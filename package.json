@@ -1,0 +1,28 @@
+{
+  "name": "zulip-knowledge-app",
+  "version": "0.1.0",
+  "description": "TUI-driven social knowledge extraction from Zulip using Afcomech agent framework",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@connectome/agent-framework": "file:../agent-framework",
+    "@connectome/context-manager": "file:../context-manager",
+    "chronicle": "file:../chronicle",
+    "membrane": "file:../membrane",
+    "dotenv": "^17.2.3",
+    "ink": "^5.1.0",
+    "ink-text-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}
