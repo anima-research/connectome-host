@@ -89,6 +89,18 @@ interface LaunchedTask {
   completed: boolean;
 }
 
+/** Observable state of an active subagent, for TUI display. */
+export interface ActiveSubagent {
+  name: string;
+  type: 'spawn' | 'fork';
+  task: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: number;
+  statusMessage?: string;
+  toolCallsCount: number;
+  findingsCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -103,6 +115,9 @@ export class SubagentModule implements Module {
   private currentDepth: number;
   private launchedTasks = new Map<string, LaunchedTask>();
   private taskCounter = 0;
+
+  /** Observable registry of active/recent subagents for TUI display. */
+  readonly activeSubagents = new Map<string, ActiveSubagent>();
 
   constructor(config: SubagentModuleConfig = {}) {
     this.config = config;
@@ -334,6 +349,12 @@ export class SubagentModule implements Module {
 
   private async runSpawn(input: SpawnInput): Promise<SubagentResult> {
     const agentName = `spawn-${input.name}-${Date.now()}`;
+    const entry: ActiveSubagent = {
+      name: input.name, type: 'spawn', task: input.task,
+      status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
+    };
+    this.activeSubagents.set(agentName, entry);
+
     const { agent, contextManager, cleanup } = await this.getFramework().createEphemeralAgent({
       name: agentName,
       model: input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001',
@@ -343,15 +364,18 @@ export class SubagentModule implements Module {
     });
 
     try {
-      // Inject the task as a user message
       contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
 
-      // Get available tools (filter out subagent tools to prevent recursive spawning
-      // beyond depth limit — child gets its own SubagentModule at depth+1)
       const allTools = this.getFramework().getAllTools();
       const tools = this.filterToolsForSubagent(allTools, input.tools);
 
-      return await this.driveToCompletion(agent, tools);
+      const result = await this.driveToCompletion(agent, tools, entry);
+      entry.status = 'completed';
+      return result;
+    } catch (err) {
+      entry.status = 'failed';
+      entry.statusMessage = err instanceof Error ? err.message : String(err);
+      throw err;
     } finally {
       cleanup();
     }
@@ -359,13 +383,16 @@ export class SubagentModule implements Module {
 
   private async runFork(input: ForkInput): Promise<SubagentResult> {
     const agentName = `fork-${input.name}-${Date.now()}`;
+    const entry: ActiveSubagent = {
+      name: input.name, type: 'fork', task: input.task,
+      status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
+    };
+    this.activeSubagents.set(agentName, entry);
 
-    // Get parent agent's compiled context
     const parentAgent = this.config.parentAgentName
       ? this.getFramework().getAgent(this.config.parentAgentName)
       : null;
 
-    // Determine system prompt
     const systemPrompt = input.systemPrompt
       ?? (parentAgent ? parentAgent.systemPrompt : 'You are a research assistant.');
 
@@ -393,7 +420,13 @@ export class SubagentModule implements Module {
       const allTools = this.getFramework().getAllTools();
       const tools = this.filterToolsForSubagent(allTools);
 
-      return await this.driveToCompletion(agent, tools);
+      const result = await this.driveToCompletion(agent, tools, entry);
+      entry.status = 'completed';
+      return result;
+    } catch (err) {
+      entry.status = 'failed';
+      entry.statusMessage = err instanceof Error ? err.message : String(err);
+      throw err;
     } finally {
       cleanup();
     }
@@ -411,6 +444,7 @@ export class SubagentModule implements Module {
   private async driveToCompletion(
     agent: Agent,
     tools: ToolDefinition[],
+    entry?: ActiveSubagent,
   ): Promise<SubagentResult> {
     const findings: string[] = [];
     const issues: string[] = [];
@@ -432,6 +466,11 @@ export class SubagentModule implements Module {
             hadToolCalls = true;
             const calls = event.calls;
             toolCallsCount += calls.length;
+            if (entry) {
+              entry.toolCallsCount = toolCallsCount;
+              const toolNames = calls.map((c: ToolCall) => c.name.split(':').pop()).join(', ');
+              entry.statusMessage = `calling ${toolNames}`;
+            }
 
             // Execute each tool call
             const afResults = await Promise.all(

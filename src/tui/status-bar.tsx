@@ -7,9 +7,10 @@ interface StatusBarProps {
   branch?: string;
   lessonsCount?: number;
   subagentCount?: number;
+  hint?: string;
 }
 
-export function StatusBar({ status, tool, branch, lessonsCount, subagentCount }: StatusBarProps) {
+export function StatusBar({ status, tool, branch, lessonsCount, subagentCount, hint }: StatusBarProps) {
   const statusColor = status === 'idle' ? 'green'
     : status === 'error' ? 'red'
     : 'yellow';
@@ -27,6 +28,7 @@ export function StatusBar({ status, tool, branch, lessonsCount, subagentCount }:
         <Text color="blue"> | {lessonsCount} lessons</Text>
       )}
       <Text color="gray">]</Text>
+      {hint && <Text color="gray" dimColor> {hint}</Text>}
     </Box>
   );
 }
