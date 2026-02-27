@@ -408,14 +408,15 @@ export class SubagentModule implements Module {
     });
 
     try {
-      // Copy parent's messages into the fork's context, remapping the parent's
-      // assistant participant name to the fork's name so Membrane maps roles correctly.
+      // Copy parent's compiled (already-compressed) context into the fork.
+      // This gives the fork diary summaries + recent messages instead of the
+      // full raw history, preventing context overflow on long-running parents.
       if (parentAgent) {
         const parentCM = parentAgent.getContextManager();
-        const { messages } = parentCM.queryMessages({});
-        for (const msg of messages) {
+        const { messages: compiled } = await parentCM.compile();
+        for (const msg of compiled) {
           const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
-          contextManager.addMessage(participant, msg.content, msg.metadata);
+          contextManager.addMessage(participant, msg.content);
         }
       }
 

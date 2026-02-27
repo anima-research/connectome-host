@@ -16,7 +16,7 @@
  */
 
 import { Membrane, AnthropicAdapter, NativeFormatter } from 'membrane';
-import { AgentFramework, PassthroughStrategy } from '@connectome/agent-framework';
+import { AgentFramework, AutobiographicalStrategy } from '@connectome/agent-framework';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SYSTEM_PROMPT } from './prompts/system.js';
@@ -67,7 +67,12 @@ async function createFramework(membrane: Membrane) {
         name: 'researcher',
         model: config.model,
         systemPrompt: SYSTEM_PROMPT,
-        strategy: new PassthroughStrategy(),
+        strategy: new AutobiographicalStrategy({
+          headWindowTokens: 4000,
+          recentWindowTokens: 30000,
+          compressionModel: 'claude-haiku-4-5-20251001',
+          autoTickOnNewMessage: true,
+        }),
       },
     ],
     modules: [new TuiModule(), subagentModule, lessonsModule, retrievalModule],
