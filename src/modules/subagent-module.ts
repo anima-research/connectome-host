@@ -22,6 +22,8 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
+  TraceEvent,
+  ContextManager,
 } from '@connectome/agent-framework';
 import type { AgentFramework } from '@connectome/agent-framework';
 import { AutobiographicalStrategy } from '@connectome/agent-framework';
@@ -108,6 +110,31 @@ export interface ActiveSubagent {
   findingsCount: number;
 }
 
+/** Live state captured for peek observability. */
+interface LiveSubagentState {
+  frameworkAgentName: string;
+  displayName: string;
+  systemPrompt: string;
+  contextManager: ContextManager;
+  currentStream: string;
+  pendingToolCalls: Array<{ name: string; input?: unknown }>;
+}
+
+/** Snapshot returned by peek(). */
+export interface SubagentPeekSnapshot {
+  name: string;
+  type: 'spawn' | 'fork';
+  task: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: number;
+  elapsedMs: number;
+  systemPrompt: string;
+  messages: Array<{ participant: string; content: ContentBlock[] }>;
+  currentStream: string;
+  pendingToolCalls: Array<{ name: string; input?: unknown }>;
+  toolCallsCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -144,6 +171,10 @@ export class SubagentModule implements Module {
   /** Observable registry of active/recent subagents for TUI display. */
   readonly activeSubagents = new Map<string, ActiveSubagent>();
 
+  // Live state for peek observability
+  private liveSubagents = new Map<string, LiveSubagentState>();          // keyed by displayName
+  private frameworkNameIndex = new Map<string, string>();                 // frameworkAgentName → displayName
+
   constructor(config: SubagentModuleConfig = {}) {
     this.config = config;
     this.maxDepth = config.maxDepth ?? 3;
@@ -158,6 +189,37 @@ export class SubagentModule implements Module {
   /** Set the framework reference. Must be called after framework creation. */
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
+
+    // Subscribe to traces for peek observability
+    framework.onTrace((event: TraceEvent) => {
+      const agentName = 'agentName' in event ? (event as { agentName: string }).agentName : null;
+      if (!agentName) return;
+
+      const displayName = this.frameworkNameIndex.get(agentName);
+      if (!displayName) return;
+      const live = this.liveSubagents.get(displayName);
+      if (!live) return;
+
+      switch (event.type) {
+        case 'inference:started':
+          live.currentStream = '';
+          live.pendingToolCalls = [];
+          break;
+        case 'inference:tokens':
+          live.currentStream += (event as { content?: string }).content ?? '';
+          break;
+        case 'inference:tool_calls_yielded': {
+          const calls = (event as { calls?: Array<{ name: string; input?: unknown }> }).calls ?? [];
+          live.pendingToolCalls = calls.map(c => ({ name: c.name, input: c.input }));
+          live.currentStream = '';
+          break;
+        }
+        case 'inference:stream_resumed':
+          live.currentStream = '';
+          live.pendingToolCalls = [];
+          break;
+      }
+    });
   }
 
   private getFramework(): AgentFramework {
@@ -245,6 +307,16 @@ export class SubagentModule implements Module {
           },
         },
       },
+      {
+        name: 'peek',
+        description: 'Peek at a running subagent\'s live state: full compiled context (system prompt, messages, tool results), current streaming output, and pending tool calls. Omit name to peek at all running subagents.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Subagent name to peek at (omit for all)' },
+          },
+        },
+      },
     ];
   }
 
@@ -260,6 +332,8 @@ export class SubagentModule implements Module {
         return this.handleWait(call.input as WaitInput);
       case 'concurrency':
         return this.handleConcurrency(call.input as { maxConcurrent?: number });
+      case 'peek':
+        return this.handlePeek(call.input as { name?: string });
       default:
         return { success: false, error: `Unknown tool: ${call.name}`, isError: true };
     }
@@ -357,6 +431,83 @@ export class SubagentModule implements Module {
       effective: this.effectiveConcurrent,
       active: this.activeConcurrent,
       queued: this.waitQueue.length,
+    };
+  }
+
+  // =========================================================================
+  // Peek Observability
+  // =========================================================================
+
+  private registerLive(
+    displayName: string,
+    frameworkAgentName: string,
+    systemPrompt: string,
+    contextManager: ContextManager,
+  ): void {
+    this.liveSubagents.set(displayName, {
+      frameworkAgentName,
+      displayName,
+      systemPrompt,
+      contextManager,
+      currentStream: '',
+      pendingToolCalls: [],
+    });
+    this.frameworkNameIndex.set(frameworkAgentName, displayName);
+  }
+
+  private unregisterLive(displayName: string, frameworkAgentName: string): void {
+    this.liveSubagents.delete(displayName);
+    this.frameworkNameIndex.delete(frameworkAgentName);
+  }
+
+  /**
+   * Peek at a running subagent's live state: full context, streaming output,
+   * pending tool calls. Returns null if the subagent is not running.
+   * If name is omitted, returns snapshots for all running subagents.
+   */
+  async peek(name?: string): Promise<SubagentPeekSnapshot[]> {
+    if (name) {
+      const snapshot = await this.peekOne(name);
+      return snapshot ? [snapshot] : [];
+    }
+    const results: SubagentPeekSnapshot[] = [];
+    for (const displayName of this.liveSubagents.keys()) {
+      const snapshot = await this.peekOne(displayName);
+      if (snapshot) results.push(snapshot);
+    }
+    return results;
+  }
+
+  private async peekOne(displayName: string): Promise<SubagentPeekSnapshot | null> {
+    const live = this.liveSubagents.get(displayName);
+    if (!live) return null;
+
+    // Find the matching ActiveSubagent entry for status/metadata
+    let entry: ActiveSubagent | undefined;
+    for (const e of this.activeSubagents.values()) {
+      if (e.name === displayName) { entry = e; break; }
+    }
+
+    let messages: Array<{ participant: string; content: ContentBlock[] }> = [];
+    try {
+      const compiled = await live.contextManager.compile();
+      messages = compiled.messages;
+    } catch {
+      // Context manager may be mid-modification; return what we have
+    }
+
+    return {
+      name: displayName,
+      type: entry?.type ?? 'spawn',
+      task: entry?.task ?? '',
+      status: entry?.status ?? 'running',
+      startedAt: entry?.startedAt ?? 0,
+      elapsedMs: entry ? Date.now() - entry.startedAt : 0,
+      systemPrompt: live.systemPrompt,
+      messages,
+      currentStream: live.currentStream,
+      pendingToolCalls: live.pendingToolCalls,
+      toolCallsCount: entry?.toolCallsCount ?? 0,
     };
   }
 
@@ -525,6 +676,17 @@ export class SubagentModule implements Module {
     return { success: true, data: this.getConcurrencyStatus() };
   }
 
+  private async handlePeek(input: { name?: string }): Promise<ToolResult> {
+    const snapshots = await this.peek(input.name);
+    if (snapshots.length === 0) {
+      return {
+        success: true,
+        data: { message: input.name ? `No running subagent named '${input.name}'` : 'No running subagents' },
+      };
+    }
+    return { success: true, data: snapshots };
+  }
+
   // =========================================================================
   // Subagent Execution
   // =========================================================================
@@ -559,6 +721,9 @@ export class SubagentModule implements Module {
           }),
           allowedTools: this.filterToolNames(input.tools),
         });
+
+        // Register live state for peek observability
+        this.registerLive(input.name, agentName, input.systemPrompt, contextManager);
 
         try {
           contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
@@ -596,6 +761,7 @@ export class SubagentModule implements Module {
           entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
           await new Promise(resolve => setTimeout(resolve, delay));
         } finally {
+          this.unregisterLive(input.name, agentName);
           cleanup();
         }
       }
@@ -648,6 +814,9 @@ export class SubagentModule implements Module {
           allowedTools: this.filterToolNames(),
         });
 
+        // Register live state for peek observability
+        this.registerLive(input.name, agentName, systemPrompt, contextManager);
+
         try {
           // Copy parent's compiled (already-compressed) context into the fork.
           if (parentAgent) {
@@ -694,6 +863,7 @@ export class SubagentModule implements Module {
           entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
           await new Promise(resolve => setTimeout(resolve, delay));
         } finally {
+          this.unregisterLive(input.name, agentName);
           cleanup();
         }
       }
