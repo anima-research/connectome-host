@@ -24,7 +24,8 @@ import type {
   ToolResult,
 } from '@connectome/agent-framework';
 import type { AgentFramework } from '@connectome/agent-framework';
-import { PassthroughStrategy } from '@connectome/agent-framework';
+import { AutobiographicalStrategy } from '@connectome/agent-framework';
+import type { ContentBlock } from 'membrane';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +42,14 @@ export interface SubagentModuleConfig {
   defaultMaxTokens?: number;
   /** Which parent agent this module serves (for fork context access) */
   parentAgentName?: string;
+  /** Max concurrent subagent executions (default: 3) */
+  maxConcurrent?: number;
+  /** Max prompt tokens before failing fast (default: 190000) */
+  maxPromptTokens?: number;
+  /** Max execution time per subagent in ms (default: 600000 = 10 min) */
+  maxExecutionMs?: number;
+  /** Max restart attempts on transient errors (default: 2) */
+  maxRetries?: number;
 }
 
 export interface SubagentResult {
@@ -114,6 +123,24 @@ export class SubagentModule implements Module {
   private launchedTasks = new Map<string, LaunchedTask>();
   private taskCounter = 0;
 
+  // Concurrency control — adaptive rate-limit-aware semaphore
+  private configuredMaxConcurrent: number;   // User's ceiling
+  private effectiveConcurrent: number;       // Current effective limit (may be reduced)
+  private activeConcurrent = 0;
+  private waitQueue: Array<() => void> = [];
+  private consecutiveSuccesses = 0;
+  private lastRateLimitAt = 0;
+  private rateLimitCooldownMs = 30_000;      // Delay after rate limit before releasing next slot
+
+  // Prompt size guard
+  private maxPromptTokens: number;
+
+  // Per-subagent execution deadline
+  private maxExecutionMs: number;
+
+  // Retry on transient errors
+  private maxRetries: number;
+
   /** Observable registry of active/recent subagents for TUI display. */
   readonly activeSubagents = new Map<string, ActiveSubagent>();
 
@@ -121,6 +148,11 @@ export class SubagentModule implements Module {
     this.config = config;
     this.maxDepth = config.maxDepth ?? 3;
     this.currentDepth = config.currentDepth ?? 0;
+    this.configuredMaxConcurrent = config.maxConcurrent ?? 3;
+    this.effectiveConcurrent = this.configuredMaxConcurrent;
+    this.maxPromptTokens = config.maxPromptTokens ?? 190_000;
+    this.maxExecutionMs = config.maxExecutionMs ?? 600_000;
+    this.maxRetries = config.maxRetries ?? 2;
   }
 
   /** Set the framework reference. Must be called after framework creation. */
@@ -203,6 +235,16 @@ export class SubagentModule implements Module {
           },
         },
       },
+      {
+        name: 'concurrency',
+        description: 'View or adjust subagent concurrency. Omit maxConcurrent to just view status. Concurrency auto-adapts to rate limits (halves on 429, recovers after successes).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            maxConcurrent: { type: 'number', description: 'Set new concurrency ceiling (min 1)' },
+          },
+        },
+      },
     ];
   }
 
@@ -216,6 +258,8 @@ export class SubagentModule implements Module {
         return this.handleLaunch(call.input as LaunchInput);
       case 'wait':
         return this.handleWait(call.input as WaitInput);
+      case 'concurrency':
+        return this.handleConcurrency(call.input as { maxConcurrent?: number });
       default:
         return { success: false, error: `Unknown tool: ${call.name}`, isError: true };
     }
@@ -223,6 +267,139 @@ export class SubagentModule implements Module {
 
   async onProcess(_event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     return {};
+  }
+
+  // =========================================================================
+  // Concurrency Control (adaptive, rate-limit-aware)
+  // =========================================================================
+
+  private async acquireSlot(): Promise<void> {
+    if (this.activeConcurrent < this.effectiveConcurrent) {
+      this.activeConcurrent++;
+      return;
+    }
+    return new Promise<void>(resolve => this.waitQueue.push(resolve));
+  }
+
+  private releaseSlot(): void {
+    this.activeConcurrent--;
+    if (this.waitQueue.length > 0 && this.activeConcurrent < this.effectiveConcurrent) {
+      this.activeConcurrent++;
+      this.waitQueue.shift()!();
+    }
+  }
+
+  /** Call on successful subagent completion — gradually recovers concurrency. */
+  private onSubagentSuccess(): void {
+    this.consecutiveSuccesses++;
+    // After 3 consecutive successes, try increasing by 1
+    if (this.consecutiveSuccesses >= 3 && this.effectiveConcurrent < this.configuredMaxConcurrent) {
+      this.effectiveConcurrent++;
+      this.consecutiveSuccesses = 0;
+    }
+  }
+
+  /** Call on rate limit error — halves concurrency and applies cooldown. */
+  private async onRateLimitHit(): Promise<void> {
+    const prev = this.effectiveConcurrent;
+    this.effectiveConcurrent = Math.max(1, Math.floor(this.effectiveConcurrent / 2));
+    this.consecutiveSuccesses = 0;
+    this.lastRateLimitAt = Date.now();
+    console.error(
+      `[subagent] Rate limit hit — concurrency ${prev} → ${this.effectiveConcurrent}, ` +
+      `cooling down ${this.rateLimitCooldownMs}ms`
+    );
+    await new Promise(resolve => setTimeout(resolve, this.rateLimitCooldownMs));
+  }
+
+  private isRateLimitError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    const msg = err.message.toLowerCase();
+    return msg.includes('rate') || msg.includes('429') || msg.includes('too many');
+  }
+
+  /** Transient = worth retrying the whole subagent from scratch. */
+  private isTransientError(err: Error): boolean {
+    const msg = err.message.toLowerCase();
+    return (
+      msg.includes('timeout') ||
+      msg.includes('idle') ||
+      msg.includes('econnreset') ||
+      msg.includes('socket hang up') ||
+      msg.includes('network') ||
+      msg.includes('stream aborted') ||
+      msg.includes('overloaded') ||
+      msg.includes('529') ||
+      msg.includes('500') ||
+      msg.includes('502') ||
+      msg.includes('503') ||
+      this.isRateLimitError(err)
+    );
+  }
+
+  /** Set concurrency ceiling at runtime. Also raises effective if below new ceiling. */
+  setConcurrency(n: number): void {
+    this.configuredMaxConcurrent = Math.max(1, n);
+    if (this.effectiveConcurrent > this.configuredMaxConcurrent) {
+      this.effectiveConcurrent = this.configuredMaxConcurrent;
+    }
+    // If we were throttled below the new ceiling, let waiters through
+    while (this.waitQueue.length > 0 && this.activeConcurrent < this.effectiveConcurrent) {
+      this.activeConcurrent++;
+      this.waitQueue.shift()!();
+    }
+  }
+
+  /** Get current concurrency status for observability. */
+  getConcurrencyStatus(): { configured: number; effective: number; active: number; queued: number } {
+    return {
+      configured: this.configuredMaxConcurrent,
+      effective: this.effectiveConcurrent,
+      active: this.activeConcurrent,
+      queued: this.waitQueue.length,
+    };
+  }
+
+  // =========================================================================
+  // Execution Timeout
+  // =========================================================================
+
+  private withTimeout<T>(promise: Promise<T>, name: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Subagent ${name} timed out after ${this.maxExecutionMs}ms`)),
+          this.maxExecutionMs,
+        )
+      ),
+    ]);
+  }
+
+  // =========================================================================
+  // Prompt Size Estimation
+  // =========================================================================
+
+  private estimatePromptTokens(
+    systemPrompt: string,
+    messages: Array<{ content: ContentBlock[] }>,
+    tools: ToolDefinition[],
+  ): number {
+    let tokens = Math.ceil(systemPrompt.length / 4) + 50; // system + overhead
+
+    for (const msg of messages) {
+      tokens += 50; // per-message overhead (role, formatting)
+      for (const block of msg.content) {
+        tokens += Math.ceil(JSON.stringify(block).length / 4);
+      }
+    }
+
+    for (const tool of tools) {
+      tokens += 100; // per-tool overhead
+      tokens += Math.ceil(JSON.stringify(tool).length / 4);
+    }
+
+    return tokens;
   }
 
   // =========================================================================
@@ -341,98 +518,191 @@ export class SubagentModule implements Module {
     return { success: true, data: results };
   }
 
+  private handleConcurrency(input: { maxConcurrent?: number }): ToolResult {
+    if (input.maxConcurrent !== undefined) {
+      this.setConcurrency(input.maxConcurrent);
+    }
+    return { success: true, data: this.getConcurrencyStatus() };
+  }
+
   // =========================================================================
   // Subagent Execution
   // =========================================================================
 
   private async runSpawn(input: SpawnInput): Promise<SubagentResult> {
-    const agentName = `spawn-${input.name}-${Date.now()}`;
+    await this.acquireSlot();
+
     const entry: ActiveSubagent = {
       name: input.name, type: 'spawn', task: input.task,
       status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
     };
-    this.activeSubagents.set(agentName, entry);
-
-    const framework = this.getFramework();
-    const { agent, contextManager, cleanup } = await framework.createEphemeralAgent({
-      name: agentName,
-      model: input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001',
-      systemPrompt: input.systemPrompt,
-      maxTokens: input.maxTokens ?? this.config.defaultMaxTokens ?? 4096,
-      strategy: new PassthroughStrategy(),
-      allowedTools: this.filterToolNames(input.tools),
-    });
+    const entryKey = `spawn-${input.name}`;
+    this.activeSubagents.set(entryKey, entry);
 
     try {
-      contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+      const framework = this.getFramework();
+      const model = input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001';
+      let lastError: Error | null = null;
 
-      // Run through the framework's event loop — full traces, logging, tool dispatch
-      const { speech, toolCallsCount } = await framework.runEphemeralToCompletion(agent, contextManager);
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        const agentName = `spawn-${input.name}-${Date.now()}`;
+        const { agent, contextManager, cleanup } = await framework.createEphemeralAgent({
+          name: agentName,
+          model,
+          systemPrompt: input.systemPrompt,
+          maxTokens: input.maxTokens ?? this.config.defaultMaxTokens ?? 4096,
+          strategy: new AutobiographicalStrategy({
+            headWindowTokens: 2_000,
+            recentWindowTokens: 80_000,
+            compressionModel: model,
+            autoTickOnNewMessage: true,
+          }),
+          allowedTools: this.filterToolNames(input.tools),
+        });
 
-      entry.status = 'completed';
-      entry.toolCallsCount = toolCallsCount;
-      return { summary: speech, findings: [], issues: [], toolCallsCount };
-    } catch (err) {
+        try {
+          contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+
+          // Pre-validate prompt size
+          const { messages } = await contextManager.compile();
+          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          if (est > this.maxPromptTokens) {
+            throw new Error(
+              `Prompt too large for subagent ${input.name}: ~${est} tokens ` +
+              `(limit: ${this.maxPromptTokens}). Reduce context or task size.`
+            );
+          }
+
+          const { speech, toolCallsCount } = await this.withTimeout(
+            framework.runEphemeralToCompletion(agent, contextManager),
+            input.name,
+          );
+
+          entry.status = 'completed';
+          entry.toolCallsCount = toolCallsCount;
+          this.onSubagentSuccess();
+          return { summary: speech, findings: [], issues: [], toolCallsCount };
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (this.isRateLimitError(lastError)) await this.onRateLimitHit();
+          if (!this.isTransientError(lastError) || attempt === this.maxRetries) break;
+
+          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          console.error(
+            `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +
+            `${lastError.message}. Restarting in ${delay}ms...`
+          );
+          entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } finally {
+          cleanup();
+        }
+      }
+
       entry.status = 'failed';
-      entry.statusMessage = err instanceof Error ? err.message : String(err);
-      throw err;
+      entry.statusMessage = lastError!.message;
+      throw lastError!;
     } finally {
-      cleanup();
+      this.releaseSlot();
     }
   }
 
   private async runFork(input: ForkInput): Promise<SubagentResult> {
-    const agentName = input.name;
+    await this.acquireSlot();
+
     const entry: ActiveSubagent = {
       name: input.name, type: 'fork', task: input.task,
       status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
     };
-    this.activeSubagents.set(agentName, entry);
-
-    const framework = this.getFramework();
-
-    const parentAgent = this.config.parentAgentName
-      ? framework.getAgent(this.config.parentAgentName)
-      : null;
-
-    const systemPrompt = input.systemPrompt
-      ?? (parentAgent ? parentAgent.systemPrompt : 'You are a research assistant.');
-
-    const { agent, contextManager, cleanup } = await framework.createEphemeralAgent({
-      name: agentName,
-      model: input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001',
-      systemPrompt,
-      maxTokens: this.config.defaultMaxTokens ?? 4096,
-      strategy: new PassthroughStrategy(),
-      allowedTools: this.filterToolNames(),
-    });
+    this.activeSubagents.set(input.name, entry);
 
     try {
-      // Copy parent's compiled (already-compressed) context into the fork.
-      // This gives the fork diary summaries + recent messages instead of the
-      // full raw history, preventing context overflow on long-running parents.
-      if (parentAgent) {
-        const parentCM = parentAgent.getContextManager();
-        const { messages: compiled } = await parentCM.compile();
-        for (const msg of compiled) {
-          const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
-          contextManager.addMessage(participant, msg.content);
+      const framework = this.getFramework();
+
+      const parentAgent = this.config.parentAgentName
+        ? framework.getAgent(this.config.parentAgentName)
+        : null;
+
+      const systemPrompt = input.systemPrompt
+        ?? (parentAgent ? parentAgent.systemPrompt : 'You are a research assistant.');
+
+      const model = input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001';
+      let lastError: Error | null = null;
+
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        // Unique agent name per attempt (cleanup removes previous from framework map)
+        const agentName = attempt === 0 ? input.name : `${input.name}-retry${attempt}`;
+
+        const { agent, contextManager, cleanup } = await framework.createEphemeralAgent({
+          name: agentName,
+          model,
+          systemPrompt,
+          maxTokens: this.config.defaultMaxTokens ?? 4096,
+          strategy: new AutobiographicalStrategy({
+            headWindowTokens: 2_000,
+            recentWindowTokens: 80_000,
+            compressionModel: model,
+            autoTickOnNewMessage: true,
+          }),
+          allowedTools: this.filterToolNames(),
+        });
+
+        try {
+          // Copy parent's compiled (already-compressed) context into the fork.
+          if (parentAgent) {
+            const parentCM = parentAgent.getContextManager();
+            const { messages: compiled } = await parentCM.compile();
+            for (const msg of compiled) {
+              const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
+              contextManager.addMessage(participant, msg.content);
+            }
+          }
+
+          contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+
+          // Pre-validate prompt size
+          const { messages } = await contextManager.compile();
+          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          if (est > this.maxPromptTokens) {
+            throw new Error(
+              `Prompt too large for subagent ${input.name}: ~${est} tokens ` +
+              `(limit: ${this.maxPromptTokens}). Reduce context or task size.`
+            );
+          }
+
+          const { speech, toolCallsCount } = await this.withTimeout(
+            framework.runEphemeralToCompletion(agent, contextManager),
+            input.name,
+          );
+
+          entry.status = 'completed';
+          entry.toolCallsCount = toolCallsCount;
+          this.onSubagentSuccess();
+          return { summary: speech, findings: [], issues: [], toolCallsCount };
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (this.isRateLimitError(lastError)) await this.onRateLimitHit();
+          if (!this.isTransientError(lastError) || attempt === this.maxRetries) break;
+
+          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          console.error(
+            `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +
+            `${lastError.message}. Restarting in ${delay}ms...`
+          );
+          entry.statusMessage = `Retry ${attempt + 1}: ${lastError.message}`;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } finally {
+          cleanup();
         }
       }
 
-      contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
-
-      const { speech, toolCallsCount } = await framework.runEphemeralToCompletion(agent, contextManager);
-
-      entry.status = 'completed';
-      entry.toolCallsCount = toolCallsCount;
-      return { summary: speech, findings: [], issues: [], toolCallsCount };
-    } catch (err) {
       entry.status = 'failed';
-      entry.statusMessage = err instanceof Error ? err.message : String(err);
-      throw err;
+      entry.statusMessage = lastError!.message;
+      throw lastError!;
     } finally {
-      cleanup();
+      this.releaseSlot();
     }
   }
 

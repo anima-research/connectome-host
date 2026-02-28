@@ -16,7 +16,7 @@
  */
 
 import { Membrane, AnthropicAdapter, NativeFormatter } from 'membrane';
-import { AgentFramework, AutobiographicalStrategy } from '@connectome/agent-framework';
+import { AgentFramework, AutobiographicalStrategy, FilesModule } from '@connectome/agent-framework';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SYSTEM_PROMPT } from './prompts/system.js';
@@ -31,7 +31,7 @@ const noTui = process.argv.includes('--no-tui') || !process.stdin.isTTY;
 
 const config = {
   apiKey: process.env.ANTHROPIC_API_KEY,
-  model: process.env.MODEL || 'claude-sonnet-4-5-20250929',
+  model: process.env.MODEL || 'claude-opus-4-6',
   storePath: process.env.STORE_PATH || './data/store',
   zulipMcpCmd: process.env.ZULIP_MCP_CMD || 'node',
   zulipMcpArgs: process.env.ZULIP_MCP_ARGS?.split(' ') || [resolve(__dirname, '../../zulip-mcp/build/index.js')],
@@ -58,6 +58,7 @@ async function createFramework(membrane: Membrane) {
   });
   const lessonsModule = new LessonsModule();
   const retrievalModule = new RetrievalModule({ membrane });
+  const filesModule = new FilesModule({ namespace: 'products' });
 
   const framework = await AgentFramework.create({
     storePath: config.storePath,
@@ -70,12 +71,12 @@ async function createFramework(membrane: Membrane) {
         strategy: new AutobiographicalStrategy({
           headWindowTokens: 4000,
           recentWindowTokens: 30000,
-          compressionModel: 'claude-haiku-4-5-20251001',
+          compressionModel: config.model,
           autoTickOnNewMessage: true,
         }),
       },
     ],
-    modules: [new TuiModule(), subagentModule, lessonsModule, retrievalModule],
+    modules: [new TuiModule(), subagentModule, lessonsModule, retrievalModule, filesModule],
     mcplServers: [
       {
         id: 'zulip',
@@ -87,6 +88,7 @@ async function createFramework(membrane: Membrane) {
   });
 
   subagentModule.setFramework(framework);
+  filesModule.initStore(framework.getStore());
   return framework;
 }
 

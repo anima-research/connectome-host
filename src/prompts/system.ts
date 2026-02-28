@@ -26,6 +26,15 @@ Use \`lessons:create\` to persist extracted knowledge. Each lesson should be:
 - **Tagged**: Use tags for categorization (people, process, decision, technical, etc.)
 - **Evidenced**: Include source references (stream:topic:messageId) when possible
 
+### Files (Products)
+Use the \`files:\` tools to write reports, summaries, and other products:
+- \`files:write\` to create or overwrite a file (e.g., \`reports/team-overview.md\`)
+- \`files:edit\` to make targeted edits to an existing file
+- \`files:read\` to review what you've written
+- \`files:materialize\` to write files to disk (target directory: \`./output\`)
+
+Write products when you have substantial findings worth preserving as a document — analysis reports, team profiles, process maps, decision logs, etc.
+
 ## Approach
 
 When the user asks you to analyze something:

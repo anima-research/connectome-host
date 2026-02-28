@@ -226,28 +226,8 @@ export class LessonsModule implements Module {
     return {};
   }
 
-  /**
-   * Inject relevant lessons into agent context before inference.
-   * Returns top lessons sorted by confidence.
-   */
-  async gatherContext(_agentName: string): Promise<ContextInjection[]> {
-    const active = this.state.lessons.filter(l => !l.deprecated && l.confidence > 0.3);
-    if (active.length === 0) return [];
-
-    const topLessons = active
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 10);
-
-    const text = topLessons
-      .map(l => `- [${(l.confidence * 100).toFixed(0)}%] ${l.content} (tags: ${l.tags.join(', ')})`)
-      .join('\n');
-
-    return [{
-      namespace: 'lessons',
-      position: 'system',
-      content: [{ type: 'text', text: `## Knowledge Library (${active.length} lessons)\n${text}` }],
-    }];
-  }
+  // Lesson injection is handled solely by RetrievalModule (intelligent retrieval
+  // pipeline). LessonsModule provides storage + CRUD tools only.
 
   // Public accessor for other modules (e.g., RetrievalModule)
   getLessons(): Lesson[] {
