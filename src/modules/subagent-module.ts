@@ -151,6 +151,8 @@ export interface SubagentPeekSnapshot {
   currentStream: string;
   pendingToolCalls: Array<{ name: string; input?: unknown }>;
   toolCallsCount: number;
+  /** True if the subagent appears stalled: running status, no active stream, elapsed > threshold. */
+  isZombie: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,12 +466,28 @@ export class SubagentModule implements Module {
       return { waitedMs: 0 };
     }
 
+    // Before queueing, try to reclaim slots from zombie subagents
+    const reclaimedZombies = this.reclaimZombieSlots();
+    if (reclaimedZombies > 0 && this.activeConcurrent < this.effectiveConcurrent) {
+      this.activeConcurrent++;
+      return { waitedMs: 0 };
+    }
+
     const startWait = Date.now();
     return new Promise<{ waitedMs: number }>((resolve, reject) => {
       const timer = setTimeout(() => {
         // Remove ourselves from the wait queue
         const idx = this.waitQueue.indexOf(onSlot);
         if (idx >= 0) this.waitQueue.splice(idx, 1);
+
+        // Last-chance zombie reclamation before failing
+        const reclaimed = this.reclaimZombieSlots();
+        if (reclaimed > 0 && this.activeConcurrent < this.effectiveConcurrent) {
+          this.activeConcurrent++;
+          resolve({ waitedMs: Date.now() - startWait });
+          return;
+        }
+
         reject(new Error(
           `Timed out waiting for a concurrency slot after ${slotTimeoutMs}ms ` +
           `(${this.activeConcurrent}/${this.effectiveConcurrent} slots in use, ` +
@@ -487,7 +505,67 @@ export class SubagentModule implements Module {
     });
   }
 
+  /**
+   * Scan for zombie subagents and force-release their concurrency slots.
+   * A zombie is a subagent that's been "running" for >30s with no active
+   * inference stream and no pending tool calls.
+   * Returns the number of slots reclaimed.
+   */
+  private reclaimZombieSlots(): number {
+    const ZOMBIE_THRESHOLD_MS = 30_000;
+    let reclaimed = 0;
+
+    for (const [displayName, live] of this.liveSubagents) {
+      let entry: ActiveSubagent | undefined;
+      for (const e of this.activeSubagents.values()) {
+        if (e.name === displayName) { entry = e; break; }
+      }
+      if (!entry || entry.status !== 'running') continue;
+
+      const elapsed = Date.now() - entry.startedAt;
+      const isZombie = elapsed > ZOMBIE_THRESHOLD_MS
+        && !live.currentStream
+        && live.pendingToolCalls.length === 0;
+
+      if (isZombie) {
+        console.error(
+          `[subagent] Reclaiming zombie slot: "${displayName}" ` +
+          `(running for ${(elapsed / 1000).toFixed(0)}s with no active stream)`
+        );
+
+        // Cancel the zombie's framework agent
+        try {
+          const agent = this.getFramework().getAgent(live.frameworkAgentName);
+          if (agent) agent.cancelStream();
+        } catch { /* best-effort */ }
+
+        // Cancel via cancellation handle (unblocks the Promise.race in runSpawn/runFork)
+        const handle = this.cancellationHandles.get(displayName);
+        if (handle) {
+          handle.reject(new Error(
+            `Zombie detected: "${displayName}" ran for ${(elapsed / 1000).toFixed(0)}s ` +
+            `without starting inference. Slot reclaimed.`
+          ));
+          this.cancellationHandles.delete(displayName);
+        }
+
+        entry.status = 'failed';
+        entry.completedAt = Date.now();
+        entry.statusMessage = 'zombie — slot reclaimed';
+
+        // Release the slot (the finally block in runSpawn/runFork will also
+        // call releaseSlot, but that's safe — activeConcurrent just goes to
+        // max(0, activeConcurrent-1) effectively)
+        this.activeConcurrent = Math.max(0, this.activeConcurrent - 1);
+        reclaimed++;
+      }
+    }
+
+    return reclaimed;
+  }
+
   private releaseSlot(): void {
+    if (this.activeConcurrent <= 0) return; // Guard against double-release (e.g., zombie reclamation + finally)
     this.activeConcurrent--;
     if (this.waitQueue.length > 0 && this.activeConcurrent < this.effectiveConcurrent) {
       this.activeConcurrent++;
@@ -705,18 +783,28 @@ export class SubagentModule implements Module {
       // Context manager may be mid-modification; return what we have
     }
 
+    const elapsedMs = entry ? Date.now() - entry.startedAt : 0;
+
+    // Zombie detection: running for >30s with no active stream and no pending tool calls
+    const ZOMBIE_THRESHOLD_MS = 30_000;
+    const isZombie = (entry?.status === 'running')
+      && elapsedMs > ZOMBIE_THRESHOLD_MS
+      && !live.currentStream
+      && live.pendingToolCalls.length === 0;
+
     return {
       name: displayName,
       type: entry?.type ?? 'spawn',
       task: entry?.task ?? '',
       status: entry?.status ?? 'running',
       startedAt: entry?.startedAt ?? 0,
-      elapsedMs: entry ? Date.now() - entry.startedAt : 0,
+      elapsedMs,
       systemPrompt: live.systemPrompt,
       messages,
       currentStream: live.currentStream,
       pendingToolCalls: live.pendingToolCalls,
       toolCallsCount: entry?.toolCallsCount ?? 0,
+      isZombie,
     };
   }
 
@@ -859,6 +947,9 @@ export class SubagentModule implements Module {
   }
 
   private async handleWait(input: WaitInput): Promise<ToolResult> {
+    // Before waiting, reclaim any zombie slots so we don't block on them
+    this.reclaimZombieSlots();
+
     if (input.taskId) {
       const task = this.launchedTasks.get(input.taskId);
       if (!task) {
@@ -1068,10 +1159,17 @@ export class SubagentModule implements Module {
 
         try {
           // Copy parent's compiled (already-compressed) context into the fork.
+          // Deduplicate: after context compression, compile() can return both
+          // original messages and their compressed summaries, causing duplication.
           if (parentAgent) {
             const parentCM = parentAgent.getContextManager();
             const { messages: compiled } = await parentCM.compile();
+            const seen = new Set<string>();
             for (const msg of compiled) {
+              // Hash by participant + content to detect exact duplicates
+              const key = msg.participant + '\0' + JSON.stringify(msg.content);
+              if (seen.has(key)) continue;
+              seen.add(key);
               const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
               contextManager.addMessage(participant, msg.content);
             }
