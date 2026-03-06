@@ -1088,16 +1088,20 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
 
-    // Chat view: Escape interrupts the active agent
+    // Chat view: Escape interrupts the active agent and all running subagents
     if (key.name === 'escape' && state.viewMode === 'chat') {
       if (state.status !== 'idle' && state.status !== 'error') {
+        // Cancel all subagents first so their results propagate up
+        const cancelled = subMod?.cancelAll() ?? 0;
         const agent = app.framework.getAgent('researcher');
         if (agent) {
           agent.cancelStream();
           if (streaming) endStream();
           state.status = 'idle';
           state.tool = null;
-          addLine('  (interrupted)', YELLOW);
+          addLine(cancelled > 0
+            ? `  (interrupted — ${cancelled} subagent${cancelled > 1 ? 's' : ''} stopped)`
+            : '  (interrupted)', YELLOW);
           updateStatus();
         }
       }

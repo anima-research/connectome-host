@@ -758,6 +758,9 @@ export class SubagentModule implements Module {
    * Returns true if the subagent was found and cancelled.
    */
   cancelSubagent(displayName: string): boolean {
+    // Cancel children first (bottom-up) so their results propagate before the parent dies
+    this.cancelChildren(displayName);
+
     const handle = this.cancellationHandles.get(displayName);
     if (!handle) return false;
 
@@ -774,6 +777,43 @@ export class SubagentModule implements Module {
     // Unblock the Promise.race in runSpawn/runFork
     handle.reject(new SubagentTerminated('cancelled', partial, `Subagent "${displayName}" cancelled by user`));
     return true;
+  }
+
+  /**
+   * Cancel all running subagents (e.g. on user Esc).
+   * Returns the number of subagents cancelled.
+   */
+  cancelAll(): number {
+    // Collect all cancellable names first to avoid mutation during iteration
+    const names = [...this.cancellationHandles.keys()];
+    let count = 0;
+    for (const name of names) {
+      if (this.cancelSubagent(name)) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Cancel all children (direct + transitive) of the given display name.
+   * Uses the parentMap to find descendants via framework agent names.
+   */
+  private cancelChildren(displayName: string): void {
+    const live = this.liveSubagents.get(displayName);
+    if (!live) return;
+
+    // Find direct children: entries in parentMap whose parent is this agent's framework name
+    const frameworkName = live.frameworkAgentName;
+    const children: string[] = [];
+    for (const [childName, parentFrameworkName] of this.parentMap) {
+      if (parentFrameworkName === frameworkName) {
+        children.push(childName);
+      }
+    }
+
+    // Cancel each child (which recursively cancels its children)
+    for (const child of children) {
+      this.cancelSubagent(child);
+    }
   }
 
   // =========================================================================
