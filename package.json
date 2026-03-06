@@ -9,7 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@connectome/agent-framework": "github:Anarchid/agent-framework#zombie-detection",
+    "@connectome/agent-framework": "file:../agent-framework",
     "@connectome/context-manager": "github:Anarchid/context-manager#fix-tool-crash",
     "chronicle": "file:../chronicle",
     "membrane": "github:Anarchid/membrane#main",

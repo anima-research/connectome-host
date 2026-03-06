@@ -238,7 +238,8 @@ export class WakeModule implements Module {
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     if (event.type !== 'external-message') return {};
-    if ((event as { source?: string }).source === 'cli' || (event as { source?: string }).source === 'tui') return {};
+    const source = (event as { source?: string }).source;
+    if (source === 'cli' || source === 'tui' || source === 'wake:triggered') return {};
 
     const content = typeof event.content === 'string' ? event.content : JSON.stringify(event.content);
     const eventType = (event as { source?: string }).source ?? 'external-message';
