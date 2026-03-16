@@ -1,16 +1,18 @@
 /**
- * WakeModule — selective MCPL event triggering via subscriptions.
+ * WakeModule — file-driven MCPL event triggering with per-policy debounce.
  *
- * Tools:
- *   wake:subscribe   — Create a subscription with text/regex filter
- *   wake:unsubscribe — Remove a subscription by name
- *   wake:list        — List all active subscriptions
+ * Reads policies from a `wake.json` config file. The recipe seeds this file
+ * on first run; after that the agent owns it and can edit it with file tools.
+ *
+ * Policies are evaluated in order — first match wins. Each policy specifies
+ * a behavior: "always" (trigger immediately), "suppress" (drop), or
+ * { "debounce": ms } (batch events per-policy, deliver when timer fires).
  *
  * Exposes `shouldTrigger` for wiring into McplServerConfig.shouldTriggerInference.
- * When no subscriptions exist, all events pass through (preserving default behavior).
- * When subscriptions exist, only matching events trigger inference.
  */
 
+import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type {
   Module,
   ModuleContext,
@@ -25,33 +27,86 @@ import type {
 import type { AgentFramework } from '@connectome/agent-framework';
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — Wake Config (persisted as wake.json)
 // ---------------------------------------------------------------------------
 
-export interface Subscription {
-  name: string;
-  filter: { type: 'text' | 'regex'; pattern: string };
-  subscriptionType: 'once' | 'permanent';
-  scope: string[];
-  createdAt: number;
-  matchCount: number;
+export interface WakeConfig {
+  policies: WakePolicy[];
+  /** What happens when no policy matches. Default: 'always' */
+  default: 'always' | 'suppress';
 }
 
-interface SubscribeInput {
+export interface WakePolicy {
   name: string;
-  filter: { type: 'text' | 'regex'; pattern: string };
-  type?: 'once' | 'permanent';
+  match: WakePolicyMatch;
+  behavior: 'always' | 'suppress' | { debounce: number };
+}
+
+export interface WakePolicyMatch {
+  /** Event types to match: 'channel:incoming', 'push:event', etc. Empty/omitted = all. */
   scope?: string[];
+  /** ServerId to match (exact or glob with *). */
+  source?: string;
+  /** ChannelId to match (exact or glob with *). */
+  channel?: string;
+  /** Content text filter. */
+  filter?: { type: 'text' | 'regex'; pattern: string };
 }
 
-interface UnsubscribeInput {
-  name: string;
-}
+/** Default config when no recipe wake config and no existing file. */
+export const DEFAULT_WAKE_CONFIG: WakeConfig = {
+  policies: [],
+  default: 'always',
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Max content length stored in pending events. */
+const MAX_CONTENT_SNIPPET = 200;
+/** Max content length shown in onWake callbacks. */
+const MAX_WAKE_SNIPPET = 80;
+/** Max events buffered during inference before oldest are dropped. */
+const MAX_INFERENCE_BUFFER = 100;
+/** Minimum interval between filesystem checks for config changes (ms). */
+const RELOAD_THROTTLE_MS = 1000;
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
 
 interface PendingEvent {
-  subscription: string;
+  policyName: string;
   content: string;
   eventType: string;
+  timestamp: number;
+}
+
+interface DebounceState {
+  timer: ReturnType<typeof setTimeout>;
+  events: PendingEvent[];
+}
+
+/** A compiled policy with pre-built matchers for fast evaluation. */
+interface CompiledPolicy {
+  policy: WakePolicy;
+  filterRegex?: RegExp;
+  sourceRegex?: RegExp;
+  channelRegex?: RegExp;
+}
+
+// ---------------------------------------------------------------------------
+// Glob matching (simple * wildcards)
+// ---------------------------------------------------------------------------
+
+function compileGlob(pattern: string): RegExp {
+  if (!pattern.includes('*')) {
+    return new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&') + '$');
+  }
+  return new RegExp(
+    '^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -62,22 +117,32 @@ export class WakeModule implements Module {
   readonly name = 'wake';
 
   private ctx: ModuleContext | null = null;
-  private framework: AgentFramework | null = null;
-  private subscriptions = new Map<string, Subscription>();
-  private onceToRemove = new Set<string>();
-  private pendingEvents: PendingEvent[] = [];
-  private inferring = false;
-  private agentName: string;
-  private onWake?: (subs: string[], summary: string) => void;
+  private configPath: string;
+  private config: WakeConfig;
+  private compiledPolicies: CompiledPolicy[] = [];
+  private configMtime: number = 0;
+  private lastReloadCheck: number = 0;
 
-  constructor(opts?: { agentName?: string; onWake?: (subs: string[], summary: string) => void }) {
-    this.agentName = opts?.agentName ?? 'agent';
-    this.onWake = opts?.onWake;
+  private inferring = false;
+  private inferenceBuffer: PendingEvent[] = [];
+  private debounceTimers = new Map<string, DebounceState>();
+
+  private agentName: string;
+  private onWake?: (policyNames: string[], summary: string) => void;
+
+  constructor(opts: {
+    configPath: string;
+    agentName?: string;
+    onWake?: (policyNames: string[], summary: string) => void;
+  }) {
+    this.configPath = opts.configPath;
+    this.agentName = opts.agentName ?? 'agent';
+    this.onWake = opts.onWake;
+    this.config = this.loadConfig();
+    this.compiledPolicies = this.compilePolicies(this.config);
   }
 
   setFramework(framework: AgentFramework): void {
-    this.framework = framework;
-
     framework.onTrace((event: TraceEvent) => {
       const agent = 'agentName' in event ? (event as { agentName: string }).agentName : null;
       if (agent !== this.agentName) return;
@@ -86,42 +151,74 @@ export class WakeModule implements Module {
         this.inferring = true;
       } else if (event.type === 'inference:completed' || event.type === 'inference:failed') {
         this.inferring = false;
-        this.flushPendingEvents();
-        this.cleanupOnce();
+        // Defer flush to avoid pushEvent re-entrancy inside trace callback
+        queueMicrotask(() => this.flushInferenceBuffer());
       }
     });
   }
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
-    this.restoreFromStore();
   }
 
   async stop(): Promise<void> {
     this.ctx = null;
-  }
-
-  // =========================================================================
-  // Persistence
-  // =========================================================================
-
-  private persistState(): void {
-    if (!this.ctx) return;
-    const subs: Record<string, Subscription> = {};
-    for (const [key, sub] of this.subscriptions) {
-      subs[key] = sub;
+    // Clear all debounce timers
+    for (const state of this.debounceTimers.values()) {
+      clearTimeout(state.timer);
     }
-    this.ctx.setState({ subscriptions: subs });
+    this.debounceTimers.clear();
   }
 
-  private restoreFromStore(): void {
-    if (!this.ctx) return;
-    const persisted = this.ctx.getState<{ subscriptions?: Record<string, Subscription> }>();
-    if (!persisted?.subscriptions) return;
+  // =========================================================================
+  // Config loading (file-based, reloaded when mtime changes)
+  // =========================================================================
 
-    this.subscriptions.clear();
-    for (const [key, sub] of Object.entries(persisted.subscriptions)) {
-      this.subscriptions.set(key, sub);
+  private loadConfig(): WakeConfig {
+    if (!existsSync(this.configPath)) {
+      return { ...DEFAULT_WAKE_CONFIG };
+    }
+    try {
+      const raw = readFileSync(this.configPath, 'utf-8');
+      const stat = statSync(this.configPath);
+      this.configMtime = stat.mtimeMs;
+      return validateWakeConfig(JSON.parse(raw));
+    } catch (err) {
+      console.error(`[wake] Failed to load ${this.configPath}:`, err);
+      return { ...DEFAULT_WAKE_CONFIG };
+    }
+  }
+
+  private compilePolicies(config: WakeConfig): CompiledPolicy[] {
+    return config.policies.map(policy => {
+      const compiled: CompiledPolicy = { policy };
+      if (policy.match.filter?.type === 'regex') {
+        try { compiled.filterRegex = new RegExp(policy.match.filter.pattern, 'i'); } catch { /* skip */ }
+      }
+      if (policy.match.source) {
+        compiled.sourceRegex = compileGlob(policy.match.source);
+      }
+      if (policy.match.channel) {
+        compiled.channelRegex = compileGlob(policy.match.channel);
+      }
+      return compiled;
+    });
+  }
+
+  private reloadIfChanged(): void {
+    const now = Date.now();
+    if (now - this.lastReloadCheck < RELOAD_THROTTLE_MS) return;
+    this.lastReloadCheck = now;
+
+    try {
+      if (!existsSync(this.configPath)) return;
+      const stat = statSync(this.configPath);
+      if (stat.mtimeMs !== this.configMtime) {
+        this.config = this.loadConfig();
+        this.compiledPolicies = this.compilePolicies(this.config);
+      }
+    } catch {
+      // ignore stat errors
     }
   }
 
@@ -130,229 +227,328 @@ export class WakeModule implements Module {
   // =========================================================================
 
   shouldTrigger = (content: string, metadata: Record<string, unknown>): boolean => {
-    if (this.subscriptions.size === 0) return true;
+    this.reloadIfChanged();
 
     const eventType = (metadata.eventType as string) ?? 'unknown';
-    const matches = this.matchSubscriptions(content, eventType);
+    const serverId = (metadata.serverId as string) ?? '';
+    const channelId = (metadata.channelId as string) ?? '';
 
-    if (matches.length === 0) return false;
+    const policy = this.matchPolicy(content, eventType, serverId, channelId);
 
-    // If currently inferring, stash for later delivery
-    if (this.inferring) {
-      for (const sub of matches) {
-        this.pendingEvents.push({
-          subscription: sub.name,
-          content: content.length > 200 ? content.slice(0, 200) + '...' : content,
-          eventType,
-        });
-      }
+    if (!policy) {
+      // No policy matched — use default
+      return this.config.default === 'always';
+    }
+
+    if (policy.behavior === 'suppress') {
       return false;
     }
 
-    // Fire onWake callback for TUI display
-    if (this.onWake) {
-      const snippet = content.length > 80 ? content.slice(0, 80) + '...' : content;
-      this.onWake(matches.map(m => m.name), snippet);
+    if (policy.behavior === 'always') {
+      return this.handleAlways(policy, content, eventType);
     }
 
-    return true;
+    // Debounce behavior
+    this.handleDebounce(policy, content, eventType);
+    return false; // Never trigger immediately for debounce — the timer will deliver
   };
 
   // =========================================================================
-  // Subscription matching
+  // Policy matching — first match wins
   // =========================================================================
 
-  private matchSubscriptions(content: string, eventType: string): Subscription[] {
-    const matched: Subscription[] = [];
-
-    for (const sub of this.subscriptions.values()) {
-      // Scope check
-      if (sub.scope.length > 0 && !sub.scope.includes(eventType)) continue;
-
-      // Filter check
-      let isMatch = false;
-      if (sub.filter.type === 'text') {
-        isMatch = content.toLowerCase().includes(sub.filter.pattern.toLowerCase());
-      } else {
-        try {
-          isMatch = new RegExp(sub.filter.pattern, 'i').test(content);
-        } catch {
-          // Invalid regex — skip
-        }
+  private matchPolicy(
+    content: string,
+    eventType: string,
+    serverId: string,
+    channelId: string,
+  ): WakePolicy | null {
+    for (const compiled of this.compiledPolicies) {
+      if (this.compiledMatches(compiled, content, eventType, serverId, channelId)) {
+        return compiled.policy;
       }
+    }
+    return null;
+  }
 
-      if (isMatch) {
-        sub.matchCount++;
-        matched.push(sub);
-        if (sub.subscriptionType === 'once') {
-          this.onceToRemove.add(sub.name);
+  private compiledMatches(
+    compiled: CompiledPolicy,
+    content: string,
+    eventType: string,
+    serverId: string,
+    channelId: string,
+  ): boolean {
+    const match = compiled.policy.match;
+
+    // Scope check
+    if (match.scope && match.scope.length > 0 && !match.scope.includes(eventType)) {
+      return false;
+    }
+
+    // Source check (serverId) — uses pre-compiled regex
+    if (compiled.sourceRegex && !compiled.sourceRegex.test(serverId)) {
+      return false;
+    }
+
+    // Channel check — uses pre-compiled regex
+    if (compiled.channelRegex && !compiled.channelRegex.test(channelId)) {
+      return false;
+    }
+
+    // Content filter check
+    if (match.filter) {
+      if (match.filter.type === 'text') {
+        if (!content.toLowerCase().includes(match.filter.pattern.toLowerCase())) {
+          return false;
         }
+      } else if (compiled.filterRegex) {
+        if (!compiled.filterRegex.test(content)) {
+          return false;
+        }
+      } else {
+        return false; // Regex failed to compile — no match
       }
     }
 
-    if (matched.length > 0) this.persistState();
-    return matched;
+    return true;
   }
 
   // =========================================================================
-  // Event bundling
+  // Behavior handlers
   // =========================================================================
 
-  private flushPendingEvents(): void {
-    if (this.pendingEvents.length === 0 || !this.ctx) return;
+  private snippetContent(content: string): string {
+    return content.length > MAX_CONTENT_SNIPPET ? content.slice(0, MAX_CONTENT_SNIPPET) + '...' : content;
+  }
 
-    const events = this.pendingEvents.splice(0);
-    const lines = events.map(e =>
-      `- [${e.subscription}] (${e.eventType}): ${e.content}`
-    ).join('\n');
+  private bufferEvent(policyName: string, content: string, eventType: string): void {
+    if (this.inferenceBuffer.length >= MAX_INFERENCE_BUFFER) {
+      // Drop oldest to prevent unbounded growth
+      this.inferenceBuffer.shift();
+    }
+    this.inferenceBuffer.push({
+      policyName,
+      content: this.snippetContent(content),
+      eventType,
+      timestamp: Date.now(),
+    });
+  }
 
-    const text = `[Wake: ${events.length} event${events.length > 1 ? 's' : ''} matched during inference]\n\n${lines}`;
+  private handleAlways(policy: WakePolicy, content: string, eventType: string): boolean {
+    // If currently inferring, buffer it (same as old behavior)
+    if (this.inferring) {
+      this.bufferEvent(policy.name, content, eventType);
+      return false;
+    }
+
+    if (this.onWake) {
+      const snippet = content.length > MAX_WAKE_SNIPPET ? content.slice(0, MAX_WAKE_SNIPPET) + '...' : content;
+      this.onWake([policy.name], snippet);
+    }
+    return true;
+  }
+
+  private handleDebounce(policy: WakePolicy, content: string, eventType: string): void {
+    const debounceMs = (policy.behavior as { debounce: number }).debounce;
+
+    const event: PendingEvent = {
+      policyName: policy.name,
+      content: this.snippetContent(content),
+      eventType,
+      timestamp: Date.now(),
+    };
+
+    const existing = this.debounceTimers.get(policy.name);
+    if (existing) {
+      // Reset timer, add event to batch
+      clearTimeout(existing.timer);
+      existing.events.push(event);
+      existing.timer = setTimeout(() => this.fireDebounce(policy.name), debounceMs);
+    } else {
+      // Start new debounce window
+      const timer = setTimeout(() => this.fireDebounce(policy.name), debounceMs);
+      this.debounceTimers.set(policy.name, { timer, events: [event] });
+    }
+  }
+
+  private fireDebounce(policyName: string): void {
+    const state = this.debounceTimers.get(policyName);
+    if (!state || state.events.length === 0) {
+      this.debounceTimers.delete(policyName);
+      return;
+    }
+
+    const events = state.events;
+    this.debounceTimers.delete(policyName);
+
+    // If currently inferring, move to inference buffer instead
+    if (this.inferring) {
+      this.inferenceBuffer.push(...events);
+      return;
+    }
+
+    this.deliverEvents(events);
+  }
+
+  // =========================================================================
+  // Event delivery
+  // =========================================================================
+
+  private deliverEvents(events: PendingEvent[]): void {
+    if (events.length === 0 || !this.ctx) return;
+
+    const policyNames = [...new Set(events.map(e => e.policyName))];
+    const lines = events
+      .map(e => `- [${e.policyName}] (${e.eventType}): ${e.content}`)
+      .join('\n');
+
+    const text = `[Wake: ${events.length} event${events.length > 1 ? 's' : ''} matched]\n\n${lines}`;
 
     this.ctx.addMessage('user', [{ type: 'text', text }]);
     this.ctx.pushEvent({
       type: 'inference-request',
       agentName: this.agentName,
-      reason: 'wake:pending-events',
+      reason: 'wake:events',
       source: 'wake',
     });
 
-    // Fire onWake for the bundled batch
     if (this.onWake) {
-      const subNames = [...new Set(events.map(e => e.subscription))];
-      this.onWake(subNames, `${events.length} events bundled`);
+      this.onWake(policyNames, `${events.length} event${events.length > 1 ? 's' : ''} delivered`);
     }
   }
 
-  private cleanupOnce(): void {
-    if (this.onceToRemove.size === 0) return;
-    for (const name of this.onceToRemove) {
-      this.subscriptions.delete(name);
-    }
-    this.onceToRemove.clear();
-    this.persistState();
+  private flushInferenceBuffer(): void {
+    if (this.inferenceBuffer.length === 0) return;
+    const events = this.inferenceBuffer.splice(0);
+    this.deliverEvents(events);
   }
 
   // =========================================================================
-  // onProcess — check subscriptions for non-MCPL events
+  // onProcess — handle non-MCPL external events
   // =========================================================================
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     if (event.type !== 'external-message') return {};
     const source = (event as { source?: string }).source;
-    if (source === 'cli' || source === 'tui' || source === 'wake:triggered') return {};
+    if (source === 'cli' || source === 'tui' || source === 'wake:events' || source === 'wake:triggered') return {};
+
+    this.reloadIfChanged();
 
     const content = typeof event.content === 'string' ? event.content : JSON.stringify(event.content);
-    const eventType = (event as { source?: string }).source ?? 'external-message';
+    const eventType = source ?? 'external-message';
 
-    if (this.subscriptions.size === 0) return {};
+    const policy = this.matchPolicy(content, eventType, '', '');
 
-    const matches = this.matchSubscriptions(content, eventType);
-    if (matches.length === 0) return {};
-
-    if (this.onWake) {
-      const snippet = content.length > 80 ? content.slice(0, 80) + '...' : content;
-      this.onWake(matches.map(m => m.name), snippet);
+    if (!policy) {
+      // For non-MCPL events, we don't suppress — they're already in the queue.
+      // The shouldTrigger callback only applies to MCPL ingress.
+      return {};
     }
 
-    return { requestInference: true };
+    if (this.onWake) {
+      const snippet = content.length > MAX_WAKE_SNIPPET ? content.slice(0, MAX_WAKE_SNIPPET) + '...' : content;
+      this.onWake([policy.name], snippet);
+    }
+
+    return {};
   }
 
   // =========================================================================
-  // Tools
+  // Tools — none. Agent edits wake.json directly with file tools.
   // =========================================================================
 
   getTools(): ToolDefinition[] {
-    return [
-      {
-        name: 'subscribe',
-        description: 'Create a wake subscription. When matching events arrive, inference is triggered. With no subscriptions, all events pass through.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Unique name for this subscription' },
-            filter: {
-              type: 'object',
-              description: 'Match filter. The pattern is matched against the MESSAGE CONTENT text (not channel names or metadata). Use text for substring match, regex for pattern match.',
-              properties: {
-                type: { type: 'string', enum: ['text', 'regex'], description: 'Filter type' },
-                pattern: { type: 'string', description: 'Pattern matched against message content text. For text type: case-insensitive substring match. For regex type: regex tested against content.' },
-              },
-              required: ['type', 'pattern'],
-            },
-            type: { type: 'string', enum: ['once', 'permanent'], description: 'once = auto-remove after first match (default: permanent)' },
-            scope: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Event types to filter by. Values: "channel:incoming", "push:event", or custom sources. Empty array or omitted = match all event types (recommended default).',
-            },
-          },
-          required: ['name', 'filter'],
-        },
-      },
-      {
-        name: 'unsubscribe',
-        description: 'Remove a wake subscription by name.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Subscription name to remove' },
-          },
-          required: ['name'],
-        },
-      },
-      {
-        name: 'list',
-        description: 'List all active wake subscriptions with match counts.',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-    ];
+    return [];
   }
 
-  async handleToolCall(call: ToolCall): Promise<ToolResult> {
-    switch (call.name) {
-      case 'subscribe': {
-        const input = call.input as SubscribeInput;
-        if (this.subscriptions.has(input.name)) {
-          return { success: false, isError: true, error: `Subscription '${input.name}' already exists` };
-        }
-        if (input.filter.type === 'regex') {
-          try { new RegExp(input.filter.pattern); } catch (e) {
-            return { success: false, isError: true, error: `Invalid regex: ${e}` };
-          }
-        }
-        const sub: Subscription = {
-          name: input.name,
-          filter: input.filter,
-          subscriptionType: input.type ?? 'permanent',
-          scope: input.scope ?? [],
-          createdAt: Date.now(),
-          matchCount: 0,
-        };
-        this.subscriptions.set(input.name, sub);
-        this.persistState();
-        return { success: true, data: { subscription: sub, total: this.subscriptions.size } };
-      }
+  async handleToolCall(_call: ToolCall): Promise<ToolResult> {
+    return { success: false, isError: true, error: 'WakeModule has no tools' };
+  }
+}
 
-      case 'unsubscribe': {
-        const { name } = call.input as UnsubscribeInput;
-        if (!this.subscriptions.has(name)) {
-          return { success: false, isError: true, error: `No subscription named '${name}'` };
-        }
-        this.subscriptions.delete(name);
-        this.persistState();
-        return { success: true, data: { removed: name, remaining: this.subscriptions.size } };
-      }
+// ---------------------------------------------------------------------------
+// Config validation
+// ---------------------------------------------------------------------------
 
-      case 'list': {
-        const subs = [...this.subscriptions.values()];
-        return { success: true, data: { subscriptions: subs, total: subs.length } };
-      }
+function validateWakeConfig(raw: unknown): WakeConfig {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('wake.json must be a JSON object');
+  }
 
-      default:
-        return { success: false, isError: true, error: `Unknown tool: ${call.name}` };
+  const obj = raw as Record<string, unknown>;
+
+  const defaultBehavior = obj.default ?? 'always';
+  if (defaultBehavior !== 'always' && defaultBehavior !== 'suppress') {
+    throw new Error(`wake.json "default" must be "always" or "suppress", got: ${defaultBehavior}`);
+  }
+
+  const policies: WakePolicy[] = [];
+  const rawPolicies = obj.policies;
+  if (Array.isArray(rawPolicies)) {
+    for (const p of rawPolicies) {
+      policies.push(validatePolicy(p));
     }
   }
+
+  return { policies, default: defaultBehavior };
+}
+
+function validatePolicy(raw: unknown): WakePolicy {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Each wake policy must be an object');
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj.name !== 'string' || !obj.name) {
+    throw new Error('Wake policy must have a "name" string');
+  }
+
+  // Validate behavior
+  let behavior: WakePolicy['behavior'];
+  if (obj.behavior === 'always' || obj.behavior === 'suppress') {
+    behavior = obj.behavior;
+  } else if (obj.behavior && typeof obj.behavior === 'object') {
+    const b = obj.behavior as Record<string, unknown>;
+    if (typeof b.debounce === 'number' && b.debounce > 0) {
+      behavior = { debounce: b.debounce };
+    } else {
+      throw new Error(`Policy "${obj.name}": debounce must be a positive number`);
+    }
+  } else {
+    behavior = 'always'; // default behavior
+  }
+
+  // Validate match (lenient — missing fields mean "match all")
+  const match: WakePolicyMatch = {};
+  if (obj.match && typeof obj.match === 'object') {
+    const m = obj.match as Record<string, unknown>;
+    if (Array.isArray(m.scope)) match.scope = m.scope.filter(s => typeof s === 'string');
+    if (typeof m.source === 'string') match.source = m.source;
+    if (typeof m.channel === 'string') match.channel = m.channel;
+    if (m.filter && typeof m.filter === 'object') {
+      const f = m.filter as Record<string, unknown>;
+      if ((f.type === 'text' || f.type === 'regex') && typeof f.pattern === 'string') {
+        match.filter = { type: f.type, pattern: f.pattern };
+        // Validate regex
+        if (f.type === 'regex') {
+          try { new RegExp(f.pattern as string); } catch (e) {
+            throw new Error(`Policy "${obj.name}": invalid regex pattern: ${e}`);
+          }
+        }
+      }
+    }
+  }
+
+  return { name: obj.name, match, behavior };
+}
+
+// ---------------------------------------------------------------------------
+// Seed helper — writes wake.json if it doesn't exist
+// ---------------------------------------------------------------------------
+
+export function seedWakeConfig(configPath: string, config: WakeConfig): void {
+  if (existsSync(configPath)) return; // Agent's edits take precedence
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 }
