@@ -29,7 +29,21 @@
     "subagents": true,
     "lessons": true,
     "retrieval": true,
-    "wake": true,
+    "wake": {
+      "policies": [
+        {
+          "name": "zulip-messages",
+          "match": { "scope": ["channel:incoming"] },
+          "behavior": "always"
+        },
+        {
+          "name": "zulip-events",
+          "match": { "scope": ["push:event"], "source": "zulip" },
+          "behavior": { "debounce": 3000 }
+        }
+      ],
+      "default": "always"
+    },
     "files": { "namespace": "products" }
   },
 

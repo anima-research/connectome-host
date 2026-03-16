@@ -15,11 +15,11 @@
 
 import { Membrane, AnthropicAdapter, NativeFormatter } from 'membrane';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, FilesModule, type Module } from '@connectome/agent-framework';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
-import { WakeModule } from './modules/wake-module.js';
+import { WakeModule, seedWakeConfig, type WakeConfig } from './modules/wake-module.js';
 import { LocalFilesModule } from './modules/local-files-module.js';
 import { TuiModule } from './modules/tui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
@@ -146,11 +146,18 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
 
   // Wake
   let wakeModule: WakeModule | null = null;
-  let emitWakeTrace: ((subs: string[], summary: string) => void) | undefined;
+  let emitWakeTrace: ((policyNames: string[], summary: string) => void) | undefined;
   if (modules.wake !== false) {
+    // Resolve wake config path and seed from recipe if needed
+    const wakeConfigPath = join(config.dataDir, 'wake.json');
+    if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
+      // Recipe provides wake config — seed file if it doesn't exist
+      seedWakeConfig(wakeConfigPath, modules.wake as WakeConfig);
+    }
     wakeModule = new WakeModule({
+      configPath: wakeConfigPath,
       agentName,
-      onWake: (subs, summary) => emitWakeTrace?.(subs, summary),
+      onWake: (policyNames, summary) => emitWakeTrace?.(policyNames, summary),
     });
     moduleInstances.push(wakeModule);
   }
@@ -213,12 +220,12 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
 
   // Wire post-creation hooks
   if (wakeModule) {
-    emitWakeTrace = (subs, summary) => {
+    emitWakeTrace = (policyNames, summary) => {
       framework.pushEvent({
         type: 'external-message',
         source: 'wake:triggered',
         content: summary,
-        metadata: { subscriptions: subs, eventSummary: summary },
+        metadata: { policies: policyNames, eventSummary: summary },
         triggerInference: false,
       } as any);
     };

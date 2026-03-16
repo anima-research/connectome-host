@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { WakeConfig } from './modules/wake-module.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,7 +56,7 @@ export interface RecipeModules {
   subagents?: boolean | { defaultModel?: string };
   lessons?: boolean;
   retrieval?: boolean | { model?: string; maxInjected?: number };
-  wake?: boolean;
+  wake?: boolean | WakeConfig;
   files?: boolean | { namespace?: string };
 }
 
