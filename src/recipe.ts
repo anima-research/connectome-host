@@ -55,7 +55,7 @@ export interface RecipeModules {
   subagents?: boolean | { defaultModel?: string };
   lessons?: boolean;
   retrieval?: boolean | { model?: string; maxInjected?: number };
-  wake?: boolean;
+  wake?: boolean | import('@connectome/agent-framework').GateConfig;
   files?: boolean | { namespace?: string };
 }
 

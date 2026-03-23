@@ -15,11 +15,10 @@
 
 import { Membrane, AnthropicAdapter, NativeFormatter } from 'membrane';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, FilesModule, type Module } from '@connectome/agent-framework';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
-import { WakeModule } from './modules/wake-module.js';
 import { LocalFilesModule } from './modules/local-files-module.js';
 import { TuiModule } from './modules/tui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
@@ -144,15 +143,14 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     }));
   }
 
-  // Wake
-  let wakeModule: WakeModule | null = null;
-  let emitWakeTrace: ((subs: string[], summary: string) => void) | undefined;
+  // Gate config (replaces WakeModule — gate is now a core AF feature)
+  let gateOptions: import('@connectome/agent-framework').GateOptions | undefined;
   if (modules.wake !== false) {
-    wakeModule = new WakeModule({
-      agentName,
-      onWake: (subs, summary) => emitWakeTrace?.(subs, summary),
-    });
-    moduleInstances.push(wakeModule);
+    const gateConfigPath = join(config.dataDir, 'gate.json');
+    gateOptions = { configPath: gateConfigPath };
+    if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
+      gateOptions.config = modules.wake as import('@connectome/agent-framework').GateConfig;
+    }
   }
 
   // Files
@@ -175,11 +173,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
 
   const allServers = [...recipeServerList, ...fileServers];
 
-  // Augment with wake filtering if wake module is active
-  const augmentedServers = allServers.map(server => ({
-    ...server,
-    ...(wakeModule ? { shouldTriggerInference: wakeModule.shouldTrigger } : {}),
-  }));
+  // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
   // -- Build strategy --
   const strategyConfig = recipe.agent.strategy;
@@ -208,23 +202,11 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
       },
     ],
     modules: moduleInstances,
-    mcplServers: augmentedServers,
+    mcplServers: allServers,
+    gate: gateOptions,
   });
 
   // Wire post-creation hooks
-  if (wakeModule) {
-    emitWakeTrace = (subs, summary) => {
-      framework.pushEvent({
-        type: 'external-message',
-        source: 'wake:triggered',
-        content: summary,
-        metadata: { subscriptions: subs, eventSummary: summary },
-        triggerInference: false,
-      } as any);
-    };
-    wakeModule.setFramework(framework);
-  }
-
   if (subagentModule) {
     subagentModule.setFramework(framework);
   }
