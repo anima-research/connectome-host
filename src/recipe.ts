@@ -69,7 +69,7 @@ export interface RecipeModules {
   lessons?: boolean;
   retrieval?: boolean | { model?: string; maxInjected?: number };
   wake?: boolean | import('@connectome/agent-framework').GateConfig;
-  workspace?: boolean | { mounts: RecipeWorkspaceMount[] };
+  workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
 }
 
 export interface Recipe {

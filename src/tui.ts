@@ -404,6 +404,12 @@ export async function runTui(app: AppContext): Promise<void> {
       }
     }
 
+    // Materialize config files from the (possibly new) branch so gate.json stays in sync
+    const ws = app.framework.getModule('workspace');
+    if (ws && 'materializeMount' in ws) {
+      (ws as any).materializeMount('_config').catch(() => {});
+    }
+
     updateStatus();
   }
 

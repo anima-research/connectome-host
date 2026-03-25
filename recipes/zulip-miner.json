@@ -32,6 +32,11 @@
     "wake": {
       "policies": [
         {
+          "name": "user-input",
+          "match": { "scope": ["external-message"] },
+          "behavior": "always"
+        },
+        {
           "name": "subagent-completions",
           "match": { "scope": ["inference-request"] },
           "behavior": "always"
@@ -40,6 +45,7 @@
       "default": "skip"
     },
     "workspace": {
+      "configMount": true,
       "mounts": [
         { "name": "local", "path": ".", "mode": "read-only" },
         { "name": "products", "path": "./output", "mode": "read-write" }

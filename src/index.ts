@@ -143,10 +143,10 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
   }
 
   // Gate config (replaces WakeModule — gate is now a core AF feature)
+  // Path is per-session: {storePath}/config/gate.json
   let gateOptions: import('@connectome/agent-framework').GateOptions | undefined;
   if (modules.wake !== false) {
-    const gateConfigPath = join(config.dataDir, 'gate.json');
-    gateOptions = { configPath: gateConfigPath };
+    gateOptions = { configPath: join(storePath, 'config', 'gate.json') };
     if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
       gateOptions.config = modules.wake as import('@connectome/agent-framework').GateConfig;
     }
@@ -179,6 +179,19 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
         { name: 'products', path: resolve('./output'), mode: 'read-write', watch: 'never' },
       ];
     }
+
+    // Config mount: version-controls gate.json (and future config files) via Chronicle.
+    // Opt-in via recipe: workspace.configMount = true
+    const wantConfigMount = typeof modules.workspace === 'object' && modules.workspace.configMount;
+    if (wantConfigMount) {
+      mounts.push({
+        name: '_config',
+        path: resolve(join(storePath, 'config')),
+        mode: 'read-write',
+        watch: 'always',
+      });
+    }
+
     workspaceModule = new WorkspaceModule({ mounts });
     moduleInstances.push(workspaceModule);
   }
@@ -345,6 +358,12 @@ async function runPiped(app: AppContext) {
       const result = handleCommand(trimmed, app);
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
+      if (result.branchChanged) {
+        const ws = app.framework.getModule('workspace');
+        if (ws && 'materializeMount' in ws) {
+          await (ws as any).materializeMount('_config');
+        }
+      }
       if (result.switchToSessionId) {
         await app.switchSession(result.switchToSessionId);
         console.log('Session switched.');
