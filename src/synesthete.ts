@@ -5,7 +5,7 @@
  * 2–4 word name that captures the session's topic/mood.
  */
 
-import type { Membrane } from 'membrane';
+import type { Membrane } from '@animalabs/membrane';
 
 const DEFAULT_EXAMPLES = [
   'Context Window Budgeting',

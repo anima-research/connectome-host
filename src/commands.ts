@@ -20,8 +20,8 @@
  *   /help          — List commands
  */
 
-import type { AgentFramework } from '@connectome/agent-framework';
-import type { ContextManager } from '@connectome/context-manager';
+import type { AgentFramework } from '@animalabs/agent-framework';
+import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 

@@ -9,10 +9,10 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@connectome/agent-framework": "file:../agent-framework",
-    "@connectome/context-manager": "file:../context-manager",
-    "chronicle": "file:../chronicle",
-    "membrane": "file:../membrane",
+    "@animalabs/agent-framework": "^0.1.0",
+    "@animalabs/context-manager": "^0.1.0",
+    "@animalabs/chronicle": "^0.1.0",
+    "@animalabs/membrane": "^0.5.40",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {

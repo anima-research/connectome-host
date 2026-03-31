@@ -26,10 +26,10 @@ import type {
   ToolResult,
   TraceEvent,
   ContextManager,
-} from '@connectome/agent-framework';
-import type { AgentFramework } from '@connectome/agent-framework';
-import { KnowledgeStrategy } from '@connectome/agent-framework';
-import type { ContentBlock } from 'membrane';
+} from '@animalabs/agent-framework';
+import type { AgentFramework } from '@animalabs/agent-framework';
+import { KnowledgeStrategy } from '@animalabs/agent-framework';
+import type { ContentBlock } from '@animalabs/membrane';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -543,7 +543,7 @@ export class SubagentModule implements Module {
     return {};
   }
 
-  async gatherContext(_agentName: string): Promise<import('@connectome/context-manager').ContextInjection[]> {
+  async gatherContext(_agentName: string): Promise<import('@animalabs/context-manager').ContextInjection[]> {
     if (!this.ctx) return [];
     const persisted = this.ctx.getState<{ hudEnabled?: boolean }>() ?? {};
     if (!persisted.hudEnabled) return [];

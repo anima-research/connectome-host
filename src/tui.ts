@@ -28,9 +28,9 @@ import {
   fg,
 } from '@opentui/core';
 import { createWriteStream, mkdirSync } from 'node:fs';
-import type { AgentFramework } from '@connectome/agent-framework';
-import type { AutobiographicalStrategy } from '@connectome/context-manager';
-import type { Membrane, NormalizedRequest } from 'membrane';
+import type { AgentFramework } from '@animalabs/agent-framework';
+import type { AutobiographicalStrategy } from '@animalabs/context-manager';
+import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { handleCommand, resetBranchState } from './commands.js';
 

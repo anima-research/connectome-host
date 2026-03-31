@@ -13,8 +13,8 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
-import { Membrane, AnthropicAdapter, NativeFormatter } from 'membrane';
-import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@connectome/agent-framework';
+import { Membrane, AnthropicAdapter, NativeFormatter } from '@animalabs/membrane';
+import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join } from 'node:path';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
@@ -144,11 +144,11 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
 
   // Gate config (replaces WakeModule — gate is now a core AF feature)
   // Path is per-session: {storePath}/config/gate.json
-  let gateOptions: import('@connectome/agent-framework').GateOptions | undefined;
+  let gateOptions: import('@animalabs/agent-framework').GateOptions | undefined;
   if (modules.wake !== false) {
     gateOptions = { configPath: join(storePath, 'config', 'gate.json') };
     if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
-      gateOptions.config = modules.wake as import('@connectome/agent-framework').GateConfig;
+      gateOptions.config = modules.wake as import('@animalabs/agent-framework').GateConfig;
     }
   }
 

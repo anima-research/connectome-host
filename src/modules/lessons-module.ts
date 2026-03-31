@@ -19,8 +19,8 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
-} from '@connectome/agent-framework';
-import type { ContextInjection } from '@connectome/context-manager';
+} from '@animalabs/agent-framework';
+import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------

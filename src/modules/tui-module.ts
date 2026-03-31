@@ -14,7 +14,7 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
-} from '@connectome/agent-framework';
+} from '@animalabs/agent-framework';
 
 export class TuiModule implements Module {
   readonly name = 'tui';

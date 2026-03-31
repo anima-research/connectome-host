@@ -21,8 +21,8 @@ import type {
   ToolCall,
   ToolResult,
   TraceEvent,
-} from '@connectome/agent-framework';
-import type { AgentFramework } from '@connectome/agent-framework';
+} from '@animalabs/agent-framework';
+import type { AgentFramework } from '@animalabs/agent-framework';
 
 // ---------------------------------------------------------------------------
 // Types

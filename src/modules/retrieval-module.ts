@@ -20,9 +20,9 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
-} from '@connectome/agent-framework';
-import type { Membrane, NormalizedRequest } from 'membrane';
-import type { ContextInjection } from '@connectome/context-manager';
+} from '@animalabs/agent-framework';
+import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
+import type { ContextInjection } from '@animalabs/context-manager';
 import type { LessonsModule, Lesson } from './lessons-module.js';
 
 // ---------------------------------------------------------------------------

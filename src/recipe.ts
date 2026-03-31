@@ -68,7 +68,7 @@ export interface RecipeModules {
   subagents?: boolean | { defaultModel?: string };
   lessons?: boolean;
   retrieval?: boolean | { model?: string; maxInjected?: number };
-  wake?: boolean | import('@connectome/agent-framework').GateConfig;
+  wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
 }
 
