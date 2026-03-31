@@ -137,6 +137,7 @@ bun --watch src/index.ts            # Dev mode
 | `/recipe` | Show current recipe info |
 | `/status` | Show agent state, branch, queue depth |
 | `/lessons` | Show lesson library sorted by confidence |
+| `/newtopic [context]` | Reset context window for a new topic |
 | `/clear` | Clear conversation display |
 | `/undo` | Revert to state before last agent turn |
 | `/redo` | Re-apply undone action |

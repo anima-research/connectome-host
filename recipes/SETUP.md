@@ -170,6 +170,7 @@ The agent will:
 | `/status` | Agent state, session info |
 | `/undo` | Roll back the last agent turn |
 | `/mcp list` | Show connected data sources |
+| `/newtopic [context]` | Reset context window for a new topic (compresses old context) |
 | `/session new` | Start a fresh session (lessons persist) |
 | `Esc` | Interrupt the agent mid-turn |
 
@@ -179,7 +180,7 @@ The agent will:
 - **Let it fork.** The agent is designed to run 2-4 sub-agents in parallel. Don't micromanage.
 - **Check lessons periodically.** `/lessons` shows what's been extracted. You can ask the agent to revise or merge lessons.
 - **Use the workspace.** Ask the agent to "write a report" and it produces files in `./output/`.
-- **Sessions are isolated.** Use `/session new` to start fresh when switching topics. Lessons carry over.
+- **Switch topics cleanly.** Use `/newtopic` when changing research direction — it compresses old context and frees up the context window. Cheaper than a new session, and lessons carry over either way.
 
 ## Customization
 
