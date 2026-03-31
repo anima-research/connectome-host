@@ -7,13 +7,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "paths": {
-      "@animalabs/chronicle": ["../chronicle/index.d.ts"],
-      "@animalabs/membrane": ["../membrane/dist/index.d.ts"],
-      "@animalabs/context-manager": ["../context-manager/dist/src/index.d.ts"],
-      "@animalabs/agent-framework": ["../agent-framework/dist/src/index.d.ts"]
-    }
+    "rootDir": "src"
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]
