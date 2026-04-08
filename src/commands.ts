@@ -17,9 +17,12 @@
  *   /session       — Session management (list, new, switch, rename, delete)
  *   /recipe        — Show current recipe info
  *   /newtopic      — Reset head window (auto-summarize or with user context)
+ *   /export        — Export lessons to ./output/ (JSON + markdown)
  *   /help          — List commands
  */
 
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
@@ -100,8 +103,10 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
   switch (cmd) {
     case 'quit':
-    case 'q':
-      return { lines: [], quit: true };
+    case 'q': {
+      const exportResult = handleExport(app);
+      return { lines: exportResult.lines, quit: true };
+    }
 
     case 'help':
       return {
@@ -111,6 +116,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /status                Show agent status', style: 'system' },
           { text: '  /clear                 Clear conversation', style: 'system' },
           { text: '  /lessons               Show lesson library', style: 'system' },
+          { text: '  /export                Export lessons to ./output/ (JSON + markdown)', style: 'system' },
           { text: '  /undo                  Revert last agent turn', style: 'system' },
           { text: '  /redo                  Re-apply undone action', style: 'system' },
           { text: '  /checkpoint <name>     Save current state', style: 'system' },
@@ -142,6 +148,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
     case 'lessons':
       return handleLessons(framework);
+
+    case 'export':
+      return handleExport(app);
 
     case 'undo':
       return handleUndo(app);
@@ -450,6 +459,74 @@ function handleLessons(framework: AgentFramework): CommandResult {
   }
 
   return { lines };
+}
+
+/** Export lessons to ./output/ as JSON and markdown. Called by /export and on quit. */
+export function handleExport(app: AppContext): CommandResult {
+  const modules = app.framework.getAllModules();
+  const lessonsModule = modules.find(m => m.name === 'lessons') as
+    { getLessons(): Array<{ id: string; content: string; confidence: number; tags: string[]; evidence: string[]; created: number; updated: number; deprecated: boolean; deprecationReason?: string }> } | undefined;
+
+  if (!lessonsModule) {
+    return { lines: [{ text: 'Lessons module not loaded — nothing to export.', style: 'system' }] };
+  }
+
+  const lessons = lessonsModule.getLessons();
+  if (lessons.length === 0) {
+    return { lines: [{ text: 'No lessons to export.', style: 'system' }] };
+  }
+
+  const active = lessons.filter(l => !l.deprecated);
+  const outDir = resolve('./output');
+  mkdirSync(outDir, { recursive: true });
+
+  // JSON export with metadata envelope
+  const exportData = {
+    exportedAt: new Date().toISOString(),
+    sessionName: app.sessionManager.getActiveSession()?.name ?? 'unknown',
+    recipeName: app.recipe.name,
+    lessonCount: lessons.length,
+    activeCount: active.length,
+    lessons,
+  };
+  const jsonPath = resolve(outDir, 'lessons-export.json');
+  writeFileSync(jsonPath, JSON.stringify(exportData, null, 2));
+
+  // Markdown summary grouped by tag
+  const tagMap = new Map<string, typeof active>();
+  for (const l of active) {
+    for (const tag of l.tags.length ? l.tags : ['untagged']) {
+      if (!tagMap.has(tag)) tagMap.set(tag, []);
+      tagMap.get(tag)!.push(l);
+    }
+  }
+
+  let md = `# Lessons Export\n\n`;
+  md += `**Exported:** ${new Date().toISOString()}  \n`;
+  md += `**Recipe:** ${app.recipe.name}  \n`;
+  md += `**Active lessons:** ${active.length} (${lessons.length - active.length} deprecated)  \n\n`;
+
+  for (const [tag, tagLessons] of [...tagMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    md += `## ${tag}\n\n`;
+    for (const l of tagLessons.sort((a, b) => b.confidence - a.confidence)) {
+      const conf = (l.confidence * 100).toFixed(0);
+      md += `- **[${conf}%]** ${l.content}`;
+      if (l.evidence.length) md += `  \n  _Sources: ${l.evidence.join(', ')}_`;
+      md += '\n';
+    }
+    md += '\n';
+  }
+
+  const mdPath = resolve(outDir, 'lessons-export.md');
+  writeFileSync(mdPath, md);
+
+  return {
+    lines: [
+      { text: `Exported ${active.length} lessons (${lessons.length - active.length} deprecated) to:`, style: 'system' },
+      { text: `  ${jsonPath}`, style: 'system' },
+      { text: `  ${mdPath}`, style: 'system' },
+    ],
+  };
 }
 
 function handleUndo(app: AppContext): CommandResult {

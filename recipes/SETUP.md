@@ -226,6 +226,50 @@ To only expose certain tool categories (e.g., issues and merge requests, not pip
 }
 ```
 
+## Reviewing knowledge quality
+
+After the Knowledge Miner produces documents, run the Reviewer agent for a quality audit.
+
+### Step 1: Export lessons
+
+In the Knowledge Miner session:
+```
+/export
+```
+
+Or just quit — lessons are auto-exported on exit. This creates `./output/lessons-export.json` and `./output/lessons-export.md`.
+
+### Step 2: Run the Reviewer
+
+Use a separate data directory so the Reviewer gets its own sessions and Chronicle store:
+
+```bash
+DATA_DIR=./review-data bun src/index.ts recipes/knowledge-reviewer.json
+```
+
+The Reviewer reads the Miner's output (documents + exported lessons) and produces:
+- **Critic findings** per document — internal contradictions, unsupported claims, missing markers
+- **SME checklist** — a focused list of items for domain experts to verify
+
+Ask it:
+```
+> Review all documents in input/. Generate the SME checklist.
+```
+
+### Step 3: Human review
+
+Open `./review-output/sme-checklist.md`. It contains a prioritized list:
+- **High risk** — `[GEN]` claims (general knowledge, no source)
+- **Medium risk** — `[INF]` claims on system boundaries
+- **Knowledge gaps** — `❓` markers needing expert input
+- **Unmarked suspicious claims** — the most dangerous: plausible but unsourced
+
+A domain expert can complete this checklist in 10-20 minutes without reading the full document.
+
+### The confidence markers
+
+The Knowledge Miner tags document claims with `[SRC]`, `[INF]`, `[GEN]`, or `❓`. The Reviewer audits these. If the Miner missed markers (unmarked claims that look like general knowledge), the Reviewer flags them.
+
 ## Troubleshooting
 
 | Problem | Fix |
