@@ -241,13 +241,11 @@ Or just quit — lessons are auto-exported on exit. This creates `./output/lesso
 
 ### Step 2: Run the Reviewer
 
-Use a separate data directory so the Reviewer gets its own sessions and Chronicle store:
-
 ```bash
-DATA_DIR=./review-data bun src/index.ts recipes/knowledge-reviewer.json
+bun src/index.ts recipes/knowledge-reviewer.json
 ```
 
-The Reviewer reads the Miner's output (documents + exported lessons) and produces:
+The Reviewer shares the same data directory as the Miner — it can access all lessons extracted by previous mining sessions. It also reads the Miner's output documents and produces:
 - **Critic findings** per document — internal contradictions, unsupported claims, missing markers
 - **SME checklist** — a focused list of items for domain experts to verify
 
