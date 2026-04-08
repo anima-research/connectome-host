@@ -22,6 +22,8 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,12 +92,21 @@ export class LessonsModule implements Module {
 
   private ctx: ModuleContext | null = null;
   private state: LessonsState = { lessons: [] };
+  private globalPath: string | null;
+
+  constructor(opts?: { globalPath?: string }) {
+    this.globalPath = opts?.globalPath ?? null;
+  }
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
     const saved = ctx.getState<LessonsState>();
     if (saved) {
       this.state = saved;
+    }
+    // Merge in lessons from the global shared file
+    if (this.globalPath) {
+      this.mergeFromGlobal();
     }
   }
 
@@ -408,5 +419,47 @@ export class LessonsModule implements Module {
 
   private save(): void {
     this.ctx?.setState(this.state);
+    if (this.globalPath) {
+      this.saveToGlobal();
+    }
+  }
+
+  /** Merge lessons from the global JSON file. Newer `updated` wins on ID conflicts. */
+  private mergeFromGlobal(): void {
+    if (!this.globalPath) return;
+    let global: LessonsState;
+    try {
+      global = JSON.parse(readFileSync(this.globalPath, 'utf-8'));
+    } catch {
+      return; // File doesn't exist yet — nothing to merge
+    }
+    if (!Array.isArray(global.lessons)) return;
+
+    const byId = new Map(this.state.lessons.map(l => [l.id, l]));
+    let merged = false;
+    for (const gl of global.lessons) {
+      const existing = byId.get(gl.id);
+      if (!existing) {
+        this.state.lessons.push(gl);
+        merged = true;
+      } else if (gl.updated > existing.updated) {
+        Object.assign(existing, gl);
+        merged = true;
+      }
+    }
+    if (merged) {
+      this.ctx?.setState(this.state);
+    }
+  }
+
+  /** Write current lessons to the global JSON file. */
+  private saveToGlobal(): void {
+    if (!this.globalPath) return;
+    try {
+      mkdirSync(dirname(this.globalPath), { recursive: true });
+      writeFileSync(this.globalPath, JSON.stringify({ lessons: this.state.lessons }, null, 2));
+    } catch {
+      // Best-effort — don't break the module if the file can't be written
+    }
   }
 }

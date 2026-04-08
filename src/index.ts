@@ -128,7 +128,8 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
   // Lessons
   let lessonsModule: LessonsModule | null = null;
   if (modules.lessons !== false) {
-    lessonsModule = new LessonsModule();
+    const globalLessonsPath = resolve(join(storePath, '..', '..', 'lessons.json'));
+    lessonsModule = new LessonsModule({ globalPath: globalLessonsPath });
     moduleInstances.push(lessonsModule);
   }
 
