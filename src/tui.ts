@@ -823,18 +823,12 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'inference:completed': {
-        const usage = event.tokenUsage as { input?: number; output?: number; cacheRead?: number; cacheCreation?: number } | undefined;
-        if (usage) {
-          state.tokens.input += usage.input ?? 0;
-          state.tokens.output += usage.output ?? 0;
-          state.tokens.cacheRead += usage.cacheRead ?? 0;
-          state.tokens.cacheWrite += usage.cacheCreation ?? 0;
-          // Track context size per agent (store by both full and short name)
-          if (agent && usage.input) {
-            agentContextTokens.set(agent, usage.input);
-            const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
-            if (short !== agent) agentContextTokens.set(short, usage.input);
-          }
+        const usage = event.tokenUsage as { input?: number; output?: number } | undefined;
+        // Track context size per agent (store by both full and short name)
+        if (usage && agent && usage.input) {
+          agentContextTokens.set(agent, usage.input);
+          const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+          if (short !== agent) agentContextTokens.set(short, usage.input);
         }
 
         if (agent === rootAgentName) {
@@ -851,6 +845,16 @@ export async function runTui(app: AppContext): Promise<void> {
           }
           if (streaming) endStream();
         }
+        updateStatus();
+        break;
+      }
+
+      case 'billing:updated': {
+        const totals = (event as { totals: { inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number } }).totals;
+        state.tokens.input = totals.inputTokens;
+        state.tokens.output = totals.outputTokens;
+        state.tokens.cacheRead = totals.cacheReadTokens;
+        state.tokens.cacheWrite = totals.cacheCreationTokens;
         updateStatus();
         break;
       }
