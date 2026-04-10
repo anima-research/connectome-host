@@ -32,7 +32,15 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import type { AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
+import type { SessionUsage } from '@connectome/agent-framework';
 import { handleCommand, resetBranchState } from './commands.js';
+
+/** Format a token count compactly: 1.2M / 3.5k / 42. */
+export function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
 
 interface AppContext {
   framework: AgentFramework;
@@ -413,11 +421,7 @@ export async function runTui(app: AppContext): Promise<void> {
     updateStatus();
   }
 
-  const fmtK = (n: number) => {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-    return String(n);
-  };
+  const fmtK = fmtTokens;
 
   // ── Fleet tree view ────────────────────────────────────────────────
 
@@ -850,7 +854,7 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'usage:updated': {
-        const totals = (event as { totals: { inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number } }).totals;
+        const { totals } = event as { totals: SessionUsage };
         state.tokens.input = totals.inputTokens;
         state.tokens.output = totals.outputTokens;
         state.tokens.cacheRead = totals.cacheReadTokens;
@@ -1424,13 +1428,8 @@ function formatTokens(tokens: TokenUsage, verbose: boolean): string {
 
   const total = tokens.input + tokens.output;
   if (total > 0) {
-    const fmt = (n: number) => {
-      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-      return String(n);
-    };
-    let s = `${fmt(tokens.input)}in ${fmt(tokens.output)}out`;
-    if (tokens.cacheRead > 0) s += ` ${fmt(tokens.cacheRead)}cache`;
+    let s = `${fmtTokens(tokens.input)}in ${fmtTokens(tokens.output)}out`;
+    if (tokens.cacheRead > 0) s += ` ${fmtTokens(tokens.cacheRead)}cache`;
     parts.push(s);
   }
 

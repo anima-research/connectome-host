@@ -28,6 +28,7 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
+import { fmtTokens } from './tui.js';
 
 /** Imported lazily to avoid circular deps — index.ts re-exports the type. */
 interface AppContext {
@@ -373,12 +374,7 @@ function handleRecipe(app: AppContext): CommandResult {
 function handleUsage(app: AppContext): CommandResult {
   const snapshot = app.framework.getSessionUsage();
   const lines: Line[] = [];
-
-  const fmt = (n: number) => {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-    return String(n);
-  };
+  const fmt = fmtTokens;
 
   const fmtCost = (cost?: { total: number; currency: string }) => {
     if (!cost) return '';
@@ -386,22 +382,20 @@ function handleUsage(app: AppContext): CommandResult {
   };
 
   const { totals } = snapshot;
-  const costStr = fmtCost(totals.estimatedCost);
   lines.push({ text: '--- Session Usage ---', style: 'system' });
   lines.push({
-    text: `  Total: ${fmt(totals.inputTokens)} in  ${fmt(totals.outputTokens)} out  ${fmt(totals.cacheReadTokens)} cache read  ${fmt(totals.cacheCreationTokens)} cache write${costStr}`,
+    text: `  Total: ${fmt(totals.inputTokens)} in  ${fmt(totals.outputTokens)} out  ${fmt(totals.cacheReadTokens)} cache read  ${fmt(totals.cacheCreationTokens)} cache write${fmtCost(totals.estimatedCost)}`,
     style: 'system',
   });
   lines.push({ text: `  Inferences: ${snapshot.inferenceCount}`, style: 'system' });
 
-  if (snapshot.byAgent.length > 1) {
+  if (snapshot.byAgent.length > 0) {
     lines.push({ text: '', style: 'system' });
     lines.push({ text: '--- Per Agent ---', style: 'system' });
     for (const agent of snapshot.byAgent) {
       const u = agent.usage;
-      const ac = fmtCost(u.estimatedCost);
       lines.push({
-        text: `  ${agent.agentName}  ${fmt(u.inputTokens)} in  ${fmt(u.outputTokens)} out  ${fmt(u.cacheReadTokens)} cache${ac}  (${agent.inferenceCount} inf)`,
+        text: `  ${agent.agentName}  ${fmt(u.inputTokens)} in  ${fmt(u.outputTokens)} out  ${fmt(u.cacheReadTokens)} cache read  ${fmt(u.cacheCreationTokens)} cache write${fmtCost(u.estimatedCost)}  (${agent.inferenceCount} inf)`,
         style: 'system',
       });
     }
