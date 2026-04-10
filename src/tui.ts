@@ -849,7 +849,7 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
 
-      case 'billing:updated': {
+      case 'usage:updated': {
         const totals = (event as { totals: { inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number } }).totals;
         state.tokens.input = totals.inputTokens;
         state.tokens.output = totals.outputTokens;
