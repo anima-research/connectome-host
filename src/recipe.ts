@@ -62,6 +62,13 @@ export interface RecipeWorkspaceMount {
   mode?: 'read-write' | 'read-only';
   watch?: 'always' | 'on-agent-action' | 'never';
   ignore?: string[];
+  /**
+   * Request inference when files in this mount change. Pair with
+   * `watch: 'always'` so chokidar actually observes the mount.
+   * - `true` — any of created | modified | deleted
+   * - array — only the listed ops
+   */
+  wakeOnChange?: boolean | Array<'created' | 'modified' | 'deleted'>;
 }
 
 export interface RecipeModules {

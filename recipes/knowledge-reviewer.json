@@ -16,9 +16,39 @@
   "modules": {
     "lessons": true,
     "retrieval": true,
+    "wake": {
+      "policies": [
+        {
+          "name": "user-input",
+          "match": { "scope": ["external-message"] },
+          "behavior": "always"
+        },
+        {
+          "name": "subagent-completions",
+          "match": { "scope": ["inference-request"] },
+          "behavior": "always"
+        },
+        {
+          "name": "new-reports",
+          "match": {
+            "scope": ["workspace:created"],
+            "mount": "input",
+            "pathGlob": "input/*.md"
+          },
+          "behavior": "always"
+        }
+      ],
+      "default": "skip"
+    },
     "workspace": {
       "mounts": [
-        { "name": "input", "path": "./output", "mode": "read-only" },
+        {
+          "name": "input",
+          "path": "./output",
+          "mode": "read-only",
+          "watch": "always",
+          "wakeOnChange": ["created"]
+        },
         { "name": "products", "path": "./review-output", "mode": "read-write" }
       ]
     }

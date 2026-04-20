@@ -49,6 +49,15 @@
           "name": "tracker-channel",
           "match": { "scope": ["mcpl:channel-incoming"], "channel": "zulip:tracker-miner-f" },
           "behavior": "always"
+        },
+        {
+          "name": "ticket-resolutions",
+          "match": {
+            "scope": ["workspace:modified"],
+            "mount": "knowledge-requests",
+            "pathGlob": "knowledge-requests/*.md"
+          },
+          "behavior": "always"
         }
       ],
       "default": "skip"
@@ -58,7 +67,13 @@
       "mounts": [
         { "name": "library-mined",      "path": "./output",             "mode": "read-only" },
         { "name": "library-reviewed",   "path": "./review-output",      "mode": "read-only" },
-        { "name": "knowledge-requests", "path": "./knowledge-requests", "mode": "read-write" }
+        {
+          "name": "knowledge-requests",
+          "path": "./knowledge-requests",
+          "mode": "read-write",
+          "watch": "always",
+          "wakeOnChange": ["modified"]
+        }
       ]
     }
   },

@@ -172,6 +172,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
           watch: m.watch ?? 'never', // FKM: no chokidar watchers by default
         };
         if (m.ignore) mount.ignore = m.ignore;
+        if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
         return mount;
       });
     } else {
