@@ -71,7 +71,7 @@ connectome-host/
       subagent-module.ts     Spawn, fork, peek, hud, concurrency, return
       lessons-module.ts      Knowledge CRUD + gatherContext injection
       retrieval-module.ts    3-step LLM-as-retriever pipeline
-      wake-module.ts         Legacy subscriptions (gating migrated to AF's EventGate)
+      time-module.ts         Session-start timestamp + time:now tool
     strategies/              (reserved for future domain-specific strategies)
     types/
       bun-ffi.d.ts           Bun FFI type declarations
@@ -153,11 +153,9 @@ Enables the agent to delegate work to parallel ephemeral agents.
 - **Fork** = spawning a subagent that inherits the parent's compiled messages (agent-level, message copy)
 - **Branch** = Chronicle state branch for undo/redo/checkpointing (storage-level, user-facing)
 
-### EventGate (replaces WakeModule)
+### EventGate
 
-MCPL event gating is now a core Agent Framework feature. Configuration is file-based (`{storePath}/config/gate.json`) and controlled via `GateOptions` in `FrameworkConfig`. The recipe's `modules.wake` key controls whether gating is enabled and can provide initial policy config.
-
-The legacy `wake-module.ts` still exists in the codebase but is **not instantiated** — gating was migrated to AF's EventGate in commit `601bc8c`.
+MCPL event gating is a core Agent Framework feature. Configuration is file-based (`{storePath}/config/gate.json`) and controlled via `GateOptions` in `FrameworkConfig`. The recipe's `modules.wake` key controls whether gating is enabled and can provide initial policy config.
 
 ### Workspace Module (from AF)
 

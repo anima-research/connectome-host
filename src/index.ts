@@ -22,6 +22,7 @@ import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
+import { TimeModule } from './modules/time-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { generateSessionName } from './synesthete.js';
@@ -112,7 +113,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
   const modules = recipe.modules ?? {};
 
   // -- Build module list --
-  const moduleInstances: Module[] = [new TuiModule()];
+  const moduleInstances: Module[] = [new TuiModule(), new TimeModule()];
 
   // Subagents
   let subagentModule: SubagentModule | null = null;
@@ -144,7 +145,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     }));
   }
 
-  // Gate config (replaces WakeModule — gate is now a core AF feature)
+  // Gate config — core AF EventGate feature.
   // Path is per-session: {storePath}/config/gate.json
   let gateOptions: import('@animalabs/agent-framework').GateOptions | undefined;
   if (modules.wake !== false) {
