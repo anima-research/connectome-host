@@ -75,6 +75,12 @@ export interface RecipeWorkspaceMount {
    * - array — only the listed ops
    */
   wakeOnChange?: boolean | Array<'created' | 'modified' | 'deleted'>;
+  /**
+   * Persist every write/edit/delete to disk immediately. Required for mounts
+   * shared across agents as a communication channel (tickets, reports, etc.)
+   * so other agents' chokidar watchers actually see the change.
+   */
+  autoMaterialize?: boolean;
 }
 
 export interface RecipeModules {

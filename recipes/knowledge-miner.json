@@ -74,13 +74,19 @@
       "configMount": true,
       "mounts": [
         { "name": "input", "path": "./input", "mode": "read-only" },
-        { "name": "products", "path": "./output", "mode": "read-write" },
+        {
+          "name": "products",
+          "path": "./output",
+          "mode": "read-write",
+          "autoMaterialize": true
+        },
         {
           "name": "tickets",
           "path": "./knowledge-requests",
           "mode": "read-write",
           "watch": "always",
-          "wakeOnChange": ["created"]
+          "wakeOnChange": ["created"],
+          "autoMaterialize": true
         }
       ]
     }

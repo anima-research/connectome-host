@@ -173,6 +173,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
         };
         if (m.ignore) mount.ignore = m.ignore;
         if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
+        if (m.autoMaterialize !== undefined) mount.autoMaterialize = m.autoMaterialize;
         return mount;
       });
     } else {

@@ -49,7 +49,12 @@
           "watch": "always",
           "wakeOnChange": ["created"]
         },
-        { "name": "products", "path": "./review-output", "mode": "read-write" }
+        {
+          "name": "products",
+          "path": "./review-output",
+          "mode": "read-write",
+          "autoMaterialize": true
+        }
       ]
     }
   },

@@ -72,7 +72,8 @@
           "path": "./knowledge-requests",
           "mode": "read-write",
           "watch": "always",
-          "wakeOnChange": ["modified"]
+          "wakeOnChange": ["modified"],
+          "autoMaterialize": true
         }
       ]
     }
