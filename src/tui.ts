@@ -28,11 +28,10 @@ import {
   fg,
 } from '@opentui/core';
 import { createWriteStream, mkdirSync } from 'node:fs';
-import type { AgentFramework } from '@animalabs/agent-framework';
+import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
 import type { AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
-import type { SessionUsage } from '@connectome/agent-framework';
 import { handleCommand, resetBranchState } from './commands.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
