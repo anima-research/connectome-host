@@ -7,3 +7,4 @@ mcpl-servers.json
 my-recipe.json
 output/
 review-output/
+tsconfig.tsbuildinfo

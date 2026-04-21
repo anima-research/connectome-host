@@ -31,7 +31,7 @@ export class TuiModule implements Module {
     if (event.type !== 'external-message') return {};
 
     const source = (event as { source: string }).source;
-    if (source !== 'tui' && source !== 'cli' && source !== 'system') return {};
+    if (source !== 'tui' && source !== 'cli' && source !== 'system' && source !== 'headless') return {};
 
     const content = (event as { content: unknown }).content;
     const text = typeof content === 'string' ? content : JSON.stringify(content);

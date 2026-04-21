@@ -6,6 +6,8 @@
  *   bun src/index.ts <recipe-url-or-path>      # Load recipe from URL or file
  *   bun src/index.ts --no-recipe               # Start fresh with default recipe
  *   bun src/index.ts --no-tui                  # Readline mode (works in pipes/CI)
+ *   bun src/index.ts --headless                # Daemon mode: JSONL over Unix socket at $DATA_DIR/ipc.sock
+ *   bun src/index.ts --headless --exit-when-idle   # One-shot: exit when agents go idle after first inference
  *
  * Environment variables:
  *   ANTHROPIC_API_KEY   - Required
@@ -23,6 +25,7 @@ import { RetrievalModule } from './modules/retrieval-module.js';
 import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
+import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { generateSessionName } from './synesthete.js';
@@ -39,7 +42,8 @@ import { createBranchState, resetBranchState, handleExport, type BranchState } f
 
 export type { AppContext };
 
-const noTui = process.argv.includes('--no-tui') || !process.stdin.isTTY;
+const headless = process.argv.includes('--headless');
+const noTui = !headless && (process.argv.includes('--no-tui') || !process.stdin.isTTY);
 
 const config = {
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -133,6 +137,31 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     const globalLessonsPath = resolve(join(storePath, '..', '..', 'lessons.json'));
     lessonsModule = new LessonsModule({ globalPath: globalLessonsPath });
     moduleInstances.push(lessonsModule);
+  }
+
+  // Fleet (cross-process child orchestration). Opt-in via recipe.
+  if (modules.fleet === true) {
+    moduleInstances.push(new FleetModule());
+  } else if (modules.fleet && typeof modules.fleet === 'object') {
+    const fleetCfg = modules.fleet;
+    const fleetModuleConfig: FleetModuleConfig = {};
+    if (fleetCfg.children) {
+      fleetModuleConfig.autoStart = fleetCfg.children.map((c) => {
+        const entry: NonNullable<FleetModuleConfig['autoStart']>[number] = {
+          name: c.name,
+          recipe: c.recipe,
+          autoStart: c.autoStart !== false,  // default true
+        };
+        if (c.dataDir !== undefined) entry.dataDir = c.dataDir;
+        if (c.env !== undefined) entry.env = c.env;
+        if (c.subscription !== undefined) entry.subscription = c.subscription;
+        if (c.autoRestart !== undefined) entry.autoRestart = c.autoRestart;
+        return entry;
+      });
+    }
+    if (fleetCfg.allowedRecipes !== undefined) fleetModuleConfig.allowedRecipes = fleetCfg.allowedRecipes;
+    if (fleetCfg.defaultSubscription !== undefined) fleetModuleConfig.defaultSubscription = fleetCfg.defaultSubscription;
+    moduleInstances.push(new FleetModule(fleetModuleConfig));
   }
 
   // Retrieval (requires lessons)
@@ -473,7 +502,10 @@ async function main() {
   framework.start();
   setupSynesthete(app);
 
-  if (noTui) {
+  if (headless) {
+    const { runHeadless } = await import('./headless.js');
+    await runHeadless(app, process.argv.slice(2));
+  } else if (noTui) {
     await runPiped(app);
   } else {
     const { runTui } = await import('./tui.js');

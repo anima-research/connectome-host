@@ -89,6 +89,60 @@ export interface RecipeModules {
   retrieval?: boolean | { model?: string; maxInjected?: number };
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
+  /**
+   * Cross-process child fleet.  When true (shorthand), FleetModule is attached
+   * with no pre-configured children.  When an object, declares children the
+   * conductor supervises (auto-started by default on framework start) and
+   * optionally an allowlist of recipe paths the conductor may spawn at will.
+   * Recipes outside the allowlist require user approval.
+   *
+   * Recipe path resolution: relative paths in `children[].recipe` are resolved
+   * against the process CWD (same convention as workspace mounts).
+   */
+  fleet?: boolean | RecipeFleet;
+}
+
+export interface RecipeFleet {
+  /** Children to manage. autoStart children launch when the framework starts. */
+  children?: RecipeFleetChild[];
+  /**
+   * Allowlist for `fleet--spawn`.  If omitted, the list is implicitly the
+   * set of recipe paths named in `children`.  A spawn call targeting a
+   * recipe outside the allowlist fails with an error the agent should
+   * relay to the user (who can then approve and re-issue).
+   *
+   * Pattern syntax (intentionally minimal to keep matcher and intent aligned):
+   *   - Literal exact match: `"recipes/miner.json"`
+   *   - Single `"*"`: allow everything
+   *   - Trailing `"*"` only (prefix match): `"recipes/*"` matches any path
+   *     under `recipes/`.  A mid-string `*` is rejected at validation time
+   *     — it would look like a glob but behave only as a literal.
+   */
+  allowedRecipes?: string[];
+  /** Default subscription sent to each child at handshake if they don't specify their own. */
+  defaultSubscription?: string[];
+}
+
+export interface RecipeFleetChild {
+  name: string;
+  /** Recipe path (CWD-relative or absolute) or http(s) URL. */
+  recipe: string;
+  /** Data dir override; default `./data/<name>`. */
+  dataDir?: string;
+  /** Env overrides on top of parent env. */
+  env?: Record<string, string>;
+  /**
+   * Event subscription at handshake (supports glob like `tool:*`).
+   * Relevant synthetic events the parent may care about:
+   *   - `lifecycle` (includes `ready` / `idle` / `exiting`) — required for fleet--await.
+   *   - `inference:speech` — per-final-inference speech text, required for fleet--relay.
+   *   - `inference:completed` / `inference:failed` / `tool:completed` / `tool:failed` — useful for status tracking.
+   */
+  subscription?: string[];
+  /** Launch this child on framework start. Default: true. */
+  autoStart?: boolean;
+  /** Respawn on crash (Phase 5 honours this; schema accepts it now). */
+  autoRestart?: boolean;
 }
 
 export interface Recipe {
@@ -243,6 +297,60 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (m.mode !== undefined && m.mode !== 'read-write' && m.mode !== 'read-only') {
           throw new Error(`workspace.mounts[${i}].mode must be "read-write" or "read-only"`);
+        }
+      }
+    }
+
+    // Validate fleet if present (object form only — boolean is trivially valid).
+    if (mods.fleet && typeof mods.fleet === 'object') {
+      const fleet = mods.fleet as Record<string, unknown>;
+      if (fleet.children !== undefined) {
+        if (!Array.isArray(fleet.children)) {
+          throw new Error('fleet.children must be an array');
+        }
+        const seenNames = new Set<string>();
+        for (let i = 0; i < fleet.children.length; i++) {
+          const c = fleet.children[i] as Record<string, unknown>;
+          if (!c || typeof c !== 'object') {
+            throw new Error(`fleet.children[${i}] must be an object`);
+          }
+          if (typeof c.name !== 'string' || !c.name) {
+            throw new Error(`fleet.children[${i}].name must be a non-empty string`);
+          }
+          if (seenNames.has(c.name)) {
+            throw new Error(`fleet.children[${i}].name "${c.name}" is duplicated`);
+          }
+          seenNames.add(c.name);
+          if (typeof c.recipe !== 'string' || !c.recipe) {
+            throw new Error(`fleet.children[${i}].recipe must be a non-empty string`);
+          }
+          if (c.subscription !== undefined && !Array.isArray(c.subscription)) {
+            throw new Error(`fleet.children[${i}].subscription must be an array of strings`);
+          }
+          if (c.autoStart !== undefined && typeof c.autoStart !== 'boolean') {
+            throw new Error(`fleet.children[${i}].autoStart must be a boolean`);
+          }
+        }
+      }
+      if (fleet.allowedRecipes !== undefined) {
+        if (!Array.isArray(fleet.allowedRecipes) || !fleet.allowedRecipes.every((r) => typeof r === 'string')) {
+          throw new Error('fleet.allowedRecipes must be an array of strings');
+        }
+        // Prefix-match-only: reject mid-string `*` so the pattern can't look
+        // like a glob while silently behaving as a literal.
+        for (const pattern of fleet.allowedRecipes as string[]) {
+          if (pattern === '*' || !pattern.includes('*')) continue;
+          if (pattern.indexOf('*') !== pattern.length - 1) {
+            throw new Error(
+              `fleet.allowedRecipes entry "${pattern}" has a mid-string "*". ` +
+              `Only trailing "*" (prefix match) or a bare "*" (allow all) are supported.`,
+            );
+          }
+        }
+      }
+      if (fleet.defaultSubscription !== undefined) {
+        if (!Array.isArray(fleet.defaultSubscription) || !fleet.defaultSubscription.every((s) => typeof s === 'string')) {
+          throw new Error('fleet.defaultSubscription must be an array of strings');
         }
       }
     }
