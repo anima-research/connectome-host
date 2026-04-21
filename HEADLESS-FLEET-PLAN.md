@@ -14,9 +14,10 @@ Run the Knowledge Mining Triumvirate (miner / reviewer / clerk) as a single orch
 │  agent: "conductor" (LLM, own context)                │
 │  modules:                                             │
 │    - FleetModule ──┐                                  │
-│    - workspace     │  tools: fleet--spawn / list /    │
+│    - workspace     │  tools: fleet--launch / list /   │
 │    - lessons       │         status / send / command /│
-│    - ...           │         peek / kill / restart    │
+│    - ...           │         peek / kill / restart /  │
+│    - ...           │         relay / await            │
 │  TUI: chat + fleet pane (per-child status + tail)     │
 └────────────────┬──────────────────────────────────────┘
                  │ spawn (detached), connect Unix socket
@@ -122,7 +123,7 @@ Run the Knowledge Mining Triumvirate (miner / reviewer / clerk) as a single orch
 - `src/modules/fleet-types.ts` (new) — wire protocol types shared with `headless.ts`.
 
 **Tools (exposed to conductor agent):**
-- `fleet--spawn {name, recipe, dataDir?, env?, autoRestart?}` — launch a child. Checks `allowedRecipes`, prompts user if out-of-list.
+- `fleet--launch {name, recipe, dataDir?, env?, autoRestart?}` — launch a child (separate OS process, distinct from `subagent--spawn`). Checks `allowedRecipes`, prompts user if out-of-list.
 - `fleet--list` — enumerate children with status.
 - `fleet--status {name?}` — detailed status for one or all.
 - `fleet--send {name, content}` — send user-like message to child.
@@ -260,7 +261,7 @@ One JSON object per line. All events include `type`; most include `ts` (epoch ms
 - No Chronicle persistence, no autoRestart, no reattach yet.
 
 **Acceptance:**
-- In a test parent instance, conductor calls `fleet--spawn {name:"test", recipe:"recipes/zulip-miner.json"}` → subprocess starts, socket connects.
+- In a test parent instance, conductor calls `fleet--launch {name:"test", recipe:"recipes/zulip-miner.json"}` → subprocess starts, socket connects.
 - `fleet--status {name:"test"}` returns `ready`.
 - `fleet--send {name:"test", content:"say hi"}` → child runs inference; `fleet--peek {name:"test"}` shows the events.
 - `fleet--kill {name:"test"}` → child exits; status becomes `exited`.

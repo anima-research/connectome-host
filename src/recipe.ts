@@ -106,8 +106,8 @@ export interface RecipeFleet {
   /** Children to manage. autoStart children launch when the framework starts. */
   children?: RecipeFleetChild[];
   /**
-   * Allowlist for `fleet--spawn`.  If omitted, the list is implicitly the
-   * set of recipe paths named in `children`.  A spawn call targeting a
+   * Allowlist for `fleet--launch`.  If omitted, the list is implicitly the
+   * set of recipe paths named in `children`.  A launch call targeting a
    * recipe outside the allowlist fails with an error the agent should
    * relay to the user (who can then approve and re-issue).
    *

@@ -28,14 +28,14 @@ function makeFleet(overrides: Partial<FleetModuleConfig> = {}): FleetModule {
   });
 }
 
-async function spawnChild(fleet: FleetModule, name: string, dataDir: string): Promise<void> {
+async function launchChild(fleet: FleetModule, name: string, dataDir: string): Promise<void> {
   const res = await fleet.handleToolCall({
-    id: `spawn-${name}`,
-    name: 'spawn',
+    id: `launch-${name}`,
+    name: 'launch',
     input: { name, recipe: 'mock-recipe', dataDir },
   });
   if (!res.success) {
-    throw new Error(`spawn ${name} failed: ${res.error}`);
+    throw new Error(`launch ${name} failed: ${res.error}`);
   }
 }
 
@@ -74,7 +74,7 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-orch-synth-'));
     fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'a', join(tmpDir, 'a'));
+    await launchChild(fleet, 'a', join(tmpDir, 'a'));
   });
 
   afterAll(async () => {
@@ -124,8 +124,8 @@ describe('fleet--relay', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-orch-relay-'));
     fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'src', join(tmpDir, 'src'));
-    await spawnChild(fleet, 'dst', join(tmpDir, 'dst'));
+    await launchChild(fleet, 'src', join(tmpDir, 'src'));
+    await launchChild(fleet, 'dst', join(tmpDir, 'dst'));
   });
 
   afterAll(async () => {
@@ -208,7 +208,7 @@ describe('fleet--await', () => {
   test('returns immediately when all named children are already idle', async () => {
     const fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'x', join(tmpDir, 'x1'));
+    await launchChild(fleet, 'x', join(tmpDir, 'x1'));
 
     // Trigger one round so child emits lifecycle:idle.
     await send(fleet, 'x', 'hi');
@@ -237,8 +237,8 @@ describe('fleet--await', () => {
   test('blocks until all named children emit idle', async () => {
     const fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'p', join(tmpDir, 'p'));
-    await spawnChild(fleet, 'q', join(tmpDir, 'q'));
+    await launchChild(fleet, 'p', join(tmpDir, 'p'));
+    await launchChild(fleet, 'q', join(tmpDir, 'q'));
 
     // Kick both, then await — the await should resolve after both idle up.
     const awaitPromise = (async () => {
@@ -266,8 +266,8 @@ describe('fleet--await', () => {
   test('returns on any idle when requireAll is false', async () => {
     const fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'fast', join(tmpDir, 'fast'));
-    await spawnChild(fleet, 'slow', join(tmpDir, 'slow'));
+    await launchChild(fleet, 'fast', join(tmpDir, 'fast'));
+    await launchChild(fleet, 'slow', join(tmpDir, 'slow'));
 
     const awaitPromise = (async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -293,7 +293,7 @@ describe('fleet--await', () => {
   test('times out returning partial set', async () => {
     const fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'stuck', join(tmpDir, 'stuck'));
+    await launchChild(fleet, 'stuck', join(tmpDir, 'stuck'));
 
     await command(fleet, 'stuck', '/hang');
 
@@ -311,7 +311,7 @@ describe('fleet--await', () => {
   test('fails fast when waited-for child crashes', async () => {
     const fleet = makeFleet();
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
-    await spawnChild(fleet, 'doomed', join(tmpDir, 'doomed'));
+    await launchChild(fleet, 'doomed', join(tmpDir, 'doomed'));
 
     const awaitPromise = (async () => {
       await new Promise((r) => setTimeout(r, 50));

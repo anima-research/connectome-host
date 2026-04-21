@@ -6,7 +6,13 @@
  * parent connects to the child's Unix socket at {dataDir}/ipc.sock and
  * exchanges JSONL envelopes (see `fleet-types.ts`, `HEADLESS-FLEET-PLAN.md`).
  *
- * Tools: spawn / list / status / send / command / peek / kill / restart.
+ * Tools: launch / list / status / send / command / peek / kill / restart / relay / await.
+ *
+ * Naming note: this module's `launch` is deliberately NOT `spawn` — the
+ * agent framework's SubagentModule already owns `subagent--spawn` for an
+ * in-process ephemeral agent with a different identity and lifecycle.
+ * `fleet--launch` means "start a separate recipe-driven child process"
+ * and should not be confused with it.
  * Features: autoStart on framework start, allowedRecipes enforcement,
  * autoRestart with flap cap, Chronicle persistence of fleet state, and
  * adopt-on-restart (reattach to living children after parent restart).
@@ -73,7 +79,7 @@ export interface FleetModuleConfig {
    */
   autoStart?: AutoStartChild[];
   /**
-   * Recipes the conductor may spawn via fleet--spawn, on top of whatever is
+   * Recipes the conductor may launch via fleet--launch, on top of whatever is
    * already listed in autoStart (those are implicitly allowed).  If BOTH
    * autoStart and allowedRecipes are absent, the allowlist is disabled and
    * any recipe is allowed (matches Phase 2/3 ad-hoc usage).
@@ -98,7 +104,7 @@ export interface AutoStartChild {
   autoRestart?: boolean;
 }
 
-interface SpawnInput {
+interface LaunchInput {
   name: string;
   recipe: string;
   dataDir?: string;
@@ -243,13 +249,13 @@ export class FleetModule implements Module {
       if (child.autoStart === false) continue;
       if (adoptedNames.has(child.name)) continue;
 
-      const input: SpawnInput = { name: child.name, recipe: child.recipe };
+      const input: LaunchInput = { name: child.name, recipe: child.recipe };
       if (child.dataDir !== undefined) input.dataDir = child.dataDir;
       if (child.env !== undefined) input.env = child.env;
       if (child.subscription !== undefined) input.subscription = child.subscription;
       if (child.autoRestart !== undefined) input.autoRestart = child.autoRestart;
 
-      this.handleSpawn(input, { viaAutoStart: true })
+      this.handleLaunch(input, { viaAutoStart: true })
         .then((res) => {
           if (!res.success) {
             console.error(`[fleet] autoStart "${child.name}" failed: ${res.error}`);
@@ -487,7 +493,7 @@ export class FleetModule implements Module {
 
     console.error(`[fleet] autoRestart "${child.name}" (attempt ${attempt}, in ${delayMs}ms)`);
 
-    const input: SpawnInput = {
+    const input: LaunchInput = {
       name: child.name,
       recipe: child.recipePath,
       dataDir: child.dataDir,
@@ -496,12 +502,12 @@ export class FleetModule implements Module {
     };
     if (child.env !== undefined) input.env = child.env;
 
-    // Drop the crashed record so handleSpawn can register a fresh one.
+    // Drop the crashed record so handleLaunch can register a fresh one.
     this.children.delete(child.name);
 
     setTimeout(() => {
       if (this.stopping) return;
-      this.handleSpawn(input, { viaAutoStart: true })
+      this.handleLaunch(input, { viaAutoStart: true })
         .then((res) => {
           if (!res.success) {
             console.error(`[fleet] autoRestart "${child.name}" failed: ${res.error}`);
@@ -594,9 +600,11 @@ export class FleetModule implements Module {
   getTools(): ToolDefinition[] {
     return [
       {
-        name: 'spawn',
+        name: 'launch',
         description:
-          'Spawn a child connectome-host process running the given recipe in headless mode. ' +
+          'Launch a child connectome-host process running the given recipe in headless mode. ' +
+          'Distinct from subagent--spawn (which creates an in-process ephemeral agent): this starts a ' +
+          'separate OS process with its own Chronicle store, MCPL servers, and lifecycle. ' +
           'Returns once the child reports ready, or fails. ' +
           'Environment is inherited from the parent and cannot be overridden via this tool — ' +
           'that belongs in the recipe (modules.fleet.children[].env) so it sits on the trusted side of the boundary.',
@@ -683,7 +691,7 @@ export class FleetModule implements Module {
       },
       {
         name: 'restart',
-        description: 'Kill and respawn a child with the same recipe + dataDir + subscription it was originally spawned with.',
+        description: 'Kill and respawn a child with the same recipe + dataDir + subscription it was originally launched with.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -747,7 +755,7 @@ export class FleetModule implements Module {
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     try {
       switch (call.name) {
-        case 'spawn':   return await this.handleSpawn(call.input as SpawnInput, { viaAutoStart: false });
+        case 'launch':  return await this.handleLaunch(call.input as LaunchInput, { viaAutoStart: false });
         case 'list':    return this.handleList();
         case 'status':  return this.handleStatus(call.input as { name?: string });
         case 'send':    return this.handleSend(call.input as { name: string; content: string });
@@ -773,15 +781,15 @@ export class FleetModule implements Module {
   // Tool handlers
   // =========================================================================
 
-  private async handleSpawn(
-    input: SpawnInput,
+  private async handleLaunch(
+    input: LaunchInput,
     opts: { viaAutoStart: boolean } = { viaAutoStart: false },
   ): Promise<ToolResult> {
     if (!input.name || typeof input.name !== 'string') {
-      return { success: false, isError: true, error: 'spawn requires "name" string' };
+      return { success: false, isError: true, error: 'launch requires "name" string' };
     }
     if (!input.recipe || typeof input.recipe !== 'string') {
-      return { success: false, isError: true, error: 'spawn requires "recipe" string' };
+      return { success: false, isError: true, error: 'launch requires "recipe" string' };
     }
 
     // allowedRecipes enforcement — skip for autoStart (implicitly trusted).
@@ -797,10 +805,10 @@ export class FleetModule implements Module {
     }
 
     // env may only be set on the recipe-trusted path (autoStart).  If an
-    // agent smuggles it through the agent-facing fleet--spawn tool (the
+    // agent smuggles it through the agent-facing fleet--launch tool (the
     // schema doesn't advertise it; this is belt-and-suspenders), strip it
-    // here before it can reach spawn().  Prevents LD_PRELOAD / NODE_OPTIONS
-    // / ANTHROPIC_BASE_URL and similar injection.
+    // here before it can reach child_process.spawn().  Prevents LD_PRELOAD /
+    // NODE_OPTIONS / ANTHROPIC_BASE_URL and similar injection.
     //
     // Rebind to a local copy rather than mutating the caller's ToolCall.input
     // object — the framework may not reuse it today, but defensively copy
@@ -875,7 +883,7 @@ export class FleetModule implements Module {
     // instead; startup.log just holds the pre-redirect bootstrap slice.
     const startupLogPath = join(dataDir, 'startup.log');
     try {
-      appendFileSync(startupLogPath, `\n--- spawn ${new Date().toISOString()} recipe=${recipePath} pid=parent:${process.pid} ---\n`);
+      appendFileSync(startupLogPath, `\n--- launch ${new Date().toISOString()} recipe=${recipePath} pid=parent:${process.pid} ---\n`);
     } catch { /* best-effort; directory existed from mkdirSync above */ }
     let startupFd: number | null = null;
     try {
@@ -936,7 +944,7 @@ export class FleetModule implements Module {
       try { proc.kill('SIGKILL'); } catch { /* noop */ }
       child.status = 'crashed';
       child.exitReason = err instanceof Error ? err.message : String(err);
-      return { success: false, isError: true, error: `spawn failed: ${child.exitReason}` };
+      return { success: false, isError: true, error: `launch failed: ${child.exitReason}` };
     }
 
     // Set the subscription filter on the child immediately.
@@ -1051,7 +1059,7 @@ export class FleetModule implements Module {
   private async handleRestart(input: { name: string }): Promise<ToolResult> {
     const c = this.children.get(input.name);
     if (!c) return { success: false, isError: true, error: `Unknown child: ${input.name}` };
-    const respawn: SpawnInput = {
+    const relaunch: LaunchInput = {
       name: c.name,
       recipe: c.recipePath,
       dataDir: c.dataDir,
@@ -1062,8 +1070,8 @@ export class FleetModule implements Module {
     }
     this.children.delete(c.name);
     // Restart is implicitly allowed — we're using the exact recipe the child
-    // was originally spawned with (which already passed the allowlist check).
-    return await this.handleSpawn(respawn, { viaAutoStart: true });
+    // was originally launched with (which already passed the allowlist check).
+    return await this.handleLaunch(relaunch, { viaAutoStart: true });
   }
 
   /**

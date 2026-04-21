@@ -3,7 +3,7 @@
  *
  * Drives the module's tool surface directly (no full framework needed) and
  * exercises the end-to-end loop:
- *   spawn -> ready, list, status, command (/help, offline-safe), peek
+ *   launch -> ready, list, status, command (/help, offline-safe), peek
  *   shows command-output events, kill exits the child cleanly.
  *
  * fleet--send is intentionally NOT tested here — it triggers inference and
@@ -67,11 +67,11 @@ describe('FleetModule — Phase 2', () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
   });
 
-  test('spawn → list → status → command/peek → kill round trip', async () => {
-    // -- spawn --
+  test('launch → list → status → command/peek → kill round trip', async () => {
+    // -- launch --
     const spawnRes = await fleet.handleToolCall({
-      id: 't-spawn',
-      name: 'spawn',
+      id: 't-launch',
+      name: 'launch',
       input: { name: 'leaf', recipe: recipePath, dataDir },
     });
     expect(spawnRes.success).toBe(true);
@@ -139,18 +139,18 @@ describe('FleetModule — Phase 2', () => {
     expect(existsSync(join(dataDir, 'ipc.sock'))).toBe(false);
   }, 60_000);
 
-  test('spawn rejects duplicate name while child is running', async () => {
+  test('launch rejects duplicate name while child is running', async () => {
     const dataDir2 = join(tmpDir, 'duplicate');
     const first = await fleet.handleToolCall({
       id: 't-dup-1',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'dup', recipe: recipePath, dataDir: dataDir2 },
     });
     expect(first.success).toBe(true);
 
     const second = await fleet.handleToolCall({
       id: 't-dup-2',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'dup', recipe: recipePath, dataDir: dataDir2 },
     });
     expect(second.success).toBe(false);
@@ -169,13 +169,13 @@ describe('FleetModule — Phase 2', () => {
 
     const spawnRes = await fleet.handleToolCall({
       id: 't-sub-spawn',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'sub', recipe: recipePath, dataDir: dataDir3 },
     });
     expect(spawnRes.success).toBe(true);
 
     // The lifecycle:ready event should have been fanned out by the time
-    // spawn returned (handleSpawn awaits waitForReady which polls status).
+    // launch returned (handleLaunch awaits waitForReady which polls status).
     expect(seen.some((e) => e.child === 'sub' && e.type === 'lifecycle')).toBe(true);
 
     await fleet.handleToolCall({ id: 't-sub-cmd', name: 'command', input: { name: 'sub', command: '/help' } });
@@ -266,7 +266,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     const bogus = join(tmpDir, 'bogus-recipe.json');
     const res = await fleet.handleToolCall({
       id: 't-allow-deny',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'nope', recipe: bogus, dataDir: join(tmpDir, 'nope') },
     });
     expect(res.success).toBe(false);
@@ -275,7 +275,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     // Listed path should be accepted.
     const ok = await fleet.handleToolCall({
       id: 't-allow-ok',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'ok', recipe: recipePath, dataDir: join(tmpDir, 'ok') },
     });
     expect(ok.success).toBe(true);
@@ -302,7 +302,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     const dataDir = join(tmpDir, 'filter');
     const res = await fleet.handleToolCall({
       id: 't-filt-spawn',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'filt', recipe: recipePath, dataDir },
     });
     expect(res.success).toBe(true);
@@ -344,7 +344,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     const dataDir = join(tmpDir, 'adopt');
     const res1 = await fleet1.handleToolCall({
       id: 't-adopt-spawn',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'adoptee', recipe: recipePath, dataDir },
     });
     expect(res1.success).toBe(true);
@@ -397,7 +397,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     // Any recipe under tmpDir/ should match.
     const ok = await fleet.handleToolCall({
       id: 't-glob-ok',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'glob', recipe: recipePath, dataDir: join(tmpDir, 'glob') },
     });
     expect(ok.success).toBe(true);
@@ -405,7 +405,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     // Something outside tmpDir should not.
     const bad = await fleet.handleToolCall({
       id: 't-glob-bad',
-      name: 'spawn',
+      name: 'launch',
       input: { name: 'bad', recipe: '/somewhere/else.json', dataDir: join(tmpDir, 'bad') },
     });
     expect(bad.success).toBe(false);

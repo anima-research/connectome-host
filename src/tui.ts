@@ -675,7 +675,7 @@ export async function runTui(app: AppContext): Promise<void> {
     } else {
       const children = [...fleetMod.getChildren().values()];
       if (children.length === 0) {
-        lines.push({ text: '  (no children spawned — conductor can call fleet--spawn)', color: DIM_GRAY });
+        lines.push({ text: '  (no children launched — conductor can call fleet--launch)', color: DIM_GRAY });
       } else {
         for (let i = 0; i < children.length; i++) {
           const c = children[i]!;
