@@ -28,16 +28,16 @@
     "syncntn": {
       "command": "../syncntn/services/mcp/start_mcp_local.sh",
       "env": {
-        "STORAGE_URL": "http://localhost:8000",
-        "WORKSPACE_ID": "YOUR_WORKSPACE_ID"
+        "STORAGE_URL": "${NOTION_STORAGE_URL}",
+        "WORKSPACE_ID": "${NOTION_WORKSPACE_ID}"
       }
     },
     "gitlab": {
       "command": "npx",
       "args": ["-y", "@zereight/mcp-gitlab"],
       "env": {
-        "GITLAB_PERSONAL_ACCESS_TOKEN": "YOUR_GITLAB_TOKEN",
-        "GITLAB_API_URL": "https://gitlab.example.com/api/v4"
+        "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_TOKEN}",
+        "GITLAB_API_URL": "${GITLAB_API_URL}"
       }
     },
     "gitlab-clone": {
@@ -47,8 +47,8 @@
         "../gitlab-clone-mcp/src/index.ts"
       ],
       "env": {
-        "GITLAB_PERSONAL_ACCESS_TOKEN": "YOUR_GITLAB_TOKEN",
-        "GITLAB_API_URL": "https://gitlab.example.com/api/v4"
+        "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_TOKEN}",
+        "GITLAB_API_URL": "${GITLAB_API_URL}"
       }
     }
   },

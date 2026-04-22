@@ -19,7 +19,7 @@
   "mcpServers": {
     "zulip": {
       "command": "node",
-      "args": ["../zulip-mcp/build/index.js"],
+      "args": ["../zulip_mcp/build/index.js"],
       "env": {
         "ENABLE_ZULIP": "true",
         "ENABLE_DISCORD": "false",

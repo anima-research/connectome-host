@@ -47,24 +47,25 @@ You should see a TUI with a generic assistant. Type `/quit` to exit. If this did
 
 ## Step 2: Install the Zulip MCP server
 
-Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip-mcp`.
+Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`.
 
-**Important:** the version of `zulip-mcp` adapted to match the triumvirate's recipes and the headless host's MCPL protocol expectations currently lives on a PR branch: [antra-tess/zulip_mcp#3 "Mcpl addendum"](https://github.com/antra-tess/zulip_mcp/pull/3). The PR's code sits on `Anarchid/zulip_mcp` branch `mcpl-addendum`. Clone that directly — the `anima-research/zulip_mcp` main branch is behind and will not work with the triumvirate as of this writing.
+**Important:** the version of `zulip_mcp` adapted to match the triumvirate's recipes and the headless host's MCPL protocol expectations currently lives on a PR branch: [antra-tess/zulip_mcp#3 "Mcpl addendum"](https://github.com/antra-tess/zulip_mcp/pull/3). Fetch it via the PR head ref so you don't have to juggle remotes:
 
 ```bash
 # From inside the connectome-host directory:
 cd ..
-git clone https://github.com/Anarchid/zulip_mcp.git zulip-mcp
-cd zulip-mcp
+git clone https://github.com/antra-tess/zulip_mcp.git
+cd zulip_mcp
+git fetch origin refs/pull/3/head:mcpl-addendum
 git checkout mcpl-addendum
 npm install
 npm run build
 cd ../connectome-host
 ```
 
-This leaves a built binary at `../zulip-mcp/build/index.js`, relative to connectome-host. The triumvirate recipe expects it exactly there — don't rename or move it.
+This leaves a built binary at `../zulip_mcp/build/index.js`, relative to connectome-host. The triumvirate recipes expect it exactly there — don't rename or move the directory.
 
-Once [antra-tess/zulip_mcp#3](https://github.com/antra-tess/zulip_mcp/pull/3) merges upstream, you'll be able to clone the regular upstream repository and skip the `git checkout` step. Until then, stay on `mcpl-addendum`.
+Once [antra-tess/zulip_mcp#3](https://github.com/antra-tess/zulip_mcp/pull/3) merges upstream, you'll be able to skip the `git fetch refs/pull/3/head` + `git checkout` steps and use whatever the upstream main branch is at that point. Until then, stay on `mcpl-addendum`.
 
 ## Step 3: Create a Zulip bot and get credentials
 
@@ -121,64 +122,85 @@ The miner reads other channels to extract knowledge. By default, the recipe has 
 
 If you want to narrow what it can see, edit `recipes/zulip-miner.json` → `"ZULIP_SUBSCRIBE"` and list the channels you want pre-subscribed, comma-separated.
 
-## Step 5: Set your Anthropic API key
+## Step 5: Fill in secrets in `.env`
 
-Create a `.env` file in the connectome-host directory:
+Secrets — API keys, tokens, service endpoints — live in `.env` at the connectome-host root. Recipes in `recipes/` reference them via `${VAR_NAME}` placeholders, and the framework substitutes at recipe-load time. Your recipe files stay commit-safe; your secrets stay gitignored.
+
+Copy the example and edit:
 
 ```bash
-cat > .env <<'EOF'
-ANTHROPIC_API_KEY=sk-ant-...
-EOF
+cp .env.example .env
 ```
 
-Replace `sk-ant-...` with your real key. Bun auto-loads `.env` — no extra step needed.
+Required for every run:
 
-## Step 6: Configure the miner's data sources
+```ini
+ANTHROPIC_API_KEY=sk-ant-...
+```
 
-The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, Notion, and GitLab**. You decide which of these you actually want enabled.
+Optional — **only** if you want the miner to extract from those sources (otherwise remove the relevant `mcpServers` block from `recipes/knowledge-miner.json` and skip these):
 
-Open `recipes/knowledge-miner.json` and look at the `mcpServers` block. Three source entries are there as templates:
+```ini
+# GitLab (knowledge-miner.json: gitlab + gitlab-clone)
+GITLAB_TOKEN=glpat-...
+GITLAB_API_URL=https://gitlab.example.com/api/v4
 
-### Zulip (required — already done)
+# Notion (knowledge-miner.json: syncntn)
+NOTION_STORAGE_URL=http://localhost:8000
+NOTION_WORKSPACE_ID=...
+```
 
-You set this up in Steps 2–4. The entry under `mcpServers.zulip` already points at `../zulip-mcp/build/index.js` and reads `./.zuliprc`. No change needed.
+Bun auto-loads `.env`, so nothing else to wire. If a recipe references a `${VAR}` you haven't set, the child's startup will fail with a clear message telling you which variable is missing and which recipe referenced it.
+
+## Step 6: Decide which data sources you want
+
+The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, Notion, and GitLab**. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
+
+You decide which sources are active by whether you **set the matching env vars** and whether you **keep the matching mcpServers block in the recipe**.
+
+### Zulip (required, already configured)
+
+You set this up in Steps 2–4. The entry under `mcpServers.zulip` uses `../zulip_mcp/build/index.js` and reads `./.zuliprc`. Nothing to change.
 
 ### GitLab (optional)
 
-If you want the miner to read your team's GitLab issues, merge requests, and code:
+To enable: create a GitLab Personal Access Token (User Settings → Access Tokens) with scopes `read_api` and `read_repository` (add `api` for write access to issues/comments), and set these in `.env`:
 
-1. In your GitLab instance, go to **User Settings > Access Tokens** and create a Personal Access Token with scopes `read_api` and `read_repository`. Add `api` if you want the miner to write issues or comments.
-2. In `recipes/knowledge-miner.json`, find the `gitlab` and `gitlab-clone` blocks. Replace the placeholders:
-   - `GITLAB_PERSONAL_ACCESS_TOKEN` — your token
-   - `GITLAB_API_URL` — your GitLab's `/api/v4` endpoint (e.g. `https://gitlab.example.com/api/v4` or `https://gitlab.com/api/v4`)
+```ini
+GITLAB_TOKEN=glpat-...
+GITLAB_API_URL=https://gitlab.example.com/api/v4
+```
 
-No separate install needed — the recipe uses `npx @zereight/mcp-gitlab` on demand. Note that `gitlab-clone` additionally runs `tsx ../gitlab-clone-mcp/src/index.ts`; if you want that one too, clone `gitlab-clone-mcp` into a sibling directory of connectome-host (same `..` relationship as zulip-mcp).
+No separate install — the recipe runs `npx @zereight/mcp-gitlab` on demand. The recipe also has a `gitlab-clone` MCP entry that needs `gitlab-clone-mcp` cloned as a sibling of connectome-host (`../gitlab-clone-mcp/`) — skip that one if you don't have it by deleting the `gitlab-clone` block.
 
-**If you don't use GitLab**, delete the `gitlab` and `gitlab-clone` blocks from `mcpServers` entirely. Leaving placeholder tokens in place will produce authentication errors at miner startup and noisy log churn.
+To disable: remove the `gitlab` and `gitlab-clone` blocks from `recipes/knowledge-miner.json`. If you leave them in but don't set the env vars, the child will fail to start with a message like `Recipe "recipes/knowledge-miner.json" references environment variable ${GITLAB_TOKEN} which is not set.` — that's the system telling you to either fill in the env var or delete the block.
 
 ### Notion (optional)
 
-If you want the miner to read your Notion workspace:
+To enable: install a Notion MCP server (the recipe's template is named `syncntn`; any MCP server with matching tool names works — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server) for selection caveats) and set:
 
-1. Install a Notion MCP server. The recipe's template is named `syncntn` after the adapter it was developed against — any MCP server that exposes Notion search and page-read tools works, as long as its exposed tool names match what the system prompt references (`syncntn--search_pages`, `syncntn--get_page_markdown`, etc.). If your server uses different tool names, either rename the key in the recipe and update the miner's system prompt, or install/build `syncntn` itself.
-2. Start your Notion MCP server wherever the recipe's `command` path expects it.
-3. In `recipes/knowledge-miner.json`, replace the placeholders under `mcpServers.syncntn`:
-   - `STORAGE_URL` — your MCP server's endpoint
-   - `WORKSPACE_ID` — your Notion workspace ID
+```ini
+NOTION_STORAGE_URL=http://localhost:8000
+NOTION_WORKSPACE_ID=...
+```
 
-**If you don't use Notion**, delete the `syncntn` block from `mcpServers`. The miner adapts to whatever sources remain — the system prompt is written to tolerate any combination.
+To disable: remove the `syncntn` block from `recipes/knowledge-miner.json`. Same behavior as above — unset env + kept block = startup failure with a clear message.
 
-See [SETUP.md → Step 2: Set up your data sources](./SETUP.md#step-2-set-up-your-data-sources) for additional background, including read-only GitLab modes and the Notion MCP server selection caveats.
+### Summary table
 
-### Optional: tweak other defaults
+| Source | Keep the block in recipe? | Env vars needed |
+|---|---|---|
+| Zulip | Yes | (configured via `.zuliprc`, no `${VAR}`) |
+| GitLab | Yes if using, remove otherwise | `GITLAB_TOKEN`, `GITLAB_API_URL` |
+| Notion | Yes if using, remove otherwise | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
 
-You can also edit `recipes/triumvirate.json` itself if you want to:
+### Tweaks you can still make to the recipe files
+
+You can also edit `recipes/triumvirate.json` if you want to:
 
 - **Rename the clerk's channel** away from `tracker-miner-f` — edit `recipes/clerk.json`, change `ZULIP_SUBSCRIBE` and the `tracker-channel` wake policy's `channel` field.
-- **Swap the model** — change `"model": "claude-opus-4-6"` to `claude-sonnet-4-6` (faster, cheaper) or another Claude model. The same override can be applied to each child's recipe file.
+- **Swap the model** — change `"model": "claude-opus-4-6"` to `claude-sonnet-4-6` (faster, cheaper) or another Claude model.
 - **Adjust autoStart** — set `"autoStart": false` on any child if you want to leave them inactive until you (or the conductor) explicitly launch them.
-
-For a minimal first run with Zulip-only knowledge extraction, just delete the GitLab + Notion blocks from `recipes/knowledge-miner.json` and leave everything else as-is.
 
 ## Step 7: First launch
 
@@ -371,7 +393,8 @@ If the conductor itself becomes unresponsive, `Ctrl+C` and relaunch. Children st
 | Child status stays "starting" forever | It timed out reaching ready. Check `data/<name>/headless.log` and `startup.log`. Most often: missing / invalid Zulip creds, or missing `../zulip-mcp/build/index.js`. |
 | A child is crashed with "API error 401" | Zulip credentials are wrong or expired. Regenerate the bot's API key, update `.zuliprc`, `/fleet restart <child>`. |
 | Clerk says "I don't see any messages in tracker-miner-f" | Check that the bot is actually subscribed to `#tracker-miner-f` in Zulip. Subscription happens on clerk startup via `ZULIP_SUBSCRIBE` — if the stream doesn't exist, it silently fails. |
-| Miner or clerk launches keep crashing right away | Usually a missing `.zuliprc`, a placeholder GitLab/Notion credential left un-filled, or an MCP server (Notion) that isn't running. Run the child recipe standalone to isolate: `bun src/index.ts recipes/knowledge-miner.json` (or `recipes/clerk.json`) in the same directory — the errors come back clearly in the interactive TUI. Either fill the credentials or delete the offending `mcpServers` block. |
+| Miner or clerk launches keep crashing right away | Usually a missing `.zuliprc`, an unset env var, or an MCP server (Notion) that isn't running. Check `data/<child>/startup.log` first — it'll have a clear message like `references environment variable ${GITLAB_TOKEN} which is not set`. Either add the missing value to `.env` or delete the matching `mcpServers` block from the recipe. To isolate: run the recipe standalone with `bun src/index.ts recipes/knowledge-miner.json` (or `recipes/clerk.json`) in the same directory — the same errors come back in the interactive TUI. |
+| "Recipe references environment variable ${FOO} which is not set" | The recipe has `${FOO}` in one of its values but your `.env` doesn't define `FOO`. Either add `FOO=...` to `.env` (if you want the source that references it) or delete the `mcpServers` / module block that uses it (if you don't). |
 | Process view shows fewer children than expected | Check the conductor's own `data/tui-error.log` for errors during child spawn. One child failing shouldn't prevent the others from starting. |
 | Children reappear after I thought I quit | If you chose `d` (detach) instead of `Y` (kill) last time, they're still running. `/fleet list` on startup will show them as adopted. Use `Y` to actually stop. |
 | The bill is higher than expected | All four agents run concurrently and all except the reviewer (Sonnet) default to Opus. Switch the conductor or miner to Sonnet by editing the relevant recipe's `"model"` field. |
