@@ -25,7 +25,8 @@
         "ENABLE_DISCORD": "false",
         "ZULIP_RC_PATH": "./.zuliprc",
         "ZULIP_SUBSCRIBE": "tracker-miner-f"
-      }
+      },
+      "channelSubscription": ["zulip:tracker-miner-f"]
     }
   },
 
