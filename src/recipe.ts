@@ -181,12 +181,63 @@ export const DEFAULT_RECIPE: Recipe = {
 };
 
 // ---------------------------------------------------------------------------
+// Environment variable substitution
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
+ * string values with `process.env.VAR_NAME`.  Applied at recipe-load time,
+ * before schema validation, so secrets can live in `.env` (gitignored) while
+ * the recipe itself stays commit-safe.
+ *
+ * Pattern:
+ *   - `${FOO}` where `FOO` is `[A-Za-z_][A-Za-z0-9_]*`.
+ *   - Multiple occurrences in a single string are all substituted.
+ *   - Non-string values (numbers, booleans, nulls) pass through unchanged.
+ *   - Arrays and objects are walked recursively.
+ *   - A missing env var throws with a message that names the variable and
+ *     the recipe source, plus the advice to either set it or delete the
+ *     section of the recipe that references it.
+ *
+ * No escape syntax yet — a literal `${...}` in recipe JSON is not a supported
+ * case.  If that becomes needed, add `$$` → `$` unwrapping as a pre-pass.
+ */
+export function substituteEnvVars(value: unknown, source: string): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+      const v = process.env[name];
+      if (v === undefined) {
+        throw new Error(
+          `Recipe "${source}" references environment variable \${${name}} which is not set. ` +
+          `Add it to your .env file, or delete the section of the recipe that uses it ` +
+          `(e.g. remove the mcpServers entry for a source you don't have).`,
+        );
+      }
+      return v;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => substituteEnvVars(v, source));
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = substituteEnvVars(v, source);
+    }
+    return out;
+  }
+  return value;
+}
+
+// ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
 /**
  * Load a recipe from a URL or local file path.
  * If the systemPrompt value is an HTTP(S) URL, fetches the text.
+ * Recipe string values containing `${VAR}` patterns are substituted against
+ * `process.env` before validation — see substituteEnvVars().
  */
 export async function loadRecipe(source: string): Promise<Recipe> {
   let raw: unknown;
@@ -201,6 +252,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
     raw = JSON.parse(readFileSync(path, 'utf-8'));
   }
 
+  raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
   return resolveSystemPrompt(recipe);
 }
