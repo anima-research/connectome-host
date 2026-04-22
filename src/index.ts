@@ -264,6 +264,8 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
       if (recipeEntry.toolPrefix !== undefined) merged.toolPrefix = recipeEntry.toolPrefix;
       if (recipeEntry.enabledFeatureSets !== undefined) merged.enabledFeatureSets = recipeEntry.enabledFeatureSets;
       if (recipeEntry.disabledFeatureSets !== undefined) merged.disabledFeatureSets = recipeEntry.disabledFeatureSets;
+      if (recipeEntry.enabledTools !== undefined) merged.enabledTools = recipeEntry.enabledTools;
+      if (recipeEntry.disabledTools !== undefined) merged.disabledTools = recipeEntry.disabledTools;
       if (recipeEntry.reconnect !== undefined) merged.reconnect = recipeEntry.reconnect;
       if (recipeEntry.reconnectIntervalMs !== undefined) merged.reconnectIntervalMs = recipeEntry.reconnectIntervalMs;
       allServers.push(merged as { id: string; command: string; [k: string]: unknown });

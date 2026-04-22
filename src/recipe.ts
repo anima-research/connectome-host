@@ -47,6 +47,18 @@ export interface RecipeMcpServer {
   toolPrefix?: string;
   enabledFeatureSets?: string[];
   disabledFeatureSets?: string[];
+  /**
+   * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
+   * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
+   * If set, only matching tools are exposed to the model AND callable at dispatch.
+   */
+  enabledTools?: string[];
+  /**
+   * Tool deny-list (same syntax as enabledTools). Wins over enabledTools on overlap.
+   * Denied tools are hidden from the model and rejected at dispatch — both, so a
+   * model that imitates a prior call from message history can't sneak the call through.
+   */
+  disabledTools?: string[];
   reconnect?: boolean;
   reconnectIntervalMs?: number;
   /**
@@ -332,6 +344,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
+      }
+      for (const field of ['enabledTools', 'disabledTools'] as const) {
+        if (server[field] === undefined) continue;
+        if (!Array.isArray(server[field]) || !(server[field] as unknown[]).every((p) => typeof p === 'string' && p)) {
+          throw new Error(`mcpServers.${id}.${field} must be an array of non-empty strings`);
+        }
       }
     }
   }
