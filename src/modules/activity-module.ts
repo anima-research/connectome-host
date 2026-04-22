@@ -18,7 +18,9 @@ import type {
   ToolCall,
   ToolResult,
   TraceEvent,
+  WorkspaceModule,
 } from '@animalabs/agent-framework';
+import { open } from 'node:fs/promises';
 
 export interface ActivityModuleConfig {
   initialChannels?: string[];
@@ -26,6 +28,37 @@ export interface ActivityModuleConfig {
 
 interface ActivityState {
   channels: string[];
+}
+
+/**
+ * Parse a loose origin hint out of a file's top lines. Used when an inference
+ * is triggered by a workspace file rather than an incoming channel message:
+ * if the file's head declares the conversation it's replying to, we route the
+ * typing indicator to that topic. Returns null if no hint is found.
+ *
+ * Recognized shapes:
+ *   - `origin: zulip#<channel>#<topic>`
+ *   - `reply-to: zulip:<channel>/<topic>`
+ *   - YAML frontmatter with both `channel: <name>` and `topic: <name>`
+ *     (matches the clerk's existing knowledge-request ticket convention)
+ *
+ * All platform hints currently resolve to `zulip:<channel>` — extend here when
+ * another MCPL server wants in on origin-routing.
+ */
+function parseOriginHint(text: string): { channelId: string; topic: string } | null {
+  const compact = text.match(/origin:\s*zulip#([^\s#]+)#(\S+)/i);
+  if (compact) return { channelId: `zulip:${compact[1]}`, topic: compact[2] };
+
+  const replyTo = text.match(/reply-to:\s*zulip:([^\s/]+)\/(\S+)/i);
+  if (replyTo) return { channelId: `zulip:${replyTo[1]}`, topic: replyTo[2] };
+
+  const channelMatch = text.match(/^channel:\s*(\S+)\s*$/m);
+  const topicMatch = text.match(/^topic:\s*(.+?)\s*$/m);
+  if (channelMatch && topicMatch) {
+    return { channelId: `zulip:${channelMatch[1]}`, topic: topicMatch[1] };
+  }
+
+  return null;
 }
 
 export class ActivityModule implements Module {
@@ -163,7 +196,46 @@ export class ActivityModule implements Module {
       }
       this.lastMetadata.set(e.channelId, merged);
     }
+    // Workspace-triggered inferences have no incoming-message metadata, so
+    // peek at the file's head for an origin hint and populate routing metadata
+    // if found. Best-effort; failures are silent.
+    else if (event.type === 'workspace:created' || event.type === 'workspace:modified') {
+      const e = event as unknown as { paths: string[] };
+      await this.extractOriginFromFiles(e.paths);
+    }
     return {};
+  }
+
+  private async extractOriginFromFiles(mountPaths: string[]): Promise<void> {
+    const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
+    if (!workspace) return;
+
+    for (const mountPath of mountPaths) {
+      const abs = workspace.resolveAbsolutePath(mountPath);
+      if (!abs) continue;
+
+      try {
+        const fd = await open(abs, 'r');
+        try {
+          const buf = Buffer.alloc(2048);
+          const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
+          const head = buf.toString('utf8', 0, bytesRead);
+          const top = head.split('\n').slice(0, 10).join('\n');
+
+          const origin = parseOriginHint(top);
+          if (origin && this.channels.has(origin.channelId)) {
+            // Merge with any existing metadata so other keys (e.g. senderEmail)
+            // survive if the origin refresh is subsequent to an incoming message.
+            const prior = this.lastMetadata.get(origin.channelId) ?? {};
+            this.lastMetadata.set(origin.channelId, { ...prior, topic: origin.topic });
+          }
+        } finally {
+          await fd.close();
+        }
+      } catch {
+        // File unreadable / gone / etc. — silently skip.
+      }
+    }
   }
 
   private onInferenceStarted(): void {
