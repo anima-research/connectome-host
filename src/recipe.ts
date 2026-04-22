@@ -90,6 +90,14 @@ export interface RecipeModules {
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
+   * Surface agent composition activity (typing indicators) to one or more
+   * MCPL channels while inference is active. Opt-in per recipe; channel IDs
+   * use the MCPL format (e.g. `zulip:tracker-miner-f`). The agent can also
+   * adjust the set at runtime via the `activity:show_in` / `activity:hide_in`
+   * tools.
+   */
+  activity?: boolean | { channels?: string[] };
+  /**
    * Cross-process child fleet.  When true (shorthand), FleetModule is attached
    * with no pre-configured children.  When an object, declares children the
    * conductor supervises (auto-started by default on framework start) and

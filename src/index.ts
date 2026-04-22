@@ -26,6 +26,7 @@ import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
+import { ActivityModule } from './modules/activity-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { generateSessionName } from './synesthete.js';
@@ -230,6 +231,14 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     moduleInstances.push(workspaceModule);
   }
 
+  // Activity (typing indicators) — opt-in per recipe
+  let activityModule: ActivityModule | null = null;
+  if (modules.activity !== undefined && modules.activity !== false) {
+    const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
+    activityModule = new ActivityModule({ initialChannels: activityConfig.channels });
+    moduleInstances.push(activityModule);
+  }
+
   // -- Build MCP server list --
   //
   // Recipes are opt-in: a file entry from mcpl-servers.json is loaded only
@@ -304,6 +313,10 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     subagentModule.setFramework(framework);
   }
 
+  if (activityModule) {
+    activityModule.setFramework(framework);
+  }
+
   if (workspaceModule) {
     workspaceModule.initStore(framework.getStore());
   }
@@ -352,6 +365,28 @@ function setupSynesthete(app: AppContext): void {
         app.sessionManager.renameSession(session.id, name, false);
       }
     });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// MCPL subprocess stderr log — receipts for "why did that MCPL server break"
+// ---------------------------------------------------------------------------
+
+function setupMcplStderrLog(app: AppContext, storePath: string): void {
+  const { appendFileSync, mkdirSync } = require('node:fs') as typeof import('node:fs');
+  const dir = join(storePath, 'mcpl-stderr');
+  mkdirSync(dir, { recursive: true });
+
+  app.framework.onTrace((event) => {
+    if (event.type !== 'mcpl:server-stderr') return;
+    const e = event as unknown as { serverId: string; line: string; timestamp: number };
+    const iso = new Date(e.timestamp).toISOString();
+    const path = join(dir, `${e.serverId}.log`);
+    try {
+      appendFileSync(path, `${iso} ${e.line}\n`);
+    } catch {
+      // If logging itself fails, don't cascade.
+    }
   });
 }
 
@@ -505,11 +540,13 @@ async function main() {
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
       setupSynesthete(this);
+      setupMcplStderrLog(this, newStorePath);
     },
   };
 
   framework.start();
   setupSynesthete(app);
+  setupMcplStderrLog(app, storePath);
 
   if (headless) {
     const { runHeadless } = await import('./headless.js');

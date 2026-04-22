@@ -33,6 +33,7 @@
     "subagents": true,
     "lessons": true,
     "retrieval": true,
+    "activity": { "channels": ["zulip:tracker-miner-f"] },
     "wake": {
       "policies": [
         {
