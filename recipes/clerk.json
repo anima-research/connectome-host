@@ -2,7 +2,6 @@
   "name": "Library Frontdesk",
   "description": "Answers library lookups on #tracker-miner-f; files knowledge-request tickets when the library is insufficient.",
   "version": "1.0.0",
-
   "agent": {
     "name": "clerk",
     "model": "claude-opus-4-6",
@@ -15,21 +14,28 @@
       "maxMessageTokens": 10000
     }
   },
-
   "mcpServers": {
     "zulip": {
       "command": "node",
-      "args": ["../zulip_mcp/build/index.js"],
+      "args": [
+        "../zulip_mcp/build/index.js"
+      ],
       "env": {
         "ENABLE_ZULIP": "true",
         "ENABLE_DISCORD": "false",
         "ZULIP_RC_PATH": "./.zuliprc",
         "ZULIP_SUBSCRIBE": "tracker-miner-f"
       },
-      "channelSubscription": ["zulip:tracker-miner-f"]
+      "channelSubscription": ["zulip:tracker-miner-f"],
+      "source": {
+        "url": "https://github.com/antra-tess/zulip_mcp.git",
+        "install": "npm",
+        "inContainer": {
+          "path": "/zulip_mcp"
+        }
+      }
     }
   },
-
   "modules": {
     "subagents": true,
     "lessons": true,
@@ -39,23 +45,38 @@
       "policies": [
         {
           "name": "user-input",
-          "match": { "scope": ["external-message"] },
+          "match": {
+            "scope": [
+              "external-message"
+            ]
+          },
           "behavior": "always"
         },
         {
           "name": "subagent-completions",
-          "match": { "scope": ["inference-request"] },
+          "match": {
+            "scope": [
+              "inference-request"
+            ]
+          },
           "behavior": "always"
         },
         {
           "name": "tracker-channel",
-          "match": { "scope": ["mcpl:channel-incoming"], "channel": "zulip:tracker-miner-f" },
+          "match": {
+            "scope": [
+              "mcpl:channel-incoming"
+            ],
+            "channel": "zulip:tracker-miner-f"
+          },
           "behavior": "always"
         },
         {
           "name": "ticket-resolutions",
           "match": {
-            "scope": ["workspace:modified"],
+            "scope": [
+              "workspace:modified"
+            ],
             "mount": "knowledge-requests",
             "pathGlob": "knowledge-requests/*.md"
           },
@@ -64,7 +85,9 @@
         {
           "name": "reviewed-responses",
           "match": {
-            "scope": ["workspace:created"],
+            "scope": [
+              "workspace:created"
+            ],
             "mount": "library-reviewed",
             "pathGlob": "library-reviewed/*.md"
           },
@@ -76,26 +99,33 @@
     "workspace": {
       "configMount": true,
       "mounts": [
-        { "name": "library-mined",      "path": "./output",             "mode": "read-only" },
+        {
+          "name": "library-mined",
+          "path": "./output",
+          "mode": "read-only"
+        },
         {
           "name": "library-reviewed",
           "path": "./review-output",
           "mode": "read-only",
           "watch": "always",
-          "wakeOnChange": ["created"]
+          "wakeOnChange": [
+            "created"
+          ]
         },
         {
           "name": "knowledge-requests",
           "path": "./knowledge-requests",
           "mode": "read-write",
           "watch": "always",
-          "wakeOnChange": ["modified"],
+          "wakeOnChange": [
+            "modified"
+          ],
           "autoMaterialize": true
         }
       ]
     }
   },
-
   "sessionNaming": {
     "examples": [
       "Tracker-Miner-F Frontdesk Shift",

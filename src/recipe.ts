@@ -67,6 +67,66 @@ export interface RecipeMcpServer {
    * a string[] is an allow-list of channel ids.
    */
   channelSubscription?: 'auto' | 'manual' | string[];
+  /**
+   * Optional install metadata for build/deploy tooling (e.g. connectome-cook).
+   * Ignored by the recipe loader at runtime — agents don't need this; only
+   * tools that produce deployable artifacts (Docker images, etc.) do.
+   */
+  source?: RecipeMcpServerSource;
+}
+
+/**
+ * How to obtain and install an MCP server at deploy time.  Consumed by
+ * build tooling like connectome-cook.  All fields optional-at-the-schema-
+ * layer except `url`; tools may require more depending on the install
+ * pattern they're generating.
+ */
+export interface RecipeMcpServerSource {
+  /** Git URL to clone from. */
+  url: string;
+  /**
+   * Git ref: branch, tag, or commit SHA.  Default: "main".
+   * If the value starts with "refs/" (e.g. "refs/pull/3/head"), it's
+   * treated as an explicit refspec — tools fetch it then check out
+   * FETCH_HEAD.  Useful for tracking PR heads on GitHub/GitLab.
+   */
+  ref?: string;
+  /**
+   * How to install inside the cloned dir at build time.
+   *   "npm"           runs `npm install && npm run build`; implies node runtime.
+   *   "pip-editable"  creates a venv at `.venv/` and runs `pip install -e .`;
+   *                   implies python3 runtime.
+   *   { run, runtime } runs an arbitrary shell command from the cloned dir;
+   *                   `runtime` tells the tool which base packages to install
+   *                   in the image (node / python3 / custom = no defaults).
+   * Omit entirely for sources that need no build step (e.g. the tool is
+   * fetched at runtime by npx/uvx — the recipe's `command` is enough).
+   */
+  install?:
+    | 'npm'
+    | 'pip-editable'
+    | { run: string; runtime: 'node' | 'python3' | 'custom' };
+  /**
+   * Build-arg name for an auth token if the URL is private.
+   * Tools consuming `source` should mount this via BuildKit secrets
+   * (so the token doesn't leak into image layers).  The same env var
+   * name is typically already needed at runtime by the operator's
+   * `.env`, so this field doesn't introduce new secret surface.
+   */
+  authSecret?: string;
+  /**
+   * True if the URL's TLS cert isn't in the container's trust store
+   * (e.g. self-signed internal CAs on private GitLab/Gitea).  Tools
+   * should add `-c http.sslVerify=false` to the git clone of this source.
+   * Prefer installing a proper CA bundle in the image over using this flag.
+   */
+  sslBypass?: boolean;
+  /**
+   * Override the in-container path of the installed source.  Default:
+   * `/<basename-of-url-without-.git-suffix>` (e.g. the URL
+   * `https://github.com/x/zulip_mcp.git` places the source at `/zulip_mcp`).
+   */
+  inContainer?: { path: string };
 }
 
 /**
@@ -392,6 +452,48 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
+      }
+      if (server.source !== undefined) {
+        if (typeof server.source !== 'object' || server.source === null) {
+          throw new Error(`mcpServers.${id}.source must be an object`);
+        }
+        const src = server.source as Record<string, unknown>;
+        if (typeof src.url !== 'string' || !src.url) {
+          throw new Error(`mcpServers.${id}.source.url must be a non-empty string`);
+        }
+        if (src.ref !== undefined && typeof src.ref !== 'string') {
+          throw new Error(`mcpServers.${id}.source.ref must be a string`);
+        }
+        if (src.install !== undefined) {
+          const install = src.install;
+          const isShorthand = install === 'npm' || install === 'pip-editable';
+          const isCustom =
+            typeof install === 'object' && install !== null
+            && typeof (install as Record<string, unknown>).run === 'string'
+            && ['node', 'python3', 'custom'].includes(
+              (install as Record<string, unknown>).runtime as string,
+            );
+          if (!isShorthand && !isCustom) {
+            throw new Error(
+              `mcpServers.${id}.source.install must be 'npm', 'pip-editable', ` +
+              `or { run: string, runtime: 'node' | 'python3' | 'custom' }`,
+            );
+          }
+        }
+        if (src.authSecret !== undefined && typeof src.authSecret !== 'string') {
+          throw new Error(`mcpServers.${id}.source.authSecret must be a string`);
+        }
+        if (src.sslBypass !== undefined && typeof src.sslBypass !== 'boolean') {
+          throw new Error(`mcpServers.${id}.source.sslBypass must be a boolean`);
+        }
+        if (src.inContainer !== undefined) {
+          if (typeof src.inContainer !== 'object' || src.inContainer === null) {
+            throw new Error(`mcpServers.${id}.source.inContainer must be an object`);
+          }
+          if (typeof (src.inContainer as Record<string, unknown>).path !== 'string') {
+            throw new Error(`mcpServers.${id}.source.inContainer.path must be a string`);
+          }
+        }
       }
       for (const field of ['enabledTools', 'disabledTools'] as const) {
         if (server[field] === undefined) continue;

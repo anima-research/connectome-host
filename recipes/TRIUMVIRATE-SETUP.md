@@ -47,25 +47,19 @@ You should see a TUI with a generic assistant. Type `/quit` to exit. If this did
 
 ## Step 2: Install the Zulip MCP server
 
-Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`.
-
-**Important:** the version of `zulip_mcp` adapted to match the triumvirate's recipes and the headless host's MCPL protocol expectations currently lives on a PR branch: [antra-tess/zulip_mcp#3 "Mcpl addendum"](https://github.com/antra-tess/zulip_mcp/pull/3). Fetch it via the PR head ref so you don't have to juggle remotes:
+Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`. The MCPL-addendum work has merged into upstream `main` ([PR #3](https://github.com/antra-tess/zulip_mcp/pull/3)) so the install is just clone + build:
 
 ```bash
 # From inside the connectome-host directory:
 cd ..
 git clone https://github.com/antra-tess/zulip_mcp.git
 cd zulip_mcp
-git fetch origin refs/pull/3/head:mcpl-addendum
-git checkout mcpl-addendum
 npm install
 npm run build
 cd ../connectome-host
 ```
 
 This leaves a built binary at `../zulip_mcp/build/index.js`, relative to connectome-host. The triumvirate recipes expect it exactly there — don't rename or move the directory.
-
-Once [antra-tess/zulip_mcp#3](https://github.com/antra-tess/zulip_mcp/pull/3) merges upstream, you'll be able to skip the `git fetch refs/pull/3/head` + `git checkout` steps and use whatever the upstream main branch is at that point. Until then, stay on `mcpl-addendum`.
 
 ## Step 3: Create a Zulip bot and get credentials
 
