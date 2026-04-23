@@ -9,7 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.2.0",
+    "@animalabs/agent-framework": "^0.3.0",
     "@animalabs/context-manager": "^0.2.0",
     "@animalabs/chronicle": "^0.1.1",
     "@animalabs/membrane": "^0.5.43",

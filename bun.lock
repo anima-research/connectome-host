@@ -5,7 +5,7 @@
     "": {
       "name": "zulip-knowledge-app",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.2.0",
+        "@animalabs/agent-framework": "^0.3.0",
         "@animalabs/chronicle": "^0.1.1",
         "@animalabs/context-manager": "^0.2.0",
         "@animalabs/membrane": "^0.5.43",
@@ -18,7 +18,7 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.2.0", "", { "dependencies": { "@animalabs/chronicle": "^0.1.0", "@animalabs/context-manager": "^0.2.0", "@animalabs/membrane": "^0.5.43", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-gU63Xp2cUSPEJaFZ5HF6Cw4+hZJlWIy4TAuDDurRBZ2Vhv1wQMJ+0Oj5afiHha2K82aAwxkfi4mLtTqUC784NA=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.3.0", "", { "dependencies": { "@animalabs/chronicle": "^0.1.0", "@animalabs/context-manager": "^0.2.0", "@animalabs/membrane": "^0.5.43", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-pj+zq7LI4LqrIa5uz9adBHPYBpf0rrvU3yYm+vMKn4emS4QLQ9LKdcZed39R/+V0xgX/Pgeq5YIIvr5Rj+vI+Q=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.1.1", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.1.1", "@animalabs/chronicle-darwin-x64": "0.1.1", "@animalabs/chronicle-linux-arm64-gnu": "0.1.1", "@animalabs/chronicle-linux-x64-gnu": "0.1.1", "@animalabs/chronicle-win32-x64-msvc": "0.1.1" } }, "sha512-/yeeUpIkRnPS7s+XbXzveKNBRqMFPWmknwe98vBtFOR1ovp+ENgF0HmfFPC4XDeqO4B3v8S+EZkWkiOw+kwJkQ=="],
 
