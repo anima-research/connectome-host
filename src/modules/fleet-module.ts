@@ -793,15 +793,24 @@ export class FleetModule implements Module {
     }
 
     // allowedRecipes enforcement — skip for autoStart (implicitly trusted).
-    if (!opts.viaAutoStart && this.allowlistEnabled && !this.matchesAllowlist(input.recipe)) {
-      return {
-        success: false,
-        isError: true,
-        error:
-          `Recipe "${input.recipe}" is not in the allowlist. ` +
-          `Allowed: ${this.allowlist.join(', ') || '(none)'}. ` +
-          `Ask the user to approve it (add to modules.fleet.allowedRecipes in the parent recipe) and retry.`,
-      };
+    // Match against both the raw string (for explicit literal allowedRecipes
+    // like `"recipes/*"`) and the CWD-resolved absolute form (for implicit
+    // entries derived from `children[]`, which now carry absolute paths after
+    // recipe-load-time resolution).
+    if (!opts.viaAutoStart && this.allowlistEnabled) {
+      const resolvedInput = isUrlOrAbsolute(input.recipe)
+        ? input.recipe
+        : resolve(process.cwd(), input.recipe);
+      if (!this.matchesAllowlist(input.recipe, resolvedInput)) {
+        return {
+          success: false,
+          isError: true,
+          error:
+            `Recipe "${input.recipe}" is not in the allowlist. ` +
+            `Allowed: ${this.allowlist.join(', ') || '(none)'}. ` +
+            `Ask the user to approve it (add to modules.fleet.allowedRecipes in the parent recipe) and retry.`,
+        };
+      }
     }
 
     // env may only be set on the recipe-trusted path (autoStart).  If an
@@ -1079,14 +1088,19 @@ export class FleetModule implements Module {
    * Prefix-match-only: literal exact match, bare `"*"` for any, or trailing
    * `"*"` for prefix match.  Mid-string `*` is rejected at recipe
    * validation time so it can't silently fail here.
+   *
+   * Two forms of the input are tried against each entry: the raw string
+   * (as the agent supplied it — matches explicit literal entries like
+   * `"recipes/*"`) and a CWD-resolved absolute form (matches implicit
+   * entries derived from `children[]`, which are absolute post-load).
    */
-  private matchesAllowlist(recipe: string): boolean {
+  private matchesAllowlist(recipe: string, resolved: string): boolean {
     for (const entry of this.allowlist) {
       if (entry === '*') return true;
-      if (entry === recipe) return true;
+      if (entry === recipe || entry === resolved) return true;
       if (entry.endsWith('*') && !entry.slice(0, -1).includes('*')) {
         const prefix = entry.slice(0, -1);
-        if (recipe.startsWith(prefix)) return true;
+        if (recipe.startsWith(prefix) || resolved.startsWith(prefix)) return true;
       }
     }
     return false;

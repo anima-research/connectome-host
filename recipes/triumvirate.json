@@ -26,21 +26,21 @@
       "children": [
         {
           "name": "miner",
-          "recipe": "recipes/knowledge-miner.json",
+          "recipe": "knowledge-miner.json",
           "dataDir": "./data/miner",
           "autoStart": true,
           "subscription": ["lifecycle", "inference:completed", "inference:speech", "tool:completed", "tool:failed", "inference:failed"]
         },
         {
           "name": "reviewer",
-          "recipe": "recipes/knowledge-reviewer.json",
+          "recipe": "knowledge-reviewer.json",
           "dataDir": "./data/reviewer",
           "autoStart": true,
           "subscription": ["lifecycle", "inference:completed", "inference:speech", "tool:completed", "tool:failed", "inference:failed"]
         },
         {
           "name": "clerk",
-          "recipe": "recipes/clerk.json",
+          "recipe": "clerk.json",
           "dataDir": "./data/clerk",
           "autoStart": true,
           "subscription": ["lifecycle", "inference:completed", "inference:speech", "tool:completed", "tool:failed", "inference:failed"]

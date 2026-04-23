@@ -382,6 +382,44 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     await fleet2.stop();
   }, 60_000);
 
+  test('relative launch path matches implicit absolute-path allowlist via CWD resolve', async () => {
+    // Simulates the conductor's post-fix situation: autoStart children carry
+    // absolute paths (resolved at recipe-load time), so the implicit allowlist
+    // is absolute; but the agent calls fleet--launch with a CWD-relative
+    // string.  The launch check must try both forms.
+    const fleet = new FleetModule({
+      childIndexPath: INDEX_PATH,
+      autoStart: [
+        // Registers an absolute path in the implicit allowlist without
+        // actually starting (autoStart: false).
+        { name: 'placeholder', recipe: recipePath, autoStart: false },
+      ],
+      socketWaitTimeoutMs: 15_000,
+      readyTimeoutMs: 10_000,
+      gracefulShutdownMs: 5_000,
+      sigtermEscalationMs: 2_000,
+    });
+    await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
+
+    // Run the launch from the recipe's directory so CWD-resolving "recipe.json"
+    // lands on the absolute path registered above.
+    const originalCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      const res = await fleet.handleToolCall({
+        id: 't-relative-allow',
+        name: 'launch',
+        input: { name: 'relauth', recipe: 'recipe.json', dataDir: join(tmpDir, 'relauth') },
+      });
+      expect(res.success).toBe(true);
+      await fleet.handleToolCall({ id: 't-relative-kill', name: 'kill', input: { name: 'relauth' } });
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    await fleet.stop();
+  }, 60_000);
+
   test('allowlist prefix wildcard works', async () => {
     const fleet = new FleetModule({
       childIndexPath: INDEX_PATH,
