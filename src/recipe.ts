@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,7 +117,14 @@ export interface RecipeModules {
    * Recipes outside the allowlist require user approval.
    *
    * Recipe path resolution: relative paths in `children[].recipe` are resolved
-   * against the process CWD (same convention as workspace mounts).
+   * at load time against the directory of the parent recipe file (or URL
+   * base), NOT the process CWD. This lets a recipe bundle live anywhere on
+   * disk and reference its siblings portably. Absolute paths and http(s)
+   * URLs pass through unchanged.
+   *
+   * Note: this differs from runtime paths (workspace mounts, `dataDir`),
+   * which stay CWD-relative because they describe where the running process
+   * puts its state.
    */
   fleet?: boolean | RecipeFleet;
 }
@@ -145,7 +152,13 @@ export interface RecipeFleet {
 
 export interface RecipeFleetChild {
   name: string;
-  /** Recipe path (CWD-relative or absolute) or http(s) URL. */
+  /**
+   * Recipe path or http(s) URL.  Relative paths are resolved at `loadRecipe`
+   * time against the directory of the parent recipe file (or URL base), so
+   * a sibling recipe is referenced by its filename regardless of where the
+   * parent is launched from.  Absolute paths and URLs pass through
+   * unchanged.
+   */
   recipe: string;
   /** Data dir override; default `./data/<name>`. */
   dataDir?: string;
@@ -254,27 +267,62 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
 // ---------------------------------------------------------------------------
 
 /**
+ * Base for resolving recipe-relative paths (currently: `children[].recipe`).
+ * `file` sources use the recipe file's directory; `url` sources use the URL
+ * base so a child like `"child.json"` on an `https://example.com/parent.json`
+ * load resolves to `https://example.com/child.json`.
+ */
+type RecipeSourceBase = { kind: 'file'; dir: string } | { kind: 'url'; base: string };
+
+/**
  * Load a recipe from a URL or local file path.
  * If the systemPrompt value is an HTTP(S) URL, fetches the text.
  * Recipe string values containing `${VAR}` patterns are substituted against
  * `process.env` before validation — see substituteEnvVars().
+ * Relative `modules.fleet.children[].recipe` paths are resolved against the
+ * parent recipe's directory (or URL base) so sibling recipes are portable.
  */
 export async function loadRecipe(source: string): Promise<Recipe> {
   let raw: unknown;
+  let sourceBase: RecipeSourceBase;
 
   if (source.startsWith('http://') || source.startsWith('https://')) {
     const res = await fetch(source);
     if (!res.ok) throw new Error(`Failed to fetch recipe from ${source}: ${res.status} ${res.statusText}`);
     raw = await res.json();
+    sourceBase = { kind: 'url', base: source };
   } else {
     const path = resolve(source);
     if (!existsSync(path)) throw new Error(`Recipe file not found: ${path}`);
     raw = JSON.parse(readFileSync(path, 'utf-8'));
+    sourceBase = { kind: 'file', dir: dirname(path) };
   }
 
   raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
+  resolveChildRecipePaths(recipe, sourceBase);
   return resolveSystemPrompt(recipe);
+}
+
+/**
+ * Resolve a single `children[].recipe` value against the parent recipe's
+ * source base.  Returns unchanged if absolute or http(s) URL.
+ */
+export function resolveRecipeRelative(child: string, base: RecipeSourceBase): string {
+  if (child.startsWith('http://') || child.startsWith('https://')) return child;
+  if (isAbsolute(child)) return child;
+  if (base.kind === 'file') return resolve(base.dir, child);
+  // URL base: resolve the child against the parent URL.
+  return new URL(child, base.base).href;
+}
+
+function resolveChildRecipePaths(recipe: Recipe, base: RecipeSourceBase): void {
+  const fleet = recipe.modules?.fleet;
+  if (!fleet || typeof fleet !== 'object') return;
+  if (!fleet.children) return;
+  for (const child of fleet.children) {
+    child.recipe = resolveRecipeRelative(child.recipe, base);
+  }
 }
 
 /**
