@@ -141,7 +141,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 Optional — **only** if you want the miner to extract from those sources (otherwise remove the relevant `mcpServers` block from `recipes/knowledge-miner.json` and skip these):
 
 ```ini
-# GitLab (knowledge-miner.json: gitlab + gitlab-clone)
+# GitLab (knowledge-miner.json: gitlab)
 GITLAB_TOKEN=glpat-...
 GITLAB_API_URL=https://gitlab.example.com/api/v4
 
