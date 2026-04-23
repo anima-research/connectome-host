@@ -8,3 +8,4 @@ my-recipe.json
 output/
 review-output/
 tsconfig.tsbuildinfo
+dev-start.sh

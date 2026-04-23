@@ -79,6 +79,7 @@ interface ForkInput {
   task: string;
   systemPrompt?: string;
   model?: string;
+  maxTokens?: number;
   sync?: boolean;
   timeoutMs?: number;
 }
@@ -431,7 +432,7 @@ export class SubagentModule implements Module {
             systemPrompt: { type: 'string', description: 'System prompt for the subagent' },
             task: { type: 'string', description: 'The task for the subagent to perform' },
             model: { type: 'string', description: 'Model override (optional)' },
-            maxTokens: { type: 'number', description: 'Max tokens per inference (optional)' },
+            maxTokens: { type: 'number', description: 'Max output tokens per inference (optional). Defaults to the recipe-level subagent default, else the parent agent\'s maxTokens.' },
             tools: {
               type: 'array',
               items: { type: 'string' },
@@ -453,6 +454,7 @@ export class SubagentModule implements Module {
             task: { type: 'string', description: 'Additional task for the fork to perform' },
             systemPrompt: { type: 'string', description: 'Override system prompt (optional, defaults to parent)' },
             model: { type: 'string', description: 'Model override (optional)' },
+            maxTokens: { type: 'number', description: 'Max output tokens per inference (optional). Defaults to the recipe-level subagent default, else the parent agent\'s maxTokens.' },
             sync: { type: 'boolean', description: 'If true, block until fork completes (default: false)' },
             timeoutMs: { type: 'number', description: 'Execution timeout in milliseconds. Sync tasks default to 600s (auto-detaches to background). Async tasks have no default timeout — only set this if you need a hard deadline.' },
           },
@@ -990,6 +992,24 @@ export class SubagentModule implements Module {
   // Execution Timeout
   // =========================================================================
 
+  /**
+   * Resolve a subagent's maxTokens budget through the cascade:
+   *   1. per-call `maxTokens` on the fork/spawn input
+   *   2. recipe-level `defaultMaxTokens` on this module's config
+   *   3. parent agent's `maxTokens` (by default, subagents inherit their caller's budget)
+   *   4. last-resort framework fallback (4096) — only reached if there's no parent at all
+   */
+  private resolveMaxTokens(callMaxTokens: number | undefined, parentAgentName?: string): number {
+    if (callMaxTokens !== undefined) return callMaxTokens;
+    if (this.config.defaultMaxTokens !== undefined) return this.config.defaultMaxTokens;
+    const parentName = parentAgentName ?? this.config.parentAgentName;
+    if (parentName) {
+      const parent = this.framework?.getAgent(parentName);
+      if (parent) return parent.maxTokens;
+    }
+    return 4096;
+  }
+
   private withTimeout<T>(promise: Promise<T>, name: string, timeoutMs?: number): Promise<T> {
     if (timeoutMs === undefined) return promise;
     return Promise.race([
@@ -1303,7 +1323,7 @@ export class SubagentModule implements Module {
           name: agentName,
           model,
           systemPrompt: input.systemPrompt,
-          maxTokens: input.maxTokens ?? this.config.defaultMaxTokens ?? 4096,
+          maxTokens: this.resolveMaxTokens(input.maxTokens, _callerAgentName),
           maxStreamTokens: 200_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,
@@ -1450,7 +1470,7 @@ export class SubagentModule implements Module {
           name: agentName,
           model,
           systemPrompt,
-          maxTokens: this.config.defaultMaxTokens ?? 4096,
+          maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
           maxStreamTokens: 200_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,

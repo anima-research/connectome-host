@@ -17,7 +17,8 @@
 
 import { Membrane, AnthropicAdapter, NativeFormatter } from '@animalabs/membrane';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
+import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
@@ -26,6 +27,7 @@ import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
+import { ActivityModule } from './modules/activity-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { generateSessionName } from './synesthete.js';
@@ -126,7 +128,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     subagentModule = new SubagentModule({
       parentAgentName: agentName,
       defaultModel: subagentConfig.defaultModel || model,
-      defaultMaxTokens: 4096,
+      defaultMaxTokens: subagentConfig.defaultMaxTokens,
     });
     moduleInstances.push(subagentModule);
   }
@@ -230,29 +232,48 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     moduleInstances.push(workspaceModule);
   }
 
-  // -- Build MCP server list (recipe + file, file wins on conflict) --
+  // Activity (typing indicators) — opt-in per recipe
+  let activityModule: ActivityModule | null = null;
+  if (modules.activity !== undefined && modules.activity !== false) {
+    const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
+    activityModule = new ActivityModule({ initialChannels: activityConfig.channels });
+    moduleInstances.push(activityModule);
+  }
+
+  // -- Build MCP server list --
+  //
+  // Recipes are opt-in: a file entry from mcpl-servers.json is loaded only
+  // when the recipe references its id under `mcpServers`. Credentials and
+  // the spawn command come from the file; the recipe entry can override
+  // policy fields (channelSubscription, toolPrefix, feature-set toggles,
+  // reconnect). Recipes can also define new servers the file doesn't have
+  // by supplying `command` or `url` themselves.
+  //
+  // The previous behavior loaded every file server for every recipe, which
+  // silently flooded focused recipes (conductor, reviewer) with traffic
+  // from channels the agent never asked to listen to.
   const recipeServers = recipe.mcpServers ?? {};
   const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
-  const fileServerIds = new Set(fileServers.map(s => s.id));
+  const fileServersById = new Map(fileServers.map(s => [s.id, s]));
 
-  // Convert recipe servers to McplServerConfig shape
-  const recipeServerList = Object.entries(recipeServers)
-    .filter(([id]) => !fileServerIds.has(id)) // file wins on conflict
-    .filter(([, entry]) => entry.command) // must have a command
-    .map(([id, entry]) => ({ id, ...entry, command: entry.command! }));
-
-  // Overlay recipe-level `channelSubscription` onto file servers. Credentials
-  // live in mcpl-servers.json (gitignored), but subscription policy is
-  // recipe-level intent and must not be silently dropped on id collision.
-  const mergedFileServers = fileServers.map(s => {
-    const recipeEntry = recipeServers[s.id];
-    if (recipeEntry?.channelSubscription !== undefined && s.channelSubscription === undefined) {
-      return { ...s, channelSubscription: recipeEntry.channelSubscription };
+  const allServers: Array<{ id: string; command: string; [k: string]: unknown }> = [];
+  for (const [id, recipeEntry] of Object.entries(recipeServers)) {
+    const fileEntry = fileServersById.get(id);
+    if (fileEntry) {
+      const merged: Record<string, unknown> = { ...fileEntry };
+      if (recipeEntry.channelSubscription !== undefined) merged.channelSubscription = recipeEntry.channelSubscription;
+      if (recipeEntry.toolPrefix !== undefined) merged.toolPrefix = recipeEntry.toolPrefix;
+      if (recipeEntry.enabledFeatureSets !== undefined) merged.enabledFeatureSets = recipeEntry.enabledFeatureSets;
+      if (recipeEntry.disabledFeatureSets !== undefined) merged.disabledFeatureSets = recipeEntry.disabledFeatureSets;
+      if (recipeEntry.enabledTools !== undefined) merged.enabledTools = recipeEntry.enabledTools;
+      if (recipeEntry.disabledTools !== undefined) merged.disabledTools = recipeEntry.disabledTools;
+      if (recipeEntry.reconnect !== undefined) merged.reconnect = recipeEntry.reconnect;
+      if (recipeEntry.reconnectIntervalMs !== undefined) merged.reconnectIntervalMs = recipeEntry.reconnectIntervalMs;
+      allServers.push(merged as { id: string; command: string; [k: string]: unknown });
+    } else if (recipeEntry.command || recipeEntry.url) {
+      allServers.push({ id, ...recipeEntry, command: recipeEntry.command! } as { id: string; command: string; [k: string]: unknown });
     }
-    return s;
-  });
-
-  const allServers = [...recipeServerList, ...mergedFileServers];
+  }
 
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
@@ -293,6 +314,10 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
   // Wire post-creation hooks
   if (subagentModule) {
     subagentModule.setFramework(framework);
+  }
+
+  if (activityModule) {
+    activityModule.setFramework(framework);
   }
 
   if (workspaceModule) {
@@ -344,6 +369,44 @@ function setupSynesthete(app: AppContext): void {
       }
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// MCPL subprocess stderr log — receipts for "why did that MCPL server break"
+// ---------------------------------------------------------------------------
+
+const MCPL_STDERR_LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB; rolls to .1 on overflow.
+
+function setupMcplStderrLog(app: AppContext, storePath: string): void {
+  const dir = join(storePath, 'mcpl-stderr');
+  // Best-effort directory creation — if it fails, per-write attempts will too,
+  // and we'll swallow those quietly. We don't want logging to be load-bearing.
+  void mkdir(dir, { recursive: true }).catch(() => {});
+
+  app.framework.onTrace((event) => {
+    if (event.type !== 'mcpl:server-stderr') return;
+    const e = event as unknown as { serverId: string; line: string; timestamp: number };
+    const iso = new Date(e.timestamp).toISOString();
+    // basename guards against a misconfigured serverId like "../foo" escaping dir.
+    const path = join(dir, `${basename(e.serverId)}.log`);
+    const entry = `${iso} ${e.line}\n`;
+    void rotateIfNeeded(path, entry.length)
+      .then(() => appendFile(path, entry))
+      .catch(() => {
+        // If logging itself fails, don't cascade.
+      });
+  });
+}
+
+async function rotateIfNeeded(path: string, incomingBytes: number): Promise<void> {
+  try {
+    const s = await stat(path);
+    if (s.size + incomingBytes > MCPL_STDERR_LOG_MAX_BYTES) {
+      await rename(path, `${path}.1`);
+    }
+  } catch {
+    // No existing file (or stat failed) — nothing to rotate.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -496,11 +559,13 @@ async function main() {
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
       setupSynesthete(this);
+      setupMcplStderrLog(this, newStorePath);
     },
   };
 
   framework.start();
   setupSynesthete(app);
+  setupMcplStderrLog(app, storePath);
 
   if (headless) {
     const { runHeadless } = await import('./headless.js');
