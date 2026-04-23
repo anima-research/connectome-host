@@ -25,7 +25,6 @@
       "channelSubscription": "manual",
       "source": {
         "url": "https://github.com/antra-tess/zulip_mcp.git",
-        "ref": "refs/pull/3/head",
         "install": "npm",
         "inContainer": {
           "path": "/zulip-mcp"
