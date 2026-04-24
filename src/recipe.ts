@@ -355,31 +355,43 @@ export const DEFAULT_RECIPE: Recipe = {
  * before schema validation, so secrets can live in `.env` (gitignored) while
  * the recipe itself stays commit-safe.
  *
- * Pattern:
- *   - `${FOO}` where `FOO` is `[A-Za-z_][A-Za-z0-9_]*`.
+ * Patterns:
+ *   - `${FOO}` — required.  Throws if FOO is unset (empty string OK).
+ *   - `${FOO:-default}` — optional.  Uses FOO when set and non-empty,
+ *     otherwise the literal default text.  Default may be empty
+ *     (`${FOO:-}`) to mean "use FOO or just empty string, never throw".
+ *   - VAR name: `[A-Za-z_][A-Za-z0-9_]*`.
+ *   - Default text: any chars except `}`.  No nested `${...}` parsing
+ *     and no escape syntax — keep recipes JSON-friendly.
  *   - Multiple occurrences in a single string are all substituted.
  *   - Non-string values (numbers, booleans, nulls) pass through unchanged.
  *   - Arrays and objects are walked recursively.
- *   - A missing env var throws with a message that names the variable and
- *     the recipe source, plus the advice to either set it or delete the
- *     section of the recipe that references it.
  *
  * No escape syntax yet — a literal `${...}` in recipe JSON is not a supported
  * case.  If that becomes needed, add `$$` → `$` unwrapping as a pre-pass.
  */
 export function substituteEnvVars(value: unknown, source: string): unknown {
   if (typeof value === 'string') {
-    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
-      const v = process.env[name];
-      if (v === undefined) {
-        throw new Error(
-          `Recipe "${source}" references environment variable \${${name}} which is not set. ` +
-          `Add it to your .env file, or delete the section of the recipe that uses it ` +
-          `(e.g. remove the mcpServers entry for a source you don't have).`,
-        );
-      }
-      return v;
-    });
+    return value.replace(
+      /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g,
+      (_match, name: string, defaultValue: string | undefined) => {
+        const v = process.env[name];
+        if (defaultValue !== undefined) {
+          // ${VAR:-default} — use VAR if set + non-empty, else default.
+          return v !== undefined && v !== '' ? v : defaultValue;
+        }
+        // ${VAR} — required; empty string is allowed if explicitly set.
+        if (v === undefined) {
+          throw new Error(
+            `Recipe "${source}" references environment variable \${${name}} which is not set. ` +
+            `Add it to your .env file, supply a default with \${${name}:-...}, ` +
+            `or delete the section of the recipe that uses it ` +
+            `(e.g. remove the mcpServers entry for a source you don't have).`,
+          );
+        }
+        return v;
+      },
+    );
   }
   if (Array.isArray(value)) {
     return value.map((v) => substituteEnvVars(v, source));

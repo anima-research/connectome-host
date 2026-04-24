@@ -120,4 +120,38 @@ describe('loadRecipe — end-to-end with env substitution', () => {
 
     await expect(loadRecipe(recipePath)).rejects.toThrow(/NEVER_SET/);
   });
+
+  describe('${VAR:-default} syntax', () => {
+    test('uses default when var unset', () => {
+      delete process.env.LATER_SET;
+      expect(substituteEnvVars('${LATER_SET:-fallback}', 't')).toBe('fallback');
+    });
+
+    test('uses default when var is empty string', () => {
+      process.env.EMPTY_VAR = '';
+      expect(substituteEnvVars('${EMPTY_VAR:-fallback}', 't')).toBe('fallback');
+    });
+
+    test('uses var value when set and non-empty', () => {
+      process.env.SET_VAR = 'real-value';
+      expect(substituteEnvVars('${SET_VAR:-fallback}', 't')).toBe('real-value');
+    });
+
+    test('empty default is allowed', () => {
+      delete process.env.OPTIONAL_VAR;
+      expect(substituteEnvVars('${OPTIONAL_VAR:-}', 't')).toBe('');
+    });
+
+    test('does NOT throw on unset var with default', () => {
+      delete process.env.NEVER_SET;
+      expect(() => substituteEnvVars('${NEVER_SET:-default}', 't')).not.toThrow();
+    });
+
+    test('mixed default + required in same string', () => {
+      delete process.env.HOST;
+      delete process.env.PORT;
+      process.env.HOST = 'example.com';
+      expect(substituteEnvVars('${HOST}:${PORT:-21}', 't')).toBe('example.com:21');
+    });
+  });
 });
