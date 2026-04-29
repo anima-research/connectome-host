@@ -139,7 +139,7 @@ export class AgentTreeReducer {
         const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
         for (const call of calls) {
           this.callIdIndex.set(call.id, e.agentName);
-          // Edge inference: subagent--spawn / subagent--fork / fleet--spawn tool calls
+          // Edge inference: subagent--spawn / subagent--fork / fleet--launch tool calls
           // create a parent edge from the calling agent to the child.
           if (call.name === 'subagent--spawn' || call.name === 'subagent--fork') {
             const childName = (call.input as SpawnCallInput | undefined)?.name;
@@ -152,7 +152,7 @@ export class AgentTreeReducer {
               else if (inp?.prompt) child.task = inp.prompt;
               if (child.startedAt === undefined) child.startedAt = ts;
             }
-          } else if (call.name === 'fleet--spawn') {
+          } else if (call.name === 'fleet--launch') {
             const childName = (call.input as SpawnCallInput | undefined)?.name;
             if (childName) {
               const child = this.ensureNode(childName, 'framework');

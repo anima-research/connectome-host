@@ -191,6 +191,26 @@ Phase 6 (invariant) — independent, land any time
 
 Phase 2 is now the keystone. Phase 1 simplifies dramatically once Phase 2 exists (`describe` handler is one line: `emit(reducer.getTree())`). Phases 1 and 4 can be done in parallel after Phase 2. Phase 3 needs both. Phase 5 needs 3.
 
+## Implementation outcome (all phases shipped)
+
+**Phase 0** — investigations completed, plan adjusted (`peek()` ruled out as snapshot source; reducer became the keystone; namespacing confirmed mechanical).
+
+**Phase 1** — `describe` IncomingCommand + `snapshot` WireEvent in `fleet-types.ts`; `headless.ts` runs a long-lived reducer subscribed to `framework.onTrace` from startup, seeded with `framework.getAllAgents()`; `describe` handler emits the reducer's snapshot exempt from subscription filtering.
+
+**Phase 2** — `src/state/agent-tree-reducer.ts` with the full canonical fold (phase transitions, token semantics, parent-edge inference for `subagent--spawn`/`fork` and `fleet--launch`, callId routing for tool events, snapshot apply with deep-copy safety, lazy node creation).
+
+**Phase 3** — `src/state/fleet-tree-aggregator.ts` owns one reducer per fleet child + one local; orchestrates `describe` at sync points (registration, `lifecycle:ready`); drops events with `ts < lastSnapshotTs`; clean read API for the TUI.
+
+**Phase 4** — pragmatically reduced. The aggregator's per-child reducers are *already namespaced* by construction (one reducer per scope), so the local TUI maps stayed as-is. Only the `FleetNode` shape grew a `kind` discriminator (`researcher` | `subagent` | `fleet-child` | `fleet-child-agent`), and `renderNode` switches data sources by kind. No rewrites to the existing 50-60 sites; the namespacing happened at the *data source*, not at the rendering call sites.
+
+**Phase 5** — `buildFleetTree()` appends fleet-child header nodes as additional descendants of the researcher root, each carrying a subtree built from the aggregator's per-child nodes. Auto-expanded on first display. Same `renderNode` handles all four node kinds. Peek/stop key bindings dispatch by node-id prefix (`proc:NAME` for headers, `NAME:agent` for agents-inside-children). The `processes` view is preserved as an alternate raw-status view; the unified tree lives in `fleet`.
+
+**Phase 6** — `FleetModule.handleLaunch` rejects nested-fleet recipes before subprocess spawn, narrowly (only on confirmed-loaded recipes that declare a `fleet` module), with a clear error message pointing to this plan. Documented in HEADLESS-FLEET-PLAN.md decision §13.
+
+**Test coverage**: 38 new tests across reducer, aggregator, describe IPC, fleet-launch edge inference, no-subfleets invariant, and an e2e integration that wires real spawn → real IPC → reducer-populated tree. Full suite: 157 pass / 0 fail.
+
+**Out of scope (left as designed)**: subfleets, snapshot delta-events, cross-child unified timeline, snapshot checksums. Late-attach replay gap accepted.
+
 ## Out of scope (deliberately)
 
 - **Subfleets.** Phase 6 forbids them. The wire protocol stays compatible with a future `via:` re-broadcast scheme if the requirement ever appears.

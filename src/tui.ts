@@ -32,6 +32,8 @@ import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
 import type { AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
+import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
+import type { AgentNode } from './state/agent-tree-reducer.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
@@ -89,16 +91,24 @@ interface TuiState {
 // Fleet tree types
 // ---------------------------------------------------------------------------
 
+type FleetNodeKind = 'researcher' | 'subagent' | 'fleet-child' | 'fleet-child-agent';
+
 interface FleetNode {
-  /** Short display name */
+  /** Short display name (used as key in expandedNodes / visibleNodeIds). */
   name: string;
-  /** Full agent name (for lookups in transcript/token maps) */
+  /** Full agent name (for lookups in transcript/token maps). */
   fullName: string;
-  /** Whether this is the root researcher node */
+  /** What this node represents — drives renderer behavior. */
+  kind: FleetNodeKind;
+  /** Legacy alias kept for callers that still check this; equivalent to kind === 'researcher'. */
   isResearcher: boolean;
-  /** ActiveSubagent data (undefined for researcher) */
+  /** ActiveSubagent data — only set for kind='subagent'. */
   agent?: ActiveSubagent;
-  /** Child nodes */
+  /** Reducer node from FleetTreeAggregator — set for kind='fleet-child-agent'. */
+  reducerNode?: AgentNode;
+  /** Fleet child name — set for kind='fleet-child' (the process header) and inherited
+   *  by descendants of that header so peek/stop know which child they target. */
+  fleetChildName?: string;
   children: FleetNode[];
 }
 
@@ -441,6 +451,9 @@ export async function runTui(app: AppContext): Promise<void> {
   // ── Fleet tree view ────────────────────────────────────────────────
 
   const expandedNodes = new Set<string>([rootAgentName]);
+  /** Tracks fleet-child header IDs we've seen so we only auto-expand once per
+   *  child (a manual collapse afterward sticks). */
+  const seenFleetHeaders = new Set<string>();
   let fleetCursor = 0;
   /** Ordered list of node IDs in current rendering (for cursor navigation). */
   let visibleNodeIds: string[] = [];
@@ -449,6 +462,7 @@ export async function runTui(app: AppContext): Promise<void> {
     const root: FleetNode = {
       name: rootAgentName,
       fullName: rootAgentName,
+      kind: 'researcher',
       isResearcher: true,
       children: [],
     };
@@ -460,6 +474,7 @@ export async function runTui(app: AppContext): Promise<void> {
       const node: FleetNode = {
         name: sa.name,
         fullName,
+        kind: 'subagent',
         isResearcher: false,
         agent: sa,
         children: [],
@@ -496,7 +511,58 @@ export async function runTui(app: AppContext): Promise<void> {
     };
     sortChildren(root.children);
 
+    // Append fleet children as additional descendants of the researcher root.
+    // Each fleet-child header carries a subtree built from its AgentTreeReducer:
+    // top-level framework agents become direct children of the header, with
+    // any subagents they spawned (visible via their parent edge) nested below.
+    if (treeAggregator && fleetMod) {
+      for (const fc of fleetMod.getChildren().values()) {
+        const reducerNodes = treeAggregator.getChildNodes(fc.name);
+        const childTreeRoots: FleetNode[] = reducerNodes
+          .filter(n => n.parent === undefined)
+          .map(n => buildAggregatorSubtree(n, reducerNodes, fc.name));
+        const headerKey = `proc:${fc.name}`;
+        // Auto-expand a fleet-child header the first time it's rendered so the
+        // user sees its agents without an extra keystroke. Subsequent toggles
+        // (manual collapse / re-expand) are persisted via expandedNodes as
+        // usual; we only seed once per header name.
+        if (!seenFleetHeaders.has(headerKey)) {
+          seenFleetHeaders.add(headerKey);
+          expandedNodes.add(headerKey);
+        }
+        const headerNode: FleetNode = {
+          name: headerKey,
+          fullName: fc.name,
+          kind: 'fleet-child',
+          isResearcher: false,
+          fleetChildName: fc.name,
+          children: childTreeRoots,
+        };
+        root.children.push(headerNode);
+      }
+    }
+
     return root;
+  }
+
+  /** Build a FleetNode subtree from an AgentTreeReducer node and its descendants. */
+  function buildAggregatorSubtree(
+    rootReducerNode: AgentNode,
+    allNodes: AgentNode[],
+    fleetChildName: string,
+  ): FleetNode {
+    const node: FleetNode = {
+      name: `${fleetChildName}:${rootReducerNode.name}`,
+      fullName: rootReducerNode.name,
+      kind: 'fleet-child-agent',
+      isResearcher: false,
+      reducerNode: rootReducerNode,
+      fleetChildName,
+      children: allNodes
+        .filter(n => n.parent === rootReducerNode.name)
+        .map(child => buildAggregatorSubtree(child, allNodes, fleetChildName)),
+    };
+    return node;
   }
 
   function renderNode(node: FleetNode, depth: number, lines: FleetLine[]): void {
@@ -506,9 +572,9 @@ export async function runTui(app: AppContext): Promise<void> {
 
     // Determine node color based on status
     let nodeColor: string;
-    if (node.isResearcher) {
+    if (node.kind === 'researcher') {
       nodeColor = state.status === 'idle' ? GRAY : WHITE;
-    } else {
+    } else if (node.kind === 'subagent') {
       const sa = node.agent!;
       if (sa.status === 'running') {
         const phase = subagentPhase.get(sa.name) ?? 'sending';
@@ -516,20 +582,32 @@ export async function runTui(app: AppContext): Promise<void> {
       } else {
         nodeColor = sa.status === 'failed' ? RED : DIM_GRAY;
       }
+    } else if (node.kind === 'fleet-child') {
+      const fc = fleetMod?.getChildren().get(node.fleetChildName!);
+      nodeColor = fc?.status === 'ready' ? CYAN
+        : fc?.status === 'starting' ? YELLOW
+        : fc?.status === 'crashed' ? RED
+        : DIM_GRAY;
+    } else {
+      // fleet-child-agent
+      const rn = node.reducerNode!;
+      if (rn.status === 'failed') nodeColor = RED;
+      else if (rn.phase === 'idle' || rn.phase === 'done') nodeColor = DIM_GRAY;
+      else nodeColor = PHASE_COLOR[rn.phase as SubagentPhase] ?? GRAY;
     }
 
     // Dimmer variant for detail/child lines
-    const detailColor = node.isResearcher
+    const detailColor = node.kind === 'researcher'
       ? (state.status === 'idle' ? DIM_GRAY : GRAY)
-      : (node.agent?.status === 'running' ? GRAY : DIM_GRAY);
+      : (node.kind === 'subagent' && node.agent?.status === 'running' ? GRAY : DIM_GRAY);
 
     // Status tag
     let statusTag: string;
-    if (node.isResearcher) {
+    if (node.kind === 'researcher') {
       statusTag = state.status === 'idle' ? '✓ idle'
         : state.status === 'error' ? '✗ error'
         : `… ${state.status}`;
-    } else {
+    } else if (node.kind === 'subagent') {
       const sa = node.agent!;
       const endTime = sa.completedAt ?? Date.now();
       const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
@@ -539,10 +617,25 @@ export async function runTui(app: AppContext): Promise<void> {
         const phase = subagentPhase.get(sa.name) ?? 'sending';
         statusTag = `${phase} ${elapsed}s`;
       }
+    } else if (node.kind === 'fleet-child') {
+      const fc = fleetMod?.getChildren().get(node.fleetChildName!);
+      const elapsed = fc ? Math.floor((Date.now() - fc.startedAt) / 1000) : 0;
+      statusTag = fc ? `${fc.status} ${elapsed}s` : 'unknown';
+    } else {
+      // fleet-child-agent
+      const rn = node.reducerNode!;
+      const elapsed = rn.startedAt ? Math.floor(((rn.completedAt ?? Date.now()) - rn.startedAt) / 1000) : 0;
+      statusTag = `${rn.phase} ${elapsed}s`;
     }
 
-    // Context size (try fullName, then short name)
-    const ctxTokens = agentContextTokens.get(node.fullName) ?? agentContextTokens.get(node.name);
+    // Context size: local maps for researcher/subagent, reducer node for fleet-child-agent.
+    let ctxTokens: number | undefined;
+    if (node.kind === 'fleet-child-agent') {
+      const v = node.reducerNode?.tokens.input;
+      if (typeof v === 'number' && v > 0) ctxTokens = v;
+    } else if (node.kind !== 'fleet-child') {
+      ctxTokens = agentContextTokens.get(node.fullName) ?? agentContextTokens.get(node.name);
+    }
     const ctxStr = ctxTokens ? ` ${fmtK(ctxTokens)}ctx` : '';
 
     // Compression stats (researcher only — we can access the strategy)
@@ -572,12 +665,28 @@ export async function runTui(app: AppContext): Promise<void> {
     // Contextual key hints on the cursor line
     let hints = '';
     if (isCursor) {
-      const canPeek = !node.isResearcher && node.agent?.status === 'running';
-      hints = canPeek ? '  ⏎:fold p:peek Del:stop' : '  ⏎:fold';
+      if (node.kind === 'subagent' && node.agent?.status === 'running') {
+        hints = '  ⏎:fold p:peek Del:stop';
+      } else if (node.kind === 'fleet-child') {
+        const fc = fleetMod?.getChildren().get(node.fleetChildName!);
+        hints = fc?.status === 'ready' ? '  ⏎:fold p:peek Del:stop' : '  ⏎:fold';
+      } else if (node.kind === 'fleet-child-agent') {
+        // Per-agent peek isn't separately supported yet; peek opens the
+        // owning child process's stream, which still contains this agent's events.
+        hints = '  ⏎:fold p:peek-proc';
+      } else {
+        hints = '  ⏎:fold';
+      }
     }
 
+    // Display name: strip the namespace prefix added in buildAggregatorSubtree
+    // so fleet-child agents read as their bare names ('commander', not 'miner:commander').
+    const displayName = node.kind === 'fleet-child-agent' ? node.fullName
+      : node.kind === 'fleet-child' ? `▣ ${node.fleetChildName}`
+      : node.name;
+
     lines.push({
-      text: `${cursor} ${indent}${marker} ${node.name}  [${statusTag}]${ctxStr}${compStr}${hints}`,
+      text: `${cursor} ${indent}${marker} ${displayName}  [${statusTag}]${ctxStr}${compStr}${hints}`,
       color: nodeColor,
     });
 
@@ -586,10 +695,10 @@ export async function runTui(app: AppContext): Promise<void> {
     // Detail lines (indented further)
     const detail = indent + '    ';
 
-    if (node.isResearcher && state.tool) {
+    if (node.kind === 'researcher' && state.tool) {
       lines.push({ text: `  ${detail}tool: ${state.tool}`, color: detailColor });
     }
-    if (!node.isResearcher && node.agent) {
+    if (node.kind === 'subagent' && node.agent) {
       const sa = node.agent;
       // Truncate task to 60 chars
       const task = sa.task.length > 60 ? sa.task.slice(0, 57) + '...' : sa.task;
@@ -598,9 +707,32 @@ export async function runTui(app: AppContext): Promise<void> {
         lines.push({ text: `  ${detail}tool: ${sa.statusMessage} (${sa.toolCallsCount} calls)`, color: detailColor });
       }
     }
+    if (node.kind === 'fleet-child') {
+      const fc = fleetMod?.getChildren().get(node.fleetChildName!);
+      if (fc) {
+        lines.push({ text: `  ${detail}pid: ${fc.pid ?? '-'}  events: ${fc.events.length}`, color: detailColor });
+        if (fc.exitReason && fc.status !== 'ready' && fc.status !== 'starting') {
+          lines.push({ text: `  ${detail}${fc.exitReason}`, color: detailColor });
+        }
+      }
+    }
+    if (node.kind === 'fleet-child-agent' && node.reducerNode) {
+      const rn = node.reducerNode;
+      if (rn.toolCallsCount > 0) {
+        lines.push({ text: `  ${detail}tools: ${rn.toolCallsCount} calls`, color: detailColor });
+      }
+      if (rn.task) {
+        const task = rn.task.length > 60 ? rn.task.slice(0, 57) + '...' : rn.task;
+        lines.push({ text: `  ${detail}task: ${task}`, color: detailColor });
+      }
+    }
 
-    // Synesthete summary
-    const fullName = node.isResearcher ? rootAgentName
+    // Synesthete summary — only meaningful for nodes whose transcripts we own
+    // locally (researcher + local subagents). Fleet-child agents transcribe to
+    // their own process; we don't have their text here.
+    const fullName = node.kind === 'fleet-child' || node.kind === 'fleet-child-agent'
+      ? null
+      : node.kind === 'researcher' ? rootAgentName
       : [...agentTranscripts.keys()].find(k => k.includes(node.name));
     if (fullName) {
       const summary = summaryCache.get(fullName);
@@ -970,6 +1102,12 @@ export async function runTui(app: AppContext): Promise<void> {
   function onTrace(event: Record<string, unknown>) {
     const agent = event.agentName as string | undefined;
 
+    // Feed the aggregator's local reducer alongside the existing TUI fold.
+    // The local reducer is the authoritative source for fleet--launch parent
+    // edges (Phase 4); it also keeps a unified-tree view of local-process
+    // state available for future rendering changes without further refactors.
+    if (treeAggregator) treeAggregator.applyLocalEvent(event as { type: string });
+
     switch (event.type) {
       case 'inference:started': {
         if (agent === rootAgentName) {
@@ -1219,6 +1357,26 @@ export async function runTui(app: AppContext): Promise<void> {
   let subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
   let fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
 
+  // FleetTreeAggregator owns one AgentTreeReducer per fleet child plus a local
+  // one. Drives the unified subagent-tree rendering: fleet children appear as
+  // first-class nodes alongside in-process subagents, with the same readouts
+  // (phase, context tokens, tool calls). See UNIFIED-TREE-PLAN.md.
+  const treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
+  if (treeAggregator) {
+    treeAggregator.seedLocalAgents(app.framework.getAllAgents().map(a => a.name));
+    // Register any fleet children that already exist (e.g. autoStart entries
+    // brought up before TUI init, or reattached survivors after parent restart).
+    for (const childName of fleetMod!.getChildren().keys()) {
+      treeAggregator.registerChild(childName);
+    }
+    // Re-render fleet view when any tracked tree changes — gives live updates
+    // without polling. The 'local' updates are already covered by the existing
+    // onTrace path's updateFleetView call sites; this catches per-child updates.
+    treeAggregator.onTreeUpdate((scope) => {
+      if (scope !== 'local' && state.viewMode === 'fleet') updateFleetView();
+    });
+  }
+
   // Per-child event log (analogue of peekLogs but for child processes).
   const procPeekLogs = new Map<string, FleetLine[]>();
   // In-progress token line buffer per child (flushed to log on newline / next event).
@@ -1388,6 +1546,14 @@ export async function runTui(app: AppContext): Promise<void> {
       else if (state.viewMode === 'peek') updatePeekView();
     }
     if (fleetMod) {
+      // Pick up fleet children that were launched after TUI init so the
+      // aggregator can request describe + start folding their event stream.
+      if (treeAggregator) {
+        const known = new Set(treeAggregator.getAllChildNames());
+        for (const name of fleetMod.getChildren().keys()) {
+          if (!known.has(name)) treeAggregator.registerChild(name);
+        }
+      }
       if (state.viewMode === 'processes') updateProcessesView();
       else if (state.viewMode === 'peek-proc') updatePeekProcView();
     }
@@ -1555,17 +1721,39 @@ export async function runTui(app: AppContext): Promise<void> {
       } else if (key.name === 'p') {
         const nodeId = visibleNodeIds[fleetCursor];
         if (nodeId && nodeId !== rootAgentName) {
-          enterPeek(nodeId);
+          // Route by node prefix: 'proc:NAME' = fleet-child header, 'NAME:agent' =
+          // fleet-child-agent (peek the owning process), bare = local subagent.
+          if (nodeId.startsWith('proc:')) {
+            enterPeekProc(nodeId.slice('proc:'.length));
+            switchView('peek-proc');
+          } else if (nodeId.includes(':')) {
+            const [childName] = nodeId.split(':', 1);
+            if (childName) {
+              enterPeekProc(childName);
+              switchView('peek-proc');
+            }
+          } else {
+            enterPeek(nodeId);
+          }
         }
       } else if (key.name === 'delete' || key.name === 'backspace') {
         const nodeId = visibleNodeIds[fleetCursor];
         if (nodeId && nodeId !== rootAgentName) {
-          const sa = state.subagents.find(s => s.name === nodeId);
-          if (sa?.status === 'running' && subMod) {
-            if (subMod.cancelSubagent(nodeId)) {
-              addLine(`  ■ [${nodeId}] stopped by user`, YELLOW);
+          if (nodeId.startsWith('proc:') && fleetMod) {
+            const childName = nodeId.slice('proc:'.length);
+            fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } })
+              .then(() => updateFleetView())
+              .catch(() => { /* error surfaces in status */ });
+          } else if (!nodeId.includes(':')) {
+            const sa = state.subagents.find(s => s.name === nodeId);
+            if (sa?.status === 'running' && subMod) {
+              if (subMod.cancelSubagent(nodeId)) {
+                addLine(`  ■ [${nodeId}] stopped by user`, YELLOW);
+              }
             }
           }
+          // fleet-child-agent: no per-agent stop yet (would need the child to
+          // expose a cancel command over IPC). Future work.
         }
       }
     }
@@ -1740,6 +1928,7 @@ export async function runTui(app: AppContext): Promise<void> {
   function cleanup() {
     cleanupPeek();
     cleanupPeekProc();
+    treeAggregator?.dispose();
     for (const unsub of subagentStreamUnsubs) unsub();
     clearInterval(pollTimer);
     app.framework.offTrace(onTrace as (e: unknown) => void);

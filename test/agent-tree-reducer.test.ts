@@ -146,14 +146,14 @@ describe('AgentTreeReducer', () => {
     expect(r.getNode('side-quest')!.subagentType).toBe('fork');
   });
 
-  test('fleet--spawn tool call creates a framework-kind child', () => {
+  test('fleet--launch tool call creates a framework-kind child', () => {
     const r = new AgentTreeReducer();
     r.applyEvent({
       type: 'inference:tool_calls_yielded',
       agentName: 'conductor',
       calls: [{
         id: 'c1',
-        name: 'fleet--spawn',
+        name: 'fleet--launch',
         input: { name: 'miner-1', recipe: 'knowledge-miner.json' },
       }],
       timestamp: ts(0),
