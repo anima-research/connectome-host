@@ -34,6 +34,7 @@ import { connect as netConnect, type Socket } from 'node:net';
 import { existsSync, mkdirSync, unlinkSync, openSync, closeSync, appendFileSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { type IncomingCommand, type WireEvent, matchesSubscription } from './fleet-types.js';
+import { loadRecipe } from '../recipe.js';
 
 export type FleetEventCallback = (childName: string, event: WireEvent) => void;
 
@@ -841,6 +842,36 @@ export class FleetModule implements Module {
       ? input.recipe
       : resolve(process.cwd(), input.recipe);
 
+    // No-subfleets invariant: a fleet child may not itself declare a fleet
+    // module. Enforced before subprocess spawn so the failure mode is a clean
+    // synchronous tool error rather than a child crashing mid-startup. See
+    // UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
+    // unified tree's cross-process visibility tractable).
+    //
+    // We only fail on a *confirmed* nested-fleet declaration. If the recipe
+    // can't be loaded for any other reason (file missing, unfetchable URL,
+    // malformed JSON, mock-test recipes), let the existing spawn path surface
+    // that failure naturally — pre-empting it here would mask test fixtures
+    // and unrelated misconfigurations.
+    try {
+      const childRecipe = await loadRecipe(recipePath);
+      const fleetField = childRecipe.modules?.fleet;
+      const declaresFleet = fleetField === true ||
+        (typeof fleetField === 'object' && fleetField !== null);
+      if (declaresFleet) {
+        return {
+          success: false,
+          isError: true,
+          error:
+            `fleet child recipe '${input.name}' (${recipePath}) declares its own 'fleet' module; ` +
+            `nested fleets are not supported. Remove the 'fleet' entry from that recipe's modules ` +
+            `to launch it as a child. (See UNIFIED-TREE-PLAN.md §6.)`,
+        };
+      }
+    } catch {
+      // Recipe couldn't be loaded — defer to the natural spawn-time failure.
+    }
+
     const dataDir = input.dataDir
       ? (isAbsolute(input.dataDir) ? input.dataDir : resolve(process.cwd(), input.dataDir))
       : resolve(process.cwd(), 'data', input.name);
@@ -1406,6 +1437,26 @@ export class FleetModule implements Module {
       throw new Error(`Child '${child.name}' has no socket`);
     }
     child.socket.write(JSON.stringify(cmd) + '\n');
+  }
+
+  /**
+   * Request a state snapshot from a fleet child. The child responds with a
+   * single `snapshot` event over its event stream (received via onChildEvent).
+   * Used as a recovery verb at sync points — TUI cold start, child reconnect,
+   * after restart. See UNIFIED-TREE-PLAN.md §3.
+   *
+   * Returns true if the request was sent, false if the child has no socket
+   * (e.g. exited or not yet ready).
+   */
+  requestDescribe(childName: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try {
+      this.sendToChild(child, { type: 'describe', corrId });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async killChild(child: FleetChild): Promise<void> {

@@ -95,6 +95,10 @@ Run the Knowledge Mining Triumvirate (miner / reviewer / clerk) as a single orch
 **Q:** stdio pipes or sockets? (Derived from #9)
 **A:** Unix domain socket at `{DATA_DIR}/ipc.sock`. Stdio would die with the parent and preclude adoption-on-restart. Children use `detached: true` + `stdio: 'ignore'` so they survive parent death; stdout/stderr go to `{DATA_DIR}/headless.log`.
 
+### 13. Nested fleets
+**Q:** Can a fleet child itself declare a `fleet` module and supervise grandchildren?
+**A:** No. Depth-1 invariant enforced by `FleetModule.handleLaunch()`: the child's recipe is loaded and validated before subprocess spawn; if it declares `modules.fleet` (true or object), the launch is rejected with a clear error. This keeps cross-process tree visibility tractable for the unified TUI rendering — the grandparent never needs to peer through the parent to discover grandchildren. See [UNIFIED-TREE-PLAN.md](./UNIFIED-TREE-PLAN.md) §6 for the design rationale and forward-compatibility notes (a future `via:` re-broadcast scheme could lift this invariant if the requirement appears).
+
 ## Decisions (deferred)
 
 - **Log rotation policy** for `{DATA_DIR}/headless.log`. Start with append-only, revisit when files get big.
