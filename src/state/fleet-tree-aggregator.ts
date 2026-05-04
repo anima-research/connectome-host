@@ -1,7 +1,7 @@
 /**
- * FleetTreeAggregator — owns one AgentTreeReducer per fleet child plus one for
- * the local process, and orchestrates `describe` requests at sync points
- * (cold start, lifecycle:ready, post-restart).
+ * FleetTreeAggregator — owns one AgentTreeReducer per fleet child and
+ * orchestrates `describe` requests at sync points (cold start,
+ * lifecycle:ready, post-restart).
  *
  * Lockstep model (see UNIFIED-TREE-PLAN.md §3):
  *   - Live event stream is the primary path. Each child's events are folded
@@ -16,6 +16,13 @@
  *
  * The aggregator exposes a clean read API for the TUI (Phase 5) without the
  * TUI needing to know about IPC, describe handshakes, or stale-event dedup.
+ *
+ * Local-process state is NOT mirrored here. The TUI's existing inline fold
+ * (subagentPhase / agentContextTokens / agentParent in tui.ts) is the
+ * canonical local store; running a parallel local reducer that nothing reads
+ * from would be paid-for-but-unused complexity. If a future pass migrates
+ * local rendering off those inline maps, instantiate a local reducer at
+ * that point.
  */
 
 import type { FleetModule, FleetEventCallback } from '../modules/fleet-module.js';
@@ -38,7 +45,6 @@ export type TreeUpdateListener = (childName: string | 'local') => void;
 
 export class FleetTreeAggregator {
   private fleet: FleetModule;
-  private localReducer: AgentTreeReducer;
   private childStates = new Map<string, ChildState>();
   private listeners = new Set<TreeUpdateListener>();
   /** Generation counter for corrIds; debugging convenience. */
@@ -46,7 +52,6 @@ export class FleetTreeAggregator {
 
   constructor(fleet: FleetModule) {
     this.fleet = fleet;
-    this.localReducer = new AgentTreeReducer();
   }
 
   /** Register a child. Idempotent — re-registering with the same name is a noop
@@ -85,22 +90,7 @@ export class FleetTreeAggregator {
     this.childStates.delete(name);
   }
 
-  /** Apply a local trace event (from this process's framework.onTrace). */
-  applyLocalEvent(event: { type: string; [k: string]: unknown }): void {
-    this.localReducer.applyEvent(event as never);
-    this.notify('local');
-  }
-
-  /** Seed the local reducer with framework agents (call once on init). */
-  seedLocalAgents(names: string[]): void {
-    this.localReducer.seedFrameworkAgents(names);
-  }
-
   // ----- read API ---------------------------------------------------------
-
-  getLocalNodes(): AgentNode[] {
-    return this.localReducer.getNodes();
-  }
 
   getChildNodes(name: string): AgentNode[] {
     const state = this.childStates.get(name);
@@ -133,7 +123,7 @@ export class FleetTreeAggregator {
     const state = this.childStates.get(name);
     if (!state) return;
 
-    const eventTs = (event as { ts?: number }).ts;
+    const eventTs = event.ts;
 
     // Snapshot response: reseed from ground truth.
     if (event.type === 'snapshot') {
@@ -169,9 +159,12 @@ export class FleetTreeAggregator {
         this.requestDescribe(name);
         return;
       }
-      // 'exiting' is informational; the actual reset happens on process:exit.
-      // The fleet-module marks status='exited' on proc.exit; we detect that via
-      // status polling on next ready, or via an explicit reset below.
+      // 'exiting' is purely informational here. There's no reset code below;
+      // the implicit recovery is: when the child restarts and emits a fresh
+      // lifecycle:ready, the branch above triggers a describe, and
+      // applySnapshot wipes the stale reducer state at that point. The
+      // hasInitialSnapshot flag below is what gates stale-event filtering
+      // through the gap.
     }
 
     // Drop events older than the most recent snapshot — they're already
@@ -181,7 +174,7 @@ export class FleetTreeAggregator {
       return;
     }
 
-    state.reducer.applyEvent(event as never);
+    state.reducer.applyEvent(event);
     this.notify(name);
   }
 

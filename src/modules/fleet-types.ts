@@ -79,7 +79,10 @@ export type WireEvent =
   | LifecycleEvent
   | CommandOutputEvent
   | SnapshotEvent
-  | (Record<string, unknown> & { type: string });
+  // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
+  // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
+  // present on the wire even when the underlying TraceEvent doesn't declare it.
+  | (Record<string, unknown> & { type: string; ts?: number });
 
 // ---------------------------------------------------------------------------
 // Subscription matching (used by both ends)

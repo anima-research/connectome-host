@@ -100,8 +100,6 @@ interface FleetNode {
   fullName: string;
   /** What this node represents — drives renderer behavior. */
   kind: FleetNodeKind;
-  /** Legacy alias kept for callers that still check this; equivalent to kind === 'researcher'. */
-  isResearcher: boolean;
   /** ActiveSubagent data — only set for kind='subagent'. */
   agent?: ActiveSubagent;
   /** Reducer node from FleetTreeAggregator — set for kind='fleet-child-agent'. */
@@ -457,13 +455,16 @@ export async function runTui(app: AppContext): Promise<void> {
   let fleetCursor = 0;
   /** Ordered list of node IDs in current rendering (for cursor navigation). */
   let visibleNodeIds: string[] = [];
+  /** Maps node ID → FleetNode for the currently-rendered tree, so keypress
+   *  handlers can dispatch on `node.kind` (a typed discriminator) rather than
+   *  re-parsing prefixes off the string ID. Rebuilt each `updateFleetView`. */
+  const visibleNodes = new Map<string, FleetNode>();
 
   function buildFleetTree(): FleetNode {
     const root: FleetNode = {
       name: rootAgentName,
       fullName: rootAgentName,
       kind: 'researcher',
-      isResearcher: true,
       children: [],
     };
 
@@ -475,7 +476,6 @@ export async function runTui(app: AppContext): Promise<void> {
         name: sa.name,
         fullName,
         kind: 'subagent',
-        isResearcher: false,
         agent: sa,
         children: [],
       };
@@ -534,7 +534,6 @@ export async function runTui(app: AppContext): Promise<void> {
           name: headerKey,
           fullName: fc.name,
           kind: 'fleet-child',
-          isResearcher: false,
           fleetChildName: fc.name,
           children: childTreeRoots,
         };
@@ -555,7 +554,6 @@ export async function runTui(app: AppContext): Promise<void> {
       name: `${fleetChildName}:${rootReducerNode.name}`,
       fullName: rootReducerNode.name,
       kind: 'fleet-child-agent',
-      isResearcher: false,
       reducerNode: rootReducerNode,
       fleetChildName,
       children: allNodes
@@ -565,57 +563,54 @@ export async function runTui(app: AppContext): Promise<void> {
     return node;
   }
 
-  /** Pick the "busiest" active phase from a list of reducer nodes.
-   *  Active phases (sending/streaming/invoking/executing) win over quiescent
-   *  ones (done/idle/failed) — we want to know whether the subtree is *currently*
-   *  doing work, not whether it ever did. Returns null if nothing is busy. */
-  function rollupActivePhase(nodes: AgentNode[]): SubagentPhase | null {
-    const PRIORITY: Partial<Record<SubagentPhase, number>> = {
-      streaming: 5,
-      invoking: 4,
-      executing: 3,
-      sending: 2,
-    };
+  /** Priority order for "which active phase is most visible." Higher = more
+   *  user-attention-worthy. Quiescent phases (done/idle/failed) are absent
+   *  on purpose: rollups represent *current* work. */
+  const PHASE_PRIORITY: Partial<Record<SubagentPhase, number>> = {
+    streaming: 5,
+    invoking: 4,
+    executing: 3,
+    sending: 2,
+  };
+
+  /** Pick the busiest active phase from a sequence of phases. Returns null
+   *  if none qualify. */
+  function pickBusiest(phases: Iterable<SubagentPhase | undefined>): SubagentPhase | null {
     let best: SubagentPhase | null = null;
     let bestScore = -1;
-    for (const n of nodes) {
-      const score = PRIORITY[n.phase as SubagentPhase];
+    for (const phase of phases) {
+      if (phase === undefined) continue;
+      const score = PHASE_PRIORITY[phase];
       if (score !== undefined && score > bestScore) {
-        best = n.phase as SubagentPhase;
+        best = phase;
         bestScore = score;
       }
     }
     return best;
   }
 
+  /** Pick the busiest active phase across a list of reducer nodes. */
+  function rollupActivePhase(nodes: AgentNode[]): SubagentPhase | null {
+    return pickBusiest(nodes.map(n => n.phase as SubagentPhase));
+  }
+
   /** "Is anything underneath the researcher busy?" Aggregates across local
    *  subagents + every fleet child's reducer. Used so the researcher header
    *  shows activity even when the researcher's own inference is idle. */
   function anyDescendantActive(): SubagentPhase | null {
-    let best: SubagentPhase | null = null;
-    const PRIORITY: Partial<Record<SubagentPhase, number>> = {
-      streaming: 5, invoking: 4, executing: 3, sending: 2,
-    };
-    let bestScore = -1;
-    const consider = (phase: SubagentPhase): void => {
-      const score = PRIORITY[phase];
-      if (score !== undefined && score > bestScore) {
-        best = phase;
-        bestScore = score;
-      }
-    };
+    const phases: Array<SubagentPhase | undefined> = [];
     for (const sa of state.subagents) {
       if (sa.status === 'running') {
-        consider(subagentPhase.get(sa.name) ?? 'sending');
+        phases.push(subagentPhase.get(sa.name) ?? 'sending');
       }
     }
     if (treeAggregator && fleetMod) {
       for (const childName of fleetMod.getChildren().keys()) {
         const phase = rollupActivePhase(treeAggregator.getChildNodes(childName));
-        if (phase) consider(phase);
+        if (phase) phases.push(phase);
       }
     }
-    return best;
+    return pickBusiest(phases);
   }
 
   function renderNode(node: FleetNode, depth: number, lines: FleetLine[]): void {
@@ -725,7 +720,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     // Compression stats (researcher only — we can access the strategy)
     let compStr = '';
-    if (node.isResearcher) {
+    if (node.kind === 'researcher') {
       try {
         const agent = app.framework.getAgent(rootAgentName);
         const cm = agent?.getContextManager();
@@ -746,6 +741,7 @@ export async function runTui(app: AppContext): Promise<void> {
     const isCursor = visibleNodeIds.length === fleetCursor;
     const cursor = isCursor ? '→' : ' ';
     visibleNodeIds.push(node.name);
+    visibleNodes.set(node.name, node);
 
     // Contextual key hints on the cursor line
     let hints = '';
@@ -838,6 +834,7 @@ export async function runTui(app: AppContext): Promise<void> {
   function updateFleetView() {
     const tree = buildFleetTree();
     visibleNodeIds = [];
+    visibleNodes.clear();
 
     const lines: FleetLine[] = [];
     lines.push({ text: '─── Agent Fleet ─── ↑↓:nav  ⏎/→:fold  p:peek  Del:stop  r:restart ───', color: GRAY });
@@ -1136,12 +1133,6 @@ export async function runTui(app: AppContext): Promise<void> {
   function onTrace(event: Record<string, unknown>) {
     const agent = event.agentName as string | undefined;
 
-    // Feed the aggregator's local reducer alongside the existing TUI fold.
-    // The local reducer is the authoritative source for fleet--launch parent
-    // edges (Phase 4); it also keeps a unified-tree view of local-process
-    // state available for future rendering changes without further refactors.
-    if (treeAggregator) treeAggregator.applyLocalEvent(event as { type: string });
-
     switch (event.type) {
       case 'inference:started': {
         if (agent === rootAgentName) {
@@ -1397,17 +1388,15 @@ export async function runTui(app: AppContext): Promise<void> {
   // (phase, context tokens, tool calls). See UNIFIED-TREE-PLAN.md.
   const treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
   if (treeAggregator) {
-    treeAggregator.seedLocalAgents(app.framework.getAllAgents().map(a => a.name));
     // Register any fleet children that already exist (e.g. autoStart entries
     // brought up before TUI init, or reattached survivors after parent restart).
     for (const childName of fleetMod!.getChildren().keys()) {
       treeAggregator.registerChild(childName);
     }
-    // Re-render fleet view when any tracked tree changes — gives live updates
-    // without polling. The 'local' updates are already covered by the existing
-    // onTrace path's updateFleetView call sites; this catches per-child updates.
-    treeAggregator.onTreeUpdate((scope) => {
-      if (scope !== 'local' && state.viewMode === 'fleet') updateFleetView();
+    // Re-render fleet view when any tracked child's tree changes — gives live
+    // updates without polling.
+    treeAggregator.onTreeUpdate(() => {
+      if (state.viewMode === 'fleet') updateFleetView();
     });
   }
 
@@ -1724,34 +1713,35 @@ export async function runTui(app: AppContext): Promise<void> {
         }
       } else if (key.name === 'p') {
         const nodeId = visibleNodeIds[fleetCursor];
-        if (nodeId && nodeId !== rootAgentName) {
-          // Route by node prefix: 'proc:NAME' = fleet-child header, 'NAME:agent' =
-          // fleet-child-agent (peek the owning process), bare = local subagent.
-          if (nodeId.startsWith('proc:')) {
-            enterPeekProc(nodeId.slice('proc:'.length));
+        const node = nodeId ? visibleNodes.get(nodeId) : undefined;
+        if (node && node.kind !== 'researcher') {
+          // Dispatch by node kind, not string-prefix surgery on the ID.
+          if (node.kind === 'fleet-child') {
+            enterPeekProc(node.fleetChildName!);
             switchView('peek-proc');
-          } else if (nodeId.includes(':')) {
-            const [childName] = nodeId.split(':', 1);
-            if (childName) {
-              enterPeekProc(childName);
-              switchView('peek-proc');
-            }
+          } else if (node.kind === 'fleet-child-agent') {
+            // Per-agent peek isn't separately supported yet; peek the
+            // owning process — its event stream still includes this agent.
+            enterPeekProc(node.fleetChildName!);
+            switchView('peek-proc');
           } else {
-            enterPeek(nodeId);
+            // node.kind === 'subagent' — local in-process peek.
+            enterPeek(nodeId!);
           }
         }
       } else if (key.name === 'delete' || key.name === 'backspace') {
         const nodeId = visibleNodeIds[fleetCursor];
-        if (nodeId && nodeId !== rootAgentName) {
-          if (nodeId.startsWith('proc:') && fleetMod) {
-            const childName = nodeId.slice('proc:'.length);
+        const node = nodeId ? visibleNodes.get(nodeId) : undefined;
+        if (node && node.kind !== 'researcher') {
+          if (node.kind === 'fleet-child' && fleetMod) {
+            const childName = node.fleetChildName!;
             fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } })
               .then(() => updateFleetView())
               .catch(() => { /* error surfaces in status */ });
-          } else if (!nodeId.includes(':')) {
+          } else if (node.kind === 'subagent') {
             const sa = state.subagents.find(s => s.name === nodeId);
             if (sa?.status === 'running' && subMod) {
-              if (subMod.cancelSubagent(nodeId)) {
+              if (subMod.cancelSubagent(nodeId!)) {
                 addLine(`  ■ [${nodeId}] stopped by user`, YELLOW);
               }
             }
@@ -1761,8 +1751,9 @@ export async function runTui(app: AppContext): Promise<void> {
         }
       } else if (key.name === 'r') {
         const nodeId = visibleNodeIds[fleetCursor];
-        if (nodeId?.startsWith('proc:') && fleetMod) {
-          const childName = nodeId.slice('proc:'.length);
+        const node = nodeId ? visibleNodes.get(nodeId) : undefined;
+        if (node?.kind === 'fleet-child' && fleetMod) {
+          const childName = node.fleetChildName!;
           fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } })
             .then(() => updateFleetView())
             .catch(() => { /* error surfaces in status */ });

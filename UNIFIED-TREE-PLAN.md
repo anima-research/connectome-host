@@ -225,6 +225,7 @@ Phase 2 is now the keystone. Phase 1 simplifies dramatically once Phase 2 exists
 - **Late-attach replay gap** between child startup and TUI attach is partially papered over by `describe`-on-attach, but events that fired before the parent existed at all (e.g. child started by a previous TUI session) are gone from the framework's perspective; only the snapshot's current state is recoverable. This is the same property single-process traces have and is accepted.
 - **Clock skew across children.** Each child stamps `ts` with its own `Date.now()`. Per-tree rendering doesn't care; only matters if a future cross-child timeline view is built (out of scope here).
 - **`findingsCount` for framework agents.** Currently only tracked per-subagent in `ActiveSubagent`. Top-level framework agents will report 0 / undefined. If this ever matters, extend the reducer to count "findings-shaped" tool calls; not addressed here.
+- **TUI subscription density at scale.** Chatty events (token streams, per-round usage) can be narrowed by recipes, but the reducer-required floor is mandatory: ~13 event types per child, always. Fine for current recipes (≤ ~5 children); if fleet sizes grow much larger the floor itself becomes the bottleneck. Mitigations would require either making rendering opt-in per child (reducer can't render what it doesn't know) or moving the rollup logic into the child process (so the wire only carries summarized state). Not addressed here.
 
 ## Subscription contract
 

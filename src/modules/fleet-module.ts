@@ -1464,8 +1464,22 @@ export class FleetModule implements Module {
     // 'ready' status. The wire is fatter by ~10 event types but they're tiny
     // relative to inference token streams.
     let outgoing = cmd;
-    if (cmd.type === 'subscribe' && Array.isArray(cmd.events)) {
-      outgoing = { type: 'subscribe', events: unionWithReducerRequired(cmd.events) };
+    if (cmd.type === 'subscribe') {
+      const requested = cmd.events;
+      const augmented = unionWithReducerRequired(requested);
+      // Log when we expanded the caller's intent so operators tailing logs
+      // can see *why* a child is receiving events its recipe didn't list.
+      // Silent rewriting of caller intent is its own postmortem-in-waiting.
+      if (augmented.length !== requested.length) {
+        const requestedSet = new Set(requested);
+        const added = augmented.filter(e => !requestedSet.has(e));
+        if (added.length > 0) {
+          console.error(
+            `[fleet] subscribe for "${child.name}": forced reducer-required events: ${added.join(', ')}`,
+          );
+        }
+      }
+      outgoing = { type: 'subscribe', events: augmented };
     }
     child.socket.write(JSON.stringify(outgoing) + '\n');
   }

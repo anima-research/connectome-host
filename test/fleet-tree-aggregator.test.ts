@@ -188,20 +188,6 @@ describe('FleetTreeAggregator', () => {
     expect(updates).toContain('miner');
   });
 
-  test('local events feed the local reducer', () => {
-    const fake = new FakeFleet();
-    const agg = new FleetTreeAggregator(fake as never);
-    agg.seedLocalAgents(['conductor']);
-    agg.applyLocalEvent({
-      type: 'inference:usage',
-      agentName: 'conductor',
-      tokenUsage: { input: 12000, output: 200 },
-      timestamp: 1000,
-    });
-    const local = agg.getLocalNodes();
-    expect(local.find(n => n.name === 'conductor')!.tokens.input).toBe(12000);
-  });
-
   test('unregister stops further event handling for that child', () => {
     const fake = new FakeFleet();
     fake.setChildren([{ name: 'miner', status: 'ready' }]);
