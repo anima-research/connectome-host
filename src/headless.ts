@@ -24,6 +24,7 @@ import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, ty
 import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
+import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -126,10 +127,15 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // are expected to send their own {type:"subscribe",events:[...]} on connect.
   let subscription = new Set<string>(['*']);
 
+  // Events that bypass subscription filtering: protocol responses, not telemetry.
+  // 'snapshot' is the response to a 'describe' request — clients always need
+  // it regardless of how they've narrowed their event stream.
+  const FILTER_EXEMPT = new Set<string>(['snapshot']);
+
   function emit(event: Record<string, unknown>): void {
     if (!currentClient) return;
     const type = typeof event.type === 'string' ? event.type : '';
-    if (!matchesSubscription(type, subscription)) return;
+    if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
     try {
       currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n');
     } catch (err) {
@@ -137,8 +143,21 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     }
   }
 
-  // -- Wire framework trace events to socket --
+  // -- Long-lived agent-tree reducer --
+  // Subscribed to framework traces from process startup; accumulates state for
+  // the lifetime of the child. Drives the 'describe' response. Same reducer
+  // shape runs in the parent for fleet children — see UNIFIED-TREE-PLAN.md §2.
+  const treeReducer = new AgentTreeReducer();
+  try {
+    treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
+  } catch (err) {
+    log(`seed framework agents failed: ${String(err)}`);
+  }
+  const startedAt = Date.now();
+
+  // -- Wire framework trace events to socket and reducer --
   app.framework.onTrace((traceEvent) => {
+    treeReducer.applyEvent(traceEvent);
     emit(traceEvent as unknown as Record<string, unknown>);
   });
 
@@ -189,6 +208,27 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
       case 'shutdown': {
         await gracefulShutdown(cmd.graceful === false ? 'shutdown:immediate' : 'shutdown:graceful');
+        return;
+      }
+      case 'describe': {
+        // Recovery verb: parent requests a full state snapshot at sync points
+        // (cold start, reconnect, after restart). See UNIFIED-TREE-PLAN.md §1.
+        const snap = treeReducer.getSnapshot();
+        emit({
+          type: 'snapshot',
+          corrId: cmd.corrId,
+          asOfTs: snap.asOfTs,
+          child: {
+            name: app.recipe.name,
+            pid: process.pid,
+            recipe: app.recipe.name,
+            startedAt,
+          },
+          tree: {
+            nodes: snap.nodes as unknown as Array<Record<string, unknown>>,
+            callIdIndex: snap.callIdIndex,
+          },
+        });
         return;
       }
       default: {

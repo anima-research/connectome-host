@@ -20,7 +20,12 @@ export type IncomingCommand =
   /** Run a slash command in the child's commands.ts handler. */
   | { type: 'command'; command: string }
   /** Graceful (default) or immediate shutdown. */
-  | { type: 'shutdown'; graceful?: boolean };
+  | { type: 'shutdown'; graceful?: boolean }
+  /** Request a state snapshot. The child responds with a single 'snapshot'
+   *  event carrying the full agent tree, exempt from subscription filtering.
+   *  Used as a recovery verb (TUI cold start, reconnect, after restart) — not
+   *  a query verb. See UNIFIED-TREE-PLAN.md §3 for the lockstep model. */
+  | { type: 'describe'; corrId?: string };
 
 // ---------------------------------------------------------------------------
 // Child → Parent: events
@@ -40,6 +45,31 @@ export interface CommandOutputEvent {
   ts?: number;
 }
 
+/** Response to a {type:'describe'} request. Carries the child's full agent
+ *  tree as folded by AgentTreeReducer. Always emitted regardless of the
+ *  client's subscription filter. */
+export interface SnapshotEvent {
+  type: 'snapshot';
+  corrId?: string;
+  /** Wall-clock at which the child built the snapshot. Receivers should drop
+   *  events with `timestamp < asOfTs` after applying. */
+  asOfTs: number;
+  child: {
+    name: string;
+    pid: number;
+    recipe?: string;
+    startedAt: number;
+  };
+  /** Serialized AgentTreeReducer state. Shape matches AgentTreeSnapshot in
+   *  src/state/agent-tree-reducer.ts. Kept structurally typed here to avoid
+   *  cross-cutting imports. */
+  tree: {
+    nodes: Array<Record<string, unknown>>;
+    callIdIndex: Record<string, string>;
+  };
+  ts?: number;
+}
+
 /**
  * A wire event from the child.  In practice this is either a framework
  * TraceEvent (typed loosely as Record<string,unknown>), or one of our
@@ -48,7 +78,11 @@ export interface CommandOutputEvent {
 export type WireEvent =
   | LifecycleEvent
   | CommandOutputEvent
-  | (Record<string, unknown> & { type: string });
+  | SnapshotEvent
+  // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
+  // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
+  // present on the wire even when the underlying TraceEvent doesn't declare it.
+  | (Record<string, unknown> & { type: string; ts?: number });
 
 // ---------------------------------------------------------------------------
 // Subscription matching (used by both ends)
