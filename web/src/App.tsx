@@ -85,6 +85,21 @@ export function App() {
   type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
 
+  /** Scope shared by Lessons / Files / Recipe panels. 'local' means the
+   *  parent process; otherwise the fleet child's name. The scope is shared
+   *  so an operator can pin a child of interest and see all three views
+   *  without re-selecting per panel. */
+  const [panelScope, setPanelScope] = createSignal<string>('local');
+  const availableScopes = (): Array<{ id: string; label: string }> => {
+    const w = welcome();
+    const local = { id: 'local', label: w?.recipe.name ?? 'parent' };
+    const children = (w?.childTrees ?? []).map(c => ({
+      id: c.name,
+      label: c.recipe?.name ? `${c.name} · ${c.recipe.name}` : c.name,
+    }));
+    return [local, ...children];
+  };
+
   /** Lessons panel state — populated by 'lessons-list' responses to a
    *  'request-lessons' message. */
   const [lessons, setLessons] = createSignal<LessonRow[]>([]);
@@ -92,7 +107,7 @@ export function App() {
   const [lessonsModuleLoaded, setLessonsModuleLoaded] = createSignal(false);
   const refreshLessons = (): void => {
     setLessonsLoaded(false);
-    wire.send({ type: 'request-lessons' });
+    wire.send({ type: 'request-lessons', scope: panelScope() });
   };
 
   /** MCPL panel state — populated by 'mcpl-list' responses, which the server
@@ -115,12 +130,14 @@ export function App() {
   const [fileLoading, setFileLoading] = createSignal(false);
   const refreshMounts = (): void => {
     setMountsLoaded(false);
-    wire.send({ type: 'request-workspace-mounts' });
+    setTreesByMount(new Map<string, FlatEntry[]>());
+    setExpandedMounts(new Set<string>());
+    wire.send({ type: 'request-workspace-mounts', scope: panelScope() });
   };
   const expandMount = (name: string): void => {
     setExpandedMounts(prev => new Set(prev).add(name));
     if (!treesByMount().has(name)) {
-      wire.send({ type: 'request-workspace-tree', mount: name });
+      wire.send({ type: 'request-workspace-tree', mount: name, scope: panelScope() });
     }
   };
   const collapseMount = (name: string): void => {
@@ -133,7 +150,25 @@ export function App() {
   const requestFile = (path: string): void => {
     setOpenFile(null);
     setFileLoading(true);
-    wire.send({ type: 'request-workspace-file', path });
+    wire.send({ type: 'request-workspace-file', path, scope: panelScope() });
+  };
+
+  /** Switch the shared panel scope. Invalidates cached lessons/files so the
+   *  new scope's data is re-fetched on next access. MCPL config is global,
+   *  so it doesn't follow scope. */
+  const changePanelScope = (scope: string): void => {
+    if (scope === panelScope()) return;
+    setPanelScope(scope);
+    setLessonsLoaded(false);
+    setLessons([]);
+    setMountsLoaded(false);
+    setMounts([]);
+    setTreesByMount(new Map<string, FlatEntry[]>());
+    setExpandedMounts(new Set<string>());
+    // Re-request whichever tab the operator is currently looking at; the
+    // others will lazy-load when they're opened.
+    if (sidebarTab() === 'lessons') refreshLessons();
+    if (sidebarTab() === 'files') refreshMounts();
   };
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
@@ -610,6 +645,9 @@ export function App() {
                 loaded={lessonsLoaded()}
                 moduleLoaded={lessonsModuleLoaded()}
                 lessons={lessons()}
+                scope={panelScope()}
+                scopes={availableScopes()}
+                onScopeChange={changePanelScope}
                 onRefresh={refreshLessons}
               />
             </Show>
@@ -631,6 +669,9 @@ export function App() {
                 mounts={mounts()}
                 treesByMount={treesByMount()}
                 expandedMounts={expandedMounts()}
+                scope={panelScope()}
+                scopes={availableScopes()}
+                onScopeChange={changePanelScope}
                 onRefreshMounts={refreshMounts}
                 onExpandMount={expandMount}
                 onCollapseMount={collapseMount}
@@ -638,7 +679,7 @@ export function App() {
               />
             </Show>
           </div>
-          <RecipePane welcome={welcome()} />
+          <RecipePane welcome={welcome()} scope={panelScope()} />
         </aside>
       </div>
     </div>
@@ -1114,24 +1155,53 @@ function ReconnectBanner(props: { status: string }) {
   );
 }
 
-function RecipePane(props: { welcome: WelcomeMessage | null }) {
+function RecipePane(props: { welcome: WelcomeMessage | null; scope: string }) {
+  /** Pick the displayed recipe based on the current panel scope: parent
+   *  process when scope is 'local', otherwise the matching child entry
+   *  from welcome.childTrees (recipe summary loaded by the host). */
+  const displayed = (): { name: string; description?: string; agentModel?: string; scopeLabel: string } | null => {
+    if (!props.welcome) return null;
+    if (props.scope === 'local') {
+      return {
+        name: props.welcome.recipe.name,
+        ...(props.welcome.recipe.description ? { description: props.welcome.recipe.description } : {}),
+        ...(props.welcome.agents[0]?.model ? { agentModel: props.welcome.agents[0].model } : {}),
+        scopeLabel: 'parent',
+      };
+    }
+    const child = props.welcome.childTrees.find(c => c.name === props.scope);
+    if (!child) return null;
+    if (!child.recipe) {
+      return { name: child.name, scopeLabel: 'child' };
+    }
+    return {
+      name: child.recipe.name,
+      ...(child.recipe.description ? { description: child.recipe.description } : {}),
+      ...(child.recipe.agentModel ? { agentModel: child.recipe.agentModel } : {}),
+      scopeLabel: `child · ${child.name}`,
+    };
+  };
+
   return (
     <div class="border-t border-neutral-800 px-3 py-2 text-[11px] space-y-0.5">
-      <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold">
-        recipe
+      <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold flex items-center gap-2">
+        <span>recipe</span>
+        <Show when={displayed()}>
+          <span class="text-neutral-600 normal-case tracking-normal">· {displayed()!.scopeLabel}</span>
+        </Show>
       </div>
-      <Show when={props.welcome} fallback={<div class="text-neutral-600 italic">…</div>}>
-        <div class="text-neutral-300">{props.welcome!.recipe.name}</div>
-        <Show when={props.welcome!.recipe.description}>
-          <div class="text-neutral-500 truncate" title={props.welcome!.recipe.description}>
-            {props.welcome!.recipe.description}
+      <Show when={displayed()} fallback={<div class="text-neutral-600 italic">…</div>}>
+        <div class="text-neutral-300">{displayed()!.name}</div>
+        <Show when={displayed()!.description}>
+          <div class="text-neutral-500 truncate" title={displayed()!.description}>
+            {displayed()!.description}
           </div>
         </Show>
-        <div class="text-neutral-600 font-mono">
-          <Show when={props.welcome!.agents.length > 0}>
-            {props.welcome!.agents[0]!.model}
-          </Show>
-        </div>
+        <Show when={displayed()!.agentModel}>
+          <div class="text-neutral-600 font-mono">
+            {displayed()!.agentModel}
+          </div>
+        </Show>
       </Show>
     </div>
   );

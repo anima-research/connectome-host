@@ -10,6 +10,7 @@
  */
 
 import { createSignal, For, Show } from 'solid-js';
+import { ScopePicker } from './Lessons';
 
 export interface Mount {
   name: string;
@@ -40,6 +41,11 @@ export function FilesPanel(props: {
   treesByMount: Map<string, FlatEntry[]>;
   /** Mounts that have been expanded at least once. */
   expandedMounts: Set<string>;
+  /** Currently-selected scope ('local' or fleet child name). */
+  scope: string;
+  /** Selectable scopes — always includes 'local', plus every fleet child. */
+  scopes: Array<{ id: string; label: string }>;
+  onScopeChange(scope: string): void;
   onRefreshMounts(): void;
   onExpandMount(name: string): void;
   onCollapseMount(name: string): void;
@@ -60,6 +66,7 @@ export function FilesPanel(props: {
           refresh
         </button>
       </div>
+      <ScopePicker scope={props.scope} scopes={props.scopes} onChange={props.onScopeChange} />
 
       <Show when={!props.loaded}>
         <div class="text-neutral-600 italic">Loading…</div>

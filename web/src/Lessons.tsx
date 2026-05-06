@@ -26,6 +26,12 @@ export function LessonsPanel(props: {
   /** True if the LessonsModule is mounted in the recipe. */
   moduleLoaded: boolean;
   lessons: LessonRow[];
+  /** Currently-selected scope ('local' for the parent process, or a fleet
+   *  child name). Drives which process's lessons are shown. */
+  scope: string;
+  /** Selectable scopes — always includes 'local', plus every fleet child. */
+  scopes: Array<{ id: string; label: string }>;
+  onScopeChange(scope: string): void;
   onRefresh(): void;
 }) {
   const active = (): LessonRow[] => props.lessons.filter(l => !l.deprecated)
@@ -53,6 +59,7 @@ export function LessonsPanel(props: {
           refresh
         </button>
       </div>
+      <ScopePicker scope={props.scope} scopes={props.scopes} onChange={props.onScopeChange} />
 
       <Show when={!props.loaded} fallback={null}>
         <div class="text-neutral-600 italic">Loading…</div>
@@ -84,6 +91,36 @@ export function LessonsPanel(props: {
         </div>
       </Show>
     </div>
+  );
+}
+
+/** Compact scope chooser shown at the top of scoped panels. The current
+ *  scope is rendered as a pill; alternative scopes appear as siblings.
+ *  Hidden when there's only one scope (no fleet children). */
+export function ScopePicker(props: {
+  scope: string;
+  scopes: Array<{ id: string; label: string }>;
+  onChange(scope: string): void;
+}) {
+  return (
+    <Show when={props.scopes.length > 1}>
+      <div class="flex flex-wrap items-center gap-1 mb-2 text-[10px] font-mono">
+        <span class="text-neutral-600 uppercase tracking-wider mr-1">scope</span>
+        <For each={props.scopes}>{(s) => (
+          <button
+            type="button"
+            class={`px-1.5 py-0.5 rounded ${
+              props.scope === s.id
+                ? 'bg-cyan-900/60 text-cyan-100'
+                : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+            }`}
+            onClick={() => props.onChange(s.id)}
+          >
+            {s.label}
+          </button>
+        )}</For>
+      </div>
+    </Show>
   );
 }
 

@@ -128,9 +128,15 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   let subscription = new Set<string>(['*']);
 
   // Events that bypass subscription filtering: protocol responses, not telemetry.
-  // 'snapshot' is the response to a 'describe' request — clients always need
-  // it regardless of how they've narrowed their event stream.
-  const FILTER_EXEMPT = new Set<string>(['snapshot']);
+  // Clients narrow their event stream for bandwidth, not protocol correctness —
+  // request/response pairs would be useless if the response got dropped.
+  const FILTER_EXEMPT = new Set<string>([
+    'snapshot',
+    'lessons-snapshot',
+    'workspace-mounts-snapshot',
+    'workspace-tree-snapshot',
+    'workspace-file-snapshot',
+  ]);
 
   function emit(event: Record<string, unknown>): void {
     if (!currentClient) return;

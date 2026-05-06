@@ -1504,6 +1504,43 @@ export class FleetModule implements Module {
     }
   }
 
+  /** Request the child's lesson library. Response arrives as a
+   *  `lessons-snapshot` event on the child's event stream — subscribers
+   *  match on `corrId` to correlate. */
+  requestLessons(childName: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try { this.sendToChild(child, { type: 'request-lessons', corrId }); return true; }
+    catch { return false; }
+  }
+
+  /** Request the child's workspace mount list. Response is a
+   *  `workspace-mounts-snapshot` event. */
+  requestWorkspaceMounts(childName: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try { this.sendToChild(child, { type: 'request-workspace-mounts', corrId }); return true; }
+    catch { return false; }
+  }
+
+  /** Request a recursive listing of one mount in the child. Response is a
+   *  `workspace-tree-snapshot` event. */
+  requestWorkspaceTree(childName: string, mount: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try { this.sendToChild(child, { type: 'request-workspace-tree', mount, corrId }); return true; }
+    catch { return false; }
+  }
+
+  /** Request a workspace file read from the child. Response is a
+   *  `workspace-file-snapshot` event (with `error` set on failure). */
+  requestWorkspaceFile(childName: string, path: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try { this.sendToChild(child, { type: 'request-workspace-file', path, corrId }); return true; }
+    catch { return false; }
+  }
+
   private async killChild(child: FleetChild): Promise<void> {
     const proc = child.process;
     if (!proc) return;

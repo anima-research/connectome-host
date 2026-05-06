@@ -64,6 +64,16 @@ export interface WelcomeMessage {
     asOfTs: number;
     nodes: Array<Record<string, unknown>>;
     callIdIndex: Record<string, string>;
+    /** Recipe summary for the child, parsed from its recipe file at fleet
+     *  registration. Undefined when the recipe couldn't be loaded (e.g. URL
+     *  recipe not yet fetched, or read error); SPA falls back to showing
+     *  the child name only. */
+    recipe?: {
+      name: string;
+      description?: string;
+      version?: string;
+      agentModel?: string;
+    };
   }>;
   /** Cumulative session-wide token usage at connect time. */
   usage: TokenUsage;
@@ -368,10 +378,14 @@ export interface QuitConfirmMessage {
   action: 'kill-children' | 'detach' | 'cancel';
 }
 
-/** Pull the parent process's full lesson library — sent on demand when the
- *  operator opens the Lessons tab. The response is a `lessons-list` envelope. */
+/** Pull a lesson library — defaults to the parent process; pass a fleet
+ *  child name in `scope` to query that child instead. The response is a
+ *  `lessons-list` envelope routed only to the requesting client (children
+ *  don't broadcast). */
 export interface RequestLessonsMessage {
   type: 'request-lessons';
+  /** Fleet child name, or 'local'/undefined for the parent process. */
+  scope?: string;
 }
 
 /** Pull the configured MCPL servers from mcpl-servers.json. Response is an
@@ -405,9 +419,11 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
-/** Pull the list of workspace mounts. Response is `workspace-mounts`. */
+/** Pull the list of workspace mounts. Response is `workspace-mounts`.
+ *  Optional `scope` selects a fleet child instead of the parent. */
 export interface RequestWorkspaceMountsMessage {
   type: 'request-workspace-mounts';
+  scope?: string;
 }
 
 /** Pull a recursive flat listing of files in one mount. Response is
@@ -416,6 +432,7 @@ export interface RequestWorkspaceMountsMessage {
 export interface RequestWorkspaceTreeMessage {
   type: 'request-workspace-tree';
   mount: string;
+  scope?: string;
 }
 
 /** Read a workspace file, capped to N lines so the wire frame stays small.
@@ -424,6 +441,7 @@ export interface RequestWorkspaceFileMessage {
   type: 'request-workspace-file';
   /** Mount-prefixed path (e.g. "tickets/2026-05-06-foo.md"). */
   path: string;
+  scope?: string;
 }
 
 export type WebUiClientMessage =

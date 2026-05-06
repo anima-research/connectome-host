@@ -51,12 +51,14 @@ import {
   type WelcomeMessageEntry,
   type TokenUsage,
   type McplListMessage,
+  type LessonsListMessage,
 } from '../web/protocol.js';
 import {
   readMcplServersFile,
   saveMcplServers,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
+import { loadRecipe } from '../recipe.js';
 
 /**
  * Minimal slice of AppContext the module needs. Defined locally to avoid
@@ -85,6 +87,8 @@ export interface WebUiModuleConfig {
 
 /** Per-connection state. */
 interface ClientState {
+  /** Stable id matching ws.data.id; used for routing fleet IPC responses. */
+  id: number;
   ws: ServerWebSocket<{ id: number }>;
   /** True after we've sent the welcome message. */
   welcomed: boolean;
@@ -127,6 +131,14 @@ interface SharedServerState {
    *  retain handles to dead frameworks. */
   treeAggregator: FleetTreeAggregator | null;
   fleetEventDetacher: (() => void) | null;
+  /** Cached child recipe summaries keyed by recipe path. Recipes are
+   *  static-ish per host run (re-spawn doesn't change the file), so we
+   *  parse once and reuse on every welcome. Cleared on session switch. */
+  childRecipeCache: Map<string, { name: string; description?: string; version?: string; agentModel?: string }>;
+  /** corrId → originating client + request kind, for routing scoped panel
+   *  query responses (lessons / workspace) back to the requesting client.
+   *  Entries are deleted on response or pruned by TTL. */
+  pendingFleetRequests: Map<string, { clientId: number; kind: string; expiresAt: number }>;
 }
 
 let sharedServer: SharedServerState | null = null;
@@ -176,6 +188,8 @@ export class WebUiModule implements Module {
       nextClientId: 1,
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       latestPerAgentCost: [],
+      pendingFleetRequests: new Map(),
+      childRecipeCache: new Map(),
       app: null,
       treeAggregator: null,
       fleetEventDetacher: null,
@@ -238,6 +252,10 @@ export class WebUiModule implements Module {
     // session switch) would carry stale or empty per-agent costs until the
     // next inference completes.
     ss.latestPerAgentCost = this.collectPerAgentCost();
+    // Recipe cache is keyed by file path; on session switch the framework
+    // is fresh but children may carry over, so the cache is still valid.
+    // Only clear if the entire app reference changed in a way that matters —
+    // for now, retain across setApp (keeps welcome fast).
 
     // Single fan-out listener. The framework's `onTrace` does not return a
     // detacher, so per-client subscriptions would leak across reconnects.
@@ -277,7 +295,7 @@ export class WebUiModule implements Module {
     for (const client of sharedServer!.clients.values()) {
       // Force a re-welcome by clearing the flag and resending.
       client.welcomed = false;
-      this.sendWelcome(client);
+      void this.sendWelcome(client);
     }
   }
 
@@ -291,6 +309,23 @@ export class WebUiModule implements Module {
       }
     }
 
+    // Snapshot responses to scoped panel queries — route to the requesting
+    // client only. The corrId came from us; we know which client to send
+    // back to without leaking child-internal data to every connected client.
+    const eType = (event as { type?: unknown }).type;
+    const corrId = (event as { corrId?: unknown }).corrId;
+    if (
+      typeof eType === 'string'
+      && typeof corrId === 'string'
+      && (eType === 'lessons-snapshot'
+        || eType === 'workspace-mounts-snapshot'
+        || eType === 'workspace-tree-snapshot'
+        || eType === 'workspace-file-snapshot')
+    ) {
+      this.routeChildSnapshotResponse(eType, corrId, event as Record<string, unknown>);
+      return; // don't fan out — these are private replies, not telemetry
+    }
+
     if (sharedServer!.clients.size === 0) return;
     // Forward the verbatim event so the SPA can fold it into its own
     // per-child AgentTreeReducer for live updates.
@@ -302,6 +337,64 @@ export class WebUiModule implements Module {
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
       this.send(client, msg);
+    }
+  }
+
+  /** Translate a child snapshot event back into the matching wire message
+   *  type and forward to the originating client. The pendingFleetRequests
+   *  map is the source of truth for which client asked. */
+  private routeChildSnapshotResponse(
+    eType: string,
+    corrId: string,
+    event: Record<string, unknown>,
+  ): void {
+    if (!sharedServer) return;
+    const entry = sharedServer.pendingFleetRequests.get(corrId);
+    if (!entry) return; // stale or foreign corrId; ignore
+    sharedServer.pendingFleetRequests.delete(corrId);
+    const client = sharedServer.clients.get(entry.clientId);
+    if (!client) return;
+
+    if (eType === 'lessons-snapshot') {
+      this.send(client, {
+        type: 'lessons-list',
+        loaded: Boolean(event.loaded),
+        lessons: (event.lessons as LessonsListMessage['lessons']) ?? [],
+      });
+      return;
+    }
+    if (eType === 'workspace-mounts-snapshot') {
+      this.send(client, {
+        type: 'workspace-mounts',
+        loaded: Boolean(event.loaded),
+        mounts: (event.mounts as Array<{ name: string; path: string; mode: string }>) ?? [],
+      });
+      return;
+    }
+    if (eType === 'workspace-tree-snapshot') {
+      this.send(client, {
+        type: 'workspace-tree',
+        mount: String(event.mount ?? ''),
+        entries: (event.entries as Array<{ path: string; size: number }>) ?? [],
+      });
+      return;
+    }
+    if (eType === 'workspace-file-snapshot') {
+      const errStr = typeof event.error === 'string' ? event.error : undefined;
+      if (errStr) {
+        this.send(client, { type: 'error', message: `read failed: ${errStr}` });
+        return;
+      }
+      this.send(client, {
+        type: 'workspace-file',
+        path: String(event.path ?? ''),
+        totalLines: Number(event.totalLines ?? 0),
+        fromLine: Number(event.fromLine ?? 1),
+        toLine: Number(event.toLine ?? 0),
+        content: String(event.content ?? ''),
+        truncated: Boolean(event.truncated),
+      });
+      return;
     }
   }
 
@@ -360,6 +453,35 @@ export class WebUiModule implements Module {
    *  envelopes so the SPA can show "incoming from zulip#X" boxes. WebUI-typed
    *  user messages are excluded — those are already optimistically rendered
    *  on the originating client. */
+  /** Load a child's recipe metadata (name, description, agent model) from
+   *  its recipe file path. Cached per-path on the singleton; failures
+   *  resolve to undefined so the SPA can fall back to displaying the child
+   *  name only. */
+  private async loadChildRecipeInfo(
+    fleet: FleetModule,
+    childName: string,
+  ): Promise<{ name: string; description?: string; version?: string; agentModel?: string } | undefined> {
+    const child = fleet.getChildren().get(childName);
+    if (!child) return undefined;
+    const path = child.recipePath;
+    if (!path) return undefined;
+    const cache = sharedServer?.childRecipeCache;
+    if (cache?.has(path)) return cache.get(path);
+    try {
+      const recipe = await loadRecipe(path);
+      const info = {
+        name: recipe.name,
+        ...(recipe.description ? { description: recipe.description } : {}),
+        ...(recipe.version ? { version: recipe.version } : {}),
+        ...(recipe.agent?.model ? { agentModel: recipe.agent.model } : {}),
+      };
+      cache?.set(path, info);
+      return info;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Pull a per-agent cost snapshot from the framework's UsageTracker.
    *  Returns [] if the framework isn't bound or no agents have been billed
    *  yet. Used by both the welcome payload and live UsageMessage frames. */
@@ -514,10 +636,10 @@ export class WebUiModule implements Module {
 
   private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
     const id = ws.data.id;
-    const client: ClientState = { ws, welcomed: false, peeks: new Map() };
+    const client: ClientState = { id, ws, welcomed: false, peeks: new Map() };
     sharedServer!.clients.set(id, client);
 
-    if (sharedServer?.app) this.sendWelcome(client);
+    if (sharedServer?.app) void this.sendWelcome(client);
     // Else: park until setApp() flushes welcomes.
   }
 
@@ -627,7 +749,12 @@ export class WebUiModule implements Module {
       }
 
       case 'request-lessons': {
-        this.sendLessonsList(client);
+        if (parsed.scope && parsed.scope !== 'local') {
+          this.routeFleetRequest(client, parsed.scope, 'lessons',
+            (corrId, fleet) => fleet.requestLessons(parsed.scope!, corrId));
+        } else {
+          this.sendLessonsList(client);
+        }
         return;
       }
 
@@ -692,19 +819,65 @@ export class WebUiModule implements Module {
       }
 
       case 'request-workspace-mounts': {
-        void this.sendWorkspaceMounts(client);
+        if (parsed.scope && parsed.scope !== 'local') {
+          this.routeFleetRequest(client, parsed.scope, 'workspace-mounts',
+            (corrId, fleet) => fleet.requestWorkspaceMounts(parsed.scope!, corrId));
+        } else {
+          void this.sendWorkspaceMounts(client);
+        }
         return;
       }
 
       case 'request-workspace-tree': {
-        void this.sendWorkspaceTree(client, parsed.mount);
+        if (parsed.scope && parsed.scope !== 'local') {
+          this.routeFleetRequest(client, parsed.scope, 'workspace-tree',
+            (corrId, fleet) => fleet.requestWorkspaceTree(parsed.scope!, parsed.mount, corrId));
+        } else {
+          void this.sendWorkspaceTree(client, parsed.mount);
+        }
         return;
       }
 
       case 'request-workspace-file': {
-        void this.sendWorkspaceFileRead(client, parsed.path);
+        if (parsed.scope && parsed.scope !== 'local') {
+          this.routeFleetRequest(client, parsed.scope, 'workspace-file',
+            (corrId, fleet) => fleet.requestWorkspaceFile(parsed.scope!, parsed.path, corrId));
+        } else {
+          void this.sendWorkspaceFileRead(client, parsed.path);
+        }
         return;
       }
+    }
+  }
+
+  /** Generate a corrId, register the requesting client, and dispatch a
+   *  request to the fleet child. The reply lands in handleFleetEvent which
+   *  looks the corrId up in pendingFleetRequests to find the client. */
+  private routeFleetRequest(
+    client: ClientState,
+    childName: string,
+    kind: string,
+    dispatch: (corrId: string, fleet: FleetModule) => boolean,
+  ): void {
+    if (!sharedServer?.app) return;
+    const fleet = sharedServer.app.framework.getAllModules().find((m) => m.name === 'fleet') as
+      | FleetModule | undefined;
+    if (!fleet) {
+      this.send(client, { type: 'error', message: `fleet module not loaded` });
+      return;
+    }
+    const corrId = `webui-${kind}-${client.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sharedServer.pendingFleetRequests.set(corrId, {
+      clientId: client.id,
+      kind,
+      // 30s TTL — lessons/workspace queries are quick; if the child is wedged,
+      // we don't want pending entries piling up forever.
+      expiresAt: Date.now() + 30_000,
+    });
+    const ok = dispatch(corrId, fleet);
+    if (!ok) {
+      sharedServer.pendingFleetRequests.delete(corrId);
+      this.send(client, { type: 'error', message: `child '${childName}' is not available` });
     }
   }
 
@@ -1250,7 +1423,7 @@ export class WebUiModule implements Module {
   private refreshAllWelcomes(): void {
     for (const c of sharedServer!.clients.values()) {
       c.welcomed = false;
-      this.sendWelcome(c);
+      void this.sendWelcome(c);
     }
   }
 
@@ -1258,17 +1431,17 @@ export class WebUiModule implements Module {
   // Outgoing — welcome, traces, etc.
   // -------------------------------------------------------------------------
 
-  private sendWelcome(client: ClientState): void {
+  private async sendWelcome(client: ClientState): Promise<void> {
     if (!sharedServer?.app) return;
 
-    const welcome = this.buildWelcome();
+    const welcome = await this.buildWelcome();
     this.send(client, welcome);
     client.welcomed = true;
     // Live trace forwarding is driven by the single fan-out listener
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
   }
 
-  private buildWelcome(): WelcomeMessage {
+  private async buildWelcome(): Promise<WelcomeMessage> {
     const app = sharedServer?.app!;
     const fw = app.framework;
     const agents = fw.getAllAgents();
@@ -1303,13 +1476,17 @@ export class WebUiModule implements Module {
     // either way the live event stream keeps it current.
     const childTrees: WelcomeMessage['childTrees'] = [];
     if (sharedServer?.treeAggregator) {
+      const fleetMod = sharedServer.app?.framework.getAllModules().find((m) => m.name === 'fleet') as
+        | FleetModule | undefined;
       for (const name of sharedServer?.treeAggregator.getAllChildNames()) {
         const nodes = sharedServer?.treeAggregator.getChildNodes(name);
+        const recipeInfo = fleetMod ? await this.loadChildRecipeInfo(fleetMod, name) : undefined;
         childTrees.push({
           name,
           asOfTs: Date.now(),
           nodes: nodes as unknown as Array<Record<string, unknown>>,
           callIdIndex: {},
+          ...(recipeInfo ? { recipe: recipeInfo } : {}),
         });
       }
     }
