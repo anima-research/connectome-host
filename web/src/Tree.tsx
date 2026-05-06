@@ -9,6 +9,12 @@ export interface TreeSidebarProps {
   /** Called when the operator clicks a node. The scope is `local` for parent
    *  agents or the child name for fleet children / their agents. */
   onSelect(scope: string): void;
+  /** Cancel an in-process subagent by display name. */
+  onCancelSubagent(name: string): void;
+  /** Stop a fleet child gracefully. */
+  onFleetStop(name: string): void;
+  /** Restart a fleet child. */
+  onFleetRestart(name: string): void;
 }
 
 export function TreeSidebar(props: TreeSidebarProps) {
@@ -23,6 +29,9 @@ export function TreeSidebar(props: TreeSidebarProps) {
             scope={scope}
             selectedScope={props.selectedScope}
             onSelect={props.onSelect}
+            onCancelSubagent={props.onCancelSubagent}
+            onFleetStop={props.onFleetStop}
+            onFleetRestart={props.onFleetRestart}
           />
         )}</For>
       </Show>
@@ -34,6 +43,9 @@ function ScopeBlock(props: {
   scope: TreeScope;
   selectedScope: string | null;
   onSelect(scope: string): void;
+  onCancelSubagent(name: string): void;
+  onFleetStop(name: string): void;
+  onFleetRestart(name: string): void;
 }) {
   const allByName = (): Map<string, AgentNode> => {
     const m = new Map<string, AgentNode>();
@@ -54,6 +66,14 @@ function ScopeBlock(props: {
     return props.scope.scope; // fleet child name
   };
 
+  const isFleetChildHeader = (node: AgentNode, depth: number): boolean => {
+    return depth === 0 && props.scope.scope !== 'local';
+  };
+
+  const isLiveSubagent = (node: AgentNode): boolean => {
+    return node.kind === 'subagent' && node.status === 'running';
+  };
+
   return (
     <div>
       <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
@@ -67,6 +87,18 @@ function ScopeBlock(props: {
               depth={item.depth}
               selected={props.selectedScope === peekScopeFor(item.node)}
               onSelect={() => props.onSelect(peekScopeFor(item.node))}
+              onStop={
+                isLiveSubagent(item.node)
+                  ? () => props.onCancelSubagent(item.node.name)
+                  : isFleetChildHeader(item.node, item.depth)
+                    ? () => props.onFleetStop(props.scope.scope)
+                    : null
+              }
+              onRestart={
+                isFleetChildHeader(item.node, item.depth)
+                  ? () => props.onFleetRestart(props.scope.scope)
+                  : null
+              }
             />
           )}
         </For>
@@ -80,6 +112,8 @@ function NodeRow(props: {
   depth: number;
   selected: boolean;
   onSelect(): void;
+  onStop: (() => void) | null;
+  onRestart: (() => void) | null;
 }) {
   const phaseColor = (): string => {
     switch (props.node.phase) {
@@ -101,28 +135,54 @@ function NodeRow(props: {
 
   const selectedClass = (): string => props.selected ? 'bg-cyan-900/30' : 'hover:bg-neutral-900/40';
 
+  // Use a div + nested clickable region so the inline action buttons can sit
+  // alongside the row's own click target without nested-button issues.
   return (
-    <button
-      type="button"
-      class={`flex items-center gap-2 py-0.5 pr-1 rounded w-full text-left ${selectedClass()}`}
+    <div
+      class={`flex items-center gap-2 py-0.5 pr-1 rounded ${selectedClass()}`}
       style={{ 'padding-left': `${0.25 + props.depth * 0.75}rem` }}
-      onClick={() => props.onSelect()}
     >
-      <span class="font-mono text-neutral-300 truncate">{props.node.name}</span>
-      <span class={`px-1 rounded text-[10px] ${phaseColor()}`}>
-        {props.node.phase}
-      </span>
-      <Show when={props.node.kind === 'subagent'}>
-        <span class="text-neutral-600 text-[10px]">sub</span>
+      <button
+        type="button"
+        class="flex items-center gap-2 flex-1 min-w-0 text-left"
+        onClick={() => props.onSelect()}
+      >
+        <span class="font-mono text-neutral-300 truncate">{props.node.name}</span>
+        <span class={`px-1 rounded text-[10px] ${phaseColor()}`}>
+          {props.node.phase}
+        </span>
+        <Show when={props.node.kind === 'subagent'}>
+          <span class="text-neutral-600 text-[10px]">sub</span>
+        </Show>
+        <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
+          <Show when={props.node.tokens.input > 0}>
+            <span title="context tokens">{fmtTokens(props.node.tokens.input)}cx</span>
+          </Show>
+          <Show when={props.node.toolCallsCount > 0}>
+            <span class="ml-1" title="tool calls">·{props.node.toolCallsCount}</span>
+          </Show>
+        </span>
+      </button>
+      <Show when={props.onStop}>
+        <button
+          type="button"
+          class="text-[10px] px-1 py-0.5 bg-rose-900/40 hover:bg-rose-900/60 text-rose-200 rounded font-mono"
+          onClick={(e) => { e.stopPropagation(); props.onStop?.(); }}
+          title="Stop"
+        >
+          stop
+        </button>
       </Show>
-      <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
-        <Show when={props.node.tokens.input > 0}>
-          <span title="context tokens">{fmtTokens(props.node.tokens.input)}cx</span>
-        </Show>
-        <Show when={props.node.toolCallsCount > 0}>
-          <span class="ml-1" title="tool calls">·{props.node.toolCallsCount}</span>
-        </Show>
-      </span>
-    </button>
+      <Show when={props.onRestart}>
+        <button
+          type="button"
+          class="text-[10px] px-1 py-0.5 bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-200 rounded font-mono"
+          onClick={(e) => { e.stopPropagation(); props.onRestart?.(); }}
+          title="Restart"
+        >
+          ↻
+        </button>
+      </Show>
+    </div>
   );
 }

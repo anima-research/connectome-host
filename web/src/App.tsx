@@ -137,14 +137,28 @@ export function App() {
     wire.send({ type: 'subscribe-peek', scope, active: true });
   };
 
+  const cancelSubagent = (name: string): void => {
+    wire.send({ type: 'cancel-subagent', name });
+  };
+
+  const fleetStop = (name: string): void => {
+    wire.send({ type: 'fleet-stop', name });
+  };
+
+  const fleetRestart = (name: string): void => {
+    wire.send({ type: 'fleet-restart', name });
+  };
+
   const stopPeekTarget = (): void => {
     const scope = peekScope();
     if (!scope) return;
-    // For subagents: dispatch the cancel command directly. The server's
-    // `interrupt` cancels ALL agents; we want a targeted stop. Easiest path
-    // is calling subagent--cancel-by-name as a slash command analogue, but
-    // that doesn't exist. For now we fall back to the broad interrupt.
-    wire.send({ type: 'interrupt' });
+    // Heuristic: if the scope name matches a fleet child in the tree, stop
+    // the child; otherwise treat it as a subagent. Either path is harmless
+    // if the heuristic mis-fires — the server returns a clean error.
+    const scopes = treeStore.scopes();
+    const isFleetChild = scopes.some(s => s.scope === scope);
+    if (isFleetChild) fleetStop(scope);
+    else cancelSubagent(scope);
   };
 
   onMount(() => {
@@ -243,6 +257,7 @@ export function App() {
   return (
     <div class="flex flex-col h-screen">
       <Header welcome={welcome()} usage={usage()} status={wire.status()} />
+      <ReconnectBanner status={wire.status()} />
 
       <div class="flex flex-1 min-h-0">
         <main class="flex-1 flex flex-col min-w-0">
@@ -308,6 +323,9 @@ export function App() {
               scopes={treeStore.scopes()}
               selectedScope={peekScope()}
               onSelect={openPeek}
+              onCancelSubagent={cancelSubagent}
+              onFleetStop={fleetStop}
+              onFleetRestart={fleetRestart}
             />
           </div>
           <RecipePane welcome={welcome()} />
@@ -554,6 +572,51 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
             <span class="text-neutral-500">{c.blurb}</span>
           </button>
         )}</For>
+      </div>
+    </Show>
+  );
+}
+
+function ReconnectBanner(props: { status: string }) {
+  const [droppedSince, setDroppedSince] = createSignal<number | null>(null);
+  const [now, setNow] = createSignal(Date.now());
+
+  // Track the moment connection drops so the banner can show elapsed time.
+  // Solid runs this effect on every status change; we only mutate on transitions.
+  const updateDropTime = (): void => {
+    if (props.status === 'open' || props.status === 'connecting') {
+      setDroppedSince(null);
+    } else if (droppedSince() === null) {
+      setDroppedSince(Date.now());
+    }
+  };
+  // Use a tracked accessor read so Solid wires up the dependency.
+  const trackStatus = (): void => { void props.status; updateDropTime(); };
+
+  onMount(() => {
+    trackStatus();
+    const interval = setInterval(() => {
+      trackStatus();
+      setNow(Date.now());
+    }, 1000);
+    onCleanup(() => clearInterval(interval));
+  });
+
+  const elapsed = (): string => {
+    const dropped = droppedSince();
+    if (dropped === null) return '';
+    const sec = Math.floor((now() - dropped) / 1000);
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ${sec % 60}s`;
+    return `${Math.floor(min / 60)}h ${min % 60}m`;
+  };
+
+  return (
+    <Show when={droppedSince() !== null}>
+      <div class="bg-rose-950/60 border-b border-rose-900 px-4 py-1.5 text-xs text-rose-200 flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+        <span>Disconnected — retrying ({elapsed()} elapsed). Check the host process.</span>
       </div>
     </Show>
   );

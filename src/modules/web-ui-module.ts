@@ -488,6 +488,67 @@ export class WebUiModule implements Module {
       case 'subscribe-peek':
         this.handleSubscribePeek(client, parsed.scope, parsed.active);
         return;
+
+      case 'cancel-subagent': {
+        if (!sharedServer?.app) return;
+        const subMod = sharedServer.app.framework
+          .getAllModules()
+          .find((m) => m.name === 'subagent') as
+          | { cancelSubagent(name: string): boolean }
+          | undefined;
+        if (!subMod) {
+          this.send(client, { type: 'error', message: 'subagent module not loaded' });
+          return;
+        }
+        const ok = subMod.cancelSubagent(parsed.name);
+        this.send(client, {
+          type: 'command-result',
+          lines: [{
+            text: ok ? `cancelled subagent ${parsed.name}` : `subagent ${parsed.name} not running`,
+            style: ok ? 'system' : 'tool',
+          }],
+        });
+        return;
+      }
+
+      case 'fleet-stop':
+      case 'fleet-restart': {
+        void this.handleFleetControl(client, parsed.type, parsed.name);
+        return;
+      }
+    }
+  }
+
+  private async handleFleetControl(client: ClientState, op: 'fleet-stop' | 'fleet-restart', name: string): Promise<void> {
+    if (!sharedServer?.app) return;
+    const fleetMod = sharedServer.app.framework
+      .getAllModules()
+      .find((m) => m.name === 'fleet') as
+      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+      | undefined;
+    if (!fleetMod) {
+      this.send(client, { type: 'error', message: 'fleet module not loaded' });
+      return;
+    }
+    const tool = op === 'fleet-stop' ? 'kill' : 'restart';
+    try {
+      const result = await fleetMod.handleToolCall({
+        name: tool,
+        input: { name },
+        id: `webui-${op}-${Date.now()}`,
+      });
+      const text = result.success
+        ? `${op === 'fleet-stop' ? 'stopped' : 'restarted'} ${name}`
+        : `${op} ${name} failed: ${result.error ?? 'unknown'}`;
+      this.send(client, {
+        type: 'command-result',
+        lines: [{ text, style: result.success ? 'system' : 'tool' }],
+      });
+    } catch (err) {
+      this.send(client, {
+        type: 'error',
+        message: `${op} ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   }
 

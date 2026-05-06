@@ -193,6 +193,24 @@ export interface InterruptMessage {
   type: 'interrupt';
 }
 
+/** Cancel one specific in-process subagent by display name. */
+export interface CancelSubagentMessage {
+  type: 'cancel-subagent';
+  name: string;
+}
+
+/** Stop a fleet child gracefully. */
+export interface FleetStopMessage {
+  type: 'fleet-stop';
+  name: string;
+}
+
+/** Restart a fleet child. */
+export interface FleetRestartMessage {
+  type: 'fleet-restart';
+  name: string;
+}
+
 /** Open or close a peek window for a specific subagent or fleet child. */
 export interface SubscribePeekMessage {
   type: 'subscribe-peek';
@@ -211,6 +229,9 @@ export type WebUiClientMessage =
   | CommandMessage
   | RouteToChildMessage
   | InterruptMessage
+  | CancelSubagentMessage
+  | FleetStopMessage
+  | FleetRestartMessage
   | SubscribePeekMessage
   | PingMessage;
 
@@ -223,5 +244,9 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
   if (!value || typeof value !== 'object') return false;
   const v = value as { type?: unknown };
   if (typeof v.type !== 'string') return false;
-  return ['user-message', 'command', 'route-to-child', 'interrupt', 'subscribe-peek', 'ping'].includes(v.type);
+  return [
+    'user-message', 'command', 'route-to-child',
+    'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
+    'subscribe-peek', 'ping',
+  ].includes(v.type);
 }
