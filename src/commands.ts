@@ -111,6 +111,13 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
   switch (cmd) {
     case 'quit':
     case 'q': {
+      // When lessons aren't loaded, skip the export call entirely so quit
+      // doesn't surface a misleading "module not loaded" line. /export still
+      // reports the absence on its own when invoked explicitly.
+      const hasLessons = framework.getAllModules().some(m => m.name === 'lessons');
+      if (!hasLessons) {
+        return { lines: [{ text: 'Goodbye.', style: 'system' }], quit: true };
+      }
       const exportResult = handleExport(app);
       return { lines: exportResult.lines, quit: true };
     }

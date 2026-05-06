@@ -1,4 +1,5 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
@@ -41,7 +42,12 @@ export function App() {
   const wire = createWireClient();
   const treeStore = createTreeStore();
 
-  const [messages, setMessages] = createSignal<Message[]>([]);
+  // Use a store rather than a signal so the streaming token append can
+  // mutate the last message's `text` in place. Replacing the message object
+  // (as a plain signal would force) makes <For> remount the DOM, which
+  // replays the msg-enter fade — visible as a wholesale flicker on every
+  // token. Keyed-by-id mutation keeps the same DOM element throughout.
+  const [messages, setMessages] = createStore<Message[]>([]);
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [draft, setDraft] = createSignal('');
@@ -63,34 +69,32 @@ export function App() {
 
   let scrollPane: HTMLDivElement | undefined;
 
-  // Append-to-last-assistant streaming buffer. Solid signals don't deep-equal,
-  // so we mutate-then-replace the array reference.
+  // Append-to-last-assistant streaming buffer. createStore lets us mutate
+  // the existing message's `text` field in place — Solid's <For> sees the
+  // same item reference and only updates the changed text, instead of
+  // remounting the row (which would replay the entrance animation).
   const appendStreamToken = (token: string): void => {
-    setMessages((prev) => {
-      const last = prev[prev.length - 1];
+    setMessages(produce((arr) => {
+      const last = arr[arr.length - 1];
       if (last && last.streaming) {
-        const next = prev.slice();
-        next[next.length - 1] = { ...last, text: last.text + token };
-        return next;
+        last.text = last.text + token;
+      } else {
+        arr.push({
+          id: nextMessageId(),
+          participant: 'assistant',
+          text: token,
+          streaming: true,
+        });
       }
-      return [...prev, {
-        id: nextMessageId(),
-        participant: 'assistant',
-        text: token,
-        streaming: true,
-      }];
-    });
+    }));
     queueScroll();
   };
 
   const finishStream = (): void => {
-    setMessages((prev) => {
-      const last = prev[prev.length - 1];
-      if (!last || !last.streaming) return prev;
-      const next = prev.slice();
-      next[next.length - 1] = { ...last, streaming: false };
-      return next;
-    });
+    setMessages(produce((arr) => {
+      const last = arr[arr.length - 1];
+      if (last && last.streaming) last.streaming = false;
+    }));
   };
 
   const queueScroll = (): void => {
@@ -250,7 +254,8 @@ export function App() {
       handleStreamMessage(msg);
       handleServerMessage(msg, wire, {
         setWelcome,
-        setMessages,
+        resetMessages: (m) => setMessages(m),
+        appendMessage: (m) => setMessages(produce(arr => arr.push(m))),
         setUsage,
         appendStreamToken,
         finishStream,
@@ -314,20 +319,20 @@ export function App() {
     }
     const route = parseRoute(text);
     if (route) {
-      setMessages((prev) => [...prev, {
+      setMessages(produce((arr) => arr.push({
         id: nextMessageId(),
         participant: 'user',
         text: `→ @${route.childName}: ${route.content}`,
-      }]);
+      })));
       queueScroll();
       wire.send({ type: 'route-to-child', childName: route.childName, content: route.content });
       return;
     }
-    setMessages((prev) => [...prev, {
+    setMessages(produce((arr) => arr.push({
       id: nextMessageId(),
       participant: 'user',
       text,
-    }]);
+    })));
     queueScroll();
     wire.send({ type: 'user-message', content: text });
   };
@@ -354,12 +359,12 @@ export function App() {
             ref={scrollPane}
             class="flex-1 overflow-y-auto px-4 py-3 space-y-3"
           >
-            <Show when={messages().length === 0}>
+            <Show when={messages.length === 0}>
               <div class="text-neutral-500 text-sm italic">
                 Connected. Type a message or /help to begin.
               </div>
             </Show>
-            <For each={messages()}>{(m) => <MessageView msg={m} />}</For>
+            <For each={messages}>{(m) => <MessageView msg={m} />}</For>
           </div>
 
           <div class="border-t border-neutral-800 px-4 py-3 bg-neutral-950 relative">
@@ -453,7 +458,10 @@ function streamHint(src: StreamSource): string | undefined {
 
 interface HandlerHooks {
   setWelcome: (w: WelcomeMessage) => void;
-  setMessages: (updater: (prev: Message[]) => Message[]) => void;
+  /** Replace the messages array wholesale (used on welcome). */
+  resetMessages: (msgs: Message[]) => void;
+  /** Append a single message at the end (used for command-result, errors, etc.). */
+  appendMessage: (msg: Message) => void;
   setUsage: (u: TokenUsage) => void;
   appendStreamToken: (token: string) => void;
   finishStream: () => void;
@@ -468,7 +476,7 @@ function handleServerMessage(
   switch (msg.type) {
     case 'welcome': {
       hooks.setWelcome(msg);
-      hooks.setMessages(() => msg.messages.map(entryToMessage));
+      hooks.resetMessages(msg.messages.map(entryToMessage));
       hooks.setUsage(msg.usage);
       hooks.queueScroll();
       return;
@@ -491,12 +499,12 @@ function handleServerMessage(
         case 'inference:tool_calls_yielded': {
           const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
           if (calls.length === 0) return;
-          hooks.setMessages((prev) => [...prev, {
+          hooks.appendMessage({
             id: nextMessageId(),
             participant: 'tool',
             text: '',
             toolCalls: calls.map(c => ({ id: c.id, name: c.name, input: c.input })),
-          }]);
+          });
           hooks.queueScroll();
           return;
         }
@@ -505,12 +513,12 @@ function handleServerMessage(
       }
     }
     case 'command-result': {
-      hooks.setMessages((prev) => [...prev, {
+      hooks.appendMessage({
         id: nextMessageId(),
         participant: 'command',
         text: msg.lines.map(l => l.text).join('\n'),
         lines: msg.lines,
-      }]);
+      });
       hooks.queueScroll();
       return;
     }
@@ -520,11 +528,11 @@ function handleServerMessage(
       return;
     case 'error':
       console.warn('[server error]', msg.message);
-      hooks.setMessages((prev) => [...prev, {
+      hooks.appendMessage({
         id: nextMessageId(),
         participant: 'system',
         text: `Error: ${msg.message}`,
-      }]);
+      });
       hooks.queueScroll();
       return;
     default:
@@ -580,34 +588,38 @@ function Header(props: {
 }
 
 function MessageView(props: { msg: Message }) {
-  const m = props.msg;
+  // Access fields via props.msg.X directly (not a destructured local) so Solid
+  // tracks reactive reads against the store. Otherwise the message would
+  // capture a snapshot at render time and never update mid-stream.
 
-  if (m.participant === 'user') {
+  if (props.msg.participant === 'user') {
     return (
       <div class="msg-enter">
         <div class="text-xs text-neutral-500 mb-1">you</div>
-        <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{m.text}</div>
+        <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
       </div>
     );
   }
 
-  if (m.participant === 'assistant') {
+  if (props.msg.participant === 'assistant') {
     return (
       <div class="msg-enter">
         <div class="text-xs text-neutral-500 mb-1">
           assistant
-          {m.streaming ? <span class="animate-pulse ml-2">▍</span> : null}
+          <Show when={props.msg.streaming}>
+            <span class="animate-pulse ml-2">▍</span>
+          </Show>
         </div>
-        <div class="prose-mini text-neutral-100" innerHTML={renderMarkdown(m.text)} />
+        <div class="prose-mini text-neutral-100" innerHTML={renderMarkdown(props.msg.text)} />
       </div>
     );
   }
 
-  if (m.participant === 'tool') {
+  if (props.msg.participant === 'tool') {
     return (
       <div class="msg-enter">
         <div class="text-xs text-neutral-500 mb-1">tool calls</div>
-        <For each={m.toolCalls ?? []}>{(call) => (
+        <For each={props.msg.toolCalls ?? []}>{(call) => (
           <div class="font-mono text-xs text-amber-400 bg-amber-950/20 px-2 py-1 rounded mb-1">
             {call.name}
           </div>
@@ -616,10 +628,10 @@ function MessageView(props: { msg: Message }) {
     );
   }
 
-  if (m.participant === 'command') {
+  if (props.msg.participant === 'command') {
     return (
       <div class="msg-enter font-mono text-xs bg-neutral-900/60 border border-neutral-800 rounded px-3 py-2 whitespace-pre-wrap">
-        <For each={m.lines ?? [{ text: m.text }]}>{(line) => (
+        <For each={props.msg.lines ?? [{ text: props.msg.text }]}>{(line) => (
           <div class={lineStyleClass(line.style)}>{line.text || ' '}</div>
         )}</For>
       </div>
@@ -628,7 +640,7 @@ function MessageView(props: { msg: Message }) {
 
   return (
     <div class="msg-enter text-xs text-neutral-500 font-mono whitespace-pre-wrap">
-      {m.text}
+      {props.msg.text}
     </div>
   );
 }

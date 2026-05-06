@@ -684,6 +684,16 @@ export class WebUiModule implements Module {
       pending: result.asyncWork !== undefined,
     });
 
+    // Quit triggers a SIGTERM on the host so the existing graceful shutdown
+    // handler runs (framework.stop, lesson export, etc.). The setTimeout lets
+    // the command-result frame actually flush before the signal lands.
+    if (result.quit) {
+      setTimeout(() => {
+        try { process.kill(process.pid, 'SIGTERM'); }
+        catch { process.exit(0); }
+      }, 150);
+    }
+
     // Branch-change side effects parity with TUI / runPiped: materialize the
     // _config mount so gate.json etc. stay in sync, then refresh every
     // welcomed client by re-sending welcome with the new branch's messages.
@@ -936,13 +946,22 @@ function flattenMessage(msg: MessageLike): WelcomeMessageEntry {
   }
 
   const entry: WelcomeMessageEntry = {
-    participant: msg.participant as WelcomeMessageEntry['participant'],
+    participant: normalizeParticipant(msg.participant),
     text: textParts.join('\n'),
   };
   if (msg.id) entry.id = msg.id;
   if (toolCalls.length > 0) entry.toolCalls = toolCalls;
   if (msg.timestamp) entry.timestamp = msg.timestamp;
   return entry;
+}
+
+/** The framework stores assistant turns under the agent's name (e.g.
+ *  "commander", "miner") rather than the literal "assistant" string. The TUI
+ *  treats anything not 'user' as agent output; mirror that here so the WebUI
+ *  doesn't render restored agent turns as user messages on session resume. */
+function normalizeParticipant(raw: string): WelcomeMessageEntry['participant'] {
+  if (raw === 'user' || raw === 'system' || raw === 'tool') return raw;
+  return 'assistant';
 }
 
 function mimeFor(path: string): string {
