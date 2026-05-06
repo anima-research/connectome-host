@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Sane base for monospace blocks. */
+pre, code, kbd, samp { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Fade in messages as they arrive — keeps streaming feeling alive. */
+.msg-enter { animation: msg-enter 120ms ease-out; }
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Markdown defaults — enough for assistant prose without a plugin. */
+.prose-mini { line-height: 1.55; }
+.prose-mini p { margin: 0.4em 0; }
+.prose-mini h1, .prose-mini h2, .prose-mini h3 { font-weight: 600; margin: 0.6em 0 0.3em; }
+.prose-mini h1 { font-size: 1.25em; }
+.prose-mini h2 { font-size: 1.15em; }
+.prose-mini h3 { font-size: 1.05em; }
+.prose-mini ul, .prose-mini ol { margin: 0.4em 0; padding-left: 1.5em; }
+.prose-mini li { margin: 0.15em 0; }
+.prose-mini code { background: rgba(255,255,255,0.08); padding: 0.05em 0.3em; border-radius: 3px; font-size: 0.9em; }
+.prose-mini pre { background: rgba(255,255,255,0.04); padding: 0.6em 0.8em; border-radius: 5px; overflow-x: auto; margin: 0.5em 0; }
+.prose-mini pre code { background: transparent; padding: 0; }
+.prose-mini a { color: rgb(96 165 250); text-decoration: underline; }
+.prose-mini blockquote { border-left: 2px solid rgba(255,255,255,0.2); padding-left: 0.8em; margin: 0.4em 0; color: rgba(255,255,255,0.7); }
