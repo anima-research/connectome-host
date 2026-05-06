@@ -259,6 +259,25 @@ export interface RecipeModules {
    * puts its state.
    */
   fleet?: boolean | RecipeFleet;
+
+  /**
+   * Web admin UI. Off by default. When true (shorthand), binds 127.0.0.1:7340.
+   * When an object, accepts the full WebUiModule config including optional
+   * Basic-Auth credentials (`${VAR}`-substitutable from .env).
+   *
+   * For remote admin (over VPN), front this with a reverse proxy (Caddy/nginx)
+   * that handles TLS and outer auth. The module refuses to bind a non-loopback
+   * host without either basicAuth or `acknowledgeNoAuth: true`.
+   */
+  webui?: boolean | RecipeWebUi;
+}
+
+export interface RecipeWebUi {
+  port?: number;
+  host?: string;
+  basicAuth?: { username: string; password: string };
+  /** Set true if you've fronted this with a reverse proxy that handles auth. */
+  acknowledgeNoAuth?: boolean;
 }
 
 export interface RecipeFleet {

@@ -28,6 +28,7 @@ import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
+import { WebUiModule } from './modules/web-ui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { generateSessionName } from './synesthete.js';
@@ -240,6 +241,19 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     moduleInstances.push(activityModule);
   }
 
+  // Web admin UI — opt-in per recipe
+  let webUiModule: WebUiModule | null = null;
+  if (modules.webui !== undefined && modules.webui !== false) {
+    const webuiConfig = typeof modules.webui === 'object' ? modules.webui : {};
+    webUiModule = new WebUiModule({
+      port: webuiConfig.port,
+      host: webuiConfig.host,
+      basicAuth: webuiConfig.basicAuth,
+      acknowledgeNoAuth: webuiConfig.acknowledgeNoAuth,
+    });
+    moduleInstances.push(webUiModule);
+  }
+
   // -- Build MCP server list --
   //
   // Recipes are opt-in: a file entry from mcpl-servers.json is loaded only
@@ -324,7 +338,21 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     workspaceModule.initStore(framework.getStore());
   }
 
+  // Stash the WebUiModule reference on the framework so main() can call
+  // setApp() once the AppContext is built. Using a symbol-keyed property to
+  // avoid polluting the public framework API for the sake of one module.
+  if (webUiModule) {
+    (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
+  }
+
   return framework;
+}
+
+const webUiModuleSymbol = Symbol.for('connectome-host:web-ui-module');
+
+function getWebUiModule(framework: AgentFramework): WebUiModule | null {
+  const sym = (framework as unknown as Record<symbol, WebUiModule | undefined>)[webUiModuleSymbol];
+  return sym ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -560,12 +588,14 @@ async function main() {
       resetBranchState(this.branchState);
       setupSynesthete(this);
       setupMcplStderrLog(this, newStorePath);
+      getWebUiModule(this.framework)?.setApp(this);
     },
   };
 
   framework.start();
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
+  getWebUiModule(framework)?.setApp(app);
 
   if (headless) {
     const { runHeadless } = await import('./headless.js');

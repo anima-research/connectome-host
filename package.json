@@ -6,7 +6,9 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "build:web": "cd web && bun install && bun run build",
+    "postinstall": "test -d web && cd web && bun install --production=false && bun run build || true"
   },
   "dependencies": {
     "@animalabs/agent-framework": "^0.3.0",
@@ -16,6 +18,7 @@
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.13",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   }

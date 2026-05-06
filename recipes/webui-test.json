@@ -1,0 +1,16 @@
+{
+  "name": "WebUI Test",
+  "description": "Minimal recipe for WebUI smoke testing",
+  "agent": {
+    "name": "agent",
+    "systemPrompt": "You are a helpful assistant for WebUI testing."
+  },
+  "modules": {
+    "subagents": false,
+    "lessons": false,
+    "retrieval": false,
+    "wake": false,
+    "workspace": false,
+    "webui": true
+  }
+}

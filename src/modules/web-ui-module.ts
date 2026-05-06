@@ -1,0 +1,832 @@
+/**
+ * WebUiModule — serves a single-page web admin UI plus a JSON-over-WebSocket
+ * control plane. Mirrors what TuiModule provides for the terminal: a way to
+ * see the conversation, the agent tree, and to issue user messages and slash
+ * commands. Designed for remote admin over a VPN, fronted by a reverse proxy
+ * for TLS and outer auth.
+ *
+ * Lifecycle:
+ *   - Module's `start()` opens a Bun.serve HTTP+WS server.
+ *   - `setApp()` (called from index.ts after framework creation) plugs in the
+ *     full AppContext so slash commands, sessions, and branch state work.
+ *   - `start()` is intentionally tolerant of `setApp` being called late: WS
+ *     clients that connect before app-binding are parked until binding lands.
+ *
+ * Decoupled transport: the module speaks plain HTTP. TLS / external auth /
+ * fan-out across many VMs are the reverse-proxy's job; an optional Basic-Auth
+ * check is available as defense-in-depth.
+ *
+ * See WEBUI-PLAN.md and src/web/protocol.ts for the wire shape.
+ */
+
+import type {
+  AgentFramework,
+  Module,
+  ModuleContext,
+  ProcessEvent,
+  ProcessState,
+  EventResponse,
+  ToolDefinition,
+  ToolCall,
+  ToolResult,
+  TraceEvent,
+} from '@animalabs/agent-framework';
+import type { ServerWebSocket } from 'bun';
+import { readFile, stat } from 'node:fs/promises';
+import { join, resolve, normalize, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { Recipe } from '../recipe.js';
+import type { SessionManager } from '../session-manager.js';
+import type { BranchState } from '../commands.js';
+import { handleCommand } from '../commands.js';
+import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
+import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
+import type { FleetModule } from './fleet-module.js';
+import type { WireEvent } from './fleet-types.js';
+import {
+  WEB_PROTOCOL_VERSION,
+  isClientMessage,
+  type WebUiServerMessage,
+  type WelcomeMessage,
+  type WelcomeMessageEntry,
+  type TokenUsage,
+} from '../web/protocol.js';
+
+/**
+ * Minimal slice of AppContext the module needs. Defined locally to avoid
+ * importing the full type from index.ts (which would create a cycle).
+ */
+export interface WebUiAppRef {
+  framework: AgentFramework;
+  sessionManager: SessionManager;
+  recipe: Recipe;
+  branchState: BranchState;
+  switchSession(id: string): Promise<void>;
+}
+
+export interface WebUiModuleConfig {
+  /** TCP port to bind. Default: 7340. */
+  port?: number;
+  /** Host to bind. Default: 127.0.0.1 — refuses non-loopback without auth. */
+  host?: string;
+  /** Optional Basic-Auth credentials. Sourced from `${VAR}` substitution at recipe load time. */
+  basicAuth?: { username: string; password: string };
+  /** Acknowledge non-loopback bind without auth. False by default; setting true is the explicit footgun lever. */
+  acknowledgeNoAuth?: boolean;
+  /** Path to the SPA build output. Default: `<cwd>/dist/web`. */
+  staticDir?: string;
+}
+
+/** Per-connection state. */
+interface ClientState {
+  ws: ServerWebSocket<{ id: number }>;
+  /** True after we've sent the welcome message. */
+  welcomed: boolean;
+}
+
+/** Default port — picked to be memorable and unlikely to collide. */
+const DEFAULT_PORT = 7340;
+
+/**
+ * Process-level singleton state. The HTTP server, WS clients, and accumulated
+ * usage snapshot must outlive any single framework instance — session-switch
+ * rebuilds the framework (and thus the WebUiModule), but the open WebSocket
+ * connections need to stay up. Module instances bind to the singleton on
+ * `start()` and rebind their AppContext on `setApp()`; the server itself
+ * never restarts within a process lifetime.
+ */
+interface SharedServerState {
+  server: ReturnType<typeof Bun.serve>;
+  port: number;
+  host: string;
+  staticRoot: string;
+  basicAuth?: { username: string; password: string };
+  clients: Map<number, ClientState>;
+  nextClientId: number;
+  latestUsage: TokenUsage;
+  /** Currently-bound app, refreshed on every setApp() call. WS handlers read
+   *  from here so the singleton always points at the live framework regardless
+   *  of which WebUiModule instance is "active". */
+  app: WebUiAppRef | null;
+  /** Per-bind aggregator and fleet detacher. Re-created in setApp; cleared
+   *  in stop(). Lives on the singleton so old WebUiModule instances don't
+   *  retain handles to dead frameworks. */
+  treeAggregator: FleetTreeAggregator | null;
+  fleetEventDetacher: (() => void) | null;
+}
+
+let sharedServer: SharedServerState | null = null;
+
+export class WebUiModule implements Module {
+  readonly name = 'webui';
+
+  private readonly config: WebUiModuleConfig;
+
+  /** Serialized SPA bundle path resolved from staticDir at construction. */
+  private readonly staticRoot: string;
+
+  constructor(config: WebUiModuleConfig = {}) {
+    this.config = config;
+    // Default static root: <package-root>/dist/web. Derived from the module's
+    // own file location so the resolution is stable regardless of process cwd.
+    // This file lives at <package>/src/modules/web-ui-module.ts, so going up
+    // two levels from its directory gets us the package root.
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const packageRoot = resolve(moduleDir, '..', '..');
+    this.staticRoot = resolve(config.staticDir ?? join(packageRoot, 'dist', 'web'));
+  }
+
+  // -------------------------------------------------------------------------
+  // Module interface
+  // -------------------------------------------------------------------------
+
+  async start(_ctx: ModuleContext): Promise<void> {
+    if (sharedServer) {
+      // Server already up from a previous framework lifetime. Reuse it. Config
+      // collisions (e.g. a different port across recipes) are out of scope —
+      // recipes within one process should declare consistent webui config.
+      return;
+    }
+
+    const port = this.config.port ?? DEFAULT_PORT;
+    const host = this.config.host ?? '127.0.0.1';
+    this.assertSafeBind(host);
+
+    const state: SharedServerState = {
+      server: undefined as unknown as ReturnType<typeof Bun.serve>,
+      port,
+      host,
+      staticRoot: this.staticRoot,
+      basicAuth: this.config.basicAuth,
+      clients: new Map(),
+      nextClientId: 1,
+      latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      app: null,
+      treeAggregator: null,
+      fleetEventDetacher: null,
+    };
+    state.server = Bun.serve({
+      port,
+      hostname: host,
+      fetch: (req, server) => this.handleHttp(req, server),
+      websocket: {
+        open: (ws) => this.onWsOpen(ws as ServerWebSocket<{ id: number }>),
+        message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<{ id: number }>, msg),
+        close: (ws) => this.onWsClose(ws as ServerWebSocket<{ id: number }>),
+      },
+    });
+    sharedServer = state;
+
+    console.log(`[webui] listening on http://${host}:${port}`);
+  }
+
+  async stop(): Promise<void> {
+    // Tear down framework-bound state only. The HTTP server and WS clients
+    // belong to the process-level singleton and survive across session
+    // switches; closing them here would drop active admin connections every
+    // time the operator switches sessions or the framework restarts.
+    if (!sharedServer) return;
+    sharedServer.fleetEventDetacher?.();
+    sharedServer.fleetEventDetacher = null;
+    sharedServer.treeAggregator?.dispose();
+    sharedServer.treeAggregator = null;
+    sharedServer.app = null;
+  }
+
+  getTools(): ToolDefinition[] { return []; }
+
+  async handleToolCall(_call: ToolCall): Promise<ToolResult> {
+    return { success: false, error: 'WebUiModule has no tools', isError: true };
+  }
+
+  async onProcess(_event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
+    return {};
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-creation wiring (called from index.ts, mirrors ActivityModule.setFramework)
+  // -------------------------------------------------------------------------
+
+  setApp(app: WebUiAppRef): void {
+    if (!sharedServer) return;
+    const ss = sharedServer;
+    ss.app = app;
+
+    // Tear down any previous aggregator (session-switch path).
+    ss.fleetEventDetacher?.();
+    ss.fleetEventDetacher = null;
+    ss.treeAggregator?.dispose();
+    ss.treeAggregator = null;
+
+    // Single fan-out listener. The framework's `onTrace` does not return a
+    // detacher, so per-client subscriptions would leak across reconnects.
+    // Instead, one listener iterates the live client set and the WS lifecycle
+    // owns membership. Cheap as long as the client count stays small (admin UI).
+    app.framework.onTrace((event: TraceEvent) => this.fanOutTrace(event));
+
+    // Fleet integration: if FleetModule is mounted, spin up a private
+    // FleetTreeAggregator and start forwarding child events to clients. The
+    // aggregator's per-child reducers are populated via the `describe`/snapshot
+    // protocol, exactly as the TUI uses them — see UNIFIED-TREE-PLAN.md §3.
+    const fleetMod = app.framework
+      .getAllModules()
+      .find((m) => m.name === 'fleet') as FleetModule | undefined;
+
+    if (fleetMod) {
+      const agg = new FleetTreeAggregator(fleetMod);
+      ss.treeAggregator = agg;
+      // Register existing children up front. autoStart launches finish before
+      // setApp() runs, so this catches everything currently up.
+      for (const childName of fleetMod.getChildren().keys()) {
+        agg.registerChild(childName);
+      }
+
+      // One subscription on '*' — fan out to clients AND register newly-seen
+      // children with the aggregator. This avoids a polling loop and keeps the
+      // late-attach path correct.
+      ss.fleetEventDetacher = fleetMod.onChildEvent('*', (childName, event) =>
+        this.handleFleetEvent(childName, event),
+      );
+    }
+
+    // Welcome any client that's currently connected. Two cases land here:
+    //   - First setApp(): fresh page-loads parked at onWsOpen are flushed.
+    //   - Post-session-switch: every previously-welcomed client gets a fresh
+    //     welcome reflecting the new framework / messages / agents / branch.
+    for (const client of sharedServer!.clients.values()) {
+      // Force a re-welcome by clearing the flag and resending.
+      client.welcomed = false;
+      this.sendWelcome(client);
+    }
+  }
+
+  private handleFleetEvent(childName: string, event: WireEvent): void {
+    // Auto-register on first sight so the aggregator picks up children that
+    // launched after setApp() ran.
+    if (sharedServer?.treeAggregator) {
+      const known = new Set(sharedServer?.treeAggregator.getAllChildNames());
+      if (!known.has(childName)) {
+        sharedServer?.treeAggregator.registerChild(childName);
+      }
+    }
+
+    if (sharedServer!.clients.size === 0) return;
+    // Forward the verbatim event so the SPA can fold it into its own
+    // per-child AgentTreeReducer for live updates.
+    const msg: WebUiServerMessage = {
+      type: 'child-event',
+      childName,
+      event: event as unknown as { type: string; [k: string]: unknown },
+    };
+    for (const client of sharedServer!.clients.values()) {
+      if (!client.welcomed) continue;
+      this.send(client, msg);
+    }
+  }
+
+  private fanOutTrace(event: TraceEvent): void {
+    // Update cached usage snapshot first so welcomes for late-connecting
+    // clients get a current value.
+    if (event.type === 'usage:updated') {
+      const e = event as unknown as { totals?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number } };
+      const t = e.totals;
+      if (t) {
+        sharedServer!.latestUsage = {
+          input: t.inputTokens ?? 0,
+          output: t.outputTokens ?? 0,
+          cacheRead: t.cacheReadTokens ?? 0,
+          cacheWrite: t.cacheCreationTokens ?? 0,
+        };
+      }
+    }
+
+    if (sharedServer!.clients.size === 0) return;
+    const traceMsg: WebUiServerMessage = {
+      type: 'trace',
+      event: event as unknown as { type: string; [k: string]: unknown },
+    };
+    const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
+      ? { type: 'usage', usage: sharedServer!.latestUsage }
+      : null;
+    for (const client of sharedServer!.clients.values()) {
+      if (!client.welcomed) continue;
+      this.send(client, traceMsg);
+      if (usageMsg) this.send(client, usageMsg);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP — static SPA + WS upgrade
+  // -------------------------------------------------------------------------
+
+  private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
+    const url = new URL(req.url);
+
+    // WebSocket upgrade
+    if (url.pathname === '/ws') {
+      if (!this.checkAuth(req)) return this.unauthorized();
+      const id = sharedServer!.nextClientId++;
+      const ok = server.upgrade(req, { data: { id } });
+      if (!ok) return new Response('Upgrade failed', { status: 400 });
+      // Bun returns undefined on success; the response is taken over by the upgrade.
+      return new Response(null, { status: 101 });
+    }
+
+    if (!this.checkAuth(req)) return this.unauthorized();
+
+    // Workspace file passthrough: /files/<mount>/<path...>
+    // Resolves through WorkspaceModule.resolveAbsolutePath, which enforces
+    // mount-relative containment and the mount's read-permission. We never
+    // serve a path the agent framework's mount layer wouldn't itself serve.
+    if (url.pathname.startsWith('/files/')) {
+      return this.serveWorkspaceFile(url.pathname.slice('/files/'.length));
+    }
+
+    // Static SPA
+    const requested = url.pathname === '/' ? '/index.html' : url.pathname;
+    return this.serveStatic(requested);
+  }
+
+  private async serveWorkspaceFile(rest: string): Promise<Response> {
+    if (!sharedServer?.app) return new Response('Not ready', { status: 503 });
+    const decoded = decodeURIComponent(rest);
+    const slash = decoded.indexOf('/');
+    if (slash < 0) return new Response('Bad request', { status: 400 });
+    const mount = decoded.slice(0, slash);
+    const inMountPath = decoded.slice(slash + 1);
+    const mountPrefixed = `${mount}/${inMountPath}`;
+
+    const ws = sharedServer.app.framework.getModule('workspace');
+    if (!ws || !('resolveAbsolutePath' in ws)) {
+      return new Response('Workspace not mounted', { status: 503 });
+    }
+    const abs = (ws as { resolveAbsolutePath: (p: string) => string | null }).resolveAbsolutePath(mountPrefixed);
+    if (!abs) return new Response('Forbidden', { status: 403 });
+
+    try {
+      const data = await readFile(abs);
+      return new Response(data, { headers: { 'content-type': mimeFor(abs) } });
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  }
+
+  private async serveStatic(requestedPath: string): Promise<Response> {
+    // Path containment: resolve and verify the result is still under staticRoot.
+    const safePath = normalize(join(sharedServer!.staticRoot, requestedPath));
+    if (!safePath.startsWith(sharedServer!.staticRoot)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    try {
+      const s = await stat(safePath);
+      if (s.isDirectory()) {
+        return this.serveStatic(join(requestedPath, 'index.html'));
+      }
+      const data = await readFile(safePath);
+      return new Response(data, { headers: { 'content-type': mimeFor(safePath) } });
+    } catch {
+      // Fall back to index.html so the SPA can handle client-side routing.
+      try {
+        const indexPath = join(sharedServer!.staticRoot, 'index.html');
+        const data = await readFile(indexPath);
+        return new Response(data, { headers: { 'content-type': 'text/html' } });
+      } catch {
+        return new Response(
+          `WebUI bundle not found at ${sharedServer!.staticRoot}. Run \`npm run build:web\` (or postinstall) to produce it.`,
+          { status: 503, headers: { 'content-type': 'text/plain' } },
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // WebSocket lifecycle
+  // -------------------------------------------------------------------------
+
+  private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
+    const id = ws.data.id;
+    const client: ClientState = { ws, welcomed: false };
+    sharedServer!.clients.set(id, client);
+
+    if (sharedServer?.app) this.sendWelcome(client);
+    // Else: park until setApp() flushes welcomes.
+  }
+
+  private onWsMessage(ws: ServerWebSocket<{ id: number }>, raw: string | Buffer): void {
+    const id = ws.data.id;
+    const client = sharedServer!.clients.get(id);
+    if (!client) return;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf-8'));
+    } catch {
+      this.send(client, { type: 'error', message: 'invalid JSON' });
+      return;
+    }
+    if (!isClientMessage(parsed)) {
+      this.send(client, { type: 'error', message: 'unknown message shape' });
+      return;
+    }
+
+    if (!sharedServer?.app) {
+      this.send(client, { type: 'error', message: 'host not ready' });
+      return;
+    }
+
+    switch (parsed.type) {
+      case 'ping':
+        // No reply — round-trip already confirmed by the message arriving.
+        return;
+
+      case 'user-message':
+        sharedServer?.app.framework.pushEvent({
+          type: 'external-message',
+          source: 'tui',
+          content: parsed.content,
+          metadata: {},
+          triggerInference: true,
+        });
+        return;
+
+      case 'command': {
+        void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        return;
+      }
+
+      case 'route-to-child': {
+        void this.handleRouteToChild(client, parsed.childName, parsed.content);
+        return;
+      }
+
+      case 'interrupt': {
+        if (!sharedServer?.app) return;
+        const fw = sharedServer.app.framework;
+        // Cancel any in-process subagents so their results propagate.
+        const subMod = fw.getAllModules().find((m) => m.name === 'subagent') as
+          | { cancelAll(): number }
+          | undefined;
+        const cancelled = subMod?.cancelAll() ?? 0;
+        for (const agent of fw.getAllAgents()) {
+          try { agent.cancelStream(); } catch { /* idempotent */ }
+        }
+        this.send(client, {
+          type: 'command-result',
+          lines: [{
+            text: cancelled > 0 ? `interrupted — ${cancelled} subagent(s) stopped` : 'interrupted',
+            style: 'system',
+          }],
+        });
+        return;
+      }
+
+      case 'subscribe-peek':
+        // Phase 5+ — defined in the protocol but not yet handled.
+        this.send(client, { type: 'error', message: `'subscribe-peek' not implemented yet` });
+        return;
+    }
+  }
+
+  private async handleRouteToChild(client: ClientState, childName: string, content: string): Promise<void> {
+    if (!sharedServer?.app) return;
+    const fleetMod = sharedServer.app.framework
+      .getAllModules()
+      .find((m) => m.name === 'fleet') as
+      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+      | undefined;
+    if (!fleetMod) {
+      this.send(client, { type: 'error', message: 'fleet module not loaded' });
+      return;
+    }
+    try {
+      const result = await fleetMod.handleToolCall({
+        name: 'send',
+        input: { name: childName, content },
+        id: `webui-route-${Date.now()}`,
+      });
+      const text = result.success
+        ? `→ @${childName}: ${content}`
+        : `route failed: ${result.error ?? 'unknown'}`;
+      this.send(client, {
+        type: 'command-result',
+        lines: [{ text, style: result.success ? 'system' : 'tool' }],
+      });
+    } catch (err) {
+      this.send(client, {
+        type: 'error',
+        message: `route to ${childName} failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  private onWsClose(ws: ServerWebSocket<{ id: number }>): void {
+    const id = ws.data.id;
+    sharedServer!.clients.delete(id);
+  }
+
+  /**
+   * Run a slash command and surface its CommandResult plus any side effects
+   * (workspace materialization on branch change, session switch on
+   * switchToSessionId, async follow-up). All clients see fresh welcomes after
+   * branch / session changes since those affect framework-wide state, not
+   * just the issuing client.
+   */
+  private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
+    if (!sharedServer?.app) return;
+    let result;
+    try {
+      result = handleCommand(command, sharedServer?.app);
+    } catch (err) {
+      this.send(client, {
+        type: 'error',
+        corrId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    this.send(client, {
+      type: 'command-result',
+      corrId,
+      lines: result.lines,
+      quit: result.quit,
+      branchChanged: result.branchChanged,
+      switchToSessionId: result.switchToSessionId,
+      pending: result.asyncWork !== undefined,
+    });
+
+    // Branch-change side effects parity with TUI / runPiped: materialize the
+    // _config mount so gate.json etc. stay in sync, then refresh every
+    // welcomed client by re-sending welcome with the new branch's messages.
+    if (result.branchChanged) {
+      await this.materializeConfigMount();
+      this.broadcastBranchChanged();
+      this.refreshAllWelcomes();
+    }
+
+    // Session switch — destroys + recreates the framework. setApp() is called
+    // by index.ts after the switch lands, which re-welcomes everyone.
+    if (result.switchToSessionId) {
+      try {
+        await sharedServer?.app.switchSession(result.switchToSessionId);
+        // setApp() re-flushes welcomes; nothing more to do here.
+      } catch (err) {
+        this.send(client, {
+          type: 'error',
+          corrId,
+          message: `session switch failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    // Async follow-up (e.g. /newtopic Haiku summarization).
+    if (result.asyncWork) {
+      try {
+        const follow = await result.asyncWork;
+        this.send(client, {
+          type: 'command-result',
+          corrId,
+          lines: follow.lines,
+          quit: follow.quit,
+          branchChanged: follow.branchChanged,
+          switchToSessionId: follow.switchToSessionId,
+        });
+        if (follow.branchChanged) {
+          await this.materializeConfigMount();
+          this.broadcastBranchChanged();
+          this.refreshAllWelcomes();
+        }
+      } catch (err) {
+        this.send(client, {
+          type: 'error',
+          corrId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  private async materializeConfigMount(): Promise<void> {
+    if (!sharedServer?.app) return;
+    const ws = sharedServer?.app.framework.getModule('workspace');
+    if (!ws || !('materializeMount' in ws)) return;
+    try {
+      await (ws as { materializeMount: (name: string) => Promise<unknown> }).materializeMount('_config');
+    } catch {
+      // Materialization is best-effort; failures here shouldn't break the UI.
+    }
+  }
+
+  private broadcastBranchChanged(): void {
+    if (!sharedServer?.app) return;
+    const cm = sharedServer?.app.framework.getAllAgents()[0]?.getContextManager();
+    if (!cm) return;
+    const branch = cm.currentBranch();
+    const msg: WebUiServerMessage = {
+      type: 'branch-changed',
+      branch: { id: branch.id, name: branch.name },
+    };
+    for (const c of sharedServer!.clients.values()) {
+      if (c.welcomed) this.send(c, msg);
+    }
+  }
+
+  private refreshAllWelcomes(): void {
+    for (const c of sharedServer!.clients.values()) {
+      c.welcomed = false;
+      this.sendWelcome(c);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Outgoing — welcome, traces, etc.
+  // -------------------------------------------------------------------------
+
+  private sendWelcome(client: ClientState): void {
+    if (!sharedServer?.app) return;
+
+    const welcome = this.buildWelcome();
+    this.send(client, welcome);
+    client.welcomed = true;
+    // Live trace forwarding is driven by the single fan-out listener
+    // installed in setApp(); membership is implicit in `sharedServer!.clients`.
+  }
+
+  private buildWelcome(): WelcomeMessage {
+    const app = sharedServer?.app!;
+    const fw = app.framework;
+    const agents = fw.getAllAgents();
+    const session = app.sessionManager.getActiveSession();
+    if (!session) {
+      throw new Error('cannot build welcome: no active session');
+    }
+
+    // Conversation snapshot via the first agent's context manager; matches
+    // tui.ts loadSessionHistory.
+    const cm = agents[0]?.getContextManager();
+    const messages: WelcomeMessageEntry[] = [];
+    if (cm) {
+      for (const msg of cm.getAllMessages()) {
+        const entry = flattenMessage(msg as unknown as MessageLike);
+        messages.push(entry);
+      }
+    }
+
+    // Parent-local snapshot via a transient reducer fed by the framework's
+    // current trace history. We have no replayable past traces, so the
+    // initial snapshot just registers the agents — the live trace stream
+    // takes over from there. Future: persist a parent-local reducer if
+    // cold-attach state recovery becomes important.
+    const localReducer = new AgentTreeReducer();
+    localReducer.seedFrameworkAgents(agents.map(a => a.name));
+    const localSnap: AgentTreeSnapshot = localReducer.getSnapshot();
+
+    // Per-child snapshots from the FleetTreeAggregator (if mounted). Each
+    // child's reducer was either freshly seeded by `describe` on the most
+    // recent lifecycle:ready, or empty if the child hasn't responded yet —
+    // either way the live event stream keeps it current.
+    const childTrees: WelcomeMessage['childTrees'] = [];
+    if (sharedServer?.treeAggregator) {
+      for (const name of sharedServer?.treeAggregator.getAllChildNames()) {
+        const nodes = sharedServer?.treeAggregator.getChildNodes(name);
+        childTrees.push({
+          name,
+          asOfTs: Date.now(),
+          nodes: nodes as unknown as Array<Record<string, unknown>>,
+          callIdIndex: {},
+        });
+      }
+    }
+
+    const branch = cm?.currentBranch();
+
+    return {
+      type: 'welcome',
+      protocolVersion: WEB_PROTOCOL_VERSION,
+      recipe: {
+        name: app.recipe.name,
+        description: app.recipe.description,
+        version: app.recipe.version,
+      },
+      agents: agents.map(a => ({ name: a.name, model: a.model })),
+      session: {
+        id: session.id,
+        name: session.name,
+        autoNamed: !session.manuallyNamed,
+      },
+      branch: {
+        id: branch?.id ?? '',
+        name: branch?.name ?? '',
+      },
+      messages,
+      localTree: {
+        asOfTs: localSnap.asOfTs,
+        nodes: localSnap.nodes as unknown as Array<Record<string, unknown>>,
+        callIdIndex: localSnap.callIdIndex,
+      },
+      childTrees,
+      usage: sharedServer!.latestUsage,
+    };
+  }
+
+  private send(client: ClientState, msg: WebUiServerMessage): void {
+    try {
+      client.ws.send(JSON.stringify(msg));
+    } catch {
+      // Connection dropped between send attempts; close handler will clean up.
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Auth / safety
+  // -------------------------------------------------------------------------
+
+  private assertSafeBind(host: string): void {
+    const isLoopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+    if (isLoopback) return;
+    if (this.config.basicAuth) return;
+    if (this.config.acknowledgeNoAuth) return;
+    throw new Error(
+      `WebUiModule refuses to bind ${host} without auth. Set basicAuth, ` +
+      `or set acknowledgeNoAuth: true if you've fronted this with a reverse proxy ` +
+      `that handles authentication. (Localhost binding skips this check.)`,
+    );
+  }
+
+  private checkAuth(req: Request): boolean {
+    if (!this.config.basicAuth) return true;
+    const header = req.headers.get('authorization');
+    if (!header || !header.toLowerCase().startsWith('basic ')) return false;
+    let decoded: string;
+    try {
+      decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf-8');
+    } catch {
+      return false;
+    }
+    const idx = decoded.indexOf(':');
+    if (idx < 0) return false;
+    const user = decoded.slice(0, idx);
+    const pass = decoded.slice(idx + 1);
+    return user === this.config.basicAuth.username && pass === this.config.basicAuth.password;
+  }
+
+  private unauthorized(): Response {
+    return new Response('Unauthorized', {
+      status: 401,
+      headers: { 'www-authenticate': 'Basic realm="connectome-host"' },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface MessageLike {
+  id?: string;
+  participant: string;
+  content: ReadonlyArray<unknown>;
+  timestamp?: number;
+}
+
+function flattenMessage(msg: MessageLike): WelcomeMessageEntry {
+  const textParts: string[] = [];
+  const toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
+
+  for (const block of msg.content) {
+    const b = block as unknown as { type: string; text?: unknown; id?: string; name?: string; input?: unknown };
+    if (b.type === 'text' && typeof b.text === 'string') {
+      textParts.push(b.text);
+    } else if (b.type === 'tool_use') {
+      if (typeof b.id === 'string' && typeof b.name === 'string') {
+        toolCalls.push({ id: b.id, name: b.name, input: b.input });
+      }
+    }
+    // tool_result blocks are dropped; the assistant message that owns them
+    // already conveys the conversation flow.
+  }
+
+  const entry: WelcomeMessageEntry = {
+    participant: msg.participant as WelcomeMessageEntry['participant'],
+    text: textParts.join('\n'),
+  };
+  if (msg.id) entry.id = msg.id;
+  if (toolCalls.length > 0) entry.toolCalls = toolCalls;
+  if (msg.timestamp) entry.timestamp = msg.timestamp;
+  return entry;
+}
+
+function mimeFor(path: string): string {
+  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (path.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (path.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
+  if (path.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (path.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (path.endsWith('.svg')) return 'image/svg+xml';
+  if (path.endsWith('.png')) return 'image/png';
+  if (path.endsWith('.ico')) return 'image/x-icon';
+  if (path.endsWith('.woff2')) return 'font/woff2';
+  if (path.endsWith('.woff')) return 'font/woff';
+  return 'application/octet-stream';
+}

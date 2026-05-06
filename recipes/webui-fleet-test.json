@@ -1,0 +1,27 @@
+{
+  "name": "WebUI Fleet Test",
+  "description": "Parent recipe with one fleet child for WebUI tree-rendering smoke tests",
+  "agent": {
+    "name": "conductor",
+    "systemPrompt": "You are a test conductor."
+  },
+  "modules": {
+    "subagents": false,
+    "lessons": false,
+    "retrieval": false,
+    "wake": false,
+    "workspace": false,
+    "webui": true,
+    "fleet": {
+      "children": [
+        {
+          "name": "minion",
+          "recipe": "webui-test.json",
+          "dataDir": "./tmp-webui-fleet-test/minion",
+          "autoStart": true,
+          "subscription": ["lifecycle", "inference:completed"]
+        }
+      ]
+    }
+  }
+}
