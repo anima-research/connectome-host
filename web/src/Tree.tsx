@@ -1,17 +1,19 @@
 import { For, Show } from 'solid-js';
 import type { AgentNode } from '@conhost/state/agent-tree-reducer';
 import type { UiNode } from './tree';
-import { flattenUiTree } from './tree';
+import { aggregateTokens, flattenUiTree } from './tree';
 
 export interface TreeSidebarProps {
   roots: UiNode[];
-  /** Currently-selected stream id (UiNode.id), if any. */
+  /** Currently-selected node id (UiNode.id), if any. */
   selectedId: string | null;
   /** Set of node ids that are expanded; render contains caret state. */
   expanded: Set<string>;
   onToggleExpand(id: string): void;
   /** Open / focus the stream view for this node. */
   onSelectStream(node: UiNode): void;
+  /** Open / focus the usage view for this node. */
+  onSelectUsage(node: UiNode): void;
   /** Cancel an in-process subagent by display name. */
   onCancelSubagent(name: string): void;
   /** Stop a fleet child gracefully. */
@@ -37,6 +39,7 @@ export function TreeSidebar(props: TreeSidebarProps) {
                 selected={props.selectedId === item.node.id}
                 onToggleExpand={() => props.onToggleExpand(item.node.id)}
                 onSelectStream={() => props.onSelectStream(item.node)}
+                onSelectUsage={() => props.onSelectUsage(item.node)}
                 onCancelSubagent={props.onCancelSubagent}
                 onFleetStop={props.onFleetStop}
                 onFleetRestart={props.onFleetRestart}
@@ -56,6 +59,7 @@ function NodeRow(props: {
   selected: boolean;
   onToggleExpand(): void;
   onSelectStream(): void;
+  onSelectUsage(): void;
   onCancelSubagent(name: string): void;
   onFleetStop(name: string): void;
   onFleetRestart(name: string): void;
@@ -81,6 +85,11 @@ function NodeRow(props: {
 
   const selectedClass = (): string => props.selected ? 'bg-cyan-900/30' : 'hover:bg-neutral-900/40';
 
+  const onLabelClick = (): void => {
+    if (canStream()) props.onSelectStream();
+    else if (hasChildren()) props.onToggleExpand();
+  };
+
   return (
     <div
       class={`flex items-center gap-1 py-0.5 pr-1 rounded ${selectedClass()}`}
@@ -96,17 +105,17 @@ function NodeRow(props: {
         {props.expanded ? '▾' : '▸'}
       </button>
 
-      {/* Label / row click target. Clicking opens the stream view. */}
-      <button
-        type="button"
-        class="flex items-center gap-2 flex-1 min-w-0 text-left disabled:cursor-default"
-        onClick={() => {
-          if (canStream()) props.onSelectStream();
-          else if (hasChildren()) props.onToggleExpand();
-        }}
+      {/* Label region — clicking opens the stream view. The token badge inside
+       *  has its own onClick that stops propagation so it can target usage. */}
+      <div
+        role="button"
+        tabIndex={0}
+        class="flex items-center gap-2 flex-1 min-w-0 cursor-pointer"
+        onClick={onLabelClick}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onLabelClick(); }}
       >
-        <NodeLabel node={props.node} />
-      </button>
+        <NodeLabel node={props.node} onUsageClick={() => props.onSelectUsage()} />
+      </div>
 
       <NodeActions
         node={props.node}
@@ -119,23 +128,31 @@ function NodeRow(props: {
   );
 }
 
-function NodeLabel(props: { node: UiNode }) {
+function NodeLabel(props: { node: UiNode; onUsageClick: () => void }) {
   const n = props.node;
   if (n.kind === 'process') {
+    const agg = aggregateTokens(n);
     return (
       <>
         <span class="text-neutral-600">▣</span>
         <span class="font-mono text-neutral-200 truncate">{n.label}</span>
         <span class="text-[10px] text-neutral-600 uppercase tracking-wider">parent</span>
+        <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
+          <UsageBadge label={`${fmtTokens(agg.output)}out`} hidden={agg.output === 0} onClick={props.onUsageClick} title="Show session usage" />
+        </span>
       </>
     );
   }
   if (n.kind === 'fleet-child') {
+    const agg = aggregateTokens(n);
     return (
       <>
         <span class="text-cyan-400">▢</span>
         <span class="font-mono text-neutral-200 truncate">{n.label}</span>
         <span class="text-[10px] text-cyan-500 uppercase tracking-wider">child</span>
+        <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
+          <UsageBadge label={`${fmtTokens(agg.output)}out`} hidden={agg.output === 0} onClick={props.onUsageClick} title="Show child usage" />
+        </span>
       </>
     );
   }
@@ -150,15 +167,41 @@ function NodeLabel(props: { node: UiNode }) {
       <Show when={n.kind === 'subagent'}>
         <span class="text-neutral-600 text-[10px]">sub</span>
       </Show>
-      <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
-        <Show when={a.tokens.input > 0}>
-          <span title="context tokens">{fmtTokens(a.tokens.input)}cx</span>
-        </Show>
+      <span class="ml-auto flex items-center gap-1 text-neutral-500 text-[10px] font-mono whitespace-nowrap">
+        <UsageBadge
+          label={`${fmtTokens(a.tokens.input)}cx`}
+          hidden={a.tokens.input === 0}
+          onClick={props.onUsageClick}
+          title="Show agent usage"
+        />
         <Show when={a.toolCallsCount > 0}>
-          <span class="ml-1" title="tool calls">·{a.toolCallsCount}</span>
+          <span title="tool calls">·{a.toolCallsCount}</span>
         </Show>
       </span>
     </>
+  );
+}
+
+function UsageBadge(props: { label: string; hidden: boolean; onClick: () => void; title: string }) {
+  return (
+    <Show when={!props.hidden}>
+      <span
+        role="button"
+        tabIndex={0}
+        class="px-1 rounded cursor-pointer hover:text-cyan-300 hover:bg-cyan-900/20"
+        title={props.title}
+        onClick={(e) => { e.stopPropagation(); props.onClick(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+            e.preventDefault();
+            props.onClick();
+          }
+        }}
+      >
+        {props.label}
+      </span>
+    </Show>
   );
 }
 

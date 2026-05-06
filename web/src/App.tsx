@@ -4,6 +4,7 @@ import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './Tree';
 import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
+import { UsagePanel } from './Usage';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -44,9 +45,14 @@ export function App() {
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [draft, setDraft] = createSignal('');
-  /** Currently-focused node id; null when no stream is open. */
+  /** Currently-focused tree node + the panel mode rendered on its behalf.
+   *  `mode` decides whether the side panel shows live stream events or a
+   *  static usage breakdown; clicking the row opens 'stream', clicking the
+   *  token badge opens 'usage'. Both share the same panel slot. */
+  type PanelMode = 'stream' | 'usage';
   const [focusedId, setFocusedId] = createSignal<string | null>(null);
   const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
+  const [panelMode, setPanelMode] = createSignal<PanelMode | null>(null);
   const [streamLines, setStreamLines] = createSignal<StreamLine[]>([]);
   /** Default-collapsed; the parent root and freshly-spawned fleet children
    *  auto-expand once on first sight, so users see structure without a click. */
@@ -122,36 +128,55 @@ export function App() {
     }]);
   };
 
-  const closeStream = (): void => {
+  /** Tear down any peek subscription tied to the currently focused node.
+   *  Idempotent — safe to call when nothing's focused or when the focused
+   *  node was a non-peek source. */
+  const teardownPeek = (): void => {
     const node = focusedNode();
-    if (node && node.streamSource.kind === 'peek') {
+    if (node && panelMode() === 'stream' && node.streamSource.kind === 'peek') {
       wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: false });
     }
+  };
+
+  const closePanel = (): void => {
+    teardownPeek();
     setFocusedId(null);
     setFocusedNode(null);
+    setPanelMode(null);
     setStreamLines([]);
     streamTokenBuffer = '';
   };
 
   const openStream = (node: UiNode): void => {
     if (node.streamSource.kind === 'none') return;
-    if (focusedId() === node.id) {
-      // Re-clicking same node closes the panel — toggle behavior.
-      closeStream();
+    if (focusedId() === node.id && panelMode() === 'stream') {
+      // Re-clicking same node in stream mode closes the panel.
+      closePanel();
       return;
     }
-    // Tear down any previous subscription before retargeting.
-    const previous = focusedNode();
-    if (previous && previous.streamSource.kind === 'peek') {
-      wire.send({ type: 'subscribe-peek', scope: previous.streamSource.scope, active: false });
-    }
+    teardownPeek();
     setFocusedId(node.id);
     setFocusedNode(node);
+    setPanelMode('stream');
     setStreamLines([]);
     streamTokenBuffer = '';
     if (node.streamSource.kind === 'peek') {
       wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: true });
     }
+  };
+
+  const openUsage = (node: UiNode): void => {
+    if (focusedId() === node.id && panelMode() === 'usage') {
+      // Re-clicking the same usage badge toggles closed.
+      closePanel();
+      return;
+    }
+    teardownPeek();
+    setFocusedId(node.id);
+    setFocusedNode(node);
+    setPanelMode('usage');
+    setStreamLines([]);
+    streamTokenBuffer = '';
   };
 
   const toggleExpand = (id: string): void => {
@@ -241,6 +266,7 @@ export function App() {
   /** Route a server message into the stream pane *if* it matches the focused
    *  node's StreamSource. Each kind has its own match rule. */
   const handleStreamMessage = (msg: WebUiServerMessage): void => {
+    if (panelMode() !== 'stream') return;
     const node = focusedNode();
     if (!node) return;
     const src = node.streamSource;
@@ -371,15 +397,27 @@ export function App() {
           </div>
         </main>
 
-        <Show when={focusedNode()}>
-          {(node) => (
-            <StreamPanel
-              label={node().label}
-              scopeHint={streamHint(node().streamSource)}
-              lines={streamLines()}
-              onClose={closeStream}
-              onStop={stopFocusedNode}
-              canStop={canStopFocused()}
+        <Show when={focusedNode() && panelMode() === 'stream'}>
+          {(_) => {
+            const node = focusedNode()!;
+            return (
+              <StreamPanel
+                label={node.label}
+                scopeHint={streamHint(node.streamSource)}
+                lines={streamLines()}
+                onClose={closePanel}
+                onStop={stopFocusedNode}
+                canStop={canStopFocused()}
+              />
+            );
+          }}
+        </Show>
+        <Show when={focusedNode() && panelMode() === 'usage'}>
+          {(_) => (
+            <UsagePanel
+              node={focusedNode()!}
+              sessionUsage={usage()}
+              onClose={closePanel}
             />
           )}
         </Show>
@@ -391,6 +429,7 @@ export function App() {
               expanded={expanded()}
               onToggleExpand={toggleExpand}
               onSelectStream={openStream}
+              onSelectUsage={openUsage}
               onCancelSubagent={cancelSubagent}
               onFleetStop={fleetStop}
               onFleetRestart={fleetRestart}

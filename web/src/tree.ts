@@ -237,3 +237,32 @@ export function flattenUiTree(roots: UiNode[], expanded: Set<string>): FlatUiNod
   for (const r of roots) visit(r, 0);
   return out;
 }
+
+export interface AggregateTokens {
+  /** Sum of current context window sizes across descendants. Useful as a
+   *  "total active memory burden" indicator for aggregate nodes; for a single
+   *  agent it equals that agent's current input. */
+  input: number;
+  /** Cumulative output across descendants. */
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Walk a UiNode subtree and aggregate token counts. Cumulative fields
+ *  (output / cache) sum across descendants; input also sums since each
+ *  agent's input is its own current ctx and they don't overlap. */
+export function aggregateTokens(node: UiNode): AggregateTokens {
+  const agg: AggregateTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const visit = (n: UiNode): void => {
+    if (n.agent) {
+      agg.input += n.agent.tokens.input;
+      agg.output += n.agent.tokens.output;
+      agg.cacheRead += n.agent.tokens.cacheRead;
+      agg.cacheWrite += n.agent.tokens.cacheWrite;
+    }
+    for (const c of n.children) visit(c);
+  };
+  visit(node);
+  return agg;
+}
