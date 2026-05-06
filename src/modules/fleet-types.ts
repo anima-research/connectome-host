@@ -25,7 +25,15 @@ export type IncomingCommand =
    *  event carrying the full agent tree, exempt from subscription filtering.
    *  Used as a recovery verb (TUI cold start, reconnect, after restart) — not
    *  a query verb. See UNIFIED-TREE-PLAN.md §3 for the lockstep model. */
-  | { type: 'describe'; corrId?: string };
+  | { type: 'describe'; corrId?: string }
+  /** Pull the child's lesson library. Response is `lessons-snapshot`. */
+  | { type: 'request-lessons'; corrId?: string }
+  /** Pull the child's workspace mount list. Response is `workspace-mounts-snapshot`. */
+  | { type: 'request-workspace-mounts'; corrId?: string }
+  /** Pull a recursive listing of one mount in the child. Response is `workspace-tree-snapshot`. */
+  | { type: 'request-workspace-tree'; mount: string; corrId?: string }
+  /** Read a workspace file from the child. Response is `workspace-file-snapshot`. */
+  | { type: 'request-workspace-file'; path: string; corrId?: string };
 
 // ---------------------------------------------------------------------------
 // Child → Parent: events
@@ -70,6 +78,58 @@ export interface SnapshotEvent {
   ts?: number;
 }
 
+/** Response to a {type:'request-lessons'} request. */
+export interface LessonsSnapshotEvent {
+  type: 'lessons-snapshot';
+  corrId?: string;
+  /** True iff the child has LessonsModule loaded. */
+  loaded: boolean;
+  lessons: Array<{
+    id: string;
+    content: string;
+    confidence: number;
+    tags: string[];
+    deprecated: boolean;
+    deprecationReason?: string;
+    created?: number;
+    updated?: number;
+  }>;
+  ts?: number;
+}
+
+/** Response to a {type:'request-workspace-mounts'} request. */
+export interface WorkspaceMountsSnapshotEvent {
+  type: 'workspace-mounts-snapshot';
+  corrId?: string;
+  loaded: boolean;
+  mounts: Array<{ name: string; path: string; mode: string }>;
+  ts?: number;
+}
+
+/** Response to a {type:'request-workspace-tree'} request. */
+export interface WorkspaceTreeSnapshotEvent {
+  type: 'workspace-tree-snapshot';
+  corrId?: string;
+  mount: string;
+  entries: Array<{ path: string; size: number }>;
+  ts?: number;
+}
+
+/** Response to a {type:'request-workspace-file'} request. */
+export interface WorkspaceFileSnapshotEvent {
+  type: 'workspace-file-snapshot';
+  corrId?: string;
+  path: string;
+  totalLines: number;
+  fromLine: number;
+  toLine: number;
+  content: string;
+  truncated: boolean;
+  /** Set on lookup failure (file not found, mount unknown, etc.). */
+  error?: string;
+  ts?: number;
+}
+
 /**
  * A wire event from the child.  In practice this is either a framework
  * TraceEvent (typed loosely as Record<string,unknown>), or one of our
@@ -79,6 +139,10 @@ export type WireEvent =
   | LifecycleEvent
   | CommandOutputEvent
   | SnapshotEvent
+  | LessonsSnapshotEvent
+  | WorkspaceMountsSnapshotEvent
+  | WorkspaceTreeSnapshotEvent
+  | WorkspaceFileSnapshotEvent
   // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
   // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
   // present on the wire even when the underlying TraceEvent doesn't declare it.
