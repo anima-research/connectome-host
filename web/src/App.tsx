@@ -7,6 +7,7 @@ import { TreeSidebar } from './Tree';
 import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
+import { McplPanel, type McplServerRow } from './Mcpl';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -91,6 +92,16 @@ export function App() {
   const refreshLessons = (): void => {
     setLessonsLoaded(false);
     wire.send({ type: 'request-lessons' });
+  };
+
+  /** MCPL panel state — populated by 'mcpl-list' responses, which the server
+   *  also re-sends after every mutation so the panel auto-refreshes. */
+  const [mcplServers, setMcplServers] = createSignal<McplServerRow[]>([]);
+  const [mcplLoaded, setMcplLoaded] = createSignal(false);
+  const [mcplConfigPath, setMcplConfigPath] = createSignal('');
+  const refreshMcpl = (): void => {
+    setMcplLoaded(false);
+    wire.send({ type: 'request-mcpl' });
   };
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
@@ -330,6 +341,11 @@ export function App() {
           setLessonsModuleLoaded(moduleLoaded);
           setLessons(list);
         },
+        setMcpl: (configPath, servers) => {
+          setMcplLoaded(true);
+          setMcplConfigPath(configPath);
+          setMcplServers(servers);
+        },
       });
     });
     onCleanup(() => {
@@ -515,10 +531,10 @@ export function App() {
             current={sidebarTab()}
             onSelect={(tab) => {
               setSidebarTab(tab);
-              // Lazy-load tab data on first open. The lessons-list response
-              // populates the panel; subsequent opens show the cached state
-              // until the operator hits refresh.
+              // Lazy-load tab data on first open. Mutations re-broadcast a
+              // fresh list so we don't need to re-fetch after every change.
               if (tab === 'lessons' && !lessonsLoaded()) refreshLessons();
+              if (tab === 'mcp' && !mcplLoaded()) refreshMcpl();
             }}
           />
           <div class="flex-1 min-h-0">
@@ -544,7 +560,15 @@ export function App() {
               />
             </Show>
             <Show when={sidebarTab() === 'mcp'}>
-              <PlaceholderPanel label="MCPL admin" />
+              <McplPanel
+                loaded={mcplLoaded()}
+                configPath={mcplConfigPath()}
+                servers={mcplServers()}
+                onRefresh={refreshMcpl}
+                onAdd={(input) => wire.send({ type: 'mcpl-add', ...input })}
+                onRemove={(id) => wire.send({ type: 'mcpl-remove', id })}
+                onSetEnv={(id, env) => wire.send({ type: 'mcpl-set-env', id, env })}
+              />
             </Show>
             <Show when={sidebarTab() === 'files'}>
               <PlaceholderPanel label="Files" />
@@ -581,6 +605,8 @@ interface HandlerHooks {
   openQuitConfirm: (children: string[]) => void;
   /** Apply a lessons-list response from the server. */
   setLessons: (loaded: boolean, moduleLoaded: boolean, lessons: LessonRow[]) => void;
+  /** Apply an mcpl-list response from the server. */
+  setMcpl: (configPath: string, servers: McplServerRow[]) => void;
 }
 
 function handleServerMessage(
@@ -663,6 +689,9 @@ function handleServerMessage(
       return;
     case 'lessons-list':
       hooks.setLessons(true, msg.loaded, msg.lessons);
+      return;
+    case 'mcpl-list':
+      hooks.setMcpl(msg.configPath, msg.servers);
       return;
     case 'error':
       console.warn('[server error]', msg.message);

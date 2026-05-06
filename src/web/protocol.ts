@@ -179,6 +179,26 @@ export interface LessonsListMessage {
   }>;
 }
 
+/** MCPL server config snapshot — response to request-mcpl, mcpl-add, etc.
+ *  Sent only to the requesting client; mutations don't broadcast since
+ *  changes are file-only and require restart anyway. */
+export interface McplListMessage {
+  type: 'mcpl-list';
+  /** Path to the config file (informational — operator may want to grep
+   *  for it locally). */
+  configPath: string;
+  servers: Array<{
+    id: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    toolPrefix?: string;
+    reconnect?: boolean;
+    enabledFeatureSets?: string[];
+    disabledFeatureSets?: string[];
+  }>;
+}
+
 /** Server-side error response. Non-fatal; the client stays connected. */
 export interface ErrorMessage {
   type: 'error';
@@ -236,6 +256,7 @@ export type WebUiServerMessage =
   | InboundTriggerMessage
   | QuitConfirmRequiredMessage
   | LessonsListMessage
+  | McplListMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
@@ -315,6 +336,37 @@ export interface RequestLessonsMessage {
   type: 'request-lessons';
 }
 
+/** Pull the configured MCPL servers from mcpl-servers.json. Response is an
+ *  `mcpl-list` envelope. Recipe-defined servers are excluded — those live in
+ *  the recipe file and aren't editable from here. */
+export interface RequestMcplMessage {
+  type: 'request-mcpl';
+}
+
+/** Add or overwrite an MCPL server entry in mcpl-servers.json. Restart is
+ *  required for the host to pick up the change; the response is a fresh
+ *  `mcpl-list` so the SPA reflects the new state. */
+export interface McplAddMessage {
+  type: 'mcpl-add';
+  id: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  toolPrefix?: string;
+}
+
+export interface McplRemoveMessage {
+  type: 'mcpl-remove';
+  id: string;
+}
+
+export interface McplSetEnvMessage {
+  type: 'mcpl-set-env';
+  id: string;
+  /** Replaces the existing env block in full. Empty object clears it. */
+  env: Record<string, string>;
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
   | CommandMessage
@@ -326,6 +378,10 @@ export type WebUiClientMessage =
   | SubscribePeekMessage
   | QuitConfirmMessage
   | RequestLessonsMessage
+  | RequestMcplMessage
+  | McplAddMessage
+  | McplRemoveMessage
+  | McplSetEnvMessage
   | PingMessage;
 
 // ---------------------------------------------------------------------------
@@ -340,6 +396,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
   return [
     'user-message', 'command', 'route-to-child',
     'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
-    'subscribe-peek', 'quit-confirm', 'request-lessons', 'ping',
+    'subscribe-peek', 'quit-confirm', 'request-lessons',
+    'request-mcpl', 'mcpl-add', 'mcpl-remove', 'mcpl-set-env',
+    'ping',
   ].includes(v.type);
 }

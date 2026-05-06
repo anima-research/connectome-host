@@ -50,7 +50,13 @@ import {
   type WelcomeMessage,
   type WelcomeMessageEntry,
   type TokenUsage,
+  type McplListMessage,
 } from '../web/protocol.js';
+import {
+  readMcplServersFile,
+  saveMcplServers,
+  DEFAULT_CONFIG_PATH,
+} from '../mcpl-config.js';
 
 /**
  * Minimal slice of AppContext the module needs. Defined locally to avoid
@@ -624,7 +630,91 @@ export class WebUiModule implements Module {
         this.sendLessonsList(client);
         return;
       }
+
+      case 'request-mcpl': {
+        this.sendMcplList(client);
+        return;
+      }
+
+      case 'mcpl-add': {
+        try {
+          const servers = readMcplServersFile(DEFAULT_CONFIG_PATH);
+          servers[parsed.id] = {
+            command: parsed.command,
+            ...(parsed.args && parsed.args.length > 0 ? { args: parsed.args } : {}),
+            ...(parsed.env && Object.keys(parsed.env).length > 0 ? { env: parsed.env } : {}),
+            ...(parsed.toolPrefix ? { toolPrefix: parsed.toolPrefix } : {}),
+          };
+          saveMcplServers(DEFAULT_CONFIG_PATH, servers);
+        } catch (err) {
+          this.send(client, { type: 'error', message: `mcpl-add failed: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        this.sendMcplList(client);
+        return;
+      }
+
+      case 'mcpl-remove': {
+        try {
+          const servers = readMcplServersFile(DEFAULT_CONFIG_PATH);
+          if (!(parsed.id in servers)) {
+            this.send(client, { type: 'error', message: `server '${parsed.id}' not found` });
+            return;
+          }
+          delete servers[parsed.id];
+          saveMcplServers(DEFAULT_CONFIG_PATH, servers);
+        } catch (err) {
+          this.send(client, { type: 'error', message: `mcpl-remove failed: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        this.sendMcplList(client);
+        return;
+      }
+
+      case 'mcpl-set-env': {
+        try {
+          const servers = readMcplServersFile(DEFAULT_CONFIG_PATH);
+          const entry = servers[parsed.id];
+          if (!entry) {
+            this.send(client, { type: 'error', message: `server '${parsed.id}' not found` });
+            return;
+          }
+          // Replace env wholesale; empty object clears it.
+          if (Object.keys(parsed.env).length === 0) delete entry.env;
+          else entry.env = parsed.env;
+          saveMcplServers(DEFAULT_CONFIG_PATH, servers);
+        } catch (err) {
+          this.send(client, { type: 'error', message: `mcpl-set-env failed: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        this.sendMcplList(client);
+        return;
+      }
     }
+  }
+
+  /** Read mcpl-servers.json and ship the list to a single client. The bound
+   *  config path is whatever the host's mcpl-config module resolves at
+   *  module-load time — usually `<cwd>/mcpl-servers.json`. */
+  private sendMcplList(client: ClientState): void {
+    let servers: ReturnType<typeof readMcplServersFile> = {};
+    try { servers = readMcplServersFile(DEFAULT_CONFIG_PATH); }
+    catch { /* missing or malformed file → empty list */ }
+    const out: McplListMessage = {
+      type: 'mcpl-list',
+      configPath: DEFAULT_CONFIG_PATH,
+      servers: Object.entries(servers).map(([id, entry]) => ({
+        id,
+        command: entry.command,
+        ...(entry.args ? { args: entry.args } : {}),
+        ...(entry.env ? { env: entry.env } : {}),
+        ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),
+        ...(entry.reconnect !== undefined ? { reconnect: entry.reconnect } : {}),
+        ...(entry.enabledFeatureSets ? { enabledFeatureSets: entry.enabledFeatureSets } : {}),
+        ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
+      })),
+    };
+    this.send(client, out);
   }
 
   /** Build a LessonsListMessage from the bound LessonsModule, if present. */
