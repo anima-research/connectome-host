@@ -33,8 +33,9 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ServerWebSocket } from 'bun';
 import { readFile, stat } from 'node:fs/promises';
-import { join, resolve, normalize, dirname } from 'node:path';
+import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
@@ -83,6 +84,20 @@ export interface WebUiModuleConfig {
   acknowledgeNoAuth?: boolean;
   /** Path to the SPA build output. Default: `<cwd>/dist/web`. */
   staticDir?: string;
+  /**
+   * Origin allowlist for the WebSocket upgrade. Browsers do not enforce
+   * same-origin on `new WebSocket(...)` the way they do on fetch, so without
+   * an explicit Origin check any page the operator opens in another tab
+   * could connect to a localhost-bound /ws and drive the host. Default:
+   * `http://127.0.0.1:<port>`, `http://localhost:<port>`, plus the matching
+   * `https://` forms. Override when fronted by a reverse proxy that rewrites
+   * Origin (e.g. `["https://admin.example.com"]`).
+   *
+   * Set explicitly to `[]` to allow any Origin (or none) — only sensible
+   * when the host is behind a proxy that already enforces Origin or when
+   * the entire host is firewalled off from browsers.
+   */
+  allowedOrigins?: string[];
 }
 
 /** Per-connection state. */
@@ -115,6 +130,8 @@ interface SharedServerState {
   host: string;
   staticRoot: string;
   basicAuth?: { username: string; password: string };
+  /** Resolved origin allowlist. Empty array means "no Origin check". */
+  allowedOrigins: string[];
   clients: Map<number, ClientState>;
   nextClientId: number;
   latestUsage: TokenUsage;
@@ -184,6 +201,7 @@ export class WebUiModule implements Module {
       host,
       staticRoot: this.staticRoot,
       basicAuth: this.config.basicAuth,
+      allowedOrigins: this.config.allowedOrigins ?? defaultAllowedOrigins(port),
       clients: new Map(),
       nextClientId: 1,
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -204,9 +222,20 @@ export class WebUiModule implements Module {
         close: (ws) => this.onWsClose(ws as ServerWebSocket<{ id: number }>),
       },
     });
+    // When port=0 is passed (test setups, ephemeral binds), the OS picks a
+    // free port and Bun.serve exposes it via `.port`. Re-read so the cached
+    // port and the default Origin allowlist match the actual listener.
+    // Bun's typings widen `port` to `number | undefined` for some socket
+    // listener types; fall back to the requested port if the runtime didn't
+    // expose one.
+    const boundPort = state.server.port ?? port;
+    state.port = boundPort;
+    if (this.config.allowedOrigins === undefined) {
+      state.allowedOrigins = defaultAllowedOrigins(boundPort);
+    }
     sharedServer = state;
 
-    console.log(`[webui] listening on http://${host}:${port}`);
+    console.log(`[webui] listening on http://${host}:${boundPort}`);
   }
 
   async stop(): Promise<void> {
@@ -554,6 +583,11 @@ export class WebUiModule implements Module {
 
     // WebSocket upgrade
     if (url.pathname === '/ws') {
+      // Origin check FIRST — drive-by CSRF on a localhost-bound WS is the
+      // failure mode this guards. Browsers do not enforce same-origin on
+      // `new WebSocket(...)` the way they do on fetch, so without an
+      // explicit check, any tab the operator opens could connect here.
+      if (!this.checkOrigin(req)) return new Response('Forbidden', { status: 403 });
       if (!this.checkAuth(req)) return this.unauthorized();
       const id = sharedServer!.nextClientId++;
       const ok = server.upgrade(req, { data: { id } });
@@ -603,8 +637,14 @@ export class WebUiModule implements Module {
 
   private async serveStatic(requestedPath: string): Promise<Response> {
     // Path containment: resolve and verify the result is still under staticRoot.
-    const safePath = normalize(join(sharedServer!.staticRoot, requestedPath));
-    if (!safePath.startsWith(sharedServer!.staticRoot)) {
+    // Plain startsWith without a separator is unsafe — both `<root>` and
+    // `<root>-evil/...` pass `startsWith('<root>')`. The current callers
+    // pass relative paths so this is unreachable today, but a future
+    // refactor that lets absolute paths slip through would turn it into a
+    // real escape; require either an exact match or a trailing separator.
+    const root = sharedServer!.staticRoot;
+    const safePath = normalize(join(root, requestedPath));
+    if (safePath !== root && !safePath.startsWith(root + pathSep)) {
       return new Response('Forbidden', { status: 403 });
     }
 
@@ -860,6 +900,11 @@ export class WebUiModule implements Module {
     dispatch: (corrId: string, fleet: FleetModule) => boolean,
   ): void {
     if (!sharedServer?.app) return;
+    // Sweep expired entries before we add a new one. Without this the map
+    // grows unbounded whenever a child is wedged — every "refresh files"
+    // click pins another corrId until process exit. The sweep notifies the
+    // originating client of the timeout instead of swallowing it.
+    this.pruneExpiredFleetRequests();
     const fleet = sharedServer.app.framework.getAllModules().find((m) => m.name === 'fleet') as
       | FleetModule | undefined;
     if (!fleet) {
@@ -878,6 +923,24 @@ export class WebUiModule implements Module {
     if (!ok) {
       sharedServer.pendingFleetRequests.delete(corrId);
       this.send(client, { type: 'error', message: `child '${childName}' is not available` });
+    }
+  }
+
+  /** Drop expired entries from `pendingFleetRequests` and notify the
+   *  originating client of each one. Idempotent — handlers tolerate the
+   *  late-arriving real reply (entry just won't be in the map anymore). */
+  private pruneExpiredFleetRequests(): void {
+    if (!sharedServer) return;
+    const now = Date.now();
+    for (const [corrId, entry] of sharedServer.pendingFleetRequests) {
+      if (entry.expiresAt > now) continue;
+      sharedServer.pendingFleetRequests.delete(corrId);
+      const client = sharedServer.clients.get(entry.clientId);
+      if (!client) continue;
+      this.send(client, {
+        type: 'error',
+        message: `${entry.kind} request timed out (child unresponsive after 30s)`,
+      });
     }
   }
 
@@ -947,14 +1010,17 @@ export class WebUiModule implements Module {
       this.send(client, { type: 'error', message: 'workspace module not loaded' });
       return;
     }
-    // Cap responses at 5k lines so an accidental 200MB log file doesn't
-    // jam the WS frame. Operators reading huge files should drop into a
-    // shell on the host.
-    const LIMIT = 5000;
+    // Cap responses by both lines AND bytes. Lines alone don't bound the
+    // wire frame: a minified bundle, JSON-on-one-line, or infolog.txt with
+    // embedded base64 can run 5k lines and still be hundreds of MB. The
+    // byte cap (256 KB) is the actual safety net — operators reading
+    // larger files should drop into a shell on the host.
+    const LINE_LIMIT = 5000;
+    const BYTE_LIMIT = 256 * 1024;
     try {
       const result = await mod.handleToolCall({
         name: 'read',
-        input: { path, limit: LIMIT },
+        input: { path, limit: LINE_LIMIT },
         id: `webui-read-${Date.now()}`,
       });
       if (!result.success) {
@@ -969,15 +1035,29 @@ export class WebUiModule implements Module {
         content?: string;
       };
       const totalLines = data.totalLines ?? 0;
-      const toLine = data.toLine ?? totalLines;
+      const reportedToLine = data.toLine ?? totalLines;
+      let content = data.content ?? '';
+      let toLine = reportedToLine;
+      let truncatedByBytes = false;
+      if (Buffer.byteLength(content, 'utf-8') > BYTE_LIMIT) {
+        // Truncate at a UTF-8 boundary at-or-before BYTE_LIMIT bytes, then
+        // adjust toLine to the last full line in the truncated content so
+        // the SPA doesn't draw a half-line at the bottom.
+        const truncated = sliceUtf8(content, BYTE_LIMIT);
+        const lastNl = truncated.lastIndexOf('\n');
+        content = lastNl >= 0 ? truncated.slice(0, lastNl) : truncated;
+        const fromLine = data.fromLine ?? 1;
+        toLine = fromLine + content.split('\n').length - 1;
+        truncatedByBytes = true;
+      }
       this.send(client, {
         type: 'workspace-file',
         path: data.path ?? path,
         totalLines,
         fromLine: data.fromLine ?? 1,
         toLine,
-        content: data.content ?? '',
-        truncated: toLine < totalLines,
+        content,
+        truncated: truncatedByBytes || toLine < totalLines,
       });
     } catch (err) {
       this.send(client, { type: 'error', message: `read ${path} failed: ${err instanceof Error ? err.message : String(err)}` });
@@ -1549,6 +1629,26 @@ export class WebUiModule implements Module {
     );
   }
 
+  /**
+   * Validate the Origin header against the configured allowlist. An empty
+   * allowlist means "no Origin check" — only sensible behind a proxy that
+   * enforces it for us. Same-origin native clients (curl, custom MCP
+   * tooling) typically send no Origin at all; we accept those as well, since
+   * the threat model here is browsers cross-origin connecting from another
+   * tab. Auth still gates anything sensitive.
+   */
+  private checkOrigin(req: Request): boolean {
+    if (!sharedServer) return false;
+    const allow = sharedServer.allowedOrigins;
+    if (allow.length === 0) return true;
+    const origin = req.headers.get('origin');
+    // No Origin header → not a browser cross-origin attempt. (Browsers
+    // always set Origin on WebSocket upgrades; non-browser clients usually
+    // don't.)
+    if (!origin) return true;
+    return allow.includes(origin);
+  }
+
   private checkAuth(req: Request): boolean {
     if (!this.config.basicAuth) return true;
     const header = req.headers.get('authorization');
@@ -1563,7 +1663,13 @@ export class WebUiModule implements Module {
     if (idx < 0) return false;
     const user = decoded.slice(0, idx);
     const pass = decoded.slice(idx + 1);
-    return user === this.config.basicAuth.username && pass === this.config.basicAuth.password;
+    // Use SHA-256 digests so the timing-safe compare runs over fixed-length
+    // buffers regardless of credential length, and a wrong-length input
+    // doesn't bail early via the length-mismatch path. Both halves are
+    // always compared so a mismatch in `user` doesn't short-circuit `pass`.
+    const userOk = constantTimeStringEq(user, this.config.basicAuth.username);
+    const passOk = constantTimeStringEq(pass, this.config.basicAuth.password);
+    return userOk && passOk;
   }
 
   private unauthorized(): Response {
@@ -1577,6 +1683,49 @@ export class WebUiModule implements Module {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Default Origin allowlist for the WebSocket upgrade. Covers the recommended
+ * deployment (loopback bind, page served from the same Bun.serve), plus the
+ * `https://` form so a Caddy/nginx terminating TLS in front of this still
+ * works without overriding `allowedOrigins` explicitly.
+ */
+function defaultAllowedOrigins(port: number): string[] {
+  return [
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+    `https://127.0.0.1:${port}`,
+    `https://localhost:${port}`,
+  ];
+}
+
+/**
+ * Constant-time string equality. Hashes both inputs with SHA-256 first so the
+ * underlying compare runs on fixed-length 32-byte buffers — `timingSafeEqual`
+ * itself throws on length mismatch, which leaks length, and direct buffer
+ * compares of the raw strings would leak length too. Two HMAC-style
+ * comparisons (same input through SHA-256 twice) is a standard pattern.
+ */
+function constantTimeStringEq(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a, 'utf-8').digest();
+  const hb = createHash('sha256').update(b, 'utf-8').digest();
+  return timingSafeEqual(ha, hb);
+}
+
+/**
+ * Slice a string to at most `maxBytes` UTF-8 bytes without splitting a
+ * multi-byte sequence. Buffer.from + slice + toString is the standard idiom;
+ * if the cut would land mid-codepoint, walk back to the last lead byte.
+ */
+function sliceUtf8(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, 'utf-8');
+  if (buf.length <= maxBytes) return s;
+  let end = maxBytes;
+  // Continuation bytes match 10xxxxxx (0x80..0xbf). Step back until we land
+  // on either ASCII (0x00..0x7f) or a lead byte (0xc0..0xff).
+  while (end > 0 && (buf[end] !== undefined && (buf[end]! & 0xc0) === 0x80)) end--;
+  return buf.subarray(0, end).toString('utf-8');
+}
 
 interface MessageLike {
   id?: string;
@@ -1672,4 +1821,30 @@ function mimeFor(path: string): string {
   if (path.endsWith('.woff2')) return 'font/woff2';
   if (path.endsWith('.woff')) return 'font/woff';
   return 'application/octet-stream';
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+//
+// The HTTP server lives at module scope (process-level singleton). Tests need
+// to read the actual bound port when they pass `port: 0`, and they need to
+// shut the server down between files even though normal lifecycle keeps it
+// running across session switches. These helpers exist solely for tests; they
+// are not part of the public module API.
+
+/** Return the bound listener port, or null if the singleton hasn't started. */
+export function __getSharedServerPortForTests(): number | null {
+  return sharedServer?.port ?? null;
+}
+
+/** Forcibly tear down the shared HTTP server and clear the singleton, so a
+ *  subsequent `start()` boots a fresh one. Tests only. */
+export async function __resetSharedServerForTests(): Promise<void> {
+  if (!sharedServer) return;
+  try { sharedServer.server.stop(true); } catch { /* ignore */ }
+  // Detach any fleet listener / aggregator so the next start runs clean.
+  sharedServer.fleetEventDetacher?.();
+  sharedServer.treeAggregator?.dispose();
+  sharedServer = null;
 }

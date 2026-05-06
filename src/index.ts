@@ -250,6 +250,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
       host: webuiConfig.host,
       basicAuth: webuiConfig.basicAuth,
       acknowledgeNoAuth: webuiConfig.acknowledgeNoAuth,
+      allowedOrigins: webuiConfig.allowedOrigins,
     });
     moduleInstances.push(webUiModule);
   }

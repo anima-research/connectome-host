@@ -278,6 +278,14 @@ export interface RecipeWebUi {
   basicAuth?: { username: string; password: string };
   /** Set true if you've fronted this with a reverse proxy that handles auth. */
   acknowledgeNoAuth?: boolean;
+  /**
+   * Override the default Origin allowlist for the WebSocket upgrade. Default
+   * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Add
+   * your reverse-proxy origin (e.g. `https://admin.example.com`) here when
+   * fronted by Caddy/nginx. Pass `[]` to disable the Origin check entirely
+   * — only sensible when something else upstream is enforcing it.
+   */
+  allowedOrigins?: string[];
 }
 
 export interface RecipeFleet {

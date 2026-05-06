@@ -468,17 +468,95 @@ export type WebUiClientMessage =
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Type guard for narrowing parsed JSON to a known client message. */
+/**
+ * Type guard for narrowing parsed JSON to a known client message. Per-variant
+ * payload validation lives here so handlers downstream can trust field
+ * shapes — without this, a malformed payload like `{type:'mcpl-add', id: 42,
+ * command: null}` would slip through and propagate into disk writes / file
+ * paths / spawn() args, where the eventual failure is far from the cause.
+ */
 export function isClientMessage(value: unknown): value is WebUiClientMessage {
   if (!value || typeof value !== 'object') return false;
-  const v = value as { type?: unknown };
+  const v = value as Record<string, unknown>;
   if (typeof v.type !== 'string') return false;
-  return [
-    'user-message', 'command', 'route-to-child',
-    'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
-    'subscribe-peek', 'quit-confirm', 'request-lessons',
-    'request-mcpl', 'mcpl-add', 'mcpl-remove', 'mcpl-set-env',
-    'request-workspace-mounts', 'request-workspace-tree', 'request-workspace-file',
-    'ping',
-  ].includes(v.type);
+  switch (v.type) {
+    case 'ping':
+    case 'interrupt':
+    case 'request-mcpl':
+      return true;
+    case 'user-message':
+      return typeof v.content === 'string';
+    case 'command':
+      return typeof v.command === 'string'
+        && (v.corrId === undefined || typeof v.corrId === 'string');
+    case 'route-to-child':
+      return isNonEmptyString(v.childName) && typeof v.content === 'string';
+    case 'cancel-subagent':
+    case 'fleet-stop':
+    case 'fleet-restart':
+      return isNonEmptyString(v.name);
+    case 'subscribe-peek':
+      return typeof v.scope === 'string' && typeof v.active === 'boolean';
+    case 'quit-confirm':
+      return v.action === 'kill-children' || v.action === 'detach' || v.action === 'cancel';
+    case 'request-lessons':
+      return v.scope === undefined || typeof v.scope === 'string';
+    case 'mcpl-add':
+      return isValidMcplId(v.id)
+        && isNonEmptyString(v.command)
+        && isOptionalStringArray(v.args)
+        && isOptionalStringMap(v.env)
+        && (v.toolPrefix === undefined || isNonEmptyString(v.toolPrefix));
+    case 'mcpl-remove':
+      return isValidMcplId(v.id);
+    case 'mcpl-set-env':
+      return isValidMcplId(v.id) && isStringMap(v.env);
+    case 'request-workspace-mounts':
+      return v.scope === undefined || typeof v.scope === 'string';
+    case 'request-workspace-tree':
+      return isNonEmptyString(v.mount)
+        && (v.scope === undefined || typeof v.scope === 'string');
+    case 'request-workspace-file':
+      return isNonEmptyString(v.path)
+        && (v.scope === undefined || typeof v.scope === 'string');
+    default:
+      return false;
+  }
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0;
+}
+
+/** MCPL config keys end up as filesystem-adjacent identifiers (the spec
+ *  treats them as opaque strings, but they're surfaced in error paths and
+ *  may flow into other tooling). Reject path separators, control bytes, and
+ *  anything that looks like it would escape JSON-key territory. */
+function isValidMcplId(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length === 0 || v.length > 128) return false;
+  if (v.includes('/') || v.includes('\\') || v.includes('\0')) return false;
+  // Control chars are a robustness hole — reject 0x00-0x1f and 0x7f.
+  for (let i = 0; i < v.length; i++) {
+    const c = v.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return false;
+  }
+  return true;
+}
+
+function isStringMap(v: unknown): v is Record<string, string> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  for (const val of Object.values(v as Record<string, unknown>)) {
+    if (typeof val !== 'string') return false;
+  }
+  return true;
+}
+
+function isOptionalStringMap(v: unknown): v is Record<string, string> | undefined {
+  return v === undefined || isStringMap(v);
+}
+
+function isOptionalStringArray(v: unknown): v is string[] | undefined {
+  if (v === undefined) return true;
+  if (!Array.isArray(v)) return false;
+  return v.every((x) => typeof x === 'string');
 }

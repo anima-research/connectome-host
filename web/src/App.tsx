@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './Tree';
@@ -1229,10 +1230,18 @@ function parseRoute(input: string): { childName: string; content: string } | nul
 
 marked.setOptions({ async: false, breaks: false, gfm: true });
 
+// marked v14 has no built-in sanitizer (the `sanitize` option was removed),
+// and assistant output is the *primary* untrusted input on this admin
+// surface — a tool result, mined-knowledge ingestion, or peeked subagent
+// line that contains literal HTML lands here. Pipe through DOMPurify before
+// innerHTML so <script>, <img onerror=...>, javascript: hrefs, etc. are
+// stripped. The default DOMPurify config already drops <script>, on*
+// handlers, and dangerous URL schemes.
 function renderMarkdown(src: string): string {
   if (!src) return '';
   try {
-    return marked.parse(src) as string;
+    const html = marked.parse(src) as string;
+    return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
   } catch {
     return escapeHtml(src);
   }
