@@ -108,6 +108,10 @@ interface SharedServerState {
   clients: Map<number, ClientState>;
   nextClientId: number;
   latestUsage: TokenUsage;
+  /** Per-agent cost breakdown captured alongside latestUsage. Re-derived on
+   *  every usage:updated event so the welcome and live UsageMessage frames
+   *  carry consistent values. */
+  latestPerAgentCost: import('../web/protocol.js').PerAgentCost[];
   /** Currently-bound app, refreshed on every setApp() call. WS handlers read
    *  from here so the singleton always points at the live framework regardless
    *  of which WebUiModule instance is "active". */
@@ -165,6 +169,7 @@ export class WebUiModule implements Module {
       clients: new Map(),
       nextClientId: 1,
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      latestPerAgentCost: [],
       app: null,
       treeAggregator: null,
       fleetEventDetacher: null,
@@ -221,6 +226,12 @@ export class WebUiModule implements Module {
     ss.fleetEventDetacher = null;
     ss.treeAggregator?.dispose();
     ss.treeAggregator = null;
+
+    // Re-derive cost snapshot for the new framework. Without this the
+    // welcome of the first connecting client (or all clients after a
+    // session switch) would carry stale or empty per-agent costs until the
+    // next inference completes.
+    ss.latestPerAgentCost = this.collectPerAgentCost();
 
     // Single fan-out listener. The framework's `onTrace` does not return a
     // detacher, so per-client subscriptions would leak across reconnects.
@@ -292,7 +303,7 @@ export class WebUiModule implements Module {
     // Update cached usage snapshot first so welcomes for late-connecting
     // clients get a current value.
     if (event.type === 'usage:updated') {
-      const e = event as unknown as { totals?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number } };
+      const e = event as unknown as { totals?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; estimatedCost?: { total: number; currency: string } } };
       const t = e.totals;
       if (t) {
         sharedServer!.latestUsage = {
@@ -300,8 +311,13 @@ export class WebUiModule implements Module {
           output: t.outputTokens ?? 0,
           cacheRead: t.cacheReadTokens ?? 0,
           cacheWrite: t.cacheCreationTokens ?? 0,
+          ...(t.estimatedCost ? { cost: { total: t.estimatedCost.total, currency: t.estimatedCost.currency } } : {}),
         };
       }
+      // Re-derive the per-agent slice from the framework's snapshot. This
+      // is the only place we reach into framework internals on the trace
+      // hot path; the call is O(agents) and guarded by the cached snapshot.
+      sharedServer!.latestPerAgentCost = this.collectPerAgentCost();
     }
 
     // External-trigger surfacing — turn `message:added` traces from MCPL
@@ -318,7 +334,13 @@ export class WebUiModule implements Module {
       event: event as unknown as { type: string; [k: string]: unknown },
     };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
-      ? { type: 'usage', usage: sharedServer!.latestUsage }
+      ? {
+          type: 'usage',
+          usage: sharedServer!.latestUsage,
+          ...(sharedServer!.latestPerAgentCost.length > 0
+            ? { perAgentCost: sharedServer!.latestPerAgentCost }
+            : {}),
+        }
       : null;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
@@ -332,6 +354,33 @@ export class WebUiModule implements Module {
    *  envelopes so the SPA can show "incoming from zulip#X" boxes. WebUI-typed
    *  user messages are excluded — those are already optimistically rendered
    *  on the originating client. */
+  /** Pull a per-agent cost snapshot from the framework's UsageTracker.
+   *  Returns [] if the framework isn't bound or no agents have been billed
+   *  yet. Used by both the welcome payload and live UsageMessage frames. */
+  private collectPerAgentCost(): import('../web/protocol.js').PerAgentCost[] {
+    if (!sharedServer?.app) return [];
+    const fw = sharedServer.app.framework as unknown as {
+      getSessionUsage?(): {
+        byAgent: Array<{
+          agentName: string;
+          usage: { estimatedCost?: { total: number; currency: string } };
+          inferenceCount: number;
+        }>;
+      };
+    };
+    if (typeof fw.getSessionUsage !== 'function') return [];
+    let snap;
+    try { snap = fw.getSessionUsage(); }
+    catch { return []; }
+    const out: import('../web/protocol.js').PerAgentCost[] = [];
+    for (const agent of snap.byAgent) {
+      const c = agent.usage.estimatedCost;
+      if (!c) continue;
+      out.push({ name: agent.agentName, cost: { total: c.total, currency: c.currency }, inferenceCount: agent.inferenceCount });
+    }
+    return out;
+  }
+
   private async maybeEmitTrigger(messageId: string, source: string): Promise<void> {
     if (!source.startsWith('mcpl:')) return;
     if (!sharedServer?.app) return;
@@ -565,7 +614,61 @@ export class WebUiModule implements Module {
         void this.handleFleetControl(client, parsed.type, parsed.name);
         return;
       }
+
+      case 'quit-confirm': {
+        void this.handleQuitConfirm(parsed.action);
+        return;
+      }
     }
+  }
+
+  /** Names of fleet children currently running. Empty when no fleet module
+   *  is mounted or every child has stopped. */
+  private runningFleetChildren(): string[] {
+    if (!sharedServer?.app) return [];
+    const fleetMod = sharedServer.app.framework.getAllModules().find((m) => m.name === 'fleet') as
+      | { getChildren(): ReadonlyMap<string, { status: string }> }
+      | undefined;
+    if (!fleetMod) return [];
+    const out: string[] = [];
+    for (const [name, child] of fleetMod.getChildren()) {
+      if (child.status === 'ready' || child.status === 'starting') out.push(name);
+    }
+    return out;
+  }
+
+  /** Defer SIGTERM so the WS frame flushes, then trigger the existing
+   *  graceful-shutdown handler. process.exit fallback covers the case where
+   *  no SIGTERM listener is registered (e.g. TUI mode). */
+  private scheduleShutdown(): void {
+    setTimeout(() => {
+      try { process.kill(process.pid, 'SIGTERM'); }
+      catch { process.exit(0); }
+    }, 150);
+  }
+
+  /** Honor the operator's response to a quit-confirm-required prompt.
+   *  kill-children: stop them gracefully, then SIGTERM. Detach: SIGTERM
+   *  immediately and let them orphan. Cancel: keep the host running. */
+  private async handleQuitConfirm(action: 'kill-children' | 'detach' | 'cancel'): Promise<void> {
+    if (action === 'cancel') return;
+    if (action === 'detach') {
+      this.scheduleShutdown();
+      return;
+    }
+    // kill-children: dispatch fleet kills in parallel and wait briefly.
+    const running = this.runningFleetChildren();
+    const fleetMod = sharedServer?.app?.framework.getAllModules().find((m) => m.name === 'fleet') as
+      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; error?: string }> }
+      | undefined;
+    if (fleetMod) {
+      await Promise.allSettled(running.map(name => fleetMod.handleToolCall({
+        name: 'kill',
+        input: { name },
+        id: `webui-quit-${Date.now()}-${name}`,
+      })));
+    }
+    this.scheduleShutdown();
   }
 
   private async handleFleetControl(client: ClientState, op: 'fleet-stop' | 'fleet-restart', name: string): Promise<void> {
@@ -820,14 +923,16 @@ export class WebUiModule implements Module {
       pending: result.asyncWork !== undefined,
     });
 
-    // Quit triggers a SIGTERM on the host so the existing graceful shutdown
-    // handler runs (framework.stop, lesson export, etc.). The setTimeout lets
-    // the command-result frame actually flush before the signal lands.
+    // /quit handling. If the recipe has running fleet children, hold the
+    // shutdown and ask the operator how to handle them — same three-way
+    // prompt as the TUI. Otherwise fall through to immediate SIGTERM.
     if (result.quit) {
-      setTimeout(() => {
-        try { process.kill(process.pid, 'SIGTERM'); }
-        catch { process.exit(0); }
-      }, 150);
+      const running = this.runningFleetChildren();
+      if (running.length > 0) {
+        this.send(client, { type: 'quit-confirm-required', children: running });
+        return;
+      }
+      this.scheduleShutdown();
     }
 
     // Branch-change side effects parity with TUI / runPiped: materialize the
@@ -1001,6 +1106,9 @@ export class WebUiModule implements Module {
       },
       childTrees,
       usage: sharedServer!.latestUsage,
+      ...(sharedServer!.latestPerAgentCost.length > 0
+        ? { perAgentCost: sharedServer!.latestPerAgentCost }
+        : {}),
     };
   }
 

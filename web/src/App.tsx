@@ -11,6 +11,7 @@ import type {
   WelcomeMessage,
   WelcomeMessageEntry,
   TokenUsage,
+  PerAgentCost,
 } from '@conhost/web/protocol';
 
 interface Message {
@@ -57,6 +58,7 @@ export function App() {
   const [messages, setMessages] = createStore<Message[]>([]);
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [draft, setDraft] = createSignal('');
   /** Currently-focused tree node + the panel mode rendered on its behalf.
    *  `mode` decides whether the side panel shows live stream events or a
@@ -71,6 +73,9 @@ export function App() {
    *  auto-expand once on first sight, so users see structure without a click. */
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set(['process:local']));
   const seenAutoExpand = new Set<string>(['process:local']);
+  /** Names of fleet children the server says are still running when /quit
+   *  was invoked. Non-null = the quit-confirm modal is open. */
+  const [quitConfirm, setQuitConfirm] = createSignal<string[] | null>(null);
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
 
@@ -299,9 +304,11 @@ export function App() {
         resetMessages: (m) => setMessages(m),
         appendMessage: (m) => setMessages(produce(arr => arr.push(m))),
         setUsage,
+        setPerAgentCost,
         appendStreamToken,
         finishStream,
         queueScroll,
+        openQuitConfirm: (children) => setQuitConfirm(children),
       });
     });
     onCleanup(() => {
@@ -383,6 +390,11 @@ export function App() {
     wire.send({ type: 'interrupt' });
   };
 
+  const respondQuit = (action: 'kill-children' | 'detach' | 'cancel'): void => {
+    wire.send({ type: 'quit-confirm', action });
+    setQuitConfirm(null);
+  };
+
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -394,6 +406,14 @@ export function App() {
     <div class="flex flex-col h-screen">
       <Header welcome={welcome()} usage={usage()} status={wire.status()} />
       <ReconnectBanner status={wire.status()} />
+      <Show when={quitConfirm()}>
+        {(list) => (
+          <QuitConfirmModal
+            childNames={list()}
+            onAction={respondQuit}
+          />
+        )}
+      </Show>
 
       <div class="flex flex-1 min-h-0">
         <main class="flex-1 flex flex-col min-w-0">
@@ -464,6 +484,7 @@ export function App() {
             <UsagePanel
               node={focusedNode()!}
               sessionUsage={usage()}
+              perAgentCost={perAgentCost()}
               onClose={closePanel}
             />
           )}
@@ -505,9 +526,12 @@ interface HandlerHooks {
   /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
   setUsage: (u: TokenUsage) => void;
+  setPerAgentCost: (c: PerAgentCost[]) => void;
   appendStreamToken: (token: string) => void;
   finishStream: () => void;
   queueScroll: () => void;
+  /** Show the quit-confirm modal with the given list of running children. */
+  openQuitConfirm: (children: string[]) => void;
 }
 
 function handleServerMessage(
@@ -520,11 +544,13 @@ function handleServerMessage(
       hooks.setWelcome(msg);
       hooks.resetMessages(msg.messages.map(entryToMessage));
       hooks.setUsage(msg.usage);
+      hooks.setPerAgentCost(msg.perAgentCost ?? []);
       hooks.queueScroll();
       return;
     }
     case 'usage':
       hooks.setUsage(msg.usage);
+      if (msg.perAgentCost) hooks.setPerAgentCost(msg.perAgentCost);
       return;
     case 'trace': {
       const e = msg.event;
@@ -583,6 +609,9 @@ function handleServerMessage(
       hooks.queueScroll();
       return;
     }
+    case 'quit-confirm-required':
+      hooks.openQuitConfirm(msg.children);
+      return;
     case 'error':
       console.warn('[server error]', msg.message);
       hooks.appendMessage({
@@ -638,6 +667,14 @@ function Header(props: {
         <span class="ml-2">{fmt(props.usage.output)} out</span>
         <Show when={props.usage.cacheRead > 0}>
           <span class="ml-2">{fmt(props.usage.cacheRead)} cache</span>
+        </Show>
+        <Show when={props.usage.cost && props.usage.cost.total > 0}>
+          <span
+            class="ml-3 text-emerald-300"
+            title={`Estimated cost (${props.usage.cost!.currency})`}
+          >
+            ${props.usage.cost!.total.toFixed(props.usage.cost!.total < 1 ? 4 : 2)}
+          </span>
         </Show>
       </div>
     </div>
@@ -778,6 +815,60 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
         )}</For>
       </div>
     </Show>
+  );
+}
+
+function QuitConfirmModal(props: {
+  childNames: string[];
+  onAction: (action: 'kill-children' | 'detach' | 'cancel') => void;
+}) {
+  // Centered overlay rather than a corner banner — quit is a deliberate
+  // action, so the dialog should command attention.
+  return (
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl max-w-md w-full mx-4 p-5">
+        <div class="text-amber-300 text-sm font-semibold mb-2">
+          Quit requested
+        </div>
+        <p class="text-neutral-300 text-sm mb-3">
+          {props.childNames.length === 1
+            ? `1 fleet child is still running:`
+            : `${props.childNames.length} fleet children are still running:`}
+        </p>
+        <ul class="text-xs font-mono text-neutral-400 mb-4 space-y-0.5">
+          <For each={props.childNames}>{(n) => <li>· {n}</li>}</For>
+        </ul>
+        <div class="grid grid-cols-1 gap-2">
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded bg-rose-900/40 hover:bg-rose-900/60 text-rose-100 text-sm text-left"
+            onClick={() => props.onAction('kill-children')}
+            title="Stop each child gracefully, then exit."
+          >
+            <span class="font-semibold">Stop children & exit</span>
+            <span class="text-rose-200/70 text-xs ml-2">graceful kill, then host shuts down</span>
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded bg-amber-900/30 hover:bg-amber-900/50 text-amber-100 text-sm text-left"
+            onClick={() => props.onAction('detach')}
+            title="Leave the children running; the host process exits anyway."
+          >
+            <span class="font-semibold">Detach & exit</span>
+            <span class="text-amber-200/70 text-xs ml-2">children orphan, host exits</span>
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-sm text-left"
+            onClick={() => props.onAction('cancel')}
+            title="Cancel the quit request."
+          >
+            <span class="font-semibold">Cancel</span>
+            <span class="text-neutral-500 text-xs ml-2">stay running</span>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

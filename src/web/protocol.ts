@@ -67,6 +67,9 @@ export interface WelcomeMessage {
   }>;
   /** Cumulative session-wide token usage at connect time. */
   usage: TokenUsage;
+  /** Per-agent cost breakdown for the parent process, present when the
+   *  framework's usage tracker has data. Empty during cold start. */
+  perAgentCost?: PerAgentCost[];
 }
 
 export interface WelcomeMessageEntry {
@@ -114,6 +117,7 @@ export interface CommandResultMessage {
 export interface UsageMessage {
   type: 'usage';
   usage: TokenUsage;
+  perAgentCost?: PerAgentCost[];
 }
 
 export interface TokenUsage {
@@ -121,6 +125,19 @@ export interface TokenUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Estimated cost for this scope. Currency is provider-derived (USD for
+   *  Anthropic). Optional because not every adapter / cached usage frame
+   *  carries pricing data. */
+  cost?: { total: number; currency: string };
+}
+
+/** Per-agent cost slice used by the WebUI usage panel to label rows. Only
+ *  surfaces parent-process agents — fleet-child agents track their own
+ *  usage in their own UsageTracker and aren't aggregated cross-process. */
+export interface PerAgentCost {
+  name: string;
+  cost: { total: number; currency: string };
+  inferenceCount: number;
 }
 
 /** Sent when the active branch changes (undo/redo/checkout). Clients should
@@ -150,6 +167,17 @@ export interface ErrorMessage {
   /** corrId echo if the error was triggered by a specific request. */
   corrId?: string;
   message: string;
+}
+
+/**
+ * /quit was issued while one or more fleet children are still running.
+ * The server holds the shutdown until the operator confirms what to do
+ * with them. Mirrors the TUI's three-way prompt — kill/cancel/detach.
+ */
+export interface QuitConfirmRequiredMessage {
+  type: 'quit-confirm-required';
+  /** Names of fleet children currently in 'ready' or 'starting' state. */
+  children: string[];
 }
 
 /**
@@ -188,6 +216,7 @@ export type WebUiServerMessage =
   | SessionChangedMessage
   | PeekMessage
   | InboundTriggerMessage
+  | QuitConfirmRequiredMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
@@ -251,6 +280,16 @@ export interface PingMessage {
   type: 'ping';
 }
 
+/**
+ * Operator's response to a quit-confirm-required prompt. The action mirrors
+ * the TUI's [Y/n/d] choices: kill the children gracefully and exit, leave
+ * them running and exit anyway, or cancel quit altogether.
+ */
+export interface QuitConfirmMessage {
+  type: 'quit-confirm';
+  action: 'kill-children' | 'detach' | 'cancel';
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
   | CommandMessage
@@ -260,6 +299,7 @@ export type WebUiClientMessage =
   | FleetStopMessage
   | FleetRestartMessage
   | SubscribePeekMessage
+  | QuitConfirmMessage
   | PingMessage;
 
 // ---------------------------------------------------------------------------
@@ -274,6 +314,6 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
   return [
     'user-message', 'command', 'route-to-child',
     'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
-    'subscribe-peek', 'ping',
+    'subscribe-peek', 'quit-confirm', 'ping',
   ].includes(v.type);
 }
