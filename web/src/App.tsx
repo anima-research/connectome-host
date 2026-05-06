@@ -1,9 +1,9 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { marked } from 'marked';
 import { createWireClient, type WireClient } from './wire';
-import { createTreeStore } from './tree';
+import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './Tree';
-import { PeekPanel, formatPeekEvent, type PeekLine } from './Peek';
+import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -24,8 +24,8 @@ interface Message {
 
 let messageCounter = 0;
 const nextMessageId = () => `m${++messageCounter}`;
-let peekIdSeq = 0;
-const peekLineId = (): number => ++peekIdSeq;
+let streamIdSeq = 0;
+const streamLineId = (): number => ++streamIdSeq;
 
 function entryToMessage(e: WelcomeMessageEntry): Message {
   return {
@@ -44,10 +44,16 @@ export function App() {
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [draft, setDraft] = createSignal('');
-  const [peekScope, setPeekScope] = createSignal<string | null>(null);
-  const [peekLines, setPeekLines] = createSignal<PeekLine[]>([]);
-  /** Pending-token buffer per peek scope; flushes on newline or non-token event. */
-  let peekTokenBuffer = '';
+  /** Currently-focused node id; null when no stream is open. */
+  const [focusedId, setFocusedId] = createSignal<string | null>(null);
+  const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
+  const [streamLines, setStreamLines] = createSignal<StreamLine[]>([]);
+  /** Default-collapsed; the parent root and freshly-spawned fleet children
+   *  auto-expand once on first sight, so users see structure without a click. */
+  const [expanded, setExpanded] = createSignal<Set<string>>(new Set(['process:local']));
+  const seenAutoExpand = new Set<string>(['process:local']);
+  /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
+  let streamTokenBuffer = '';
 
   let scrollPane: HTMLDivElement | undefined;
 
@@ -87,16 +93,16 @@ export function App() {
     });
   };
 
-  const appendPeekToken = (text: string): void => {
-    peekTokenBuffer += text;
-    const newlineIdx = peekTokenBuffer.lastIndexOf('\n');
+  const appendStreamPaneToken = (text: string): void => {
+    streamTokenBuffer += text;
+    const newlineIdx = streamTokenBuffer.lastIndexOf('\n');
     if (newlineIdx < 0) return;
-    const completed = peekTokenBuffer.slice(0, newlineIdx);
-    peekTokenBuffer = peekTokenBuffer.slice(newlineIdx + 1);
+    const completed = streamTokenBuffer.slice(0, newlineIdx);
+    streamTokenBuffer = streamTokenBuffer.slice(newlineIdx + 1);
     if (completed) {
       const lines = completed.split('\n').filter(s => s.length > 0);
-      setPeekLines((prev) => [...prev, ...lines.map(s => ({
-        id: peekLineId(),
+      setStreamLines((prev) => [...prev, ...lines.map(s => ({
+        id: streamLineId(),
         kind: 'token' as const,
         text: s,
         color: 'text-cyan-200',
@@ -104,37 +110,57 @@ export function App() {
     }
   };
 
-  const flushPeekBuffer = (): void => {
-    if (peekTokenBuffer.length === 0) return;
-    const text = peekTokenBuffer;
-    peekTokenBuffer = '';
-    setPeekLines((prev) => [...prev, {
-      id: peekLineId(),
+  const flushStreamBuffer = (): void => {
+    if (streamTokenBuffer.length === 0) return;
+    const text = streamTokenBuffer;
+    streamTokenBuffer = '';
+    setStreamLines((prev) => [...prev, {
+      id: streamLineId(),
       kind: 'token' as const,
       text,
       color: 'text-cyan-200',
     }]);
   };
 
-  const closePeek = (): void => {
-    const current = peekScope();
-    if (current) wire.send({ type: 'subscribe-peek', scope: current, active: false });
-    setPeekScope(null);
-    setPeekLines([]);
-    peekTokenBuffer = '';
+  const closeStream = (): void => {
+    const node = focusedNode();
+    if (node && node.streamSource.kind === 'peek') {
+      wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: false });
+    }
+    setFocusedId(null);
+    setFocusedNode(null);
+    setStreamLines([]);
+    streamTokenBuffer = '';
   };
 
-  const openPeek = (scope: string): void => {
-    if (scope === peekScope()) {
+  const openStream = (node: UiNode): void => {
+    if (node.streamSource.kind === 'none') return;
+    if (focusedId() === node.id) {
       // Re-clicking same node closes the panel — toggle behavior.
-      closePeek();
+      closeStream();
       return;
     }
-    if (peekScope()) closePeek();
-    setPeekScope(scope);
-    setPeekLines([]);
-    peekTokenBuffer = '';
-    wire.send({ type: 'subscribe-peek', scope, active: true });
+    // Tear down any previous subscription before retargeting.
+    const previous = focusedNode();
+    if (previous && previous.streamSource.kind === 'peek') {
+      wire.send({ type: 'subscribe-peek', scope: previous.streamSource.scope, active: false });
+    }
+    setFocusedId(node.id);
+    setFocusedNode(node);
+    setStreamLines([]);
+    streamTokenBuffer = '';
+    if (node.streamSource.kind === 'peek') {
+      wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: true });
+    }
+  };
+
+  const toggleExpand = (id: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const cancelSubagent = (name: string): void => {
@@ -149,22 +175,54 @@ export function App() {
     wire.send({ type: 'fleet-restart', name });
   };
 
-  const stopPeekTarget = (): void => {
-    const scope = peekScope();
-    if (!scope) return;
-    // Heuristic: if the scope name matches a fleet child in the tree, stop
-    // the child; otherwise treat it as a subagent. Either path is harmless
-    // if the heuristic mis-fires — the server returns a clean error.
-    const scopes = treeStore.scopes();
-    const isFleetChild = scopes.some(s => s.scope === scope);
-    if (isFleetChild) fleetStop(scope);
-    else cancelSubagent(scope);
+  /** Stop the focused stream's underlying node, dispatched by stream source kind. */
+  const stopFocusedNode = (): void => {
+    const node = focusedNode();
+    if (!node) return;
+    const src = node.streamSource;
+    if (src.kind === 'peek') cancelSubagent(src.scope);
+    else if (src.kind === 'child-event-all') fleetStop(src.childName);
+    else if (src.kind === 'child-event-agent') {
+      // Agent inside a fleet child — there's no per-agent kill verb yet, so
+      // stopping the whole child is the closest analogue.
+      fleetStop(src.childName);
+    }
+  };
+
+  /** Whether the current focused node has a sensible stop affordance. */
+  const canStopFocused = (): boolean => {
+    const node = focusedNode();
+    if (!node) return false;
+    const src = node.streamSource;
+    if (src.kind === 'peek') {
+      return node.agent?.status === 'running';
+    }
+    return src.kind === 'child-event-all' || src.kind === 'child-event-agent';
+  };
+
+  /** Auto-expand newly-discovered fleet-child folders the first time they
+   *  appear, so the user sees their agents without an extra click. */
+  const autoExpandNewFleetChildren = (): void => {
+    const roots = treeStore.build();
+    const visit = (node: UiNode): void => {
+      if (node.kind === 'fleet-child' && !seenAutoExpand.has(node.id)) {
+        seenAutoExpand.add(node.id);
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.add(node.id);
+          return next;
+        });
+      }
+      for (const c of node.children) visit(c);
+    };
+    for (const r of roots) visit(r);
   };
 
   onMount(() => {
     const detach = wire.onMessage((msg) => {
       treeStore.ingest(msg);
-      handlePeekMessage(msg);
+      autoExpandNewFleetChildren();
+      handleStreamMessage(msg);
       handleServerMessage(msg, wire, {
         setWelcome,
         setMessages,
@@ -180,36 +238,44 @@ export function App() {
     });
   });
 
-  const handlePeekMessage = (msg: WebUiServerMessage): void => {
-    const scope = peekScope();
-    if (!scope) return;
+  /** Route a server message into the stream pane *if* it matches the focused
+   *  node's StreamSource. Each kind has its own match rule. */
+  const handleStreamMessage = (msg: WebUiServerMessage): void => {
+    const node = focusedNode();
+    if (!node) return;
+    const src = node.streamSource;
+    if (src.kind === 'none') return;
 
-    // Subagent peek: dedicated `peek` envelope.
-    if (msg.type === 'peek' && msg.scope === scope) {
-      const e = msg.event;
-      if (e.type === 'tokens' && typeof e.content === 'string') {
-        appendPeekToken(e.content);
-        return;
-      }
-      flushPeekBuffer();
-      const line = formatPeekEvent(e);
-      if (line) setPeekLines((prev) => [...prev, line]);
+    if (src.kind === 'peek' && msg.type === 'peek' && msg.scope === src.scope) {
+      ingestStreamEvent(msg.event);
       return;
     }
 
-    // Fleet child peek: re-use the live child-event stream (no separate
-    // subscription; events already arrive at every welcomed client).
-    if (msg.type === 'child-event' && msg.childName === scope) {
-      const e = msg.event;
-      if (e.type === 'inference:tokens' && typeof e.content === 'string') {
-        appendPeekToken(e.content);
-        return;
-      }
-      flushPeekBuffer();
-      const line = formatPeekEvent(e);
-      if (line) setPeekLines((prev) => [...prev, line]);
+    if (msg.type !== 'child-event') return;
+
+    if (src.kind === 'child-event-all' && msg.childName === src.childName) {
+      ingestStreamEvent(msg.event);
       return;
     }
+
+    if (
+      src.kind === 'child-event-agent'
+      && msg.childName === src.childName
+      && (msg.event as { agentName?: string }).agentName === src.agentName
+    ) {
+      ingestStreamEvent(msg.event);
+      return;
+    }
+  };
+
+  const ingestStreamEvent = (event: { type: string; [k: string]: unknown }): void => {
+    if ((event.type === 'inference:tokens' || event.type === 'tokens') && typeof event.content === 'string') {
+      appendStreamPaneToken(event.content);
+      return;
+    }
+    flushStreamBuffer();
+    const line = formatStreamEvent(event);
+    if (line) setStreamLines((prev) => [...prev, line]);
   };
 
   const submit = (): void => {
@@ -220,7 +286,6 @@ export function App() {
       wire.send({ type: 'command', command: text });
       return;
     }
-    // @childname routing — bypass the conductor agent.
     const route = parseRoute(text);
     if (route) {
       setMessages((prev) => [...prev, {
@@ -232,8 +297,6 @@ export function App() {
       wire.send({ type: 'route-to-child', childName: route.childName, content: route.content });
       return;
     }
-    // Optimistically append the user's message — server will echo via traces
-    // but the immediate feedback feels right.
     setMessages((prev) => [...prev, {
       id: nextMessageId(),
       participant: 'user',
@@ -308,21 +371,26 @@ export function App() {
           </div>
         </main>
 
-        <Show when={peekScope()}>
-          <PeekPanel
-            scope={peekScope()!}
-            lines={peekLines()}
-            onClose={closePeek}
-            onStop={stopPeekTarget}
-            canStop={true}
-          />
+        <Show when={focusedNode()}>
+          {(node) => (
+            <StreamPanel
+              label={node().label}
+              scopeHint={streamHint(node().streamSource)}
+              lines={streamLines()}
+              onClose={closeStream}
+              onStop={stopFocusedNode}
+              canStop={canStopFocused()}
+            />
+          )}
         </Show>
         <aside class="w-72 border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
           <div class="flex-1 min-h-0">
             <TreeSidebar
-              scopes={treeStore.scopes()}
-              selectedScope={peekScope()}
-              onSelect={openPeek}
+              roots={treeStore.build()}
+              selectedId={focusedId()}
+              expanded={expanded()}
+              onToggleExpand={toggleExpand}
+              onSelectStream={openStream}
               onCancelSubagent={cancelSubagent}
               onFleetStop={fleetStop}
               onFleetRestart={fleetRestart}
@@ -333,6 +401,15 @@ export function App() {
       </div>
     </div>
   );
+}
+
+function streamHint(src: StreamSource): string | undefined {
+  switch (src.kind) {
+    case 'peek': return 'subagent';
+    case 'child-event-all': return 'fleet child';
+    case 'child-event-agent': return `agent in ${src.childName}`;
+    default: return undefined;
+  }
 }
 
 interface HandlerHooks {
@@ -399,8 +476,6 @@ function handleServerMessage(
       return;
     }
     case 'branch-changed':
-      // Welcome refresh follows; nothing to do here. The fresh welcome will
-      // reset messages and tree state.
       return;
     case 'session-changed':
       return;
@@ -414,7 +489,6 @@ function handleServerMessage(
       hooks.queueScroll();
       return;
     default:
-      // child-event / branch-changed / session-changed / peek not yet handled
       return;
   }
 }
@@ -507,7 +581,7 @@ function MessageView(props: { msg: Message }) {
     return (
       <div class="msg-enter font-mono text-xs bg-neutral-900/60 border border-neutral-800 rounded px-3 py-2 whitespace-pre-wrap">
         <For each={m.lines ?? [{ text: m.text }]}>{(line) => (
-          <div class={lineStyleClass(line.style)}>{line.text || ' '}</div>
+          <div class={lineStyleClass(line.style)}>{line.text || ' '}</div>
         )}</For>
       </div>
     );
@@ -552,8 +626,6 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
   const filtered = (): CommandHint[] => {
     const d = props.draft.trim();
     if (!d.startsWith('/')) return [];
-    // Only show suggestions for the leading token; don't continue showing them
-    // once the user starts typing arguments.
     const head = d.split(/\s/)[0]!.toLowerCase();
     if (d.includes(' ')) return [];
     return COMMANDS.filter(c => c.name.startsWith(head)).slice(0, 8);
@@ -581,8 +653,6 @@ function ReconnectBanner(props: { status: string }) {
   const [droppedSince, setDroppedSince] = createSignal<number | null>(null);
   const [now, setNow] = createSignal(Date.now());
 
-  // Track the moment connection drops so the banner can show elapsed time.
-  // Solid runs this effect on every status change; we only mutate on transitions.
   const updateDropTime = (): void => {
     if (props.status === 'open' || props.status === 'connecting') {
       setDroppedSince(null);
@@ -590,7 +660,6 @@ function ReconnectBanner(props: { status: string }) {
       setDroppedSince(Date.now());
     }
   };
-  // Use a tracked accessor read so Solid wires up the dependency.
   const trackStatus = (): void => { void props.status; updateDropTime(); };
 
   onMount(() => {
@@ -655,8 +724,6 @@ function lineStyleClass(style?: string): string {
   }
 }
 
-/** Parse "@childname rest of message" → route. Mirrors parseFleetRoute in the
- *  server's fleet-types.ts. Returns null on a non-route input or empty payload. */
 function parseRoute(input: string): { childName: string; content: string } | null {
   const trimmed = input.trimStart();
   if (!trimmed.startsWith('@') || trimmed.startsWith('@@')) return null;
@@ -667,7 +734,6 @@ function parseRoute(input: string): { childName: string; content: string } | nul
   return { childName: m[1]!, content };
 }
 
-// Configure marked once. Synchronous mode keeps render() safe to call from JSX.
 marked.setOptions({ async: false, breaks: false, gfm: true });
 
 function renderMarkdown(src: string): string {

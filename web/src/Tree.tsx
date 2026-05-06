@@ -1,14 +1,17 @@
 import { For, Show } from 'solid-js';
 import type { AgentNode } from '@conhost/state/agent-tree-reducer';
-import type { TreeScope } from './tree';
-import { flattenTree } from './tree';
+import type { UiNode } from './tree';
+import { flattenUiTree } from './tree';
 
 export interface TreeSidebarProps {
-  scopes: TreeScope[];
-  selectedScope: string | null;
-  /** Called when the operator clicks a node. The scope is `local` for parent
-   *  agents or the child name for fleet children / their agents. */
-  onSelect(scope: string): void;
+  roots: UiNode[];
+  /** Currently-selected stream id (UiNode.id), if any. */
+  selectedId: string | null;
+  /** Set of node ids that are expanded; render contains caret state. */
+  expanded: Set<string>;
+  onToggleExpand(id: string): void;
+  /** Open / focus the stream view for this node. */
+  onSelectStream(node: UiNode): void;
   /** Cancel an in-process subagent by display name. */
   onCancelSubagent(name: string): void;
   /** Stop a fleet child gracefully. */
@@ -19,150 +22,165 @@ export interface TreeSidebarProps {
 
 export function TreeSidebar(props: TreeSidebarProps) {
   return (
-    <div class="h-full overflow-y-auto px-3 py-3 text-xs space-y-3">
+    <div class="h-full overflow-y-auto px-2 py-2 text-xs">
       <Show
-        when={props.scopes.length > 0 && props.scopes.some(s => s.roots.length > 0)}
-        fallback={<div class="text-neutral-600 italic">No agents registered yet.</div>}
+        when={props.roots.length > 0}
+        fallback={<div class="text-neutral-600 italic px-2">No agents registered yet.</div>}
       >
-        <For each={props.scopes}>{(scope) => (
-          <ScopeBlock
-            scope={scope}
-            selectedScope={props.selectedScope}
-            onSelect={props.onSelect}
-            onCancelSubagent={props.onCancelSubagent}
-            onFleetStop={props.onFleetStop}
-            onFleetRestart={props.onFleetRestart}
-          />
-        )}</For>
+        <div class="space-y-0.5">
+          <For each={flattenUiTree(props.roots, props.expanded)}>
+            {(item) => (
+              <NodeRow
+                node={item.node}
+                depth={item.depth}
+                expanded={props.expanded.has(item.node.id)}
+                selected={props.selectedId === item.node.id}
+                onToggleExpand={() => props.onToggleExpand(item.node.id)}
+                onSelectStream={() => props.onSelectStream(item.node)}
+                onCancelSubagent={props.onCancelSubagent}
+                onFleetStop={props.onFleetStop}
+                onFleetRestart={props.onFleetRestart}
+              />
+            )}
+          </For>
+        </div>
       </Show>
     </div>
   );
 }
 
-function ScopeBlock(props: {
-  scope: TreeScope;
-  selectedScope: string | null;
-  onSelect(scope: string): void;
+function NodeRow(props: {
+  node: UiNode;
+  depth: number;
+  expanded: boolean;
+  selected: boolean;
+  onToggleExpand(): void;
+  onSelectStream(): void;
   onCancelSubagent(name: string): void;
   onFleetStop(name: string): void;
   onFleetRestart(name: string): void;
 }) {
-  const allByName = (): Map<string, AgentNode> => {
-    const m = new Map<string, AgentNode>();
-    for (const n of props.scope.roots) m.set(n.name, n);
-    return m;
-  };
-  const flat = (): ReturnType<typeof flattenTree> => flattenTree(props.scope.roots, allByName());
+  const hasChildren = (): boolean => props.node.children.length > 0;
+  const canStream = (): boolean => props.node.streamSource.kind !== 'none';
 
-  // Scope ID used for peek subscriptions. For `local`, the parent process —
-  // we use the scope label; for fleet children, the scope name *is* the
-  // child name, which is also the peek scope.
-  const peekScopeFor = (node: AgentNode): string => {
-    if (props.scope.scope === 'local') {
-      // Top-level parent agent: no peek (the trace stream is the data).
-      // Subagent: use its name. The reducer marks subagents with kind='subagent'.
-      return node.kind === 'subagent' ? node.name : props.scope.scope;
-    }
-    return props.scope.scope; // fleet child name
+  const isLiveSubagent = (): boolean =>
+    props.node.kind === 'subagent' && props.node.agent?.status === 'running';
+
+  const stopHandler = (): (() => void) | null => {
+    if (isLiveSubagent()) return () => props.onCancelSubagent(props.node.label);
+    if (props.node.kind === 'fleet-child' && props.node.fleetChildName)
+      return () => props.onFleetStop(props.node.fleetChildName!);
+    return null;
   };
 
-  const isFleetChildHeader = (node: AgentNode, depth: number): boolean => {
-    return depth === 0 && props.scope.scope !== 'local';
-  };
-
-  const isLiveSubagent = (node: AgentNode): boolean => {
-    return node.kind === 'subagent' && node.status === 'running';
-  };
-
-  return (
-    <div>
-      <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
-        {props.scope.label}
-      </div>
-      <div class="space-y-0.5">
-        <For each={flat()} fallback={<div class="text-neutral-600 italic pl-2">empty</div>}>
-          {(item) => (
-            <NodeRow
-              node={item.node}
-              depth={item.depth}
-              selected={props.selectedScope === peekScopeFor(item.node)}
-              onSelect={() => props.onSelect(peekScopeFor(item.node))}
-              onStop={
-                isLiveSubagent(item.node)
-                  ? () => props.onCancelSubagent(item.node.name)
-                  : isFleetChildHeader(item.node, item.depth)
-                    ? () => props.onFleetStop(props.scope.scope)
-                    : null
-              }
-              onRestart={
-                isFleetChildHeader(item.node, item.depth)
-                  ? () => props.onFleetRestart(props.scope.scope)
-                  : null
-              }
-            />
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
-
-function NodeRow(props: {
-  node: AgentNode;
-  depth: number;
-  selected: boolean;
-  onSelect(): void;
-  onStop: (() => void) | null;
-  onRestart: (() => void) | null;
-}) {
-  const phaseColor = (): string => {
-    switch (props.node.phase) {
-      case 'streaming': return 'bg-cyan-500/30 text-cyan-200';
-      case 'sending': return 'bg-amber-500/30 text-amber-200';
-      case 'invoking': return 'bg-fuchsia-500/30 text-fuchsia-200';
-      case 'executing': return 'bg-amber-500/30 text-amber-200';
-      case 'done': return 'bg-neutral-700 text-neutral-400';
-      case 'failed': return 'bg-rose-500/40 text-rose-200';
-      default: return 'bg-neutral-800 text-neutral-400';
-    }
-  };
-
-  const fmtTokens = (n: number): string => {
-    if (n < 1000) return String(n);
-    if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k';
-    return (n / 1_000_000).toFixed(1) + 'M';
+  const restartHandler = (): (() => void) | null => {
+    if (props.node.kind === 'fleet-child' && props.node.fleetChildName)
+      return () => props.onFleetRestart(props.node.fleetChildName!);
+    return null;
   };
 
   const selectedClass = (): string => props.selected ? 'bg-cyan-900/30' : 'hover:bg-neutral-900/40';
 
-  // Use a div + nested clickable region so the inline action buttons can sit
-  // alongside the row's own click target without nested-button issues.
   return (
     <div
-      class={`flex items-center gap-2 py-0.5 pr-1 rounded ${selectedClass()}`}
+      class={`flex items-center gap-1 py-0.5 pr-1 rounded ${selectedClass()}`}
       style={{ 'padding-left': `${0.25 + props.depth * 0.75}rem` }}
     >
+      {/* Expand caret. Always present so column widths line up; invisible for leaves. */}
       <button
         type="button"
-        class="flex items-center gap-2 flex-1 min-w-0 text-left"
-        onClick={() => props.onSelect()}
+        class={`w-4 text-center text-neutral-500 hover:text-neutral-200 ${hasChildren() ? '' : 'opacity-0 pointer-events-none'}`}
+        onClick={props.onToggleExpand}
+        title={props.expanded ? 'Collapse' : 'Expand'}
       >
-        <span class="font-mono text-neutral-300 truncate">{props.node.name}</span>
-        <span class={`px-1 rounded text-[10px] ${phaseColor()}`}>
-          {props.node.phase}
-        </span>
-        <Show when={props.node.kind === 'subagent'}>
-          <span class="text-neutral-600 text-[10px]">sub</span>
-        </Show>
-        <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
-          <Show when={props.node.tokens.input > 0}>
-            <span title="context tokens">{fmtTokens(props.node.tokens.input)}cx</span>
-          </Show>
-          <Show when={props.node.toolCallsCount > 0}>
-            <span class="ml-1" title="tool calls">·{props.node.toolCallsCount}</span>
-          </Show>
-        </span>
+        {props.expanded ? '▾' : '▸'}
       </button>
+
+      {/* Label / row click target. Clicking opens the stream view. */}
+      <button
+        type="button"
+        class="flex items-center gap-2 flex-1 min-w-0 text-left disabled:cursor-default"
+        onClick={() => {
+          if (canStream()) props.onSelectStream();
+          else if (hasChildren()) props.onToggleExpand();
+        }}
+      >
+        <NodeLabel node={props.node} />
+      </button>
+
+      <NodeActions
+        node={props.node}
+        canStream={canStream()}
+        onSelectStream={props.onSelectStream}
+        onStop={stopHandler()}
+        onRestart={restartHandler()}
+      />
+    </div>
+  );
+}
+
+function NodeLabel(props: { node: UiNode }) {
+  const n = props.node;
+  if (n.kind === 'process') {
+    return (
+      <>
+        <span class="text-neutral-600">▣</span>
+        <span class="font-mono text-neutral-200 truncate">{n.label}</span>
+        <span class="text-[10px] text-neutral-600 uppercase tracking-wider">parent</span>
+      </>
+    );
+  }
+  if (n.kind === 'fleet-child') {
+    return (
+      <>
+        <span class="text-cyan-400">▢</span>
+        <span class="font-mono text-neutral-200 truncate">{n.label}</span>
+        <span class="text-[10px] text-cyan-500 uppercase tracking-wider">child</span>
+      </>
+    );
+  }
+  // framework / subagent
+  const a = n.agent!;
+  return (
+    <>
+      <span class="font-mono text-neutral-300 truncate">{n.label}</span>
+      <span class={`px-1 rounded text-[10px] ${phaseColor(a.phase)}`}>
+        {a.phase}
+      </span>
+      <Show when={n.kind === 'subagent'}>
+        <span class="text-neutral-600 text-[10px]">sub</span>
+      </Show>
+      <span class="ml-auto text-neutral-500 text-[10px] font-mono whitespace-nowrap">
+        <Show when={a.tokens.input > 0}>
+          <span title="context tokens">{fmtTokens(a.tokens.input)}cx</span>
+        </Show>
+        <Show when={a.toolCallsCount > 0}>
+          <span class="ml-1" title="tool calls">·{a.toolCallsCount}</span>
+        </Show>
+      </span>
+    </>
+  );
+}
+
+function NodeActions(props: {
+  node: UiNode;
+  canStream: boolean;
+  onSelectStream: () => void;
+  onStop: (() => void) | null;
+  onRestart: (() => void) | null;
+}) {
+  return (
+    <>
+      <Show when={props.canStream}>
+        <button
+          type="button"
+          class="text-[10px] px-1 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded font-mono"
+          onClick={(e) => { e.stopPropagation(); props.onSelectStream(); }}
+          title="Show this node's live stream"
+        >
+          stream
+        </button>
+      </Show>
       <Show when={props.onStop}>
         <button
           type="button"
@@ -183,6 +201,24 @@ function NodeRow(props: {
           ↻
         </button>
       </Show>
-    </div>
+    </>
   );
+}
+
+function phaseColor(phase: AgentNode['phase']): string {
+  switch (phase) {
+    case 'streaming': return 'bg-cyan-500/30 text-cyan-200';
+    case 'sending': return 'bg-amber-500/30 text-amber-200';
+    case 'invoking': return 'bg-fuchsia-500/30 text-fuchsia-200';
+    case 'executing': return 'bg-amber-500/30 text-amber-200';
+    case 'done': return 'bg-neutral-700 text-neutral-400';
+    case 'failed': return 'bg-rose-500/40 text-rose-200';
+    default: return 'bg-neutral-800 text-neutral-400';
+  }
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1_000_000).toFixed(1) + 'M';
 }
