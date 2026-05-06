@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore } from './tree';
 import { TreeSidebar } from './Tree';
+import { PeekPanel, formatPeekEvent, type PeekLine } from './Peek';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -23,6 +24,8 @@ interface Message {
 
 let messageCounter = 0;
 const nextMessageId = () => `m${++messageCounter}`;
+let peekIdSeq = 0;
+const peekLineId = (): number => ++peekIdSeq;
 
 function entryToMessage(e: WelcomeMessageEntry): Message {
   return {
@@ -41,6 +44,10 @@ export function App() {
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [draft, setDraft] = createSignal('');
+  const [peekScope, setPeekScope] = createSignal<string | null>(null);
+  const [peekLines, setPeekLines] = createSignal<PeekLine[]>([]);
+  /** Pending-token buffer per peek scope; flushes on newline or non-token event. */
+  let peekTokenBuffer = '';
 
   let scrollPane: HTMLDivElement | undefined;
 
@@ -80,9 +87,70 @@ export function App() {
     });
   };
 
+  const appendPeekToken = (text: string): void => {
+    peekTokenBuffer += text;
+    const newlineIdx = peekTokenBuffer.lastIndexOf('\n');
+    if (newlineIdx < 0) return;
+    const completed = peekTokenBuffer.slice(0, newlineIdx);
+    peekTokenBuffer = peekTokenBuffer.slice(newlineIdx + 1);
+    if (completed) {
+      const lines = completed.split('\n').filter(s => s.length > 0);
+      setPeekLines((prev) => [...prev, ...lines.map(s => ({
+        id: peekLineId(),
+        kind: 'token' as const,
+        text: s,
+        color: 'text-cyan-200',
+      }))]);
+    }
+  };
+
+  const flushPeekBuffer = (): void => {
+    if (peekTokenBuffer.length === 0) return;
+    const text = peekTokenBuffer;
+    peekTokenBuffer = '';
+    setPeekLines((prev) => [...prev, {
+      id: peekLineId(),
+      kind: 'token' as const,
+      text,
+      color: 'text-cyan-200',
+    }]);
+  };
+
+  const closePeek = (): void => {
+    const current = peekScope();
+    if (current) wire.send({ type: 'subscribe-peek', scope: current, active: false });
+    setPeekScope(null);
+    setPeekLines([]);
+    peekTokenBuffer = '';
+  };
+
+  const openPeek = (scope: string): void => {
+    if (scope === peekScope()) {
+      // Re-clicking same node closes the panel — toggle behavior.
+      closePeek();
+      return;
+    }
+    if (peekScope()) closePeek();
+    setPeekScope(scope);
+    setPeekLines([]);
+    peekTokenBuffer = '';
+    wire.send({ type: 'subscribe-peek', scope, active: true });
+  };
+
+  const stopPeekTarget = (): void => {
+    const scope = peekScope();
+    if (!scope) return;
+    // For subagents: dispatch the cancel command directly. The server's
+    // `interrupt` cancels ALL agents; we want a targeted stop. Easiest path
+    // is calling subagent--cancel-by-name as a slash command analogue, but
+    // that doesn't exist. For now we fall back to the broad interrupt.
+    wire.send({ type: 'interrupt' });
+  };
+
   onMount(() => {
     const detach = wire.onMessage((msg) => {
       treeStore.ingest(msg);
+      handlePeekMessage(msg);
       handleServerMessage(msg, wire, {
         setWelcome,
         setMessages,
@@ -97,6 +165,38 @@ export function App() {
       wire.close();
     });
   });
+
+  const handlePeekMessage = (msg: WebUiServerMessage): void => {
+    const scope = peekScope();
+    if (!scope) return;
+
+    // Subagent peek: dedicated `peek` envelope.
+    if (msg.type === 'peek' && msg.scope === scope) {
+      const e = msg.event;
+      if (e.type === 'tokens' && typeof e.content === 'string') {
+        appendPeekToken(e.content);
+        return;
+      }
+      flushPeekBuffer();
+      const line = formatPeekEvent(e);
+      if (line) setPeekLines((prev) => [...prev, line]);
+      return;
+    }
+
+    // Fleet child peek: re-use the live child-event stream (no separate
+    // subscription; events already arrive at every welcomed client).
+    if (msg.type === 'child-event' && msg.childName === scope) {
+      const e = msg.event;
+      if (e.type === 'inference:tokens' && typeof e.content === 'string') {
+        appendPeekToken(e.content);
+        return;
+      }
+      flushPeekBuffer();
+      const line = formatPeekEvent(e);
+      if (line) setPeekLines((prev) => [...prev, line]);
+      return;
+    }
+  };
 
   const submit = (): void => {
     const text = draft().trim();
@@ -193,9 +293,22 @@ export function App() {
           </div>
         </main>
 
+        <Show when={peekScope()}>
+          <PeekPanel
+            scope={peekScope()!}
+            lines={peekLines()}
+            onClose={closePeek}
+            onStop={stopPeekTarget}
+            canStop={true}
+          />
+        </Show>
         <aside class="w-72 border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
           <div class="flex-1 min-h-0">
-            <TreeSidebar scopes={treeStore.scopes()} />
+            <TreeSidebar
+              scopes={treeStore.scopes()}
+              selectedScope={peekScope()}
+              onSelect={openPeek}
+            />
           </div>
           <RecipePane welcome={welcome()} />
         </aside>

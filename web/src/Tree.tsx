@@ -3,40 +3,55 @@ import type { AgentNode } from '@conhost/state/agent-tree-reducer';
 import type { TreeScope } from './tree';
 import { flattenTree } from './tree';
 
-export function TreeSidebar(props: { scopes: TreeScope[] }) {
+export interface TreeSidebarProps {
+  scopes: TreeScope[];
+  selectedScope: string | null;
+  /** Called when the operator clicks a node. The scope is `local` for parent
+   *  agents or the child name for fleet children / their agents. */
+  onSelect(scope: string): void;
+}
+
+export function TreeSidebar(props: TreeSidebarProps) {
   return (
     <div class="h-full overflow-y-auto px-3 py-3 text-xs space-y-3">
       <Show
         when={props.scopes.length > 0 && props.scopes.some(s => s.roots.length > 0)}
         fallback={<div class="text-neutral-600 italic">No agents registered yet.</div>}
       >
-        <For each={props.scopes}>{(scope) => <ScopeBlock scope={scope} />}</For>
+        <For each={props.scopes}>{(scope) => (
+          <ScopeBlock
+            scope={scope}
+            selectedScope={props.selectedScope}
+            onSelect={props.onSelect}
+          />
+        )}</For>
       </Show>
     </div>
   );
 }
 
-function ScopeBlock(props: { scope: TreeScope }) {
-  // Build a name → node map for child lookup (same shape across scope).
-  // Walks all nodes once per render — fine at admin-UI scale.
+function ScopeBlock(props: {
+  scope: TreeScope;
+  selectedScope: string | null;
+  onSelect(scope: string): void;
+}) {
   const allByName = (): Map<string, AgentNode> => {
     const m = new Map<string, AgentNode>();
-    const visit = (nodes: AgentNode[]): void => {
-      for (const n of nodes) m.set(n.name, n);
-    };
-    visit(props.scope.roots);
-    // Also collect any non-root nodes that the reducer knows about by walking
-    // children. We expose `roots` only, so children aren't directly visible —
-    // but `flattenTree` re-derives them from the parent edge, so the map needs
-    // to include nodes that are *parented* to a root. The simplest path is to
-    // pass an empty map and let flattenTree only walk roots — which means
-    // subtrees won't render. For Phase 3 we accept roots-only display; the
-    // FleetTreeAggregator already returns flat nodes per child anyway.
+    for (const n of props.scope.roots) m.set(n.name, n);
     return m;
   };
+  const flat = (): ReturnType<typeof flattenTree> => flattenTree(props.scope.roots, allByName());
 
-  const flat = (): ReturnType<typeof flattenTree> => {
-    return flattenTree(props.scope.roots, allByName());
+  // Scope ID used for peek subscriptions. For `local`, the parent process —
+  // we use the scope label; for fleet children, the scope name *is* the
+  // child name, which is also the peek scope.
+  const peekScopeFor = (node: AgentNode): string => {
+    if (props.scope.scope === 'local') {
+      // Top-level parent agent: no peek (the trace stream is the data).
+      // Subagent: use its name. The reducer marks subagents with kind='subagent'.
+      return node.kind === 'subagent' ? node.name : props.scope.scope;
+    }
+    return props.scope.scope; // fleet child name
   };
 
   return (
@@ -46,14 +61,26 @@ function ScopeBlock(props: { scope: TreeScope }) {
       </div>
       <div class="space-y-0.5">
         <For each={flat()} fallback={<div class="text-neutral-600 italic pl-2">empty</div>}>
-          {(item) => <NodeRow node={item.node} depth={item.depth} />}
+          {(item) => (
+            <NodeRow
+              node={item.node}
+              depth={item.depth}
+              selected={props.selectedScope === peekScopeFor(item.node)}
+              onSelect={() => props.onSelect(peekScopeFor(item.node))}
+            />
+          )}
         </For>
       </div>
     </div>
   );
 }
 
-function NodeRow(props: { node: AgentNode; depth: number }) {
+function NodeRow(props: {
+  node: AgentNode;
+  depth: number;
+  selected: boolean;
+  onSelect(): void;
+}) {
   const phaseColor = (): string => {
     switch (props.node.phase) {
       case 'streaming': return 'bg-cyan-500/30 text-cyan-200';
@@ -72,10 +99,14 @@ function NodeRow(props: { node: AgentNode; depth: number }) {
     return (n / 1_000_000).toFixed(1) + 'M';
   };
 
+  const selectedClass = (): string => props.selected ? 'bg-cyan-900/30' : 'hover:bg-neutral-900/40';
+
   return (
-    <div
-      class="flex items-center gap-2 py-0.5 pr-1 hover:bg-neutral-900/40 rounded"
+    <button
+      type="button"
+      class={`flex items-center gap-2 py-0.5 pr-1 rounded w-full text-left ${selectedClass()}`}
       style={{ 'padding-left': `${0.25 + props.depth * 0.75}rem` }}
+      onClick={() => props.onSelect()}
     >
       <span class="font-mono text-neutral-300 truncate">{props.node.name}</span>
       <span class={`px-1 rounded text-[10px] ${phaseColor()}`}>
@@ -92,6 +123,6 @@ function NodeRow(props: { node: AgentNode; depth: number }) {
           <span class="ml-1" title="tool calls">·{props.node.toolCallsCount}</span>
         </Show>
       </span>
-    </div>
+    </button>
   );
 }

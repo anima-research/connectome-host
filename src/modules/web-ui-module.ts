@@ -82,6 +82,10 @@ interface ClientState {
   ws: ServerWebSocket<{ id: number }>;
   /** True after we've sent the welcome message. */
   welcomed: boolean;
+  /** Open peek subscriptions for this client, keyed by scope. Each entry
+   *  carries its detacher so unsubscribe and disconnect both clean up
+   *  without the framework leaking listeners. */
+  peeks: Map<string, () => void>;
 }
 
 /** Default port — picked to be memorable and unlikely to collide. */
@@ -406,7 +410,7 @@ export class WebUiModule implements Module {
 
   private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
     const id = ws.data.id;
-    const client: ClientState = { ws, welcomed: false };
+    const client: ClientState = { ws, welcomed: false, peeks: new Map() };
     sharedServer!.clients.set(id, client);
 
     if (sharedServer?.app) this.sendWelcome(client);
@@ -482,10 +486,66 @@ export class WebUiModule implements Module {
       }
 
       case 'subscribe-peek':
-        // Phase 5+ — defined in the protocol but not yet handled.
-        this.send(client, { type: 'error', message: `'subscribe-peek' not implemented yet` });
+        this.handleSubscribePeek(client, parsed.scope, parsed.active);
         return;
     }
+  }
+
+  /**
+   * Open or close a peek window for a subagent or fleet child.
+   *
+   * For in-process subagents we hook SubagentModule.onPeekStream(name) and
+   * forward each event as a `peek` message scoped to the subagent name.
+   *
+   * For fleet children we don't need a separate subscription — child events
+   * already flow to all welcomed clients via handleFleetEvent. Returning
+   * "fleet child" here is enough to confirm the panel can rely on the
+   * existing stream.
+   */
+  private handleSubscribePeek(client: ClientState, scope: string, active: boolean): void {
+    if (!active) {
+      const detach = client.peeks.get(scope);
+      if (detach) {
+        try { detach(); } catch { /* ignore */ }
+        client.peeks.delete(scope);
+      }
+      return;
+    }
+
+    // Idempotent: re-subscribing to an already-open scope is a no-op.
+    if (client.peeks.has(scope)) return;
+
+    if (!sharedServer?.app) return;
+
+    // Fleet child path — events already arrive via child-event; no separate
+    // subscription is needed. Mark the slot so unsubscribe-peek symmetry
+    // works without special-casing.
+    const fleetMod = sharedServer.app.framework
+      .getAllModules()
+      .find((m) => m.name === 'fleet') as { getChildren(): ReadonlyMap<string, unknown> } | undefined;
+    if (fleetMod && fleetMod.getChildren().has(scope)) {
+      client.peeks.set(scope, () => { /* no-op detach */ });
+      return;
+    }
+
+    // In-process subagent path — register on SubagentModule.onPeekStream.
+    const subMod = sharedServer.app.framework
+      .getAllModules()
+      .find((m) => m.name === 'subagent') as
+      | { onPeekStream(name: string, cb: (ev: { type: string; [k: string]: unknown }) => void): () => void }
+      | undefined;
+    if (!subMod) {
+      this.send(client, { type: 'error', message: `subscribe-peek: scope '${scope}' not found` });
+      return;
+    }
+    const detach = subMod.onPeekStream(scope, (event) => {
+      this.send(client, {
+        type: 'peek',
+        scope,
+        event: event as { type: string; [k: string]: unknown },
+      });
+    });
+    client.peeks.set(scope, detach);
   }
 
   private async handleRouteToChild(client: ClientState, childName: string, content: string): Promise<void> {
@@ -522,7 +582,14 @@ export class WebUiModule implements Module {
 
   private onWsClose(ws: ServerWebSocket<{ id: number }>): void {
     const id = ws.data.id;
-    sharedServer!.clients.delete(id);
+    const client = sharedServer?.clients.get(id);
+    if (client) {
+      for (const detach of client.peeks.values()) {
+        try { detach(); } catch { /* ignore */ }
+      }
+      client.peeks.clear();
+    }
+    sharedServer?.clients.delete(id);
   }
 
   /**
