@@ -8,6 +8,7 @@ import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow } from './Mcpl';
+import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -102,6 +103,37 @@ export function App() {
   const refreshMcpl = (): void => {
     setMcplLoaded(false);
     wire.send({ type: 'request-mcpl' });
+  };
+
+  /** Workspace files panel state — mounts list + per-mount tree cache. */
+  const [mounts, setMounts] = createSignal<Mount[]>([]);
+  const [mountsLoaded, setMountsLoaded] = createSignal(false);
+  const [workspaceModuleLoaded, setWorkspaceModuleLoaded] = createSignal(false);
+  const [treesByMount, setTreesByMount] = createSignal<Map<string, FlatEntry[]>>(new Map());
+  const [expandedMounts, setExpandedMounts] = createSignal<Set<string>>(new Set());
+  const [openFile, setOpenFile] = createSignal<FileViewer | null>(null);
+  const [fileLoading, setFileLoading] = createSignal(false);
+  const refreshMounts = (): void => {
+    setMountsLoaded(false);
+    wire.send({ type: 'request-workspace-mounts' });
+  };
+  const expandMount = (name: string): void => {
+    setExpandedMounts(prev => new Set(prev).add(name));
+    if (!treesByMount().has(name)) {
+      wire.send({ type: 'request-workspace-tree', mount: name });
+    }
+  };
+  const collapseMount = (name: string): void => {
+    setExpandedMounts(prev => {
+      const next = new Set(prev);
+      next.delete(name);
+      return next;
+    });
+  };
+  const requestFile = (path: string): void => {
+    setOpenFile(null);
+    setFileLoading(true);
+    wire.send({ type: 'request-workspace-file', path });
   };
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
@@ -346,6 +378,22 @@ export function App() {
           setMcplConfigPath(configPath);
           setMcplServers(servers);
         },
+        setMounts: (loaded, moduleLoaded, list) => {
+          setMountsLoaded(loaded);
+          setWorkspaceModuleLoaded(moduleLoaded);
+          setMounts(list);
+        },
+        setMountTree: (mountName, entries) => {
+          setTreesByMount(prev => {
+            const next = new Map(prev);
+            next.set(mountName, entries);
+            return next;
+          });
+        },
+        setOpenFile: (file) => {
+          setOpenFile(file);
+          setFileLoading(false);
+        },
       });
     });
     onCleanup(() => {
@@ -451,6 +499,11 @@ export function App() {
           />
         )}
       </Show>
+      <FileViewerModal
+        file={openFile()}
+        loading={fileLoading()}
+        onClose={() => { setOpenFile(null); setFileLoading(false); }}
+      />
 
       <div class="flex flex-1 min-h-0">
         <main class="flex-1 flex flex-col min-w-0">
@@ -535,6 +588,7 @@ export function App() {
               // fresh list so we don't need to re-fetch after every change.
               if (tab === 'lessons' && !lessonsLoaded()) refreshLessons();
               if (tab === 'mcp' && !mcplLoaded()) refreshMcpl();
+              if (tab === 'files' && !mountsLoaded()) refreshMounts();
             }}
           />
           <div class="flex-1 min-h-0">
@@ -571,7 +625,17 @@ export function App() {
               />
             </Show>
             <Show when={sidebarTab() === 'files'}>
-              <PlaceholderPanel label="Files" />
+              <FilesPanel
+                loaded={mountsLoaded()}
+                moduleLoaded={workspaceModuleLoaded()}
+                mounts={mounts()}
+                treesByMount={treesByMount()}
+                expandedMounts={expandedMounts()}
+                onRefreshMounts={refreshMounts}
+                onExpandMount={expandMount}
+                onCollapseMount={collapseMount}
+                onOpenFile={requestFile}
+              />
             </Show>
           </div>
           <RecipePane welcome={welcome()} />
@@ -607,6 +671,12 @@ interface HandlerHooks {
   setLessons: (loaded: boolean, moduleLoaded: boolean, lessons: LessonRow[]) => void;
   /** Apply an mcpl-list response from the server. */
   setMcpl: (configPath: string, servers: McplServerRow[]) => void;
+  /** Apply a workspace-mounts response. */
+  setMounts: (loaded: boolean, moduleLoaded: boolean, mounts: Mount[]) => void;
+  /** Apply a workspace-tree response for one mount. */
+  setMountTree: (mount: string, entries: FlatEntry[]) => void;
+  /** Apply a workspace-file response. */
+  setOpenFile: (file: FileViewer) => void;
 }
 
 function handleServerMessage(
@@ -692,6 +762,15 @@ function handleServerMessage(
       return;
     case 'mcpl-list':
       hooks.setMcpl(msg.configPath, msg.servers);
+      return;
+    case 'workspace-mounts':
+      hooks.setMounts(true, msg.loaded, msg.mounts);
+      return;
+    case 'workspace-tree':
+      hooks.setMountTree(msg.mount, msg.entries);
+      return;
+    case 'workspace-file':
+      hooks.setOpenFile(msg);
       return;
     case 'error':
       console.warn('[server error]', msg.message);

@@ -690,6 +690,124 @@ export class WebUiModule implements Module {
         this.sendMcplList(client);
         return;
       }
+
+      case 'request-workspace-mounts': {
+        void this.sendWorkspaceMounts(client);
+        return;
+      }
+
+      case 'request-workspace-tree': {
+        void this.sendWorkspaceTree(client, parsed.mount);
+        return;
+      }
+
+      case 'request-workspace-file': {
+        void this.sendWorkspaceFileRead(client, parsed.path);
+        return;
+      }
+    }
+  }
+
+  /** Workspace surface — three small wrappers over the WorkspaceModule's
+   *  public tools (`ls`, `read`). Going through tools instead of internals
+   *  keeps the SPA decoupled from module implementation details. */
+
+  private async workspaceMod(): Promise<
+    | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+    | undefined
+  > {
+    if (!sharedServer?.app) return undefined;
+    return sharedServer.app.framework.getAllModules().find((m) => m.name === 'workspace') as
+      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+      | undefined;
+  }
+
+  private async sendWorkspaceMounts(client: ClientState): Promise<void> {
+    const mod = await this.workspaceMod();
+    if (!mod) {
+      this.send(client, { type: 'workspace-mounts', loaded: false, mounts: [] });
+      return;
+    }
+    try {
+      const result = await mod.handleToolCall({ name: 'ls', input: {}, id: `webui-ls-${Date.now()}` });
+      const data = (result.data ?? {}) as { mounts?: Array<{ name: string; path: string; mode: string }> };
+      this.send(client, {
+        type: 'workspace-mounts',
+        loaded: true,
+        mounts: data.mounts ?? [],
+      });
+    } catch (err) {
+      this.send(client, { type: 'error', message: `workspace mounts failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  private async sendWorkspaceTree(client: ClientState, mount: string): Promise<void> {
+    const mod = await this.workspaceMod();
+    if (!mod) {
+      this.send(client, { type: 'error', message: 'workspace module not loaded' });
+      return;
+    }
+    try {
+      const result = await mod.handleToolCall({
+        name: 'ls',
+        input: { path: mount, recursive: true },
+        id: `webui-tree-${Date.now()}`,
+      });
+      if (!result.success) {
+        this.send(client, { type: 'error', message: `workspace ls failed: ${result.error ?? 'unknown'}` });
+        return;
+      }
+      const data = (result.data ?? {}) as { entries?: Array<{ path: string; size: number }> };
+      this.send(client, {
+        type: 'workspace-tree',
+        mount,
+        entries: data.entries ?? [],
+      });
+    } catch (err) {
+      this.send(client, { type: 'error', message: `workspace ls failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  private async sendWorkspaceFileRead(client: ClientState, path: string): Promise<void> {
+    const mod = await this.workspaceMod();
+    if (!mod) {
+      this.send(client, { type: 'error', message: 'workspace module not loaded' });
+      return;
+    }
+    // Cap responses at 5k lines so an accidental 200MB log file doesn't
+    // jam the WS frame. Operators reading huge files should drop into a
+    // shell on the host.
+    const LIMIT = 5000;
+    try {
+      const result = await mod.handleToolCall({
+        name: 'read',
+        input: { path, limit: LIMIT },
+        id: `webui-read-${Date.now()}`,
+      });
+      if (!result.success) {
+        this.send(client, { type: 'error', message: `read ${path} failed: ${result.error ?? 'unknown'}` });
+        return;
+      }
+      const data = (result.data ?? {}) as {
+        path?: string;
+        totalLines?: number;
+        fromLine?: number;
+        toLine?: number;
+        content?: string;
+      };
+      const totalLines = data.totalLines ?? 0;
+      const toLine = data.toLine ?? totalLines;
+      this.send(client, {
+        type: 'workspace-file',
+        path: data.path ?? path,
+        totalLines,
+        fromLine: data.fromLine ?? 1,
+        toLine,
+        content: data.content ?? '',
+        truncated: toLine < totalLines,
+      });
+    } catch (err) {
+      this.send(client, { type: 'error', message: `read ${path} failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   }
 

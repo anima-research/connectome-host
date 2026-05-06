@@ -179,6 +179,41 @@ export interface LessonsListMessage {
   }>;
 }
 
+/** Workspace mount summary — response to request-workspace-mounts. */
+export interface WorkspaceMountsMessage {
+  type: 'workspace-mounts';
+  /** True iff WorkspaceModule is loaded in the recipe. */
+  loaded: boolean;
+  mounts: Array<{
+    name: string;
+    /** Filesystem path the mount maps to. */
+    path: string;
+    /** 'read-only' | 'read-write' (or any other future mode). */
+    mode: string;
+  }>;
+}
+
+/** Recursive file listing for one mount — response to request-workspace-tree. */
+export interface WorkspaceTreeMessage {
+  type: 'workspace-tree';
+  mount: string;
+  entries: Array<{ path: string; size: number }>;
+}
+
+/** File content — response to request-workspace-file. Content is
+ *  line-numbered (cat -n style) as returned by the workspace `read` tool. */
+export interface WorkspaceFileMessage {
+  type: 'workspace-file';
+  path: string;
+  totalLines: number;
+  fromLine: number;
+  toLine: number;
+  content: string;
+  /** True if the response was capped at the line limit; the SPA can warn
+   *  that the file is larger than what's shown. */
+  truncated: boolean;
+}
+
 /** MCPL server config snapshot — response to request-mcpl, mcpl-add, etc.
  *  Sent only to the requesting client; mutations don't broadcast since
  *  changes are file-only and require restart anyway. */
@@ -257,6 +292,9 @@ export type WebUiServerMessage =
   | QuitConfirmRequiredMessage
   | LessonsListMessage
   | McplListMessage
+  | WorkspaceMountsMessage
+  | WorkspaceTreeMessage
+  | WorkspaceFileMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
@@ -367,6 +405,27 @@ export interface McplSetEnvMessage {
   env: Record<string, string>;
 }
 
+/** Pull the list of workspace mounts. Response is `workspace-mounts`. */
+export interface RequestWorkspaceMountsMessage {
+  type: 'request-workspace-mounts';
+}
+
+/** Pull a recursive flat listing of files in one mount. Response is
+ *  `workspace-tree`. The flat shape mirrors what WorkspaceModule's `ls`
+ *  tool returns; the SPA folds it into a hierarchy locally. */
+export interface RequestWorkspaceTreeMessage {
+  type: 'request-workspace-tree';
+  mount: string;
+}
+
+/** Read a workspace file, capped to N lines so the wire frame stays small.
+ *  Response is `workspace-file`. */
+export interface RequestWorkspaceFileMessage {
+  type: 'request-workspace-file';
+  /** Mount-prefixed path (e.g. "tickets/2026-05-06-foo.md"). */
+  path: string;
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
   | CommandMessage
@@ -382,6 +441,9 @@ export type WebUiClientMessage =
   | McplAddMessage
   | McplRemoveMessage
   | McplSetEnvMessage
+  | RequestWorkspaceMountsMessage
+  | RequestWorkspaceTreeMessage
+  | RequestWorkspaceFileMessage
   | PingMessage;
 
 // ---------------------------------------------------------------------------
@@ -398,6 +460,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
     'subscribe-peek', 'quit-confirm', 'request-lessons',
     'request-mcpl', 'mcpl-add', 'mcpl-remove', 'mcpl-set-env',
+    'request-workspace-mounts', 'request-workspace-tree', 'request-workspace-file',
     'ping',
   ].includes(v.type);
 }
