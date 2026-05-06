@@ -67,6 +67,22 @@ export function App() {
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
 
+  /** Per-childName ring buffer of recent child-event payloads. Used to
+   *  backfill the stream pane when an operator opens a fleet child / agent
+   *  view — events fan out to every connected client regardless of focus, so
+   *  we capture them as they pass through. */
+  const FLEET_BACKFILL_LIMIT = 80;
+  const childEventBuffers = new Map<string, Array<{ type: string; [k: string]: unknown }>>();
+  const recordChildEvent = (childName: string, event: { type: string; [k: string]: unknown }): void => {
+    let buf = childEventBuffers.get(childName);
+    if (!buf) {
+      buf = [];
+      childEventBuffers.set(childName, buf);
+    }
+    buf.push(event);
+    if (buf.length > FLEET_BACKFILL_LIMIT) buf.splice(0, buf.length - FLEET_BACKFILL_LIMIT);
+  };
+
   let scrollPane: HTMLDivElement | undefined;
 
   // Append-to-last-assistant streaming buffer. createStore lets us mutate
@@ -166,6 +182,20 @@ export function App() {
     streamTokenBuffer = '';
     if (node.streamSource.kind === 'peek') {
       wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: true });
+    } else if (node.streamSource.kind === 'child-event-all') {
+      // Replay buffered child-events for this child so the panel isn't blank.
+      const buf = childEventBuffers.get(node.streamSource.childName);
+      if (buf) for (const ev of buf) ingestStreamEvent(ev);
+    } else if (node.streamSource.kind === 'child-event-agent') {
+      // Replay only events attributable to this agent inside the child.
+      const buf = childEventBuffers.get(node.streamSource.childName);
+      if (buf) {
+        for (const ev of buf) {
+          if ((ev as { agentName?: string }).agentName === node.streamSource.agentName) {
+            ingestStreamEvent(ev);
+          }
+        }
+      }
     }
   };
 
@@ -251,6 +281,11 @@ export function App() {
     const detach = wire.onMessage((msg) => {
       treeStore.ingest(msg);
       autoExpandNewFleetChildren();
+      // Capture child-events into the per-childName ring buffer so a future
+      // openStream() can backfill the panel from local history.
+      if (msg.type === 'child-event') {
+        recordChildEvent(msg.childName, msg.event);
+      }
       handleStreamMessage(msg);
       handleServerMessage(msg, wire, {
         setWelcome,

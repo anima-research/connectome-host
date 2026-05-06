@@ -593,12 +593,29 @@ export class WebUiModule implements Module {
     const subMod = sharedServer.app.framework
       .getAllModules()
       .find((m) => m.name === 'subagent') as
-      | { onPeekStream(name: string, cb: (ev: { type: string; [k: string]: unknown }) => void): () => void }
+      | {
+          onPeekStream(name: string, cb: (ev: { type: string; [k: string]: unknown }) => void): () => void;
+          peek(name?: string): Promise<Array<{
+            name: string;
+            status: string;
+            messageCount: number;
+            lastMessageSnippet: string;
+            currentStream: string;
+            pendingToolCalls: Array<{ name: string; input?: unknown }>;
+            elapsedMs: number;
+            isZombie: boolean;
+          }>>;
+        }
       | undefined;
     if (!subMod) {
       this.send(client, { type: 'error', message: `subscribe-peek: scope '${scope}' not found` });
       return;
     }
+    // Backfill: send a one-shot summary derived from the subagent's current
+    // peek snapshot before live events start. Operators opening a peek panel
+    // shouldn't see "Waiting for events…" when the agent is mid-task — the
+    // peek already knows what's in flight.
+    void this.sendPeekBackfill(client, subMod, scope);
     const detach = subMod.onPeekStream(scope, (event) => {
       this.send(client, {
         type: 'peek',
@@ -607,6 +624,76 @@ export class WebUiModule implements Module {
       });
     });
     client.peeks.set(scope, detach);
+  }
+
+  /** Push a synthetic backfill bundle for a subagent peek subscription so the
+   *  client renders something meaningful immediately rather than waiting for
+   *  the next live event. Best-effort — peek may fail mid-modification. */
+  private async sendPeekBackfill(
+    client: ClientState,
+    subMod: {
+      peek(name?: string): Promise<Array<{
+        name: string;
+        status: string;
+        messageCount: number;
+        lastMessageSnippet: string;
+        currentStream: string;
+        pendingToolCalls: Array<{ name: string; input?: unknown }>;
+        elapsedMs: number;
+        isZombie: boolean;
+      }>>;
+    },
+    scope: string,
+  ): Promise<void> {
+    let snap: Awaited<ReturnType<typeof subMod.peek>>[number] | undefined;
+    try {
+      const snaps = await subMod.peek(scope);
+      snap = snaps[0];
+    } catch {
+      return;
+    }
+    if (!snap) return;
+
+    // Header line — gives operators an at-a-glance read on what they're
+    // looking at without scrolling for context.
+    const headerBits: string[] = [
+      `status=${snap.status}`,
+      `msgs=${snap.messageCount}`,
+      `elapsed=${Math.round(snap.elapsedMs / 1000)}s`,
+    ];
+    if (snap.isZombie) headerBits.push('zombie');
+    this.send(client, {
+      type: 'peek',
+      scope,
+      event: { type: 'lifecycle', phase: `peek opened — ${headerBits.join(' ')}` },
+    });
+
+    if (snap.lastMessageSnippet) {
+      this.send(client, {
+        type: 'peek',
+        scope,
+        event: { type: 'lifecycle', phase: `last: ${snap.lastMessageSnippet.slice(-200)}` },
+      });
+    }
+
+    if (snap.currentStream) {
+      // Replay accumulated stream tokens as a single tokens event; the
+      // client folds tokens by newline so this renders as the most recent
+      // few stream lines in cyan.
+      this.send(client, {
+        type: 'peek',
+        scope,
+        event: { type: 'tokens', content: snap.currentStream },
+      });
+    }
+
+    for (const call of snap.pendingToolCalls) {
+      this.send(client, {
+        type: 'peek',
+        scope,
+        event: { type: 'tool:started', tool: call.name },
+      });
+    }
   }
 
   private async handleRouteToChild(client: ClientState, childName: string, content: string): Promise<void> {
