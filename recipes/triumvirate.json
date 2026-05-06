@@ -22,6 +22,7 @@
     "retrieval": false,
     "wake": true,
     "workspace": false,
+    "webui": true,
     "fleet": {
       "children": [
         {
