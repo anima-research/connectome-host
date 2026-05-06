@@ -619,7 +619,35 @@ export class WebUiModule implements Module {
         void this.handleQuitConfirm(parsed.action);
         return;
       }
+
+      case 'request-lessons': {
+        this.sendLessonsList(client);
+        return;
+      }
     }
+  }
+
+  /** Build a LessonsListMessage from the bound LessonsModule, if present. */
+  private sendLessonsList(client: ClientState): void {
+    if (!sharedServer?.app) return;
+    const lessonsMod = sharedServer.app.framework.getAllModules().find((m) => m.name === 'lessons') as
+      | { getLessons(): Array<{ id: string; content: string; confidence: number; tags: string[]; deprecated: boolean; deprecationReason?: string; created?: number; updated?: number }> }
+      | undefined;
+    if (!lessonsMod) {
+      this.send(client, { type: 'lessons-list', loaded: false, lessons: [] });
+      return;
+    }
+    const lessons = lessonsMod.getLessons().map(l => ({
+      id: l.id,
+      content: l.content,
+      confidence: l.confidence,
+      tags: l.tags,
+      deprecated: l.deprecated,
+      ...(l.deprecationReason ? { deprecationReason: l.deprecationReason } : {}),
+      ...(typeof l.created === 'number' ? { created: l.created } : {}),
+      ...(typeof l.updated === 'number' ? { updated: l.updated } : {}),
+    }));
+    this.send(client, { type: 'lessons-list', loaded: true, lessons });
   }
 
   /** Names of fleet children currently running. Empty when no fleet module

@@ -161,6 +161,24 @@ export interface PeekMessage {
   event: { type: string; [k: string]: unknown };
 }
 
+/** Lesson library snapshot — response to RequestLessonsMessage. Empty array
+ *  when LessonsModule isn't loaded, with `loaded: false` so the SPA can
+ *  surface a "module not loaded" hint rather than appearing broken. */
+export interface LessonsListMessage {
+  type: 'lessons-list';
+  loaded: boolean;
+  lessons: Array<{
+    id: string;
+    content: string;
+    confidence: number;
+    tags: string[];
+    deprecated: boolean;
+    deprecationReason?: string;
+    created?: number;
+    updated?: number;
+  }>;
+}
+
 /** Server-side error response. Non-fatal; the client stays connected. */
 export interface ErrorMessage {
   type: 'error';
@@ -217,6 +235,7 @@ export type WebUiServerMessage =
   | PeekMessage
   | InboundTriggerMessage
   | QuitConfirmRequiredMessage
+  | LessonsListMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
@@ -290,6 +309,12 @@ export interface QuitConfirmMessage {
   action: 'kill-children' | 'detach' | 'cancel';
 }
 
+/** Pull the parent process's full lesson library — sent on demand when the
+ *  operator opens the Lessons tab. The response is a `lessons-list` envelope. */
+export interface RequestLessonsMessage {
+  type: 'request-lessons';
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
   | CommandMessage
@@ -300,6 +325,7 @@ export type WebUiClientMessage =
   | FleetRestartMessage
   | SubscribePeekMessage
   | QuitConfirmMessage
+  | RequestLessonsMessage
   | PingMessage;
 
 // ---------------------------------------------------------------------------
@@ -314,6 +340,6 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
   return [
     'user-message', 'command', 'route-to-child',
     'interrupt', 'cancel-subagent', 'fleet-stop', 'fleet-restart',
-    'subscribe-peek', 'quit-confirm', 'ping',
+    'subscribe-peek', 'quit-confirm', 'request-lessons', 'ping',
   ].includes(v.type);
 }

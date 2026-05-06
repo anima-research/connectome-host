@@ -6,6 +6,7 @@ import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './Tree';
 import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
 import { UsagePanel } from './Usage';
+import { LessonsPanel, type LessonRow } from './Lessons';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -76,6 +77,21 @@ export function App() {
   /** Names of fleet children the server says are still running when /quit
    *  was invoked. Non-null = the quit-confirm modal is open. */
   const [quitConfirm, setQuitConfirm] = createSignal<string[] | null>(null);
+
+  /** Right-sidebar tab selection. The Tree is the most-used surface so it's
+   *  the default; lessons / mcp / files are operator-driven panels. */
+  type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files';
+  const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
+
+  /** Lessons panel state — populated by 'lessons-list' responses to a
+   *  'request-lessons' message. */
+  const [lessons, setLessons] = createSignal<LessonRow[]>([]);
+  const [lessonsLoaded, setLessonsLoaded] = createSignal(false);
+  const [lessonsModuleLoaded, setLessonsModuleLoaded] = createSignal(false);
+  const refreshLessons = (): void => {
+    setLessonsLoaded(false);
+    wire.send({ type: 'request-lessons' });
+  };
   /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
 
@@ -309,6 +325,11 @@ export function App() {
         finishStream,
         queueScroll,
         openQuitConfirm: (children) => setQuitConfirm(children),
+        setLessons: (loaded, moduleLoaded, list) => {
+          setLessonsLoaded(loaded);
+          setLessonsModuleLoaded(moduleLoaded);
+          setLessons(list);
+        },
       });
     });
     onCleanup(() => {
@@ -490,18 +511,44 @@ export function App() {
           )}
         </Show>
         <aside class="w-72 border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
+          <SidebarTabs
+            current={sidebarTab()}
+            onSelect={(tab) => {
+              setSidebarTab(tab);
+              // Lazy-load tab data on first open. The lessons-list response
+              // populates the panel; subsequent opens show the cached state
+              // until the operator hits refresh.
+              if (tab === 'lessons' && !lessonsLoaded()) refreshLessons();
+            }}
+          />
           <div class="flex-1 min-h-0">
-            <TreeSidebar
-              roots={treeStore.build()}
-              selectedId={focusedId()}
-              expanded={expanded()}
-              onToggleExpand={toggleExpand}
-              onSelectStream={openStream}
-              onSelectUsage={openUsage}
-              onCancelSubagent={cancelSubagent}
-              onFleetStop={fleetStop}
-              onFleetRestart={fleetRestart}
-            />
+            <Show when={sidebarTab() === 'tree'}>
+              <TreeSidebar
+                roots={treeStore.build()}
+                selectedId={focusedId()}
+                expanded={expanded()}
+                onToggleExpand={toggleExpand}
+                onSelectStream={openStream}
+                onSelectUsage={openUsage}
+                onCancelSubagent={cancelSubagent}
+                onFleetStop={fleetStop}
+                onFleetRestart={fleetRestart}
+              />
+            </Show>
+            <Show when={sidebarTab() === 'lessons'}>
+              <LessonsPanel
+                loaded={lessonsLoaded()}
+                moduleLoaded={lessonsModuleLoaded()}
+                lessons={lessons()}
+                onRefresh={refreshLessons}
+              />
+            </Show>
+            <Show when={sidebarTab() === 'mcp'}>
+              <PlaceholderPanel label="MCPL admin" />
+            </Show>
+            <Show when={sidebarTab() === 'files'}>
+              <PlaceholderPanel label="Files" />
+            </Show>
           </div>
           <RecipePane welcome={welcome()} />
         </aside>
@@ -532,6 +579,8 @@ interface HandlerHooks {
   queueScroll: () => void;
   /** Show the quit-confirm modal with the given list of running children. */
   openQuitConfirm: (children: string[]) => void;
+  /** Apply a lessons-list response from the server. */
+  setLessons: (loaded: boolean, moduleLoaded: boolean, lessons: LessonRow[]) => void;
 }
 
 function handleServerMessage(
@@ -611,6 +660,9 @@ function handleServerMessage(
     }
     case 'quit-confirm-required':
       hooks.openQuitConfirm(msg.children);
+      return;
+    case 'lessons-list':
+      hooks.setLessons(true, msg.loaded, msg.lessons);
       return;
     case 'error':
       console.warn('[server error]', msg.message);
@@ -815,6 +867,46 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
         )}</For>
       </div>
     </Show>
+  );
+}
+
+function SidebarTabs(props: {
+  current: 'tree' | 'lessons' | 'mcp' | 'files';
+  onSelect: (tab: 'tree' | 'lessons' | 'mcp' | 'files') => void;
+}) {
+  const tabs: Array<{ id: 'tree' | 'lessons' | 'mcp' | 'files'; label: string; title: string }> = [
+    { id: 'tree', label: 'Tree', title: 'Agent + fleet tree' },
+    { id: 'lessons', label: 'Lessons', title: 'Lesson library' },
+    { id: 'mcp', label: 'MCP', title: 'MCPL servers' },
+    { id: 'files', label: 'Files', title: 'Workspace mounts + files' },
+  ];
+  return (
+    <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px]">
+      <For each={tabs}>{(t) => (
+        <button
+          type="button"
+          class={`flex-1 px-2 py-1.5 font-mono ${
+            props.current === t.id
+              ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700'
+              : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900/60'
+          }`}
+          title={t.title}
+          onClick={() => props.onSelect(t.id)}
+        >
+          {t.label}
+        </button>
+      )}</For>
+    </div>
+  );
+}
+
+/** Stub used while a tab's full content isn't shipped yet. Replaced as each
+ *  panel lands. */
+function PlaceholderPanel(props: { label: string }) {
+  return (
+    <div class="px-3 py-3 text-xs text-neutral-600 italic">
+      {props.label} — coming soon.
+    </div>
   );
 }
 
