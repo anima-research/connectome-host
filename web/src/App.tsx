@@ -15,13 +15,20 @@ import type {
 
 interface Message {
   id: string;
-  participant: 'user' | 'assistant' | 'system' | 'tool' | 'command';
+  participant: 'user' | 'assistant' | 'system' | 'tool' | 'command' | 'trigger';
   text: string;
   toolCalls?: Array<{ id: string; name: string; input: unknown }>;
   /** Per-line style — only set for `command` messages from /slash output. */
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   /** True if the message is mid-stream — render with a cursor cue. */
   streaming?: boolean;
+  /** For 'trigger' participant: origin/source/author metadata for the box header. */
+  trigger?: {
+    origin: string;
+    source: string;
+    author?: string;
+    triggered: boolean;
+  };
 }
 
 let messageCounter = 0;
@@ -561,6 +568,21 @@ function handleServerMessage(
       return;
     case 'session-changed':
       return;
+    case 'inbound-trigger': {
+      hooks.appendMessage({
+        id: nextMessageId(),
+        participant: 'trigger',
+        text: msg.text,
+        trigger: {
+          origin: msg.origin,
+          source: msg.source,
+          author: msg.author,
+          triggered: msg.triggered,
+        },
+      });
+      hooks.queueScroll();
+      return;
+    }
     case 'error':
       console.warn('[server error]', msg.message);
       hooks.appendMessage({
@@ -669,6 +691,30 @@ function MessageView(props: { msg: Message }) {
         <For each={props.msg.lines ?? [{ text: props.msg.text }]}>{(line) => (
           <div class={lineStyleClass(line.style)}>{line.text || ' '}</div>
         )}</For>
+      </div>
+    );
+  }
+
+  if (props.msg.participant === 'trigger') {
+    const t = props.msg.trigger!;
+    // Bordered box with an origin chip — emphasises that the agent didn't
+    // generate this; the world did. Dim when the gate filtered it (no wake).
+    const tone = t.triggered
+      ? 'border-amber-700/60 bg-amber-950/20'
+      : 'border-neutral-800 bg-neutral-900/40';
+    return (
+      <div class={`msg-enter rounded border px-3 py-2 ${tone}`}>
+        <div class="flex items-center gap-2 text-[10px] uppercase tracking-wider mb-1">
+          <span class="text-amber-300 font-semibold">incoming</span>
+          <span class="font-mono text-neutral-300">{t.origin}</span>
+          <Show when={t.author}>
+            <span class="text-neutral-500">· {t.author}</span>
+          </Show>
+          <Show when={!t.triggered}>
+            <span class="ml-auto text-neutral-600 italic">(gated, no wake)</span>
+          </Show>
+        </div>
+        <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
       </div>
     );
   }

@@ -152,6 +152,32 @@ export interface ErrorMessage {
   message: string;
 }
 
+/**
+ * An external message just landed in the agent's context — e.g. an MCPL push
+ * (zulip notification, etc.) or channel incoming. The TUI quietly switches to
+ * "thinking" when this happens; the WebUI surfaces it as a labeled box so the
+ * operator can see *why* the agent is suddenly active.
+ *
+ * Not emitted for inputs typed in the WebUI itself (those are already
+ * optimistically rendered as a user message).
+ */
+export interface InboundTriggerMessage {
+  type: 'inbound-trigger';
+  /** Trace-event source field — e.g. 'mcpl:channel-incoming', 'mcpl:push-event'. */
+  source: string;
+  /** Human-readable origin label like 'zulip#general' or 'discord/myserver'. */
+  origin: string;
+  /** Did this message wake the agent up? When false the message landed but
+   *  the gate filtered it out (no inference triggered). */
+  triggered: boolean;
+  /** Author display name where applicable. */
+  author?: string;
+  /** Brief text excerpt — capped server-side to keep the wire frame small. */
+  text: string;
+  /** Server time when the message was added. */
+  timestamp: number;
+}
+
 export type WebUiServerMessage =
   | WelcomeMessage
   | TraceMessage
@@ -161,6 +187,7 @@ export type WebUiServerMessage =
   | BranchChangedMessage
   | SessionChangedMessage
   | PeekMessage
+  | InboundTriggerMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------

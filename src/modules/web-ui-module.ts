@@ -304,6 +304,14 @@ export class WebUiModule implements Module {
       }
     }
 
+    // External-trigger surfacing — turn `message:added` traces from MCPL
+    // sources into a typed wire message so the SPA can show an attribution
+    // box. Fire-and-forget; lookup may fail mid-modification.
+    if (event.type === 'message:added') {
+      const e = event as unknown as { messageId: string; source: string };
+      void this.maybeEmitTrigger(e.messageId, e.source);
+    }
+
     if (sharedServer!.clients.size === 0) return;
     const traceMsg: WebUiServerMessage = {
       type: 'trace',
@@ -316,6 +324,47 @@ export class WebUiModule implements Module {
       if (!client.welcomed) continue;
       this.send(client, traceMsg);
       if (usageMsg) this.send(client, usageMsg);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  /** Surface MCPL-sourced `message:added` traces as `inbound-trigger`
+   *  envelopes so the SPA can show "incoming from zulip#X" boxes. WebUI-typed
+   *  user messages are excluded — those are already optimistically rendered
+   *  on the originating client. */
+  private async maybeEmitTrigger(messageId: string, source: string): Promise<void> {
+    if (!source.startsWith('mcpl:')) return;
+    if (!sharedServer?.app) return;
+    type Stored = { participant: string; content: ReadonlyArray<unknown>; metadata?: Record<string, unknown>; timestamp: Date };
+    let storedMsg: Stored | null;
+    try {
+      const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
+      if (!cm) return;
+      storedMsg = (cm.getMessage(messageId) as Stored | null) ?? null;
+    } catch {
+      return;
+    }
+    if (!storedMsg) return;
+    if (storedMsg.participant !== 'user') return;
+
+    const md = storedMsg.metadata ?? {};
+    const origin = describeTriggerOrigin(source, md);
+    const author = extractAuthorName(md);
+    const text = extractText(storedMsg.content).slice(0, 500);
+    const triggered = Boolean(md.triggered);
+
+    const msg: WebUiServerMessage = {
+      type: 'inbound-trigger',
+      source,
+      origin,
+      triggered,
+      ...(author ? { author } : {}),
+      text,
+      timestamp: storedMsg.timestamp.getTime(),
+    };
+    for (const client of sharedServer.clients.values()) {
+      if (!client.welcomed) continue;
+      this.send(client, msg);
     }
   }
 
@@ -1049,6 +1098,45 @@ function flattenMessage(msg: MessageLike): WelcomeMessageEntry {
 function normalizeParticipant(raw: string): WelcomeMessageEntry['participant'] {
   if (raw === 'user' || raw === 'system' || raw === 'tool') return raw;
   return 'assistant';
+}
+
+/** Build a human label for an MCPL trigger origin. The exact metadata shape
+ *  varies by MCPL flavor (channel-incoming carries channelId; push-event has
+ *  serverId + featureSet) — surface what's most informative without
+ *  over-fitting to one server's schema. */
+function describeTriggerOrigin(source: string, md: Record<string, unknown>): string {
+  const serverId = typeof md.serverId === 'string' ? md.serverId : '?';
+  if (source === 'mcpl:channel-incoming') {
+    const channelId = typeof md.channelId === 'string' ? md.channelId : '';
+    return channelId ? `${serverId}#${channelId}` : serverId;
+  }
+  if (source === 'mcpl:push-event') {
+    const featureSet = typeof md.featureSet === 'string' ? md.featureSet : '';
+    return featureSet ? `${serverId}/${featureSet}` : serverId;
+  }
+  return source;
+}
+
+/** MCPL channel-incoming carries `author: { id, name }` in metadata; push
+ *  events sometimes do via origin spread. Best-effort extraction. */
+function extractAuthorName(md: Record<string, unknown>): string | undefined {
+  const author = md.author;
+  if (author && typeof author === 'object' && 'name' in author) {
+    const name = (author as { name?: unknown }).name;
+    if (typeof name === 'string') return name;
+  }
+  return undefined;
+}
+
+/** Pull a flat-text excerpt out of a content-block array. Mirrors what
+ *  flattenMessage does for assistant turns, scoped down to a single string. */
+function extractText(content: ReadonlyArray<unknown>): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = block as { type?: unknown; text?: unknown };
+    if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+  }
+  return parts.join('\n');
 }
 
 function mimeFor(path: string): string {
