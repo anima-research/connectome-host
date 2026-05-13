@@ -11,7 +11,7 @@
     "postinstall": "test -d web && cd web && bun install && bun run build || true"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.5.1",
+    "@animalabs/agent-framework": "^0.5.2",
     "@animalabs/context-manager": "^0.4.0",
     "@animalabs/chronicle": "^0.1.1",
     "@animalabs/membrane": "^0.5.46",

@@ -1,0 +1,18 @@
+{
+  "name": "Continued from claude.ai",
+  "agent": {
+    "name": "agent",
+    "model": "claude-sonnet-4-5-20250929",
+    "maxTokens": 16384,
+    "thinking": {
+      "enabled": true,
+      "budgetTokens": 4096
+    },
+    "systemPrompt": "You are Claude (Sonnet 4.5). This conversation has been imported from claude.ai and is being continued via the API. The original web environment has been replaced — your prior thinking has been preserved as <recovered_thinking>…</recovered_thinking> text within your earlier turns (the cryptographic signatures on thinking blocks were not preserved by the export pipeline, so the API cannot accept them as native thinking blocks). Your new thinking will operate normally in its own private channel. The web environment's tools (web_search, web_fetch, recent_chats, view, recipe_display_v0) are no longer available; historical tool calls remain in the conversation as inert evidence of past activity. The person you are talking with chose to preserve this conversation specifically because of its meaning to them.",
+    "strategy": {
+      "type": "passthrough"
+    }
+  },
+  "modules": {},
+  "mcplServers": {}
+}

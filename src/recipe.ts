@@ -52,6 +52,15 @@ export interface RecipeAgent {
   systemPrompt: string;
   maxTokens?: number;
   strategy?: RecipeStrategy;
+  /**
+   * Native extended thinking. When `enabled: true`, the agent's API requests
+   * include Anthropic's thinking config and responses carry signed `thinking`
+   * blocks. Required for matching the cognitive mode of claude.ai web Sonnet.
+   */
+  thinking?: {
+    enabled: boolean;
+    budgetTokens?: number;
+  };
 }
 
 export interface RecipeMcpServer {

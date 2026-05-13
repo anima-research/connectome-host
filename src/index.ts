@@ -353,6 +353,7 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
         systemPrompt: recipe.agent.systemPrompt,
         maxTokens: recipe.agent.maxTokens ?? 16384,
         strategy,
+        ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
       },
     ],
     modules: moduleInstances,
