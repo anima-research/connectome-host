@@ -16,6 +16,15 @@
  *
  * Cases that succeed unlock the corresponding import strategy.
  *
+ * Last run: 2026-05-13 against claude-sonnet-4-5-20250929. Results:
+ *   A_no_signature     → 400 invalid_request_error "signature: Field required"
+ *   B_empty_signature  → 400 invalid_request_error "Invalid `signature` in `thinking` block"
+ *   C_wrapped_text     → 200 OK; response itself contained native thinking
+ *   D_redacted_thinking → 400 invalid_request_error "Invalid `data` in `redacted_thinking`"
+ * Conclusion: signatures are server-generated HMACs, cryptographically validated,
+ * cannot be forged or stripped. Wrapped text is the only path that round-trips.
+ * Re-run if Anthropic loosens this in future API versions.
+ *
  * Run: ANTHROPIC_API_KEY=sk-... bun scripts/test-historical-thinking.ts
  */
 
@@ -131,7 +140,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

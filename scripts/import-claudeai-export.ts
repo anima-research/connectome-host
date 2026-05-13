@@ -178,9 +178,12 @@ const ROOT_PARENT = '00000000-0000-4000-8000-000000000000';
 /**
  * Pick a canonical path through the message tree. For unbranched conversations
  * this is just topological order. For branched ones, at each fork point we
- * recurse into the subtree whose deepest leaf has the latest `created_at`.
+ * descend into the subtree whose deepest leaf has the latest `created_at`.
+ *
+ * Single DFS post-order populates a per-node `latestLeafTime` map so the main
+ * descent is O(n) — no repeated subtree walks at branch points.
  */
-function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched: boolean } {
+export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched: boolean } {
   const byParent = new Map<string, ExportMessage[]>();
   for (const m of messages) {
     const arr = byParent.get(m.parent_message_uuid) ?? [];
@@ -188,29 +191,45 @@ function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched
     byParent.set(m.parent_message_uuid, arr);
   }
 
-  let branched = false;
-  function deepestLeafTime(msg: ExportMessage): string {
-    const children = byParent.get(msg.uuid) ?? [];
-    if (children.length === 0) return msg.created_at;
-    let best = msg.created_at;
-    for (const c of children) {
-      const t = deepestLeafTime(c);
+  // Iterative post-order to avoid recursion-depth limits on very long
+  // chains, and to memoize each node's deepest-leaf time in one pass.
+  const latestLeafTime = new Map<string, string>();
+  // Build a flat post-order list by DFS from each root.
+  const roots = byParent.get(ROOT_PARENT) ?? [];
+  const stack: Array<{ msg: ExportMessage; childIdx: number }> = roots.map((r) => ({ msg: r, childIdx: 0 }));
+  const postOrder: ExportMessage[] = [];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    const kids = byParent.get(frame.msg.uuid) ?? [];
+    if (frame.childIdx < kids.length) {
+      const next = kids[frame.childIdx++]!;
+      stack.push({ msg: next, childIdx: 0 });
+    } else {
+      postOrder.push(frame.msg);
+      stack.pop();
+    }
+  }
+  for (const node of postOrder) {
+    const kids = byParent.get(node.uuid) ?? [];
+    let best = node.created_at;
+    for (const k of kids) {
+      const t = latestLeafTime.get(k.uuid)!;
       if (t > best) best = t;
     }
-    return best;
+    latestLeafTime.set(node.uuid, best);
   }
 
+  let branched = false;
   const path: ExportMessage[] = [];
   let cursorParent = ROOT_PARENT;
   while (true) {
     const children = byParent.get(cursorParent) ?? [];
     if (children.length === 0) break;
     if (children.length > 1) branched = true;
-    // Pick the child whose subtree extends latest in time
     let pick = children[0]!;
-    let pickT = deepestLeafTime(pick);
+    let pickT = latestLeafTime.get(pick.uuid)!;
     for (let i = 1; i < children.length; i++) {
-      const t = deepestLeafTime(children[i]!);
+      const t = latestLeafTime.get(children[i]!.uuid)!;
       if (t > pickT) {
         pick = children[i]!;
         pickT = t;
@@ -227,11 +246,8 @@ function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched
 // Block transform
 // ---------------------------------------------------------------------------
 
-function transformContent(
-  msg: ExportMessage,
-): { content: ContentBlock[]; recoveredThinking: Array<{ thinking: string; summaries?: string[] }> } {
+export function transformContent(msg: ExportMessage): ContentBlock[] {
   const out: ContentBlock[] = [];
-  const recoveredThinking: Array<{ thinking: string; summaries?: string[] }> = [];
 
   // Prepend attachment texts (user-side)
   for (const att of msg.attachments ?? []) {
@@ -253,10 +269,10 @@ function transformContent(
         break;
 
       case 'thinking': {
-        recoveredThinking.push({
-          thinking: block.thinking,
-          summaries: block.summaries?.map((s) => s.summary),
-        });
+        // Full thinking text is the load-bearing form: it's what the API
+        // sees at replay and what the model reads as its prior reasoning.
+        // The sidecar import-source.json captures provenance separately,
+        // so we don't duplicate into message metadata.
         out.push({
           type: 'text',
           text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
@@ -301,6 +317,17 @@ function transformContent(
         });
         break;
       }
+
+      default: {
+        // Unknown block type — claude.ai may add new ones (server_tool_use,
+        // citations, etc.) without notice. Don't drop on the floor; emit a
+        // grep-able marker so the operator can audit what was lost.
+        const unknownType = (block as { type?: unknown }).type;
+        out.push({
+          type: 'text',
+          text: `[unknown_block type=${JSON.stringify(unknownType)}]\n${JSON.stringify(block)}`,
+        });
+      }
     }
   }
 
@@ -312,11 +339,16 @@ function transformContent(
     });
   }
 
-  return { content: out, recoveredThinking };
+  return out;
 }
 
 function escapeAttr(s: string): string {
-  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // & must be replaced first so the others' replacements aren't double-escaped.
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +374,7 @@ async function importConversation(
     const cm = await ContextManager.open({ store });
     try {
       for (const msg of path) {
-        const { content, recoveredThinking } = transformContent(msg);
+        const content = transformContent(msg);
         if (content.length === 0) continue; // skip degenerate messages
         const participant = msg.sender === 'assistant' ? opts.agentName : 'user';
         cm.addMessage(participant, content, {
@@ -354,9 +386,6 @@ async function importConversation(
             updatedAt: msg.updated_at,
             originalSender: msg.sender,
           },
-          ...(recoveredThinking.length > 0 && {
-            recoveredThinking,
-          }),
         });
       }
     } finally {
@@ -417,6 +446,13 @@ async function main() {
   );
 
   const sessionMgr = new SessionManager(opts.outDir);
+
+  // Snapshot pre-import activeSessionId so a bulk import doesn't silently
+  // steal the operator's working session. createSession() unconditionally
+  // sets activeSessionId; after a 24-convo import we'd land on whichever
+  // conversation was last in the file. Restored at the end.
+  const preImportActive = sessionMgr.load().activeSessionId || null;
+
   let succeeded = 0;
   let branchedCount = 0;
   for (const conv of filtered) {
@@ -437,6 +473,17 @@ async function main() {
     }
   }
 
+  // Restore the pre-import active session (no-op if there wasn't one — but
+  // we still leave activeSessionId as the last-imported id rather than the
+  // first, which feels less wrong if the operator had no active session).
+  if (preImportActive && !opts.dryRun) {
+    try {
+      sessionMgr.setActiveSession(preImportActive);
+    } catch {
+      // Pre-import active session may have been deleted; leave default.
+    }
+  }
+
   console.log(
     `\n${succeeded}/${filtered.length} imported${branchedCount > 0 ? `, ${branchedCount} had branches (linearized)` : ''}.`,
   );
@@ -446,7 +493,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

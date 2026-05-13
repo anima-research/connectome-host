@@ -41,6 +41,10 @@ import { SessionManager } from '../src/session-manager.js';
 // ---------------------------------------------------------------------------
 // Pricing (approximate, USD per 1M tokens). Used for the --max-spend gate
 // and the on-screen running cost.
+// Keep in sync with any canonical billing source if/when one is consolidated
+// (per memory: project_billing_tracker.md). Stale entries here only affect
+// the cost displayed during warmup; the actual spend is whatever Anthropic
+// charges.
 // ---------------------------------------------------------------------------
 
 const PRICING: Record<string, { input: number; output: number }> = {
@@ -100,25 +104,6 @@ function parseArgs(argv: string[]): Opts {
 }
 
 // ---------------------------------------------------------------------------
-// Monitorable autobio (subclassed only to expose protected queue state)
-// ---------------------------------------------------------------------------
-
-class MonitoredAutobiographicalStrategy extends AutobiographicalStrategy {
-  getQueueStats() {
-    return {
-      chunks: this.chunks.length,
-      chunksCompressed: this.chunks.filter((c) => c.compressed).length,
-      l1Queue: this.compressionQueue.length,
-      mergeQueue: this.mergeQueue.length,
-      summariesL1: this.summaries.filter((s) => s.level === 1).length,
-      summariesL2: this.summaries.filter((s) => s.level === 2).length,
-      summariesL3: this.summaries.filter((s) => s.level === 3).length,
-      pending: this.pendingCompression !== null,
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Progress renderer
 // ---------------------------------------------------------------------------
 
@@ -129,28 +114,28 @@ interface Spend {
 }
 
 function renderProgress(
-  strategy: MonitoredAutobiographicalStrategy,
+  strategy: AutobiographicalStrategy,
   startedAt: number,
   initialL1Queue: number,
   spend: Spend,
   isTty: boolean,
 ): void {
-  const s = strategy.getQueueStats();
+  const s = strategy.getProgressSnapshot();
   const elapsedMs = Date.now() - startedAt;
   const elapsedSec = elapsedMs / 1000;
 
   // Throughput: L1 chunks processed per second since start
-  const l1Done = initialL1Queue - s.l1Queue;
+  const l1Done = initialL1Queue - s.l1QueueLength;
   const l1Pct = initialL1Queue > 0 ? (l1Done / initialL1Queue) * 100 : 100;
   const throughput = l1Done > 0 ? l1Done / elapsedSec : 0;
-  const remainingL1 = s.l1Queue;
+  const remainingL1 = s.l1QueueLength;
   const etaSec = throughput > 0 ? remainingL1 / throughput : 0;
 
-  const phase = s.l1Queue > 0 ? 'L1' : s.mergeQueue > 0 ? 'merges' : 'done';
+  const phase = s.l1QueueLength > 0 ? 'L1' : s.mergeQueueLength > 0 ? 'merges' : 'done';
   const line =
     `[${phase}] L1 ${l1Done}/${initialL1Queue} (${l1Pct.toFixed(1)}%) │ ` +
-    `merges ${s.mergeQueue} queued │ ` +
-    `L1/L2/L3 ${s.summariesL1}/${s.summariesL2}/${s.summariesL3} │ ` +
+    `merges ${s.mergeQueueLength} queued │ ` +
+    `L1/L2/L3 ${s.summaryCounts.l1}/${s.summaryCounts.l2}/${s.summaryCounts.l3} │ ` +
     `tok ${(spend.inputTokens / 1000).toFixed(0)}k in / ${(spend.outputTokens / 1000).toFixed(0)}k out │ ` +
     `$${spend.cost.toFixed(2)} │ ` +
     `${formatDuration(elapsedSec)} elapsed │ ` +
@@ -218,7 +203,7 @@ async function main() {
 
   // -- Store + strategy + context manager --
   const store = JsStore.openOrCreate({ path: storePath });
-  const strategy = new MonitoredAutobiographicalStrategy({
+  const strategy = new AutobiographicalStrategy({
     compressionModel: opts.model,
     autoTickOnNewMessage: false, // we drive ticks manually
     ...(opts.l1Budget !== undefined && { l1BudgetTokens: opts.l1Budget }),
@@ -234,14 +219,14 @@ async function main() {
   });
 
   // -- Inspect initial state --
-  const initialStats = strategy.getQueueStats();
+  const initialStats = strategy.getProgressSnapshot();
   const totalMessages = cm.getAllMessages().length;
   console.error(
-    `\nInitial state: ${totalMessages} messages, ${initialStats.chunks} chunks total ` +
-      `(${initialStats.chunksCompressed} already compressed, ${initialStats.l1Queue} pending L1, ` +
-      `${initialStats.mergeQueue} merges pending).`,
+    `\nInitial state: ${totalMessages} messages, ${initialStats.totalChunks} chunks total ` +
+      `(${initialStats.chunksCompressed} already compressed, ${initialStats.l1QueueLength} pending L1, ` +
+      `${initialStats.mergeQueueLength} merges pending).`,
   );
-  if (initialStats.l1Queue === 0 && initialStats.mergeQueue === 0) {
+  if (initialStats.l1QueueLength === 0 && initialStats.mergeQueueLength === 0) {
     console.error('Nothing to do — already converged.\n');
     store.close?.();
     return;
@@ -251,7 +236,7 @@ async function main() {
   // -- Drive to convergence --
   const isTty = process.stderr.isTTY ?? false;
   const startedAt = Date.now();
-  const initialL1Queue = initialStats.l1Queue;
+  const initialL1Queue = initialStats.l1QueueLength;
 
   // Periodic progress refresh (handles long Sonnet calls so the bar doesn't
   // freeze between ticks).
@@ -263,8 +248,8 @@ async function main() {
   let aborted = false;
   try {
     while (true) {
-      const stats = strategy.getQueueStats();
-      if (stats.l1Queue === 0 && stats.mergeQueue === 0) break;
+      const stats = strategy.getProgressSnapshot();
+      if (stats.l1QueueLength === 0 && stats.mergeQueueLength === 0) break;
       if (opts.maxSpend !== null && spend.cost >= opts.maxSpend) {
         aborted = true;
         break;
@@ -277,28 +262,30 @@ async function main() {
     if (isTty) process.stderr.write('\n');
   }
 
-  const finalStats = strategy.getQueueStats();
+  const finalStats = strategy.getProgressSnapshot();
   console.error('');
   if (aborted) {
     console.error(
       `Halted at $${spend.cost.toFixed(2)} (--max-spend $${opts.maxSpend?.toFixed(2)}). ` +
         `Re-run to resume — autobio state persists in Chronicle.`,
     );
-  } else if (finalStats.l1Queue === 0 && finalStats.mergeQueue === 0) {
+  } else if (finalStats.l1QueueLength === 0 && finalStats.mergeQueueLength === 0) {
     console.error(
-      `Converged. ${finalStats.summariesL1} L1 + ${finalStats.summariesL2} L2 + ${finalStats.summariesL3} L3 summaries. ` +
+      `Converged. ${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
         `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
     );
   } else {
     console.error(
-      `Stopped with work remaining (L1=${finalStats.l1Queue}, merges=${finalStats.mergeQueue}). Re-run to continue.`,
+      `Stopped with work remaining (L1=${finalStats.l1QueueLength}, merges=${finalStats.mergeQueueLength}). Re-run to continue.`,
     );
   }
 
   store.close?.();
 }
 
-main().catch((e) => {
-  console.error('\n', e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error('\n', e);
+    process.exit(1);
+  });
+}
