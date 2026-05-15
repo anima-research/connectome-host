@@ -61,13 +61,14 @@ interface Opts {
   agentName: string;
   filter?: RegExp;
   dryRun: boolean;
+  interactive: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run]',
+      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive]',
     );
     process.exit(1);
   }
@@ -76,18 +77,22 @@ function parseArgs(argv: string[]): Opts {
   let agentName = 'agent';
   let filter: RegExp | undefined;
   let dryRun = false;
+  // Interactive by default if stdin is a TTY; --no-interactive forces off.
+  let interactive = !!process.stdin.isTTY;
   for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--out') outDir = resolve(args[++i]!);
     else if (a === '--agent') agentName = args[++i]!;
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
+    else if (a === '--no-interactive') interactive = false;
+    else if (a === '--interactive') interactive = true;
     else {
       console.error(`Unknown arg: ${a}`);
       process.exit(1);
     }
   }
-  return { exportDir, outDir, agentName, filter, dryRun };
+  return { exportDir, outDir, agentName, filter, dryRun, interactive };
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +431,171 @@ async function importConversation(
   return { sessionId: meta.id, messageCount: path.length, branched };
 }
 
+// ---------------------------------------------------------------------------
+// Interactive selection UI
+// ---------------------------------------------------------------------------
+
+function formatRow(idx: number, selected: boolean, conv: ExportConversation): string {
+  const id6 = conv.uuid.replace(/-/g, '').slice(0, 6);
+  const date = formatShortDate(conv.updated_at || conv.created_at);
+  const msgs = (conv.chat_messages?.length ?? 0).toString().padStart(4);
+  const name = (conv.name || '(unnamed)').slice(0, 64);
+  const mark = selected ? 'x' : ' ';
+  return `  [${mark}] ${idx.toString().padStart(3)}  ${id6}  ${date}  ${msgs}msg  ${name}`;
+}
+
+function formatShortDate(iso: string | undefined): string {
+  if (!iso) return '         ';
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '         ';
+  return `${months[d.getMonth()]} ${d.getDate().toString().padStart(2, ' ')} ${d.getFullYear().toString().slice(2)}`;
+}
+
+/** Parse comma-and-range index spec like "1,3-5,7" into a set of 1-based indices. */
+function parseToggleSpec(input: string, max: number): Set<number> {
+  const out = new Set<number>();
+  for (const piece of input.split(/[,\s]+/)) {
+    if (!piece) continue;
+    const dash = piece.indexOf('-');
+    if (dash > 0) {
+      const lo = parseInt(piece.slice(0, dash), 10);
+      const hi = parseInt(piece.slice(dash + 1), 10);
+      if (isNaN(lo) || isNaN(hi)) continue;
+      for (let i = Math.max(1, lo); i <= Math.min(max, hi); i++) out.add(i);
+    } else {
+      const n = parseInt(piece, 10);
+      if (!isNaN(n) && n >= 1 && n <= max) out.add(n);
+    }
+  }
+  return out;
+}
+
+/**
+ * Stdin line reader using readline's 'line' event. Robust to piped input
+ * (unlike readline.question / readline/promises.question, which hang on
+ * subsequent calls when stdin is a pipe — Bun 1.3 bug).
+ */
+function createLineReader(): { nextLine: (prompt?: string) => Promise<string | null>; close: () => void } {
+  const { createInterface } = require('node:readline');
+  const buf: string[] = [];
+  let resolveNext: ((s: string | null) => void) | null = null;
+  let closed = false;
+  const rl = createInterface({ input: process.stdin, terminal: false });
+  rl.on('line', (line: string) => {
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r(line);
+    } else {
+      buf.push(line);
+    }
+  });
+  rl.on('close', () => {
+    closed = true;
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r(null);
+    }
+  });
+  return {
+    nextLine(prompt?: string) {
+      if (prompt) process.stdout.write(prompt);
+      return new Promise<string | null>((resolve) => {
+        if (buf.length > 0) resolve(buf.shift()!);
+        else if (closed) resolve(null);
+        else resolveNext = resolve;
+      });
+    },
+    close() {
+      rl.close();
+    },
+  };
+}
+
+async function chooseInteractively(conversations: ExportConversation[]): Promise<ExportConversation[] | null> {
+  const reader = createLineReader();
+  try {
+    // Top-level menu
+    while (true) {
+      const raw = await reader.nextLine(
+        `\n${conversations.length} conversation(s) found. Import [A]ll, [C]hoose, e[X]it? `,
+      );
+      if (raw === null) return null;
+      const ans = raw.trim().toLowerCase();
+      if (ans === '' || ans === 'a') return conversations;
+      if (ans === 'x' || ans === 'q') return null;
+      if (ans === 'c') break;
+      console.log('Please enter A, C, or X.');
+    }
+
+    // Toggle UI
+    const selected = new Array<boolean>(conversations.length).fill(false);
+    const render = () => {
+      console.log('');
+      for (let i = 0; i < conversations.length; i++) {
+        console.log(formatRow(i + 1, selected[i]!, conversations[i]!));
+      }
+      const count = selected.filter((s) => s).length;
+      console.log(`\n${count}/${conversations.length} selected.`);
+    };
+    render();
+    console.log(
+      'Toggle: number(s)/range (e.g. "1,3-5"), "a" all, "n" none, "i" invert, "l" relist, [enter] commit, "x" abort.',
+    );
+    while (true) {
+      const raw = await reader.nextLine('> ');
+      if (raw === null) break; // EOF == commit
+      const input = raw.trim();
+      if (input === '') break;
+      const cmd = input.toLowerCase();
+      if (cmd === 'x' || cmd === 'q') return null;
+      if (cmd === 'a') {
+        selected.fill(true);
+        render();
+        continue;
+      }
+      if (cmd === 'n') {
+        selected.fill(false);
+        render();
+        continue;
+      }
+      if (cmd === 'i') {
+        for (let i = 0; i < selected.length; i++) selected[i] = !selected[i];
+        render();
+        continue;
+      }
+      if (cmd === 'l') {
+        render();
+        continue;
+      }
+      const toToggle = parseToggleSpec(input, conversations.length);
+      if (toToggle.size === 0) {
+        console.log('  (no valid indices in input)');
+        continue;
+      }
+      for (const i of toToggle) selected[i - 1] = !selected[i - 1];
+      // Show what just toggled, not the full list — keeps the scroll usable.
+      const summary = [...toToggle]
+        .sort((a, b) => a - b)
+        .map((i) => `${i}${selected[i - 1] ? '✓' : '·'}`)
+        .join(' ');
+      const count = selected.filter((s) => s).length;
+      console.log(`  toggled: ${summary}  (${count}/${conversations.length} selected)`);
+    }
+
+    const chosen = conversations.filter((_, i) => selected[i]);
+    if (chosen.length === 0) {
+      console.log('Nothing selected — aborting.');
+      return null;
+    }
+    return chosen;
+  } finally {
+    reader.close();
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv);
   const convPath = join(opts.exportDir, 'conversations.json');
@@ -435,12 +605,24 @@ async function main() {
   }
   const conversations: ExportConversation[] = JSON.parse(readFileSync(convPath, 'utf-8'));
 
-  const filtered = opts.filter
+  const afterRegex = opts.filter
     ? conversations.filter((c) => opts.filter!.test(c.name))
     : conversations;
 
+  let filtered: ExportConversation[];
+  if (opts.interactive) {
+    const chosen = await chooseInteractively(afterRegex);
+    if (chosen === null) {
+      console.log('Aborted.');
+      process.exit(0);
+    }
+    filtered = chosen;
+  } else {
+    filtered = afterRegex;
+  }
+
   console.log(
-    `Importing ${filtered.length}/${conversations.length} conversation(s) into ${opts.outDir}${
+    `\nImporting ${filtered.length}/${conversations.length} conversation(s) into ${opts.outDir}${
       opts.dryRun ? ' (DRY RUN)' : ''
     }\n`,
   );
