@@ -398,55 +398,78 @@ function detectModel(conversations: ExportConversation[]): { model: string | nul
 const MINIMAL_DEFAULT_PROMPT =
   'You are Claude, an AI assistant made by Anthropic. Respond honestly and helpfully.';
 
+type PromptDialogResult =
+  | { kind: 'prompt'; text: string; source: string }
+  | { kind: 'switch-model'; newModel: string };
+
 /**
  * Interactive dialog when no leaked prompt is known for the chosen model.
- * Returns the prompt text to use, or null to abort.
+ * The model itself is settled — this dialog is *only* about where the
+ * starting calibration prompt text comes from. If the operator actually
+ * wants to substitute the model, the "model" option loops back to step 1.
  *
- * Explicit choices only — no silent fallback to a "close enough" model.
+ * Returns either:
+ *   { kind: 'prompt', text, source }      — text to use, model stays
+ *   { kind: 'switch-model', newModel }    — operator wants to change model
+ *   null                                  — abort
  */
 async function handleMissingPrompt(
   model: string,
   reader: LineReader,
-): Promise<{ text: string; source: string } | null> {
+): Promise<PromptDialogResult | null> {
   console.log(`\n[2/5] No prompt source is configured for "${model}".`);
+  console.log('');
+  console.log(`      The model itself stays "${model}" — this dialog only asks where to source`);
+  console.log('      the calibration prompt text as a starting point. Step 3 will let you adjust');
+  console.log('      whatever we fetch; step 4 opens it in $EDITOR for final review.');
+  console.log('');
+  console.log(`      (If you actually want to continue with a different model instead, type`);
+  console.log(`       "model" to switch.)`);
+  console.log('');
   const ranked = rankByDistance(model, Object.keys(MODEL_PROMPT_SOURCES));
   if (ranked.length > 0) {
-    console.log('      Closest known models by name distance:');
+    console.log('      Prompt sources by name distance to the chosen model:');
     for (let i = 0; i < Math.min(ranked.length, 6); i++) {
       const { name, distance } = ranked[i]!;
       console.log(`        ${(i + 1).toString().padStart(2)}) ${name.padEnd(32)} (d=${distance})`);
     }
+    console.log('');
   }
-  console.log('');
-  console.log('      Choices:');
-  console.log('        - Number from the list above (use that model\'s prompt as a starting proxy)');
-  console.log('        - URL or local path to a leaked prompt');
-  console.log('        - "empty"   to start with no system prompt at all');
-  console.log('        - "minimal" to start with a one-line "You are Claude" default');
-  console.log('        - empty input to abort the transplant');
+  console.log('      Other choices:');
+  console.log('        - URL or local path to a leaked prompt file');
+  console.log('        - "empty"   — start with no system prompt at all');
+  console.log('        - "minimal" — start with a one-line "You are Claude" default');
+  console.log('        - "model"   — switch to a different model (returns to model selection)');
+  console.log('        - empty input — abort the transplant');
   console.log('');
   for (;;) {
     const input = await askText(reader, '      Choice: ');
     if (!input) return null;
     const lower = input.toLowerCase();
 
+    if (lower === 'model') {
+      console.log(`      The current model is "${model}". What model do you want instead?`);
+      const newModel = await askRequired(reader, '      New model ID: ');
+      return { kind: 'switch-model', newModel };
+    }
+
     // Number into the ranked list
     const asNum = parseInt(input, 10);
     if (!isNaN(asNum) && asNum >= 1 && asNum <= ranked.length) {
       const pick = ranked[asNum - 1]!.name;
       const url = MODEL_PROMPT_SOURCES[pick]!;
-      console.log(`      → Using ${pick} as proxy (${url})`);
-      console.log(`        Note: this is an explicit substitution, not "${model}". The model name in the recipe will still be "${model}", but the prompt text comes from ${pick}.`);
+      console.log(`      → Will source prompt text from ${pick} (${url})`);
+      console.log(`        The recipe's model field stays "${model}". Only the prompt body comes from ${pick}.`);
       const ok = await askYesNo(reader, '      Proceed?', true);
       if (!ok) continue;
       const text = await fetchPromptSource(url);
-      return { text, source: url };
+      return { kind: 'prompt', text, source: url };
     }
 
     if (lower === 'empty') {
       const ok = await askYesNo(reader, '      Use empty system prompt (model runs with only the transplant addendum + memories)?', false);
       if (!ok) continue;
-      return { text: '', source: '(empty)' };
+      return { kind: 'prompt', text: '', source: '(empty)' };
     }
 
     if (lower === 'minimal') {
@@ -454,27 +477,29 @@ async function handleMissingPrompt(
       console.log(`        ${MINIMAL_DEFAULT_PROMPT}`);
       const ok = await askYesNo(reader, '      Use this?', true);
       if (!ok) continue;
-      return { text: MINIMAL_DEFAULT_PROMPT, source: '(minimal default)' };
+      return { kind: 'prompt', text: MINIMAL_DEFAULT_PROMPT, source: '(minimal default)' };
     }
 
     if (input.startsWith('http://') || input.startsWith('https://') || existsSync(input)) {
       try {
         const text = await fetchPromptSource(input);
-        return { text, source: input };
+        return { kind: 'prompt', text, source: input };
       } catch (e) {
         console.log(`      Fetch failed: ${(e as Error).message}`);
         continue;
       }
     }
 
-    // Bare model name not in the list
+    // Bare model name not in the list — treat as a sibling lookup if it's
+    // in our map; otherwise nudge.
     if (MODEL_PROMPT_SOURCES[input]) {
       const url = MODEL_PROMPT_SOURCES[input]!;
+      console.log(`      → Will source prompt text from ${input}. Recipe model stays "${model}".`);
       const text = await fetchPromptSource(url);
-      return { text, source: url };
+      return { kind: 'prompt', text, source: url };
     }
 
-    console.log(`      "${input}" is neither a list number, known model, URL, nor local path. Try again.`);
+    console.log(`      "${input}" is neither a list number, known model, URL, "model", "empty", nor "minimal". Try again.`);
   }
 }
 
@@ -696,9 +721,11 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
         model = detected.model;
       }
     } else {
-      console.log('      No model surfaced in export (older format?).');
+      console.log('      This export doesn\'t include model metadata per message');
+      console.log('      (claude.ai didn\'t always record it). The model itself isn\'t');
+      console.log('      unknown — it\'s just absent from the export. Please name it.');
       console.log('      Known map entries:', Object.keys(MODEL_PROMPT_SOURCES).join(', '));
-      model = await askRequired(reader, '      Enter model ID: ');
+      model = await askRequired(reader, '      Model ID for this conversation: ');
     }
     // Retirement check happens AFTER the operator has named the model but
     // BEFORE we cache it as the working model. If they decline to substitute,
@@ -720,34 +747,54 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       console.log(`      (substituted for retired original: ${state.originalModel})`);
     }
   }
-  const model = state.model!;
 
   // -- Step 2: fetch prompt source --
   if (!state.rawPrompt) {
-    const directSource = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[model];
-    let source: string;
-    let raw: string;
-    if (directSource) {
-      console.log(`\n[2/5] Fetching prompt from ${directSource}`);
-      raw = await fetchPromptSource(directSource);
-      console.log(`      Fetched ${raw.length} bytes.`);
-      source = directSource;
-    } else {
-      const result = await handleMissingPrompt(model, reader);
+    // Loop because the operator may switch the model from inside the dialog —
+    // a fresh model lookup might (or might not) hit a direct prompt source.
+    while (!state.rawPrompt) {
+      const directSource = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[state.model!];
+      if (directSource) {
+        console.log(`\n[2/5] Fetching prompt from ${directSource}`);
+        const raw = await fetchPromptSource(directSource);
+        console.log(`      Fetched ${raw.length} bytes.`);
+        state.promptSource = directSource;
+        state.rawPrompt = raw;
+        saveState(opts.dataDir, state);
+        break;
+      }
+      const result = await handleMissingPrompt(state.model!, reader);
       if (result === null) {
         console.log('      Aborted.');
         process.exit(0);
       }
-      raw = result.text;
-      source = result.source;
-      console.log(`      Using prompt source: ${source} (${raw.length} bytes).`);
+      if (result.kind === 'switch-model') {
+        // Re-check retirement on the substituted model.
+        const retire = checkRetirement(result.newModel);
+        if (retire.retired) {
+          const replacement = await handleRetiredModel(result.newModel, retire.era!, retire.closestLiving, reader);
+          if (replacement === null) process.exit(0);
+          state.originalModel = state.originalModel ?? state.model;
+          state.model = replacement;
+        } else {
+          state.originalModel = state.originalModel ?? state.model;
+          state.model = result.newModel;
+        }
+        saveState(opts.dataDir, state);
+        console.log(`      Model switched to "${state.model}". Re-evaluating prompt source...`);
+        continue;
+      }
+      // result.kind === 'prompt'
+      state.promptSource = result.source;
+      state.rawPrompt = result.text;
+      saveState(opts.dataDir, state);
+      console.log(`      Using prompt source: ${result.source} (${result.text.length} bytes).`);
     }
-    state.promptSource = source;
-    state.rawPrompt = raw;
-    saveState(opts.dataDir, state);
   } else {
     console.log(`\n[2/5] Resumed: prompt cached (${state.rawPrompt.length} bytes from ${state.promptSource})`);
   }
+  // Read model after step 2, since switch-model in the prompt dialog may have updated it.
+  const model = state.model!;
 
   // -- Step 3: optional Sonnet adjustment --
   let workingPrompt = state.adjustedPrompt ?? state.rawPrompt!;
