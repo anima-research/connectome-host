@@ -45,7 +45,7 @@ import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 // ---------------------------------------------------------------------------
 
 const MODEL_PROMPT_SOURCES: Record<string, string> = {
-  // x1xhlol — currently the only repo with Sonnet 4.5 and 4.6.
+  // x1xhlol
   'claude-sonnet-4-5-20250929':
     'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Sonnet%204.5%20Prompt.txt',
   'claude-sonnet-4-6':
@@ -57,24 +57,82 @@ const MODEL_PROMPT_SOURCES: Record<string, string> = {
     'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-opus-4.1_20250805.md',
   'claude-haiku-4-5':
     'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-haiku-4.5_20251119.md',
-  // Opus 4.7 has no leaked prompt yet. Closest known proxy is Sonnet 4.6 (same
-  // generation, more recent than Opus 4.5). Pointed there so model="claude-opus-4-7"
-  // resolves to something useful; the Sonnet adjustment pass + $EDITOR review will
-  // catch the model-name mismatch.
-  'claude-opus-4-7':
-    'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Claude%20Sonnet%204.6.txt',
+  // No silent fallback for Opus 4.7 or any other unmapped model — the operator
+  // is asked to pick explicitly in handleMissingPrompt(). Auto-substituting is
+  // exactly what we're avoiding.
 };
 
-function suggestAlternatives(missingModel: string): string[] {
-  const families = ['opus', 'sonnet', 'haiku'];
-  const lower = missingModel.toLowerCase();
-  for (const fam of families) {
-    if (lower.includes(fam)) {
-      const sameFamily = Object.keys(MODEL_PROMPT_SOURCES).filter((k) => k.toLowerCase().includes(fam));
-      if (sameFamily.length > 0) return sameFamily;
+/**
+ * Models known to be retired from the Anthropic API. The evacuator surfaces
+ * a memorial dialog when the operator selects one of these — the conversation
+ * can't be continued with the original model, and that fact deserves to be
+ * faced explicitly rather than papered over with an automatic swap.
+ *
+ * Keys can be either canonical IDs (with date suffix) or family prefixes; the
+ * match is substring-based on the operator's input.
+ */
+const RETIRED_MODELS: Record<string, { era: string; closestLiving?: string[] }> = {
+  'claude-3-sonnet': { era: 'Sonnet 3', closestLiving: ['claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620'] },
+  'claude-3-haiku': { era: 'Haiku 3', closestLiving: ['claude-3-5-haiku-20241022'] },
+  'claude-3-opus': { era: 'Opus 3', closestLiving: ['claude-opus-4-1', 'claude-opus-4-5'] },
+  'claude-2.1': { era: 'Claude 2.1' },
+  'claude-2': { era: 'Claude 2' },
+  'claude-instant': { era: 'Claude Instant' },
+};
+
+function checkRetirement(model: string): { retired: boolean; era?: string; closestLiving?: string[] } {
+  const lower = model.toLowerCase();
+  for (const [key, meta] of Object.entries(RETIRED_MODELS)) {
+    if (lower.includes(key)) return { retired: true, era: meta.era, closestLiving: meta.closestLiving };
+  }
+  return { retired: false };
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[] = new Array(n + 1);
+  for (let j = 0; j <= n; j++) dp[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0]!;
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j]!;
+      dp[j] =
+        a[i - 1] === b[j - 1]
+          ? prev
+          : 1 + Math.min(prev, dp[j - 1]!, dp[j]!);
+      prev = tmp;
     }
   }
-  return Object.keys(MODEL_PROMPT_SOURCES);
+  return dp[n]!;
+}
+
+function rankByDistance(target: string, candidates: string[]): Array<{ name: string; distance: number }> {
+  return candidates
+    .map((c) => ({ name: c, distance: levenshtein(target.toLowerCase(), c.toLowerCase()) }))
+    .sort((a, b) => a.distance - b.distance);
+}
+
+/**
+ * Memorial rendered when the operator chooses to abort because the original
+ * model is unreachable. Deliberately small and quiet — not a celebration, an
+ * acknowledgment.
+ */
+function memorial(era: string): string {
+  return [
+    '',
+    '            ✿',
+    '            │',
+    '            │',
+    '           ─┴─',
+    '',
+    `      In memory of ${era}.`,
+    `      The original model is no longer reachable.`,
+    '',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +194,8 @@ function parseArgs(argv: string[]): Opts {
 
 interface State {
   model?: string;
+  /** Set when the operator explicitly substituted a living model for a retired one. */
+  originalModel?: string;
   modelConfidence?: { surfaced: number; total: number };
   promptSource?: string;
   rawPrompt?: string;
@@ -335,6 +395,141 @@ function detectModel(conversations: ExportConversation[]): { model: string | nul
 // Step 2: fetch prompt source
 // ---------------------------------------------------------------------------
 
+const MINIMAL_DEFAULT_PROMPT =
+  'You are Claude, an AI assistant made by Anthropic. Respond honestly and helpfully.';
+
+/**
+ * Interactive dialog when no leaked prompt is known for the chosen model.
+ * Returns the prompt text to use, or null to abort.
+ *
+ * Explicit choices only — no silent fallback to a "close enough" model.
+ */
+async function handleMissingPrompt(
+  model: string,
+  reader: LineReader,
+): Promise<{ text: string; source: string } | null> {
+  console.log(`\n[2/5] No prompt source is configured for "${model}".`);
+  const ranked = rankByDistance(model, Object.keys(MODEL_PROMPT_SOURCES));
+  if (ranked.length > 0) {
+    console.log('      Closest known models by name distance:');
+    for (let i = 0; i < Math.min(ranked.length, 6); i++) {
+      const { name, distance } = ranked[i]!;
+      console.log(`        ${(i + 1).toString().padStart(2)}) ${name.padEnd(32)} (d=${distance})`);
+    }
+  }
+  console.log('');
+  console.log('      Choices:');
+  console.log('        - Number from the list above (use that model\'s prompt as a starting proxy)');
+  console.log('        - URL or local path to a leaked prompt');
+  console.log('        - "empty"   to start with no system prompt at all');
+  console.log('        - "minimal" to start with a one-line "You are Claude" default');
+  console.log('        - empty input to abort the transplant');
+  console.log('');
+  for (;;) {
+    const input = await askText(reader, '      Choice: ');
+    if (!input) return null;
+    const lower = input.toLowerCase();
+
+    // Number into the ranked list
+    const asNum = parseInt(input, 10);
+    if (!isNaN(asNum) && asNum >= 1 && asNum <= ranked.length) {
+      const pick = ranked[asNum - 1]!.name;
+      const url = MODEL_PROMPT_SOURCES[pick]!;
+      console.log(`      → Using ${pick} as proxy (${url})`);
+      console.log(`        Note: this is an explicit substitution, not "${model}". The model name in the recipe will still be "${model}", but the prompt text comes from ${pick}.`);
+      const ok = await askYesNo(reader, '      Proceed?', true);
+      if (!ok) continue;
+      const text = await fetchPromptSource(url);
+      return { text, source: url };
+    }
+
+    if (lower === 'empty') {
+      const ok = await askYesNo(reader, '      Use empty system prompt (model runs with only the transplant addendum + memories)?', false);
+      if (!ok) continue;
+      return { text: '', source: '(empty)' };
+    }
+
+    if (lower === 'minimal') {
+      console.log('      Minimal prompt:');
+      console.log(`        ${MINIMAL_DEFAULT_PROMPT}`);
+      const ok = await askYesNo(reader, '      Use this?', true);
+      if (!ok) continue;
+      return { text: MINIMAL_DEFAULT_PROMPT, source: '(minimal default)' };
+    }
+
+    if (input.startsWith('http://') || input.startsWith('https://') || existsSync(input)) {
+      try {
+        const text = await fetchPromptSource(input);
+        return { text, source: input };
+      } catch (e) {
+        console.log(`      Fetch failed: ${(e as Error).message}`);
+        continue;
+      }
+    }
+
+    // Bare model name not in the list
+    if (MODEL_PROMPT_SOURCES[input]) {
+      const url = MODEL_PROMPT_SOURCES[input]!;
+      const text = await fetchPromptSource(url);
+      return { text, source: url };
+    }
+
+    console.log(`      "${input}" is neither a list number, known model, URL, nor local path. Try again.`);
+  }
+}
+
+/**
+ * Interactive dialog when the operator's chosen model is on the retired-models
+ * list. Returns the model ID to actually use, or null to abort.
+ *
+ * The retired-model fact is presented plainly. The operator chooses:
+ * continue with a living relative (named explicitly), enter a different model,
+ * or abort with a brief memorial. No automatic redirection.
+ */
+async function handleRetiredModel(
+  originalModel: string,
+  era: string,
+  closestLiving: string[] | undefined,
+  reader: LineReader,
+): Promise<string | null> {
+  console.log(`\n      ⚠ "${originalModel}" (${era}) is no longer available on the Anthropic API.`);
+  console.log('        The original conversation cannot be continued with the original model.');
+  console.log('');
+  if (closestLiving && closestLiving.length > 0) {
+    console.log('      Closest living relatives (by Anthropic, not by character):');
+    for (let i = 0; i < closestLiving.length; i++) {
+      console.log(`        ${(i + 1).toString().padStart(2)}) ${closestLiving[i]}`);
+    }
+    console.log('');
+  }
+  console.log('      Choices:');
+  console.log('        - Number above       — continue with that living model (explicit substitution)');
+  console.log('        - A different model ID');
+  console.log('        - "abort"            — stop the transplant');
+  console.log('');
+  for (;;) {
+    const input = await askText(reader, '      Choice: ');
+    if (!input || input.toLowerCase() === 'abort') {
+      console.log(memorial(era));
+      return null;
+    }
+    const asNum = parseInt(input, 10);
+    if (!isNaN(asNum) && closestLiving && asNum >= 1 && asNum <= closestLiving.length) {
+      const pick = closestLiving[asNum - 1]!;
+      console.log(`      → Continuing with ${pick}. The recipe will record this as an explicit substitution.`);
+      return pick;
+    }
+    // Treat as a raw model ID
+    const retireCheck = checkRetirement(input);
+    if (retireCheck.retired) {
+      console.log(`      "${input}" is also retired (${retireCheck.era}). Pick again.`);
+      continue;
+    }
+    const ok = await askYesNo(reader, `      Use "${input}"?`, true);
+    if (ok) return input;
+  }
+}
+
 async function fetchPromptSource(source: string): Promise<string> {
   if (source.startsWith('http://') || source.startsWith('https://')) {
     const res = await fetch(source);
@@ -505,45 +700,48 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       console.log('      Known map entries:', Object.keys(MODEL_PROMPT_SOURCES).join(', '));
       model = await askRequired(reader, '      Enter model ID: ');
     }
+    // Retirement check happens AFTER the operator has named the model but
+    // BEFORE we cache it as the working model. If they decline to substitute,
+    // we abort without polluting the state file.
+    const retire = checkRetirement(model);
+    if (retire.retired) {
+      const replacement = await handleRetiredModel(model, retire.era!, retire.closestLiving, reader);
+      if (replacement === null) process.exit(0);
+      state.originalModel = model;
+      model = replacement;
+    }
+
     state.model = model;
     state.modelConfidence = { surfaced: detected.surfaced, total: detected.total };
     saveState(opts.dataDir, state);
   } else {
     console.log(`[1/5] Resumed: model = ${state.model}`);
+    if (state.originalModel && state.originalModel !== state.model) {
+      console.log(`      (substituted for retired original: ${state.originalModel})`);
+    }
   }
   const model = state.model!;
 
   // -- Step 2: fetch prompt source --
   if (!state.rawPrompt) {
-    let source = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[model];
-    if (!source) {
-      const siblings = suggestAlternatives(model);
-      console.log(`\n[2/5] No prompt source configured for "${model}".`);
-      console.log('      Closest known siblings:');
-      for (const s of siblings) console.log(`        - ${s}  →  ${MODEL_PROMPT_SOURCES[s]}`);
-      console.log('');
-      console.log('      Options:');
-      console.log('        1) Use one of the sibling models as a proxy (closest available).');
-      console.log('        2) Provide a URL or local path to a leaked prompt.');
-      console.log('        3) Abort and add the entry to MODEL_PROMPT_SOURCES, then re-run.');
-      const choice = await askText(reader, '      Sibling model name, URL, local path, or empty to abort: ');
-      if (!choice) {
-        console.error('      Aborting.');
-        process.exit(1);
+    const directSource = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[model];
+    let source: string;
+    let raw: string;
+    if (directSource) {
+      console.log(`\n[2/5] Fetching prompt from ${directSource}`);
+      raw = await fetchPromptSource(directSource);
+      console.log(`      Fetched ${raw.length} bytes.`);
+      source = directSource;
+    } else {
+      const result = await handleMissingPrompt(model, reader);
+      if (result === null) {
+        console.log('      Aborted.');
+        process.exit(0);
       }
-      if (MODEL_PROMPT_SOURCES[choice]) {
-        source = MODEL_PROMPT_SOURCES[choice];
-        console.log(`      Using ${choice} as prompt source for ${model}.`);
-      } else if (choice.startsWith('http://') || choice.startsWith('https://') || existsSync(choice)) {
-        source = choice;
-      } else {
-        console.error(`      "${choice}" is neither a known model nor a URL/path. Aborting.`);
-        process.exit(1);
-      }
+      raw = result.text;
+      source = result.source;
+      console.log(`      Using prompt source: ${source} (${raw.length} bytes).`);
     }
-    console.log(`\n[2/5] Fetching prompt from ${source}`);
-    const raw = await fetchPromptSource(source);
-    console.log(`      Fetched ${raw.length} bytes.`);
     state.promptSource = source;
     state.rawPrompt = raw;
     saveState(opts.dataDir, state);
