@@ -572,6 +572,30 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent must have a "systemPrompt" string');
   }
 
+  // Validate agent.thinking if present. Catches typos and constraint
+  // violations (notably max_tokens > budget_tokens) at recipe-load time
+  // rather than as a 400 from Anthropic at first inference.
+  if (agent.thinking !== undefined) {
+    if (!agent.thinking || typeof agent.thinking !== 'object' || Array.isArray(agent.thinking)) {
+      throw new Error('Recipe agent.thinking must be an object with "enabled" and optional "budgetTokens".');
+    }
+    const thinking = agent.thinking as Record<string, unknown>;
+    if (typeof thinking.enabled !== 'boolean') {
+      throw new Error('Recipe agent.thinking.enabled must be a boolean.');
+    }
+    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || thinking.budgetTokens <= 0)) {
+      throw new Error('Recipe agent.thinking.budgetTokens must be a positive number.');
+    }
+    if (thinking.enabled === true && typeof thinking.budgetTokens === 'number' && typeof agent.maxTokens === 'number') {
+      if (thinking.budgetTokens >= agent.maxTokens) {
+        throw new Error(
+          `Recipe agent.thinking.budgetTokens (${thinking.budgetTokens}) must be less than agent.maxTokens (${agent.maxTokens}) ` +
+            `(Anthropic requires max_tokens > thinking.budget_tokens).`,
+        );
+      }
+    }
+  }
+
   // Validate strategy type if present
   if (agent.strategy) {
     const strategy = agent.strategy as Record<string, unknown>;

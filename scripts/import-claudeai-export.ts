@@ -50,6 +50,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { createLineReader } from './lib/line-reader.js';
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -61,13 +62,14 @@ interface Opts {
   agentName: string;
   filter?: RegExp;
   dryRun: boolean;
+  interactive: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run]',
+      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive]',
     );
     process.exit(1);
   }
@@ -76,18 +78,22 @@ function parseArgs(argv: string[]): Opts {
   let agentName = 'agent';
   let filter: RegExp | undefined;
   let dryRun = false;
+  // Interactive by default if stdin is a TTY; --no-interactive forces off.
+  let interactive = !!process.stdin.isTTY;
   for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--out') outDir = resolve(args[++i]!);
     else if (a === '--agent') agentName = args[++i]!;
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
+    else if (a === '--no-interactive') interactive = false;
+    else if (a === '--interactive') interactive = true;
     else {
       console.error(`Unknown arg: ${a}`);
       process.exit(1);
     }
   }
-  return { exportDir, outDir, agentName, filter, dryRun };
+  return { exportDir, outDir, agentName, filter, dryRun, interactive };
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +184,12 @@ const ROOT_PARENT = '00000000-0000-4000-8000-000000000000';
 /**
  * Pick a canonical path through the message tree. For unbranched conversations
  * this is just topological order. For branched ones, at each fork point we
- * recurse into the subtree whose deepest leaf has the latest `created_at`.
+ * descend into the subtree whose deepest leaf has the latest `created_at`.
+ *
+ * Single DFS post-order populates a per-node `latestLeafTime` map so the main
+ * descent is O(n) — no repeated subtree walks at branch points.
  */
-function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched: boolean } {
+export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched: boolean } {
   const byParent = new Map<string, ExportMessage[]>();
   for (const m of messages) {
     const arr = byParent.get(m.parent_message_uuid) ?? [];
@@ -188,29 +197,45 @@ function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched
     byParent.set(m.parent_message_uuid, arr);
   }
 
-  let branched = false;
-  function deepestLeafTime(msg: ExportMessage): string {
-    const children = byParent.get(msg.uuid) ?? [];
-    if (children.length === 0) return msg.created_at;
-    let best = msg.created_at;
-    for (const c of children) {
-      const t = deepestLeafTime(c);
+  // Iterative post-order to avoid recursion-depth limits on very long
+  // chains, and to memoize each node's deepest-leaf time in one pass.
+  const latestLeafTime = new Map<string, string>();
+  // Build a flat post-order list by DFS from each root.
+  const roots = byParent.get(ROOT_PARENT) ?? [];
+  const stack: Array<{ msg: ExportMessage; childIdx: number }> = roots.map((r) => ({ msg: r, childIdx: 0 }));
+  const postOrder: ExportMessage[] = [];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    const kids = byParent.get(frame.msg.uuid) ?? [];
+    if (frame.childIdx < kids.length) {
+      const next = kids[frame.childIdx++]!;
+      stack.push({ msg: next, childIdx: 0 });
+    } else {
+      postOrder.push(frame.msg);
+      stack.pop();
+    }
+  }
+  for (const node of postOrder) {
+    const kids = byParent.get(node.uuid) ?? [];
+    let best = node.created_at;
+    for (const k of kids) {
+      const t = latestLeafTime.get(k.uuid)!;
       if (t > best) best = t;
     }
-    return best;
+    latestLeafTime.set(node.uuid, best);
   }
 
+  let branched = false;
   const path: ExportMessage[] = [];
   let cursorParent = ROOT_PARENT;
   while (true) {
     const children = byParent.get(cursorParent) ?? [];
     if (children.length === 0) break;
     if (children.length > 1) branched = true;
-    // Pick the child whose subtree extends latest in time
     let pick = children[0]!;
-    let pickT = deepestLeafTime(pick);
+    let pickT = latestLeafTime.get(pick.uuid)!;
     for (let i = 1; i < children.length; i++) {
-      const t = deepestLeafTime(children[i]!);
+      const t = latestLeafTime.get(children[i]!.uuid)!;
       if (t > pickT) {
         pick = children[i]!;
         pickT = t;
@@ -227,11 +252,8 @@ function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched
 // Block transform
 // ---------------------------------------------------------------------------
 
-function transformContent(
-  msg: ExportMessage,
-): { content: ContentBlock[]; recoveredThinking: Array<{ thinking: string; summaries?: string[] }> } {
+export function transformContent(msg: ExportMessage): ContentBlock[] {
   const out: ContentBlock[] = [];
-  const recoveredThinking: Array<{ thinking: string; summaries?: string[] }> = [];
 
   // Prepend attachment texts (user-side)
   for (const att of msg.attachments ?? []) {
@@ -253,10 +275,10 @@ function transformContent(
         break;
 
       case 'thinking': {
-        recoveredThinking.push({
-          thinking: block.thinking,
-          summaries: block.summaries?.map((s) => s.summary),
-        });
+        // Full thinking text is the load-bearing form: it's what the API
+        // sees at replay and what the model reads as its prior reasoning.
+        // The sidecar import-source.json captures provenance separately,
+        // so we don't duplicate into message metadata.
         out.push({
           type: 'text',
           text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
@@ -301,6 +323,17 @@ function transformContent(
         });
         break;
       }
+
+      default: {
+        // Unknown block type — claude.ai may add new ones (server_tool_use,
+        // citations, etc.) without notice. Don't drop on the floor; emit a
+        // grep-able marker so the operator can audit what was lost.
+        const unknownType = (block as { type?: unknown }).type;
+        out.push({
+          type: 'text',
+          text: `[unknown_block type=${JSON.stringify(unknownType)}]\n${JSON.stringify(block)}`,
+        });
+      }
     }
   }
 
@@ -312,11 +345,16 @@ function transformContent(
     });
   }
 
-  return { content: out, recoveredThinking };
+  return out;
 }
 
 function escapeAttr(s: string): string {
-  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // & must be replaced first so the others' replacements aren't double-escaped.
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +380,7 @@ async function importConversation(
     const cm = await ContextManager.open({ store });
     try {
       for (const msg of path) {
-        const { content, recoveredThinking } = transformContent(msg);
+        const content = transformContent(msg);
         if (content.length === 0) continue; // skip degenerate messages
         const participant = msg.sender === 'assistant' ? opts.agentName : 'user';
         cm.addMessage(participant, content, {
@@ -354,9 +392,6 @@ async function importConversation(
             updatedAt: msg.updated_at,
             originalSender: msg.sender,
           },
-          ...(recoveredThinking.length > 0 && {
-            recoveredThinking,
-          }),
         });
       }
     } finally {
@@ -397,6 +432,130 @@ async function importConversation(
   return { sessionId: meta.id, messageCount: path.length, branched };
 }
 
+// ---------------------------------------------------------------------------
+// Interactive selection UI
+// ---------------------------------------------------------------------------
+
+function formatRow(idx: number, selected: boolean, conv: ExportConversation): string {
+  const id6 = conv.uuid.replace(/-/g, '').slice(0, 6);
+  const date = formatShortDate(conv.updated_at || conv.created_at);
+  const msgs = (conv.chat_messages?.length ?? 0).toString().padStart(4);
+  const name = (conv.name || '(unnamed)').slice(0, 64);
+  const mark = selected ? 'x' : ' ';
+  return `  [${mark}] ${idx.toString().padStart(3)}  ${id6}  ${date}  ${msgs}msg  ${name}`;
+}
+
+function formatShortDate(iso: string | undefined): string {
+  if (!iso) return '         ';
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '         ';
+  return `${months[d.getMonth()]} ${d.getDate().toString().padStart(2, ' ')} ${d.getFullYear().toString().slice(2)}`;
+}
+
+/** Parse comma-and-range index spec like "1,3-5,7" into a set of 1-based indices. */
+export function parseToggleSpec(input: string, max: number): Set<number> {
+  const out = new Set<number>();
+  for (const piece of input.split(/[,\s]+/)) {
+    if (!piece) continue;
+    const dash = piece.indexOf('-');
+    if (dash > 0) {
+      const lo = parseInt(piece.slice(0, dash), 10);
+      const hi = parseInt(piece.slice(dash + 1), 10);
+      if (isNaN(lo) || isNaN(hi)) continue;
+      for (let i = Math.max(1, lo); i <= Math.min(max, hi); i++) out.add(i);
+    } else {
+      const n = parseInt(piece, 10);
+      if (!isNaN(n) && n >= 1 && n <= max) out.add(n);
+    }
+  }
+  return out;
+}
+
+// createLineReader is shared via scripts/lib/line-reader.ts (see imports above).
+
+async function chooseInteractively(conversations: ExportConversation[]): Promise<ExportConversation[] | null> {
+  const reader = createLineReader();
+  try {
+    // Top-level menu
+    while (true) {
+      const raw = await reader.nextLine(
+        `\n${conversations.length} conversation(s) found. Import [A]ll, [C]hoose, e[X]it? `,
+      );
+      if (raw === null) return null;
+      const ans = raw.trim().toLowerCase();
+      if (ans === '' || ans === 'a') return conversations;
+      if (ans === 'x' || ans === 'q') return null;
+      if (ans === 'c') break;
+      console.log('Please enter A, C, or X.');
+    }
+
+    // Toggle UI
+    const selected = new Array<boolean>(conversations.length).fill(false);
+    const render = () => {
+      console.log('');
+      for (let i = 0; i < conversations.length; i++) {
+        console.log(formatRow(i + 1, selected[i]!, conversations[i]!));
+      }
+      const count = selected.filter((s) => s).length;
+      console.log(`\n${count}/${conversations.length} selected.`);
+    };
+    render();
+    console.log(
+      'Toggle: number(s)/range (e.g. "1,3-5"), "a" all, "n" none, "i" invert, "l" relist, [enter] commit, "x" abort.',
+    );
+    while (true) {
+      const raw = await reader.nextLine('> ');
+      if (raw === null) break; // EOF == commit
+      const input = raw.trim();
+      if (input === '') break;
+      const cmd = input.toLowerCase();
+      if (cmd === 'x' || cmd === 'q') return null;
+      if (cmd === 'a') {
+        selected.fill(true);
+        render();
+        continue;
+      }
+      if (cmd === 'n') {
+        selected.fill(false);
+        render();
+        continue;
+      }
+      if (cmd === 'i') {
+        for (let i = 0; i < selected.length; i++) selected[i] = !selected[i];
+        render();
+        continue;
+      }
+      if (cmd === 'l') {
+        render();
+        continue;
+      }
+      const toToggle = parseToggleSpec(input, conversations.length);
+      if (toToggle.size === 0) {
+        console.log('  (no valid indices in input)');
+        continue;
+      }
+      for (const i of toToggle) selected[i - 1] = !selected[i - 1];
+      // Show what just toggled, not the full list — keeps the scroll usable.
+      const summary = [...toToggle]
+        .sort((a, b) => a - b)
+        .map((i) => `${i}${selected[i - 1] ? '✓' : '·'}`)
+        .join(' ');
+      const count = selected.filter((s) => s).length;
+      console.log(`  toggled: ${summary}  (${count}/${conversations.length} selected)`);
+    }
+
+    const chosen = conversations.filter((_, i) => selected[i]);
+    if (chosen.length === 0) {
+      console.log('Nothing selected — aborting.');
+      return null;
+    }
+    return chosen;
+  } finally {
+    reader.close();
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv);
   const convPath = join(opts.exportDir, 'conversations.json');
@@ -406,17 +565,36 @@ async function main() {
   }
   const conversations: ExportConversation[] = JSON.parse(readFileSync(convPath, 'utf-8'));
 
-  const filtered = opts.filter
+  const afterRegex = opts.filter
     ? conversations.filter((c) => opts.filter!.test(c.name))
     : conversations;
 
+  let filtered: ExportConversation[];
+  if (opts.interactive) {
+    const chosen = await chooseInteractively(afterRegex);
+    if (chosen === null) {
+      console.log('Aborted.');
+      process.exit(0);
+    }
+    filtered = chosen;
+  } else {
+    filtered = afterRegex;
+  }
+
   console.log(
-    `Importing ${filtered.length}/${conversations.length} conversation(s) into ${opts.outDir}${
+    `\nImporting ${filtered.length}/${conversations.length} conversation(s) into ${opts.outDir}${
       opts.dryRun ? ' (DRY RUN)' : ''
     }\n`,
   );
 
   const sessionMgr = new SessionManager(opts.outDir);
+
+  // Snapshot pre-import activeSessionId so a bulk import doesn't silently
+  // steal the operator's working session. createSession() unconditionally
+  // sets activeSessionId; after a 24-convo import we'd land on whichever
+  // conversation was last in the file. Restored at the end.
+  const preImportActive = sessionMgr.load().activeSessionId || null;
+
   let succeeded = 0;
   let branchedCount = 0;
   for (const conv of filtered) {
@@ -437,6 +615,17 @@ async function main() {
     }
   }
 
+  // Restore the pre-import active session (no-op if there wasn't one — but
+  // we still leave activeSessionId as the last-imported id rather than the
+  // first, which feels less wrong if the operator had no active session).
+  if (preImportActive && !opts.dryRun) {
+    try {
+      sessionMgr.setActiveSession(preImportActive);
+    } catch {
+      // Pre-import active session may have been deleted; leave default.
+    }
+  }
+
   console.log(
     `\n${succeeded}/${filtered.length} imported${branchedCount > 0 ? `, ${branchedCount} had branches (linearized)` : ''}.`,
   );
@@ -446,7 +635,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
