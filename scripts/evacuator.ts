@@ -31,12 +31,12 @@
  *   --reset                 Clear checkpoint state before running
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { join, resolve, dirname, sep as pathSep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { createInterface } from 'node:readline';
 import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
+import { createLineReader, type LineReader } from './lib/line-reader.js';
 
 // ---------------------------------------------------------------------------
 // Known leaked-prompt URLs keyed by model ID. New models: add an entry.
@@ -44,7 +44,7 @@ import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 // HTML page URL.
 // ---------------------------------------------------------------------------
 
-const MODEL_PROMPT_SOURCES: Record<string, string> = {
+export const MODEL_PROMPT_SOURCES: Record<string, string> = {
   // x1xhlol
   'claude-sonnet-4-5-20250929':
     'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Sonnet%204.5%20Prompt.txt',
@@ -68,27 +68,46 @@ const MODEL_PROMPT_SOURCES: Record<string, string> = {
  * can't be continued with the original model, and that fact deserves to be
  * faced explicitly rather than papered over with an automatic swap.
  *
- * Keys can be either canonical IDs (with date suffix) or family prefixes; the
- * match is substring-based on the operator's input.
+ * Keys are family prefixes; the match is `startsWith` on the operator's input
+ * (lower-cased). Prefix-based so a future `claude-2x-…` model won't
+ * accidentally match `claude-2`.
  */
-const RETIRED_MODELS: Record<string, { era: string; closestLiving?: string[] }> = {
+export const RETIRED_MODELS: Record<string, { era: string; closestLiving?: string[] }> = {
   'claude-3-sonnet': { era: 'Sonnet 3', closestLiving: ['claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620'] },
   'claude-3-haiku': { era: 'Haiku 3', closestLiving: ['claude-3-5-haiku-20241022'] },
   'claude-3-opus': { era: 'Opus 3', closestLiving: ['claude-opus-4-1', 'claude-opus-4-5'] },
   'claude-2.1': { era: 'Claude 2.1' },
-  'claude-2': { era: 'Claude 2' },
+  'claude-2.0': { era: 'Claude 2.0' },
+  'claude-2-': { era: 'Claude 2' },
   'claude-instant': { era: 'Claude Instant' },
 };
 
-function checkRetirement(model: string): { retired: boolean; era?: string; closestLiving?: string[] } {
+export function checkRetirement(model: string): { retired: boolean; era?: string; closestLiving?: string[] } {
   const lower = model.toLowerCase();
   for (const [key, meta] of Object.entries(RETIRED_MODELS)) {
-    if (lower.includes(key)) return { retired: true, era: meta.era, closestLiving: meta.closestLiving };
+    if (lower.startsWith(key) || lower === key.replace(/-$/, '')) {
+      return { retired: true, era: meta.era, closestLiving: meta.closestLiving };
+    }
   }
   return { retired: false };
 }
 
-function levenshtein(a: string, b: string): number {
+/**
+ * Conservative gate for the `thinking` recipe field. Extended thinking is
+ * supported by Claude 3.7 Sonnet and the Claude 4 family. Other models reject
+ * the parameter outright. When the gate returns false we omit the field
+ * entirely rather than silently shipping a recipe that the API will refuse.
+ */
+export function supportsThinking(model: string): boolean {
+  const m = model.toLowerCase();
+  return (
+    /^claude-(opus|sonnet)-4(?:[-.]|$)/.test(m) ||
+    /^claude-haiku-4-5(?:[-.]|$)/.test(m) ||
+    /^claude-3-7-sonnet(?:[-.]|$)/.test(m)
+  );
+}
+
+export function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
@@ -110,7 +129,7 @@ function levenshtein(a: string, b: string): number {
   return dp[n]!;
 }
 
-function rankByDistance(target: string, candidates: string[]): Array<{ name: string; distance: number }> {
+export function rankByDistance(target: string, candidates: string[]): Array<{ name: string; distance: number }> {
   return candidates
     .map((c) => ({ name: c, distance: levenshtein(target.toLowerCase(), c.toLowerCase()) }))
     .sort((a, b) => a.distance - b.distance);
@@ -212,12 +231,26 @@ function statePath(dataDir: string): string {
 function loadState(dataDir: string): State {
   const p = statePath(dataDir);
   if (!existsSync(p)) return {};
-  return JSON.parse(readFileSync(p, 'utf-8')) as State;
+  const raw = readFileSync(p, 'utf-8');
+  try {
+    return JSON.parse(raw) as State;
+  } catch (e) {
+    console.warn(`      warn: ${p} is not valid JSON (${(e as Error).message}); starting fresh.`);
+    return {};
+  }
 }
 
+/**
+ * Write-and-rename so an interrupted run leaves either the prior good state
+ * file or no change — never a half-written file. POSIX rename is atomic on
+ * the same filesystem; we put the temp file in the same dir for that reason.
+ */
 function saveState(dataDir: string, state: State): void {
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(statePath(dataDir), JSON.stringify(state, null, 2) + '\n');
+  const final = statePath(dataDir);
+  const tmp = `${final}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n');
+  renameSync(tmp, final);
 }
 
 function clearState(dataDir: string): void {
@@ -228,55 +261,6 @@ function clearState(dataDir: string): void {
 // ---------------------------------------------------------------------------
 // Interactive helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Stdin line reader using readline's 'line' event. Robust to piped input
- * (Bun 1.3's readline.question / readline/promises.question hang at 99% CPU
- * on subsequent calls when stdin is a pipe). One reader instance, kept alive
- * for the whole script's main() — closing and re-opening per question has
- * also been observed flaky.
- */
-interface LineReader {
-  nextLine(prompt?: string): Promise<string | null>;
-  close(): void;
-}
-
-function createLineReader(): LineReader {
-  const buf: string[] = [];
-  let resolveNext: ((s: string | null) => void) | null = null;
-  let closed = false;
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on('line', (line: string) => {
-    if (resolveNext) {
-      const r = resolveNext;
-      resolveNext = null;
-      r(line);
-    } else {
-      buf.push(line);
-    }
-  });
-  rl.on('close', () => {
-    closed = true;
-    if (resolveNext) {
-      const r = resolveNext;
-      resolveNext = null;
-      r(null);
-    }
-  });
-  return {
-    nextLine(prompt?: string) {
-      if (prompt) process.stdout.write(prompt);
-      return new Promise<string | null>((resolve) => {
-        if (buf.length > 0) resolve(buf.shift()!);
-        else if (closed) resolve(null);
-        else resolveNext = resolve;
-      });
-    },
-    close() {
-      rl.close();
-    },
-  };
-}
 
 async function askYesNo(reader: LineReader, prompt: string, defaultYes = true): Promise<boolean> {
   const line = await reader.nextLine(`${prompt} ${defaultYes ? '[Y/n]' : '[y/N]'} `);
@@ -326,10 +310,10 @@ function editInline(content: string, suffix = '.md', header?: string): string {
     }
     let edited = readFileSync(tmpPath, 'utf-8');
     if (header) {
-      // Strip the header back off if it's still at the top unchanged.
-      if (edited.startsWith(header)) {
-        edited = edited.slice(header.length).replace(/^\n/, '');
-      }
+      // Robust strip: any leading HTML-comment block plus trailing whitespace,
+      // not byte-exact equality. Whitespace re-encoding / a missing space in
+      // the boilerplate must not leave the instructive comment in the prompt.
+      edited = edited.replace(/^\s*<!--[\s\S]*?-->\s*/m, '');
     }
     return edited;
   } finally {
@@ -358,7 +342,7 @@ interface ExportConversation {
   chat_messages: ExportMessage[];
 }
 
-function detectModel(conversations: ExportConversation[]): { model: string | null; surfaced: number; total: number } {
+export function detectModel(conversations: ExportConversation[]): { model: string | null; surfaced: number; total: number } {
   // claude.ai exports surface `model` at multiple levels depending on era:
   // sometimes on the conversation, sometimes on per-message assistant turns.
   // Tally across both, pick the most frequent.
@@ -395,8 +379,23 @@ function detectModel(conversations: ExportConversation[]): { model: string | nul
 // Step 2: fetch prompt source
 // ---------------------------------------------------------------------------
 
-const MINIMAL_DEFAULT_PROMPT =
+export const MINIMAL_DEFAULT_PROMPT =
   'You are Claude, an AI assistant made by Anthropic. Respond honestly and helpfully.';
+
+/**
+ * A bare token like `notes` may collide with a same-named file in the CWD and
+ * surprise the operator by being treated as a prompt-source path. Require an
+ * explicit path indicator so the file-lookup branch is opt-in.
+ */
+function looksLikePath(input: string): boolean {
+  return (
+    input.startsWith('./') ||
+    input.startsWith('../') ||
+    input.startsWith('~/') ||
+    input.includes(pathSep) ||
+    input.includes('/')
+  );
+}
 
 type PromptDialogResult =
   | { kind: 'prompt'; text: string; source: string }
@@ -480,7 +479,8 @@ async function handleMissingPrompt(
       return { kind: 'prompt', text: MINIMAL_DEFAULT_PROMPT, source: '(minimal default)' };
     }
 
-    if (input.startsWith('http://') || input.startsWith('https://') || existsSync(input)) {
+    const isUrl = input.startsWith('http://') || input.startsWith('https://');
+    if (isUrl || (looksLikePath(input) && existsSync(input))) {
       try {
         const text = await fetchPromptSource(input);
         return { kind: 'prompt', text, source: input };
@@ -624,10 +624,9 @@ async function adjustPromptWithModel(
 
 interface MemoriesEntry {
   conversations_memory?: string;
-  account_uuid?: string;
 }
 
-function loadMemoriesBlock(exportDir: string): string | null {
+export function loadMemoriesBlock(exportDir: string): string | null {
   const p = join(exportDir, 'memories.json');
   if (!existsSync(p)) return null;
   const raw = JSON.parse(readFileSync(p, 'utf-8')) as MemoriesEntry[];
@@ -644,7 +643,7 @@ function loadMemoriesBlock(exportDir: string): string | null {
 // Compose recipe
 // ---------------------------------------------------------------------------
 
-function composeRecipe(opts: {
+export function composeRecipe(opts: {
   model: string;
   systemPrompt: string;
   memoriesBlock: string | null;
@@ -657,19 +656,22 @@ function composeRecipe(opts: {
   }
   parts.push(opts.addendum.trim());
   const composed = parts.join('\n\n');
+  const agent: Record<string, unknown> = {
+    name: 'agent',
+    model: opts.model,
+    maxTokens: 16384,
+    systemPrompt: composed,
+    strategy: {
+      type: 'autobiographical',
+      compressionModel: opts.model,
+    },
+  };
+  if (supportsThinking(opts.model)) {
+    agent.thinking = { enabled: true, budgetTokens: 4096 };
+  }
   return {
     name: opts.recipeName,
-    agent: {
-      name: 'agent',
-      model: opts.model,
-      maxTokens: 16384,
-      thinking: { enabled: true, budgetTokens: 4096 },
-      systemPrompt: composed,
-      strategy: {
-        type: 'autobiographical',
-        compressionModel: opts.model,
-      },
-    },
+    agent,
     modules: {},
     mcplServers: {},
   };
@@ -685,6 +687,21 @@ async function main() {
   if (opts.reset) {
     clearState(opts.dataDir);
     console.log('Cleared evacuator state.\n');
+  }
+
+  // Protect the checkpoint: refuse to silently clobber an existing state file
+  // unless --resume or --reset is explicit. The whole point of the state file
+  // is that an interrupted run can be picked up, and forgetting to pass
+  // --resume should not throw away prior steps' work.
+  const sp = statePath(opts.dataDir);
+  if (!opts.resume && !opts.reset && existsSync(sp)) {
+    const mtime = statSync(sp).mtime.toISOString();
+    console.error(
+      `\nFound existing checkpoint at ${sp} (last touched ${mtime}).\n` +
+        `  Pass --resume to continue from it, or --reset to discard.\n` +
+        `Aborting rather than overwriting your prior work.`,
+    );
+    process.exit(1);
   }
   let state: State = opts.resume ? loadState(opts.dataDir) : {};
 
@@ -749,10 +766,16 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   }
 
   // -- Step 2: fetch prompt source --
-  if (!state.rawPrompt) {
+  // Use `promptSource` as the existence sentinel rather than `rawPrompt`,
+  // because an intentionally-empty prompt ("empty" / empty-body file) yields
+  // `rawPrompt === ''` — which is a legitimate settled state. A truthiness
+  // check on the empty string would softlock the loop. `promptSource` is set
+  // in lockstep with rawPrompt on every settle path, and is never set to ''.
+  if (state.promptSource === undefined) {
     // Loop because the operator may switch the model from inside the dialog —
     // a fresh model lookup might (or might not) hit a direct prompt source.
-    while (!state.rawPrompt) {
+    let settled = false;
+    while (!settled) {
       const directSource = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[state.model!];
       if (directSource) {
         console.log(`\n[2/5] Fetching prompt from ${directSource}`);
@@ -761,6 +784,7 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
         state.promptSource = directSource;
         state.rawPrompt = raw;
         saveState(opts.dataDir, state);
+        settled = true;
         break;
       }
       const result = await handleMissingPrompt(state.model!, reader);
@@ -784,19 +808,22 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
         console.log(`      Model switched to "${state.model}". Re-evaluating prompt source...`);
         continue;
       }
-      // result.kind === 'prompt'
+      // result.kind === 'prompt' — including the legitimate empty-text case.
       state.promptSource = result.source;
       state.rawPrompt = result.text;
       saveState(opts.dataDir, state);
       console.log(`      Using prompt source: ${result.source} (${result.text.length} bytes).`);
+      settled = true;
     }
   } else {
-    console.log(`\n[2/5] Resumed: prompt cached (${state.rawPrompt.length} bytes from ${state.promptSource})`);
+    console.log(
+      `\n[2/5] Resumed: prompt cached (${state.rawPrompt?.length ?? 0} bytes from ${state.promptSource})`,
+    );
   }
   // Read model after step 2, since switch-model in the prompt dialog may have updated it.
   const model = state.model!;
 
-  // -- Step 3: optional Sonnet adjustment --
+  // -- Step 3: optional model-driven adjustment --
   let workingPrompt = state.adjustedPrompt ?? state.rawPrompt!;
   let changeSummary = state.changeSummary ?? '';
   if (state.adjustedPrompt === undefined) {
@@ -893,9 +920,9 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   mkdirSync(dirname(opts.out), { recursive: true });
   writeFileSync(opts.out, JSON.stringify(recipe, null, 2) + '\n');
 
-  const composedLen = (recipe.agent as Record<string, unknown>).systemPrompt as string;
+  const composed = (recipe.agent as Record<string, unknown>).systemPrompt as string;
   console.log(`\n→ Recipe written to ${opts.out}`);
-  console.log(`  Composed system prompt: ${composedLen.length} bytes (~${Math.round(composedLen.length / 4)} tokens)`);
+  console.log(`  Composed system prompt: ${composed.length} bytes (~${Math.round(composed.length / 4)} tokens)`);
   console.log(`    - base/edited prompt: ${state.finalSystemPrompt!.length} bytes`);
   console.log(`    - memories block:     ${state.finalMemoriesBlock?.length ?? 0} bytes`);
   console.log(`    - transplant addendum: ${addendum.length} bytes`);

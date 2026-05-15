@@ -50,6 +50,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { createLineReader } from './lib/line-reader.js';
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -453,7 +454,7 @@ function formatShortDate(iso: string | undefined): string {
 }
 
 /** Parse comma-and-range index spec like "1,3-5,7" into a set of 1-based indices. */
-function parseToggleSpec(input: string, max: number): Set<number> {
+export function parseToggleSpec(input: string, max: number): Set<number> {
   const out = new Set<number>();
   for (const piece of input.split(/[,\s]+/)) {
     if (!piece) continue;
@@ -471,48 +472,7 @@ function parseToggleSpec(input: string, max: number): Set<number> {
   return out;
 }
 
-/**
- * Stdin line reader using readline's 'line' event. Robust to piped input
- * (unlike readline.question / readline/promises.question, which hang on
- * subsequent calls when stdin is a pipe — Bun 1.3 bug).
- */
-function createLineReader(): { nextLine: (prompt?: string) => Promise<string | null>; close: () => void } {
-  const { createInterface } = require('node:readline');
-  const buf: string[] = [];
-  let resolveNext: ((s: string | null) => void) | null = null;
-  let closed = false;
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on('line', (line: string) => {
-    if (resolveNext) {
-      const r = resolveNext;
-      resolveNext = null;
-      r(line);
-    } else {
-      buf.push(line);
-    }
-  });
-  rl.on('close', () => {
-    closed = true;
-    if (resolveNext) {
-      const r = resolveNext;
-      resolveNext = null;
-      r(null);
-    }
-  });
-  return {
-    nextLine(prompt?: string) {
-      if (prompt) process.stdout.write(prompt);
-      return new Promise<string | null>((resolve) => {
-        if (buf.length > 0) resolve(buf.shift()!);
-        else if (closed) resolve(null);
-        else resolveNext = resolve;
-      });
-    },
-    close() {
-      rl.close();
-    },
-  };
-}
+// createLineReader is shared via scripts/lib/line-reader.ts (see imports above).
 
 async function chooseInteractively(conversations: ExportConversation[]): Promise<ExportConversation[] | null> {
   const reader = createLineReader();

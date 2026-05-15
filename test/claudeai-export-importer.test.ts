@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { linearize, transformContent } from '../scripts/import-claudeai-export.js';
+import { linearize, transformContent, parseToggleSpec } from '../scripts/import-claudeai-export.js';
 
 const ROOT = '00000000-0000-4000-8000-000000000000';
 
@@ -170,5 +170,38 @@ describe('transformContent', () => {
     expect(last.text).toContain('image.png');
     expect(last.text).toContain('fu_1');
     expect(last.text).toContain('bytes not in export');
+  });
+});
+
+describe('parseToggleSpec', () => {
+  test('handles single numbers', () => {
+    const s = parseToggleSpec('3', 10);
+    expect([...s].sort((a, b) => a - b)).toEqual([3]);
+  });
+
+  test('handles ranges', () => {
+    const s = parseToggleSpec('2-5', 10);
+    expect([...s].sort((a, b) => a - b)).toEqual([2, 3, 4, 5]);
+  });
+
+  test('mixes commas, ranges, and whitespace', () => {
+    const s = parseToggleSpec('1, 3-5  7', 10);
+    expect([...s].sort((a, b) => a - b)).toEqual([1, 3, 4, 5, 7]);
+  });
+
+  test('clamps to [1, max]', () => {
+    const s = parseToggleSpec('0-3 8-99', 5);
+    expect([...s].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    // 8-99 → low bound > max, nothing added
+  });
+
+  test('ignores non-numeric junk', () => {
+    const s = parseToggleSpec('foo 2 bar', 10);
+    expect([...s]).toEqual([2]);
+  });
+
+  test('returns empty set for empty input', () => {
+    expect(parseToggleSpec('', 10).size).toBe(0);
+    expect(parseToggleSpec('   ', 10).size).toBe(0);
   });
 });
