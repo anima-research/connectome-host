@@ -1,5 +1,11 @@
 import { describe, test, expect } from 'bun:test';
-import { linearize, transformContent, parseToggleSpec } from '../scripts/import-claudeai-export.js';
+import {
+  linearize,
+  transformContent,
+  parseToggleSpec,
+  splitMixedToolMessages,
+} from '../scripts/import-claudeai-export.js';
+import type { ContentBlock } from '@animalabs/membrane';
 
 const ROOT = '00000000-0000-4000-8000-000000000000';
 
@@ -170,6 +176,179 @@ describe('transformContent', () => {
     expect(last.text).toContain('image.png');
     expect(last.text).toContain('fu_1');
     expect(last.text).toContain('bytes not in export');
+  });
+});
+
+describe('transformContent — null tool IDs', () => {
+  test('synthesizes a stable id for null-id tool_use blocks', () => {
+    const msg = mkMsg({
+      uuid: 'msg-A',
+      sender: 'assistant',
+      content: [
+        { type: 'text', text: 'thinking out loud' },
+        { type: 'tool_use', id: null, name: 'web_search', input: { q: 'hi' } },
+      ],
+    });
+    const out = transformContent(msg);
+    const tu = out.find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
+    expect(tu).toBeDefined();
+    expect(typeof tu.id).toBe('string');
+    expect(tu.id.length).toBeGreaterThan(0);
+    expect(tu.id).toContain('msg-A');
+  });
+
+  test('pairs null tool_use id with null tool_result.tool_use_id by FIFO', () => {
+    const msg = mkMsg({
+      uuid: 'msg-B',
+      sender: 'assistant',
+      content: [
+        { type: 'tool_use', id: null, name: 'conversation_search', input: { q: 'foo' } },
+        { type: 'tool_result', tool_use_id: null, content: 'result body' },
+      ],
+    });
+    const out = transformContent(msg);
+    const tu = out.find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
+    const tr = out.find((b) => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(tu.id).toBe(tr.toolUseId);
+    expect(tu.id).toContain('msg-B');
+  });
+
+  test('handles multiple bundled cycles in one message (FIFO pairing)', () => {
+    const msg = mkMsg({
+      uuid: 'msg-C',
+      sender: 'assistant',
+      content: [
+        { type: 'tool_use', id: null, name: 'search_A', input: {} },
+        { type: 'tool_result', tool_use_id: null, content: 'A' },
+        { type: 'tool_use', id: null, name: 'search_B', input: {} },
+        { type: 'tool_result', tool_use_id: null, content: 'B' },
+      ],
+    });
+    const out = transformContent(msg);
+    const uses = out.filter((b) => b.type === 'tool_use') as Array<Extract<ContentBlock, { type: 'tool_use' }>>;
+    const results = out.filter((b) => b.type === 'tool_result') as Array<Extract<ContentBlock, { type: 'tool_result' }>>;
+    expect(uses).toHaveLength(2);
+    expect(results).toHaveLength(2);
+    expect(uses[0]!.id).toBe(results[0]!.toolUseId);
+    expect(uses[1]!.id).toBe(results[1]!.toolUseId);
+    expect(uses[0]!.id).not.toBe(uses[1]!.id);
+  });
+
+  test('preserves explicit non-null ids unchanged', () => {
+    const msg = mkMsg({
+      uuid: 'msg-D',
+      sender: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'toolu_explicit_123', name: 'do', input: {} },
+        { type: 'tool_result', tool_use_id: 'toolu_explicit_123', content: 'ok' },
+      ],
+    });
+    const out = transformContent(msg);
+    const tu = out.find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
+    const tr = out.find((b) => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(tu.id).toBe('toolu_explicit_123');
+    expect(tr.toolUseId).toBe('toolu_explicit_123');
+  });
+
+  test('emits an orphan id for tool_result with no preceding tool_use', () => {
+    const msg = mkMsg({
+      uuid: 'msg-E',
+      sender: 'assistant',
+      content: [{ type: 'tool_result', tool_use_id: null, content: 'orphaned' }],
+    });
+    const out = transformContent(msg);
+    const tr = out.find((b) => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(tr.toolUseId).toBeTruthy();
+    expect(tr.toolUseId).toContain('orphan');
+  });
+});
+
+describe('splitMixedToolMessages', () => {
+  function mkBlocks(spec: string): ContentBlock[] {
+    // shorthand: 't' = text, 'u' = tool_use, 'r' = tool_result
+    return spec.split('').map((c, i) => {
+      if (c === 't') return { type: 'text', text: `t${i}` };
+      if (c === 'u') return { type: 'tool_use', id: `u${i}`, name: 'fn', input: {} };
+      if (c === 'r') return { type: 'tool_result', toolUseId: `u${i}`, content: 'res' };
+      throw new Error(`bad char: ${c}`);
+    });
+  }
+
+  test('passes through a user-source message unchanged', () => {
+    const blocks = mkBlocks('tt');
+    const out = splitMixedToolMessages(blocks, 'user');
+    expect(out).toEqual([{ participant: 'user', content: blocks }]);
+  });
+
+  test('returns empty for empty input', () => {
+    expect(splitMixedToolMessages([], 'agent')).toEqual([]);
+  });
+
+  test('passes through assistant message with no tool_result unchanged', () => {
+    const blocks = mkBlocks('tut');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.participant).toBe('agent');
+    expect(out[0]!.content).toEqual(blocks);
+  });
+
+  test('splits text-tool_use-tool_result-text into three messages', () => {
+    const blocks = mkBlocks('turt');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    expect(out).toHaveLength(3);
+    expect(out[0]!.participant).toBe('agent');
+    expect(out[0]!.content.map((b) => b.type)).toEqual(['text', 'tool_use']);
+    expect(out[1]!.participant).toBe('user');
+    expect(out[1]!.content.map((b) => b.type)).toEqual(['tool_result']);
+    expect(out[2]!.participant).toBe('agent');
+    expect(out[2]!.content.map((b) => b.type)).toEqual(['text']);
+  });
+
+  test('merges adjacent tool_results into one user message', () => {
+    const blocks = mkBlocks('uurr');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    expect(out).toHaveLength(2);
+    expect(out[0]!.participant).toBe('agent');
+    expect(out[0]!.content.map((b) => b.type)).toEqual(['tool_use', 'tool_use']);
+    expect(out[1]!.participant).toBe('user');
+    expect(out[1]!.content.map((b) => b.type)).toEqual(['tool_result', 'tool_result']);
+  });
+
+  test('handles tool_result at the start of an assistant message', () => {
+    const blocks = mkBlocks('rt');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    expect(out).toHaveLength(2);
+    expect(out[0]!.participant).toBe('user');
+    expect(out[0]!.content.map((b) => b.type)).toEqual(['tool_result']);
+    expect(out[1]!.participant).toBe('agent');
+    expect(out[1]!.content.map((b) => b.type)).toEqual(['text']);
+  });
+
+  test('handles tool_result at the end of an assistant message', () => {
+    const blocks = mkBlocks('tur');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    expect(out).toHaveLength(2);
+    expect(out[0]!.participant).toBe('agent');
+    expect(out[0]!.content.map((b) => b.type)).toEqual(['text', 'tool_use']);
+    expect(out[1]!.participant).toBe('user');
+    expect(out[1]!.content.map((b) => b.type)).toEqual(['tool_result']);
+  });
+
+  test('handles multiple alternating cycles in one message', () => {
+    const blocks = mkBlocks('urur');
+    const out = splitMixedToolMessages(blocks, 'agent');
+    // [u]-[r]-[u]-[r] → 4 messages: agent, user, agent, user
+    expect(out.map((m) => m.participant)).toEqual(['agent', 'user', 'agent', 'user']);
+    expect(out.flatMap((m) => m.content.map((b) => b.type))).toEqual([
+      'tool_use', 'tool_result', 'tool_use', 'tool_result',
+    ]);
+  });
+
+  test('preserves custom agentName as participant of non-tool-result chunks', () => {
+    const blocks = mkBlocks('tur');
+    const out = splitMixedToolMessages(blocks, 'commander');
+    expect(out[0]!.participant).toBe('commander');
+    expect(out[1]!.participant).toBe('user');
   });
 });
 
