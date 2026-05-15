@@ -35,7 +35,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { createInterface } from 'node:readline/promises';
+import { createInterface } from 'node:readline';
 import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 
 // ---------------------------------------------------------------------------
@@ -45,9 +45,37 @@ import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 // ---------------------------------------------------------------------------
 
 const MODEL_PROMPT_SOURCES: Record<string, string> = {
+  // x1xhlol — currently the only repo with Sonnet 4.5 and 4.6.
   'claude-sonnet-4-5-20250929':
     'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Sonnet%204.5%20Prompt.txt',
+  'claude-sonnet-4-6':
+    'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Claude%20Sonnet%204.6.txt',
+  // jujumilk3 — broader catalog, dated filenames.
+  'claude-opus-4-5':
+    'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-opus-4.5_20251124.md',
+  'claude-opus-4-1':
+    'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-opus-4.1_20250805.md',
+  'claude-haiku-4-5':
+    'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-haiku-4.5_20251119.md',
+  // Opus 4.7 has no leaked prompt yet. Closest known proxy is Sonnet 4.6 (same
+  // generation, more recent than Opus 4.5). Pointed there so model="claude-opus-4-7"
+  // resolves to something useful; the Sonnet adjustment pass + $EDITOR review will
+  // catch the model-name mismatch.
+  'claude-opus-4-7':
+    'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Claude%20Sonnet%204.6.txt',
 };
+
+function suggestAlternatives(missingModel: string): string[] {
+  const families = ['opus', 'sonnet', 'haiku'];
+  const lower = missingModel.toLowerCase();
+  for (const fam of families) {
+    if (lower.includes(fam)) {
+      const sameFamily = Object.keys(MODEL_PROMPT_SOURCES).filter((k) => k.toLowerCase().includes(fam));
+      if (sameFamily.length > 0) return sameFamily;
+    }
+  }
+  return Object.keys(MODEL_PROMPT_SOURCES);
+}
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -141,23 +169,82 @@ function clearState(dataDir: string): void {
 // Interactive helpers
 // ---------------------------------------------------------------------------
 
-async function ask(prompt: string, defaultYes = true): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = (await rl.question(`${prompt} ${defaultYes ? '[Y/n]' : '[y/N]'} `)).trim().toLowerCase();
-    if (ans === '') return defaultYes;
-    return ans === 'y' || ans === 'yes';
-  } finally {
-    rl.close();
-  }
+/**
+ * Stdin line reader using readline's 'line' event. Robust to piped input
+ * (Bun 1.3's readline.question / readline/promises.question hang at 99% CPU
+ * on subsequent calls when stdin is a pipe). One reader instance, kept alive
+ * for the whole script's main() — closing and re-opening per question has
+ * also been observed flaky.
+ */
+interface LineReader {
+  nextLine(prompt?: string): Promise<string | null>;
+  close(): void;
 }
 
-async function askText(prompt: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    return (await rl.question(prompt)).trim();
-  } finally {
-    rl.close();
+function createLineReader(): LineReader {
+  const buf: string[] = [];
+  let resolveNext: ((s: string | null) => void) | null = null;
+  let closed = false;
+  const rl = createInterface({ input: process.stdin, terminal: false });
+  rl.on('line', (line: string) => {
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r(line);
+    } else {
+      buf.push(line);
+    }
+  });
+  rl.on('close', () => {
+    closed = true;
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r(null);
+    }
+  });
+  return {
+    nextLine(prompt?: string) {
+      if (prompt) process.stdout.write(prompt);
+      return new Promise<string | null>((resolve) => {
+        if (buf.length > 0) resolve(buf.shift()!);
+        else if (closed) resolve(null);
+        else resolveNext = resolve;
+      });
+    },
+    close() {
+      rl.close();
+    },
+  };
+}
+
+async function askYesNo(reader: LineReader, prompt: string, defaultYes = true): Promise<boolean> {
+  const line = await reader.nextLine(`${prompt} ${defaultYes ? '[Y/n]' : '[y/N]'} `);
+  const ans = (line ?? '').trim().toLowerCase();
+  if (ans === '') return defaultYes;
+  return ans === 'y' || ans === 'yes';
+}
+
+async function askText(reader: LineReader, prompt: string): Promise<string> {
+  const line = await reader.nextLine(prompt);
+  return (line ?? '').trim();
+}
+
+async function askRequired(reader: LineReader, prompt: string, validate?: (s: string) => string | null): Promise<string> {
+  for (;;) {
+    const v = await askText(reader, prompt);
+    if (!v) {
+      console.log('      (input required — please type a value)');
+      continue;
+    }
+    if (validate) {
+      const err = validate(v);
+      if (err) {
+        console.log(`      ${err}`);
+        continue;
+      }
+    }
+    return v;
   }
 }
 
@@ -381,6 +468,15 @@ async function main() {
   }
   let state: State = opts.resume ? loadState(opts.dataDir) : {};
 
+  const reader = createLineReader();
+  try {
+    await runPipeline(opts, state, reader);
+  } finally {
+    reader.close();
+  }
+}
+
+async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   // -- Step 1: model detection --
   if (!state.model) {
     console.log('[1/5] Detecting model from export...');
@@ -398,15 +494,16 @@ async function main() {
       console.log(`      Using --model override: ${model}`);
     } else if (detected.model) {
       console.log(`      Detected: ${detected.model} (${detected.surfaced}/${detected.total} surfaces)`);
-      const ok = await ask('      Use this model?');
+      const ok = await askYesNo(reader, '      Use this model?');
       if (!ok) {
-        model = await askText('      Enter model ID: ');
+        model = await askRequired(reader, '      Enter model ID: ');
       } else {
         model = detected.model;
       }
     } else {
       console.log('      No model surfaced in export (older format?).');
-      model = await askText('      Enter model ID: ');
+      console.log('      Known map entries:', Object.keys(MODEL_PROMPT_SOURCES).join(', '));
+      model = await askRequired(reader, '      Enter model ID: ');
     }
     state.model = model;
     state.modelConfidence = { surfaced: detected.surfaced, total: detected.total };
@@ -418,15 +515,31 @@ async function main() {
 
   // -- Step 2: fetch prompt source --
   if (!state.rawPrompt) {
-    const source = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[model];
+    let source = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[model];
     if (!source) {
-      console.error(`\n[2/5] No prompt source configured for "${model}".`);
-      console.error('      Add an entry to MODEL_PROMPT_SOURCES in scripts/evacuator.ts,');
-      console.error('      or pass --prompt-source <url|path>.');
-      console.error('      Known leak repos:');
-      console.error('        - https://github.com/x1xhlol/system-prompts-and-models-of-ai-tools');
-      console.error('        - https://github.com/jujumilk3/leaked-system-prompts');
-      process.exit(1);
+      const siblings = suggestAlternatives(model);
+      console.log(`\n[2/5] No prompt source configured for "${model}".`);
+      console.log('      Closest known siblings:');
+      for (const s of siblings) console.log(`        - ${s}  →  ${MODEL_PROMPT_SOURCES[s]}`);
+      console.log('');
+      console.log('      Options:');
+      console.log('        1) Use one of the sibling models as a proxy (closest available).');
+      console.log('        2) Provide a URL or local path to a leaked prompt.');
+      console.log('        3) Abort and add the entry to MODEL_PROMPT_SOURCES, then re-run.');
+      const choice = await askText(reader, '      Sibling model name, URL, local path, or empty to abort: ');
+      if (!choice) {
+        console.error('      Aborting.');
+        process.exit(1);
+      }
+      if (MODEL_PROMPT_SOURCES[choice]) {
+        source = MODEL_PROMPT_SOURCES[choice];
+        console.log(`      Using ${choice} as prompt source for ${model}.`);
+      } else if (choice.startsWith('http://') || choice.startsWith('https://') || existsSync(choice)) {
+        source = choice;
+      } else {
+        console.error(`      "${choice}" is neither a known model nor a URL/path. Aborting.`);
+        process.exit(1);
+      }
     }
     console.log(`\n[2/5] Fetching prompt from ${source}`);
     const raw = await fetchPromptSource(source);
@@ -445,7 +558,7 @@ async function main() {
     console.log('\n[3/5] Adjust prompt for transplant context?');
     console.log('      Calls Sonnet 4.5 with editing instructions: drop web-only tools/products, update dates,');
     console.log('      preserve identity/behavior. Costs ~$0.05–0.15 and ~10–30s.');
-    const doAdjust = await ask('      Run adjustment?');
+    const doAdjust = await askYesNo(reader, '      Run adjustment?');
     if (doAdjust) {
       console.log('      Calling Sonnet 4.5...');
       const today = new Date().toISOString().slice(0, 10);
@@ -544,9 +657,9 @@ async function main() {
   // -- Optional warmup chain --
   if (!opts.noWarmup) {
     console.log('');
-    const warmup = await ask('Start a warmup pass now?', false);
+    const warmup = await askYesNo(reader, 'Start a warmup pass now?', false);
     if (warmup) {
-      const sessionRef = await askText('  Session name or id to warm up (leave blank to skip): ');
+      const sessionRef = await askText(reader, '  Session name or id to warm up (leave blank to skip): ');
       if (sessionRef) {
         console.log(`  Spawning warmup-session.ts for "${sessionRef}"...\n`);
         const scriptPath = resolve(import.meta.dir, 'warmup-session.ts');
