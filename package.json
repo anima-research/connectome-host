@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "@animalabs/agent-framework": "^0.5.3",
-    "@animalabs/context-manager": "^0.5.0",
-    "@animalabs/chronicle": "^0.1.1",
+    "@animalabs/context-manager": "^0.5.2",
+    "@animalabs/chronicle": "^0.2.0",
     "@animalabs/membrane": "^0.5.46",
     "@opentui/core": "^0.1.82"
   },
