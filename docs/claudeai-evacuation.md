@@ -148,6 +148,7 @@ Useful warmup flags:
 |---|---|
 | `--data-dir <dir>` | Conhost data dir (default `./data`) |
 | `--model <id>` | Compression model (default `claude-sonnet-4-5-20250929`) |
+| `--agent <name>` | Participant name for assistant turns (default `agent`). **Must match the value used at import** — otherwise Membrane will map assistant messages to role `user` and the API will reject the compression request. |
 | `--max-spend <usd>` | Soft cap — halts gracefully when running cost hits the cap. Re-run to resume. |
 | `--l1-budget <n>`, `--l2-budget <n>`, `--l3-budget <n>` | Autobio tier token budgets |
 | `--merge-threshold <n>` | L1→L2 / L2→L3 merge threshold (default 6) |

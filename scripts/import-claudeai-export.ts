@@ -252,6 +252,23 @@ export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; b
 // Block transform
 // ---------------------------------------------------------------------------
 
+/**
+ * Transform one export message's content blocks into Anthropic-shape blocks,
+ * fixing two claude.ai quirks along the way:
+ *
+ *   - Internal tools (web_search, web_fetch, conversation_search, artifacts,
+ *     etc.) have `tool_use.id === null` and the paired `tool_result` has
+ *     `tool_use_id === null`. The API requires non-empty strings. We
+ *     synthesize stable IDs (`toolu_imported_<msg.uuid>_<blockIdx>`) and
+ *     pair the next null-ID tool_result to the most recent null-ID tool_use
+ *     in the same message via FIFO queue.
+ *
+ *   - tool_use + tool_result get bundled in a single assistant message.
+ *     API rules require tool_result to live in the *next* user message.
+ *     The block-level transform handled here only emits the blocks; the
+ *     message-level split is done in `splitMixedToolMessages` so the
+ *     two concerns stay independently testable.
+ */
 export function transformContent(msg: ExportMessage): ContentBlock[] {
   const out: ContentBlock[] = [];
 
@@ -268,7 +285,12 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
     }
   }
 
-  for (const block of msg.content ?? []) {
+  // Queue of synthetic tool_use IDs awaiting pairing with a null-ID
+  // tool_result. FIFO because tool cycles are sequentially well-ordered
+  // within a single source message.
+  const pendingToolUseIds: string[] = [];
+
+  for (const [blockIdx, block] of (msg.content ?? []).entries()) {
     switch (block.type) {
       case 'text':
         if (block.text) out.push({ type: 'text', text: block.text });
@@ -286,16 +308,30 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
         break;
       }
 
-      case 'tool_use':
+      case 'tool_use': {
+        let id = (block.id as string | null | undefined) ?? '';
+        if (!id) {
+          id = `toolu_imported_${msg.uuid}_${blockIdx}`;
+          pendingToolUseIds.push(id);
+        }
         out.push({
           type: 'tool_use',
-          id: block.id,
+          id,
           name: block.name,
           input: block.input ?? {},
         });
         break;
+      }
 
       case 'tool_result': {
+        // Pair with the nearest preceding null-ID tool_use in the same
+        // message. If the source provided a tool_use_id, trust it. If
+        // neither pairing nor source ID is available, emit an orphan
+        // marker rather than null (which crashes the API).
+        let toolUseId = (block.tool_use_id as string | null | undefined) ?? '';
+        if (!toolUseId) {
+          toolUseId = pendingToolUseIds.shift() ?? `toolu_imported_orphan_${msg.uuid}_${blockIdx}`;
+        }
         // Membrane's ToolResultContent.content is string | ContentBlock[].
         // The export's `content` is usually a string or an array of {type,text}
         // sub-blocks; coerce conservatively to a string when in doubt so the
@@ -317,7 +353,7 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
         }
         out.push({
           type: 'tool_result',
-          toolUseId: block.tool_use_id,
+          toolUseId,
           content,
           ...(block.is_error ? { isError: true } : {}),
         });
@@ -345,6 +381,57 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
     });
   }
 
+  return out;
+}
+
+/**
+ * claude.ai stores an entire internal-tool cycle (tool_use → tool_result)
+ * as consecutive blocks in one assistant message. The Anthropic API requires
+ * tool_use blocks in assistant turns and tool_result blocks in user turns,
+ * with each tool_result in the *immediately following* user message.
+ *
+ * Walks `blocks` and, whenever a tool_result is encountered in a non-user
+ * source message, flushes the preceding blocks as a `sourceParticipant`
+ * message, emits the tool_result alone as a `user` message, then continues
+ * collecting blocks for another `sourceParticipant` message. Adjacent
+ * tool_results get merged into a single user message (API-legal).
+ *
+ * If the source is already 'user' (claude.ai never produces this, but be
+ * safe), no splitting is needed and the input is returned unchanged.
+ */
+export function splitMixedToolMessages(
+  blocks: ContentBlock[],
+  sourceParticipant: string,
+): Array<{ participant: string; content: ContentBlock[] }> {
+  if (sourceParticipant === 'user' || blocks.length === 0) {
+    return blocks.length === 0 ? [] : [{ participant: sourceParticipant, content: blocks }];
+  }
+  const out: Array<{ participant: string; content: ContentBlock[] }> = [];
+  let preTool: ContentBlock[] = [];
+  let pendingResults: ContentBlock[] = [];
+  const flushPre = () => {
+    if (preTool.length > 0) {
+      out.push({ participant: sourceParticipant, content: preTool });
+      preTool = [];
+    }
+  };
+  const flushResults = () => {
+    if (pendingResults.length > 0) {
+      out.push({ participant: 'user', content: pendingResults });
+      pendingResults = [];
+    }
+  };
+  for (const block of blocks) {
+    if (block.type === 'tool_result') {
+      flushPre();
+      pendingResults.push(block);
+    } else {
+      flushResults();
+      preTool.push(block);
+    }
+  }
+  flushResults();
+  flushPre();
   return out;
 }
 
@@ -380,19 +467,26 @@ async function importConversation(
     const cm = await ContextManager.open({ store });
     try {
       for (const msg of path) {
-        const content = transformContent(msg);
-        if (content.length === 0) continue; // skip degenerate messages
-        const participant = msg.sender === 'assistant' ? opts.agentName : 'user';
-        cm.addMessage(participant, content, {
-          sourceId: msg.uuid,
-          exportSource: {
-            conversationUuid: conv.uuid,
-            originalParent: msg.parent_message_uuid,
-            createdAt: msg.created_at,
-            updatedAt: msg.updated_at,
-            originalSender: msg.sender,
-          },
-        });
+        const blocks = transformContent(msg);
+        if (blocks.length === 0) continue; // skip degenerate messages
+        const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
+        // claude.ai bundles tool cycles into single assistant turns; the API
+        // requires tool_results in their own user turns. Split here so the
+        // Chronicle store holds API-shape messages from the start.
+        const messages = splitMixedToolMessages(blocks, sourceParticipant);
+        for (const [idx, m] of messages.entries()) {
+          cm.addMessage(m.participant, m.content, {
+            sourceId: messages.length > 1 ? `${msg.uuid}#${idx}` : msg.uuid,
+            exportSource: {
+              conversationUuid: conv.uuid,
+              originalParent: msg.parent_message_uuid,
+              createdAt: msg.created_at,
+              updatedAt: msg.updated_at,
+              originalSender: msg.sender,
+              ...(messages.length > 1 ? { splitIndex: idx, splitTotal: messages.length } : {}),
+            },
+          });
+        }
       }
     } finally {
       await cm.close?.();

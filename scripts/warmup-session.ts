@@ -24,6 +24,10 @@
  * Options:
  *   --data-dir <dir>   Conhost data dir (default: ./data)
  *   --model <id>       Compression model (default: claude-sonnet-4-5-20250929)
+ *   --agent <name>     Participant name for assistant turns (default: "agent",
+ *                      matching the importer's default; MUST match the value
+ *                      used during import or Membrane will map assistant
+ *                      messages to role 'user' and the API will reject them)
  *   --max-spend <usd>  Soft cap; halt gracefully if cost exceeds this
  *   --l1-budget <n>    L1 budget tokens (passed to autobio)
  *   --l2-budget <n>    Likewise L2
@@ -65,6 +69,7 @@ interface Opts {
   sessionRef: string;
   dataDir: string;
   model: string;
+  agentName: string;
   maxSpend: number | null;
   l1Budget?: number;
   l2Budget?: number;
@@ -76,7 +81,7 @@ function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/warmup-session.ts <session-name-or-id> [--data-dir <dir>] [--model <id>] [--max-spend <usd>] [--l1-budget <n>] [--l2-budget <n>] [--l3-budget <n>] [--merge-threshold <n>]',
+      'Usage: bun scripts/warmup-session.ts <session-name-or-id> [--data-dir <dir>] [--model <id>] [--agent <name>] [--max-spend <usd>] [--l1-budget <n>] [--l2-budget <n>] [--l3-budget <n>] [--merge-threshold <n>]',
     );
     process.exit(1);
   }
@@ -84,12 +89,14 @@ function parseArgs(argv: string[]): Opts {
     sessionRef: args[0]!,
     dataDir: resolve(process.cwd(), 'data'),
     model: 'claude-sonnet-4-5-20250929',
+    agentName: 'agent',
     maxSpend: null,
   };
   for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--data-dir') opts.dataDir = resolve(args[++i]!);
     else if (a === '--model') opts.model = args[++i]!;
+    else if (a === '--agent') opts.agentName = args[++i]!;
     else if (a === '--max-spend') opts.maxSpend = parseFloat(args[++i]!);
     else if (a === '--l1-budget') opts.l1Budget = parseInt(args[++i]!);
     else if (a === '--l2-budget') opts.l2Budget = parseInt(args[++i]!);
@@ -187,6 +194,11 @@ async function main() {
   const spend: Spend = { inputTokens: 0, outputTokens: 0, cost: 0 };
   const adapter = new AnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY });
   const membrane = new Membrane(adapter, {
+    // Sessions imported by import-claudeai-export.ts store assistant turns
+    // under participant `agentName`. Membrane's default assistantParticipant
+    // is 'Claude'; without this override every assistant message would map
+    // to role 'user' and the API would reject tool_use blocks.
+    assistantParticipant: opts.agentName,
     hooks: {
       afterResponse: (response: NormalizedResponse) => {
         const u = response.usage;
@@ -205,6 +217,10 @@ async function main() {
   const store = JsStore.openOrCreate({ path: storePath });
   const strategy = new AutobiographicalStrategy({
     compressionModel: opts.model,
+    // Autobio uses summaryParticipant for the synthetic summary messages it
+    // writes back; aligning with the imported agent name keeps the whole
+    // conversation under a single participant.
+    summaryParticipant: opts.agentName,
     autoTickOnNewMessage: false, // we drive ticks manually
     ...(opts.l1Budget !== undefined && { l1BudgetTokens: opts.l1Budget }),
     ...(opts.l2Budget !== undefined && { l2BudgetTokens: opts.l2Budget }),
