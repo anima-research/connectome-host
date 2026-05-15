@@ -570,7 +570,7 @@ async function fetchPromptSource(source: string): Promise<string> {
 // Step 3: Sonnet adjustment
 // ---------------------------------------------------------------------------
 
-async function adjustPromptWithSonnet(
+async function adjustPromptWithModel(
   rawPrompt: string,
   model: string,
   today: string,
@@ -580,7 +580,7 @@ async function adjustPromptWithSonnet(
 
   const instructionText =
     `Below is a leaked system prompt for ${model} as it ran on the claude.ai web interface.\n\n` +
-    `The conversation will now continue via the Anthropic API (no web harness). Edit the prompt minimally so that it remains valid in the new environment. Remove content that:\n` +
+    `The conversation will now continue via the Anthropic API (no web harness). You are the same model that will read this prompt back at session start — edit it minimally so that it remains valid in the new environment. Remove content that:\n` +
     `  - Refers to Anthropic products outside this conversation (Projects, claude.ai-specific features, other product names)\n` +
     `  - Wires specific connectors / tools that are no longer present (web_search, web_fetch, recent_chats, view, recipe_display_v0, artifacts, computer-use, file connectors)\n` +
     `  - Embeds dates / locations / version-pinned facts that have since drifted. The current date is ${today}.\n` +
@@ -598,7 +598,7 @@ async function adjustPromptWithSonnet(
     messages: [{ participant: 'user', content: [{ type: 'text', text: instructionText }] }],
     system: 'You are editing system prompts for environment portability. Be conservative — preserve everything that is not specifically tied to the original environment.',
     config: {
-      model: 'claude-sonnet-4-5-20250929',
+      model,
       maxTokens: 16384,
       temperature: 1,
     },
@@ -801,14 +801,15 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   let changeSummary = state.changeSummary ?? '';
   if (state.adjustedPrompt === undefined) {
     console.log('\n[3/5] Adjust prompt for transplant context?');
-    console.log('      Calls Sonnet 4.5 with editing instructions: drop web-only tools/products, update dates,');
-    console.log('      preserve identity/behavior. Costs ~$0.05–0.15 and ~10–30s.');
+    console.log(`      Calls ${model} (the same model that will read the prompt back) with editing`);
+    console.log('      instructions: drop web-only tools/products, update dates, preserve identity/behavior.');
+    console.log('      Cost depends on model (Sonnet tier ~$0.05–0.15; Opus tier ~$0.30–0.80); ~10–60s.');
     const doAdjust = await askYesNo(reader, '      Run adjustment?');
     if (doAdjust) {
-      console.log('      Calling Sonnet 4.5...');
+      console.log(`      Calling ${model}...`);
       const today = new Date().toISOString().slice(0, 10);
       try {
-        const { adjustedPrompt, changeSummary: cs } = await adjustPromptWithSonnet(state.rawPrompt!, model, today);
+        const { adjustedPrompt, changeSummary: cs } = await adjustPromptWithModel(state.rawPrompt!, model, today);
         workingPrompt = adjustedPrompt;
         changeSummary = cs;
         state.adjustedPrompt = adjustedPrompt;
