@@ -32,6 +32,7 @@ import { ActivityModule } from './modules/activity-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
+import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
 import {
   type Recipe,
@@ -69,6 +70,13 @@ interface AppContext {
   membrane: Membrane;
   sessionManager: SessionManager;
   recipe: Recipe;
+  /**
+   * Resolved at startup from recipe + active session's import sidecar +
+   * default. Used downstream by createFramework, setupSynesthete, etc. so
+   * the priority chain isn't recomputed (and potentially drifted) at each
+   * call site. Stays stable across `switchSession` — see note in main().
+   */
+  agentName: string;
   branchState: BranchState;
   userMessageCount: number;
 
@@ -115,8 +123,12 @@ async function resolveRecipe(): Promise<Recipe> {
 // Framework factory
 // ---------------------------------------------------------------------------
 
-async function createFramework(membrane: Membrane, storePath: string, recipe: Recipe): Promise<AgentFramework> {
-  const agentName = recipe.agent.name || 'agent';
+async function createFramework(
+  membrane: Membrane,
+  storePath: string,
+  recipe: Recipe,
+  agentName: string,
+): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
 
@@ -396,7 +408,7 @@ function getWebUiModule(framework: AgentFramework): WebUiModule | null {
 // ---------------------------------------------------------------------------
 
 function setupSynesthete(app: AppContext): void {
-  const agentName = app.recipe.agent.name || 'agent';
+  const agentName = app.agentName;
   const namingExamples = app.recipe.sessionNaming?.examples;
 
   app.framework.onTrace((event) => {
@@ -608,15 +620,6 @@ function countLines(path: string): number {
 
 async function main() {
   const recipe = await resolveRecipe();
-  // Resolve the agent's participant name once here so the Membrane below
-  // can be configured with it. AutobiographicalStrategy's compression
-  // requests don't set `assistantParticipant` themselves — they rely on
-  // the Membrane-level default. Without a name match the formatter maps
-  // every stored assistant turn to role 'user', collapses them into one
-  // multi-block user message, and the API rejects any tool_use blocks
-  // riding along. Symptom: post-warmup compressions silently fail on
-  // every chunk until the user notices the agent has lost continuity.
-  const agentName = recipe.agent.name || 'agent';
 
   const adapter = new AnthropicAdapter({ apiKey: config.apiKey! });
 
@@ -666,14 +669,42 @@ async function main() {
   // of main(), which blocks all other module init for no real benefit.
   if (llmCallCount >= ROTATE_AT) void rotateLlmCallLog();
 
+  // Session management — resolved before Membrane construction so the
+  // active session's import-source sidecar can contribute to agent-name
+  // resolution. Without that, a custom recipe that omits agent.name
+  // combined with a claudeai-imported session falls back to 'agent' on
+  // the live side while the importer + warmup default to 'Claude',
+  // re-creating the namespace fork this branch exists to close.
+  const sessionManager = new SessionManager(config.dataDir);
+  sessionManager.migrateIfNeeded();
+
+  let activeSession = sessionManager.getActiveSession();
+  if (!activeSession) {
+    activeSession = sessionManager.createSession();
+  }
+
+  const resolved = resolveAgentName({
+    explicit: recipe.agent.name,
+    sidecar: sessionManager.getImportSource(activeSession.id)?.agentName,
+    default: 'agent',
+  });
+  if (resolved.mismatch) {
+    console.warn(
+      `[recipe vs sidecar] agent name disagreement: recipe says ` +
+      `"${resolved.mismatch.explicit}", session ${activeSession.id}'s ` +
+      `import sidecar says "${resolved.mismatch.sidecar}". Using the ` +
+      `recipe value; warmup output under "${resolved.mismatch.sidecar}" ` +
+      `will be orphaned at agents/${resolved.mismatch.sidecar}/...`,
+    );
+  }
+  const agentName = resolved.name;
+
   const membrane = new Membrane(adapter, {
     formatter: new NativeFormatter(),
-    // Compression and other internal callers (autobio L1 builds,
-    // executeMerge, etc.) don't set request.assistantParticipant —
-    // they trust the Membrane-level default. Anchor it to the recipe's
-    // agent name so stored assistant turns get role='assistant' even
-    // for non-"Claude" agents (live-session counterpart of the warmup
-    // Bug 3 fix in scripts/warmup-session.ts).
+    // Anchor the assistant role for internal callers that don't set
+    // request.assistantParticipant themselves (autobio compression,
+    // executeMerge). Mismatch here flips stored assistant turns to
+    // role: 'user' and the API rejects tool_use blocks riding along.
     assistantParticipant: agentName,
     hooks: {
       beforeRequest: (normalizedRequest, rawRequest) => {
@@ -697,17 +728,8 @@ async function main() {
     },
   });
 
-  // Session management
-  const sessionManager = new SessionManager(config.dataDir);
-  sessionManager.migrateIfNeeded();
-
-  let activeSession = sessionManager.getActiveSession();
-  if (!activeSession) {
-    activeSession = sessionManager.createSession();
-  }
-
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe);
+  const framework = await createFramework(membrane, storePath, recipe, agentName);
 
   // Build app context
   const app: AppContext = {
@@ -715,6 +737,7 @@ async function main() {
     membrane,
     sessionManager,
     recipe,
+    agentName,
     branchState: createBranchState(),
     userMessageCount: 0,
 
@@ -723,7 +746,11 @@ async function main() {
       await this.framework.stop();
       sessionManager.setActiveSession(id);
       const newStorePath = sessionManager.getStorePath(id);
-      this.framework = await createFramework(membrane, newStorePath, recipe);
+      // Note: agentName stays as resolved at startup. A per-session
+      // re-resolution would matter only if recipe.agent.name is absent
+      // AND the user switches between imports that used different
+      // --agent values; not the canonical flow.
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
