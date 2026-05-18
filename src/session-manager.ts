@@ -160,16 +160,28 @@ export class SessionManager {
   /**
    * Read the import-source sidecar for a session, if one exists.
    *
-   * Returns null when the session wasn't created by the importer (no sidecar),
-   * when the file can't be read, or when its contents don't parse as JSON.
-   * The caller gets a partial record — every field is optional, because
-   * sidecars written by older importer versions may be missing newer fields.
+   * Returns null when the session wasn't created by the importer (no
+   * sidecar), when the file can't be read, when its contents don't parse
+   * as JSON, or when the parsed value isn't a plain object (e.g. someone
+   * wrote `null` or an array). The caller gets a partial record — every
+   * field is optional, because sidecars written by older importer
+   * versions may be missing newer fields.
+   *
+   * Field-level types are NOT validated here: this is a filesystem trust
+   * boundary, but field-shape regressions would touch each consumer's
+   * usage site anyway, and the typeof-string guards in
+   * `resolveAgentName`/inline at call sites catch the values that
+   * actually flow through.
    */
   getImportSource(id: string): ImportSource | null {
     const path = join(this.sessionsDir, `${id}.import-source.json`);
     if (!existsSync(path)) return null;
     try {
-      return JSON.parse(readFileSync(path, 'utf-8')) as ImportSource;
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return null;
+      }
+      return parsed as ImportSource;
     } catch {
       return null;
     }

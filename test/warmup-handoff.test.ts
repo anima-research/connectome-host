@@ -60,6 +60,24 @@ describe('SessionManager.getImportSource', () => {
     expect(sm.getImportSource('broken')).toBeNull();
   });
 
+  test('returns null when sidecar JSON parses to a non-object root', () => {
+    // The trust-boundary gate added in src/session-manager.ts:
+    // valid JSON like `null`, `[]`, `"string"`, or a bare number parses
+    // successfully but would have produced an unusable `ImportSource`
+    // with whatever field accesses the call site does. The gate rejects
+    // these at the boundary so the rest of the code can assume a record.
+    const cases: Array<[string, string]> = [
+      ['null-root', 'null'],
+      ['array-root', '[1,2,3]'],
+      ['string-root', '"just a string"'],
+      ['number-root', '42'],
+    ];
+    for (const [id, body] of cases) {
+      writeFileSync(join(tmpDir, 'sessions', `${id}.import-source.json`), body);
+      expect(sm.getImportSource(id)).toBeNull();
+    }
+  });
+
   test('surfaces agentName specifically — guards against field rename', () => {
     // The whole point of this sidecar field is that warmup-session.ts can
     // read it back. If someone renames `agentName` upstream without
