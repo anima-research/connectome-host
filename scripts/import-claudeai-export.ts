@@ -506,6 +506,12 @@ async function importConversation(
         summary: conv.summary ?? null,
         createdAt: conv.created_at,
         updatedAt: conv.updated_at,
+        // The participant name assigned to assistant turns at import time.
+        // Recorded here so warmup and conhost can read it back and stay in
+        // sync without depending on a CLI flag the operator might forget.
+        // Bug source: warmup using its own default left summaries in one
+        // strategy namespace while the framework read from another.
+        agentName: opts.agentName,
         originalMessageCount: conv.chat_messages.length,
         importedMessageCount: path.length,
         branched,
