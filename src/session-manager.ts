@@ -29,6 +29,36 @@ export interface SessionIndex {
   sessions: Record<string, SessionMeta>;
 }
 
+/**
+ * Provenance recorded by the claude.ai importer alongside each session.
+ * Fields are optional because older sessions imported before a given field
+ * existed will simply omit it. Callers reading this should treat every
+ * property as "may be missing" and provide their own fallbacks.
+ *
+ * Lives in `{dataDir}/sessions/{id}.import-source.json`, NOT inside the
+ * Chronicle store directory. Written once by the importer, never updated.
+ */
+export interface ImportSource {
+  conversationUuid?: string;
+  name?: string;
+  summary?: string | null;
+  /** Original `conv.created_at` from the export. */
+  createdAt?: string;
+  /** Original `conv.updated_at` from the export. */
+  updatedAt?: string;
+  /**
+   * Participant name assigned to assistant turns at import time. Warmup and
+   * conhost both read this so they don't disagree about the agent's identity
+   * — disagreement leaves strategy state in the wrong Chronicle namespace
+   * and the live agent silently amnesiac.
+   */
+  agentName?: string;
+  originalMessageCount?: number;
+  importedMessageCount?: number;
+  branched?: boolean;
+  importedAt?: string;
+}
+
 // ---------------------------------------------------------------------------
 // SessionManager
 // ---------------------------------------------------------------------------
@@ -125,6 +155,36 @@ export class SessionManager {
   /** Get the Chronicle store directory path for a session. */
   getStorePath(id: string): string {
     return join(this.sessionsDir, id);
+  }
+
+  /**
+   * Read the import-source sidecar for a session, if one exists.
+   *
+   * Returns null when the session wasn't created by the importer (no
+   * sidecar), when the file can't be read, when its contents don't parse
+   * as JSON, or when the parsed value isn't a plain object (e.g. someone
+   * wrote `null` or an array). The caller gets a partial record — every
+   * field is optional, because sidecars written by older importer
+   * versions may be missing newer fields.
+   *
+   * Field-level types are NOT validated here: this is a filesystem trust
+   * boundary, but field-shape regressions would touch each consumer's
+   * usage site anyway, and the typeof-string guards in
+   * `resolveAgentName`/inline at call sites catch the values that
+   * actually flow through.
+   */
+  getImportSource(id: string): ImportSource | null {
+    const path = join(this.sessionsDir, `${id}.import-source.json`);
+    if (!existsSync(path)) return null;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return null;
+      }
+      return parsed as ImportSource;
+    } catch {
+      return null;
+    }
   }
 
   /** Get the currently active session, or null if none. */

@@ -1,7 +1,7 @@
 {
   "name": "Continued from claude.ai",
   "agent": {
-    "name": "agent",
+    "name": "Claude",
     "model": "claude-sonnet-4-5-20250929",
     "maxTokens": 16384,
     "thinking": {

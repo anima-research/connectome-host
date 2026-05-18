@@ -37,9 +37,13 @@
  *
  * Options:
  *   --out <dir>       Conhost data dir (default: ./data)
- *   --agent <name>    Participant name for assistant turns (default: "agent",
- *                     matching conhost's default; must equal the recipe's
- *                     `agent.name` for messages to be recognized as assistant)
+ *   --agent <name>    Participant name for assistant turns. Default: "Claude"
+ *                     — the natural choice for claude.ai-derived sessions
+ *                     and what the bundled `claude-export-revive.json`
+ *                     recipe pins `agent.name` to. The chosen value is
+ *                     written into the per-session import-source sidecar,
+ *                     so warmup and conhost can read it back without
+ *                     re-passing the flag.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
  */
@@ -75,7 +79,7 @@ function parseArgs(argv: string[]): Opts {
   }
   const exportDir = resolve(args[0]!);
   let outDir = resolve(process.cwd(), 'data');
-  let agentName = 'agent';
+  let agentName = 'Claude';
   let filter: RegExp | undefined;
   let dryRun = false;
   // Interactive by default if stdin is a TTY; --no-interactive forces off.
@@ -506,6 +510,12 @@ async function importConversation(
         summary: conv.summary ?? null,
         createdAt: conv.created_at,
         updatedAt: conv.updated_at,
+        // The participant name assigned to assistant turns at import time.
+        // Recorded here so warmup and conhost can read it back and stay in
+        // sync without depending on a CLI flag the operator might forget.
+        // Bug source: warmup using its own default left summaries in one
+        // strategy namespace while the framework read from another.
+        agentName: opts.agentName,
         originalMessageCount: conv.chat_messages.length,
         importedMessageCount: path.length,
         branched,
