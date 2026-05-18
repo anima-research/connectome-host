@@ -247,10 +247,20 @@ async function main() {
     ...(opts.mergeThreshold !== undefined && { mergeThreshold: opts.mergeThreshold }),
   });
 
+  // Match the namespace `AgentFramework.createAgent` uses for the live
+  // agent (`agents/${config.name}`). Without this, `ContextManager.open`
+  // falls back to `'default'` and warmup writes its summaries to
+  // `default/autobio:summaries` while the live agent reads from
+  // `agents/${agentName}/autobio:summaries` — they never meet, and on
+  // first session open the autobiography appears blank to the agent.
+  // This is *the* bug this branch exists to fix; the surrounding plumbing
+  // (sidecar agentName, defaults, live-Membrane assistantParticipant) is
+  // defense-in-depth around the same handoff.
   const cm = await ContextManager.open({
     store,
     strategy,
     membrane,
+    namespace: `agents/${agentName}`,
   });
 
   // -- Inspect initial state --
