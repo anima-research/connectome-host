@@ -608,6 +608,15 @@ function countLines(path: string): number {
 
 async function main() {
   const recipe = await resolveRecipe();
+  // Resolve the agent's participant name once here so the Membrane below
+  // can be configured with it. AutobiographicalStrategy's compression
+  // requests don't set `assistantParticipant` themselves — they rely on
+  // the Membrane-level default. Without a name match the formatter maps
+  // every stored assistant turn to role 'user', collapses them into one
+  // multi-block user message, and the API rejects any tool_use blocks
+  // riding along. Symptom: post-warmup compressions silently fail on
+  // every chunk until the user notices the agent has lost continuity.
+  const agentName = recipe.agent.name || 'agent';
 
   const adapter = new AnthropicAdapter({ apiKey: config.apiKey! });
 
@@ -659,6 +668,13 @@ async function main() {
 
   const membrane = new Membrane(adapter, {
     formatter: new NativeFormatter(),
+    // Compression and other internal callers (autobio L1 builds,
+    // executeMerge, etc.) don't set request.assistantParticipant —
+    // they trust the Membrane-level default. Anchor it to the recipe's
+    // agent name so stored assistant turns get role='assistant' even
+    // for non-"Claude" agents (live-session counterpart of the warmup
+    // Bug 3 fix in scripts/warmup-session.ts).
+    assistantParticipant: agentName,
     hooks: {
       beforeRequest: (normalizedRequest, rawRequest) => {
         const entry = {
