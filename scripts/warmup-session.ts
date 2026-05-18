@@ -44,6 +44,7 @@ import { ContextManager } from '@animalabs/context-manager';
 import { AutobiographicalStrategy } from '@animalabs/agent-framework';
 import { Membrane, AnthropicAdapter, type NormalizedResponse } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { resolveAgentName } from '../src/agent-name.js';
 
 // ---------------------------------------------------------------------------
 // Pricing (approximate, USD per 1M tokens). Used for the --max-spend gate
@@ -193,18 +194,24 @@ async function main() {
   }
   const storePath = sessionMgr.getStorePath(session.id);
 
-  // Resolve agent identity: explicit --agent wins; otherwise consult the
-  // import-source sidecar (the importer recorded the name it used for
-  // assistant turns); otherwise fall back to "Claude" — the natural default
-  // for claude.ai-derived sessions, which is the only data source the
-  // warmup script currently has.
   const importSource = sessionMgr.getImportSource(session.id);
-  const agentName = opts.agentName ?? importSource?.agentName ?? 'Claude';
+  const resolved = resolveAgentName({
+    explicit: opts.agentName,
+    sidecar: importSource?.agentName,
+    default: 'Claude',
+  });
 
   console.error(`Warming up session "${session.name}" (${session.id})`);
   console.error(`Store: ${storePath}`);
-  console.error(`Agent: ${agentName}` +
-    (opts.agentName ? ' (--agent)' : importSource?.agentName ? ' (sidecar)' : ' (default)'));
+  console.error(`Agent: ${resolved.name} (${resolved.source})`);
+  if (resolved.mismatch) {
+    console.error(
+      `WARNING: --agent "${resolved.mismatch.explicit}" overrides sidecar ` +
+      `"${resolved.mismatch.sidecar}". Any summaries previously written under ` +
+      `the sidecar name will be orphaned at agents/${resolved.mismatch.sidecar}/...`,
+    );
+  }
+  const agentName = resolved.name;
   console.error(`Model: ${opts.model}`);
   if (opts.maxSpend !== null) console.error(`Max spend: $${opts.maxSpend.toFixed(2)}`);
 
@@ -247,15 +254,8 @@ async function main() {
     ...(opts.mergeThreshold !== undefined && { mergeThreshold: opts.mergeThreshold }),
   });
 
-  // Match the namespace `AgentFramework.createAgent` uses for the live
-  // agent (`agents/${config.name}`). Without this, `ContextManager.open`
-  // falls back to `'default'` and warmup writes its summaries to
-  // `default/autobio:summaries` while the live agent reads from
-  // `agents/${agentName}/autobio:summaries` — they never meet, and on
-  // first session open the autobiography appears blank to the agent.
-  // This is *the* bug this branch exists to fix; the surrounding plumbing
-  // (sidecar agentName, defaults, live-Membrane assistantParticipant) is
-  // defense-in-depth around the same handoff.
+  // Match AgentFramework.createAgent's namespace (`agents/${config.name}`)
+  // so warmup writes summaries where the live agent reads them.
   const cm = await ContextManager.open({
     store,
     strategy,
