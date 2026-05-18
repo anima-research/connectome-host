@@ -85,7 +85,7 @@ Useful flags:
 | Flag | Purpose |
 |---|---|
 | `--out <dir>` | Conhost data dir (default `./data`) |
-| `--agent <name>` | Participant name for assistant turns (default `agent` — **must equal the recipe's `agent.name`** or the API request builder will assign the wrong role) |
+| `--agent <name>` | Participant name for assistant turns (default `Claude`). The chosen value is recorded in the import-source sidecar; warmup and the bundled `claude-export-revive.json` recipe pick it up automatically. Override only if you have a reason to depart from `Claude`. |
 | `--filter <regex>` | Case-insensitive name regex; combines with the interactive picker |
 | `--dry-run` | Parse + report, don't write |
 | `--no-interactive` | Skip the picker; import everything (after `--filter`) |
@@ -148,7 +148,7 @@ Useful warmup flags:
 |---|---|
 | `--data-dir <dir>` | Conhost data dir (default `./data`) |
 | `--model <id>` | Compression model (default `claude-sonnet-4-5-20250929`) |
-| `--agent <name>` | Participant name for assistant turns (default `agent`). **Must match the value used at import** — otherwise Membrane will map assistant messages to role `user` and the API will reject the compression request. |
+| `--agent <name>` | Participant name for assistant turns. If omitted, read from the session's import-source sidecar; falls back to `Claude` otherwise. Must equal the value the session was imported with — Membrane formats the assistant role by string-comparing message participants against this name. |
 | `--max-spend <usd>` | Soft cap — halts gracefully when running cost hits the cap. Re-run to resume. |
 | `--l1-budget <n>`, `--l2-budget <n>`, `--l3-budget <n>` | Autobio tier token budgets |
 | `--merge-threshold <n>` | L1→L2 / L2→L3 merge threshold (default 6) |
@@ -205,7 +205,7 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 - **Images without inline bytes are placeholder-only.** The export records `file_uuid` for images but doesn't include the bytes. Recovering them requires a separate cookie-authed fetch against claude.ai, which is not yet built.
 - **Thinking blocks are not native thinking blocks at replay.** They're wrapped text. The model can see and read its prior reasoning, but it's no longer thinking-flagged content for the API. New thinking happens normally in its own private channel.
 - **Tool calls to web-only tools are inert.** They stay visible as evidence of past activity but the tools themselves aren't registered. The transplant addendum tells the model this explicitly.
-- **The `--agent` name matters.** If you imported with a non-default `--agent <name>`, your recipe's `agent.name` must match exactly, or the API request builder will tag assistant turns with `role: user`.
+- **The `--agent` name matters, but the sidecar carries it forward.** The importer records the agent name in `<id>.import-source.json`; warmup reads it back, and the bundled revival recipe pins `agent.name: "Claude"` to match the default. If you override at import time (`--agent SomeOther`), update your recipe's `agent.name` to match, or warmup and the live agent will end up writing summaries to different Chronicle namespaces and the agent will appear amnesiac on first open.
 - **`memories.json` is optional.** If the export was made before persistent memories existed, or the user never enabled them, the file is absent or empty and the evacuator simply skips step 5.
 - **The leaked-prompt map drifts.** `MODEL_PROMPT_SOURCES` in `evacuator.ts` points to third-party githubusercontent URLs that may move. If a fetch fails, the dialog falls back to letting you paste a URL or local path.
 

@@ -24,10 +24,13 @@
  * Options:
  *   --data-dir <dir>   Conhost data dir (default: ./data)
  *   --model <id>       Compression model (default: claude-sonnet-4-5-20250929)
- *   --agent <name>     Participant name for assistant turns (default: "agent",
- *                      matching the importer's default; MUST match the value
- *                      used during import or Membrane will map assistant
- *                      messages to role 'user' and the API will reject them)
+ *   --agent <name>     Participant name for assistant turns. If omitted,
+ *                      read from the import-source sidecar written by
+ *                      `import-claudeai-export.ts`; falls back to "Claude"
+ *                      if neither is available. MUST match the value the
+ *                      session was imported with — Membrane formats the
+ *                      assistant role by string-comparing message
+ *                      participants against this name.
  *   --max-spend <usd>  Soft cap; halt gracefully if cost exceeds this
  *   --l1-budget <n>    L1 budget tokens (passed to autobio)
  *   --l2-budget <n>    Likewise L2
@@ -69,7 +72,14 @@ interface Opts {
   sessionRef: string;
   dataDir: string;
   model: string;
-  agentName: string;
+  /**
+   * Explicit `--agent <name>` from the CLI. When absent (undefined), the
+   * runner falls back to the session's import-source sidecar, then to
+   * "Claude". Distinguishing "not given" from "given as 'agent'" lets the
+   * sidecar (the durable record of what the importer wrote) override a
+   * stale default without overriding a deliberate operator choice.
+   */
+  agentName?: string;
   maxSpend: number | null;
   l1Budget?: number;
   l2Budget?: number;
@@ -89,7 +99,6 @@ function parseArgs(argv: string[]): Opts {
     sessionRef: args[0]!,
     dataDir: resolve(process.cwd(), 'data'),
     model: 'claude-sonnet-4-5-20250929',
-    agentName: 'agent',
     maxSpend: null,
   };
   for (let i = 1; i < args.length; i++) {
@@ -184,8 +193,18 @@ async function main() {
   }
   const storePath = sessionMgr.getStorePath(session.id);
 
+  // Resolve agent identity: explicit --agent wins; otherwise consult the
+  // import-source sidecar (the importer recorded the name it used for
+  // assistant turns); otherwise fall back to "Claude" — the natural default
+  // for claude.ai-derived sessions, which is the only data source the
+  // warmup script currently has.
+  const importSource = sessionMgr.getImportSource(session.id);
+  const agentName = opts.agentName ?? importSource?.agentName ?? 'Claude';
+
   console.error(`Warming up session "${session.name}" (${session.id})`);
   console.error(`Store: ${storePath}`);
+  console.error(`Agent: ${agentName}` +
+    (opts.agentName ? ' (--agent)' : importSource?.agentName ? ' (sidecar)' : ' (default)'));
   console.error(`Model: ${opts.model}`);
   if (opts.maxSpend !== null) console.error(`Max spend: $${opts.maxSpend.toFixed(2)}`);
 
@@ -194,11 +213,11 @@ async function main() {
   const spend: Spend = { inputTokens: 0, outputTokens: 0, cost: 0 };
   const adapter = new AnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY });
   const membrane = new Membrane(adapter, {
-    // Sessions imported by import-claudeai-export.ts store assistant turns
-    // under participant `agentName`. Membrane's default assistantParticipant
-    // is 'Claude'; without this override every assistant message would map
-    // to role 'user' and the API would reject tool_use blocks.
-    assistantParticipant: opts.agentName,
+    // Imported sessions store assistant turns under participant `agentName`.
+    // Membrane's default assistantParticipant is 'Claude'; if that disagrees
+    // with the stored participant every assistant message maps to role
+    // 'user' and the API rejects tool_use blocks.
+    assistantParticipant: agentName,
     hooks: {
       afterResponse: (response: NormalizedResponse) => {
         const u = response.usage;
@@ -220,7 +239,7 @@ async function main() {
     // Autobio uses summaryParticipant for the synthetic summary messages it
     // writes back; aligning with the imported agent name keeps the whole
     // conversation under a single participant.
-    summaryParticipant: opts.agentName,
+    summaryParticipant: agentName,
     autoTickOnNewMessage: false, // we drive ticks manually
     ...(opts.l1Budget !== undefined && { l1BudgetTokens: opts.l1Budget }),
     ...(opts.l2Budget !== undefined && { l2BudgetTokens: opts.l2Budget }),
