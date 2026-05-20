@@ -329,6 +329,30 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         }
         return;
       }
+      case 'cancel-subagent': {
+        const mod = app.framework.getAllModules().find((m) => m.name === 'subagent') as
+          | { cancelSubagent(name: string): boolean }
+          | undefined;
+        if (!mod) {
+          emit({
+            type: 'cancel-subagent-result',
+            corrId: cmd.corrId,
+            name: cmd.name,
+            cancelled: false,
+            reason: 'subagent module not loaded',
+          });
+          return;
+        }
+        const ok = mod.cancelSubagent(cmd.name);
+        emit({
+          type: 'cancel-subagent-result',
+          corrId: cmd.corrId,
+          name: cmd.name,
+          cancelled: ok,
+          ...(ok ? {} : { reason: 'subagent not running' }),
+        });
+        return;
+      }
       default: {
         const t = (cmd as { type?: unknown }).type;
         log(`unknown command type: ${String(t)}`);

@@ -329,8 +329,8 @@ export function App() {
     });
   };
 
-  const cancelSubagent = (name: string): void => {
-    wire.send({ type: 'cancel-subagent', name });
+  const cancelSubagent = (name: string, childName?: string): void => {
+    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : {}) });
   };
 
   const fleetStop = (name: string): void => {
@@ -349,9 +349,12 @@ export function App() {
     if (src.kind === 'peek') cancelSubagent(src.scope);
     else if (src.kind === 'child-event-all') fleetStop(src.childName);
     else if (src.kind === 'child-event-agent') {
-      // Agent inside a fleet child — there's no per-agent kill verb yet, so
-      // stopping the whole child is the closest analogue.
-      fleetStop(src.childName);
+      // For a subagent inside a fleet child, route the cancel to that
+      // child's SubagentModule rather than killing the whole child. The
+      // main framework agent of a child is not a subagent — for that we
+      // still have no per-agent kill verb, so fall back to fleetStop.
+      if (node.kind === 'subagent') cancelSubagent(src.agentName, src.childName);
+      else fleetStop(src.childName);
     }
   };
 

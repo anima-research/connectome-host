@@ -375,7 +375,8 @@ export class WebUiModule implements Module {
       && (eType === 'lessons-snapshot'
         || eType === 'workspace-mounts-snapshot'
         || eType === 'workspace-tree-snapshot'
-        || eType === 'workspace-file-snapshot')
+        || eType === 'workspace-file-snapshot'
+        || eType === 'cancel-subagent-result')
     ) {
       this.routeChildSnapshotResponse(eType, corrId, event as Record<string, unknown>);
       return; // don't fan out — these are private replies, not telemetry
@@ -485,6 +486,21 @@ export class WebUiModule implements Module {
         toLine: Number(event.toLine ?? 0),
         content: String(event.content ?? ''),
         truncated: Boolean(event.truncated),
+      });
+      return;
+    }
+    if (eType === 'cancel-subagent-result') {
+      const name = String(event.name ?? '');
+      const cancelled = Boolean(event.cancelled);
+      const reason = typeof event.reason === 'string' ? event.reason : undefined;
+      this.send(client, {
+        type: 'command-result',
+        lines: [{
+          text: cancelled
+            ? `cancelled subagent ${name}`
+            : `subagent ${name} not cancelled${reason ? ` (${reason})` : ''}`,
+          style: cancelled ? 'system' : 'tool',
+        }],
       });
       return;
     }
@@ -822,6 +838,15 @@ export class WebUiModule implements Module {
 
       case 'cancel-subagent': {
         if (!sharedServer?.app) return;
+        // Route to the owning fleet child if the WUI told us which one to
+        // target. Subagents inside a fleet child (e.g. Clerk-spawned forks)
+        // can't be cancelled locally — the conductor's framework doesn't have
+        // their SubagentModule.
+        if (parsed.childName) {
+          this.routeFleetRequest(client, parsed.childName, 'cancel-subagent',
+            (corrId, fleet) => fleet.cancelSubagentOnChild(parsed.childName!, parsed.name, corrId));
+          return;
+        }
         const subMod = sharedServer.app.framework
           .getAllModules()
           .find((m) => m.name === 'subagent') as
