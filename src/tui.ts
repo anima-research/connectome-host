@@ -128,6 +128,7 @@ const RED = '#cc0000';
 const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
+const THINKING_DIM = '#8a7aa8';
 
 // ---------------------------------------------------------------------------
 // Main
@@ -355,8 +356,11 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  let currentStreamBlockType: 'text' | 'thinking' | 'tool_call' | 'tool_result' = 'text';
+
   function beginStream() {
     currentStreamBuffer = '';
+    currentStreamBlockType = 'text';
     currentStreamText = new TextRenderable(renderer, {
       id: `stream-${++messageCounter}`,
       content: '',
@@ -364,6 +368,38 @@ export async function runTui(app: AppContext): Promise<void> {
     });
     scrollBox.add(currentStreamText);
     streaming = true;
+  }
+
+  /**
+   * Switch the active stream element to a different block lane. Called from
+   * inference:content_block (block_start). If the new block is the same lane
+   * as the current one, this is a no-op — Anthropic's stream occasionally
+   * splits a single logical "lane" across multiple blocks (e.g. interleaved
+   * thinking) and we want them visually contiguous within their kind.
+   */
+  function switchStreamBlock(blockType: 'text' | 'thinking' | 'tool_call' | 'tool_result') {
+    if (currentStreamBlockType === blockType && currentStreamText) return;
+    if (blockType !== 'text' && blockType !== 'thinking') {
+      currentStreamBlockType = blockType;
+      return;
+    }
+    currentStreamBuffer = '';
+    currentStreamBlockType = blockType;
+    if (blockType === 'thinking') {
+      currentStreamBuffer = '💭 ';
+      currentStreamText = new TextRenderable(renderer, {
+        id: `stream-thinking-${++messageCounter}`,
+        content: currentStreamBuffer,
+        fg: THINKING_DIM,
+      });
+    } else {
+      currentStreamText = new TextRenderable(renderer, {
+        id: `stream-${++messageCounter}`,
+        content: '',
+        fg: WHITE,
+      });
+    }
+    scrollBox.add(currentStreamText);
   }
 
   function streamToken(text: string) {
@@ -377,6 +413,7 @@ export async function runTui(app: AppContext): Promise<void> {
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
+    currentStreamBlockType = 'text';
   }
 
   function loadSessionHistory() {
@@ -397,6 +434,11 @@ export async function runTui(app: AppContext): Promise<void> {
             addLine(`You: ${(block as { text: string }).text}`, GREEN);
           } else {
             addLine((block as { text: string }).text, WHITE);
+          }
+        } else if (block.type === 'thinking') {
+          const t = (block as { thinking?: string }).thinking;
+          if (t && t.trim()) {
+            addLine(`💭 ${t}`, THINKING_DIM);
           }
         } else if (block.type === 'tool_use') {
           toolNames.push((block as { name: string }).name);
@@ -1162,14 +1204,34 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
 
+      case 'inference:content_block': {
+        if (agent === rootAgentName && event.event === 'block_start') {
+          const bt = event.blockType as 'text' | 'thinking' | 'tool_call' | 'tool_result';
+          if (bt === 'text' || bt === 'thinking') {
+            if (!streaming) beginStream();
+            switchStreamBlock(bt);
+          }
+        }
+        break;
+      }
+
       case 'inference:tokens': {
         const content = event.content as string;
+        const blockType = event.blockType as
+          | 'text' | 'thinking' | 'tool_call' | 'tool_result' | undefined;
         if (content) {
           if (agent === rootAgentName && backgrounded) {
             // Silently accumulate tokens while backgrounded
             backgroundBuffer += content;
             streamOutputTokens += Math.ceil(content.length / 4);
           } else if (agent === rootAgentName && streaming) {
+            // Belt-and-braces: if a token's blockType disagrees with what
+            // block_start announced (or block_start was missed), switch lanes
+            // before appending so thinking doesn't leak into the text element.
+            if (blockType && (blockType === 'text' || blockType === 'thinking')
+              && blockType !== currentStreamBlockType) {
+              switchStreamBlock(blockType);
+            }
             streamToken(content);
             streamOutputTokens += Math.ceil(content.length / 4);
             spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
