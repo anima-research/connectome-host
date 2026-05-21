@@ -129,6 +129,15 @@ interface PersistedSubagent {
   task: string;
   status: 'running' | 'completed' | 'failed';
   startedAt: number;
+  /**
+   * Last time we saw a trace event addressed to this subagent (token, tool
+   * call, completion, etc.). Used as the staleness metric for zombie
+   * detection: `startedAt` alone can't distinguish a slow-but-progressing
+   * subagent from one that has been silently stuck for hours. Bumped on
+   * every inference-lifecycle event in the trace listener; persisted so
+   * it survives branch ops and session restores.
+   */
+  lastActivityAt: number;
   completedAt?: number;
   toolCallsCount: number;
   findingsCount: number;
@@ -143,6 +152,8 @@ export interface ActiveSubagent {
   task: string;
   status: 'running' | 'completed' | 'failed';
   startedAt: number;
+  /** Last addressed trace event timestamp. See PersistedSubagent.lastActivityAt. */
+  lastActivityAt: number;
   completedAt?: number;
   statusMessage?: string;
   toolCallsCount: number;
@@ -376,6 +387,15 @@ export class SubagentModule implements Module {
   private lastRateLimitAt = 0;
   private rateLimitCooldownMs = 30_000;      // Delay after rate limit before releasing next slot
 
+  // Periodic zombie reaper. The pre-existing reaper only ran on-demand
+  // inside acquireSlot, which meant zombies persisted indefinitely when
+  // no new spawns happened — production traces showed a stale subagent
+  // holding a slot for 7 days before a fresh spawn finally tripped the
+  // demand-driven reap. This interval gives us a steady heartbeat reap
+  // independent of spawn activity.
+  private reaperTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly REAPER_INTERVAL_MS = 30_000;
+
   // Prompt size guard
   private maxPromptTokens: number;
 
@@ -428,6 +448,19 @@ export class SubagentModule implements Module {
         if (!displayName) return;
         const live = this.liveSubagents.get(displayName);
         if (!live) return;
+
+        // Bump lastActivityAt on every addressed event. This is the staleness
+        // metric the periodic reaper consults — without it, the only signal
+        // is `startedAt`, which can't distinguish a 10-hour-but-progressing
+        // subagent from one that has been silently stuck. Look up the
+        // ActiveSubagent record by entry-key (a separate index, since
+        // displayName isn't the activeSubagents key directly).
+        for (const sa of this.activeSubagents.values()) {
+          if (sa.name === displayName) {
+            sa.lastActivityAt = Date.now();
+            break;
+          }
+        }
 
         // inference:usage is emitted at runtime but not in the TraceEvent union — handle it first
         if ((event as { type: string }).type === 'inference:usage') {
@@ -519,9 +552,32 @@ export class SubagentModule implements Module {
     this.ctx = ctx;
     // Restore in-memory state from Chronicle (for session restore / branch switch)
     this.restoreFromStore();
+
+    // Periodic zombie reap independent of acquireSlot demand. See reaperTimer
+    // comment above. Wrapped in try/catch — a reap-loop bug must not crash
+    // the module.
+    this.reaperTimer = setInterval(() => {
+      try {
+        const reclaimed = this.reclaimZombieSlots();
+        if (reclaimed > 0) {
+          // Persist updated statuses so chronicle reflects the reap.
+          this.persistState();
+        }
+      } catch (error) {
+        console.error('[subagent] periodic reaper error:', error);
+      }
+    }, SubagentModule.REAPER_INTERVAL_MS);
+    // Don't keep the event loop alive just for the reaper.
+    if (typeof (this.reaperTimer as { unref?: () => void }).unref === 'function') {
+      (this.reaperTimer as { unref: () => void }).unref();
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.reaperTimer) {
+      clearInterval(this.reaperTimer);
+      this.reaperTimer = null;
+    }
     this.ctx = null;
   }
 
@@ -539,6 +595,7 @@ export class SubagentModule implements Module {
         task: sa.task,
         status: sa.status,
         startedAt: sa.startedAt,
+        lastActivityAt: sa.lastActivityAt,
         completedAt: sa.completedAt,
         toolCallsCount: sa.toolCallsCount,
         findingsCount: sa.findingsCount,
@@ -568,6 +625,12 @@ export class SubagentModule implements Module {
         task: pa.task,
         status: pa.status === 'running' ? 'completed' : pa.status,
         startedAt: pa.startedAt,
+        // Fallback for records from versions before lastActivityAt was added:
+        // treat them as if their last activity was their start time. Affects
+        // only the staleness heuristic, which will simply flag them as stale
+        // immediately on next reaper sweep — correct, because by definition
+        // the process owning them is gone.
+        lastActivityAt: pa.lastActivityAt ?? pa.startedAt,
         completedAt: pa.completedAt ?? (pa.status === 'running' ? Date.now() : undefined),
         toolCallsCount: pa.toolCallsCount,
         findingsCount: pa.findingsCount,
@@ -777,11 +840,23 @@ export class SubagentModule implements Module {
           return;
         }
 
+        // Surface which subagents currently hold the slots, with silence
+        // and total runtime. Without this the caller only sees "5/5 in
+        // use" and has no signal for which to cancel. In production this
+        // lack of detail meant the parent agent couldn't self-rescue —
+        // it had to wait days for the demand-driven reaper to fire on
+        // its own.
+        const holders = this.describeSlotHolders();
+        const holderLines = holders.length > 0
+          ? `\nSlots held by:\n${holders.map(h => `  - ${h}`).join('\n')}`
+          : '';
+
         reject(new Error(
           `Timed out waiting for a concurrency slot after ${slotTimeoutMs}ms ` +
           `(${this.activeConcurrent}/${this.effectiveConcurrent} slots in use, ` +
           `${this.waitQueue.length} still queued). ` +
-          `Limit parallel forks/spawns to ${this.effectiveConcurrent}.`
+          `Limit parallel forks/spawns to ${this.effectiveConcurrent}.` +
+          holderLines
         ));
       }, slotTimeoutMs);
 
@@ -795,9 +870,38 @@ export class SubagentModule implements Module {
   }
 
   /**
+   * Summarize subagents currently holding concurrency slots. Used to enrich
+   * the slot-acquisition timeout error so the calling agent can decide
+   * which stale forks to cancel rather than helplessly waiting on the
+   * demand-driven reaper.
+   */
+  private describeSlotHolders(): string[] {
+    const lines: string[] = [];
+    const now = Date.now();
+    for (const sa of this.activeSubagents.values()) {
+      if (sa.status !== 'running') continue;
+      const silentS = Math.floor((now - sa.lastActivityAt) / 1000);
+      const runtimeS = Math.floor((now - sa.startedAt) / 1000);
+      const live = this.liveSubagents.get(sa.name);
+      const streamState = live?.currentStream ? 'streaming' :
+        live?.pendingToolCalls?.length ? `awaiting ${live.pendingToolCalls.length} tool(s)` :
+        'idle';
+      lines.push(
+        `${sa.name} [${sa.type}] runtime=${runtimeS}s silent=${silentS}s ${streamState}`
+      );
+    }
+    return lines;
+  }
+
+  /**
    * Scan for zombie subagents and force-release their concurrency slots.
-   * A zombie is a subagent that's been "running" for >30s with no active
-   * inference stream and no pending tool calls.
+   * A zombie is a subagent in 'running' status whose `lastActivityAt` is
+   * older than ZOMBIE_THRESHOLD_MS AND has no active inference stream AND
+   * no pending tool calls. Using `lastActivityAt` instead of `startedAt`
+   * lets us distinguish a 10-hour-but-progressing subagent from one that
+   * has been silently stuck for hours — the latter is what kept locking
+   * concurrency slots for days in production.
+   *
    * Returns the number of slots reclaimed.
    */
   private reclaimZombieSlots(): number {
@@ -811,15 +915,17 @@ export class SubagentModule implements Module {
       }
       if (!entry || entry.status !== 'running') continue;
 
-      const elapsed = Date.now() - entry.startedAt;
-      const isZombie = elapsed > ZOMBIE_THRESHOLD_MS
+      const silentMs = Date.now() - entry.lastActivityAt;
+      const isZombie = silentMs > ZOMBIE_THRESHOLD_MS
         && !live.currentStream
         && live.pendingToolCalls.length === 0;
 
       if (isZombie) {
+        const elapsedTotal = Date.now() - entry.startedAt;
         console.error(
           `[subagent] Reclaiming zombie slot: "${displayName}" ` +
-          `(running for ${(elapsed / 1000).toFixed(0)}s with no active stream)`
+          `(silent for ${(silentMs / 1000).toFixed(0)}s, total runtime ` +
+          `${(elapsedTotal / 1000).toFixed(0)}s, no active stream)`
         );
 
         // Cancel the zombie's framework agent
@@ -835,8 +941,8 @@ export class SubagentModule implements Module {
           handle.reject(new SubagentTerminated(
             'zombie',
             partial,
-            `Zombie detected: "${displayName}" ran for ${(elapsed / 1000).toFixed(0)}s ` +
-            `without starting inference. Slot reclaimed.`,
+            `Zombie detected: "${displayName}" silent for ${(silentMs / 1000).toFixed(0)}s ` +
+            `(total runtime ${(elapsedTotal / 1000).toFixed(0)}s). Slot reclaimed.`,
           ));
           this.cancellationHandles.delete(displayName);
         }
@@ -1467,9 +1573,11 @@ export class SubagentModule implements Module {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
+    const now = Date.now();
     const entry: ActiveSubagent = {
       name: input.name, type: 'spawn', task: input.task,
-      status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
+      status: 'running', startedAt: now, lastActivityAt: now,
+      toolCallsCount: 0, findingsCount: 0,
     };
     const entryKey = `spawn-${input.name}`;
     this.activeSubagents.set(entryKey, entry);
@@ -1599,9 +1707,11 @@ export class SubagentModule implements Module {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
+    const now = Date.now();
     const entry: ActiveSubagent = {
       name: input.name, type: 'fork', task: input.task,
-      status: 'running', startedAt: Date.now(), toolCallsCount: 0, findingsCount: 0,
+      status: 'running', startedAt: now, lastActivityAt: now,
+      toolCallsCount: 0, findingsCount: 0,
     };
     this.activeSubagents.set(input.name, entry);
     if (callerAgentName) this.parentMap.set(input.name, callerAgentName);
