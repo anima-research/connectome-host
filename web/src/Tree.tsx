@@ -14,8 +14,10 @@ export interface TreeSidebarProps {
   onSelectStream(node: UiNode): void;
   /** Open / focus the usage view for this node. */
   onSelectUsage(node: UiNode): void;
-  /** Cancel an in-process subagent by display name. */
-  onCancelSubagent(name: string): void;
+  /** Cancel an in-process subagent by display name. If the subagent lives
+   *  inside a fleet child, pass its name as `childName` so the server can
+   *  forward the cancel to that child's runtime. */
+  onCancelSubagent(name: string, childName?: string): void;
   /** Stop a fleet child gracefully. */
   onFleetStop(name: string): void;
   /** Restart a fleet child. */
@@ -60,7 +62,7 @@ function NodeRow(props: {
   onToggleExpand(): void;
   onSelectStream(): void;
   onSelectUsage(): void;
-  onCancelSubagent(name: string): void;
+  onCancelSubagent(name: string, childName?: string): void;
   onFleetStop(name: string): void;
   onFleetRestart(name: string): void;
 }) {
@@ -70,8 +72,15 @@ function NodeRow(props: {
   const isLiveSubagent = (): boolean =>
     props.node.kind === 'subagent' && props.node.agent?.status === 'running';
 
+  // Subagents inside a fleet child carry `child-event-agent` as their stream
+  // source; that's where the owning fleet child's name lives.
+  const owningFleetChild = (): string | undefined =>
+    props.node.streamSource.kind === 'child-event-agent'
+      ? props.node.streamSource.childName
+      : undefined;
+
   const stopHandler = (): (() => void) | null => {
-    if (isLiveSubagent()) return () => props.onCancelSubagent(props.node.label);
+    if (isLiveSubagent()) return () => props.onCancelSubagent(props.node.label, owningFleetChild());
     if (props.node.kind === 'fleet-child' && props.node.fleetChildName)
       return () => props.onFleetStop(props.node.fleetChildName!);
     return null;

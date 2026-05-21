@@ -1597,6 +1597,18 @@ export class FleetModule implements Module {
     catch { return false; }
   }
 
+  /** Cancel a specific in-process subagent inside a fleet child. Response
+   *  arrives as a `cancel-subagent-result` event on the child's event stream;
+   *  the WUI handler matches on corrId to route the result back to the
+   *  originating browser client. Returns false if the named child isn't
+   *  running. */
+  cancelSubagentOnChild(childName: string, name: string, corrId?: string): boolean {
+    const child = this.children.get(childName);
+    if (!child || !child.socket) return false;
+    try { this.sendToChild(child, { type: 'cancel-subagent', name, corrId }); return true; }
+    catch { return false; }
+  }
+
   private async killChild(child: FleetChild): Promise<void> {
     if (child.status === 'exited' || child.status === 'crashed') return;
     const proc = child.process;

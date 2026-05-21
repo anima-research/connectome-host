@@ -337,10 +337,16 @@ export interface InterruptMessage {
   type: 'interrupt';
 }
 
-/** Cancel one specific in-process subagent by display name. */
+/** Cancel one specific in-process subagent by display name. If `childName`
+ *  is set, the cancel is forwarded to that fleet child's headless runtime;
+ *  otherwise the conductor's local SubagentModule is used. Required for
+ *  subagents that live inside a fleet child (e.g. Clerk-spawned subagents) —
+ *  the conductor typically has no SubagentModule loaded, so a non-routed
+ *  cancel would hit "subagent module not loaded". */
 export interface CancelSubagentMessage {
   type: 'cancel-subagent';
   name: string;
+  childName?: string;
 }
 
 /** Stop a fleet child gracefully. */
@@ -492,6 +498,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'route-to-child':
       return isNonEmptyString(v.childName) && typeof v.content === 'string';
     case 'cancel-subagent':
+      return isNonEmptyString(v.name)
+        && (v.childName === undefined || isNonEmptyString(v.childName));
     case 'fleet-stop':
     case 'fleet-restart':
       return isNonEmptyString(v.name);

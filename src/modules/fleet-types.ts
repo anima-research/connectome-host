@@ -33,7 +33,12 @@ export type IncomingCommand =
   /** Pull a recursive listing of one mount in the child. Response is `workspace-tree-snapshot`. */
   | { type: 'request-workspace-tree'; mount: string; corrId?: string }
   /** Read a workspace file from the child. Response is `workspace-file-snapshot`. */
-  | { type: 'request-workspace-file'; path: string; corrId?: string };
+  | { type: 'request-workspace-file'; path: string; corrId?: string }
+  /** Cancel a specific in-process subagent by display name. Response is
+   *  `cancel-subagent-result`. The child looks the agent up in its own
+   *  SubagentModule, so this is the only way to stop a subagent that lives
+   *  in a fleet child rather than the conductor. */
+  | { type: 'cancel-subagent'; name: string; corrId?: string };
 
 // ---------------------------------------------------------------------------
 // Child → Parent: events
@@ -115,6 +120,20 @@ export interface WorkspaceTreeSnapshotEvent {
   ts?: number;
 }
 
+/** Response to a {type:'cancel-subagent'} request. */
+export interface CancelSubagentResultEvent {
+  type: 'cancel-subagent-result';
+  corrId?: string;
+  /** Subagent display name the parent asked us to cancel. */
+  name: string;
+  /** True iff a matching live subagent was found and signalled to stop. */
+  cancelled: boolean;
+  /** Set when cancelled=false to explain why (e.g. "subagent module not
+   *  loaded", "subagent not running"). */
+  reason?: string;
+  ts?: number;
+}
+
 /** Response to a {type:'request-workspace-file'} request. */
 export interface WorkspaceFileSnapshotEvent {
   type: 'workspace-file-snapshot';
@@ -143,6 +162,7 @@ export type WireEvent =
   | WorkspaceMountsSnapshotEvent
   | WorkspaceTreeSnapshotEvent
   | WorkspaceFileSnapshotEvent
+  | CancelSubagentResultEvent
   // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
   // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
   // present on the wire even when the underlying TraceEvent doesn't declare it.
