@@ -11,10 +11,10 @@
     "postinstall": "test -d web && cd web && bun install && bun run build || true"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.5.4",
+    "@animalabs/agent-framework": "^0.5.5",
     "@animalabs/context-manager": "^0.5.3",
     "@animalabs/chronicle": "^0.2.0",
-    "@animalabs/membrane": "^0.5.48",
+    "@animalabs/membrane": "^0.5.49",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {
