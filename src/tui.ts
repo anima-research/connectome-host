@@ -129,6 +129,10 @@ const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
 const THINKING_DIM = '#8a7aa8';
+const THINKING_PREFIX = '💭 ';
+
+/** Block kinds the membrane can route into a stream lane. */
+type StreamBlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
 // ---------------------------------------------------------------------------
 // Main
@@ -356,7 +360,7 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  let currentStreamBlockType: 'text' | 'thinking' | 'tool_call' | 'tool_result' = 'text';
+  let currentStreamBlockType: StreamBlockType = 'text';
 
   function beginStream() {
     currentStreamBuffer = '';
@@ -377,8 +381,14 @@ export async function runTui(app: AppContext): Promise<void> {
    * splits a single logical "lane" across multiple blocks (e.g. interleaved
    * thinking) and we want them visually contiguous within their kind.
    */
-  function switchStreamBlock(blockType: 'text' | 'thinking' | 'tool_call' | 'tool_result') {
+  function switchStreamBlock(blockType: StreamBlockType) {
     if (currentStreamBlockType === blockType && currentStreamText) return;
+    // Tool blocks (tool_call / tool_result) aren't rendered as a stream lane
+    // here — they're surfaced via the tool:* trace events instead. We still
+    // need to update currentStreamBlockType so that when tokens swing back to
+    // text or thinking, the next switchStreamBlock() call sees a "different
+    // lane than before" and creates a fresh TextRenderable instead of
+    // appending to the prior element across a tool sandwich.
     if (blockType !== 'text' && blockType !== 'thinking') {
       currentStreamBlockType = blockType;
       return;
@@ -386,7 +396,7 @@ export async function runTui(app: AppContext): Promise<void> {
     currentStreamBuffer = '';
     currentStreamBlockType = blockType;
     if (blockType === 'thinking') {
-      currentStreamBuffer = '💭 ';
+      currentStreamBuffer = THINKING_PREFIX;
       currentStreamText = new TextRenderable(renderer, {
         id: `stream-thinking-${++messageCounter}`,
         content: currentStreamBuffer,
@@ -438,7 +448,7 @@ export async function runTui(app: AppContext): Promise<void> {
         } else if (block.type === 'thinking') {
           const t = (block as { thinking?: string }).thinking;
           if (t && t.trim()) {
-            addLine(`💭 ${t}`, THINKING_DIM);
+            addLine(`${THINKING_PREFIX}${t}`, THINKING_DIM);
           }
         } else if (block.type === 'tool_use') {
           toolNames.push((block as { name: string }).name);
@@ -1206,7 +1216,10 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:content_block': {
         if (agent === rootAgentName && event.phase === 'block_start') {
-          const bt = event.blockType as 'text' | 'thinking' | 'tool_call' | 'tool_result';
+          // `as string` rather than narrowing to StreamBlockType up front:
+          // honest about the trust boundary. Anthropic ships block types we
+          // may not have enumerated yet (e.g. redacted_thinking); ignore them.
+          const bt = event.blockType as string;
           if (bt === 'text' || bt === 'thinking') {
             if (!streaming) beginStream();
             switchStreamBlock(bt);
@@ -1217,8 +1230,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:tokens': {
         const content = event.content as string;
-        const blockType = event.blockType as
-          | 'text' | 'thinking' | 'tool_call' | 'tool_result' | undefined;
+        const blockType = event.blockType as string | undefined;
         if (content) {
           if (agent === rootAgentName && backgrounded) {
             // Silently accumulate tokens while backgrounded
