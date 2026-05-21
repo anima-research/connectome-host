@@ -26,6 +26,8 @@ import {
   bold,
   dim,
   fg,
+  decodePasteBytes,
+  stripAnsiSequences,
 } from '@opentui/core';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
@@ -245,8 +247,9 @@ export async function runTui(app: AppContext): Promise<void> {
   // Large pastes get stored out-of-band; a short placeholder appears in
   // the input field.  On submit the placeholders are expanded back.
   const pastedTexts: string[] = [];
-  (input as any).handlePaste = (event: { text: string }) => {
-    pastedTexts.push(event.text);
+  (input as any).handlePaste = (event: { bytes: Uint8Array }) => {
+    const text = stripAnsiSequences(decodePasteBytes(event.bytes));
+    pastedTexts.push(text);
     const tag = `[pasted text #${pastedTexts.length}]`;
     (input as any).insertText(tag);
   };
