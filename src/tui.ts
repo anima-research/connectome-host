@@ -1205,7 +1205,7 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'inference:content_block': {
-        if (agent === rootAgentName && event.event === 'block_start') {
+        if (agent === rootAgentName && event.phase === 'block_start') {
           const bt = event.blockType as 'text' | 'thinking' | 'tool_call' | 'tool_result';
           if (bt === 'text' || bt === 'thinking') {
             if (!streaming) beginStream();
