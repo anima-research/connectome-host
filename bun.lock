@@ -8,7 +8,7 @@
         "@animalabs/agent-framework": "^0.5.6",
         "@animalabs/chronicle": "^0.2.0",
         "@animalabs/context-manager": "^0.5.3",
-        "@animalabs/membrane": "^0.5.52",
+        "@animalabs/membrane": "^0.5.53",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -25,7 +25,7 @@
 
     "@animalabs/context-manager": ["@animalabs/context-manager@0.5.3", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.40" } }, "sha512-8lmjCG8WWDoxaj8UIBmdllnQjBh69yMhip2dkp2aoaLp0xgvQRpqJUOI0DGs4RpISrGrtt0QYRxQLBC+9Dae5Q=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.52", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-mTXRTvpzW1NOr2WwvNGbG8QxvQSzLk3TO0cCBfgKQ1DxYxFHcQhlgONOnxJpHoQwAyYIsIvTZyGq3QEVbczH4Q=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.53", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-fWSlMXbWuRfCf5b3B3aOUlL/ddGCkdXiq/TVzxeZQzXlTP85UcC9RZ6kgY7Fz+b5/VU6rordhybWBp6ISWBCQQ=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
