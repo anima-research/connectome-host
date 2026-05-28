@@ -36,11 +36,17 @@ export type AgentPhase =
   | 'invoking'
   | 'executing'
   | 'done'
-  | 'failed';
+  | 'failed'
+  // Terminal-but-benign: user cancel, zombie-reclaim, supersession, agent
+  // reboot, budget-restart. Postmortem 2026-05-28 P1 #3: renderers must
+  // treat this as neutral (not red) and terminal (not 'running'). It is the
+  // result of `inference:aborted` and reboot-induced `inference:exhausted`,
+  // both of which are NOT faults.
+  | 'cancelled';
 
 export type AgentKind = 'framework' | 'subagent';
 
-export type AgentStatus = 'running' | 'completed' | 'failed';
+export type AgentStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface AgentTokens {
   /** Last-seen input tokens. Represents *current context window size*, not cumulative. */
@@ -175,6 +181,13 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
     node.phase = 'done';
+    // Postmortem 2026-05-28 F1: writing 'completed' here closes a one-way
+    // failed latch. Before this, the only status transitions were
+    // running → failed (via aborted/exhausted/failed) and the only way out
+    // was a fresh inference:started. So a benign abort followed by a clean
+    // completion left the admin UI red forever for that node.
+    node.status = 'completed';
+    node.completedAt = ts;
     node.lastEventAt = ts;
     const usage = e.tokenUsage as { input?: number; output?: number; cacheRead?: number; cacheCreation?: number } | undefined;
     if (usage) r._applyTokenUsage(node, usage);
@@ -189,24 +202,26 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.lastEventAt = ts;
   },
 
+  // inference:exhausted = budget exhaustion / stream-side cancel / reboot-
+  // induced. Postmortem 2026-05-28 P1 #3: not strictly a fault — flip both
+  // fields to the dedicated 'cancelled' terminal state so the renderer can
+  // distinguish "stopped on purpose" from "errored out".
   'inference:exhausted': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
-    node.phase = 'failed';
-    node.status = 'failed';
+    node.phase = 'cancelled';
+    node.status = 'cancelled';
     node.completedAt = ts;
     node.lastEventAt = ts;
   },
 
-  // Aborted = user-initiated cancel. Not strictly a fault, but for tree
-  // rendering the terminal-state semantics match :failed/:exhausted: status
-  // must flip to 'failed' so the renderer's status-keyed RED colouring
-  // doesn't show an aborted agent as still 'running'.
+  // inference:aborted = user cancel / zombie-reclaim / supersession.
+  // Postmortem 2026-05-28 P1 #3: same as exhausted — terminal, but benign.
   'inference:aborted': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
-    node.phase = 'failed';
-    node.status = 'failed';
+    node.phase = 'cancelled';
+    node.status = 'cancelled';
     node.completedAt = ts;
     node.lastEventAt = ts;
   },

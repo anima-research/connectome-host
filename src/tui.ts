@@ -742,8 +742,12 @@ export async function runTui(app: AppContext): Promise<void> {
     } else {
       // fleet-child-agent
       const rn = node.reducerNode!;
+      // Postmortem 2026-05-28 P1 #3: 'cancelled' = benign termination
+      // (user cancel, zombie-reclaim, supersession, budget restart). Must
+      // not paint red — that was the visible "failed labels" symptom that
+      // drove the operator to file the postmortem.
       if (rn.status === 'failed') nodeColor = RED;
-      else if (rn.phase === 'idle' || rn.phase === 'done') nodeColor = DIM_GRAY;
+      else if (rn.phase === 'idle' || rn.phase === 'done' || rn.phase === 'cancelled') nodeColor = DIM_GRAY;
       else nodeColor = PHASE_COLOR[rn.phase as SubagentPhase] ?? GRAY;
     }
 
@@ -771,7 +775,12 @@ export async function runTui(app: AppContext): Promise<void> {
       const endTime = sa.completedAt ?? Date.now();
       const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
       if (sa.status !== 'running') {
-        statusTag = sa.status === 'completed' ? `done ${elapsed}s` : `failed ${elapsed}s`;
+        // Postmortem 2026-05-28 P1 #4: 'cancelled' is a third terminal state
+        // (zombie reclaim, user cancel). Show it distinctly so the operator
+        // can tell which subagents ended on a benign cancel vs. a fault.
+        statusTag = sa.status === 'completed' ? `done ${elapsed}s`
+          : sa.status === 'cancelled' ? `cancelled ${elapsed}s`
+          : `failed ${elapsed}s`;
       } else {
         const phase = subagentPhase.get(sa.name) ?? 'sending';
         statusTag = `${phase} ${elapsed}s`;

@@ -67,28 +67,76 @@ describe('AgentTreeReducer', () => {
     expect(node.completedAt).toBe(ts(1));
   });
 
-  test('inference:aborted sets BOTH phase and status to failed (renderer keys colour off status)', () => {
-    // Regression: pre-fix, aborted inferences emerged with phase='failed' but
-    // status='running', so the fleet-child-agent renderer (keyed off status)
-    // showed cancelled agents as still working. The bug was masked when most
-    // recipes didn't subscribe to inference:aborted; the reducer-required-events
-    // floor exposed it on every fleet child.
+  test('inference:aborted produces terminal cancelled state (P1 #3 — distinct from failed)', () => {
+    // Postmortem 2026-05-28 P1 #3: inference:aborted = user cancel /
+    // zombie-reclaim / supersession / agent reboot. Not strictly a fault. The
+    // previous regression guard (pre-2026-05-28) flipped status to 'failed'
+    // because the fleet-child-agent renderer was status-keyed and aborts left
+    // it stuck on 'running'. The right answer is a third terminal state,
+    // 'cancelled' — terminal (renderer must not show as 'running'), but
+    // neutral (renderer must not paint red). Both fields settle to 'cancelled'
+    // so consumers of either status or phase get the same answer.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'user', timestamp: ts(1) });
     const node = r.getNode('a')!;
-    expect(node.phase).toBe('failed');
-    expect(node.status).toBe('failed');
+    expect(node.phase).toBe('cancelled');
+    expect(node.status).toBe('cancelled');
     expect(node.completedAt).toBe(ts(1));
   });
 
-  test('inference:exhausted also sets status=failed', () => {
+  test('inference:exhausted from in-band stream abort also produces cancelled (P1 #3)', () => {
+    // Postmortem 2026-05-28 F1: framework.ts:2108 emits inference:exhausted
+    // for budget-restart / stream-side cancel paths. Same semantics as
+    // aborted — benign termination, not a fault.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:exhausted', agentName: 'a', error: 'budget', timestamp: ts(1) });
     const node = r.getNode('a')!;
-    expect(node.status).toBe('failed');
-    expect(node.phase).toBe('failed');
+    expect(node.phase).toBe('cancelled');
+    expect(node.status).toBe('cancelled');
+  });
+
+  // Postmortem 2026-05-28 F1: the reducer never transitions status to 'completed'.
+  // inference:completed only sets phase='done', leaving status='running' for the
+  // entire lifetime of the agent — which is fine until a later aborted/exhausted/
+  // failed event latches status='failed', at which point only a fresh
+  // inference:started can clear it. For ephemeral subagents whose terminal event
+  // is a benign abort, terminal RED is then permanent.
+  test('inference:completed sets status=completed (F1 — closes one-way failed latch)', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({
+      type: 'inference:completed',
+      agentName: 'a',
+      durationMs: 5,
+      timestamp: ts(1),
+    });
+    const node = r.getNode('a')!;
+    expect(node.phase).toBe('done');
+    expect(node.status).toBe('completed');
+  });
+
+  test('inference:completed after a prior aborted clears the cancelled status (F1 — recovery un-latches)', () => {
+    // The "successful turn clears earlier transient terminal status" behavior.
+    // Without this, the admin UI shows long-running agents non-running for
+    // hours after a single transient cancel even though they have since
+    // completed many turns. Combined with the P1 #3 cancelled-vs-failed split
+    // (the prior aborted now lands as 'cancelled', not 'failed').
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'cancel', timestamp: ts(1) });
+    expect(r.getNode('a')!.status).toBe('cancelled');
+
+    // A subsequent successful round should heal the latch.
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(2) });
+    r.applyEvent({
+      type: 'inference:completed',
+      agentName: 'a',
+      durationMs: 5,
+      timestamp: ts(3),
+    });
+    expect(r.getNode('a')!.status).toBe('completed');
   });
 
   test('REDUCER_REQUIRED_EVENTS is derived from the dispatch table — every entry actually does something', () => {
