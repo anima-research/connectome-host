@@ -8,7 +8,7 @@
  *   ├─────────────────────────────┤
  *   │  Status bar (1 row)         │  ← [status | tool | N sub]
  *   ├─────────────────────────────┤
- *   │  InputRenderable            │  ← user input
+ *   │  TextareaRenderable         │  ← user input (Enter submits, Alt+Enter newline)
  *   └─────────────────────────────┘
  *
  * Tab toggles between conversation and agent fleet tree view.
@@ -20,8 +20,7 @@ import {
   type CliRenderer,
   BoxRenderable,
   TextRenderable,
-  InputRenderable,
-  InputRenderableEvents,
+  TextareaRenderable,
   ScrollBoxRenderable,
   bold,
   dim,
@@ -243,9 +242,20 @@ export async function runTui(app: AppContext): Promise<void> {
     justifyContent: 'space-between',
   });
 
-  const input = new InputRenderable(renderer, {
+  // Multi-line input. Enter submits; Alt+Enter (meta+return) and Ctrl+J
+  // (linefeed, default Textarea binding) insert a newline. Shift+Enter is
+  // not bound because most terminals don't transmit the shift modifier on
+  // Enter without Kitty Keyboard protocol; users who want it can run their
+  // terminal's equivalent of Claude Code's /terminal-setup.
+  const input = new TextareaRenderable(renderer, {
     id: 'input',
-    placeholder: 'Type a message or /help...',
+    placeholder: 'Type a message or /help — Alt+Enter for newline',
+    wrapMode: 'word',
+    keyBindings: [
+      { name: 'return', action: 'submit' },
+      { name: 'return', meta: true, action: 'newline' },
+    ],
+    onSubmit: () => { handleSubmit(); },
   });
 
   // ── Paste handling ─────────────────────────────────────────────────
@@ -1876,9 +1886,9 @@ export async function runTui(app: AppContext): Promise<void> {
 
   let resolveExit: (() => void) | null = null;
 
-  input.on(InputRenderableEvents.ENTER, () => {
-    const raw = input.value.trim();
-    input.deleteLine();
+  function handleSubmit() {
+    const raw = ((input as any).plainText as string).trim();
+    (input as any).clear();
 
     if (!raw) { pastedTexts.length = 0; return; }
 
@@ -2026,7 +2036,7 @@ export async function runTui(app: AppContext): Promise<void> {
         content: text, metadata: {}, triggerInference: true,
       });
     }
-  });
+  }
 
   // ── Init ───────────────────────────────────────────────────────────
 
