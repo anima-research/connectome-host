@@ -248,15 +248,27 @@ export async function runTui(app: AppContext): Promise<void> {
     placeholder: 'Type a message or /help...',
   });
 
-  // ── Paste handling (CC-style) ───────────────────────────────────────
-  // Large pastes get stored out-of-band; a short placeholder appears in
-  // the input field.  On submit the placeholders are expanded back.
+  // ── Paste handling ─────────────────────────────────────────────────
+  // Short single-line pastes are inlined for visibility. Larger or
+  // multi-line pastes get stored out-of-band; an informative placeholder
+  // — `[paste #N: "head…" Nch, Mlines]` — appears in the input. The
+  // placeholder is expanded back to the original text on submit.
+  const INLINE_PASTE_THRESHOLD = 200;
   const pastedTexts: string[] = [];
+  function formatPastePlaceholder(n: number, text: string): string {
+    const head = text.replace(/\s+/g, ' ').trim().slice(0, 30);
+    const lines = text.split(/\r?\n/).length;
+    const sizeHint = lines > 1 ? `${text.length}ch, ${lines}L` : `${text.length}ch`;
+    return `[paste #${n}: "${head}…" ${sizeHint}]`;
+  }
   (input as any).handlePaste = (event: { bytes: Uint8Array }) => {
     const text = stripAnsiSequences(decodePasteBytes(event.bytes));
+    if (text.length <= INLINE_PASTE_THRESHOLD && !/[\r\n]/.test(text)) {
+      (input as any).insertText(text);
+      return;
+    }
     pastedTexts.push(text);
-    const tag = `[pasted text #${pastedTexts.length}]`;
-    (input as any).insertText(tag);
+    (input as any).insertText(formatPastePlaceholder(pastedTexts.length, text));
   };
 
   const inputBox = new BoxRenderable(renderer, {
@@ -1872,7 +1884,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     // Expand paste placeholders
     const text = pastedTexts.length > 0
-      ? raw.replace(/\[pasted text #(\d+)\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
+      ? raw.replace(/\[paste #(\d+):[^\]]*\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
       : raw;
     pastedTexts.length = 0;
 
