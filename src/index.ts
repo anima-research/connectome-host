@@ -17,6 +17,7 @@
 
 import { Membrane, NativeFormatter } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
@@ -115,13 +116,20 @@ async function resolveRecipe(): Promise<Recipe> {
 // Framework factory
 // ---------------------------------------------------------------------------
 
-async function createFramework(membrane: Membrane, storePath: string, recipe: Recipe): Promise<AgentFramework> {
+async function createFramework(
+  membrane: Membrane,
+  storePath: string,
+  recipe: Recipe,
+  settingsModule: SettingsModule,
+): Promise<AgentFramework> {
   const agentName = recipe.agent.name || 'agent';
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
 
   // -- Build module list --
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule()];
+  // SettingsModule is constructed in main() (before the adapter, so the
+  // adapter can read its state for cross-cutting concerns like reasoning).
+  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(), settingsModule];
 
   // Subagents
   let subagentModule: SubagentModule | null = null;
@@ -592,13 +600,24 @@ async function runPiped(app: AppContext) {
 async function main() {
   const recipe = await resolveRecipe();
 
+  // SettingsModule constructed early so the adapter can read its state for
+  // cross-cutting concerns (currently: reasoning). It's wired into the
+  // framework's module list inside createFramework().
+  const settingsModule = new SettingsModule();
+
   // Append each LLM request/response/error to a JSONL log per process lifetime
-  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility).
+  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility). The adapter
+  // also reads SettingsModule.getReasoning() per call to inject `thinking`
+  // when the agent has toggled reasoning on.
   const llmLogPath = join(
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
-  const adapter = new LoggingAnthropicAdapter({ apiKey: config.apiKey! }, llmLogPath);
+  const adapter = new LoggingAnthropicAdapter(
+    { apiKey: config.apiKey! },
+    llmLogPath,
+    () => settingsModule.getReasoning(),
+  );
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
 
   // Session management
@@ -611,7 +630,7 @@ async function main() {
   }
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe);
+  const framework = await createFramework(membrane, storePath, recipe, settingsModule);
 
   // Build app context
   const app: AppContext = {
@@ -627,7 +646,7 @@ async function main() {
       await this.framework.stop();
       sessionManager.setActiveSession(id);
       const newStorePath = sessionManager.getStorePath(id);
-      this.framework = await createFramework(membrane, newStorePath, recipe);
+      this.framework = await createFramework(membrane, newStorePath, recipe, settingsModule);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

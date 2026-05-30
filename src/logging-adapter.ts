@@ -24,15 +24,36 @@ import type {
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
 
+/** Live read of the current reasoning setting. The host wires this to
+ *  `SettingsModule.getReasoning()` so toggles via the `settings--reasoning_*`
+ *  tools take effect on the next call without restart. */
+export type ReasoningGetter = () => { enabled: boolean; budgetTokens: number };
+
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly logPath: string;
+  private readonly getReasoning?: ReasoningGetter;
 
   constructor(
     config: ConstructorParameters<typeof AnthropicAdapter>[0],
     logPath: string,
+    getReasoning?: ReasoningGetter,
   ) {
     super(config);
     this.logPath = logPath;
+    this.getReasoning = getReasoning;
+  }
+
+  /** If reasoning is enabled, inject `thinking` into the request before the
+   *  adapter builds the Anthropic payload. AnthropicAdapter.buildRequest only
+   *  sets `params.thinking` if `request.thinking` is truthy, so this is the
+   *  hook point. We mutate a shallow clone to avoid surprising callers. */
+  private withReasoning(request: ProviderRequest): ProviderRequest {
+    const r = this.getReasoning?.();
+    if (!r || !r.enabled) return request;
+    return {
+      ...request,
+      thinking: { type: 'enabled', budget_tokens: r.budgetTokens },
+    } as ProviderRequest;
   }
 
   private log(record: Record<string, unknown>): void {
@@ -64,10 +85,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
+    const effective = this.withReasoning(request);
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     try {
-      const response = await super.complete(request, wrapped);
+      const response = await super.complete(effective, wrapped);
       this.log({
         type: 'call', kind: 'complete',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
@@ -95,10 +117,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
+    const effective = this.withReasoning(request);
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     try {
-      const response = await super.stream(request, callbacks, wrapped);
+      const response = await super.stream(effective, callbacks, wrapped);
       this.log({
         type: 'call', kind: 'stream',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
