@@ -15,7 +15,8 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
-import { Membrane, AnthropicAdapter, NativeFormatter } from '@animalabs/membrane';
+import { Membrane, NativeFormatter } from '@animalabs/membrane';
+import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
@@ -330,6 +331,10 @@ async function createFramework(membrane: Membrane, storePath: string, recipe: Re
     'l3BudgetTokens',
     'toolResultMaxLastN',
     'toolUseInputMaxTokens',
+    'summaryParticipant',
+    'summarySystemPrompt',
+    'summaryUserPrompt',
+    'summaryContextLabel',
   ];
   for (const key of passthroughKeys) {
     const v = strategyConfig?.[key];
@@ -587,7 +592,13 @@ async function runPiped(app: AppContext) {
 async function main() {
   const recipe = await resolveRecipe();
 
-  const adapter = new AnthropicAdapter({ apiKey: config.apiKey! });
+  // Append each LLM request/response/error to a JSONL log per process lifetime
+  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility).
+  const llmLogPath = join(
+    config.dataDir,
+    `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
+  );
+  const adapter = new LoggingAnthropicAdapter({ apiKey: config.apiKey! }, llmLogPath);
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
 
   // Session management

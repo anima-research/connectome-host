@@ -44,6 +44,15 @@ export interface RecipeStrategy {
   l3BudgetTokens?: number;
   toolResultMaxLastN?: number;
   toolUseInputMaxTokens?: number;
+  // Self-voice / compression framing. When the agent's name differs from
+  // 'Claude' (the strategy default for summaryParticipant), these MUST be set
+  // (especially summaryParticipant: <agent.name>) — otherwise self-recollections
+  // are stored under a stranger's participant and surface in the compiled prompt
+  // as another voice speaking in first person about the agent.
+  summaryParticipant?: string;
+  summarySystemPrompt?: string;
+  summaryUserPrompt?: string;
+  summaryContextLabel?: string;
 }
 
 export interface RecipeAgent {
