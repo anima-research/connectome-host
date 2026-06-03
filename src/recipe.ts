@@ -44,6 +44,14 @@ export interface RecipeStrategy {
   l3BudgetTokens?: number;
   toolResultMaxLastN?: number;
   toolUseInputMaxTokens?: number;
+  // Adaptive resolution (document-based gradual compression). For the
+  // 'autobiographical' strategy type this defaults ON (see index.ts); set
+  // `adaptiveResolution: false` to opt back to the count-based hierarchical
+  // renderer. The remaining knobs only apply when adaptiveResolution is true.
+  adaptiveResolution?: boolean;
+  compressionSlackRatio?: number;
+  foldingStrategy?: 'flat-profile' | 'oldest-first';
+  speculativeProduction?: boolean;
   // Self-voice / compression framing. When the agent's name differs from
   // 'Claude' (the strategy default for summaryParticipant), these MUST be set
   // (especially summaryParticipant: <agent.name>) — otherwise self-recollections
@@ -60,6 +68,11 @@ export interface RecipeAgent {
   model?: string;
   systemPrompt: string;
   maxTokens?: number;
+  /** Max input tokens before the stream is broken and recompiled. Default 150000. */
+  maxStreamTokens?: number;
+  /** Per-agent context compile budget (input tokens). When unset, the
+   *  ContextManager default (100k) applies. Raise for large-context models. */
+  contextBudgetTokens?: number;
   strategy?: RecipeStrategy;
 }
 
@@ -290,13 +303,14 @@ export interface RecipeModules {
   fleet?: boolean | RecipeFleet;
 
   /**
-   * Web admin UI. Off by default. When true (shorthand), binds 127.0.0.1:7340.
-   * When an object, accepts the full WebUiModule config including optional
-   * Basic-Auth credentials (`${VAR}`-substitutable from .env).
+   * Web admin UI. Off by default. The default bind is 0.0.0.0:7340 (connectome
+   * deployments are remote, not local), which hard-requires Basic-Auth: a
+   * recipe that enables webui MUST supply `basicAuth`, or the host refuses to
+   * start. Credentials should be `${VAR}`-substituted from .env, never literal.
    *
-   * For remote admin (over VPN), front this with a reverse proxy (Caddy/nginx)
-   * that handles TLS and outer auth. The module refuses to bind a non-loopback
-   * host without either basicAuth or `acknowledgeNoAuth: true`.
+   * For remote admin, front this with a reverse proxy (Caddy/nginx) for TLS;
+   * Basic-Auth is still required at the app layer. Set `host: '127.0.0.1'` to
+   * bind loopback-only for local development, which skips the auth requirement.
    */
   webui?: boolean | RecipeWebUi;
 }
@@ -304,9 +318,11 @@ export interface RecipeModules {
 export interface RecipeWebUi {
   port?: number;
   host?: string;
+  /**
+   * Basic-Auth credentials. Required whenever the bind host is non-loopback
+   * (which is the default). `${VAR}`-substitutable from .env.
+   */
   basicAuth?: { username: string; password: string };
-  /** Set true if you've fronted this with a reverse proxy that handles auth. */
-  acknowledgeNoAuth?: boolean;
   /**
    * Override the default Origin allowlist for the WebSocket upgrade. Default
    * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Add

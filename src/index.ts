@@ -262,7 +262,6 @@ async function createFramework(
       port: webuiConfig.port,
       host: webuiConfig.host,
       basicAuth: webuiConfig.basicAuth,
-      acknowledgeNoAuth: webuiConfig.acknowledgeNoAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
     });
     moduleInstances.push(webUiModule);
@@ -339,6 +338,10 @@ async function createFramework(
     'l3BudgetTokens',
     'toolResultMaxLastN',
     'toolUseInputMaxTokens',
+    'adaptiveResolution',
+    'compressionSlackRatio',
+    'foldingStrategy',
+    'speculativeProduction',
     'summaryParticipant',
     'summarySystemPrompt',
     'summaryUserPrompt',
@@ -347,6 +350,13 @@ async function createFramework(
   for (const key of passthroughKeys) {
     const v = strategyConfig?.[key];
     if (v !== undefined) autobiographicalOpts[key] = v;
+  }
+  // Adaptive resolution (document-based gradual compression) is the intended
+  // default for autobiographical agents. Frontdesk keeps the hierarchical
+  // renderer (its salience-biased L1 selection); it can still opt in via the
+  // recipe. A recipe may set `adaptiveResolution: false` to opt back out.
+  if (strategyType === 'autobiographical' && autobiographicalOpts.adaptiveResolution === undefined) {
+    autobiographicalOpts.adaptiveResolution = true;
   }
   const strategy = strategyType === 'passthrough'
     ? new PassthroughStrategy()
@@ -364,6 +374,8 @@ async function createFramework(
         model,
         systemPrompt: recipe.agent.systemPrompt,
         maxTokens: recipe.agent.maxTokens ?? 16384,
+        maxStreamTokens: recipe.agent.maxStreamTokens,
+        contextBudgetTokens: recipe.agent.contextBudgetTokens,
         strategy,
       },
     ],
