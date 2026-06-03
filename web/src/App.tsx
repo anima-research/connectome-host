@@ -4,7 +4,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
-import { TreeSidebar } from './Tree';
+import { TreeSidebar } from './TreeSidebar';
 import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
