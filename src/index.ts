@@ -202,6 +202,11 @@ async function createFramework(
     if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
       gateOptions.config = modules.wake as import('@animalabs/agent-framework').GateConfig;
     }
+    // Privileged-users file for the `sleep` tool — users who may wake the agent
+    // through a sleep window. Stable across sessions (install-dir relative);
+    // override with SLEEP_PRIVILEGED_FILE. Edit the file to change the list.
+    gateOptions.privilegedUsersPath =
+      process.env.SLEEP_PRIVILEGED_FILE || resolve('./sleep-privileged.json');
   }
 
   // Workspace (replaces FilesModule + LocalFilesModule)
