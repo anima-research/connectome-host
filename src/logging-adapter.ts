@@ -50,9 +50,16 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private withReasoning(request: ProviderRequest): ProviderRequest {
     const r = this.getReasoning?.();
     if (!r || !r.enabled) return request;
+    // Use ADAPTIVE thinking, not the legacy { type:'enabled', budget_tokens }
+    // form. Current Anthropic models (opus-4-6/4-7/4-8, …) reject the legacy
+    // form with: `"thinking.type.enabled" is not supported for this model.
+    // Use "thinking.type.adaptive"`. Under adaptive the model sizes its own
+    // thinking, so `budgetTokens` is no longer sent (it still shows in
+    // reasoning_status as an informational hint). Membrane forwards
+    // `request.thinking` verbatim, so no provider change is needed.
     return {
       ...request,
-      thinking: { type: 'enabled', budget_tokens: r.budgetTokens },
+      thinking: { type: 'adaptive' } as unknown as ProviderRequest['thinking'],
     } as ProviderRequest;
   }
 
