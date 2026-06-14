@@ -8,7 +8,7 @@
  *   ├─────────────────────────────┤
  *   │  Status bar (1 row)         │  ← [status | tool | N sub]
  *   ├─────────────────────────────┤
- *   │  InputRenderable            │  ← user input
+ *   │  TextareaRenderable         │  ← user input (Enter submits, Alt+Enter newline)
  *   └─────────────────────────────┘
  *
  * Tab toggles between conversation and agent fleet tree view.
@@ -20,8 +20,7 @@ import {
   type CliRenderer,
   BoxRenderable,
   TextRenderable,
-  InputRenderable,
-  InputRenderableEvents,
+  TextareaRenderable,
   ScrollBoxRenderable,
   bold,
   dim,
@@ -243,20 +242,43 @@ export async function runTui(app: AppContext): Promise<void> {
     justifyContent: 'space-between',
   });
 
-  const input = new InputRenderable(renderer, {
+  // Multi-line input. Enter submits; Alt+Enter (meta+return) and Ctrl+J
+  // (linefeed, default Textarea binding) insert a newline. Shift+Enter is
+  // not bound because most terminals don't transmit the shift modifier on
+  // Enter without Kitty Keyboard protocol; users who want it can run their
+  // terminal's equivalent of Claude Code's /terminal-setup.
+  const input = new TextareaRenderable(renderer, {
     id: 'input',
-    placeholder: 'Type a message or /help...',
+    placeholder: 'Type a message or /help — Alt+Enter for newline',
+    wrapMode: 'word',
+    keyBindings: [
+      { name: 'return', action: 'submit' },
+      { name: 'return', meta: true, action: 'newline' },
+    ],
+    onSubmit: () => { handleSubmit(); },
   });
 
-  // ── Paste handling (CC-style) ───────────────────────────────────────
-  // Large pastes get stored out-of-band; a short placeholder appears in
-  // the input field.  On submit the placeholders are expanded back.
+  // ── Paste handling ─────────────────────────────────────────────────
+  // Short single-line pastes are inlined for visibility. Larger or
+  // multi-line pastes get stored out-of-band; an informative placeholder
+  // — `[paste #N: "head…" Nch, Mlines]` — appears in the input. The
+  // placeholder is expanded back to the original text on submit.
+  const INLINE_PASTE_THRESHOLD = 200;
   const pastedTexts: string[] = [];
+  function formatPastePlaceholder(n: number, text: string): string {
+    const head = text.replace(/\s+/g, ' ').trim().slice(0, 30);
+    const lines = text.split(/\r?\n/).length;
+    const sizeHint = lines > 1 ? `${text.length}ch, ${lines}L` : `${text.length}ch`;
+    return `[paste #${n}: "${head}…" ${sizeHint}]`;
+  }
   (input as any).handlePaste = (event: { bytes: Uint8Array }) => {
     const text = stripAnsiSequences(decodePasteBytes(event.bytes));
+    if (text.length <= INLINE_PASTE_THRESHOLD && !/[\r\n]/.test(text)) {
+      (input as any).insertText(text);
+      return;
+    }
     pastedTexts.push(text);
-    const tag = `[pasted text #${pastedTexts.length}]`;
-    (input as any).insertText(tag);
+    (input as any).insertText(formatPastePlaceholder(pastedTexts.length, text));
   };
 
   const inputBox = new BoxRenderable(renderer, {
@@ -720,8 +742,12 @@ export async function runTui(app: AppContext): Promise<void> {
     } else {
       // fleet-child-agent
       const rn = node.reducerNode!;
+      // Postmortem 2026-05-28 P1 #3: 'cancelled' = benign termination
+      // (user cancel, zombie-reclaim, supersession, budget restart). Must
+      // not paint red — that was the visible "failed labels" symptom that
+      // drove the operator to file the postmortem.
       if (rn.status === 'failed') nodeColor = RED;
-      else if (rn.phase === 'idle' || rn.phase === 'done') nodeColor = DIM_GRAY;
+      else if (rn.phase === 'idle' || rn.phase === 'done' || rn.phase === 'cancelled') nodeColor = DIM_GRAY;
       else nodeColor = PHASE_COLOR[rn.phase as SubagentPhase] ?? GRAY;
     }
 
@@ -749,7 +775,12 @@ export async function runTui(app: AppContext): Promise<void> {
       const endTime = sa.completedAt ?? Date.now();
       const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
       if (sa.status !== 'running') {
-        statusTag = sa.status === 'completed' ? `done ${elapsed}s` : `failed ${elapsed}s`;
+        // Postmortem 2026-05-28 P1 #4: 'cancelled' is a third terminal state
+        // (zombie reclaim, user cancel). Show it distinctly so the operator
+        // can tell which subagents ended on a benign cancel vs. a fault.
+        statusTag = sa.status === 'completed' ? `done ${elapsed}s`
+          : sa.status === 'cancelled' ? `cancelled ${elapsed}s`
+          : `failed ${elapsed}s`;
       } else {
         const phase = subagentPhase.get(sa.name) ?? 'sending';
         statusTag = `${phase} ${elapsed}s`;
@@ -1864,15 +1895,15 @@ export async function runTui(app: AppContext): Promise<void> {
 
   let resolveExit: (() => void) | null = null;
 
-  input.on(InputRenderableEvents.ENTER, () => {
-    const raw = input.value.trim();
-    input.deleteLine();
+  function handleSubmit() {
+    const raw = ((input as any).plainText as string).trim();
+    (input as any).clear();
 
     if (!raw) { pastedTexts.length = 0; return; }
 
     // Expand paste placeholders
     const text = pastedTexts.length > 0
-      ? raw.replace(/\[pasted text #(\d+)\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
+      ? raw.replace(/\[paste #(\d+):[^\]]*\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
       : raw;
     pastedTexts.length = 0;
 
@@ -2014,7 +2045,7 @@ export async function runTui(app: AppContext): Promise<void> {
         content: text, metadata: {}, triggerInference: true,
       });
     }
-  });
+  }
 
   // ── Init ───────────────────────────────────────────────────────────
 

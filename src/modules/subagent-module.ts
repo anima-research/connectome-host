@@ -122,12 +122,15 @@ export class SubagentTerminated extends Error {
   }
 }
 
-/** Persisted subagent state (stored in Chronicle module state). */
+/** Persisted subagent state (stored in Chronicle module state).
+ *  'cancelled' = terminal-but-benign (user cancel, zombie reclaim, supersession).
+ *  Postmortem 2026-05-28 P1 #4: separated from 'failed' so the TUI subagent
+ *  list and the web admin tree agree on terminal cause. */
 interface PersistedSubagent {
   name: string;
   type: 'spawn' | 'fork';
   task: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   startedAt: number;
   /**
    * Last time we saw a trace event addressed to this subagent (token, tool
@@ -145,12 +148,14 @@ interface PersistedSubagent {
   parent?: string;
 }
 
-/** Observable state of an active subagent, for TUI display. */
+/** Observable state of an active subagent, for TUI display. See
+ *  PersistedSubagent.status — 'cancelled' is the same dedicated benign-
+ *  terminal state introduced for the postmortem 2026-05-28 P1 #4 fix. */
 export interface ActiveSubagent {
   name: string;
   type: 'spawn' | 'fork';
   task: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   startedAt: number;
   /** Last addressed trace event timestamp. See PersistedSubagent.lastActivityAt. */
   lastActivityAt: number;
@@ -170,6 +175,16 @@ interface LiveSubagentState {
   pendingToolCalls: Array<{ name: string; input?: unknown }>;
   /** Track callIds from tool_calls_yielded so we can route tool:* events back. */
   activeCallIds: Set<string>;
+  /** When set, an inference request has been dispatched but no token has
+   *  arrived yet — i.e., the agent is provably alive waiting on the LLM
+   *  provider. Postmortem 2026-05-28 F3: between `inference:started` /
+   *  `inference:stream_resumed` and the first `inference:tokens`, both
+   *  `currentStream` and `pendingToolCalls` are empty even though the
+   *  request is on the wire. The reaper / peek predicates must treat this
+   *  as a protected state, otherwise slow rounds (Opus on 100–165K-token
+   *  contexts routinely exceed 30s TTFT) get reaped mid-request. Cleared
+   *  on first token, completion, failure, or new tool yield. */
+  requestInFlightSince?: number;
 }
 
 /** Streaming event pushed to peek subscribers. */
@@ -192,7 +207,7 @@ export interface SubagentPeekSnapshot {
   name: string;
   type: 'spawn' | 'fork';
   task: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   startedAt: number;
   elapsedMs: number;
   messageCount: number;
@@ -394,7 +409,14 @@ export class SubagentModule implements Module {
   // demand-driven reap. This interval gives us a steady heartbeat reap
   // independent of spawn activity.
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly REAPER_INTERVAL_MS = 30_000;
+  // Postmortem 2026-05-28 F3: bumped from 30_000ms. With the in-flight guard
+  // closing the "request on wire" false-positive window, the threshold is
+  // less load-bearing — but 30s was still tight enough that JIT pauses, GC,
+  // or transient hiccups under heavy fleet load could trip the reaper on a
+  // genuinely-progressing-but-pausing agent. 60s sweep cadence is also
+  // friendlier when the fleet is already throttled by 429s (reaping under
+  // throttling is counterproductive — the slot isn't stuck, it's queued).
+  private static readonly REAPER_INTERVAL_MS = 60_000;
 
   // Prompt size guard
   private maxPromptTokens: number;
@@ -469,16 +491,24 @@ export class SubagentModule implements Module {
           return;
         }
 
+        // Postmortem 2026-05-28 F3: track the request-in-flight window.
+        // `inference:started` and `inference:stream_resumed` dispatch a new
+        // LLM request; the first `inference:tokens`, `inference:completed`,
+        // `inference:failed`, or `inference:tool_calls_yielded` signals the
+        // provider has responded. Between those, the reaper / peek predicates
+        // treat `requestInFlightSince` as proof the agent isn't stuck.
         switch (event.type) {
           case 'inference:started':
             live.currentStream = '';
             live.pendingToolCalls = [];
             live.activeCallIds.clear();
+            live.requestInFlightSince = Date.now();
             this.emit(displayName, { type: 'inference:started' });
             break;
           case 'inference:tokens': {
             const content = (event as { content?: string }).content ?? '';
             live.currentStream += content;
+            live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'tokens', content });
             break;
           }
@@ -486,6 +516,7 @@ export class SubagentModule implements Module {
             const calls = (event as { calls?: Array<{ id: string; name: string; input?: unknown }> }).calls ?? [];
             live.pendingToolCalls = calls.map(c => ({ name: c.name, input: c.input }));
             live.currentStream = '';
+            live.requestInFlightSince = undefined;
             // Index callIds so we can route tool:* events back
             for (const c of calls) {
               live.activeCallIds.add(c.id);
@@ -497,16 +528,19 @@ export class SubagentModule implements Module {
           case 'inference:stream_resumed':
             live.currentStream = '';
             live.pendingToolCalls = [];
+            live.requestInFlightSince = Date.now();
             this.emit(displayName, { type: 'stream_resumed' });
             break;
           case 'inference:completed': {
             const usage = (event as { tokenUsage?: { input?: number } }).tokenUsage;
             if (usage?.input) this.lastInputTokens.set(displayName, usage.input);
+            live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'inference:completed' });
             break;
           }
           case 'inference:failed': {
             const error = (event as { error?: string }).error ?? 'Unknown error';
+            live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'inference:failed', error });
             break;
           }
@@ -608,7 +642,9 @@ export class SubagentModule implements Module {
 
   /**
    * Restore activeSubagents + parentMap from Chronicle module state.
-   * Marks any 'running' entries as 'interrupted' since the actual processes are gone.
+   * Marks any 'running' entries as 'cancelled' since the actual processes are gone.
+   * Postmortem 2026-05-28 P1 #4: use 'cancelled' (not 'completed') so the
+   * operator can tell host-interruption from genuine completion in the TUI.
    */
   restoreFromStore(): void {
     if (!this.ctx) return;
@@ -623,7 +659,7 @@ export class SubagentModule implements Module {
         name: pa.name,
         type: pa.type,
         task: pa.task,
-        status: pa.status === 'running' ? 'completed' : pa.status,
+        status: pa.status === 'running' ? 'cancelled' : pa.status,
         startedAt: pa.startedAt,
         // Fallback for records from versions before lastActivityAt was added:
         // treat them as if their last activity was their start time. Affects
@@ -745,7 +781,7 @@ export class SubagentModule implements Module {
       case 'concurrency':
         return this.handleConcurrency(call.input as { maxConcurrent?: number });
       case 'peek':
-        return this.handlePeek(call.input as { name?: string });
+        return this.handlePeek(call.input as { name?: string }, caller);
       case 'return': {
         // Stash the result keyed by the tool call ID. The completion path
         // in runSpawn/runFork will pick it up via the callIdIndex → displayName.
@@ -772,13 +808,21 @@ export class SubagentModule implements Module {
     return {};
   }
 
-  async gatherContext(_agentName: string): Promise<import('@animalabs/context-manager').ContextInjection[]> {
+  async gatherContext(agentName: string): Promise<import('@animalabs/context-manager').ContextInjection[]> {
     if (!this.ctx) return [];
     const persisted = this.ctx.getState<{ hudEnabled?: boolean }>() ?? {};
     if (!persisted.hudEnabled) return [];
 
+    // Postmortem 2026-05-28 P3 #8: scope the Fleet Status HUD to the
+    // calling agent's descendants. Pre-fix the HUD injected the whole
+    // fleet roster every turn, which (a) encouraged peer-coordination
+    // anti-patterns and (b) amplified false zombie/failed flags across
+    // the orchestrator's context.
+    const allowed = this.getDescendantDisplayNames(agentName);
+
     const lines: string[] = [];
     for (const [, sa] of this.activeSubagents) {
+      if (!allowed.has(sa.name)) continue;
       const elapsed = sa.completedAt
         ? Math.floor((sa.completedAt - sa.startedAt) / 1000)
         : Math.floor((Date.now() - sa.startedAt) / 1000);
@@ -788,8 +832,12 @@ export class SubagentModule implements Module {
       lines.push(`  ${sa.name} [${sa.type}] ${sa.status} ${elapsed}s ${sa.toolCallsCount}calls parent:${parentShort} "${task}"`);
     }
 
-    // Also show async handles still running
+    // Also show async handles still running, but only those owned by the
+    // caller (or its descendants — but async handles aren't parent-indexed
+    // separately, so conservatively skip them when scoping is in effect
+    // and the caller has no descendants to begin with).
     for (const [name] of this.asyncHandles) {
+      if (!allowed.has(name)) continue;
       if (!this.activeSubagents.has(name) && !this.activeSubagents.has(`spawn-${name}`)) {
         lines.push(`  ${name} [async] pending`);
       }
@@ -905,7 +953,12 @@ export class SubagentModule implements Module {
    * Returns the number of slots reclaimed.
    */
   private reclaimZombieSlots(): number {
-    const ZOMBIE_THRESHOLD_MS = 30_000;
+    // Postmortem 2026-05-28 F3: bumped from 30_000ms — 30s was too tight for
+    // Opus on 100–165K-token contexts with rate-limited MCP tools; single-
+    // round TTFT routinely exceeds it. The `requestInFlightSince` guard
+    // (below) is the primary defence; the threshold bump is belt-and-braces
+    // for legitimate post-request pauses.
+    const ZOMBIE_THRESHOLD_MS = 120_000;
     let reclaimed = 0;
 
     for (const [displayName, live] of this.liveSubagents) {
@@ -916,9 +969,16 @@ export class SubagentModule implements Module {
       if (!entry || entry.status !== 'running') continue;
 
       const silentMs = Date.now() - entry.lastActivityAt;
+      // Postmortem 2026-05-28 F3: `!live.requestInFlightSince` protects the
+      // "request dispatched, awaiting first token" window. Before this, the
+      // guard `!currentStream && pendingToolCalls.length===0` was true while
+      // the next round's request was on the wire, and the reaper killed
+      // progressing agents mid-request. Forensic signature in production:
+      // last message in store is an unconsumed `tool_result`.
       const isZombie = silentMs > ZOMBIE_THRESHOLD_MS
         && !live.currentStream
-        && live.pendingToolCalls.length === 0;
+        && live.pendingToolCalls.length === 0
+        && !live.requestInFlightSince;
 
       if (isZombie) {
         const elapsedTotal = Date.now() - entry.startedAt;
@@ -947,7 +1007,11 @@ export class SubagentModule implements Module {
           this.cancellationHandles.delete(displayName);
         }
 
-        entry.status = 'failed';
+        // Postmortem 2026-05-28 P1 #4: zombie reclaim is terminal-but-benign,
+        // not a fault. Land on 'cancelled' so the TUI and the reducer-driven
+        // web tree agree (the reducer maps the trace-side `inference:aborted`
+        // emitted by the cancellation handle to 'cancelled' as well).
+        entry.status = 'cancelled';
         entry.completedAt = Date.now();
         entry.statusMessage = 'zombie — slot reclaimed';
 
@@ -1097,6 +1161,32 @@ export class SubagentModule implements Module {
   }
 
   /**
+   * Compute the set of descendant display names rooted at the given framework
+   * agent name. Walks `parentMap` (displayName → callerFrameworkAgentName)
+   * top-down. Excludes the root itself.
+   *
+   * Postmortem 2026-05-28 P3 #8: used by peek() and gatherContext() to
+   * scope observability surfaces to the caller's subtree. Prevents peer
+   * agents from inspecting each other and saturating context with
+   * cross-fleet roster information they have no legitimate use for.
+   */
+  private getDescendantDisplayNames(rootFrameworkAgentName: string): Set<string> {
+    const result = new Set<string>();
+    const queue: string[] = [rootFrameworkAgentName];
+    while (queue.length > 0) {
+      const parentFw = queue.shift()!;
+      for (const [childDisplayName, parentName] of this.parentMap) {
+        if (parentName === parentFw && !result.has(childDisplayName)) {
+          result.add(childDisplayName);
+          const childLive = this.liveSubagents.get(childDisplayName);
+          if (childLive) queue.push(childLive.frameworkAgentName);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
    * Cancel all children (direct + transitive) of the given display name.
    * Uses the parentMap to find descendants via framework agent names.
    */
@@ -1190,14 +1280,25 @@ export class SubagentModule implements Module {
    * Peek at a running subagent's live state: full context, streaming output,
    * pending tool calls. Returns null if the subagent is not running.
    * If name is omitted, returns snapshots for all running subagents.
+   *
+   * Postmortem 2026-05-28 P3 #8: when a `callerFrameworkAgentName` is
+   * supplied (the normal tool-call path threads it through `handlePeek`),
+   * the result is scoped to the caller's descendants — peers/cousins are
+   * filtered out. Internal callers without a known identity (omit the arg)
+   * keep the global view for backward compatibility.
    */
-  async peek(name?: string): Promise<SubagentPeekSnapshot[]> {
+  async peek(name?: string, callerFrameworkAgentName?: string): Promise<SubagentPeekSnapshot[]> {
+    const allowed = callerFrameworkAgentName
+      ? this.getDescendantDisplayNames(callerFrameworkAgentName)
+      : null;
     if (name) {
+      if (allowed && !allowed.has(name)) return [];
       const snapshot = await this.peekOne(name);
       return snapshot ? [snapshot] : [];
     }
     const results: SubagentPeekSnapshot[] = [];
     for (const displayName of this.liveSubagents.keys()) {
+      if (allowed && !allowed.has(displayName)) continue;
       const snapshot = await this.peekOne(displayName);
       if (snapshot) results.push(snapshot);
     }
@@ -1235,12 +1336,18 @@ export class SubagentModule implements Module {
 
     const elapsedMs = entry ? Date.now() - entry.startedAt : 0;
 
-    // Zombie detection: running for >30s with no active stream and no pending tool calls
-    const ZOMBIE_THRESHOLD_MS = 30_000;
+    // Zombie detection. Postmortem 2026-05-28 F2: this previously keyed off
+    // `startedAt`, which flagged any subagent >30s old as a zombie the moment
+    // it was between tokens — saturating peers' context with false alarms and
+    // driving an orchestrator-level retry storm. Now keyed off `lastActivityAt`
+    // and gated by `!requestInFlightSince` to match the reaper.
+    const ZOMBIE_THRESHOLD_MS = 120_000;
+    const silentMs = entry ? Date.now() - entry.lastActivityAt : 0;
     const isZombie = (entry?.status === 'running')
-      && elapsedMs > ZOMBIE_THRESHOLD_MS
+      && silentMs > ZOMBIE_THRESHOLD_MS
       && !live.currentStream
-      && live.pendingToolCalls.length === 0;
+      && live.pendingToolCalls.length === 0
+      && !live.requestInFlightSince;
 
     return {
       name: displayName,
@@ -1554,8 +1661,8 @@ export class SubagentModule implements Module {
     return { success: true, data: this.getConcurrencyStatus() };
   }
 
-  private async handlePeek(input: { name?: string }): Promise<ToolResult> {
-    const snapshots = await this.peek(input.name);
+  private async handlePeek(input: { name?: string }, caller?: string): Promise<ToolResult> {
+    const snapshots = await this.peek(input.name, caller);
     if (snapshots.length === 0) {
       return {
         success: true,
@@ -1664,9 +1771,12 @@ export class SubagentModule implements Module {
           lastError = err instanceof Error ? err : new Error(String(err));
           this.cancellationHandles.delete(input.name);
 
-          // Non-retryable termination (user cancel, zombie reclaim, etc.)
+          // Non-retryable termination (user cancel, zombie reclaim, etc.).
+          // Postmortem 2026-05-28 P1 #4: terminal-but-benign — 'cancelled',
+          // not 'completed'. Before this, the TUI subagent list rendered these
+          // as "done" while the reducer-driven web tree rendered them red.
           if (lastError instanceof SubagentTerminated) {
-            entry.status = 'completed';
+            entry.status = 'cancelled';
             entry.completedAt = Date.now();
             entry.statusMessage = lastError.reason;
             const notice = this.concurrencyNotice(waitedMs);
@@ -1872,9 +1982,10 @@ export class SubagentModule implements Module {
           lastError = err instanceof Error ? err : new Error(String(err));
           this.cancellationHandles.delete(input.name);
 
-          // Non-retryable termination (user cancel, zombie reclaim, etc.)
+          // Non-retryable termination (user cancel, zombie reclaim, etc.).
+          // See P1 #4 comment in runSpawn — 'cancelled', not 'completed'.
           if (lastError instanceof SubagentTerminated) {
-            entry.status = 'completed';
+            entry.status = 'cancelled';
             entry.completedAt = Date.now();
             entry.statusMessage = lastError.reason;
             const notice = this.concurrencyNotice(waitedMs);

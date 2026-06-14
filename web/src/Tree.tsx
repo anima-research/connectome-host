@@ -267,6 +267,11 @@ function phaseColor(phase: AgentNode['phase']): string {
     case 'executing': return 'bg-amber-500/30 text-amber-200';
     case 'done': return 'bg-neutral-700 text-neutral-400';
     case 'failed': return 'bg-rose-500/40 text-rose-200';
+    // Postmortem 2026-05-28 P1 #3: 'cancelled' is terminal-but-benign.
+    // A slightly warmer dim than 'done' so the operator can spot which
+    // children ended on a cancel vs. a successful turn, without the
+    // false-alarm RED of 'failed'.
+    case 'cancelled': return 'bg-neutral-700 text-amber-300/70';
     default: return 'bg-neutral-800 text-neutral-400';
   }
 }
