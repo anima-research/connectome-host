@@ -626,7 +626,7 @@ function countLines(path: string): number {
 async function main() {
   const recipe = await resolveRecipe();
 
-  const adapter = new AnthropicAdapter({ apiKey: config.apiKey! });
+  const adapter = new AnthropicAdapter({ apiKey: config.apiKey!, baseURL: process.env.ANTHROPIC_BASE_URL || undefined });
 
   // LLM call log: appends one JSON line per request to {dataDir}/llm-calls.jsonl.
   // Useful for post-mortem debugging when the TUI/headless flashes errors past.
