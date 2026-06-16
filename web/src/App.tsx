@@ -11,6 +11,7 @@ import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow } from './Mcpl';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
+import { ContextDocument } from './ContextDocument';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -86,6 +87,7 @@ export function App() {
    *  the default; lessons / mcp / files are operator-driven panels. */
   type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
+  const [mainView, setMainView] = createSignal<'chat' | 'context'>('chat');
 
   /** Scope shared by Lessons / Files / Recipe panels. 'local' means the
    *  parent process; otherwise the fleet child's name. The scope is shared
@@ -544,16 +546,24 @@ export function App() {
 
       <div class="flex flex-1 min-h-0">
         <main class="flex-1 flex flex-col min-w-0">
+          <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px] font-mono">
+            <button type="button" class={`px-3 py-1.5 ${mainView() === 'chat' ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700' : 'text-neutral-500 hover:text-neutral-300'}`} onClick={() => setMainView('chat')}>Chat</button>
+            <button type="button" class={`px-3 py-1.5 ${mainView() === 'context' ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700' : 'text-neutral-500 hover:text-neutral-300'}`} onClick={() => setMainView('context')}>Context</button>
+          </div>
           <div
             ref={scrollPane}
             class="flex-1 overflow-y-auto px-4 py-3 space-y-3"
           >
+            <Show when={mainView() === 'context'} fallback={<>
             <Show when={messages.length === 0}>
               <div class="text-neutral-500 text-sm italic">
                 Connected. Type a message or /help to begin.
               </div>
             </Show>
             <For each={messages}>{(m) => <MessageView msg={m} />}</For>
+            </>}>
+              <ContextDocument agent={panelScope() === 'local' ? undefined : panelScope()} />
+            </Show>
           </div>
 
           <div class="border-t border-neutral-800 px-4 py-3 bg-neutral-950 relative">
