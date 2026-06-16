@@ -76,12 +76,19 @@ export interface WebUiAppRef {
 export interface WebUiModuleConfig {
   /** TCP port to bind. Default: 7340. */
   port?: number;
-  /** Host to bind. Default: 127.0.0.1 — refuses non-loopback without auth. */
+  /**
+   * Host to bind. Default: 0.0.0.0 — connectome deployments are remote, not
+   * local. Any non-loopback bind (which includes the default) hard-requires
+   * `basicAuth`; the server refuses to start otherwise. Set explicitly to
+   * `127.0.0.1` for local development, which skips the auth requirement.
+   */
   host?: string;
-  /** Optional Basic-Auth credentials. Sourced from `${VAR}` substitution at recipe load time. */
+  /**
+   * Basic-Auth credentials. Mandatory for any non-loopback bind (the default).
+   * Sourced from `${VAR}` substitution at recipe load time — never commit
+   * literal credentials to a recipe.
+   */
   basicAuth?: { username: string; password: string };
-  /** Acknowledge non-loopback bind without auth. False by default; setting true is the explicit footgun lever. */
-  acknowledgeNoAuth?: boolean;
   /** Path to the SPA build output. Default: `<cwd>/dist/web`. */
   staticDir?: string;
   /**
@@ -115,6 +122,14 @@ interface ClientState {
 
 /** Default port — picked to be memorable and unlikely to collide. */
 const DEFAULT_PORT = 7340;
+
+/**
+ * Default bind host. Connectome deployments are remote (none are local), so
+ * we bind all interfaces by default. This is a non-loopback bind, so it
+ * hard-requires `basicAuth` via `assertSafeBind` — the server refuses to
+ * start without credentials. Override with `host: '127.0.0.1'` for local dev.
+ */
+const DEFAULT_HOST = '0.0.0.0';
 
 /**
  * Process-level singleton state. The HTTP server, WS clients, and accumulated
@@ -192,7 +207,7 @@ export class WebUiModule implements Module {
     }
 
     const port = this.config.port ?? DEFAULT_PORT;
-    const host = this.config.host ?? '127.0.0.1';
+    const host = this.config.host ?? DEFAULT_HOST;
     this.assertSafeBind(host);
 
     const state: SharedServerState = {
@@ -598,6 +613,17 @@ export class WebUiModule implements Module {
 
     if (!this.checkAuth(req)) return this.unauthorized();
 
+    // Debug: the membrane-normalized request that WOULD be emitted if the
+    // agent were activated right now — no inference, no state mutation.
+    //   GET /debug/context[?agent=<name>][&hooks=false][&pretty=1]
+    if (url.pathname === '/debug/context/makeup') {
+      return this.handleContextMakeup(url);
+    }
+
+    if (url.pathname === '/debug/context') {
+      return this.handleDebugContext(url);
+    }
+
     // Workspace file passthrough: /files/<mount>/<path...>
     // Resolves through WorkspaceModule.resolveAbsolutePath, which enforces
     // mount-relative containment and the mount's read-permission. We never
@@ -609,6 +635,140 @@ export class WebUiModule implements Module {
     // Static SPA
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     return this.serveStatic(requested);
+  }
+
+  /**
+   * Debug endpoint: return the membrane-normalized request the framework would
+   * hand to the model if the agent were activated right now. Delegates to
+   * `framework.previewActivation`. Auth is already enforced by the caller
+   * (`handleHttp`).
+   *
+   * Transparent by default: no inference, no Chronicle writes, no external
+   * MCPL calls — the preview leaves the system state untouched. This omits the
+   * dynamically-gathered injections (lessons/retrieval/MCPL context). Pass
+   * `?injections=1` to gather them for full fidelity, which is NOT transparent:
+   * it can run inference (e.g. RetrievalModule's Haiku calls) and fire MCPL
+   * `beforeInference` hooks (whose paired `afterInference` is never sent).
+   */
+  private async handleDebugContext(url: URL): Promise<Response> {
+    const app = sharedServer?.app;
+    if (!app) return new Response('Not ready', { status: 503 });
+
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    // Default OFF: keep the preview transparent to system state. Opt in to
+    // dynamic injection gathering (and its side effects) with ?injections=1.
+    const injParam = url.searchParams.get('injections');
+    const injections = injParam !== null && injParam !== 'false' && injParam !== '0';
+    const pretty = url.searchParams.get('pretty') !== null && url.searchParams.get('pretty') !== '0';
+
+    if (!app.framework.getAgent(agentName)) {
+      return new Response(
+        JSON.stringify({ error: `Agent not found: ${agentName}` }),
+        { status: 404, headers: { 'content-type': 'application/json' } },
+      );
+    }
+
+    try {
+      const request = await app.framework.previewActivation(agentName, { injections });
+      // `transparent` reflects whether this call was side-effect-free.
+      const body = JSON.stringify(
+        { agent: agentName, injections, transparent: !injections, request },
+        null,
+        pretty ? 2 : undefined,
+      );
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return new Response(
+        JSON.stringify({ error: message }),
+        { status: 500, headers: { 'content-type': 'application/json' } },
+      );
+    }
+  }
+
+  /**
+   * Context makeup: the segment breakdown of the agent's current compiled
+   * context — head window, raw middle, summaries by level (L1/L2/L3), and the
+   * recent verbatim tail — from the strategy's RenderStats, plus an exact
+   * total token count via the model's count_tokens endpoint. Transparent:
+   * previewActivation + count_tokens only; no inference, no Chronicle writes.
+   *
+   *   GET /debug/context/makeup[?agent=<name>]
+   */
+  private async handleContextMakeup(url: URL): Promise<Response> {
+    const app = sharedServer?.app;
+    if (!app) return new Response('Not ready', { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return new Response(JSON.stringify({ error: `Agent not found: ${agentName}` }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      });
+    }
+    try {
+      // Populates the strategy's render stats as a side-effect of compiling.
+      const request = await app.framework.previewActivation(agentName);
+      const cm = (agent as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
+      const stats = cm.getRenderStats();
+
+      // Build an Anthropic-faithful payload for an exact count_tokens: map
+      // participants to roles (the agent's own -> assistant, others -> user
+      // with a "Name:" prefix) and merge consecutive same-role runs, mirroring
+      // what the NativeFormatter sends.
+      const textOf = (c: unknown): string =>
+        Array.isArray(c)
+          ? c.map((b) => (b && typeof b === 'object' && (b as { type?: string }).type === 'text' ? (b as { text: string }).text : '')).join('')
+          : String(c ?? '');
+      const merged: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+      for (const m of ((request as { messages?: Array<{ participant?: string; role?: string; content: unknown }> }).messages ?? [])) {
+        const who = m.participant ?? m.role ?? 'user';
+        const role: 'user' | 'assistant' = who === agentName ? 'assistant' : 'user';
+        let t = textOf(m.content);
+        if (role === 'user' && who && who !== 'user') t = `${who}: ${t}`;
+        const last = merged[merged.length - 1];
+        if (last && last.role === role) last.text += '\n' + t;
+        else merged.push({ role, text: t });
+      }
+      const anthMessages = merged.filter((m) => m.text.trim().length > 0).map((m) => ({ role: m.role, content: m.text }));
+      const sysRaw = (request as { system?: unknown }).system;
+      const systemStr = Array.isArray(sysRaw)
+        ? sysRaw.map((b) => (b && typeof b === 'object' ? (b as { text?: string }).text ?? '' : String(b))).join('\n')
+        : (typeof sysRaw === 'string' ? sysRaw : undefined);
+
+      let exactTotalTokens: number | null = null;
+      const countModel = process.env.COUNT_TOKENS_MODEL || 'anthropic/claude-opus-4.5';
+      let countSource = 'count_tokens';
+      try {
+        const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
+        const res = await fetch(base + '/v1/messages/count_tokens', {
+          method: 'POST',
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY ?? '',
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+            'user-agent': 'conhost/1.0',
+          },
+          body: JSON.stringify({ model: countModel, ...(systemStr ? { system: systemStr } : {}), messages: anthMessages }),
+        });
+        if (res.ok) {
+          const j = (await res.json()) as { input_tokens?: number };
+          exactTotalTokens = j.input_tokens ?? null;
+        } else {
+          countSource = `count_tokens_failed_${res.status}`;
+        }
+      } catch {
+        countSource = 'count_tokens_error';
+      }
+
+      return new Response(
+        JSON.stringify({ agent: agentName, stats, exactTotalTokens, countModel, countSource }, null, 2),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
+        status: 500, headers: { 'content-type': 'application/json' },
+      });
+    }
   }
 
   private async serveWorkspaceFile(rest: string): Promise<Response> {
@@ -1621,11 +1781,12 @@ export class WebUiModule implements Module {
     const isLoopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
     if (isLoopback) return;
     if (this.config.basicAuth) return;
-    if (this.config.acknowledgeNoAuth) return;
     throw new Error(
-      `WebUiModule refuses to bind ${host} without auth. Set basicAuth, ` +
-      `or set acknowledgeNoAuth: true if you've fronted this with a reverse proxy ` +
-      `that handles authentication. (Localhost binding skips this check.)`,
+      `WebUiModule refuses to bind ${host} without auth. The default bind is ` +
+      `0.0.0.0, so any recipe that enables webui must supply basicAuth ` +
+      `(username/password, ideally via \${ENV_VAR} substitution). Set ` +
+      `host: '127.0.0.1' to bind loopback-only for local development, which ` +
+      `skips the auth requirement.`,
     );
   }
 

@@ -10,6 +10,7 @@ import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow } from './Mcpl';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
+import { ContextPanel } from './Context';
 import type {
   WebUiServerMessage,
   WelcomeMessage,
@@ -83,7 +84,7 @@ export function App() {
 
   /** Right-sidebar tab selection. The Tree is the most-used surface so it's
    *  the default; lessons / mcp / files are operator-driven panels. */
-  type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files';
+  type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
 
   /** Scope shared by Lessons / Files / Recipe panels. 'local' means the
@@ -679,6 +680,9 @@ export function App() {
                 onOpenFile={requestFile}
               />
             </Show>
+            <Show when={sidebarTab() === 'context'}>
+              <ContextPanel agent={panelScope() === 'local' ? undefined : panelScope()} />
+            </Show>
           </div>
           <RecipePane welcome={welcome()} scope={panelScope()} />
         </aside>
@@ -1021,14 +1025,15 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
 }
 
 function SidebarTabs(props: {
-  current: 'tree' | 'lessons' | 'mcp' | 'files';
-  onSelect: (tab: 'tree' | 'lessons' | 'mcp' | 'files') => void;
+  current: 'tree' | 'lessons' | 'mcp' | 'files' | 'context';
+  onSelect: (tab: 'tree' | 'lessons' | 'mcp' | 'files' | 'context') => void;
 }) {
-  const tabs: Array<{ id: 'tree' | 'lessons' | 'mcp' | 'files'; label: string; title: string }> = [
+  const tabs: Array<{ id: 'tree' | 'lessons' | 'mcp' | 'files' | 'context'; label: string; title: string }> = [
     { id: 'tree', label: 'Tree', title: 'Agent + fleet tree' },
     { id: 'lessons', label: 'Lessons', title: 'Lesson library' },
     { id: 'mcp', label: 'MCP', title: 'MCPL servers' },
     { id: 'files', label: 'Files', title: 'Workspace mounts + files' },
+    { id: 'context', label: 'Context', title: 'Compiled context makeup' },
   ];
   return (
     <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px]">
