@@ -51,6 +51,12 @@ export interface RecipeAgent {
   model?: string;
   systemPrompt: string;
   maxTokens?: number;
+  /**
+   * Per-agent stream token budget — the accumulated-input ceiling at which the
+   * framework breaks the stream and lets the strategy compress. Mirrors the
+   * runtime `/budget` command. When unset, the framework default (150k) applies.
+   */
+  maxStreamTokens?: number;
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -570,6 +576,10 @@ export function validateRecipe(raw: unknown): Recipe {
   const agent = obj.agent as Record<string, unknown>;
   if (typeof agent.systemPrompt !== 'string' || !agent.systemPrompt) {
     throw new Error('Recipe agent must have a "systemPrompt" string');
+  }
+
+  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
+    throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
   }
 
   // Validate agent.thinking if present. Catches typos and constraint

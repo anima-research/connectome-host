@@ -1703,7 +1703,7 @@ export class SubagentModule implements Module {
           model,
           systemPrompt: input.systemPrompt,
           maxTokens: this.resolveMaxTokens(input.maxTokens, _callerAgentName),
-          maxStreamTokens: 200_000,
+          maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,
             recentWindowTokens: 80_000,
@@ -1855,7 +1855,7 @@ export class SubagentModule implements Module {
           model,
           systemPrompt,
           maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
-          maxStreamTokens: 200_000,
+          maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,
             recentWindowTokens: 80_000,

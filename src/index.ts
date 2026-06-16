@@ -369,6 +369,7 @@ async function createFramework(
         model,
         systemPrompt: recipe.agent.systemPrompt,
         maxTokens: recipe.agent.maxTokens ?? 16384,
+        maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
         strategy,
         ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
       },
