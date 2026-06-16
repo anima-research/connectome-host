@@ -24,17 +24,18 @@ In your recipe:
 }
 ```
 
-The defaults are `127.0.0.1:7340`. The module **refuses to start** if
-`host` is non-loopback and no auth is configured, unless you set
-`acknowledgeNoAuth: true` to confirm you've fronted it with a proxy.
+The defaults are `0.0.0.0:7340` — connectome deployments are remote, not
+local, so the module binds all interfaces by default. Because that is a
+non-loopback bind, the module **refuses to start unless `basicAuth` is
+configured**: any recipe that enables webui must supply credentials. There
+is no unauthenticated escape hatch — even behind a reverse proxy, app-level
+Basic-Auth is required. Set `host: "127.0.0.1"` to bind loopback-only for
+local development, which skips the auth requirement.
 
-For a single-VM admin scenario fronted by a reverse proxy, keep the
-module bound to `127.0.0.1` and let Caddy/nginx terminate TLS. Public
-exposure is the proxy's job.
+Front the module with a reverse proxy (Caddy/nginx) to terminate TLS; the
+proxy handles transport security while Basic-Auth gates the app layer.
 
-If you want to skip the reverse proxy and let the module itself handle
-client auth (defense in depth, or a temporary local-network demo), add
-Basic-Auth credentials sourced from `.env`:
+Add Basic-Auth credentials sourced from `.env` (never literal in the recipe):
 
 ```json
 {
@@ -141,6 +142,48 @@ The header pill is your primary signal:
 - amber: reconnecting
 - red: socket unreachable (the SPA shows a banner with elapsed time)
 
+## Debug: context preview
+
+`GET /debug/context` returns the **membrane-normalized request that would be
+emitted if the agent were activated right now** — the compiled messages,
+system prompt, model config, and filtered tool set. Useful for inspecting
+exactly what the model would see.
+
+**Transparent by default.** The endpoint is side-effect-free: it runs no
+inference, writes nothing to Chronicle, and contacts no external MCPL server.
+It leaves the system state untouched, so you can poll it freely. The cost is
+that it omits the *dynamically-gathered* injections (lessons / retrieval /
+MCPL context), because gathering those is not transparent.
+
+Query params:
+
+- `agent=<name>` — defaults to the recipe's root agent
+- `injections=1` — opt into full fidelity: gather the dynamic injections too.
+  **Not transparent** — this can run inference (e.g. the retrieval module's
+  Haiku calls cost tokens) and fires MCPL `beforeInference` hooks (whose paired
+  `afterInference` is never sent, so a stateful server may be left half-open).
+- `pretty=1` — pretty-print the JSON
+
+The response includes `"transparent": true|false` so callers can confirm which
+mode ran.
+
+```sh
+# Transparent preview (default) — behind the proxy, with the same Basic-Auth
+# as the rest of the surface:
+curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
+  'https://admin.example.internal/debug/context?pretty=1'
+
+# Full-fidelity preview (spends tokens, fires MCPL hooks):
+curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
+  'https://admin.example.internal/debug/context?injections=1&pretty=1'
+```
+
+It is gated by the same Basic-Auth as every other route — note the response
+contains the full system prompt and conversation, so treat it as sensitive.
+
+See [`debug-context-api.md`](./debug-context-api.md) for the full reference:
+response shape, `jq` recipes, and the transparency contract.
+
 ## Multi-VM admin
 
 The module has no built-in cross-VM aggregation. For a fleet of admin
@@ -165,8 +208,9 @@ with that pattern.
 
 ## Troubleshooting
 
-- **`refuses to bind ... without auth`**: set `basicAuth`, switch
-  `host` to `127.0.0.1`, or set `acknowledgeNoAuth: true`.
+- **`refuses to bind ... without auth`**: the default bind is `0.0.0.0`,
+  which requires `basicAuth`. Either add credentials, or switch `host` to
+  `127.0.0.1` for a loopback-only (local-dev) bind.
 - **WebUI bundle not found at .../dist/web**: run `bun install` at the
   package root; the `postinstall` script builds the SPA. For dev, run
   `bun run build:web` from the package root.

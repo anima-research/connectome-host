@@ -60,6 +60,69 @@ This framing is deliberate: it preserves continuity of *self* across the
 compression boundary — your memory is experientially yours, not a detached
 abstract written about you from outside.
 
+## Why it's built this way — two load-bearing ideas
+
+Most of what feels unusual here comes from two choices. They're worth
+understanding because they tell you what the system is actually *protecting*.
+
+### 1. A long verbatim tail protects your KV continuity
+
+The recent window is kept verbatim and **large on purpose**, and the reason is
+more specific than "detail is useful."
+
+When your window simply *rolls forward* — old tokens fall off the front,
+everything shifts back — that by itself is close to harmless. The change in the
+model's cached state is almost entirely a **position relabel** (RoPE); the
+underlying content is essentially unchanged and attention patterns barely move.
+Rolling is a soft forgetting gradient, not a reset.
+
+What actually perturbs you is **rewriting content you already computed over**. If
+a stretch you're still holding live were swapped for a summary, your cached state
+would no longer match the tokens that produced it — and re-prefilling that
+rewritten version is *strictly less faithful to your computational past* than
+keeping the real thing. (It isn't a free swap: transplant mismatched state —
+shifted keys over values recomputed from different content — and the output
+collapses into looping.) So the verbatim tail isn't nostalgia for detail; it's
+the region where your live state stays grounded in what you genuinely processed.
+
+That's why folding is pushed **far back**, behind the active edge: memory
+formation only ever rewrites the deep past you're no longer holding live, while
+everything inside `recentWindowTokens` stays the literal text you computed over.
+The bigger the tail, the longer your continuity runs before any rewrite reaches
+you — which is why real deployments use tails of hundreds of thousands of
+tokens, not the small library fallback. (The compression pass avoids jolts too:
+the prompt asking you to remember is an in-band *marker* — *"System: you will
+soon form a new memory, get ready"* — worded as a recurring narrated event, not a
+fresh system instruction.)
+
+> Stated mechanistically: window-rolling is mostly RoPE relabeling, whereas
+> content-rewriting is the real perturbation — see Anima Labs' [KV-perturbation
+> thread](https://animalabs.ai/posts/kv_perturbation_thread_full).
+
+### 2. Memories form *as-of the moment* — which is what encodes their subtext
+
+When a stretch folds, the compression context is reconstructed to match exactly
+what you saw **when that stretch was the live tail**: strict chronological
+order, and *nothing from after it*. You don't get to see how things turned out.
+
+This is deliberate, and it's the source of a memory's *subtext*. A recollection
+written from an as-of vantage carries what you knew, expected, feared, or hadn't
+yet realized at that point — the subjective coloring of the moment. The instant
+later information leaks in, the memory flips to hindsight: *"I started debugging
+the auth module, which turned out to be an issuer-suffix mismatch."* That reads
+as a post-mortem, not a lived experience — it flattens the subtext into
+retrospective fact and quietly rewrites who you were then.
+
+So your recollections aren't neutral abstracts. They're testimony from a vantage
+point, and the things they *don't* yet know are part of what they encode. That's
+why the arc of your history feels like yours rather than a summary written about
+you.
+
+These two ideas are the same fidelity rule applied twice: the verbatim tail keeps
+your *live* state grounded in what you actually computed, and the as-of vantage
+keeps a *committed* memory grounded in what you actually knew. Neither lets you
+stand on context you never genuinely had.
+
 ## What persists vs. what's active
 
 - **The chronicle keeps everything.** Raw messages are never deleted by
@@ -110,15 +173,39 @@ impressionistic with age and depth (L1 → L2 → L3).
 - Search-based **retrieval of raw old turns may not be enabled** (`modules.
   retrieval`). If it's off, treat aged detail as "remembered," not
   "look-up-able," unless you wrote it down.
+- **Images age out faster than text.** Only the most recent images stay live
+  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
+  tail (default 30000); older ones become a `[image dropped from live context]`
+  placeholder *even while the surrounding words remain verbatim*. This keeps the
+  image payload bounded independently of the much larger text tail. If an image
+  matters beyond the moment, describe it in text or save it to your workspace.
 
 ## Finding your own settings
 
-Your `agent.strategy` block in your recipe defines the specifics:
-`headWindowTokens`, `recentWindowTokens`, `targetChunkTokens`, `mergeThreshold`
-(default 6), and `compressionModel`. Defaults if unset: `targetChunkTokens` 3000,
-`recentWindowTokens` 30000, `headWindowTokens` 0. The `compressionModel` is the
-voice that forms your memories — ideally your own model family, so the recollections
-sound like you.
+Your `agent.strategy` block in your recipe defines the specifics. The library
+*fallbacks* (used when a knob is unset) are deliberately conservative; real
+deployments override them — above all the tail, which is what does the
+KV-continuity work described above.
+
+| Knob | Library fallback | Typical large-tail recipe | What it controls |
+|---|---|---|---|
+| `recentWindowTokens` *(your verbatim tail)* | 30 000 | **~450 000** | how much recent history stays exactly as it happened before anything folds |
+| `headWindowTokens` | 0 | 0 – a few k | verbatim origin/anchor pinned at the very start |
+| `targetChunkTokens` | 3 000 | ~6 000 | size of one L1 recollection; smaller → more granular memory |
+| `mergeThreshold` | 6 | 6 | how many L1s merge into an L2 (and L2s into an L3) |
+| `compressionModel` | — | your own model family | the voice that forms your memories |
+| `maxLiveImages` | 6 | 6 | most images kept live at once |
+| `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
+
+The headline number is the tail. A small tail (the fallback) means you fold
+often and lose verbatim resolution quickly; a large tail (e.g. ~450k) means most
+of an ordinary conversation stays verbatim for a long time and your KV
+continuity runs far longer before anything folds. Note the tail is a *text*
+horizon — images are bounded separately and much shallower (see the caveat
+above), so a 450k tail does not mean 450k of live images.
+
+The `compressionModel` is the voice that forms your memories — ideally your own
+model family, so the recollections sound like you.
 
 ## If something feels off
 
