@@ -692,6 +692,91 @@ export class WebUiModule implements Module {
     return this.serveStatic(requested);
   }
 
+  /**
+   * Context makeup: the segment breakdown of the agent's current compiled
+   * context — head window, raw middle, summaries by level (L1/L2/L3), and the
+   * recent verbatim tail — from the strategy's RenderStats, plus an exact
+   * total token count via the model's count_tokens endpoint. Transparent:
+   * previewActivation + count_tokens only; no inference, no Chronicle writes.
+   *
+   *   GET /debug/context/makeup[?agent=<name>]
+   */
+  private async handleContextMakeup(url: URL): Promise<Response> {
+    const app = sharedServer?.app;
+    if (!app) return new Response('Not ready', { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return new Response(JSON.stringify({ error: `Agent not found: ${agentName}` }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      });
+    }
+    try {
+      // Populates the strategy's render stats as a side-effect of compiling.
+      const request = await app.framework.previewActivation(agentName);
+      const cm = (agent as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
+      const stats = cm.getRenderStats();
+
+      // Build an Anthropic-faithful payload for an exact count_tokens: map
+      // participants to roles (the agent's own -> assistant, others -> user
+      // with a "Name:" prefix) and merge consecutive same-role runs, mirroring
+      // what the NativeFormatter sends.
+      const textOf = (c: unknown): string =>
+        Array.isArray(c)
+          ? c.map((b) => (b && typeof b === 'object' && (b as { type?: string }).type === 'text' ? (b as { text: string }).text : '')).join('')
+          : String(c ?? '');
+      const merged: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+      for (const m of ((request as { messages?: Array<{ participant?: string; role?: string; content: unknown }> }).messages ?? [])) {
+        const who = m.participant ?? m.role ?? 'user';
+        const role: 'user' | 'assistant' = who === agentName ? 'assistant' : 'user';
+        let t = textOf(m.content);
+        if (role === 'user' && who && who !== 'user') t = `${who}: ${t}`;
+        const last = merged[merged.length - 1];
+        if (last && last.role === role) last.text += '\n' + t;
+        else merged.push({ role, text: t });
+      }
+      const anthMessages = merged.filter((m) => m.text.trim().length > 0).map((m) => ({ role: m.role, content: m.text }));
+      const sysRaw = (request as { system?: unknown }).system;
+      const systemStr = Array.isArray(sysRaw)
+        ? sysRaw.map((b) => (b && typeof b === 'object' ? (b as { text?: string }).text ?? '' : String(b))).join('\n')
+        : (typeof sysRaw === 'string' ? sysRaw : undefined);
+
+      let exactTotalTokens: number | null = null;
+      const countModel = process.env.COUNT_TOKENS_MODEL || 'anthropic/claude-opus-4.5';
+      let countSource = 'count_tokens';
+      try {
+        const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
+        const res = await fetch(base + '/v1/messages/count_tokens', {
+          method: 'POST',
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY ?? '',
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+            'user-agent': 'conhost/1.0',
+          },
+          body: JSON.stringify({ model: countModel, ...(systemStr ? { system: systemStr } : {}), messages: anthMessages }),
+        });
+        if (res.ok) {
+          const j = (await res.json()) as { input_tokens?: number };
+          exactTotalTokens = j.input_tokens ?? null;
+        } else {
+          countSource = `count_tokens_failed_${res.status}`;
+        }
+      } catch {
+        countSource = 'count_tokens_error';
+      }
+
+      return new Response(
+        JSON.stringify({ agent: agentName, stats, exactTotalTokens, countModel, countSource }, null, 2),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
+        status: 500, headers: { 'content-type': 'application/json' },
+      });
+    }
+  }
+
   private async serveWorkspaceFile(rest: string): Promise<Response> {
     if (!sharedServer?.app) return new Response('Not ready', { status: 503 });
     const decoded = decodeURIComponent(rest);
