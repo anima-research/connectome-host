@@ -1008,6 +1008,21 @@ export class FleetModule implements Module {
       startupFd = null;  // fall back to stdio: 'ignore' if we can't open the file
     }
 
+    // Auto-unclench a stale socket BEFORE spawning. A previous instance of
+    // this child that crashed or was SIGKILLed (e.g. a container stop that
+    // outran the grace period) leaves its `ipc.sock` on the bind-mounted data
+    // dir. Without this, waitForSocket() latches onto that leftover (it only
+    // checks existsSync), connectChildSocket() then races the new child's own
+    // stale-socket unlink, and the connect fails with `ENOENT` — the parent
+    // SIGKILLs the child before it finishes booting, producing a pre-recipe
+    // crash-loop. Clearing it here means the only socket waitForSocket can see
+    // is the fresh one this child creates. Fresh-launch path only — the
+    // adopt-on-restart path reconnects to a LIVE child's socket and never
+    // reaches here.
+    const pidPath = child.socketPath.replace(/ipc\.sock$/, 'headless.pid');
+    try { if (existsSync(child.socketPath)) unlinkSync(child.socketPath); } catch { /* noop */ }
+    try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch { /* noop */ }
+
     const proc = spawnProcess(
       this.config.childRuntimePath,
       [this.config.childIndexPath, recipePath, '--headless'],
