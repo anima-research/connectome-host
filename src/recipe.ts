@@ -326,6 +326,24 @@ export interface RecipeModules {
    * bind loopback-only for local development, which skips the auth requirement.
    */
   webui?: boolean | RecipeWebUi;
+
+  /**
+   * Auto-unsubscribe noisy ambient channels. On by default. Per subscribed
+   * channel, the host counts ambient (non-mention, non-DM) characters since the
+   * agent's last activation; when a channel crosses its limit before the next
+   * activation, it's auto-unsubscribed (delivery stops, and the surface starts
+   * tracking what's then missed). Counters reset on every activation — the
+   * agent sees all subscribed channels in context, compressed if large — and
+   * persist across restarts. The agent can override the per-channel limit at
+   * runtime via the `subscription-gc--set_channel_idle_limit` tool.
+   *
+   * `false` disables entirely. `defaultLimitChars` sets the global default
+   * (20000 if omitted). `serverId`/`toolPrefix` target the MCPL surface that
+   * owns subscriptions (defaults: `discord` / `mcpl--discord`).
+   */
+  subscriptionGc?:
+    | boolean
+    | { defaultLimitChars?: number; serverId?: string; toolPrefix?: string };
 }
 
 export interface RecipeWebUi {

@@ -31,6 +31,7 @@ import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
+import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
@@ -266,6 +267,20 @@ async function createFramework(
     const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
     activityModule = new ActivityModule({ initialChannels: activityConfig.channels });
     moduleInstances.push(activityModule);
+  }
+
+  // Auto-unsubscribe noisy ambient channels — ON by default (opt out with
+  // `modules.subscriptionGc: false`).
+  if (modules.subscriptionGc !== false) {
+    const gcConfig =
+      typeof modules.subscriptionGc === 'object' ? modules.subscriptionGc : {};
+    moduleInstances.push(
+      new SubscriptionGcModule({
+        defaultLimitChars: gcConfig.defaultLimitChars,
+        serverId: gcConfig.serverId,
+        toolPrefix: gcConfig.toolPrefix,
+      }),
+    );
   }
 
   // Web admin UI — opt-in per recipe
