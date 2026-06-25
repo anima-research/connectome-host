@@ -5,10 +5,10 @@
     "": {
       "name": "connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.5.6",
+        "@animalabs/agent-framework": "^0.5.7",
         "@animalabs/chronicle": "^0.2.0",
-        "@animalabs/context-manager": "^0.5.3",
-        "@animalabs/membrane": "^0.5.55",
+        "@animalabs/context-manager": "^0.5.4",
+        "@animalabs/membrane": "^0.5.68",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -19,13 +19,13 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.5.6", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/context-manager": "^0.5.3", "@animalabs/membrane": "^0.5.49", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-UHqZ1yUm0Cm1Vc2Mh7dIqxcvWwvXhJBDEBKTwZqhJn7n3P/l5Srm+QQNm++XTjS3Wx/UnZExtlDNTy2Z6ehB0Q=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.5.7", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/context-manager": "^0.5.3", "@animalabs/membrane": "^0.5.64", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-F81vEIDHU8voCQz1QMPKuXNr1TxdNLZ9yl9N3A7KpiEJTG/7ipSTL4yrfq2ayglTDSMOLA26JcA2HdM+c6k5Ig=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.2.1", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.1", "@animalabs/chronicle-darwin-x64": "0.2.1", "@animalabs/chronicle-linux-arm64-gnu": "0.2.1", "@animalabs/chronicle-linux-x64-gnu": "0.2.1", "@animalabs/chronicle-win32-x64-msvc": "0.2.1" } }, "sha512-rDFc069yfi7BQUusgsXBwBdqljUWLByXSYaTF40AP+tonBh0No3eF9VzKTSy1I8DYg/jAUHIKtVdKDGsVMVubw=="],
 
-    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.3", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.40" } }, "sha512-8lmjCG8WWDoxaj8UIBmdllnQjBh69yMhip2dkp2aoaLp0xgvQRpqJUOI0DGs4RpISrGrtt0QYRxQLBC+9Dae5Q=="],
+    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.4", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.64" } }, "sha512-2H+WQcniL20/JSAPP+5d1uCqVUi9vy2JKTYX6leO8cTEe1kL2kY7NKoCBY7adoGmovwZS8AXlMEAjcnX3Hwdog=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.55", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-cGg3qNMeN0iXBj0zlzJJnvueq6SeAUdJIJjH/JnX19Z27eVoW3MzPT5GjMal2WO+KsBzLHLIC/zXcbeUz+6nQA=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.68", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-MfSERy0ECxdBZ4NelHdZbqsP/ORWJsfeAI6vuyy6gP77aGcdJL8qf4XrUkOox5yZa5MqB50y0K58Ffv79jCnbg=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
@@ -275,6 +275,8 @@
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
+    "@animalabs/agent-framework/@animalabs/context-manager": ["@animalabs/context-manager@0.5.3", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.40" } }, "sha512-8lmjCG8WWDoxaj8UIBmdllnQjBh69yMhip2dkp2aoaLp0xgvQRpqJUOI0DGs4RpISrGrtt0QYRxQLBC+9Dae5Q=="],
+
     "@discordjs/rest/@discordjs/collection": ["@discordjs/collection@2.1.1", "", {}, "sha512-LiSusze9Tc7qF03sLCujF5iZp7K+vRNEDBZ86FT9aQAv3vxMLihUvKvpsCWiQ2DJq1tVckopKm1rxomgNUc9hg=="],
 
     "@discordjs/rest/@sapphire/snowflake": ["@sapphire/snowflake@3.5.5", "", {}, "sha512-xzvBr1Q1c4lCe7i6sRnrofxeO1QTP/LKQ6A6qy0iB4x5yfiSfARMEQEghojzTNALDTcv8En04qYNIco9/K9eZQ=="],
@@ -284,5 +286,7 @@
     "image-q/@types/node": ["@types/node@16.9.1", "", {}, "sha512-QpLcX9ZSsq3YYUUnD3nFDY8H7wctAhQj/TFKL8Ya8v5fMm3CFXxo8zStsLAl780ltoYoo1WvKUVGBQK+1ifr7g=="],
 
     "pixelmatch/pngjs": ["pngjs@6.0.0", "", {}, "sha512-TRzzuFRRmEoSW/p1KVAmiOgPco2Irlah+bGFCeNfJXxxYGwSw7YwAOAcd7X28K/m5bjBWKsC29KyoMfHbypayg=="],
+
+    "@animalabs/agent-framework/@animalabs/context-manager/@animalabs/membrane": ["@animalabs/membrane@0.5.55", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-cGg3qNMeN0iXBj0zlzJJnvueq6SeAUdJIJjH/JnX19Z27eVoW3MzPT5GjMal2WO+KsBzLHLIC/zXcbeUz+6nQA=="],
   }
 }
