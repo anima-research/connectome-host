@@ -15,7 +15,9 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
-import { Membrane, AnthropicAdapter, NativeFormatter } from '@animalabs/membrane';
+import { Membrane, NativeFormatter } from '@animalabs/membrane';
+import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
@@ -29,6 +31,7 @@ import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
+import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
@@ -128,12 +131,15 @@ async function createFramework(
   storePath: string,
   recipe: Recipe,
   agentName: string,
+  settingsModule: SettingsModule,
 ): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
 
   // -- Build module list --
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule()];
+  // SettingsModule is constructed in main() (before the adapter, so the
+  // adapter can read its state for cross-cutting concerns like reasoning).
+  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(), settingsModule];
 
   // Subagents
   let subagentModule: SubagentModule | null = null;
@@ -263,6 +269,20 @@ async function createFramework(
     moduleInstances.push(activityModule);
   }
 
+  // Auto-unsubscribe noisy ambient channels — ON by default (opt out with
+  // `modules.subscriptionGc: false`).
+  if (modules.subscriptionGc !== false) {
+    const gcConfig =
+      typeof modules.subscriptionGc === 'object' ? modules.subscriptionGc : {};
+    moduleInstances.push(
+      new SubscriptionGcModule({
+        defaultLimitChars: gcConfig.defaultLimitChars,
+        serverId: gcConfig.serverId,
+        toolPrefix: gcConfig.toolPrefix,
+      }),
+    );
+  }
+
   // Web admin UI — opt-in per recipe
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
@@ -271,7 +291,6 @@ async function createFramework(
       port: webuiConfig.port,
       host: webuiConfig.host,
       basicAuth: webuiConfig.basicAuth,
-      acknowledgeNoAuth: webuiConfig.acknowledgeNoAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
     });
     moduleInstances.push(webUiModule);
@@ -348,10 +367,25 @@ async function createFramework(
     'l3BudgetTokens',
     'toolResultMaxLastN',
     'toolUseInputMaxTokens',
+    'adaptiveResolution',
+    'compressionSlackRatio',
+    'foldingStrategy',
+    'speculativeProduction',
+    'summaryParticipant',
+    'summarySystemPrompt',
+    'summaryUserPrompt',
+    'summaryContextLabel',
   ];
   for (const key of passthroughKeys) {
     const v = strategyConfig?.[key];
     if (v !== undefined) autobiographicalOpts[key] = v;
+  }
+  // Adaptive resolution (document-based gradual compression) is the intended
+  // default for autobiographical agents. Frontdesk keeps the hierarchical
+  // renderer (its salience-biased L1 selection); it can still opt in via the
+  // recipe. A recipe may set `adaptiveResolution: false` to opt back out.
+  if (strategyType === 'autobiographical' && autobiographicalOpts.adaptiveResolution === undefined) {
+    autobiographicalOpts.adaptiveResolution = true;
   }
   const strategy = strategyType === 'passthrough'
     ? new PassthroughStrategy()
@@ -370,6 +404,7 @@ async function createFramework(
         systemPrompt: recipe.agent.systemPrompt,
         maxTokens: recipe.agent.maxTokens ?? 16384,
         maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
+        contextBudgetTokens: recipe.agent.contextBudgetTokens,
         strategy,
         ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
       },
@@ -627,53 +662,24 @@ function countLines(path: string): number {
 async function main() {
   const recipe = await resolveRecipe();
 
-  const adapter = new AnthropicAdapter({ apiKey: config.apiKey! });
+  // SettingsModule constructed early so the adapter can read its state for
+  // cross-cutting concerns (currently: reasoning). It's wired into the
+  // framework's module list inside createFramework().
+  const settingsModule = new SettingsModule();
 
-  // LLM call log: appends one JSON line per request to {dataDir}/llm-calls.jsonl.
-  // Useful for post-mortem debugging when the TUI/headless flashes errors past.
-  // The `beforeRequest` hook receives the NormalizedRequest plus the raw
-  // provider-format request (the literal body that's about to hit the API),
-  // so we capture the exact shape the provider sees including model + temperature.
-  //
-  // Rotation: every LLM_CALL_LOG_ROTATE_AT entries (default 50), the active
-  // file `llm-calls.jsonl` is renamed to `llm-calls.<ISO-timestamp>.jsonl`
-  // and the next request opens a fresh one. Old files are kept (no auto-
-  // prune) so post-mortem of any historical session is possible.
-  //
-  // Note: the log captures rawRequest bodies, which contain full message
-  // content — secrets, user input, etc. Treat `llm-calls.jsonl*` like a
-  // secrets-bearing file (chmod 600 if needed; exclude from tarballs).
-  const llmCallLogPath = join(config.dataDir, 'llm-calls.jsonl');
-  // Parse ROTATE_AT explicitly so `LLM_CALL_LOG_ROTATE_AT=0` doesn't
-  // silently fall back to 50 via `||`'s falsy-zero footgun. We require a
-  // positive integer; anything else (NaN, 0, negative) keeps the default.
-  const rotateAtRaw = Number.parseInt(process.env.LLM_CALL_LOG_ROTATE_AT ?? '', 10);
-  const ROTATE_AT = Number.isFinite(rotateAtRaw) && rotateAtRaw > 0 ? rotateAtRaw : 50;
-  let llmCallCount = countLines(llmCallLogPath);
-  const rotateLlmCallLog = async (): Promise<void> => {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const rotated = llmCallLogPath.replace(/\.jsonl$/, `.${ts}.jsonl`);
-    try {
-      await rename(llmCallLogPath, rotated);
-    } catch (err) {
-      // ENOENT is expected on the very first rotation when the file
-      // doesn't exist yet. Anything else (EPERM, EBUSY, ENOSPC, EXDEV
-      // when dataDir is on tmpfs / a different device) should be visible
-      // to the operator so they know the post-mortem log is fiction.
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== 'ENOENT') {
-        console.warn('[llm-call-log] rotation failed:', code ?? String(err));
-      }
-    }
-    llmCallCount = 0;
-  };
-  // If the existing log is already at/over threshold from a prior run,
-  // rotate it on startup so the next request lands in a fresh file. This
-  // is async at module level, so a brief startup race is possible: a
-  // request fired in the first ~ms could append to the file that's about
-  // to be renamed. Acceptable trade — alternative is awaiting at the top
-  // of main(), which blocks all other module init for no real benefit.
-  if (llmCallCount >= ROTATE_AT) void rotateLlmCallLog();
+  // Append each LLM request/response/error to a JSONL log per process lifetime
+  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility). The adapter
+  // also reads SettingsModule.getReasoning() per call to inject `thinking`
+  // when the agent has toggled reasoning on.
+  const llmLogPath = join(
+    config.dataDir,
+    `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
+  );
+  const adapter = new LoggingAnthropicAdapter(
+    { apiKey: config.apiKey!, baseURL: process.env.ANTHROPIC_BASE_URL || undefined },
+    llmLogPath,
+    () => settingsModule.getReasoning(),
+  );
 
   // Session management — resolved before Membrane construction so the
   // active session's import-source sidecar can contribute to agent-name
@@ -712,30 +718,10 @@ async function main() {
     // executeMerge). Mismatch here flips stored assistant turns to
     // role: 'user' and the API rejects tool_use blocks riding along.
     assistantParticipant: agentName,
-    hooks: {
-      beforeRequest: (normalizedRequest, rawRequest) => {
-        const entry = {
-          ts: new Date().toISOString(),
-          normalizedConfig: normalizedRequest.config,
-          rawRequest,
-        };
-        // Async, fire-and-forget — the hook is allowed to be synchronous,
-        // and we explicitly don't want to block the request on disk I/O.
-        // Pre-fix this was appendFileSync, which would stall the event
-        // loop on every inference (and on every rotation flush). Best-
-        // effort semantics: a swallowed error keeps the request going.
-        appendFile(llmCallLogPath, JSON.stringify(entry) + '\n').catch(() => {
-          // Logging is best-effort; never break inference because the disk is full.
-        });
-        llmCallCount++;
-        if (llmCallCount >= ROTATE_AT) void rotateLlmCallLog();
-        return rawRequest;
-      },
-    },
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule);
 
   // Build app context
   const app: AppContext = {
@@ -756,7 +742,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

@@ -44,6 +44,23 @@ export interface RecipeStrategy {
   l3BudgetTokens?: number;
   toolResultMaxLastN?: number;
   toolUseInputMaxTokens?: number;
+  // Adaptive resolution (document-based gradual compression). For the
+  // 'autobiographical' strategy type this defaults ON (see index.ts); set
+  // `adaptiveResolution: false` to opt back to the count-based hierarchical
+  // renderer. The remaining knobs only apply when adaptiveResolution is true.
+  adaptiveResolution?: boolean;
+  compressionSlackRatio?: number;
+  foldingStrategy?: 'flat-profile' | 'oldest-first';
+  speculativeProduction?: boolean;
+  // Self-voice / compression framing. When the agent's name differs from
+  // 'Claude' (the strategy default for summaryParticipant), these MUST be set
+  // (especially summaryParticipant: <agent.name>) — otherwise self-recollections
+  // are stored under a stranger's participant and surface in the compiled prompt
+  // as another voice speaking in first person about the agent.
+  summaryParticipant?: string;
+  summarySystemPrompt?: string;
+  summaryUserPrompt?: string;
+  summaryContextLabel?: string;
 }
 
 export interface RecipeAgent {
@@ -57,6 +74,9 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset, the framework default (150k) applies.
    */
   maxStreamTokens?: number;
+  /** Per-agent context compile budget (input tokens). When unset, the
+   *  ContextManager default (100k) applies. Raise for large-context models. */
+  contextBudgetTokens?: number;
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -296,23 +316,44 @@ export interface RecipeModules {
   fleet?: boolean | RecipeFleet;
 
   /**
-   * Web admin UI. Off by default. When true (shorthand), binds 127.0.0.1:7340.
-   * When an object, accepts the full WebUiModule config including optional
-   * Basic-Auth credentials (`${VAR}`-substitutable from .env).
+   * Web admin UI. Off by default. The default bind is 0.0.0.0:7340 (connectome
+   * deployments are remote, not local), which hard-requires Basic-Auth: a
+   * recipe that enables webui MUST supply `basicAuth`, or the host refuses to
+   * start. Credentials should be `${VAR}`-substituted from .env, never literal.
    *
-   * For remote admin (over VPN), front this with a reverse proxy (Caddy/nginx)
-   * that handles TLS and outer auth. The module refuses to bind a non-loopback
-   * host without either basicAuth or `acknowledgeNoAuth: true`.
+   * For remote admin, front this with a reverse proxy (Caddy/nginx) for TLS;
+   * Basic-Auth is still required at the app layer. Set `host: '127.0.0.1'` to
+   * bind loopback-only for local development, which skips the auth requirement.
    */
   webui?: boolean | RecipeWebUi;
+
+  /**
+   * Auto-unsubscribe noisy ambient channels. On by default. Per subscribed
+   * channel, the host counts ambient (non-mention, non-DM) characters since the
+   * agent's last activation; when a channel crosses its limit before the next
+   * activation, it's auto-unsubscribed (delivery stops, and the surface starts
+   * tracking what's then missed). Counters reset on every activation — the
+   * agent sees all subscribed channels in context, compressed if large — and
+   * persist across restarts. The agent can override the per-channel limit at
+   * runtime via the `subscription-gc--set_channel_idle_limit` tool.
+   *
+   * `false` disables entirely. `defaultLimitChars` sets the global default
+   * (20000 if omitted). `serverId`/`toolPrefix` target the MCPL surface that
+   * owns subscriptions (defaults: `discord` / `mcpl--discord`).
+   */
+  subscriptionGc?:
+    | boolean
+    | { defaultLimitChars?: number; serverId?: string; toolPrefix?: string };
 }
 
 export interface RecipeWebUi {
   port?: number;
   host?: string;
+  /**
+   * Basic-Auth credentials. Required whenever the bind host is non-loopback
+   * (which is the default). `${VAR}`-substitutable from .env.
+   */
   basicAuth?: { username: string; password: string };
-  /** Set true if you've fronted this with a reverse proxy that handles auth. */
-  acknowledgeNoAuth?: boolean;
   /**
    * Override the default Origin allowlist for the WebSocket upgrade. Default
    * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Add
