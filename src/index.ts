@@ -412,6 +412,16 @@ async function createFramework(
     modules: moduleInstances,
     mcplServers: allServers,
     gate: gateOptions,
+    // Liveness watchdog: fail hard if the main thread wedges (synchronous
+    // infinite loop / microtask flood) so the supervisor restarts a fresh
+    // process instead of leaving the agent silently deaf. On by default;
+    // tune via env. Threshold is well above legitimate heavy-compute bursts.
+    watchdog: {
+      enabled: process.env.AGENT_WATCHDOG !== 'off',
+      thresholdMs: Number(process.env.AGENT_WATCHDOG_MS) || 90_000,
+      action: process.env.AGENT_WATCHDOG_ACTION === 'abort' ? 'abort' : 'exit',
+      reportPath: join(storePath, 'watchdog-wedge.jsonl'),
+    },
   });
 
   // Wire post-creation hooks
