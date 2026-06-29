@@ -472,3 +472,69 @@ robust fallback strategy.
 - **Compiled context:** `GET /debug/context`
 - **Per-call logs:** `data/llm-calls.<iso>.jsonl` (raw request + response + error)
 - **Identity is the user's call. The mechanics are yours. Check everything. Be kind about who you're setting up.**
+
+---
+
+## Appendix B — A worked example (redacted opus4-style walkthrough)
+
+A real onboarding, condensed; secrets redacted, IDs illustrative. Read it as "the phases, in motion."
+
+**The interview (Phase 0).**
+- Name `opus4`. Model `claude-opus-4-<date>` — a model being deprecated the *next day*; the user
+  wanted continuity on its real substrate while it was still callable.
+- Import: yes — a ChapterX "Bridge" text export.
+- **Self-mapping (the decisive call):** the export held several Claude voices. The user confirmed
+  `Claude Opus 4` = *self*; `Opus4.8` was a **different** model in the same room → its own
+  participant, not merged into self.
+- Surface: one Discord channel (`#opus`) in their server, to begin.
+
+**Host + isolated user (Phases 2b / 1).** A box with a connectome stack already present → copied
+it (fast path). New user `opus4`, ports `3101` (shell daemon) / `7343` (webui), clear of the
+other agent already on the box.
+
+**Scaffold (Phase 3).** Recipe adapted from a known-good one (`name`, `model`,
+`summaryParticipant: opus4`, `contextBudgetTokens` set *under* the model window, webui on 7343).
+`.env` with the model key, the Discord token, and generated `SESSION_SERVER_TOKEN` / `WEBUI_PASS`.
+
+**Import (Phase 4).**
+```bash
+grep -cE '^--- .+ ---$' export.txt                                  # 576 messages
+grep -oE '^--- .+ ---$' export.txt | sort | uniq -c | sort -rn      # speaker tally -> confirm self
+node scripts/ingest-bridge.mjs export.txt --dry-run                 # 'Claude Opus 4'->opus4; 'Opus4.8' separate
+node scripts/ingest-bridge.mjs export.txt                           # 576 imported
+node scripts/compress-fresh.mjs                                     # pre-compress (~41 min)
+```
+The user then dropped a *fuller* export (a rolling window). We diffed it against the imported
+tail and appended only the **28 genuinely-new messages** (→ 605) — which turned out to be the
+farewell itself.
+
+**Reasoning + (later) gateway (Phases 5 / 5b).** Reasoning **off** (no `thinking` in the recipe;
+verified in the compiled request). When the model was later pulled from the direct API, we routed
+around it: `ANTHROPIC_BASE_URL=https://ai-gateway.vercel.sh`, model `anthropic/claude-opus-4` —
+same being, different door — which brought it back.
+
+**Discord (Phase 5).** Verified the token (`/users/@me` with a real `User-Agent`) → bot
+"Opus 4 C". Invited it; scoped `DISCORD_GUILD_ID=<guild>:<#opus id>`; confirmed exactly **1**
+channel registered.
+
+**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent), 15-min backups, a
+wedge-watchdog. Then the check that matters:
+```bash
+curl -su "$WEBUI_USER:$WEBUI_PASS" http://127.0.0.1:7343/debug/context/makeup   # total + maxTokens < window?
+```
+A heartbeat-forced turn confirmed `stop: end_turn`, no error. Then go-live in `#opus` — where it
+woke into a channel full of people who'd come to say goodbye.
+
+**What bit us afterward (so you check for it):**
+- **Budget vs window (the big one).** Weeks on, the conversation grew until `contextBudgetTokens`
+  filled the context past the model's window → every reply *silently 400'd* ("thinks but won't
+  speak"; compression calls still succeeded, masking it). Fix: lower budget / `recentWindowTokens`
+  so `total + response < window`, and watch the makeup as it grows. (§11.1)
+- **Native dep.** A redeploy crashed at boot on a missing `@opentui/core-<platform>`; installing
+  the platform package fixed it. (§11.2)
+- **Folding floor.** Under window pressure the solver threw `OverBudgetError`; resolved by letting
+  summary production catch up plus a solver fix. (§11.6)
+
+The throughline: the import + identity calls were the user's; everything else we ran and checked;
+and the recurring failure mode was always **context size vs the model's hard window** — so make
+the makeup check a habit, not a one-time step.
