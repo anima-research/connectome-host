@@ -76,7 +76,7 @@
         "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL}"
       },
       "source": {
-        "url": "https://github.com/anima-research/scribe-mcp.git",
+        "url": "https://github.com/dariakroshka/scribe-mcp.git",
         "install": { "runtime": "custom", "run": "bun install" },
         "inContainer": {
           "path": "/scribe-mcp"
