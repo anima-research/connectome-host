@@ -330,7 +330,11 @@ async function createFramework(
   const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
   const fileServersById = new Map(fileServers.map(s => [s.id, s]));
 
-  const allServers: Array<{ id: string; command: string; [k: string]: unknown }> = [];
+  // A server entry has EITHER a `command` (stdio) or a `url` (WebSocket); the
+  // framework's McplServerConfig now carries both as optional, so this local
+  // type must too. Previously the url-only branch forced `command: undefined!`,
+  // which then reached `spawn(undefined, …)` and crashed a network-MCPL recipe.
+  const allServers: Array<{ id: string; command?: string; url?: string; [k: string]: unknown }> = [];
   for (const [id, recipeEntry] of Object.entries(recipeServers)) {
     const fileEntry = fileServersById.get(id);
     if (fileEntry) {
@@ -343,9 +347,15 @@ async function createFramework(
       if (recipeEntry.disabledTools !== undefined) merged.disabledTools = recipeEntry.disabledTools;
       if (recipeEntry.reconnect !== undefined) merged.reconnect = recipeEntry.reconnect;
       if (recipeEntry.reconnectIntervalMs !== undefined) merged.reconnectIntervalMs = recipeEntry.reconnectIntervalMs;
-      allServers.push(merged as { id: string; command: string; [k: string]: unknown });
+      // Let a recipe override/adopt WebSocket transport for a file-defined server.
+      if (recipeEntry.url !== undefined) merged.url = recipeEntry.url;
+      if (recipeEntry.transport !== undefined) merged.transport = recipeEntry.transport;
+      if (recipeEntry.token !== undefined) merged.token = recipeEntry.token;
+      allServers.push(merged as { id: string; command?: string; url?: string; [k: string]: unknown });
     } else if (recipeEntry.command || recipeEntry.url) {
-      allServers.push({ id, ...recipeEntry, command: recipeEntry.command! } as { id: string; command: string; [k: string]: unknown });
+      // Recipe-defined server (not in the file config). Spread ALL recipe fields
+      // (command OR url/transport/token, plus policy) verbatim — no fake command.
+      allServers.push({ id, ...recipeEntry } as { id: string; command?: string; url?: string; [k: string]: unknown });
     }
   }
 
