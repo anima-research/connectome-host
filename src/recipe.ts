@@ -165,14 +165,14 @@ export interface RecipeMcpServerSource {
    *                   implies python3 runtime.
    *   { run, runtime } runs an arbitrary shell command from the cloned dir;
    *                   `runtime` tells the tool which base packages to install
-   *                   in the image (node / python3 / custom = no defaults).
+   *                   in the image (node / python3 / custom / bun = no defaults).
    * Omit entirely for sources that need no build step (e.g. the tool is
    * fetched at runtime by npx/uvx — the recipe's `command` is enough).
    */
   install?:
     | 'npm'
     | 'pip-editable'
-    | { run: string; runtime: 'node' | 'python3' | 'custom' };
+    | { run: string; runtime: 'node' | 'python3' | 'custom' | 'bun' };
   /**
    * Build-arg name for an auth token if the URL is private.
    * Tools consuming `source` should mount this via BuildKit secrets
@@ -708,13 +708,13 @@ export function validateRecipe(raw: unknown): Recipe {
           const isCustom =
             typeof install === 'object' && install !== null
             && typeof (install as Record<string, unknown>).run === 'string'
-            && ['node', 'python3', 'custom'].includes(
+            && ['node', 'python3', 'custom', 'bun'].includes(
               (install as Record<string, unknown>).runtime as string,
             );
           if (!isShorthand && !isCustom) {
             throw new Error(
               `mcpServers.${id}.source.install must be 'npm', 'pip-editable', ` +
-              `or { run: string, runtime: 'node' | 'python3' | 'custom' }`,
+              `or { run: string, runtime: 'node' | 'python3' | 'custom' | 'bun' }`,
             );
           }
         }
