@@ -344,6 +344,20 @@ export interface RecipeModules {
   subscriptionGc?:
     | boolean
     | { defaultLimitChars?: number; serverId?: string; toolPrefix?: string };
+
+  /**
+   * One-step channel attention modes (the `set_channel_mode` tool): flip a
+   * channel between mentions-only and every-message-debounced. Debounced mode
+   * bundles subscribe + a per-channel ambient debounce gate rule + pinning
+   * subscription-gc off; mentions mode reverses all three. On by default when
+   * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
+   * `false` disables. `serverId`/`toolPrefix` target the MCPL surface that owns
+   * subscriptions (defaults: `discord` / `mcpl--discord`); `defaultDebounceMs`
+   * sets the debounced-mode quiet window (180000 if omitted).
+   */
+  channelMode?:
+    | boolean
+    | { serverId?: string; toolPrefix?: string; gcModuleName?: string; defaultDebounceMs?: number };
 }
 
 export interface RecipeWebUi {
