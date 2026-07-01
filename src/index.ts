@@ -32,6 +32,7 @@ import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
+import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
 import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
@@ -283,6 +284,23 @@ async function createFramework(
     );
   }
 
+  // Channel attention modes (`set_channel_mode`). Needs the gate to add/remove
+  // the per-channel debounce policy, so only when `wake` is enabled. On by
+  // default there (opt out with `modules.channelMode: false`); it only adds a
+  // tool, inert until called.
+  let channelModeModule: ChannelModeModule | null = null;
+  if (gateOptions && modules.channelMode !== false) {
+    const cmConfig =
+      typeof modules.channelMode === 'object' ? modules.channelMode : {};
+    channelModeModule = new ChannelModeModule({
+      serverId: cmConfig.serverId,
+      toolPrefix: cmConfig.toolPrefix,
+      gcModuleName: cmConfig.gcModuleName,
+      defaultDebounceMs: cmConfig.defaultDebounceMs,
+    });
+    moduleInstances.push(channelModeModule);
+  }
+
   // Web admin UI — opt-in per recipe
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
@@ -421,6 +439,10 @@ async function createFramework(
 
   if (activityModule) {
     activityModule.setFramework(framework);
+  }
+
+  if (channelModeModule) {
+    channelModeModule.setFramework(framework);
   }
 
   if (workspaceModule) {
