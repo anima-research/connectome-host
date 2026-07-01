@@ -50,7 +50,7 @@ export interface RecipeStrategy {
   // renderer. The remaining knobs only apply when adaptiveResolution is true.
   adaptiveResolution?: boolean;
   compressionSlackRatio?: number;
-  foldingStrategy?: 'flat-profile' | 'oldest-first';
+  foldingStrategy?: 'flat-profile' | 'oldest-first' | 'kv-stable';
   speculativeProduction?: boolean;
   // Self-voice / compression framing. When the agent's name differs from
   // 'Claude' (the strategy default for summaryParticipant), these MUST be set
