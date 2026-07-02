@@ -76,8 +76,8 @@
         "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL:-}"
       },
       "source": {
-        "url": "https://github.com/Tengro/scribe-mcp.git",
-        "ref": "c0deddc73581a4d8be6e28d7e1db00170ebc60cd",
+        "url": "https://github.com/dariakroshka/scribe-mcp.git",
+        "ref": "828ae8ba6ea83ce439ce6ba020ed0223cf096f82",
         "install": {
           "runtime": "bun",
           "run": "bun install --frozen-lockfile"
