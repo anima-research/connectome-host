@@ -732,9 +732,15 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error(`mcpServers.${id}.source.sslBypass must be a boolean`);
         }
         if (src.systemPackages !== undefined) {
+          // The regex bounds these to Debian package names — build tooling
+          // pastes them into an `apt-get install` line, so an unbounded string
+          // is a command-injection vector. Kept in sync with cook's vendored
+          // copy (connectome-cook src/vendor/recipe.ts).
           if (!Array.isArray(src.systemPackages)
-            || !(src.systemPackages as unknown[]).every((p) => typeof p === 'string' && p)) {
-            throw new Error(`mcpServers.${id}.source.systemPackages must be an array of non-empty strings`);
+            || !(src.systemPackages as unknown[]).every(
+              (p) => typeof p === 'string' && /^[a-z0-9][a-z0-9+.\-]+$/.test(p),
+            )) {
+            throw new Error(`mcpServers.${id}.source.systemPackages must be an array of Debian package names`);
           }
         }
         if (src.inContainer !== undefined) {
