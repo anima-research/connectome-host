@@ -44,9 +44,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   /** If reasoning is enabled, inject `thinking` into the request before the
-   *  adapter builds the Anthropic payload. AnthropicAdapter.buildRequest only
-   *  sets `params.thinking` if `request.thinking` is truthy, so this is the
-   *  hook point. We mutate a shallow clone to avoid surprising callers. */
+   *  adapter builds the Anthropic payload. The Anthropic adapter forwards
+   *  provider-specific params carried in `request.extra`, so that's the hook
+   *  point. We return a shallow clone to avoid surprising callers. */
   private withReasoning(request: ProviderRequest): ProviderRequest {
     const r = this.getReasoning?.();
     if (!r || !r.enabled) return request;
@@ -55,18 +55,21 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // form with: `"thinking.type.enabled" is not supported for this model.
     // Use "thinking.type.adaptive"`. Under adaptive the model sizes its own
     // thinking, so `budgetTokens` is no longer sent (it still shows in
-    // reasoning_status as an informational hint). Membrane forwards
-    // `request.thinking` verbatim, so no provider change is needed.
+    // reasoning_status as an informational hint).
     //
-    // As of membrane 0.6.0 `ProviderRequest` no longer types a `thinking`
-    // field, but the Anthropic adapter still reads a top-level
-    // `request.thinking` at runtime (`complete()`: `if (request.thinking)
-    // params.thinking = request.thinking`). So we inject it top-level and
-    // assert the whole object rather than indexing the (now absent) member.
+    // membrane's `ProviderRequest` doesn't type a top-level `thinking` field
+    // (membrane is 0.5.68 — agent-framework is the package that went 0.6.0;
+    // the old `as … ProviderRequest['thinking']` cast only ever compiled via a
+    // stale nested membrane copy that lockfile dedup removed). But the Anthropic
+    // adapter applies `request.extra` to the API params verbatim
+    // (`complete()`: `const { normalizedMessages, prompt, ...rest } =
+    // request.extra; Object.assign(params, rest)`), so we route thinking
+    // through the typed `extra` bag — no type assertion, and it survives the
+    // next dependency reshuffle instead of hiding it from the compiler.
     return {
       ...request,
-      thinking: { type: 'adaptive' },
-    } as ProviderRequest;
+      extra: { ...request.extra, thinking: { type: 'adaptive' } },
+    };
   }
 
   private log(record: Record<string, unknown>): void {
