@@ -57,9 +57,15 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // thinking, so `budgetTokens` is no longer sent (it still shows in
     // reasoning_status as an informational hint). Membrane forwards
     // `request.thinking` verbatim, so no provider change is needed.
+    //
+    // As of membrane 0.6.0 `ProviderRequest` no longer types a `thinking`
+    // field, but the Anthropic adapter still reads a top-level
+    // `request.thinking` at runtime (`complete()`: `if (request.thinking)
+    // params.thinking = request.thinking`). So we inject it top-level and
+    // assert the whole object rather than indexing the (now absent) member.
     return {
       ...request,
-      thinking: { type: 'adaptive' } as unknown as ProviderRequest['thinking'],
+      thinking: { type: 'adaptive' },
     } as ProviderRequest;
   }
 
