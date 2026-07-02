@@ -76,19 +76,15 @@
         "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL:-}"
       },
       "source": {
-        "url": "https://github.com/dariakroshka/scribe-mcp.git",
-        "ref": "3b5fe5a890ed5b5967588b7236d9f12d608ff143",
+        "url": "https://github.com/Tengro/scribe-mcp.git",
+        "ref": "c0deddc73581a4d8be6e28d7e1db00170ebc60cd",
         "install": {
           "runtime": "bun",
           "run": "bun install --frozen-lockfile"
         },
         "inContainer": {
           "path": "/scribe-mcp"
-        },
-        "systemPackages": [
-          "ffmpeg",
-          "curl"
-        ]
+        }
       }
     }
   },
