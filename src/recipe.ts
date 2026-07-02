@@ -165,14 +165,14 @@ export interface RecipeMcpServerSource {
    *                   implies python3 runtime.
    *   { run, runtime } runs an arbitrary shell command from the cloned dir;
    *                   `runtime` tells the tool which base packages to install
-   *                   in the image (node / python3 / custom = no defaults).
+   *                   in the image (node / python3 / custom / bun = no defaults).
    * Omit entirely for sources that need no build step (e.g. the tool is
    * fetched at runtime by npx/uvx — the recipe's `command` is enough).
    */
   install?:
     | 'npm'
     | 'pip-editable'
-    | { run: string; runtime: 'node' | 'python3' | 'custom' };
+    | { run: string; runtime: 'node' | 'python3' | 'custom' | 'bun' };
   /**
    * Build-arg name for an auth token if the URL is private.
    * Tools consuming `source` should mount this via BuildKit secrets
@@ -194,6 +194,13 @@ export interface RecipeMcpServerSource {
    * `https://github.com/x/zulip_mcp.git` places the source at `/zulip_mcp`).
    */
   inContainer?: { path: string };
+  /**
+   * Extra apt packages this source needs in the runtime image (e.g.
+   * `ffmpeg`/`curl` for a tool that shells out to them).  Build tooling
+   * appends these to the runtime stage's apt install; connectome-host
+   * ignores the field at runtime (it doesn't build images).
+   */
+  systemPackages?: string[];
 }
 
 /**
@@ -708,13 +715,13 @@ export function validateRecipe(raw: unknown): Recipe {
           const isCustom =
             typeof install === 'object' && install !== null
             && typeof (install as Record<string, unknown>).run === 'string'
-            && ['node', 'python3', 'custom'].includes(
+            && ['node', 'python3', 'custom', 'bun'].includes(
               (install as Record<string, unknown>).runtime as string,
             );
           if (!isShorthand && !isCustom) {
             throw new Error(
               `mcpServers.${id}.source.install must be 'npm', 'pip-editable', ` +
-              `or { run: string, runtime: 'node' | 'python3' | 'custom' }`,
+              `or { run: string, runtime: 'node' | 'python3' | 'custom' | 'bun' }`,
             );
           }
         }
@@ -723,6 +730,18 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (src.sslBypass !== undefined && typeof src.sslBypass !== 'boolean') {
           throw new Error(`mcpServers.${id}.source.sslBypass must be a boolean`);
+        }
+        if (src.systemPackages !== undefined) {
+          // The regex bounds these to Debian package names — build tooling
+          // pastes them into an `apt-get install` line, so an unbounded string
+          // is a command-injection vector. Kept in sync with cook's vendored
+          // copy (connectome-cook src/vendor/recipe.ts).
+          if (!Array.isArray(src.systemPackages)
+            || !(src.systemPackages as unknown[]).every(
+              (p) => typeof p === 'string' && /^[a-z0-9][a-z0-9+.\-]+$/.test(p),
+            )) {
+            throw new Error(`mcpServers.${id}.source.systemPackages must be an array of Debian package names`);
+          }
         }
         if (src.inContainer !== undefined) {
           if (typeof src.inContainer !== 'object' || src.inContainer === null) {
