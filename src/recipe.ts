@@ -194,6 +194,13 @@ export interface RecipeMcpServerSource {
    * `https://github.com/x/zulip_mcp.git` places the source at `/zulip_mcp`).
    */
   inContainer?: { path: string };
+  /**
+   * Extra apt packages this source needs in the runtime image (e.g.
+   * `ffmpeg`/`curl` for a tool that shells out to them).  Build tooling
+   * appends these to the runtime stage's apt install; connectome-host
+   * ignores the field at runtime (it doesn't build images).
+   */
+  systemPackages?: string[];
 }
 
 /**
@@ -723,6 +730,12 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (src.sslBypass !== undefined && typeof src.sslBypass !== 'boolean') {
           throw new Error(`mcpServers.${id}.source.sslBypass must be a boolean`);
+        }
+        if (src.systemPackages !== undefined) {
+          if (!Array.isArray(src.systemPackages)
+            || !(src.systemPackages as unknown[]).every((p) => typeof p === 'string' && p)) {
+            throw new Error(`mcpServers.${id}.source.systemPackages must be an array of non-empty strings`);
+          }
         }
         if (src.inContainer !== undefined) {
           if (typeof src.inContainer !== 'object' || src.inContainer === null) {

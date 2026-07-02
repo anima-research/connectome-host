@@ -84,7 +84,11 @@
         },
         "inContainer": {
           "path": "/scribe-mcp"
-        }
+        },
+        "systemPackages": [
+          "ffmpeg",
+          "curl"
+        ]
       }
     }
   },
