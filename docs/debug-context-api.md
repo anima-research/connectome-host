@@ -155,7 +155,7 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
     ],
     "system": "…full system prompt…",
     "config": {
-      "model": "claude-opus-4-6",
+      "model": "<model-id>",
       "maxTokens": 16384,
       "temperature": 0.7                    // omitted if the recipe doesn't set one
     },

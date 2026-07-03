@@ -15,8 +15,8 @@ each at runtime (sharing a single `membrane` instance is mandatory — two copie
 break `instanceof` / module singletons). Every package's `package.json` `main`
 points at `dist/…`, so **each package must be `tsc`-built** before the host runs.
 
-Agents ("Lena", "Cinder") live in separate **install dirs** (`lena-cm`, `cinder-cm`)
-that hold a recipe + `.env` + chronicle data and reference the code by absolute path.
+Each agent lives in a separate **install dir** (`<agent>-cm`, e.g. `example-cm`)
+that holds a recipe + `.env` + chronicle data and references the code by absolute path.
 
 ---
 
@@ -117,10 +117,9 @@ for d in membrane context-manager chronicle; do
 done
 ```
 
-> This is exactly the layout in use locally and (after the npm→git switch) on
-> sandbox1. On a fresh box, `npm install` inside `agent-framework` will pull its
-> own `@animalabs/*` copies first — run it, THEN replace them with the symlinks
-> above.
+> This is the layout in use on a checkout-based box. On a fresh box, `npm
+> install` inside `agent-framework` will pull its own `@animalabs/*` copies
+> first — run it, THEN replace them with the symlinks above.
 
 ---
 
@@ -142,7 +141,7 @@ node ~/connectome-local/terminal-sessions-mcp/dist/src/server/start-session-serv
 
 ---
 
-## 5. Agent install dir (e.g. `lena-cm`, `cinder-cm`)
+## 5. Agent install dir (e.g. `<agent>-cm`)
 
 Separate from the code — holds config + data, references code by absolute path.
 
@@ -171,9 +170,9 @@ HEARTBEAT_CONFIG_FILE=<abs>/data/heartbeat-config.json
 bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
   ~/connectome-local/<agent>-cm/recipes/<agent>.json --headless
 ```
-- macOS: launchd agent (e.g. `cc.lena.agent`) — stop with `launchctl bootout`,
+- macOS: launchd agent (e.g. `cc.<agent>.agent`) — stop with `launchctl bootout`,
   restart with `launchctl kickstart -k gui/$(id -u)/<label>`.
-- Linux: systemd-user (e.g. `cinder-agent.service`) —
+- Linux: systemd-user (e.g. `<agent>-agent.service`) —
   `systemctl --user restart <unit>`; needs lingering enabled.
 
 ---
@@ -181,7 +180,7 @@ bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
 ## 6. Runtimes
 
 - **bun** — runs the host (`bun src/index.ts …`).
-- **node ≥ 20** — runs the MCPL servers (sandbox1 uses node 22). nvm fine locally.
+- **node ≥ 20** — runs the MCPL servers (node 22 also fine). nvm fine locally.
 
 ---
 
@@ -198,9 +197,8 @@ bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
 3. **Single `membrane` instance** (see §3) — the #1 source of weird runtime errors
    if you skip the symlink wiring and end up with two copies.
 4. **Prod vs dev divergence.** Production boxes may run `@animalabs/*` as
-   npm-installed pinned copies rather than checkouts (sandbox1 ran agent-framework
-   0.3.0 until it was switched to a checkout). "Mirroring current dev state" means
-   the symlinked-checkout layout in this doc.
+   npm-installed pinned copies rather than checkouts. "Mirroring current dev
+   state" means the symlinked-checkout layout in this doc.
 5. **Two repos still under `antra-tess`** (`membrane`, `terminal-sessions-mcp`) —
    not yet migrated to `anima-research`.
 

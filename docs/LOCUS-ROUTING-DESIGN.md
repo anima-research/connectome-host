@@ -2,8 +2,8 @@
 
 **Status:** Agreed design, implementation deferred.
 **Date:** 2026-05-29
-**Context:** Surfaced while wiring periodic heartbeats for the Cinder instance
-(migrated from OpenClaw to the Connectome stack, running headless on sandbox1).
+**Context:** Surfaced while wiring periodic heartbeats for an agent instance
+running headless on a Linux VPS.
 
 ---
 
@@ -24,7 +24,7 @@ servers reduced to pure `channels/publish` executors.
 - Root cause of "no post": `discord-mcpl` tracks the sticky channel in an
   in-memory field `lastChannelId`, initialized to `null`, set only on inbound
   Discord messages / outbound sends. It is **not persisted**, so every
-  `cinder-agent` restart resets it to `null`. A heartbeat firing after a restart
+  agent restart resets it to `null`. A heartbeat firing after a restart
   has no sticky channel → `afterInference` skips (`reason: no-sticky-channel`).
 - First instinct was to persist `lastChannelId` (file, then MCPL host-state).
   That instinct is wrong: it persists *host-conceptual* state through the MCPL
@@ -87,7 +87,7 @@ discord-mcpl patch.
 
 ## Interim state (acceptable)
 
-- Cinder runs headless on sandbox1; heartbeats wake it and it responds.
+- The agent runs headless on the VPS; heartbeats wake it and it responds.
 - Sticky does **not** persist across restarts → heartbeat/agent text right after
   a restart won't auto-post to Discord until there's fresh channel activity.
   Known, benign gap. No workaround installed (deliberately — avoid entrenching
@@ -97,7 +97,7 @@ discord-mcpl patch.
 
 1. **discord-mcpl `connect()` race** — resolved on `login()` (before gateway
    READY), so `registerDiscordChannels` enumerated an empty `guilds.cache`.
-   *Fixed on sandbox1*: `connect()` now awaits the `ready` event. (Not yet
+   *Fixed*: `connect()` now awaits the `ready` event. (Not yet
    committed/pushed.)
 2. **Empty `DISCORD_GUILD_ID` → `[]` filter** — `"".split(',').filter(Boolean)`
    yields `[]` (truthy), and the guild filter then excludes *all* guilds.
