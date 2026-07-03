@@ -87,6 +87,16 @@ export interface RecipeAgent {
     enabled: boolean;
     budgetTokens?: number;
   };
+  /**
+   * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
+   * turn triggers an automatic rewind of the triggering turn + retry (keeping
+   * the agent on its own model). See agent-framework AgentConfig.refusalHandling.
+   */
+  refusalHandling?: {
+    autoRewind?: boolean;
+    maxRewinds?: number;
+    announceHumanTurns?: boolean;
+  };
 }
 
 export interface RecipeMcpServer {

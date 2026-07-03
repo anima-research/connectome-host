@@ -435,6 +435,7 @@ async function createFramework(
         contextBudgetTokens: recipe.agent.contextBudgetTokens,
         strategy,
         ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
+        ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
       },
     ],
     modules: moduleInstances,
