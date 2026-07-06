@@ -51,6 +51,7 @@ import {
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
+  type RequestHistoryMessage,
   type TokenUsage,
   type McplListMessage,
   type LessonsListMessage,
@@ -124,6 +125,28 @@ interface ClientState {
 /** Default port — picked to be memorable and unlikely to collide. */
 const DEFAULT_PORT = 7340;
 
+/** Messages shipped in the welcome frame (the tail window). */
+const WELCOME_HISTORY_LIMIT = 200;
+/** Default / max page size for request-history. */
+const HISTORY_PAGE_DEFAULT = 200;
+const HISTORY_PAGE_MAX = 500;
+
+/**
+ * Structural view of the windowed-read facade added to
+ * @animalabs/context-manager alongside this protocol version. Typed
+ * structurally (not imported) so the host keeps running against older
+ * context-manager copies on boxes — call sites feature-detect.
+ */
+interface WindowCapableCm {
+  getMessageCount(): number;
+  getMessageWindow(
+    offset: number,
+    limit: number,
+    opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
+  ): { messages: unknown[]; startIndex: number; totalCount: number };
+  onMessage?(listener: (event: { type: string; message?: unknown }) => void): () => void;
+}
+
 /**
  * Default bind host. Connectome deployments are remote (none are local), so
  * we bind all interfaces by default. This is a non-loopback bind, so it
@@ -176,6 +199,10 @@ interface SharedServerState {
    *  retain handles to dead frameworks. */
   treeAggregator: FleetTreeAggregator | null;
   fleetEventDetacher: (() => void) | null;
+  /** Detacher for the message-store 'add' listener driving message-appended
+   *  pushes. Re-installed on every setApp (fresh ContextManager per session)
+   *  and cleared in stop(). */
+  messageListenerDetacher: (() => void) | null;
   /** Cached child recipe summaries keyed by recipe path. Recipes are
    *  static-ish per host run (re-spawn doesn't change the file), so we
    *  parse once and reuse on every welcome. Cleared on session switch. */
@@ -241,6 +268,7 @@ export class WebUiModule implements Module {
       app: null,
       treeAggregator: null,
       fleetEventDetacher: null,
+      messageListenerDetacher: null,
     };
     state.server = Bun.serve({
       port,
@@ -276,6 +304,8 @@ export class WebUiModule implements Module {
     if (!sharedServer) return;
     sharedServer.fleetEventDetacher?.();
     sharedServer.fleetEventDetacher = null;
+    sharedServer.messageListenerDetacher?.();
+    sharedServer.messageListenerDetacher = null;
     sharedServer.treeAggregator?.dispose();
     sharedServer.treeAggregator = null;
     sharedServer.app = null;
@@ -303,8 +333,33 @@ export class WebUiModule implements Module {
     // Tear down any previous aggregator (session-switch path).
     ss.fleetEventDetacher?.();
     ss.fleetEventDetacher = null;
+    ss.messageListenerDetacher?.();
+    ss.messageListenerDetacher = null;
     ss.treeAggregator?.dispose();
     ss.treeAggregator = null;
+
+    // Live message pushes: assistant turns and tool results never surface as
+    // `message:added` traces (those fire only for external/MCPL sources), so
+    // subscribe to the message store itself. Feature-detected — older
+    // context-manager copies without onMessage simply don't get live pushes
+    // (clients still see streamed text via traces).
+    const cm0 = app.framework.getAllAgents()[0]?.getContextManager() as unknown as WindowCapableCm | undefined;
+    if (cm0 && typeof cm0.onMessage === 'function' && typeof cm0.getMessageCount === 'function') {
+      ss.messageListenerDetacher = cm0.onMessage((ev) => {
+        if (ev.type !== 'add' || !ev.message) return;
+        try {
+          const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
+          const push: WebUiServerMessage = { type: 'message-appended', entry };
+          for (const c of ss.clients.values()) {
+            if (c.welcomed) this.send(c, push);
+          }
+        } catch (err) {
+          // Never let a viewer-side projection error break the store's
+          // listener chain (ContextManager subscribes on the same path).
+          console.error('[webui] message-appended projection failed:', err);
+        }
+      });
+    }
 
     // Re-derive cost snapshot for the new framework. Without this the
     // welcome of the first connecting client (or all clients after a
@@ -963,6 +1018,11 @@ export class WebUiModule implements Module {
 
       case 'command': {
         void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        return;
+      }
+
+      case 'request-history': {
+        this.handleRequestHistory(client, parsed);
         return;
       }
 
@@ -1771,6 +1831,41 @@ export class WebUiModule implements Module {
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
   }
 
+  /**
+   * Serve a page of older history ending just before `beforeIndex`. Windowed
+   * read with bodyGroup alignment; the reply carries the same corrId so the
+   * SPA can match it to its in-flight scroll request.
+   */
+  private handleRequestHistory(client: ClientState, req: RequestHistoryMessage): void {
+    const cm = sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager();
+    if (!cm) {
+      this.send(client, { type: 'error', corrId: req.corrId, message: 'no context manager' });
+      return;
+    }
+    const cmw = cm as unknown as WindowCapableCm;
+    if (typeof cmw.getMessageWindow !== 'function') {
+      this.send(client, {
+        type: 'error', corrId: req.corrId,
+        message: 'history paging unavailable (context-manager without windowed reads)',
+      });
+      return;
+    }
+    const limit = Math.min(req.limit ?? HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX);
+    const beforeIndex = Math.min(req.beforeIndex, cmw.getMessageCount());
+    const offset = Math.max(0, beforeIndex - limit);
+    const win = cmw.getMessageWindow(offset, beforeIndex - offset, {
+      resolveBlobs: false,
+      alignToBodyGroups: true,
+    });
+    this.send(client, {
+      type: 'history-page',
+      corrId: req.corrId,
+      entries: coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex),
+      startIndex: win.startIndex,
+      totalCount: win.totalCount,
+    });
+  }
+
   private async buildWelcome(): Promise<WelcomeMessage> {
     const app = sharedServer?.app!;
     const fw = app.framework;
@@ -1780,14 +1875,32 @@ export class WebUiModule implements Module {
       throw new Error('cannot build welcome: no active session');
     }
 
-    // Conversation snapshot via the first agent's context manager; matches
-    // tui.ts loadSessionHistory.
+    // Conversation snapshot via the first agent's context manager — TAIL
+    // WINDOW only. The full-history welcome was the 51–108s render incident
+    // (lena, 2026-07-02): 4.6k messages materialized, flattened, and
+    // JSON.stringify'd per client per (re)connect. Clients page older
+    // history on demand via request-history.
     const cm = agents[0]?.getContextManager();
-    const messages: WelcomeMessageEntry[] = [];
+    let messages: WelcomeMessageEntry[] = [];
+    let history = { startIndex: 0, totalCount: 0 };
     if (cm) {
-      for (const msg of cm.getAllMessages()) {
-        const entry = flattenMessage(msg as unknown as MessageLike);
-        messages.push(entry);
+      const cmw = cm as unknown as WindowCapableCm;
+      if (typeof cmw.getMessageWindow === 'function' && typeof cmw.getMessageCount === 'function') {
+        const total = cmw.getMessageCount();
+        const start = Math.max(0, total - WELCOME_HISTORY_LIMIT);
+        const win = cmw.getMessageWindow(start, total - start, {
+          resolveBlobs: false,
+          alignToBodyGroups: true,
+        });
+        messages = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+        history = { startIndex: win.startIndex, totalCount: win.totalCount };
+      } else {
+        // Facade skew (older @animalabs/context-manager without windowed
+        // reads): fall back to the historical full walk, sliced locally.
+        const all = cm.getAllMessages() as unknown as MessageLike[];
+        const start = Math.max(0, all.length - WELCOME_HISTORY_LIMIT);
+        messages = coalesceAndFlatten(all.slice(start), start);
+        history = { startIndex: start, totalCount: all.length };
       }
     }
 
@@ -1842,6 +1955,7 @@ export class WebUiModule implements Module {
         name: branch?.name ?? '',
       },
       messages,
+      history,
       localTree: {
         asOfTs: localSnap.asOfTs,
         nodes: localSnap.nodes as unknown as Array<Record<string, unknown>>,
@@ -1982,34 +2096,192 @@ interface MessageLike {
   id?: string;
   participant: string;
   content: ReadonlyArray<unknown>;
-  timestamp?: number;
+  timestamp?: number | Date;
+  bodyGroupId?: string;
+  shardIndex?: number;
 }
 
-function flattenMessage(msg: MessageLike): WelcomeMessageEntry {
+// Per-block size caps for wire frames. A single pathological tool result or
+// pasted document must not re-bloat the windowed welcome back into the
+// megaframe territory this protocol version exists to eliminate.
+const TEXT_CAP = 64 * 1024;
+const THINKING_CAP = 32 * 1024;
+const TOOL_INPUT_CAP = 16 * 1024;
+const TOOL_RESULT_CAP = 16 * 1024;
+
+function capText(s: string, cap: number): { text: string; truncated?: boolean } {
+  const sliced = sliceUtf8(s, cap);
+  return sliced === s ? { text: s } : { text: sliced, truncated: true };
+}
+
+/**
+ * Project a stored message into its wire form: ordered MessageBlocks carrying
+ * the full internal life (thinking, tool calls AND results), with media
+ * reduced to type placeholders and per-block size caps applied.
+ *
+ * `index` is the message's store slot index — the client's paging cursor.
+ */
+function toWireEntry(msg: MessageLike, index: number): WelcomeMessageEntry {
+  const blocks: import('../web/protocol.js').MessageBlock[] = [];
   const textParts: string[] = [];
-  const toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
+  let toolResults = 0;
+  let conversational = 0; // text/thinking blocks — used for participant fixup
 
   for (const block of msg.content) {
-    const b = block as unknown as { type: string; text?: unknown; id?: string; name?: string; input?: unknown };
-    if (b.type === 'text' && typeof b.text === 'string') {
-      textParts.push(b.text);
-    } else if (b.type === 'tool_use') {
-      if (typeof b.id === 'string' && typeof b.name === 'string') {
-        toolCalls.push({ id: b.id, name: b.name, input: b.input });
-      }
+    const b = block as {
+      type?: string; text?: unknown; thinking?: unknown; data?: unknown;
+      id?: unknown; name?: unknown; input?: unknown;
+      toolUseId?: unknown; content?: unknown; isError?: unknown;
+      source?: { mediaType?: unknown }; mediaType?: unknown;
+      ref?: { mediaType?: unknown };
+    };
+    switch (b.type) {
+      case 'text':
+        if (typeof b.text === 'string') {
+          const capped = capText(b.text, TEXT_CAP);
+          blocks.push({ kind: 'text', ...capped });
+          textParts.push(capped.text);
+          conversational++;
+        }
+        break;
+      case 'thinking':
+        if (typeof b.thinking === 'string') {
+          blocks.push({ kind: 'thinking', ...capText(b.thinking, THINKING_CAP) });
+          conversational++;
+        }
+        break;
+      case 'redacted_thinking':
+        blocks.push({
+          kind: 'redacted_thinking',
+          bytes: typeof b.data === 'string' ? b.data.length : 0,
+        });
+        conversational++;
+        break;
+      case 'tool_use':
+        if (typeof b.id === 'string' && typeof b.name === 'string') {
+          let inputJson: string;
+          try {
+            inputJson = JSON.stringify(b.input, null, 2) ?? 'null';
+          } catch {
+            inputJson = '[unserializable input]';
+          }
+          const capped = capText(inputJson, TOOL_INPUT_CAP);
+          blocks.push({
+            kind: 'tool_use', id: b.id, name: b.name,
+            inputJson: capped.text,
+            ...(capped.truncated ? { truncated: true } : {}),
+          });
+        }
+        break;
+      case 'tool_result':
+        if (typeof b.toolUseId === 'string') {
+          blocks.push({
+            kind: 'tool_result',
+            toolUseId: b.toolUseId,
+            ...capText(flattenToolResultContent(b.content), TOOL_RESULT_CAP),
+            ...(b.isError === true ? { isError: true } : {}),
+          });
+          toolResults++;
+        }
+        break;
+      case 'image':
+      case 'document':
+      case 'audio':
+      case 'video':
+        blocks.push({
+          kind: 'media',
+          mediaType:
+            typeof b.source?.mediaType === 'string' ? b.source.mediaType
+            : typeof b.mediaType === 'string' ? b.mediaType
+            : b.type,
+        });
+        break;
+      case 'blob_ref':
+        // Un-inflated media placeholder (welcome/history are read with
+        // resolveBlobs: false so multi-MB base64 never hits the wire).
+        blocks.push({
+          kind: 'media',
+          mediaType: typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob',
+        });
+        break;
+      default:
+        break; // unknown block types are skipped, not errored
     }
-    // tool_result blocks are dropped; the assistant message that owns them
-    // already conveys the conversation flow.
   }
 
+  // Messages that are purely tool results are turn-plumbing, not prose;
+  // surface them as participant 'tool' so the client can pair/hide them.
+  const participant = toolResults > 0 && conversational === 0
+    ? 'tool'
+    : normalizeParticipant(msg.participant);
+
   const entry: WelcomeMessageEntry = {
-    participant: normalizeParticipant(msg.participant),
+    index,
+    participant,
+    blocks,
     text: textParts.join('\n'),
   };
   if (msg.id) entry.id = msg.id;
-  if (toolCalls.length > 0) entry.toolCalls = toolCalls;
-  if (msg.timestamp) entry.timestamp = msg.timestamp;
+  const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
+  if (ts) entry.timestamp = ts;
   return entry;
+}
+
+/** tool_result content is `string | ContentBlock[]` — flatten nested blocks
+ *  to text with placeholders for media. */
+function flattenToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return content == null ? '' : String(content);
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = block as { type?: string; text?: unknown };
+    if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+    else if (b.type === 'image') parts.push('[image]');
+    else if (typeof b.type === 'string') parts.push(`[${b.type}]`);
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Coalesce consecutive shards of a bodyGroup (one large message chunked at
+ * ingestion) into a single wire entry, then flatten everything. Shards are
+ * contiguous by construction; within a run they're ordered by shardIndex.
+ * The coalesced entry's `index` is the FIRST shard's slot index so paging
+ * cursors stay aligned with store slots.
+ */
+function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
+  const out: WelcomeMessageEntry[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i]!;
+    if (!m.bodyGroupId) {
+      out.push(toWireEntry(m, startIndex + i));
+      i++;
+      continue;
+    }
+    const runStart = i;
+    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
+    const shards = messages.slice(runStart, i)
+      .map((shard, k) => ({ shard, k }))
+      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
+      .map(({ shard }) => shard);
+    // Merge adjacent text blocks with NO separator — shard cuts land
+    // mid-text, so reassembly must be byte-faithful concatenation.
+    const mergedContent: unknown[] = [];
+    for (const blk of shards.flatMap((s) => [...s.content])) {
+      const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
+      const cur = blk as { type?: string; text?: unknown };
+      if (prev?.type === 'text' && cur.type === 'text'
+          && typeof prev.text === 'string' && typeof cur.text === 'string') {
+        mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
+      } else {
+        mergedContent.push(blk);
+      }
+    }
+    const merged: MessageLike = { ...shards[0]!, content: mergedContent };
+    out.push(toWireEntry(merged, startIndex + runStart));
+  }
+  return out;
 }
 
 /** The framework stores assistant turns under the agent's name (e.g.

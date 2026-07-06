@@ -1,4 +1,4 @@
-import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -12,19 +12,40 @@ import { McplPanel, type McplServerRow } from './Mcpl';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
-import type {
-  WebUiServerMessage,
-  WelcomeMessage,
-  WelcomeMessageEntry,
-  TokenUsage,
-  PerAgentCost,
+import {
+  WEB_PROTOCOL_VERSION,
+  type WebUiServerMessage,
+  type WelcomeMessage,
+  type WelcomeMessageEntry,
+  type HistoryPageMessage,
+  type MessageBlock,
+  type TokenUsage,
+  type PerAgentCost,
 } from '@conhost/web/protocol';
+
+/** Client-side block: the wire MessageBlock plus live-stream bookkeeping. */
+type UiBlock =
+  | { kind: 'text'; text: string; truncated?: boolean; streaming?: boolean }
+  | { kind: 'thinking'; text: string; truncated?: boolean; streaming?: boolean }
+  | { kind: 'redacted_thinking'; bytes: number }
+  | {
+      kind: 'tool_use'; id: string; name: string; inputJson: string; truncated?: boolean;
+      /** Live lifecycle from tool:* traces; undefined for historical calls. */
+      status?: 'running' | 'done' | 'failed';
+      durationMs?: number;
+    }
+  | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
+  | { kind: 'media'; mediaType: string };
 
 interface Message {
   id: string;
   participant: 'user' | 'assistant' | 'system' | 'tool' | 'command' | 'trigger';
   text: string;
-  toolCalls?: Array<{ id: string; name: string; input: unknown }>;
+  /** Ordered content blocks — present on server-sourced and streamed
+   *  messages; absent on synthetic command/trigger rows. */
+  blocks?: UiBlock[];
+  /** Store slot index (paging cursor); absent on synthetic messages. */
+  index?: number;
   /** Per-line style — only set for `command` messages from /slash output. */
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   /** True if the message is mid-stream — render with a cursor cue. */
@@ -40,6 +61,7 @@ interface Message {
 
 let messageCounter = 0;
 const nextMessageId = () => `m${++messageCounter}`;
+const isSyntheticId = (id: string): boolean => /^m\d+$/.test(id);
 let streamIdSeq = 0;
 const streamLineId = (): number => ++streamIdSeq;
 
@@ -48,7 +70,8 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     id: e.id ?? nextMessageId(),
     participant: e.participant,
     text: e.text,
-    toolCalls: e.toolCalls,
+    blocks: (e.blocks ?? []) as UiBlock[],
+    index: e.index,
   };
 }
 
@@ -63,6 +86,25 @@ export function App() {
   // token. Keyed-by-id mutation keeps the same DOM element throughout.
   const [messages, setMessages] = createStore<Message[]>([]);
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
+  /** History paging state: slot index of the earliest loaded message +
+   *  store total. Null until the first welcome. */
+  const [historyInfo, setHistoryInfo] = createSignal<{ startIndex: number; totalCount: number } | null>(null);
+  const [historyLoading, setHistoryLoading] = createSignal(false);
+  /** Server protocol version when it doesn't match this bundle (stale
+   *  dist/web or old host) — renders a persistent banner. */
+  const [protoMismatch, setProtoMismatch] = createSignal<number | null>(null);
+  /** Store ids of server-sourced messages currently rendered — dedupe set
+   *  for message-appended / history-page / re-welcome overlap. */
+  let knownIds = new Set<string>();
+  /** session.id + '/' + branch.id of the last welcome; same key → soft
+   *  merge (keep paged-in scrollback), changed key → hard reset. */
+  let welcomeKey: string | null = null;
+  /** Whether the operator is pinned to the bottom of the scroll pane.
+   *  Autoscroll only fires when true, so reading history isn't yanked. */
+  let atBottom = true;
+  let historyCorrSeq = 0;
+  let pendingHistoryCorr: string | null = null;
+  let pendingHistoryTimer: number | undefined;
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [draft, setDraft] = createSignal('');
@@ -196,38 +238,274 @@ export function App() {
   let scrollPane: HTMLDivElement | undefined;
 
   // Append-to-last-assistant streaming buffer. createStore lets us mutate
-  // the existing message's `text` field in place — Solid's <For> sees the
-  // same item reference and only updates the changed text, instead of
-  // remounting the row (which would replay the entrance animation).
-  const appendStreamToken = (token: string): void => {
+  // the existing message's blocks in place — Solid's <For> sees the same
+  // item reference and only updates the changed text, instead of remounting
+  // the row (which would replay the entrance animation).
+  //
+  // Tokens are routed by trace blockType: 'text' → visible prose, 'thinking'
+  // → a live thinking block. (Previously ALL tokens were appended to the
+  // visible text, so enabling extended thinking polluted the markdown.)
+  const appendStreamToken = (token: string, blockType?: string): void => {
+    if (blockType === 'tool_call' || blockType === 'tool_result') return;
+    const kind: 'text' | 'thinking' = blockType === 'thinking' ? 'thinking' : 'text';
     setMessages(produce((arr) => {
-      const last = arr[arr.length - 1];
-      if (last && last.streaming) {
-        last.text = last.text + token;
-      } else {
+      let last = arr[arr.length - 1];
+      if (!last || !last.streaming) {
         arr.push({
           id: nextMessageId(),
           participant: 'assistant',
-          text: token,
+          text: '',
+          blocks: [],
           streaming: true,
         });
+        last = arr[arr.length - 1]!;
+      }
+      const blocks = (last.blocks ??= []);
+      let blk = blocks[blocks.length - 1];
+      if (!blk || blk.kind !== kind || !(blk as { streaming?: boolean }).streaming) {
+        blk = { kind, text: '', streaming: true };
+        blocks.push(blk);
+      }
+      (blk as { text: string }).text += token;
+      if (kind === 'text') last.text += token;
+    }));
+    queueScroll();
+  };
+
+  /** block_complete → clear the open block's streaming flag (a finished
+   *  thinking block auto-collapses to its header). */
+  const handleContentBlock = (phase: string): void => {
+    if (phase !== 'block_complete') return;
+    setMessages(produce((arr) => {
+      const last = arr[arr.length - 1];
+      if (!last?.streaming || !last.blocks) return;
+      for (let i = last.blocks.length - 1; i >= 0; i--) {
+        const b = last.blocks[i] as { streaming?: boolean };
+        if (b.streaming) { b.streaming = false; break; }
+      }
+    }));
+  };
+
+  /** Attach yielded tool calls to the streaming assistant message as
+   *  tool_use blocks (status: running). Results pair up later via the
+   *  tool_result blocks arriving in message-appended frames. */
+  const appendToolUseBlocks = (calls: Array<{ id: string; name: string; input?: unknown }>): void => {
+    setMessages(produce((arr) => {
+      let last = arr[arr.length - 1];
+      if (!last || !last.streaming) {
+        arr.push({
+          id: nextMessageId(),
+          participant: 'assistant',
+          text: '',
+          blocks: [],
+          streaming: true,
+        });
+        last = arr[arr.length - 1]!;
+      }
+      const blocks = (last.blocks ??= []);
+      for (const b of blocks) {
+        if ((b as { streaming?: boolean }).streaming) (b as { streaming?: boolean }).streaming = false;
+      }
+      for (const c of calls) {
+        let inputJson: string;
+        try { inputJson = JSON.stringify(c.input, null, 2) ?? 'null'; } catch { inputJson = '[unserializable]'; }
+        blocks.push({ kind: 'tool_use', id: c.id, name: c.name, inputJson, status: 'running' });
       }
     }));
     queueScroll();
   };
 
+  /** Flip a tool_use block's lifecycle from tool:* traces, matched by callId
+   *  over the most recent messages. */
+  const updateToolStatus = (callId: string, status: 'done' | 'failed', durationMs?: number): void => {
+    setMessages(produce((arr) => {
+      for (let i = arr.length - 1; i >= 0 && i >= arr.length - 12; i--) {
+        const blocks = arr[i]!.blocks;
+        if (!blocks) continue;
+        for (const b of blocks) {
+          if (b.kind === 'tool_use' && b.id === callId) {
+            b.status = status;
+            if (durationMs !== undefined) b.durationMs = durationMs;
+            return;
+          }
+        }
+      }
+    }));
+  };
+
   const finishStream = (): void => {
     setMessages(produce((arr) => {
       const last = arr[arr.length - 1];
-      if (last && last.streaming) last.streaming = false;
+      if (last && last.streaming) {
+        last.streaming = false;
+        if (last.blocks) {
+          for (const b of last.blocks) {
+            if ((b as { streaming?: boolean }).streaming) (b as { streaming?: boolean }).streaming = false;
+          }
+        }
+      }
     }));
   };
 
   const queueScroll = (): void => {
     queueMicrotask(() => {
-      if (scrollPane) scrollPane.scrollTop = scrollPane.scrollHeight;
+      if (scrollPane && atBottom) scrollPane.scrollTop = scrollPane.scrollHeight;
     });
   };
+
+  // -------------------------------------------------------------------------
+  // Windowed history: welcome merge, upward paging, live appends
+  // -------------------------------------------------------------------------
+
+  const applyWelcome = (msg: WelcomeMessage): void => {
+    if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
+      setProtoMismatch(msg.protocolVersion);
+      return;
+    }
+    setProtoMismatch(null);
+    setWelcome(msg);
+    const key = `${msg.session.id}/${msg.branch.id}`;
+    const entries = msg.messages.map(entryToMessage);
+
+    if (key !== welcomeKey) {
+      // Session/branch changed (or first connect): hard reset.
+      welcomeKey = key;
+      knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
+      setMessages(entries);
+      setHistoryInfo({ startIndex: msg.history.startIndex, totalCount: msg.history.totalCount });
+      atBottom = true;
+      queueScroll();
+      return;
+    }
+
+    // Same session+branch (reconnect / setApp re-welcome): keep paged-in
+    // older scrollback, replace the tail with the canonical window. Synthetic
+    // rows (optimistic user msgs, command output, triggers) are dropped —
+    // the canonical entries carry the durable conversation.
+    setMessages(produce((arr) => {
+      const kept = arr.filter(
+        (m) => typeof m.index === 'number' && m.index < msg.history.startIndex && !isSyntheticId(m.id),
+      );
+      arr.length = 0;
+      arr.push(...kept, ...entries);
+    }));
+    knownIds = new Set(
+      messages.map((m) => m.id).filter((id) => !isSyntheticId(id)),
+    );
+    setHistoryInfo((prev) => ({
+      startIndex: Math.min(prev?.startIndex ?? msg.history.startIndex, msg.history.startIndex),
+      totalCount: msg.history.totalCount,
+    }));
+    queueScroll();
+  };
+
+  const applyAppended = (entry: WelcomeMessageEntry): void => {
+    if (entry.id && knownIds.has(entry.id)) return;
+    if (entry.id) knownIds.add(entry.id);
+    const incoming = entryToMessage(entry);
+    setMessages(produce((arr) => {
+      const last = arr[arr.length - 1];
+      // Canonical assistant message replaces the streamed scaffold (brings
+      // authoritative block order, signatures, redacted blocks).
+      if (incoming.participant === 'assistant' && last?.participant === 'assistant' && last.streaming) {
+        // Preserve live tool statuses the trace stream already delivered.
+        const statusById = new Map<string, { status?: 'running' | 'done' | 'failed'; durationMs?: number }>();
+        for (const b of last.blocks ?? []) {
+          if (b.kind === 'tool_use') statusById.set(b.id, { status: b.status, durationMs: b.durationMs });
+        }
+        for (const b of incoming.blocks ?? []) {
+          if (b.kind === 'tool_use') {
+            const s = statusById.get(b.id);
+            if (s?.status) { b.status = s.status; b.durationMs = s.durationMs; }
+          }
+        }
+        arr[arr.length - 1] = incoming;
+        return;
+      }
+      // Server echo of a message typed here: adopt into the optimistic row.
+      if (incoming.participant === 'user') {
+        for (let i = arr.length - 1; i >= Math.max(0, arr.length - 3); i--) {
+          const m = arr[i]!;
+          if (m.participant === 'user' && isSyntheticId(m.id) && m.text === incoming.text) {
+            arr[i] = incoming;
+            return;
+          }
+        }
+      }
+      arr.push(incoming);
+    }));
+    setHistoryInfo((prev) => prev
+      ? { ...prev, totalCount: Math.max(prev.totalCount, (entry.index ?? prev.totalCount) + 1) }
+      : prev);
+    queueScroll();
+  };
+
+  const requestOlder = (): void => {
+    const info = historyInfo();
+    if (!info || info.startIndex <= 0 || historyLoading() || protoMismatch() !== null) return;
+    const corrId = `h${++historyCorrSeq}`;
+    pendingHistoryCorr = corrId;
+    setHistoryLoading(true);
+    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: 200 });
+    window.clearTimeout(pendingHistoryTimer);
+    pendingHistoryTimer = window.setTimeout(() => {
+      if (pendingHistoryCorr === corrId) {
+        pendingHistoryCorr = null;
+        setHistoryLoading(false);
+      }
+    }, 10_000);
+  };
+
+  const applyHistoryPage = (msg: HistoryPageMessage): void => {
+    if (msg.corrId !== pendingHistoryCorr) return;
+    pendingHistoryCorr = null;
+    window.clearTimeout(pendingHistoryTimer);
+    setHistoryLoading(false);
+    const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
+    for (const e of fresh) if (e.id) knownIds.add(e.id);
+    // Prepending grows the pane upward; restore the operator's viewport by
+    // offsetting scrollTop by the height delta after the DOM settles.
+    const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
+    const prevScrollTop = scrollPane?.scrollTop ?? 0;
+    setMessages(produce((arr) => arr.unshift(...fresh.map(entryToMessage))));
+    setHistoryInfo((prev) => ({
+      startIndex: msg.startIndex,
+      totalCount: msg.totalCount > 0 ? msg.totalCount : prev?.totalCount ?? 0,
+    }));
+    requestAnimationFrame(() => {
+      if (scrollPane) scrollPane.scrollTop = scrollPane.scrollHeight - prevScrollHeight + prevScrollTop;
+    });
+  };
+
+  const onScrollPane = (): void => {
+    if (!scrollPane) return;
+    atBottom = scrollPane.scrollHeight - scrollPane.scrollTop - scrollPane.clientHeight < 80;
+    if (scrollPane.scrollTop < 400) requestOlder();
+  };
+
+  /** toolUseId → result block, across all loaded messages. Rendered inline
+   *  under the matching tool_use; standalone all-paired result rows hide. */
+  const toolResults = createMemo(() => {
+    const map = new Map<string, { text: string; isError?: boolean; truncated?: boolean }>();
+    for (const m of messages) {
+      for (const b of m.blocks ?? []) {
+        if (b.kind === 'tool_result') map.set(b.toolUseId, b);
+      }
+    }
+    return map;
+  });
+
+  /** ids of all tool_use blocks currently loaded — lets a pure-tool_result
+   *  message know its content is already displayed inline. */
+  const toolUseIds = createMemo(() => {
+    const set = new Set<string>();
+    for (const m of messages) {
+      for (const b of m.blocks ?? []) {
+        if (b.kind === 'tool_use') set.add(b.id);
+      }
+    }
+    return set;
+  });
 
   const appendStreamPaneToken = (text: string): void => {
     streamTokenBuffer += text;
@@ -401,12 +679,16 @@ export function App() {
       }
       handleStreamMessage(msg);
       handleServerMessage(msg, wire, {
-        setWelcome,
-        resetMessages: (m) => setMessages(m),
+        applyWelcome,
+        applyAppended,
+        applyHistoryPage,
         appendMessage: (m) => setMessages(produce(arr => arr.push(m))),
         setUsage,
         setPerAgentCost,
         appendStreamToken,
+        appendToolUseBlocks,
+        updateToolStatus,
+        handleContentBlock,
         finishStream,
         queueScroll,
         openQuitConfirm: (children) => setQuitConfirm(children),
@@ -533,6 +815,15 @@ export function App() {
     <div class="flex flex-col h-screen">
       <Header welcome={welcome()} usage={usage()} status={wire.status()} />
       <ReconnectBanner status={wire.status()} />
+      <Show when={protoMismatch() !== null}>
+        <div class="bg-amber-950/60 border-b border-amber-900 px-4 py-1.5 text-xs text-amber-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-amber-500" />
+          <span>
+            Protocol mismatch — server speaks v{protoMismatch()}, this bundle expects v{WEB_PROTOCOL_VERSION}.
+            Rebuild the SPA (<code class="font-mono">bun run build:web</code>) and/or restart the host, then reload.
+          </span>
+        </div>
+      </Show>
       <Show when={quitConfirm()}>
         {(list) => (
           <QuitConfirmModal
@@ -556,14 +847,29 @@ export function App() {
           <div
             ref={scrollPane}
             class="flex-1 overflow-y-auto px-4 py-3 space-y-3"
+            onScroll={onScrollPane}
           >
             <Show when={mainView() === 'context'} fallback={<>
+            <Show when={(historyInfo()?.startIndex ?? 0) > 0}>
+              <button
+                type="button"
+                class="w-full text-center text-xs font-mono text-neutral-500 hover:text-neutral-300 py-1.5 border border-dashed border-neutral-800 rounded"
+                onClick={requestOlder}
+                disabled={historyLoading()}
+              >
+                {historyLoading()
+                  ? 'loading…'
+                  : `▲ ${historyInfo()!.startIndex} older message${historyInfo()!.startIndex === 1 ? '' : 's'} — scroll or click to load`}
+              </button>
+            </Show>
             <Show when={messages.length === 0}>
               <div class="text-neutral-500 text-sm italic">
                 Connected. Type a message or /help to begin.
               </div>
             </Show>
-            <For each={messages}>{(m) => <MessageView msg={m} />}</For>
+            <For each={messages}>{(m) => (
+              <MessageView msg={m} results={toolResults()} toolUseIds={toolUseIds()} />
+            )}</For>
             </>}>
               <ContextDocument agent={panelScope() === 'local' ? undefined : panelScope()} />
             </Show>
@@ -714,14 +1020,23 @@ function streamHint(src: StreamSource): string | undefined {
 }
 
 interface HandlerHooks {
-  setWelcome: (w: WelcomeMessage) => void;
-  /** Replace the messages array wholesale (used on welcome). */
-  resetMessages: (msgs: Message[]) => void;
+  /** Merge (or hard-reset on session/branch change) a welcome frame. */
+  applyWelcome: (w: WelcomeMessage) => void;
+  /** Fold a message-appended push into the timeline (id-deduped). */
+  applyAppended: (entry: WelcomeMessageEntry) => void;
+  /** Prepend a history page with scroll-anchor preservation. */
+  applyHistoryPage: (msg: HistoryPageMessage) => void;
   /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
-  appendStreamToken: (token: string) => void;
+  appendStreamToken: (token: string, blockType?: string) => void;
+  /** Attach yielded tool calls to the streaming assistant message. */
+  appendToolUseBlocks: (calls: Array<{ id: string; name: string; input?: unknown }>) => void;
+  /** Flip a tool_use block's live status from tool:* traces. */
+  updateToolStatus: (callId: string, status: 'done' | 'failed', durationMs?: number) => void;
+  /** Handle inference:content_block phases (auto-collapse finished blocks). */
+  handleContentBlock: (phase: string) => void;
   finishStream: () => void;
   queueScroll: () => void;
   /** Show the quit-confirm modal with the given list of running children. */
@@ -745,13 +1060,17 @@ function handleServerMessage(
 ): void {
   switch (msg.type) {
     case 'welcome': {
-      hooks.setWelcome(msg);
-      hooks.resetMessages(msg.messages.map(entryToMessage));
+      hooks.applyWelcome(msg);
       hooks.setUsage(msg.usage);
       hooks.setPerAgentCost(msg.perAgentCost ?? []);
-      hooks.queueScroll();
       return;
     }
+    case 'message-appended':
+      hooks.applyAppended(msg.entry);
+      return;
+    case 'history-page':
+      hooks.applyHistoryPage(msg);
+      return;
     case 'usage':
       hooks.setUsage(msg.usage);
       if (msg.perAgentCost) hooks.setPerAgentCost(msg.perAgentCost);
@@ -761,7 +1080,13 @@ function handleServerMessage(
       switch (e.type) {
         case 'inference:tokens': {
           const content = e.content;
-          if (typeof content === 'string') hooks.appendStreamToken(content);
+          if (typeof content === 'string') {
+            hooks.appendStreamToken(content, typeof e.blockType === 'string' ? e.blockType : undefined);
+          }
+          return;
+        }
+        case 'inference:content_block': {
+          if (typeof e.phase === 'string') hooks.handleContentBlock(e.phase);
           return;
         }
         case 'inference:completed':
@@ -771,13 +1096,21 @@ function handleServerMessage(
         case 'inference:tool_calls_yielded': {
           const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
           if (calls.length === 0) return;
-          hooks.appendMessage({
-            id: nextMessageId(),
-            participant: 'tool',
-            text: '',
-            toolCalls: calls.map(c => ({ id: c.id, name: c.name, input: c.input })),
-          });
-          hooks.queueScroll();
+          hooks.appendToolUseBlocks(calls);
+          return;
+        }
+        case 'tool:completed': {
+          if (typeof e.callId === 'string') {
+            hooks.updateToolStatus(e.callId, 'done',
+              typeof e.durationMs === 'number' ? e.durationMs : undefined);
+          }
+          return;
+        }
+        case 'tool:failed': {
+          if (typeof e.callId === 'string') {
+            hooks.updateToolStatus(e.callId, 'failed',
+              typeof e.durationMs === 'number' ? e.durationMs : undefined);
+          }
           return;
         }
         default:
@@ -900,7 +1233,13 @@ function Header(props: {
   );
 }
 
-function MessageView(props: { msg: Message }) {
+type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
+
+function MessageView(props: {
+  msg: Message;
+  results: Map<string, ToolResultInfo>;
+  toolUseIds: Set<string>;
+}) {
   // Access fields via props.msg.X directly (not a destructured local) so Solid
   // tracks reactive reads against the store. Otherwise the message would
   // capture a snapshot at render time and never update mid-stream.
@@ -910,6 +1249,7 @@ function MessageView(props: { msg: Message }) {
       <div class="msg-enter">
         <div class="text-xs text-neutral-500 mb-1">you</div>
         <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
+        <MediaChips blocks={props.msg.blocks} />
       </div>
     );
   }
@@ -923,21 +1263,38 @@ function MessageView(props: { msg: Message }) {
             <span class="animate-pulse ml-2">▍</span>
           </Show>
         </div>
-        <div class="prose-mini text-neutral-100" innerHTML={renderMarkdown(props.msg.text)} />
+        <Show
+          when={(props.msg.blocks?.length ?? 0) > 0}
+          fallback={<div class="prose-mini text-neutral-100" innerHTML={renderMarkdown(props.msg.text)} />}
+        >
+          <For each={props.msg.blocks}>{(block, idx) => (
+            <BlockView block={block} msgId={props.msg.id} idx={idx()} results={props.results} />
+          )}</For>
+        </Show>
       </div>
     );
   }
 
   if (props.msg.participant === 'tool') {
+    // A message whose payload is entirely tool_results that are already
+    // rendered inline under their tool_use blocks carries no new
+    // information — hide it. Unpaired results render standalone.
+    const allPaired = (): boolean => {
+      const blocks = props.msg.blocks ?? [];
+      if (blocks.length === 0) return false;
+      return blocks.every((b) =>
+        b.kind === 'tool_result' ? props.toolUseIds.has(b.toolUseId) : b.kind === 'media',
+      );
+    };
     return (
-      <div class="msg-enter">
-        <div class="text-xs text-neutral-500 mb-1">tool calls</div>
-        <For each={props.msg.toolCalls ?? []}>{(call) => (
-          <div class="font-mono text-xs text-amber-400 bg-amber-950/20 px-2 py-1 rounded mb-1">
-            {call.name}
-          </div>
-        )}</For>
-      </div>
+      <Show when={!allPaired()}>
+        <div class="msg-enter">
+          <div class="text-xs text-neutral-500 mb-1">tool</div>
+          <For each={props.msg.blocks ?? []}>{(block, idx) => (
+            <BlockView block={block} msgId={props.msg.id} idx={idx()} results={props.results} />
+          )}</For>
+        </div>
+      </Show>
     );
   }
 
@@ -979,6 +1336,187 @@ function MessageView(props: { msg: Message }) {
     <div class="msg-enter text-xs text-neutral-500 font-mono whitespace-pre-wrap">
       {props.msg.text}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Block rendering — the interiority layer
+// ---------------------------------------------------------------------------
+
+/** Expand/collapse state for thinking + tool blocks, keyed `${msgId}:${idx}`.
+ *  Module-scope signal: one timeline per page, and survival across <For>
+ *  row recycling is exactly what we want. */
+const [expandedBlocks, setExpandedBlocks] = createSignal<Set<string>>(new Set());
+const toggleBlock = (key: string): void => {
+  setExpandedBlocks((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+};
+
+function BlockView(props: {
+  block: UiBlock;
+  msgId: string;
+  idx: number;
+  results: Map<string, ToolResultInfo>;
+}) {
+  const key = (): string => `${props.msgId}:${props.idx}`;
+  const b = props.block;
+
+  if (b.kind === 'text') {
+    return <TextBlockView block={b} />;
+  }
+  if (b.kind === 'thinking') {
+    return <ThinkingBlockView block={b} blockKey={key()} />;
+  }
+  if (b.kind === 'redacted_thinking') {
+    return (
+      <div class="my-1 inline-block text-[11px] font-mono text-violet-400/70 bg-violet-950/20 border border-violet-900/40 rounded px-2 py-0.5">
+        🔒 redacted thinking ({b.bytes.toLocaleString()} bytes)
+      </div>
+    );
+  }
+  if (b.kind === 'tool_use') {
+    return <ToolBlockView block={b} blockKey={key()} result={props.results.get(b.id)} />;
+  }
+  if (b.kind === 'tool_result') {
+    // Standalone (unpaired) result — its tool_use isn't loaded.
+    return (
+      <div class={`my-1 font-mono text-xs rounded px-2 py-1 whitespace-pre-wrap ${
+        b.isError ? 'text-rose-300 bg-rose-950/20 border border-rose-900/40'
+                  : 'text-neutral-400 bg-neutral-900/60 border border-neutral-800'
+      }`}>
+        <div class="text-[10px] uppercase tracking-wider mb-0.5 opacity-70">
+          tool result{b.isError ? ' · error' : ''}{b.truncated ? ' · truncated' : ''}
+        </div>
+        {b.text}
+      </div>
+    );
+  }
+  // media
+  return (
+    <div class="my-1 inline-block text-[11px] font-mono text-sky-400/80 bg-sky-950/20 border border-sky-900/40 rounded px-2 py-0.5">
+      📎 {b.mediaType}
+    </div>
+  );
+}
+
+function TextBlockView(props: { block: Extract<UiBlock, { kind: 'text' }> }) {
+  // While streaming: plain pre-wrap text — no markdown reparse per token.
+  // Once final: parse once via memo (recomputes only if text changes again).
+  const html = createMemo(() => renderMarkdown(props.block.text));
+  return (
+    <Show
+      when={!props.block.streaming}
+      fallback={
+        <div class="font-mono text-sm whitespace-pre-wrap text-neutral-100">{props.block.text}</div>
+      }
+    >
+      <div class="prose-mini text-neutral-100" innerHTML={html()} />
+      <Show when={props.block.truncated}>
+        <div class="text-[10px] font-mono text-neutral-600 italic">· truncated for display ·</div>
+      </Show>
+    </Show>
+  );
+}
+
+function ThinkingBlockView(props: {
+  block: Extract<UiBlock, { kind: 'thinking' }>;
+  blockKey: string;
+}) {
+  // Expanded while streaming (watch the mind move), collapsed once done —
+  // unless the operator pinned it open.
+  const open = (): boolean => props.block.streaming === true || expandedBlocks().has(props.blockKey);
+  return (
+    <div class="my-1.5 border-l-2 border-violet-800/60 pl-2">
+      <button
+        type="button"
+        class="text-[11px] font-mono text-violet-400/80 hover:text-violet-300 flex items-center gap-1.5"
+        onClick={() => toggleBlock(props.blockKey)}
+      >
+        <span>{open() ? '▾' : '▸'}</span>
+        <span>💭 thinking · {props.block.text.length.toLocaleString()} chars</span>
+        <Show when={props.block.streaming}>
+          <span class="animate-pulse text-violet-300">▍</span>
+        </Show>
+        <Show when={props.block.truncated}>
+          <span class="text-neutral-600 italic">truncated</span>
+        </Show>
+      </button>
+      <Show when={open()}>
+        <div class="mt-1 text-[13px] leading-relaxed text-violet-200/60 italic whitespace-pre-wrap">
+          {props.block.text}
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function ToolBlockView(props: {
+  block: Extract<UiBlock, { kind: 'tool_use' }>;
+  blockKey: string;
+  result?: ToolResultInfo;
+}) {
+  const open = (): boolean => expandedBlocks().has(props.blockKey);
+  const dot = (): string => {
+    if (props.block.status === 'running') return 'bg-amber-400 animate-pulse';
+    if (props.block.status === 'failed' || props.result?.isError) return 'bg-rose-500';
+    if (props.block.status === 'done' || props.result) return 'bg-emerald-500';
+    return 'bg-neutral-600';
+  };
+  const duration = (): string => {
+    const ms = props.block.durationMs;
+    if (ms === undefined) return '';
+    return ms < 1000 ? ` · ${ms}ms` : ` · ${(ms / 1000).toFixed(1)}s`;
+  };
+  return (
+    <div class="my-1">
+      <button
+        type="button"
+        class="font-mono text-xs text-amber-400 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 px-2 py-1 rounded flex items-center gap-2"
+        onClick={() => toggleBlock(props.blockKey)}
+      >
+        <span class={`w-1.5 h-1.5 rounded-full ${dot()}`} />
+        <span>{open() ? '▾' : '▸'} {props.block.name}{duration()}</span>
+        <Show when={props.result?.isError}>
+          <span class="text-rose-400">error</span>
+        </Show>
+      </button>
+      <Show when={open()}>
+        <div class="mt-1 ml-3 space-y-1">
+          <div class="text-[10px] uppercase tracking-wider text-neutral-600">
+            input{props.block.truncated ? ' · truncated' : ''}
+          </div>
+          <pre class="font-mono text-[11px] text-neutral-300 bg-neutral-900/70 border border-neutral-800 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">{props.block.inputJson}</pre>
+          <Show when={props.result} fallback={
+            <div class="text-[11px] font-mono text-neutral-600 italic">
+              {props.block.status === 'running' ? 'running…' : 'no result loaded'}
+            </div>
+          }>
+            <div class="text-[10px] uppercase tracking-wider text-neutral-600">
+              result{props.result!.isError ? ' · error' : ''}{props.result!.truncated ? ' · truncated' : ''}
+            </div>
+            <pre class={`font-mono text-[11px] rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap border ${
+              props.result!.isError
+                ? 'text-rose-300 bg-rose-950/20 border-rose-900/40'
+                : 'text-neutral-300 bg-neutral-900/70 border-neutral-800'
+            }`}>{props.result!.text}</pre>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function MediaChips(props: { blocks?: UiBlock[] }) {
+  return (
+    <For each={(props.blocks ?? []).filter((b) => b.kind === 'media')}>{(b) => (
+      <div class="mt-1 inline-block mr-1 text-[11px] font-mono text-sky-400/80 bg-sky-950/20 border border-sky-900/40 rounded px-2 py-0.5">
+        📎 {(b as Extract<UiBlock, { kind: 'media' }>).mediaType}
+      </div>
+    )}</For>
   );
 }
 

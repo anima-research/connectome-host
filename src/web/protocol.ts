@@ -5,13 +5,18 @@
  * deliberately mirrors the fleet IPC (`fleet-types.ts`) so a future external
  * aggregator can reuse the same parsers.
  *
- * Versioning: v0. Breaking changes bump `WEB_PROTOCOL_VERSION` and clients
+ * Versioning: v1. Breaking changes bump `WEB_PROTOCOL_VERSION` and clients
  * refuse to connect on mismatch.
+ *
+ * v1 (2026-07): windowed history (welcome carries only a tail window plus
+ * `history` metadata; older pages via request-history/history-page), ordered
+ * `blocks` on message entries (thinking / tool_use / tool_result / media
+ * surface in full), and `message-appended` live pushes of stored messages.
  */
 
 import type { Line } from '../commands.js';
 
-export const WEB_PROTOCOL_VERSION = 0;
+export const WEB_PROTOCOL_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 // Server → Client
@@ -40,9 +45,17 @@ export interface WelcomeMessage {
     id: string;
     name: string;
   };
-  /** Conversation history snapshot. Kept lean — clients should fold live
-   *  `trace` events on top for live updates. */
+  /** Conversation history snapshot — the TAIL WINDOW only (see `history`).
+   *  Clients fold live `trace` / `message-appended` events on top and page
+   *  older messages via `request-history`. */
   messages: WelcomeMessageEntry[];
+  /** Paging metadata for `messages`. `startIndex` is the store slot index of
+   *  the first entry (== the number of older messages not shipped);
+   *  `totalCount` is the store size at snapshot time. */
+  history: {
+    startIndex: number;
+    totalCount: number;
+  };
   /**
    * Parent-local agent tree snapshot. Shape matches AgentTreeSnapshot from
    * `state/agent-tree-reducer.ts` — kept structurally typed here to avoid
@@ -82,15 +95,36 @@ export interface WelcomeMessage {
   perAgentCost?: PerAgentCost[];
 }
 
+/**
+ * One content block of a stored message, in original order. This is the
+ * viewer-facing projection of the membrane ContentBlock union: full
+ * interiority (thinking, tool calls AND their results) survives, while
+ * payloads are size-capped server-side (`truncated` flags) and media is
+ * reduced to a type placeholder.
+ */
+export type MessageBlock =
+  | { kind: 'text'; text: string; truncated?: boolean }
+  | { kind: 'thinking'; text: string; truncated?: boolean }
+  /** Provider-encrypted reasoning; only the payload size is surfaced. */
+  | { kind: 'redacted_thinking'; bytes: number }
+  | { kind: 'tool_use'; id: string; name: string; inputJson: string; truncated?: boolean }
+  | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
+  /** Image/document/audio/video or un-inflated blob_ref placeholder. */
+  | { kind: 'media'; mediaType: string };
+
 export interface WelcomeMessageEntry {
   /** Stable id from the message store; clients can use this for keys. */
   id?: string;
+  /** Store slot index — the paging cursor. For a coalesced shard run this is
+   *  the first shard's index. */
+  index: number;
   participant: 'user' | 'assistant' | 'system' | 'tool';
-  /** Flattened text content of the message; tool-call details ride on `toolCalls`. */
+  /** Ordered content blocks — the full internal life of the message. */
+  blocks: MessageBlock[];
+  /** Flattened text content (text blocks only), kept as a convenience and
+   *  for degraded rendering by stale clients. */
   text: string;
-  /** Tool calls associated with an assistant message, if any. */
-  toolCalls?: Array<{ id: string; name: string; input: unknown }>;
-  /** ISO timestamp if available. */
+  /** Epoch-millis timestamp if available. */
   timestamp?: number;
 }
 
@@ -244,6 +278,29 @@ export interface McplListMessage {
   }>;
 }
 
+/** A page of older history — response to `request-history`, routed only to
+ *  the requesting client and correlated by `corrId`. */
+export interface HistoryPageMessage {
+  type: 'history-page';
+  corrId: string;
+  /** Entries in store order (oldest first), ending just before the
+   *  requested `beforeIndex`. */
+  entries: WelcomeMessageEntry[];
+  /** Slot index of the first entry — the next page's `beforeIndex`. */
+  startIndex: number;
+  /** Store size at read time. */
+  totalCount: number;
+}
+
+/** A message was appended to the store (any participant — including
+ *  assistant turns and tool results, which never surface as trace
+ *  `message:added` events). Clients dedupe by `entry.id` against messages
+ *  they already rendered optimistically or via streaming. */
+export interface MessageAppendedMessage {
+  type: 'message-appended';
+  entry: WelcomeMessageEntry;
+}
+
 /** Server-side error response. Non-fatal; the client stays connected. */
 export interface ErrorMessage {
   type: 'error';
@@ -305,6 +362,8 @@ export type WebUiServerMessage =
   | WorkspaceMountsMessage
   | WorkspaceTreeMessage
   | WorkspaceFileMessage
+  | HistoryPageMessage
+  | MessageAppendedMessage
   | ErrorMessage;
 
 // ---------------------------------------------------------------------------
@@ -450,8 +509,22 @@ export interface RequestWorkspaceFileMessage {
   scope?: string;
 }
 
+/** Page older conversation history. Response is a `history-page` with the
+ *  same `corrId` (or an `error`). Entries returned end just before
+ *  `beforeIndex`; pass the previous page's `startIndex` to keep walking
+ *  backward. */
+export interface RequestHistoryMessage {
+  type: 'request-history';
+  corrId: string;
+  /** Fetch messages strictly before this store slot index. */
+  beforeIndex: number;
+  /** Page size; server clamps to its maximum (500). */
+  limit?: number;
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
+  | RequestHistoryMessage
   | CommandMessage
   | RouteToChildMessage
   | InterruptMessage
@@ -527,6 +600,11 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'request-workspace-file':
       return isNonEmptyString(v.path)
         && (v.scope === undefined || typeof v.scope === 'string');
+    case 'request-history':
+      return isNonEmptyString(v.corrId)
+        && Number.isInteger(v.beforeIndex) && (v.beforeIndex as number) >= 0
+        && (v.limit === undefined
+          || (Number.isInteger(v.limit) && (v.limit as number) >= 1 && (v.limit as number) <= 500));
     default:
       return false;
   }
