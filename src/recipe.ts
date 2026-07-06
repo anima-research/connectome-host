@@ -77,6 +77,10 @@ export interface RecipeAgent {
   /** Per-agent context compile budget (input tokens). When unset, the
    *  ContextManager default (100k) applies. Raise for large-context models. */
   contextBudgetTokens?: number;
+  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Set '1h' for
+   *  agents whose reply cadence is slower than 5 minutes — avoids re-writing
+   *  the full context to cache after every gap. Unset: provider default (5m). */
+  cacheTtl?: '5m' | '1h';
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests

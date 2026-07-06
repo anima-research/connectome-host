@@ -448,6 +448,7 @@ async function createFramework(
         maxTokens: recipe.agent.maxTokens ?? 16384,
         maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
         contextBudgetTokens: recipe.agent.contextBudgetTokens,
+        ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
         strategy,
         ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
         ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
