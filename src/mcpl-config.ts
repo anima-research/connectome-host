@@ -79,6 +79,106 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
   return servers;
 }
 
+// ---------------------------------------------------------------------------
+// Agent overlay — servers the agent deployed/unloaded for itself at runtime
+// ---------------------------------------------------------------------------
+
+/** Default agent-owned overlay path, resolved from cwd (per-agent deploy dir). */
+export const DEFAULT_AGENT_OVERLAY_PATH = resolve(process.cwd(), 'mcpl-servers.agent.json');
+
+/**
+ * An overlay entry is either a full server definition (agent-deployed, loads
+ * unconditionally — no recipe opt-in needed) or a tombstone `{disabled: true}`
+ * that suppresses a recipe/file server the agent unloaded.
+ *
+ * Unlike `ServerFileEntry`, `command` is optional here: an entry has EITHER
+ * a `command` (stdio) or a `url` (WebSocket), and tombstones have neither.
+ */
+export interface AgentOverlayEntry extends Partial<ServerFileEntry> {
+  /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
+  url?: string;
+  transport?: 'stdio' | 'websocket';
+  /** Bearer token for WebSocket auth. */
+  token?: string;
+  /** Tombstone: suppress a recipe/file server the agent unloaded. */
+  disabled?: boolean;
+}
+
+export interface AgentOverlayFile {
+  mcplServers: Record<string, AgentOverlayEntry>;
+}
+
+/** Read the agent overlay file. Returns empty object if it doesn't exist. */
+export function readAgentOverlay(overlayPath: string): Record<string, AgentOverlayEntry> {
+  if (!existsSync(overlayPath)) return {};
+  const raw = readFileSync(overlayPath, 'utf-8');
+  const parsed = JSON.parse(raw) as AgentOverlayFile;
+  return parsed.mcplServers ?? {};
+}
+
+/** Write the agent overlay file. */
+export function saveAgentOverlay(
+  overlayPath: string,
+  servers: Record<string, AgentOverlayEntry>,
+): void {
+  const data: AgentOverlayFile = { mcplServers: servers };
+  writeFileSync(overlayPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+/**
+ * Resolve an overlay entry into a server config object (id + fields, relative
+ * `./`/`../` args resolved against the overlay file's directory). Returns
+ * null for tombstones and entries with neither command nor url.
+ */
+export function resolveOverlayEntry(
+  id: string,
+  entry: AgentOverlayEntry,
+  overlayPath: string,
+): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
+  if (entry.disabled) return null;
+  if (!entry.command && !entry.url) return null;
+  const overlayDir = dirname(resolve(overlayPath));
+  const { disabled: _d, ...fields } = entry;
+  return {
+    id,
+    ...fields,
+    ...(entry.args
+      ? {
+          args: entry.args.map(arg =>
+            arg.startsWith('./') || arg.startsWith('../') ? resolve(overlayDir, arg) : arg,
+          ),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Apply the agent overlay to a resolved server list:
+ *   - tombstones (`disabled: true`) remove the matching server
+ *   - full entries replace an existing server or append a new one
+ * Relative `./`/`../` args are resolved against the overlay file's directory.
+ */
+export function applyAgentOverlay<T extends { id: string }>(
+  servers: T[],
+  overlayPath: string,
+): Array<T | ({ id: string } & Record<string, unknown>)> {
+  const overlay = readAgentOverlay(overlayPath);
+  if (Object.keys(overlay).length === 0) return servers;
+
+  const result: Array<T | ({ id: string } & Record<string, unknown>)> =
+    servers.filter(s => overlay[s.id]?.disabled !== true);
+
+  for (const [id, entry] of Object.entries(overlay)) {
+    const loaded = resolveOverlayEntry(id, entry, overlayPath);
+    if (!loaded) continue;
+    const idx = result.findIndex(s => s.id === id);
+    if (idx >= 0) result[idx] = loaded;
+    else result.push(loaded);
+  }
+
+  return result;
+}
+
 /**
  * Read the raw server entries from the config file (for editing).
  * Returns empty object if file doesn't exist.

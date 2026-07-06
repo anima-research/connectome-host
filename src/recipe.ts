@@ -318,6 +318,17 @@ export interface RecipeModules {
    */
   activity?: boolean | { channels?: string[] };
   /**
+   * MCPL self-administration. Off by default. When enabled, the agent gets
+   * `mcpl_list` / `mcpl_deploy` / `mcpl_restart` / `mcpl_unload` tools to
+   * hot-manage its own MCPL servers without a host restart. Deployments
+   * persist to `mcpl-servers.agent.json` (the agent overlay), merged over the
+   * recipe/file server list at startup.
+   *
+   * SECURITY: `mcpl_deploy` spawns arbitrary commands as the host user —
+   * enabling this module means trusting the agent with code execution.
+   */
+  mcplAdmin?: boolean;
+  /**
    * Cross-process child fleet.  When true (shorthand), FleetModule is attached
    * with no pre-configured children.  When an object, declares children the
    * conductor supervises (auto-started by default on framework start) and

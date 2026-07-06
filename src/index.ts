@@ -34,7 +34,8 @@ import { ActivityModule } from './modules/activity-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
-import { loadMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
+import { McplAdminModule } from './modules/mcpl-admin-module.js';
+import { loadMcplServers, applyAgentOverlay, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
@@ -301,6 +302,14 @@ async function createFramework(
     moduleInstances.push(channelModeModule);
   }
 
+  // MCPL self-administration — opt-in per recipe (grants the agent the
+  // ability to spawn arbitrary commands via mcpl_deploy; see recipe.ts).
+  let mcplAdminModule: McplAdminModule | null = null;
+  if (modules.mcplAdmin === true) {
+    mcplAdminModule = new McplAdminModule();
+    moduleInstances.push(mcplAdminModule);
+  }
+
   // Web admin UI — opt-in per recipe
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
@@ -359,6 +368,11 @@ async function createFramework(
       allServers.push({ id, ...recipeEntry } as { id: string; command?: string; url?: string; [k: string]: unknown });
     }
   }
+
+  // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
+  // deployed for itself load unconditionally (no recipe opt-in), and
+  // tombstones suppress recipe/file servers the agent unloaded.
+  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH);
 
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
@@ -440,7 +454,7 @@ async function createFramework(
       },
     ],
     modules: moduleInstances,
-    mcplServers: allServers,
+    mcplServers: finalServers,
     gate: gateOptions,
   });
 
@@ -455,6 +469,10 @@ async function createFramework(
 
   if (channelModeModule) {
     channelModeModule.setFramework(framework);
+  }
+
+  if (mcplAdminModule) {
+    mcplAdminModule.setFramework(framework);
   }
 
   if (workspaceModule) {
