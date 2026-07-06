@@ -2011,7 +2011,22 @@ export class WebUiModule implements Module {
     // always set Origin on WebSocket upgrades; non-browser clients usually
     // don't.)
     if (!origin) return true;
-    return allow.includes(origin);
+    if (allow.includes(origin)) return true;
+    // Same-origin: the page making this upgrade was served by this very
+    // server, just via a hostname the static default list can't predict —
+    // Tailscale IP, MagicDNS name, LAN hostname. A hostile page on another
+    // origin cannot forge its Origin header, so "Origin host equals the
+    // request's Host header" is safe to allow and is exactly the case the
+    // localhost-only default was wrongly rejecting (page loads over HTTP,
+    // then every ws:// upgrade 403s).
+    try {
+      const originHost = new URL(origin).host;
+      const host = req.headers.get('host');
+      if (host && originHost === host) return true;
+    } catch {
+      // Malformed Origin — fall through to reject.
+    }
+    return false;
   }
 
   private checkAuth(req: Request): boolean {
