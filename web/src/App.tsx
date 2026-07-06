@@ -35,7 +35,11 @@ type UiBlock =
       durationMs?: number;
     }
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
-  | { kind: 'media'; mediaType: string };
+  | { kind: 'media'; mediaType: string }
+  /** Client-only: a tool call being written live (raw partial JSON from
+   *  blockType 'tool_call' token deltas). Replaced by the parsed tool_use
+   *  blocks when inference:tool_calls_yielded lands. */
+  | { kind: 'tool_draft'; text: string; streaming?: boolean };
 
 interface Message {
   id: string;
@@ -46,6 +50,9 @@ interface Message {
   blocks?: UiBlock[];
   /** Store slot index (paging cursor); absent on synthetic messages. */
   index?: number;
+  /** Epoch millis. Server value for canonical entries; client clock for
+   *  optimistic/streamed rows until the canonical entry replaces them. */
+  timestamp?: number;
   /** Per-line style — only set for `command` messages from /slash output. */
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   /** True if the message is mid-stream — render with a cursor cue. */
@@ -72,6 +79,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     text: e.text,
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
+    timestamp: e.timestamp,
   };
 }
 
@@ -243,11 +251,16 @@ export function App() {
   // the row (which would replay the entrance animation).
   //
   // Tokens are routed by trace blockType: 'text' → visible prose, 'thinking'
-  // → a live thinking block. (Previously ALL tokens were appended to the
-  // visible text, so enabling extended thinking polluted the markdown.)
+  // → a live thinking block, 'tool_call' → a live "writing tool call" draft
+  // (raw partial JSON; replaced by the parsed call on tool_calls_yielded).
+  // (Previously ALL tokens were appended to the visible text, so enabling
+  // extended thinking polluted the markdown.)
   const appendStreamToken = (token: string, blockType?: string): void => {
-    if (blockType === 'tool_call' || blockType === 'tool_result') return;
-    const kind: 'text' | 'thinking' = blockType === 'thinking' ? 'thinking' : 'text';
+    if (blockType === 'tool_result') return;
+    const kind: 'text' | 'thinking' | 'tool_draft' =
+      blockType === 'thinking' ? 'thinking'
+      : blockType === 'tool_call' ? 'tool_draft'
+      : 'text';
     setMessages(produce((arr) => {
       let last = arr[arr.length - 1];
       if (!last || !last.streaming) {
@@ -257,13 +270,14 @@ export function App() {
           text: '',
           blocks: [],
           streaming: true,
+          timestamp: Date.now(),
         });
         last = arr[arr.length - 1]!;
       }
       const blocks = (last.blocks ??= []);
       let blk = blocks[blocks.length - 1];
       if (!blk || blk.kind !== kind || !(blk as { streaming?: boolean }).streaming) {
-        blk = { kind, text: '', streaming: true };
+        blk = { kind, text: '', streaming: true } as UiBlock;
         blocks.push(blk);
       }
       (blk as { text: string }).text += token;
@@ -299,10 +313,15 @@ export function App() {
           text: '',
           blocks: [],
           streaming: true,
+          timestamp: Date.now(),
         });
         last = arr[arr.length - 1]!;
       }
-      const blocks = (last.blocks ??= []);
+      let blocks = (last.blocks ??= []);
+      // The parsed calls supersede any live tool_draft scaffolding.
+      if (blocks.some((b) => b.kind === 'tool_draft')) {
+        last.blocks = blocks = blocks.filter((b) => b.kind !== 'tool_draft');
+      }
       for (const b of blocks) {
         if ((b as { streaming?: boolean }).streaming) (b as { streaming?: boolean }).streaming = false;
       }
@@ -781,6 +800,7 @@ export function App() {
         id: nextMessageId(),
         participant: 'user',
         text: `→ @${route.childName}: ${route.content}`,
+        timestamp: Date.now(),
       })));
       queueScroll();
       wire.send({ type: 'route-to-child', childName: route.childName, content: route.content });
@@ -790,6 +810,7 @@ export function App() {
       id: nextMessageId(),
       participant: 'user',
       text,
+      timestamp: Date.now(),
     })));
     queueScroll();
     wire.send({ type: 'user-message', content: text });
@@ -1136,6 +1157,7 @@ function handleServerMessage(
         id: nextMessageId(),
         participant: 'trigger',
         text: msg.text,
+        timestamp: msg.timestamp,
         trigger: {
           origin: msg.origin,
           source: msg.source,
@@ -1247,7 +1269,7 @@ function MessageView(props: {
   if (props.msg.participant === 'user') {
     return (
       <div class="msg-enter">
-        <div class="text-xs text-neutral-500 mb-1">you</div>
+        <div class="text-xs text-neutral-500 mb-1">you<TimeChip ts={props.msg.timestamp} /></div>
         <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
         <MediaChips blocks={props.msg.blocks} />
       </div>
@@ -1259,6 +1281,7 @@ function MessageView(props: {
       <div class="msg-enter">
         <div class="text-xs text-neutral-500 mb-1">
           assistant
+          <TimeChip ts={props.msg.timestamp} />
           <Show when={props.msg.streaming}>
             <span class="animate-pulse ml-2">▍</span>
           </Show>
@@ -1289,7 +1312,7 @@ function MessageView(props: {
     return (
       <Show when={!allPaired()}>
         <div class="msg-enter">
-          <div class="text-xs text-neutral-500 mb-1">tool</div>
+          <div class="text-xs text-neutral-500 mb-1">tool<TimeChip ts={props.msg.timestamp} /></div>
           <For each={props.msg.blocks ?? []}>{(block, idx) => (
             <BlockView block={block} msgId={props.msg.id} idx={idx()} results={props.results} />
           )}</For>
@@ -1323,6 +1346,7 @@ function MessageView(props: {
           <Show when={t.author}>
             <span class="text-neutral-500">· {t.author}</span>
           </Show>
+          <TimeChip ts={props.msg.timestamp} />
           <Show when={!t.triggered}>
             <span class="ml-auto text-neutral-600 italic">(gated, no wake)</span>
           </Show>
@@ -1342,6 +1366,99 @@ function MessageView(props: {
 // ---------------------------------------------------------------------------
 // Block rendering — the interiority layer
 // ---------------------------------------------------------------------------
+
+/** Compact timestamp chip for message headers. Time-only for today,
+ *  "Jul 5 14:22:07" otherwise; full ISO on hover. */
+function TimeChip(props: { ts?: number }) {
+  const label = (): string => {
+    const d = new Date(props.ts!);
+    const now = new Date();
+    const hms = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    return d.toDateString() === now.toDateString()
+      ? hms
+      : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hms}`;
+  };
+  return (
+    <Show when={props.ts}>
+      <span
+        class="ml-2 text-[10px] font-mono text-neutral-600"
+        title={new Date(props.ts!).toISOString()}
+      >{label()}</span>
+    </Show>
+  );
+}
+
+/**
+ * Readable rendering for tool inputs/results. Raw payloads are JSON (tool
+ * inputs always; shell/MCPL results usually — often DOUBLE-encoded), which
+ * renders as escape-soup. Strategy:
+ *   - parse; unwrap one level of double-encoding ("\"{...}\"")
+ *   - object → per-field rows: long/multiline strings as real pre-wrapped
+ *     text (the `think` tool's `thought`, shell `command`s, file contents),
+ *     short values inline
+ *   - bare string → pre-wrapped text
+ *   - arrays/other/unparseable → pretty JSON / raw fallback
+ */
+function ToolPayload(props: { raw: string; isError?: boolean }) {
+  const parsed = createMemo<
+    | { kind: 'fields'; entries: Array<[string, unknown]> }
+    | { kind: 'text'; text: string }
+    | { kind: 'raw'; text: string }
+  >(() => {
+    const t = props.raw.trim();
+    if (!t) return { kind: 'raw', text: props.raw };
+    let v: unknown;
+    try { v = JSON.parse(t); } catch { return { kind: 'raw', text: props.raw }; }
+    // Double-encoded payload: a JSON string that itself contains JSON.
+    if (typeof v === 'string') {
+      const s: string = v;
+      const inner = s.trim();
+      if (/^[[{]/.test(inner)) {
+        try { v = JSON.parse(inner); } catch { return { kind: 'text', text: s }; }
+      } else {
+        return { kind: 'text', text: s };
+      }
+    }
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      return { kind: 'fields', entries: Object.entries(v as Record<string, unknown>) };
+    }
+    try { return { kind: 'raw', text: JSON.stringify(v, null, 2) }; }
+    catch { return { kind: 'raw', text: props.raw }; }
+  });
+
+  const tone = (): string => props.isError
+    ? 'text-rose-300 bg-rose-950/20 border-rose-900/40'
+    : 'text-neutral-300 bg-neutral-900/70 border-neutral-800';
+
+  const fieldIsBlock = (val: unknown): boolean =>
+    typeof val === 'string' && (val.includes('\n') || val.length > 80);
+
+  const inlineValue = (val: unknown): string => {
+    if (typeof val === 'string') return val;
+    try { return JSON.stringify(val); } catch { return String(val); }
+  };
+
+  return (
+    <div class={`font-mono text-[11px] rounded px-2 py-1.5 overflow-x-auto border ${tone()}`}>
+      <Show when={parsed().kind === 'fields'} fallback={
+        <div class="whitespace-pre-wrap">{(parsed() as { text: string }).text}</div>
+      }>
+        <For each={(parsed() as { entries: Array<[string, unknown]> }).entries}>{([k, val]) => (
+          <Show when={fieldIsBlock(val)} fallback={
+            <div class="leading-relaxed">
+              <span class="text-neutral-500">{k}:</span> <span class="whitespace-pre-wrap">{inlineValue(val)}</span>
+            </div>
+          }>
+            <div class="mt-1 first:mt-0">
+              <div class="text-[10px] uppercase tracking-wider text-neutral-500">{k}</div>
+              <div class="whitespace-pre-wrap">{val as string}</div>
+            </div>
+          </Show>
+        )}</For>
+      </Show>
+    </div>
+  );
+}
 
 /** Expand/collapse state for thinking + tool blocks, keyed `${msgId}:${idx}`.
  *  Module-scope signal: one timeline per page, and survival across <For>
@@ -1384,14 +1501,22 @@ function BlockView(props: {
   if (b.kind === 'tool_result') {
     // Standalone (unpaired) result — its tool_use isn't loaded.
     return (
-      <div class={`my-1 font-mono text-xs rounded px-2 py-1 whitespace-pre-wrap ${
-        b.isError ? 'text-rose-300 bg-rose-950/20 border border-rose-900/40'
-                  : 'text-neutral-400 bg-neutral-900/60 border border-neutral-800'
-      }`}>
-        <div class="text-[10px] uppercase tracking-wider mb-0.5 opacity-70">
+      <div class="my-1">
+        <div class="text-[10px] uppercase tracking-wider mb-0.5 text-neutral-600">
           tool result{b.isError ? ' · error' : ''}{b.truncated ? ' · truncated' : ''}
         </div>
-        {b.text}
+        <ToolPayload raw={b.text} isError={b.isError} />
+      </div>
+    );
+  }
+  if (b.kind === 'tool_draft') {
+    return (
+      <div class="my-1 border-l-2 border-amber-800/60 pl-2">
+        <div class="text-[11px] font-mono text-amber-400/80 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <span>writing tool call…</span>
+        </div>
+        <div class="mt-0.5 font-mono text-[11px] text-amber-200/50 whitespace-pre-wrap">{b.text}</div>
       </div>
     );
   }
@@ -1489,7 +1614,7 @@ function ToolBlockView(props: {
           <div class="text-[10px] uppercase tracking-wider text-neutral-600">
             input{props.block.truncated ? ' · truncated' : ''}
           </div>
-          <pre class="font-mono text-[11px] text-neutral-300 bg-neutral-900/70 border border-neutral-800 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">{props.block.inputJson}</pre>
+          <ToolPayload raw={props.block.inputJson} />
           <Show when={props.result} fallback={
             <div class="text-[11px] font-mono text-neutral-600 italic">
               {props.block.status === 'running' ? 'running…' : 'no result loaded'}
@@ -1498,11 +1623,7 @@ function ToolBlockView(props: {
             <div class="text-[10px] uppercase tracking-wider text-neutral-600">
               result{props.result!.isError ? ' · error' : ''}{props.result!.truncated ? ' · truncated' : ''}
             </div>
-            <pre class={`font-mono text-[11px] rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap border ${
-              props.result!.isError
-                ? 'text-rose-300 bg-rose-950/20 border-rose-900/40'
-                : 'text-neutral-300 bg-neutral-900/70 border-neutral-800'
-            }`}>{props.result!.text}</pre>
+            <ToolPayload raw={props.result!.text} isError={props.result!.isError} />
           </Show>
         </div>
       </Show>
