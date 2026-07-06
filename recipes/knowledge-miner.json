@@ -43,11 +43,14 @@
       "command": "npx",
       "args": [
         "-y",
-        "@zereight/mcp-gitlab"
+        "@zereight/mcp-gitlab@2.1.25"
       ],
       "env": {
         "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_TOKEN}",
         "GITLAB_API_URL": "${GITLAB_API_URL}"
+      },
+      "source": {
+        "npm": "@zereight/mcp-gitlab@2.1.25"
       }
     },
     "ddg": {
