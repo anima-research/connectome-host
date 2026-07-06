@@ -125,7 +125,11 @@ export interface RecipeMcpServer {
    */
   disabledTools?: string[];
   reconnect?: boolean;
+  /** Base reconnect interval; the framework doubles it per consecutive
+   *  failure (with jitter) up to reconnectMaxIntervalMs. */
   reconnectIntervalMs?: number;
+  /** Ceiling for the exponential reconnect backoff. Default: 5 minutes. */
+  reconnectMaxIntervalMs?: number;
   /**
    * Channel auto-open policy. 'auto' (default) opens everything the server
    * registers; 'manual' opens nothing (agent calls channel_open as needed);

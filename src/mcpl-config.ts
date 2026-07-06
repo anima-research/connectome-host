@@ -20,6 +20,7 @@ export interface ServerFileEntry {
   toolPrefix?: string;
   reconnect?: boolean;
   reconnectIntervalMs?: number;
+  reconnectMaxIntervalMs?: number;
   enabledFeatureSets?: string[];
   disabledFeatureSets?: string[];
   enabledTools?: string[];
@@ -66,6 +67,7 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       toolPrefix: entry.toolPrefix,
       reconnect: entry.reconnect,
       reconnectIntervalMs: entry.reconnectIntervalMs,
+      reconnectMaxIntervalMs: entry.reconnectMaxIntervalMs,
       enabledFeatureSets: entry.enabledFeatureSets,
       disabledFeatureSets: entry.disabledFeatureSets,
       enabledTools: entry.enabledTools,
