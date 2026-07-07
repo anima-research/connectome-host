@@ -15,7 +15,7 @@
  *     double-writing the Chronicle store (audit 1.2).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 
 /**
  * Hard ceiling on graceful shutdown, shared by every run mode (headless
@@ -157,5 +157,74 @@ export function readAlivePid(pidPath: string): number | null {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EPERM') return pid;
     return null;
+  }
+}
+
+/**
+ * Acquire the double-start lock (audit 1.2). Two headless instances on one
+ * data dir means two writers on the same append-only Chronicle store —
+ * undefined behavior. A bare probe-then-write has a TOCTOU: two instances
+ * started simultaneously both read no-live-pid and both proceed. We acquire
+ * the PID file ATOMICALLY with `{ flag: 'wx' }` so the create itself is the
+ * mutex; the loser gets EEXIST and re-probes.
+ *
+ * On EEXIST the owner is re-probed FIRST, before any unlink: a simultaneous
+ * starter may have just written its live pid, and unlinking that would delete
+ * a live owner's file and let both instances run (the exact double-writer race
+ * this guards). We only reclaim the file when the owner is genuinely dead — a
+ * stale pid left by a crashed instance.
+ *
+ * Throws on refusal (live owner / lost the create race). Returns normally when
+ * the pid file is now owned, or — on a non-EEXIST write failure such as a
+ * read-only dir — best-effort proceeds after logging.
+ *
+ * `probe` is injectable for tests so the EEXIST-with-live-owner branch can be
+ * exercised deterministically; production uses `readAlivePid`.
+ */
+export function acquirePidFile(
+  pidPath: string,
+  log: (msg: string) => void,
+  probe: (p: string) => number | null = readAlivePid,
+): void {
+  for (let attempt = 0; ; attempt++) {
+    const alivePid = probe(pidPath);
+    if (alivePid !== null) {
+      const msg =
+        `refusing to start: another headless instance (pid ${alivePid}) ` +
+        `is already running (from ${pidPath})`;
+      log(msg);
+      throw new Error(msg);
+    }
+    try {
+      writeFileSync(pidPath, String(process.pid), { flag: 'wx' });
+      return; // we own the pid file
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 3) {
+        // Lost the atomic create — someone else holds the pid file. Re-probe
+        // FIRST: only reclaim if the owner is genuinely dead. A live owner
+        // (a simultaneous starter that just won the create) makes us refuse
+        // rather than delete its file and double-write.
+        const owner = probe(pidPath);
+        if (owner !== null) {
+          const msg =
+            `refusing to start: another headless instance (pid ${owner}) ` +
+            `holds ${pidPath}`;
+          log(msg);
+          throw new Error(msg);
+        }
+        try { unlinkSync(pidPath); } catch { /* another racer may have won it */ }
+        continue;
+      }
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        // Kept losing the create race to another starting instance — refuse
+        // rather than fall through to a non-atomic overwrite.
+        const msg = `refusing to start: lost the pid-file create race on ${pidPath}`;
+        log(msg);
+        throw new Error(msg);
+      }
+      // Non-EEXIST write failure (e.g. read-only dir): best-effort, proceed.
+      log(`pid file write failed: ${String(err)}`);
+      return;
+    }
   }
 }

@@ -369,4 +369,48 @@ describe('async delivery to a dead parent is dropped (audit 2.7)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('a result landing AFTER module stop (ctx null) is dead-lettered, not silently dropped (NEW-2)', () => {
+    // ctx is nulled at module stop(). An async subagent completing after
+    // shutdown began is precisely when in-flight results become undeliverable
+    // — the `!this.ctx` early return must dead-letter BEFORE returning, not
+    // vanish the work with no record.
+    const dir = mkdtempSync(join(tmpdir(), 'sub-deadletter-'));
+    try {
+      const { view } = makeDeliveryFixture(true, dir);
+      view.ctx = null; // simulate module stop
+      const bigResult: SubagentResult = {
+        summary: 'expensive synthesis that landed just after shutdown',
+        findings: [], issues: [], toolCallsCount: 7,
+      };
+      view.deliverAsyncResult('child', bigResult, 'parent');
+      const rec = JSON.parse(
+        readFileSync(join(dir, 'dropped-results.jsonl'), 'utf-8').trim().split('\n')[0],
+      ) as Record<string, unknown>;
+      expect(rec.kind).toBe('result');
+      expect(rec.reason).toBe('module-stopped');
+      expect(rec.subagent).toBe('child');
+      expect(rec.summary).toBe(bigResult.summary);
+      expect(rec.toolCallsCount).toBe(7);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('an error landing AFTER module stop (ctx null) is dead-lettered too (NEW-2)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sub-deadletter-'));
+    try {
+      const { view } = makeDeliveryFixture(true, dir);
+      view.ctx = null; // simulate module stop
+      view.deliverAsyncError('child', new Error('post-stop boom'), 'parent');
+      const rec = JSON.parse(
+        readFileSync(join(dir, 'dropped-results.jsonl'), 'utf-8').trim().split('\n')[0],
+      ) as Record<string, unknown>;
+      expect(rec.kind).toBe('error');
+      expect(rec.reason).toBe('module-stopped');
+      expect(rec.error).toBe('post-stop boom');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

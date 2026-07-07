@@ -20,12 +20,12 @@
  */
 
 import { createServer, type Socket, type Server } from 'node:net';
-import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, existsSync, unlinkSync, type WriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
-import { createSignalHandler, readAlivePid, stopWithDeadline, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
+import { createSignalHandler, acquirePidFile, stopWithDeadline, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -103,48 +103,15 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
 
   // -- Double-start guard (audit 1.2) --
-  // Two headless instances on one data dir means two writers on the same
-  // append-only Chronicle store — undefined behavior. A bare probe-then-write
-  // has a TOCTOU: two instances started simultaneously both read no-live-pid
-  // and both proceed. Acquire the PID file ATOMICALLY with { flag: 'wx' } so
-  // the create itself is the mutex; the loser gets EEXIST, re-probes, and
-  // either refuses (live owner) or reclaims a genuinely stale file and retries.
+  // Atomically acquire the pid file so two headless instances on one data dir
+  // can't both become writers on the same append-only Chronicle store. See
+  // acquirePidFile in shutdown.ts for the EEXIST re-probe ordering.
   //
   // Recycled-PID caveat: a stale file whose number is now owned by an
   // unrelated process (EPERM from kill(pid,0) counts as "alive" per
   // readAlivePid) permanently refuses startup until an operator deletes the
   // file. Rare; the error message names the path so it isn't a silent surprise.
-  for (let attempt = 0; ; attempt++) {
-    const alivePid = readAlivePid(pidPath);
-    if (alivePid !== null) {
-      const msg =
-        `refusing to start: another headless instance (pid ${alivePid}) ` +
-        `is already running on ${dataDir} (from ${pidPath})`;
-      log(msg);
-      throw new Error(msg);
-    }
-    try {
-      writeFileSync(pidPath, String(process.pid), { flag: 'wx' });
-      break; // we own the pid file
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 3) {
-        // File exists but probed as dead (or appeared in the create race).
-        // Reclaim it and retry; a live owner is caught by readAlivePid next loop.
-        try { unlinkSync(pidPath); } catch { /* another racer may have won it */ }
-        continue;
-      }
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        // Kept losing the create race to another starting instance — refuse
-        // rather than fall through to a non-atomic overwrite.
-        const msg = `refusing to start: lost the pid-file create race on ${pidPath}`;
-        log(msg);
-        throw new Error(msg);
-      }
-      // Non-EEXIST write failure (e.g. read-only dir): best-effort, proceed.
-      log(`pid file write failed: ${String(err)}`);
-      break;
-    }
-  }
+  acquirePidFile(pidPath, log);
 
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.

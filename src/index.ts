@@ -50,7 +50,7 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { createSessionSwitcher } from './session-switch.js';
-import { createSignalHandler, stopWithDeadline, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
+import { createSignalHandler, finalizeShutdown, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
 
 export type { AppContext };
 
@@ -624,10 +624,16 @@ async function runPiped(app: AppContext) {
     onFirstSignal: () => {
       void (async () => {
         try { handleExport(app); } catch { /* best-effort lessons export */ }
-        const outcome = await stopWithDeadline(
-          () => app.framework.stop(), SHUTDOWN_DEADLINE_MS, (m) => console.error(`[shutdown] ${m}`),
-        );
-        process.exit(outcome === 'stopped' ? 0 : 1);
+        // Piped mode always force-exits (even on a clean stop): no interactive
+        // loop to fall back into. forceExitOnClean maps a clean stop to exit 0,
+        // anything else to exit 1, so a supervising parent can tell the
+        // difference — same decision as the old inline stopWithDeadline.
+        await finalizeShutdown({
+          stop: () => app.framework.stop(),
+          deadlineMs: SHUTDOWN_DEADLINE_MS,
+          forceExitOnClean: true,
+          log: (m) => console.error(`[shutdown] ${m}`),
+        });
       })();
     },
     log: (m) => console.error(`[shutdown] ${m}`),

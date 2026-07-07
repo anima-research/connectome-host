@@ -880,6 +880,14 @@ export class SubagentModule implements Module {
         const key = call.callerAgentName;
         if (key) {
           this.returnedResults.set(key, result);
+        } else {
+          // Should be impossible — the framework enriches every dispatched call
+          // with callerAgentName. If it's ever absent we'd silently discard the
+          // subagent's result, so log the anomaly rather than lie "received".
+          console.error(
+            '[subagent] return handler received a call with no callerAgentName; ' +
+            'result discarded (this should be impossible — framework normally enriches it)',
+          );
         }
         return { success: true, data: 'Result received.', endTurn: true };
       }
@@ -1655,7 +1663,22 @@ export class SubagentModule implements Module {
 
   private deliverAsyncResult(name: string, result: SubagentResult, parentAgentName: string): void {
     this.asyncHandles.delete(name);
-    if (!this.ctx) return;
+    if (!this.ctx) {
+      // The module has stopped (ctx nulled at stop()). This is precisely when
+      // in-flight async results become undeliverable — the completion landed
+      // after shutdown began. Dead-letter it before returning so the work
+      // (possibly a long Opus run) is recoverable from dropped-results.jsonl
+      // instead of vanishing silently. deadLetter needs only config.dataDir.
+      this.deadLetter({
+        kind: 'result',
+        subagent: name,
+        parentAgentName,
+        summary: result.summary,
+        toolCallsCount: result.toolCallsCount,
+        reason: 'module-stopped',
+      });
+      return;
+    }
 
     if (!this.isParentAlive(parentAgentName)) {
       console.error(
@@ -1690,7 +1713,18 @@ export class SubagentModule implements Module {
 
   private deliverAsyncError(name: string, err: unknown, parentAgentName: string): void {
     this.asyncHandles.delete(name);
-    if (!this.ctx) return;
+    if (!this.ctx) {
+      // Module stopped mid-flight (see deliverAsyncResult) — dead-letter the
+      // error before returning rather than dropping it silently.
+      this.deadLetter({
+        kind: 'error',
+        subagent: name,
+        parentAgentName,
+        error: err instanceof Error ? err.message : String(err),
+        reason: 'module-stopped',
+      });
+      return;
+    }
 
     if (!this.isParentAlive(parentAgentName)) {
       const msg = err instanceof Error ? err.message : String(err);
