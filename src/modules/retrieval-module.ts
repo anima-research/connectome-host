@@ -63,10 +63,27 @@ If none are relevant, return an empty array: []`;
 export class RetrievalModule implements Module {
   readonly name = 'retrieval';
 
+  /**
+   * Per-module gatherContext timeout budget. The framework's default
+   * gatherContext deadline (5s) is too tight for this module's two sequential
+   * Haiku calls under load. Honoured by agent-framework versions that ship
+   * the module-level `contextTimeoutMs` contract (> 0.6.0); on older versions
+   * it's an inert extra property (harmless).
+   */
+  readonly contextTimeoutMs = 15_000;
+
   private ctx: ModuleContext | null = null;
   private config: RetrievalModuleConfig;
-  private lastContextHash = '';
+  /** null = no cache entry yet; a set hash with empty cachedInjections is a valid (empty) cached result. */
+  private lastContextHash: string | null = null;
   private cachedInjections: ContextInjection[] = [];
+  /**
+   * Generation counter for loser cancellation: if a newer gatherContext run
+   * starts (e.g. the previous one was timed out by the framework and a fresh
+   * inference began), the stale pipeline stops after its current await and
+   * must not write its results into the cache.
+   */
+  private generation = 0;
 
   constructor(config: RetrievalModuleConfig) {
     this.config = config;
@@ -112,15 +129,22 @@ export class RetrievalModule implements Module {
     const recentMessages = this.getRecentContext();
     if (!recentMessages) return [];
 
-    // Check cache: if context hasn't changed, reuse cached results
+    // Check cache: if context hasn't changed, reuse cached results.
+    // NOTE: a cached EMPTY result is still a valid cache hit — "no cache
+    // entry" is signalled by lastContextHash === null, not by emptiness.
+    // Otherwise every inference on an unchanged context whose retrieval came
+    // up empty would re-run both Haiku calls for nothing.
     const contextHash = this.hashContext(recentMessages);
-    if (contextHash === this.lastContextHash && this.cachedInjections.length > 0) {
+    if (this.lastContextHash !== null && contextHash === this.lastContextHash) {
       return this.cachedInjections;
     }
+
+    const gen = ++this.generation;
 
     try {
       // Step 1: Flag concepts (Haiku call)
       const concepts = await this.flagConcepts(recentMessages);
+      if (gen !== this.generation) return []; // superseded — don't touch the cache
       if (concepts.length === 0) {
         this.lastContextHash = contextHash;
         this.cachedInjections = [];
@@ -137,6 +161,7 @@ export class RetrievalModule implements Module {
 
       // Step 3: Validate relevance (Haiku call)
       const relevant = await this.validateRelevance(recentMessages, candidates);
+      if (gen !== this.generation) return []; // superseded — don't touch the cache
 
       // Build injection
       const maxLessons = this.config.maxInjectedLessons ?? 5;
@@ -284,10 +309,15 @@ export class RetrievalModule implements Module {
         return candidates.filter(l => relevantIds.has(l.id));
       }
     } catch {
-      // On parse failure, return top 5 by confidence (fail open)
-      return candidates.slice(0, 5);
+      // fall through to the fail-closed path below
     }
-    return candidates.slice(0, 5);
+    // Unparseable validator output: inject NOTHING. Injecting unvalidated
+    // keyword matches on parse failure silently polluted the agent's context
+    // with irrelevant "knowledge".
+    console.warn(
+      'RetrievalModule: relevance validation returned unparseable output; injecting nothing (fail closed)'
+    );
+    return [];
   }
 
   // =========================================================================

@@ -22,7 +22,7 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, copyFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,15 @@ export class LessonsModule implements Module {
   private state: LessonsState = { lessons: [] };
   private globalPath: string | null;
 
+  /** Debounce timer for the global-file save (coalesces mutation bursts). */
+  private globalSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True when in-memory lessons have changed since the last global-file write. */
+  private globalSaveDirty = false;
+  /** Set once a corrupt global file has been backed up, to avoid re-backing-up on every flush. */
+  private corruptBackupDone = false;
+
+  private static readonly GLOBAL_SAVE_DEBOUNCE_MS = 100;
+
   constructor(opts?: { globalPath?: string }) {
     this.globalPath = opts?.globalPath ?? null;
   }
@@ -111,6 +120,9 @@ export class LessonsModule implements Module {
   }
 
   async stop(): Promise<void> {
+    // Flush any pending debounced global save so nothing is lost at shutdown.
+    // framework.stop() awaits module.stop(), so this is a reliable flush point.
+    this.flushGlobal();
     this.ctx = null;
   }
 
@@ -251,9 +263,11 @@ export class LessonsModule implements Module {
 
   private handleCreate(input: CreateInput): ToolResult {
     const lesson: Lesson = {
-      id: randomUUID().slice(0, 8),
+      // Full UUID: an 8-char prefix collides far too easily and silently
+      // merges unrelated lessons across processes sharing the global file.
+      id: randomUUID(),
       content: input.content,
-      confidence: input.confidence ?? 0.5,
+      confidence: Math.max(0, Math.min(1, input.confidence ?? 0.5)),
       tags: input.tags,
       evidence: input.evidence ?? [],
       created: Date.now(),
@@ -420,46 +434,148 @@ export class LessonsModule implements Module {
   private save(): void {
     this.ctx?.setState(this.state);
     if (this.globalPath) {
-      this.saveToGlobal();
+      this.scheduleGlobalSave();
     }
   }
 
-  /** Merge lessons from the global JSON file. Newer `updated` wins on ID conflicts. */
-  private mergeFromGlobal(): void {
-    if (!this.globalPath) return;
-    let global: LessonsState;
-    try {
-      global = JSON.parse(readFileSync(this.globalPath, 'utf-8'));
-    } catch {
-      return; // File doesn't exist yet — nothing to merge
-    }
-    if (!Array.isArray(global.lessons)) return;
+  /**
+   * Debounced global save: coalesce mutation bursts into one write ~100ms
+   * after the last mutation, so we don't do a full-file sync write (plus a
+   * read-merge) on every single tool call. stop() flushes anything pending.
+   */
+  private scheduleGlobalSave(): void {
+    this.globalSaveDirty = true;
+    if (this.globalSaveTimer) return; // a flush is already scheduled
+    this.globalSaveTimer = setTimeout(() => {
+      this.globalSaveTimer = null;
+      this.flushGlobal();
+    }, LessonsModule.GLOBAL_SAVE_DEBOUNCE_MS);
+  }
 
+  /** Flush a pending global save immediately (no-op if nothing is dirty). */
+  private flushGlobal(): void {
+    if (this.globalSaveTimer) {
+      clearTimeout(this.globalSaveTimer);
+      this.globalSaveTimer = null;
+    }
+    if (!this.globalSaveDirty || !this.globalPath) return;
+    this.globalSaveDirty = false;
+    this.saveToGlobal();
+  }
+
+  /**
+   * Read the global lessons file.
+   * Returns null if the file simply doesn't exist yet (normal on first run).
+   * If the file exists but can't be parsed, it is backed up to
+   * `<path>.corrupt-<timestamp>` and a loud error is logged, then null is
+   * returned — callers may proceed with in-memory data because the corrupt
+   * original is preserved in the backup. If the backup itself fails, this
+   * THROWS so callers refuse to overwrite the only copy of the data.
+   */
+  private readGlobal(): LessonsState | null {
+    if (!this.globalPath) return null;
+    let raw: string;
+    try {
+      raw = readFileSync(this.globalPath, 'utf-8');
+    } catch {
+      return null; // File doesn't exist yet — nothing to merge
+    }
+    try {
+      const parsed = JSON.parse(raw) as LessonsState;
+      if (!Array.isArray(parsed.lessons)) {
+        throw new Error('parsed JSON has no "lessons" array');
+      }
+      return parsed;
+    } catch (err) {
+      if (this.corruptBackupDone) return null; // already backed up + logged
+      const backupPath = `${this.globalPath}.corrupt-${Date.now()}`;
+      try {
+        copyFileSync(this.globalPath, backupPath);
+      } catch (backupErr) {
+        console.error(
+          `[LessonsModule] CORRUPT global lessons file at ${this.globalPath} ` +
+          `(${String(err)}) and the backup copy FAILED (${String(backupErr)}). ` +
+          `Refusing to overwrite the corrupt file.`
+        );
+        throw backupErr;
+      }
+      this.corruptBackupDone = true;
+      console.error(
+        `[LessonsModule] CORRUPT global lessons file at ${this.globalPath}: ${String(err)}. ` +
+        `Backed it up to ${backupPath} before any further writes. ` +
+        `Proceeding with in-memory lessons only — recover manually from the backup if needed.`
+      );
+      return null;
+    }
+  }
+
+  /** Merge lessons into in-memory state. Newer `updated` wins on ID conflicts. */
+  private mergeLessons(incoming: Lesson[]): boolean {
     const byId = new Map(this.state.lessons.map(l => [l.id, l]));
     let merged = false;
-    for (const gl of global.lessons) {
+    for (const gl of incoming) {
       const existing = byId.get(gl.id);
       if (!existing) {
         this.state.lessons.push(gl);
+        byId.set(gl.id, gl);
         merged = true;
       } else if (gl.updated > existing.updated) {
         Object.assign(existing, gl);
         merged = true;
       }
     }
-    if (merged) {
+    return merged;
+  }
+
+  /** Merge lessons from the global JSON file (called at start()). */
+  private mergeFromGlobal(): void {
+    if (!this.globalPath) return;
+    let global: LessonsState | null;
+    try {
+      global = this.readGlobal();
+    } catch {
+      return; // corrupt file whose backup failed — already logged loudly
+    }
+    if (!global) return;
+    if (this.mergeLessons(global.lessons)) {
       this.ctx?.setState(this.state);
     }
   }
 
-  /** Write current lessons to the global JSON file. */
+  /**
+   * Write current lessons to the global JSON file.
+   *
+   * Read-merge-write: re-read the file first and merge (per-lesson, newer
+   * `updated` wins) so lessons written by OTHER processes since our last read
+   * aren't clobbered by a whole-file overwrite. NOTE: a small race window
+   * remains between the read and the rename — two processes flushing within
+   * that window can still lose one side's concurrent update to the SAME
+   * lesson; closing it fully would need a cross-process lock. Read-merge-write
+   * plus atomic rename covers the realistic failure mode (distinct lessons,
+   * mutations spaced apart).
+   */
   private saveToGlobal(): void {
     if (!this.globalPath) return;
     try {
       mkdirSync(dirname(this.globalPath), { recursive: true });
-      writeFileSync(this.globalPath, JSON.stringify({ lessons: this.state.lessons }, null, 2));
-    } catch {
-      // Best-effort — don't break the module if the file can't be written
+
+      // Merge in whatever is on disk right now. readGlobal() throws if the
+      // file is corrupt and could not be backed up — in that case we abort
+      // the write rather than destroy the only copy of the data.
+      const global = this.readGlobal();
+      if (global && this.mergeLessons(global.lessons)) {
+        this.ctx?.setState(this.state);
+      }
+
+      // Atomic write: tmp file in the same directory + rename, so concurrent
+      // readers never observe a partially written file.
+      const tmpPath = `${this.globalPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+      writeFileSync(tmpPath, JSON.stringify({ lessons: this.state.lessons }, null, 2));
+      renameSync(tmpPath, this.globalPath);
+    } catch (err) {
+      // Best-effort — don't break the module if the file can't be written,
+      // but say so instead of failing silently.
+      console.error(`[LessonsModule] failed to save global lessons file: ${String(err)}`);
     }
   }
 }
