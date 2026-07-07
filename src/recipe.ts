@@ -77,6 +77,10 @@ export interface RecipeAgent {
   /** Per-agent context compile budget (input tokens). When unset, the
    *  ContextManager default (100k) applies. Raise for large-context models. */
   contextBudgetTokens?: number;
+  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Set '1h' for
+   *  agents whose reply cadence is slower than 5 minutes — avoids re-writing
+   *  the full context to cache after every gap. Unset: provider default (5m). */
+  cacheTtl?: '5m' | '1h';
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -667,6 +671,12 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  }
+
+  // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
+  // surface as a 400 from Anthropic at the agent's first inference.
+  if (agent.cacheTtl !== undefined && agent.cacheTtl !== '5m' && agent.cacheTtl !== '1h') {
+    throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
   }
 
   // Validate agent.thinking if present. Catches typos and constraint
