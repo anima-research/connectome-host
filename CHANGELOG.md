@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Fragility audit hardening (Jul 2026)
+
+Fixes for ~25 findings from the five-way fragility audit
+(`UNTESTED-ROUTES-TEST-PLAN.md`, Groups 1–4 + 6.4). Highlights:
+
+- **Lifecycle/shutdown**: SIGTERM/SIGINT now run the graceful path in TUI
+  and `--no-tui` modes (previously headless-only); headless refuses to
+  double-start on a live data dir (PID probe); graceful shutdown races
+  `framework.stop()` against a 15 s deadline and always unlinks pid/socket;
+  a second signal force-exits; `/session switch` rolls back on failure and
+  re-binds trace forwarding (headless sockets previously went dark).
+- **Fleet/subagent**: autoRestart flap cap survives respawns; fork
+  materialisation no longer synthesizes orphaned sibling `tool_use` blocks;
+  error classification no longer keys on bare substrings (`"502"` inside a
+  token count, `"rate"` inside "generate"); zombie reclaim no longer
+  double-releases concurrency slots; stale `returnedResults` no longer leak
+  into later same-named subagents; adopted fleet children get pid-liveness
+  crash detection; `handleLaunch` duplicate-name TOCTOU closed; aggregator
+  describe latch times out and child subtrees reset on exit.
+- **Lessons/retrieval**: shared `lessons.json` saves are read-merge-write +
+  atomic (tmp+rename) — no more cross-process last-writer-wins clobber;
+  corrupt files are backed up (`.corrupt-<ts>`), never silently overwritten;
+  full-UUID lesson ids; `create` clamps confidence; global saves debounced
+  with flush-on-stop; retrieval serves cached empty results, requests a 15 s
+  `contextTimeoutMs` budget, cancels stale pipelines, and fails closed on
+  validator parse failure (previously injected top-5 keyword matches).
+- **Web UI**: `quit-confirm` now requires a server-side pending-quit token
+  (any authed frame could previously SIGTERM the host); trace frames carry
+  seq numbers and traces fired during welcome construction are buffered, not
+  dropped; WS backpressure closes stuck clients; fleet-request timeouts fire
+  on a timer; lessons frames capped at 500 entries.
+- **Unbounded growth (6.4)**: llm-calls JSONL rotates at 10 MB; TUI
+  transcript/peek-log maps capped; reducer `callIdIndex` evicts on terminal
+  tool events; typing indicator clears on `inference:failed`/`exhausted`/
+  `aborted` (previously stuck "typing" after any failed retry chain).
+
 ### Breaking (recipe authors only)
 
 - `modules.fleet.children[].recipe` paths now resolve at recipe-load time

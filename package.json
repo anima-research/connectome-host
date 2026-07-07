@@ -1,6 +1,6 @@
 {
   "name": "connectome-host",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "General-purpose agent TUI host with recipe-based configuration",
   "type": "module",
   "scripts": {

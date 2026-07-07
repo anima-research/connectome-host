@@ -105,8 +105,21 @@ export class ActivityModule implements Module {
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
     framework.onTrace((event: TraceEvent) => {
-      if (event.type === 'inference:started') this.onInferenceStarted();
-      else if (event.type === 'inference:completed') this.onInferenceCompleted();
+      // Widen: exhausted/aborted aren't in every TraceEvent union revision.
+      const type = (event as { type: string }).type;
+      if (type === 'inference:started') this.onInferenceStarted();
+      // ALL terminal inference outcomes must clear the indicator, not just
+      // the success path — otherwise a failed/exhausted retry chain leaves
+      // the bot "typing" in every subscribed channel for hours (fragility
+      // audit, activity-module finding).
+      else if (
+        type === 'inference:completed' ||
+        type === 'inference:failed' ||
+        type === 'inference:exhausted' ||
+        type === 'inference:aborted'
+      ) {
+        this.onInferenceCompleted();
+      }
     });
   }
 

@@ -259,6 +259,10 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     // Phase stays 'executing' until the next inference:* event re-binds it.
     // Mirrors tui.ts behavior where tool:completed only clears the per-agent
     // current-tool indicator without changing the high-level phase.
+    //
+    // The call is terminal — evict its routing entry (audit 6.4: the index
+    // previously grew forever and serialized into every wire snapshot).
+    r._deleteCallId(e.callId);
   },
 
   'tool:failed': (r, e, ts) => {
@@ -266,6 +270,8 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     const agentName = r._getCallIdAgent(e.callId);
     if (!agentName) return;
     r._ensureNode(agentName).lastEventAt = ts;
+    // Terminal — evict, same as tool:completed (audit 6.4).
+    r._deleteCallId(e.callId);
   },
 };
 
@@ -399,6 +405,12 @@ export class AgentTreeReducer {
   /** @internal */
   _getCallIdAgent(callId: string): string | undefined {
     return this.callIdIndex.get(callId);
+  }
+
+  /** @internal Evict a terminal call's routing entry so the index stays
+   *  bounded by in-flight calls rather than growing per tool call ever made. */
+  _deleteCallId(callId: string): void {
+    this.callIdIndex.delete(callId);
   }
 
   /** @internal */

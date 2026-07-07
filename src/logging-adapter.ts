@@ -22,24 +22,64 @@ import type {
   ProviderRequestOptions,
   StreamCallbacks,
 } from '@animalabs/membrane';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, renameSync, statSync } from 'node:fs';
 
 /** Live read of the current reasoning setting. The host wires this to
  *  `SettingsModule.getReasoning()` so toggles via the `settings--reasoning_*`
  *  tools take effect on the next call without restart. */
 export type ReasoningGetter = () => { enabled: boolean; budgetTokens: number };
 
+/** Default cap before the log rolls to `<path>.1` (matching the
+ *  mcpl-stderr log's rotation in index.ts). Full request+response per call
+ *  at ~100k-token contexts is multiple MB per line — without rotation a
+ *  busy day is tens of GB (audit 6.4). */
+export const LLM_LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Size-capped JSONL sink: appends one JSON object per line, rolling the
+ * file to `<path>.1` (replacing any previous `.1`) when the next entry
+ * would push it past `maxBytes`. Never throws — logging must not be
+ * load-bearing.
+ */
+export class RotatingJsonlLog {
+  /** Bytes currently in the file; -1 = not yet measured (lazy statSync). */
+  private size = -1;
+
+  constructor(
+    private readonly path: string,
+    private readonly maxBytes: number = LLM_LOG_MAX_BYTES,
+  ) {}
+
+  append(record: Record<string, unknown>): void {
+    try {
+      const entry = JSON.stringify(record) + '\n';
+      if (this.size < 0) {
+        try { this.size = statSync(this.path).size; } catch { this.size = 0; }
+      }
+      if (this.size + entry.length > this.maxBytes && this.size > 0) {
+        try { renameSync(this.path, `${this.path}.1`); } catch { /* keep appending to the same file */ }
+        this.size = 0;
+      }
+      appendFileSync(this.path, entry);
+      this.size += entry.length;
+    } catch {
+      // never throw from logging
+    }
+  }
+}
+
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
-  private readonly logPath: string;
+  private readonly sink: RotatingJsonlLog;
   private readonly getReasoning?: ReasoningGetter;
 
   constructor(
     config: ConstructorParameters<typeof AnthropicAdapter>[0],
     logPath: string,
     getReasoning?: ReasoningGetter,
+    maxLogBytes: number = LLM_LOG_MAX_BYTES,
   ) {
     super(config);
-    this.logPath = logPath;
+    this.sink = new RotatingJsonlLog(logPath, maxLogBytes);
     this.getReasoning = getReasoning;
   }
 
@@ -73,11 +113,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   private log(record: Record<string, unknown>): void {
-    try {
-      appendFileSync(this.logPath, JSON.stringify(record) + '\n');
-    } catch {
-      // never throw from logging
-    }
+    this.sink.append(record);
   }
 
   /** Wrap options to capture the raw provider request via the membrane

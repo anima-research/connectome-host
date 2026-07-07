@@ -440,4 +440,36 @@ describe('AgentTreeReducer (continued)', () => {
     const after = r.getNode('a')!;
     expect(after).toEqual(before);
   });
+
+  // Fragility audit 6.4: callIdIndex previously grew per tool call ever made
+  // (tool:completed never evicted) and the whole index serializes into every
+  // wire snapshot. Terminal tool events must evict their routing entry.
+  test('callIdIndex evicts entries on tool:completed and tool:failed', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({
+      type: 'inference:tool_calls_yielded',
+      agentName: 'a',
+      calls: [
+        { id: 'c-done', name: 'files--read', input: {} },
+        { id: 'c-fail', name: 'files--read', input: {} },
+        { id: 'c-open', name: 'files--read', input: {} },
+      ],
+      timestamp: ts(0),
+    });
+    expect(Object.keys(r.getSnapshot().callIdIndex).sort()).toEqual(['c-done', 'c-fail', 'c-open']);
+
+    r.applyEvent({ type: 'tool:started', callId: 'c-done', tool: 'files--read', module: 'files', timestamp: ts(1) });
+    r.applyEvent({ type: 'tool:completed', callId: 'c-done', tool: 'files--read', module: 'files', durationMs: 5, timestamp: ts(2) });
+    r.applyEvent({ type: 'tool:started', callId: 'c-fail', tool: 'files--read', module: 'files', timestamp: ts(3) });
+    r.applyEvent({ type: 'tool:failed', callId: 'c-fail', tool: 'files--read', module: 'files', error: 'x', timestamp: ts(4) });
+
+    // Only the in-flight call remains routable; terminal calls are evicted.
+    expect(Object.keys(r.getSnapshot().callIdIndex)).toEqual(['c-open']);
+    // Node state accumulated before eviction is untouched.
+    expect(r.getNode('a')!.toolCallsCount).toBe(2);
+
+    // A duplicate terminal event for an evicted call is a no-op, not a crash.
+    r.applyEvent({ type: 'tool:completed', callId: 'c-done', tool: 'files--read', module: 'files', durationMs: 5, timestamp: ts(5) });
+    expect(Object.keys(r.getSnapshot().callIdIndex)).toEqual(['c-open']);
+  });
 });
