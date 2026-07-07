@@ -50,7 +50,7 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { createSessionSwitcher } from './session-switch.js';
-import { createSignalHandler, stopWithDeadline } from './shutdown.js';
+import { createSignalHandler, stopWithDeadline, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
 
 export type { AppContext };
 
@@ -153,6 +153,10 @@ async function createFramework(
       parentAgentName: agentName,
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
+      // Top-level data dir (sibling of the per-session store) so an
+      // undeliverable async result can be dead-lettered to
+      // dropped-results.jsonl rather than lost — same location as lessons.json.
+      dataDir: resolve(join(storePath, '..', '..')),
     });
     moduleInstances.push(subagentModule);
   }
@@ -621,7 +625,7 @@ async function runPiped(app: AppContext) {
       void (async () => {
         try { handleExport(app); } catch { /* best-effort lessons export */ }
         const outcome = await stopWithDeadline(
-          () => app.framework.stop(), 15_000, (m) => console.error(`[shutdown] ${m}`),
+          () => app.framework.stop(), SHUTDOWN_DEADLINE_MS, (m) => console.error(`[shutdown] ${m}`),
         );
         process.exit(outcome === 'stopped' ? 0 : 1);
       })();
@@ -764,14 +768,15 @@ async function main() {
   // framework's module list inside createFramework().
   const settingsModule = new SettingsModule();
 
-  // Append each LLM request/response/error to a JSONL log per process lifetime
-  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility). The adapter
-  // also reads SettingsModule.getReasoning() per call to inject `thinking`
-  // when the agent has toggled reasoning on.
-  const llmLogPath = join(
-    config.dataDir,
-    `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
-  );
+  // Append each LLM request/response/error to a single rotating JSONL log
+  // (Hermes-era `llm-calls.jsonl` visibility). STABLE filename, not per-boot
+  // timestamped: the RotatingJsonlLog caps a file at 10MB + one `.1` (20MB
+  // total), but that cap is per-file — a per-boot `llm-calls.<ts>.jsonl` name
+  // left every prior boot's file on disk, so a flapping host still grew
+  // unbounded (20MB × N restarts). A stable name lets the rotation actually
+  // bound total on-disk size across restarts. The adapter also reads
+  // SettingsModule.getReasoning() per call to inject `thinking` when toggled on.
+  const llmLogPath = join(config.dataDir, 'llm-calls.jsonl');
   const adapter = new LoggingAnthropicAdapter(
     { apiKey: config.apiKey!, baseURL: process.env.ANTHROPIC_BASE_URL || undefined },
     llmLogPath,

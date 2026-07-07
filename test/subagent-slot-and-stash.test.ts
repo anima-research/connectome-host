@@ -17,7 +17,7 @@
  * runEphemeralToCompletion so each run's completion is test-controlled.
  */
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
@@ -273,8 +273,8 @@ describe('async delivery to a dead parent is dropped (audit 2.7)', () => {
     deliverAsyncError: (name: string, err: unknown, parent: string) => void;
   }
 
-  function makeDeliveryFixture(agentExists: boolean) {
-    const mod = new SubagentModule();
+  function makeDeliveryFixture(agentExists: boolean, dataDir?: string) {
+    const mod = new SubagentModule(dataDir ? { dataDir } : {});
     const added: unknown[][] = [];
     const events: unknown[] = [];
     const view = mod as unknown as DeliveryView;
@@ -317,5 +317,56 @@ describe('async delivery to a dead parent is dropped (audit 2.7)', () => {
     view.deliverAsyncError('child', new Error('boom'), 'parent');
     expect(added.length).toBe(1);
     expect(events.length).toBe(1);
+  });
+
+  test('a dropped result is DEAD-LETTERED to dropped-results.jsonl (recoverable, not lost)', () => {
+    // Gating the delivery is right (polluting the root context was worse), but
+    // a console.error records only THAT a result dropped, not the result — it
+    // could be ten minutes of Opus at 165K context. Dead-letter it instead.
+    const dir = mkdtempSync(join(tmpdir(), 'sub-deadletter-'));
+    const originalError = console.error;
+    console.error = () => { /* silence the expected drop log */ };
+    try {
+      const { view, added, events } = makeDeliveryFixture(false, dir);
+      const bigResult: SubagentResult = {
+        summary: 'a very expensive synthesis that must not vanish',
+        findings: [], issues: [], toolCallsCount: 42,
+      };
+      view.deliverAsyncResult('child', bigResult, 'fork-ghost-d2-12345');
+      // Still dropped from the live context…
+      expect(added.length).toBe(0);
+      expect(events.length).toBe(0);
+      // …but recoverable on disk.
+      const dlqPath = join(dir, 'dropped-results.jsonl');
+      expect(existsSync(dlqPath)).toBe(true);
+      const line = readFileSync(dlqPath, 'utf-8').trim().split('\n')[0];
+      const rec = JSON.parse(line) as Record<string, unknown>;
+      expect(rec.kind).toBe('result');
+      expect(rec.subagent).toBe('child');
+      expect(rec.parentAgentName).toBe('fork-ghost-d2-12345');
+      expect(rec.summary).toBe(bigResult.summary);
+      expect(rec.toolCallsCount).toBe(42);
+    } finally {
+      console.error = originalError;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a dropped error is dead-lettered too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sub-deadletter-'));
+    const originalError = console.error;
+    console.error = () => { /* silence */ };
+    try {
+      const { view } = makeDeliveryFixture(false, dir);
+      view.deliverAsyncError('child', new Error('kaboom'), 'fork-ghost-d2-999');
+      const rec = JSON.parse(
+        readFileSync(join(dir, 'dropped-results.jsonl'), 'utf-8').trim().split('\n')[0],
+      ) as Record<string, unknown>;
+      expect(rec.kind).toBe('error');
+      expect(rec.error).toBe('kaboom');
+    } finally {
+      console.error = originalError;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -31,6 +31,8 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import { KnowledgeStrategy } from '@animalabs/agent-framework';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
+import { join } from 'node:path';
+import { RotatingJsonlLog } from '../logging-adapter.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +57,11 @@ export interface SubagentModuleConfig {
   maxExecutionMs?: number;
   /** Max restart attempts on transient errors (default: 2) */
   maxRetries?: number;
+  /** Data dir for the dropped-results dead-letter log. When set, async
+   *  results that can't be delivered (parent gone) are appended to
+   *  `{dataDir}/dropped-results.jsonl` instead of being lost to a console
+   *  line. Omitted in tests / when unavailable — dead-lettering is skipped. */
+  dataDir?: string;
 }
 
 export interface SubagentResult {
@@ -486,6 +493,23 @@ export class SubagentModule implements Module {
   // Stashed results from subagent--return tool calls, keyed by framework agent name
   private returnedResults = new Map<string, string>();
 
+  // Dead-letter sink for async results whose parent is already gone. Lazily
+  // created on first drop so we don't touch the fs when nothing is ever
+  // dropped. Null when no dataDir was configured (dead-lettering disabled).
+  private droppedResultsLog: RotatingJsonlLog | null = null;
+
+  /** Append an undeliverable async result/error to `dropped-results.jsonl`
+   *  so significant subagent work (a long Opus run at high context) is
+   *  recoverable instead of gone with a console line (fragility audit). */
+  private deadLetter(record: Record<string, unknown>): void {
+    const dataDir = this.config.dataDir;
+    if (!dataDir) return;
+    if (!this.droppedResultsLog) {
+      this.droppedResultsLog = new RotatingJsonlLog(join(dataDir, 'dropped-results.jsonl'));
+    }
+    this.droppedResultsLog.append({ ts: new Date().toISOString(), ...record });
+  }
+
   // Live state for peek observability
   private liveSubagents = new Map<string, LiveSubagentState>();          // keyed by displayName
   private frameworkNameIndex = new Map<string, string>();                 // frameworkAgentName → displayName
@@ -845,12 +869,15 @@ export class SubagentModule implements Module {
         return this.handlePeek(call.input as { name?: string }, caller);
       case 'return': {
         // Stash the result for the completion path in runSpawn/runFork.
-        // Keyed primarily by the caller's framework agent name — unique per
-        // run — so two subagents sharing a display name can't consume each
-        // other's stash (fragility audit 2.5). Falls back to the
-        // callIdIndex → displayName mapping when callerAgentName is absent.
+        // Keyed by the caller's framework agent name — unique per run — so two
+        // subagents sharing a display name can't consume each other's stash
+        // (fragility audit 2.5). The framework enriches every dispatched tool
+        // call with callerAgentName (framework.ts dispatchToolCall), so this is
+        // always set in production; the completion path reads by this same
+        // unique key only, so we no longer stash under a display name nobody
+        // reads (which would leak + deliver nothing).
         const result = (call.input as { result: string }).result;
-        const key = call.callerAgentName ?? this.callIdIndex.get(call.id);
+        const key = call.callerAgentName;
         if (key) {
           this.returnedResults.set(key, result);
         }
@@ -1635,6 +1662,17 @@ export class SubagentModule implements Module {
         `[subagent] Dropping async result from '${name}': ` +
         `parent agent '${parentAgentName}' no longer exists (ephemeral parent finished?)`,
       );
+      // Dead-letter the summary — it could be significant work (a long Opus
+      // run at high context). Recoverable from dropped-results.jsonl instead
+      // of gone (fragility audit). Routing it into the root context was worse
+      // (that's why the drop exists), but the work itself shouldn't vanish.
+      this.deadLetter({
+        kind: 'result',
+        subagent: name,
+        parentAgentName,
+        summary: result.summary,
+        toolCallsCount: result.toolCallsCount,
+      });
       return;
     }
 
@@ -1660,6 +1698,7 @@ export class SubagentModule implements Module {
         `[subagent] Dropping async error from '${name}' (${msg}): ` +
         `parent agent '${parentAgentName}' no longer exists (ephemeral parent finished?)`,
       );
+      this.deadLetter({ kind: 'error', subagent: name, parentAgentName, error: msg });
       return;
     }
 
@@ -1904,10 +1943,16 @@ export class SubagentModule implements Module {
 
           this.deleteCancellationHandle(input.name, agentName);
 
-          // Prefer explicit return over speech capture. Keyed primarily by
-          // the unique framework agent name (fragility audit 2.5), with the
-          // display name as fallback for callers without callerAgentName.
-          const returned = this.returnedResults.get(agentName) ?? this.returnedResults.get(input.name);
+          // Prefer explicit return over speech capture. Keyed SOLELY by the
+          // unique framework agent name (fragility audit 2.5). The `return`
+          // tool call's callerAgentName is populated by the framework on every
+          // production dispatch (framework.ts dispatchToolCall enriches every
+          // call with `callerAgentName: agentName`; module-registry propagates
+          // it), so this key is always present and unique per run. Dropping the
+          // old `?? get(input.name)` display-name fallback closes the 2.5 hole
+          // it re-opened: with two same-named runs, an older run could consume
+          // a newer same-named run's display-name-keyed stash.
+          const returned = this.returnedResults.get(agentName);
           if (returned) {
             speech = returned;
           } else if (!speech.trim()) {
@@ -1956,9 +2001,10 @@ export class SubagentModule implements Module {
           this.unregisterLive(input.name, agentName);
           // Drop the returned-result stash on every terminal AND retry path,
           // not just success — a stale stash leaked forever and could be
-          // consumed by a later same-named run (fragility audit 2.5).
+          // consumed by a later same-named run (fragility audit 2.5). Keyed by
+          // the unique framework agent name only; the display-name delete is
+          // gone with the display-name fallback (see completion path above).
           this.returnedResults.delete(agentName);
-          this.returnedResults.delete(input.name);
           cleanup();
         }
       }
@@ -2129,10 +2175,16 @@ export class SubagentModule implements Module {
 
           this.deleteCancellationHandle(input.name, agentName);
 
-          // Prefer explicit return over speech capture. Keyed primarily by
-          // the unique framework agent name (fragility audit 2.5), with the
-          // display name as fallback for callers without callerAgentName.
-          const returned = this.returnedResults.get(agentName) ?? this.returnedResults.get(input.name);
+          // Prefer explicit return over speech capture. Keyed SOLELY by the
+          // unique framework agent name (fragility audit 2.5). The `return`
+          // tool call's callerAgentName is populated by the framework on every
+          // production dispatch (framework.ts dispatchToolCall enriches every
+          // call with `callerAgentName: agentName`; module-registry propagates
+          // it), so this key is always present and unique per run. Dropping the
+          // old `?? get(input.name)` display-name fallback closes the 2.5 hole
+          // it re-opened: with two same-named runs, an older run could consume
+          // a newer same-named run's display-name-keyed stash.
+          const returned = this.returnedResults.get(agentName);
           if (returned) {
             speech = returned;
           } else if (!speech.trim()) {
@@ -2178,9 +2230,8 @@ export class SubagentModule implements Module {
           this.agentDepths.delete(agentName);
           this.unregisterLive(input.name, agentName);
           // Drop the returned-result stash on every terminal AND retry path
-          // (fragility audit 2.5) — see runSpawn.
+          // (fragility audit 2.5) — see runSpawn. Unique agent-name key only.
           this.returnedResults.delete(agentName);
-          this.returnedResults.delete(input.name);
           cleanup();
         }
       }
