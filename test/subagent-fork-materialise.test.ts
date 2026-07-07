@@ -222,6 +222,129 @@ describe('materialiseStructuralFork', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Fragility audit Jul 2026, 2.2: when the matching tool_result had to be
+// SYNTHESISED (parent's tool_results not yet in compiled context), non-fork
+// sibling tool_uses (e.g. a subagent--peek issued alongside the forks) were
+// preserved in the assistant turn WITHOUT any matching tool_result — a
+// guaranteed API 400 on the fork's first inference.
+// ---------------------------------------------------------------------------
+
+/** Collect all tool_use ids and tool_result toolUseIds in a materialised history. */
+function collectToolIds(msgs: Msg[]): { toolUseIds: string[]; resultIds: string[] } {
+  const toolUseIds: string[] = [];
+  const resultIds: string[] = [];
+  for (const m of msgs) {
+    for (const b of m.content) {
+      if (b.type === 'tool_use') toolUseIds.push((b as { id: string }).id);
+      if (b.type === 'tool_result') resultIds.push((b as { toolUseId: string }).toolUseId);
+    }
+  }
+  return { toolUseIds, resultIds };
+}
+
+describe('materialiseStructuralFork — orphaned tool_use protection (audit 2.2)', () => {
+  test('synthesised result turn: sibling non-fork tool_uses without results are stripped', () => {
+    const compiled: Msg[] = [
+      asstText('researcher', 'Dispatching.'),
+      {
+        participant: 'researcher',
+        content: [
+          { type: 'tool_use', id: 'toolu_peek', name: 'subagent--peek', input: {} },
+          { type: 'tool_use', id: 'toolu_A', name: 'subagent--fork', input: { name: 'scout-a', task: 'A' } },
+          { type: 'tool_use', id: 'toolu_B', name: 'subagent--fork', input: { name: 'scout-b', task: 'B' } },
+        ],
+      },
+      // No user turn — the parent's tool_results haven't landed in compiled
+      // context yet; the matching result must be synthesised.
+    ];
+
+    const out = materialiseStructuralFork(compiled, 'toolu_B', 'scout-b', 'B', 1, 3);
+    expect(out).not.toBeNull();
+
+    // Invariant: every tool_use in the materialised history has a matching
+    // tool_result (this is what the API enforces with a 400 otherwise).
+    const { toolUseIds, resultIds } = collectToolIds(out!);
+    for (const id of toolUseIds) {
+      expect(resultIds).toContain(id);
+    }
+
+    // The peek sibling had no result to pair with — it must be gone.
+    expect(JSON.stringify(out)).not.toContain('toolu_peek');
+
+    // The matching fork tool_use + intention-framed result survive.
+    expect(toolUseIds).toContain('toolu_B');
+    const last = out![out!.length - 1];
+    const result = last.content[0] as { type: string; toolUseId: string; content: string };
+    expect(result.type).toBe('tool_result');
+    expect(result.toolUseId).toBe('toolu_B');
+    expect(result.content).toContain('the self reading this is the fork');
+  });
+
+  test('found result turn missing a sibling non-fork result: that tool_use is stripped too', () => {
+    // The result turn exists but only carries the fork results — the peek's
+    // result is absent (e.g. dropped by compression). Preserving the peek
+    // tool_use would orphan it.
+    const compiled: Msg[] = [
+      {
+        participant: 'researcher',
+        content: [
+          { type: 'tool_use', id: 'toolu_peek', name: 'subagent--peek', input: {} },
+          { type: 'tool_use', id: 'toolu_A', name: 'subagent--fork', input: { name: 'scout-a', task: 'A' } },
+          { type: 'tool_use', id: 'toolu_B', name: 'subagent--fork', input: { name: 'scout-b', task: 'B' } },
+        ],
+      },
+      {
+        participant: 'user',
+        content: [
+          { type: 'tool_result', toolUseId: 'toolu_A', content: "Subagent 'scout-a' forked. Running in background." },
+          { type: 'tool_result', toolUseId: 'toolu_B', content: "Subagent 'scout-b' forked. Running in background." },
+        ],
+      },
+    ];
+
+    const out = materialiseStructuralFork(compiled, 'toolu_A', 'scout-a', 'A', 1, 3);
+    expect(out).not.toBeNull();
+
+    const { toolUseIds, resultIds } = collectToolIds(out!);
+    for (const id of toolUseIds) {
+      expect(resultIds).toContain(id);
+    }
+    expect(toolUseIds).toEqual(['toolu_A']);
+    expect(JSON.stringify(out)).not.toContain('toolu_peek');
+  });
+
+  test('sibling non-fork tool_use WITH a result is still preserved (regression guard)', () => {
+    // Mirror of the pre-existing "peek calls etc. are preserved" test, kept
+    // here to pin that the orphan-stripping did not over-strip: a sibling
+    // with a matching result must survive.
+    const compiled: Msg[] = [
+      {
+        participant: 'researcher',
+        content: [
+          { type: 'tool_use', id: 'toolu_peek', name: 'subagent--peek', input: {} },
+          { type: 'tool_use', id: 'toolu_A', name: 'subagent--fork', input: { name: 'scout-a', task: 'A' } },
+        ],
+      },
+      {
+        participant: 'user',
+        content: [
+          { type: 'tool_result', toolUseId: 'toolu_peek', content: 'no fleet running' },
+          { type: 'tool_result', toolUseId: 'toolu_A', content: "Subagent 'scout-a' forked. Running in background." },
+        ],
+      },
+    ];
+
+    const out = materialiseStructuralFork(compiled, 'toolu_A', 'scout-a', 'A', 1, 3);
+    expect(out).not.toBeNull();
+    const { toolUseIds, resultIds } = collectToolIds(out!);
+    expect(toolUseIds.sort()).toEqual(['toolu_A', 'toolu_peek']);
+    for (const id of toolUseIds) {
+      expect(resultIds).toContain(id);
+    }
+  });
+});
+
 describe('buildIntentionFramedForkResult', () => {
   test('includes the task verbatim and the dual-stream framing', () => {
     const text = buildIntentionFramedForkResult('scout-a', 'investigate the FTP server', 1, 3);

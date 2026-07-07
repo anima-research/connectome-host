@@ -213,3 +213,95 @@ describe('FleetTreeAggregator', () => {
     expect(agg.getAllChildNames()).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fragility audit Jul 2026, 2.10: the describeInFlight latch never timed out,
+// and there was no reducer reset on child exit — after a crash (which emits
+// no 'exiting'), the stale latch blocked the post-restart describe forever
+// and post-restart events folded onto the pre-crash tree.
+// ---------------------------------------------------------------------------
+
+describe('FleetTreeAggregator — restart recovery (audit 2.10)', () => {
+  test('crash + restart (new pid) while describe latched: re-describes and drops pre-crash nodes', () => {
+    const fake = new FakeFleet();
+    fake.setChildren([{ name: 'miner', status: 'starting' }]);
+    const agg = new FleetTreeAggregator(fake as never);
+    agg.registerChild('miner');
+    expect(fake.describeRequests.length).toBe(0);
+
+    // First incarnation goes ready — describe #1, snapshot never arrives.
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 100, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(1);
+
+    // Pre-crash live event creates a node.
+    fake.emit('miner', { type: 'inference:started', agentName: 'pre-crash-agent', ts: 1000 } as WireEvent);
+    expect(agg.getChildNodes('miner').some(n => n.name === 'pre-crash-agent')).toBe(true);
+
+    // Hard crash → no 'exiting' event → restart emits ready with a NEW pid.
+    // Pre-fix: describeInFlight was still latched from #1, so no second
+    // describe ever went out, and the pre-crash node stayed in the tree.
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 200, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(2);
+    expect(agg.getChildNodes('miner')).toEqual([]);
+  });
+
+  test('same-pid ready while latch is fresh still dedupes (reconnect, no restart)', () => {
+    const fake = new FakeFleet();
+    fake.setChildren([{ name: 'miner', status: 'starting' }]);
+    const agg = new FleetTreeAggregator(fake as never);
+    agg.registerChild('miner');
+
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 100, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(1);
+    // Same incarnation re-announces ready (e.g. duplicate emit) — still latched.
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 100, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(1);
+  });
+
+  test('describe latch times out: a later ready re-issues describe even with the same pid', async () => {
+    const fake = new FakeFleet();
+    fake.setChildren([{ name: 'miner', status: 'starting' }]);
+    const agg = new FleetTreeAggregator(fake as never, { describeTimeoutMs: 50 });
+    agg.registerChild('miner');
+
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 100, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(1);
+
+    // Snapshot never arrives; latch expires.
+    await new Promise(r => setTimeout(r, 80));
+
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 100, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(2);
+  });
+
+  test('lifecycle:exiting resets the subtree and clears the latch', () => {
+    const fake = new FakeFleet();
+    fake.setChildren([{ name: 'miner', status: 'ready' }]);
+    const agg = new FleetTreeAggregator(fake as never);
+    agg.registerChild('miner');
+    expect(fake.describeRequests.length).toBe(1);
+
+    fake.emit('miner', makeSnapshot(1000, [{ name: 'commander', toolCalls: 2 }]));
+    expect(agg.getChildNodes('miner').length).toBe(1);
+
+    fake.emit('miner', { type: 'lifecycle', phase: 'exiting', reason: 'shutdown', ts: 2000 } as WireEvent);
+    expect(agg.getChildNodes('miner')).toEqual([]);
+
+    // Fresh ready after the graceful restart re-describes immediately.
+    fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 300, dataDir: '/tmp' } as WireEvent);
+    expect(fake.describeRequests.length).toBe(2);
+  });
+
+  test('reset notifies tree-update listeners so stale nodes get re-rendered away', () => {
+    const fake = new FakeFleet();
+    fake.setChildren([{ name: 'miner', status: 'ready' }]);
+    const agg = new FleetTreeAggregator(fake as never);
+    agg.registerChild('miner');
+    fake.emit('miner', makeSnapshot(1000, [{ name: 'commander' }]));
+
+    const updates: string[] = [];
+    agg.onTreeUpdate((scope) => updates.push(scope));
+    fake.emit('miner', { type: 'lifecycle', phase: 'exiting', reason: 'shutdown', ts: 2000 } as WireEvent);
+    expect(updates).toContain('miner');
+  });
+});

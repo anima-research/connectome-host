@@ -107,6 +107,38 @@ interface DetachableHandle {
 }
 
 /**
+ * Silence threshold for zombie detection, shared by the periodic reaper
+ * (reclaimZombieSlots) and the peek predicate (peekOne) so the two surfaces
+ * can't drift apart (fragility audit 2.12 — they were two independent
+ * copies of the same 120s literal).
+ *
+ * Postmortem 2026-05-28 F3: bumped from 30_000ms — 30s was too tight for
+ * Opus on 100–165K-token contexts with rate-limited MCP tools; single-round
+ * TTFT routinely exceeds it. The `requestInFlightSince` guard is the primary
+ * defence; the threshold bump is belt-and-braces for legitimate post-request
+ * pauses.
+ */
+export const ZOMBIE_THRESHOLD_MS = 120_000;
+
+/**
+ * The module's own per-subagent execution deadline fired (withTimeout).
+ * Distinct type so the retry loop can tell "work budget exceeded" from
+ * "provider hiccup" — a budget exceedance retried from scratch just spends
+ * the same budget again, multiplying cost (fragility audit 2.11: the old
+ * plain Error's "timed out" message matched isTransientError's substring
+ * check and triggered whole-task restart amplification).
+ */
+export class SubagentExecutionTimeout extends Error {
+  constructor(
+    public readonly subagentName: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`Subagent ${subagentName} timed out after ${timeoutMs}ms (execution budget exceeded; not retried)`);
+    this.name = 'SubagentExecutionTimeout';
+  }
+}
+
+/**
  * Non-retryable termination of a subagent. All abnormal-but-expected exits
  * (user cancel, zombie reclaim, depth limit, etc.) use this so the catch
  * path can distinguish "killed" from "transient network error".
@@ -325,12 +357,30 @@ export function materialiseStructuralFork(
     out.push({ participant: compiled[i].participant, content: compiled[i].content });
   }
 
-  // Fork assistant turn with sibling fork tool_use blocks stripped. The
-  // matching tool_use is excluded from siblingForkIds by construction, so
-  // this filter always keeps at least one block.
+  // Which tool_results will be present in the (possibly synthesised) result
+  // turn? Any tool_use in the assistant turn without a matching tool_result
+  // in the immediately following turn is a guaranteed API 400 on the fork's
+  // first inference (fragility audit 2.2: a subagent--peek issued alongside
+  // the forks used to be preserved without its result when the result turn
+  // had to be synthesised). Sibling fork results are excluded — their
+  // tool_uses get stripped below, so keeping their results would create the
+  // mirror-image orphan.
+  const availableResultIds = new Set<string>([callToolUseId]);
+  if (matchingResultIdx >= 0) {
+    for (const b of compiled[matchingResultIdx].content) {
+      if (isToolResultContent(b) && !siblingForkIds.has(b.toolUseId)) {
+        availableResultIds.add(b.toolUseId);
+      }
+    }
+  }
+
+  // Fork assistant turn: strip sibling fork tool_use blocks AND any other
+  // tool_use with no matching tool_result in the result turn. The matching
+  // tool_use is always in availableResultIds by construction, so this
+  // filter always keeps at least one block.
   const trimmedAssistantContent = forkAssistantMsg.content.filter(b => {
     if (!isToolUseContent(b)) return true;
-    return !(b.name === 'subagent--fork' && siblingForkIds.has(b.id));
+    return availableResultIds.has(b.id);
   });
   out.push({ participant: forkAssistantMsg.participant, content: trimmedAssistantContent });
 
@@ -442,7 +492,18 @@ export class SubagentModule implements Module {
   private callIdIndex = new Map<string, string>();                        // toolCallId → displayName
   private streamSubscribers = new Map<string, Set<SubagentStreamCallback>>();  // displayName → callbacks
   private lastInputTokens = new Map<string, number>();  // displayName → last known input token count
-  private cancellationHandles = new Map<string, { reject: (err: Error) => void }>();  // displayName → cancel
+  // displayName → cancel. `owner` is the collision-proofed framework agent
+  // name of the run that registered the handle, so a completing older run
+  // with the same display name can't delete a newer run's handle (fragility
+  // audit 2.6). `releaseSlotOnce` is the owning run's idempotent slot
+  // release — the zombie reaper calls it instead of decrementing the counter
+  // directly, so reclaim + the run's own finally can't double-release
+  // (fragility audit 2.4).
+  private cancellationHandles = new Map<string, {
+    reject: (err: Error) => void;
+    owner: string;
+    releaseSlotOnce: () => void;
+  }>();
   private agentDepths = new Map<string, number>();  // framework agent name → fork depth
 
   constructor(config: SubagentModuleConfig = {}) {
@@ -783,13 +844,15 @@ export class SubagentModule implements Module {
       case 'peek':
         return this.handlePeek(call.input as { name?: string }, caller);
       case 'return': {
-        // Stash the result keyed by the tool call ID. The completion path
-        // in runSpawn/runFork will pick it up via the callIdIndex → displayName.
+        // Stash the result for the completion path in runSpawn/runFork.
+        // Keyed primarily by the caller's framework agent name — unique per
+        // run — so two subagents sharing a display name can't consume each
+        // other's stash (fragility audit 2.5). Falls back to the
+        // callIdIndex → displayName mapping when callerAgentName is absent.
         const result = (call.input as { result: string }).result;
-        // Find which subagent is calling this via the callIdIndex
-        const callerName = this.callIdIndex.get(call.id);
-        if (callerName) {
-          this.returnedResults.set(callerName, result);
+        const key = call.callerAgentName ?? this.callIdIndex.get(call.id);
+        if (key) {
+          this.returnedResults.set(key, result);
         }
         return { success: true, data: 'Result received.', endTurn: true };
       }
@@ -953,12 +1016,8 @@ export class SubagentModule implements Module {
    * Returns the number of slots reclaimed.
    */
   private reclaimZombieSlots(): number {
-    // Postmortem 2026-05-28 F3: bumped from 30_000ms — 30s was too tight for
-    // Opus on 100–165K-token contexts with rate-limited MCP tools; single-
-    // round TTFT routinely exceeds it. The `requestInFlightSince` guard
-    // (below) is the primary defence; the threshold bump is belt-and-braces
-    // for legitimate post-request pauses.
-    const ZOMBIE_THRESHOLD_MS = 120_000;
+    // Threshold shared with the peek predicate — see the exported
+    // ZOMBIE_THRESHOLD_MS at the top of this file (fragility audit 2.12).
     let reclaimed = 0;
 
     for (const [displayName, live] of this.liveSubagents) {
@@ -1015,10 +1074,19 @@ export class SubagentModule implements Module {
         entry.completedAt = Date.now();
         entry.statusMessage = 'zombie — slot reclaimed';
 
-        // Release the slot (the finally block in runSpawn/runFork will also
-        // call releaseSlot, but that's safe — activeConcurrent just goes to
-        // max(0, activeConcurrent-1) effectively)
-        this.activeConcurrent = Math.max(0, this.activeConcurrent - 1);
+        if (handle) {
+          // Release the slot exactly once on behalf of the reclaimed run.
+          // The run's own finally goes through the same once-guard, so
+          // reclaim + finally can no longer double-decrement the counter
+          // below the true active count (fragility audit 2.4: over-admission
+          // after every reclaim).
+          handle.releaseSlotOnce();
+        } else {
+          // No racing run to unblock (entry installed without a live run, or
+          // the narrow pre-race window inside an attempt). Fall back to the
+          // direct guarded decrement — pre-audit behavior.
+          this.activeConcurrent = Math.max(0, this.activeConcurrent - 1);
+        }
         reclaimed++;
       }
     }
@@ -1069,25 +1137,54 @@ export class SubagentModule implements Module {
 
   private isRateLimitError(err: unknown): boolean {
     if (!(err instanceof Error)) return false;
+    // Typed status wins over message sniffing when the SDK attached one.
+    if ((err as { status?: unknown }).status === 429) return true;
     const msg = err.message.toLowerCase();
-    return msg.includes('rate') || msg.includes('429') || msg.includes('too many');
+    // Fragility audit 2.3: the old bare `includes('rate')` matched
+    // "generate"/"moderate", and bare '429' matched digits inside token
+    // counts. Anchor to the actual rate-limit vocabulary.
+    return (
+      /\brate[\s_-]?limit/.test(msg) ||   // "rate limit", "rate_limit_error", "ratelimited"
+      /\b429\b/.test(msg) ||              // \b doesn't fire between digits, so "14290" is safe
+      msg.includes('too many requests')
+    );
   }
 
-  /** Transient = worth retrying the whole subagent from scratch. */
+  /**
+   * Transient = worth retrying the whole subagent from scratch.
+   *
+   * Classification is deliberately conservative (fragility audit 2.3): the
+   * old substring checks like `includes('502')` matched digits inside token
+   * counts ("~195023 tokens"), so deterministic failures (oversized prompts)
+   * were retried at full cost. Word-boundary regexes fix that — `\b502\b`
+   * cannot match inside "195023" because there is no boundary between digits.
+   */
   private isTransientError(err: Error): boolean {
+    // The module's own execution deadline is a work-budget exceedance, not
+    // provider flakiness — never retry it (fragility audit 2.11).
+    if (err instanceof SubagentExecutionTimeout) return false;
+
     const msg = err.message.toLowerCase();
+
+    // Deterministic failures: retrying resends the same oversized prompt.
+    if (msg.includes('prompt too large')) return false;
+
+    // Typed status code, when the provider SDK attached one.
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === 'number') {
+      return [408, 429, 500, 502, 503, 504, 529].includes(status);
+    }
+
     return (
-      msg.includes('timeout') ||
+      /\btimed?[\s_-]?out\b/.test(msg) ||   // "timeout", "timed out" (network/idle timeouts)
+      msg.includes('etimedout') ||
       msg.includes('idle') ||
       msg.includes('econnreset') ||
       msg.includes('socket hang up') ||
       msg.includes('network') ||
       msg.includes('stream aborted') ||
       msg.includes('overloaded') ||
-      msg.includes('529') ||
-      msg.includes('500') ||
-      msg.includes('502') ||
-      msg.includes('503') ||
+      /\b(500|502|503|504|529)\b/.test(msg) ||
       this.isRateLimitError(err)
     );
   }
@@ -1232,15 +1329,28 @@ export class SubagentModule implements Module {
   }
 
   private unregisterLive(displayName: string, frameworkAgentName: string): void {
-    // Clean up callId index entries for this subagent
+    // Only tear down the display-name-keyed entry if it still belongs to
+    // this run. With duplicate display names, a newer run's registerLive
+    // has replaced the entry — deleting it here would destroy the newer
+    // run's live tracking (peek, lastActivityAt bumps, zombie predicate)
+    // the moment the older run completes (fragility audit 2.6).
     const live = this.liveSubagents.get(displayName);
-    if (live) {
+    if (live && live.frameworkAgentName === frameworkAgentName) {
+      // Clean up callId index entries for this subagent
       for (const callId of live.activeCallIds) {
         this.callIdIndex.delete(callId);
       }
+      this.liveSubagents.delete(displayName);
     }
-    this.liveSubagents.delete(displayName);
     this.frameworkNameIndex.delete(frameworkAgentName);
+  }
+
+  /** Delete a cancellation handle only if it is still owned by the given run
+   *  (fragility audit 2.6: an older same-named run must not delete a newer
+   *  run's handle). */
+  private deleteCancellationHandle(displayName: string, owner: string): void {
+    const h = this.cancellationHandles.get(displayName);
+    if (h && h.owner === owner) this.cancellationHandles.delete(displayName);
   }
 
   /** Fan out a stream event to all subscribers for this subagent + wildcard. */
@@ -1340,8 +1450,9 @@ export class SubagentModule implements Module {
     // `startedAt`, which flagged any subagent >30s old as a zombie the moment
     // it was between tokens — saturating peers' context with false alarms and
     // driving an orchestrator-level retry storm. Now keyed off `lastActivityAt`
-    // and gated by `!requestInFlightSince` to match the reaper.
-    const ZOMBIE_THRESHOLD_MS = 120_000;
+    // and gated by `!requestInFlightSince` to match the reaper. Threshold is
+    // the module-level exported ZOMBIE_THRESHOLD_MS shared with the reaper
+    // (fragility audit 2.12).
     const silentMs = entry ? Date.now() - entry.lastActivityAt : 0;
     const isZombie = (entry?.status === 'running')
       && silentMs > ZOMBIE_THRESHOLD_MS
@@ -1393,7 +1504,9 @@ export class SubagentModule implements Module {
       promise,
       new Promise<never>((_, reject) =>
         setTimeout(
-          () => reject(new Error(`Subagent ${name} timed out after ${timeoutMs}ms`)),
+          // Distinct type: a work-budget timeout must not be classified as
+          // transient by the retry loop (fragility audit 2.11).
+          () => reject(new SubagentExecutionTimeout(name, timeoutMs)),
           timeoutMs,
         )
       ),
@@ -1498,9 +1611,32 @@ export class SubagentModule implements Module {
     return { success: true, data: `Subagent '${input.name}' forked. Running in background.` };
   }
 
+  /**
+   * True if the named parent agent still exists in the framework. Async
+   * results delivered after an ephemeral parent has finished would land in
+   * the PRIMARY agent's store (this.ctx.addMessage) and fire an
+   * inference-request for a dead agent name — polluting the root context
+   * with results nobody can integrate (fragility audit 2.7).
+   */
+  private isParentAlive(parentAgentName: string): boolean {
+    try {
+      return !!this.framework?.getAgent(parentAgentName);
+    } catch {
+      return false;
+    }
+  }
+
   private deliverAsyncResult(name: string, result: SubagentResult, parentAgentName: string): void {
     this.asyncHandles.delete(name);
     if (!this.ctx) return;
+
+    if (!this.isParentAlive(parentAgentName)) {
+      console.error(
+        `[subagent] Dropping async result from '${name}': ` +
+        `parent agent '${parentAgentName}' no longer exists (ephemeral parent finished?)`,
+      );
+      return;
+    }
 
     this.ctx.addMessage('user', [{
       type: 'text',
@@ -1517,6 +1653,15 @@ export class SubagentModule implements Module {
   private deliverAsyncError(name: string, err: unknown, parentAgentName: string): void {
     this.asyncHandles.delete(name);
     if (!this.ctx) return;
+
+    if (!this.isParentAlive(parentAgentName)) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[subagent] Dropping async error from '${name}' (${msg}): ` +
+        `parent agent '${parentAgentName}' no longer exists (ephemeral parent finished?)`,
+      );
+      return;
+    }
 
     const message = err instanceof Error ? err.message : String(err);
     this.ctx.addMessage('user', [{
@@ -1678,6 +1823,15 @@ export class SubagentModule implements Module {
 
   private async runSpawn(input: SpawnInput, _callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
+    // Idempotent slot release shared between this run's finally and the
+    // zombie reaper — whichever fires first wins, the other is a no-op
+    // (fragility audit 2.4).
+    let slotReleased = false;
+    const releaseSlotOnce = (): void => {
+      if (slotReleased) return;
+      slotReleased = true;
+      this.releaseSlot();
+    };
     const childDepth = callerDepth + 1;
 
     const now = Date.now();
@@ -1736,7 +1890,7 @@ export class SubagentModule implements Module {
 
           // Race execution against both timeout and user cancellation
           const cancelPromise = new Promise<never>((_, reject) => {
-            this.cancellationHandles.set(input.name, { reject });
+            this.cancellationHandles.set(input.name, { reject, owner: agentName, releaseSlotOnce });
           });
 
           let { speech, toolCallsCount } = await Promise.race([
@@ -1748,13 +1902,14 @@ export class SubagentModule implements Module {
             cancelPromise,
           ]);
 
-          this.cancellationHandles.delete(input.name);
+          this.deleteCancellationHandle(input.name, agentName);
 
-          // Prefer explicit return over speech capture
-          const returned = this.returnedResults.get(input.name);
+          // Prefer explicit return over speech capture. Keyed primarily by
+          // the unique framework agent name (fragility audit 2.5), with the
+          // display name as fallback for callers without callerAgentName.
+          const returned = this.returnedResults.get(agentName) ?? this.returnedResults.get(input.name);
           if (returned) {
             speech = returned;
-            this.returnedResults.delete(input.name);
           } else if (!speech.trim()) {
             speech = this.extractLastAssistantText(contextManager);
           }
@@ -1769,7 +1924,7 @@ export class SubagentModule implements Module {
           return { summary: finalSummary, findings: [], issues: [], toolCallsCount };
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
-          this.cancellationHandles.delete(input.name);
+          this.deleteCancellationHandle(input.name, agentName);
 
           // Non-retryable termination (user cancel, zombie reclaim, etc.).
           // Postmortem 2026-05-28 P1 #4: terminal-but-benign — 'cancelled',
@@ -1799,6 +1954,11 @@ export class SubagentModule implements Module {
         } finally {
           this.agentDepths.delete(agentName);
           this.unregisterLive(input.name, agentName);
+          // Drop the returned-result stash on every terminal AND retry path,
+          // not just success — a stale stash leaked forever and could be
+          // consumed by a later same-named run (fragility audit 2.5).
+          this.returnedResults.delete(agentName);
+          this.returnedResults.delete(input.name);
           cleanup();
         }
       }
@@ -1809,12 +1969,20 @@ export class SubagentModule implements Module {
       throw lastError!;
     } finally {
       this.persistState();
-      this.releaseSlot();
+      releaseSlotOnce();
     }
   }
 
   private async runFork(input: ForkInput, callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number, callToolUseId?: string): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
+    // See runSpawn — idempotent slot release shared with the zombie reaper
+    // (fragility audit 2.4).
+    let slotReleased = false;
+    const releaseSlotOnce = (): void => {
+      if (slotReleased) return;
+      slotReleased = true;
+      this.releaseSlot();
+    };
     const childDepth = callerDepth + 1;
 
     const now = Date.now();
@@ -1947,7 +2115,7 @@ export class SubagentModule implements Module {
 
           // Race execution against both timeout and user cancellation
           const cancelPromise = new Promise<never>((_, reject) => {
-            this.cancellationHandles.set(input.name, { reject });
+            this.cancellationHandles.set(input.name, { reject, owner: agentName, releaseSlotOnce });
           });
 
           let { speech, toolCallsCount } = await Promise.race([
@@ -1959,13 +2127,14 @@ export class SubagentModule implements Module {
             cancelPromise,
           ]);
 
-          this.cancellationHandles.delete(input.name);
+          this.deleteCancellationHandle(input.name, agentName);
 
-          // Prefer explicit return over speech capture
-          const returned = this.returnedResults.get(input.name);
+          // Prefer explicit return over speech capture. Keyed primarily by
+          // the unique framework agent name (fragility audit 2.5), with the
+          // display name as fallback for callers without callerAgentName.
+          const returned = this.returnedResults.get(agentName) ?? this.returnedResults.get(input.name);
           if (returned) {
             speech = returned;
-            this.returnedResults.delete(input.name);
           } else if (!speech.trim()) {
             speech = this.extractLastAssistantText(contextManager);
           }
@@ -1980,7 +2149,7 @@ export class SubagentModule implements Module {
           return { summary: finalSummary, findings: [], issues: [], toolCallsCount };
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
-          this.cancellationHandles.delete(input.name);
+          this.deleteCancellationHandle(input.name, agentName);
 
           // Non-retryable termination (user cancel, zombie reclaim, etc.).
           // See P1 #4 comment in runSpawn — 'cancelled', not 'completed'.
@@ -2008,6 +2177,10 @@ export class SubagentModule implements Module {
         } finally {
           this.agentDepths.delete(agentName);
           this.unregisterLive(input.name, agentName);
+          // Drop the returned-result stash on every terminal AND retry path
+          // (fragility audit 2.5) — see runSpawn.
+          this.returnedResults.delete(agentName);
+          this.returnedResults.delete(input.name);
           cleanup();
         }
       }
@@ -2018,7 +2191,7 @@ export class SubagentModule implements Module {
       throw lastError!;
     } finally {
       this.persistState();
-      this.releaseSlot();
+      releaseSlotOnce();
     }
   }
 

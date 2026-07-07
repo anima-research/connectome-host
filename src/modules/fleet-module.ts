@@ -106,6 +106,13 @@ export interface FleetModuleConfig {
    */
   childRuntimePath?: string;
   /**
+   * PID-liveness poll interval for ADOPTED children (default: 5s).
+   * Adopted children have no ChildProcess handle (process === null), so
+   * there is no 'exit' event — a periodic `kill(pid, 0)` probe is the only
+   * crash signal for them (fragility audit 2.8).
+   */
+  adoptedPollIntervalMs?: number;
+  /**
    * Children to launch on start().  Each child spawns concurrently;
    * start() returns immediately (spawns are fire-and-forget so a slow
    * child doesn't block framework start).
@@ -229,6 +236,15 @@ export class FleetModule implements Module {
   private readonly restartFlapWindowMs = 60_000;
   private readonly restartFlapCap = 3;
   /**
+   * Restart-attempt timestamps keyed by child NAME, kept on the module
+   * rather than the FleetChild record. tryAutoRestart deletes the crashed
+   * record and handleLaunch recreates it with `restartAttempts: []`, so
+   * per-record accounting reset on every cycle and the 3-in-60s flap cap
+   * never accumulated (fragility audit 2.1). This map survives the
+   * delete/recreate cycle.
+   */
+  private restartHistory = new Map<string, number[]>();
+  /**
    * Effective allowlist entries.  Only consulted when `allowlistEnabled` is
    * true; when false, every recipe is allowed.
    */
@@ -244,6 +260,9 @@ export class FleetModule implements Module {
   private eventSubscribers = new Map<string, Set<FleetEventSubscription>>();
   /** Installed by start(), removed by stop(); see killAllOnExitSync(). */
   private exitHandler: (() => void) | null = null;
+  /** PID-liveness poll timers for adopted children (fragility audit 2.8),
+   *  keyed by child name. Cleared on child removal and in stop(). */
+  private adoptedPollTimers = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(config: FleetModuleConfig = {}) {
     this.config = {
@@ -255,6 +274,7 @@ export class FleetModule implements Module {
       sigtermEscalationMs: config.sigtermEscalationMs ?? 5_000,
       childIndexPath: config.childIndexPath ?? process.argv[1] ?? '',
       childRuntimePath: config.childRuntimePath ?? process.execPath,
+      adoptedPollIntervalMs: config.adoptedPollIntervalMs ?? 5_000,
     };
 
     this.autoStartChildren = config.autoStart ?? [];
@@ -412,6 +432,9 @@ export class FleetModule implements Module {
         const reattached = await this.reattachToLivingChild(p);
         this.children.set(name, reattached);
         adopted.add(name);
+        // Adopted children have no ChildProcess handle → no 'exit' event.
+        // Poll pid liveness so crashes are detected (fragility audit 2.8).
+        this.startAdoptedLivenessPoll(reattached);
         console.error(`[fleet] adopted "${name}" (pid=${p.pid}, socket=${p.socketPath})`);
       } catch (err) {
         console.error(`[fleet] failed to adopt "${name}": ${String(err)}`);
@@ -529,6 +552,68 @@ export class FleetModule implements Module {
     return child;
   }
 
+  /**
+   * Start a PID-liveness poll for an ADOPTED child (process === null).
+   * Spawned children get crash detection from the ChildProcess 'exit'
+   * event; adopted children have no handle, so without this poll a dead
+   * adopted child stayed 'ready' forever and autoRestart never fired
+   * (fragility audit 2.8).
+   */
+  private startAdoptedLivenessPoll(child: FleetChild): void {
+    this.stopAdoptedPoll(child.name);
+    if (child.process !== null || child.pid === null) return;
+    const pid = child.pid;
+
+    const timer = setInterval(() => {
+      const current = this.children.get(child.name);
+      // Child removed or replaced by a freshly spawned record — stop polling.
+      if (current !== child || child.process !== null) {
+        this.stopAdoptedPoll(child.name);
+        return;
+      }
+      if (child.status !== 'ready' && child.status !== 'starting') {
+        this.stopAdoptedPoll(child.name);
+        return;
+      }
+      try {
+        process.kill(pid, 0);
+        return;  // still alive
+      } catch {
+        // ESRCH — process is gone.
+      }
+      this.stopAdoptedPoll(child.name);
+      child.exitedAt = Date.now();
+      child.exitCode = null;  // unknown — we never had the process handle
+      child.status = child.killRequested ? 'exited' : 'crashed';
+      child.exitReason = child.killRequested
+        ? 'killed (adopted; detected by pid poll)'
+        : 'adopted child process died (detected by pid poll)';
+      try { child.socket?.destroy(); } catch { /* noop */ }
+      child.socket = null;
+      console.error(`[fleet] adopted child "${child.name}" (pid=${pid}) is gone — marked ${child.status}`);
+      this.persistState();
+
+      if (child.autoRestart && !child.killRequested && !this.stopping) {
+        this.tryAutoRestart(child);
+      }
+    }, this.config.adoptedPollIntervalMs);
+
+    // Don't keep the event loop alive just for the poll.
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+    this.adoptedPollTimers.set(child.name, timer);
+  }
+
+  /** Clear the adopted-liveness poll for a child, if any. */
+  private stopAdoptedPoll(name: string): void {
+    const timer = this.adoptedPollTimers.get(name);
+    if (timer) {
+      clearInterval(timer);
+      this.adoptedPollTimers.delete(name);
+    }
+  }
+
   /** Remove leftover PID / socket files for a dead child. */
   private cleanupStaleChildFiles(p: PersistedChild): void {
     try { if (existsSync(p.socketPath)) unlinkSync(p.socketPath); } catch { /* noop */ }
@@ -544,15 +629,22 @@ export class FleetModule implements Module {
    */
   private tryAutoRestart(child: FleetChild): void {
     const now = Date.now();
-    child.restartAttempts = child.restartAttempts.filter((t) => now - t < this.restartFlapWindowMs);
-    if (child.restartAttempts.length >= this.restartFlapCap) {
+    // Module-level history (see restartHistory): the FleetChild record's own
+    // restartAttempts array is recreated empty on every restart cycle, so it
+    // cannot carry the flap window across delete/recreate.
+    const history = (this.restartHistory.get(child.name) ?? [])
+      .filter((t) => now - t < this.restartFlapWindowMs);
+    this.restartHistory.set(child.name, history);
+    if (history.length >= this.restartFlapCap) {
       console.error(
         `[fleet] autoRestart disabled for "${child.name}" — ${this.restartFlapCap} crashes in ${this.restartFlapWindowMs / 1000}s`,
       );
       return;
     }
-    child.restartAttempts.push(now);
-    const attempt = child.restartAttempts.length;
+    history.push(now);
+    // Mirror onto the record for observability (status views read the record).
+    child.restartAttempts = [...history];
+    const attempt = history.length;
 
     // Exponential backoff with small jitter to de-sync sibling crashes:
     // attempt 1 -> ~1s, attempt 2 -> ~3s, attempt 3 -> ~10s.
@@ -572,6 +664,7 @@ export class FleetModule implements Module {
     if (child.env !== undefined) input.env = child.env;
 
     // Drop the crashed record so handleLaunch can register a fresh one.
+    this.stopAdoptedPoll(child.name);
     this.children.delete(child.name);
 
     setTimeout(() => {
@@ -591,6 +684,11 @@ export class FleetModule implements Module {
   async stop(): Promise<void> {
     // Mark shutdown so the process 'exit' handlers don't trigger autoRestart.
     this.stopping = true;
+
+    // Stop adopted-child liveness polls (fragility audit 2.8).
+    for (const name of [...this.adoptedPollTimers.keys()]) {
+      this.stopAdoptedPoll(name);
+    }
 
     // Uninstall the 'exit' safety net first so we don't pin this instance in
     // memory after a clean shutdown, and so MaxListenersExceededWarning doesn't
@@ -912,51 +1010,29 @@ export class FleetModule implements Module {
       };
     }
     // Drop the old record if it had previously exited/crashed — re-spawn replaces.
-    if (existing) this.children.delete(input.name);
+    if (existing) {
+      this.stopAdoptedPoll(input.name);
+      this.children.delete(input.name);
+    }
 
     const recipePath = isUrlOrAbsolute(input.recipe)
       ? input.recipe
       : resolve(process.cwd(), input.recipe);
 
-    // No-subfleets invariant: a fleet child may not itself declare a fleet
-    // module. Enforced before subprocess spawn so the failure mode is a clean
-    // synchronous tool error rather than a child crashing mid-startup. See
-    // UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
-    // unified tree's cross-process visibility tractable).
-    //
-    // We only fail on a *confirmed* nested-fleet declaration. If the recipe
-    // can't be loaded for any other reason (file missing, unfetchable URL,
-    // malformed JSON, mock-test recipes), let the existing spawn path surface
-    // that failure naturally — pre-empting it here would mask test fixtures
-    // and unrelated misconfigurations.
-    try {
-      const childRecipe = await loadRecipe(recipePath);
-      const fleetField = childRecipe.modules?.fleet;
-      const declaresFleet = fleetField === true ||
-        (typeof fleetField === 'object' && fleetField !== null);
-      if (declaresFleet) {
-        return {
-          success: false,
-          isError: true,
-          error:
-            `fleet child recipe '${input.name}' (${recipePath}) declares its own 'fleet' module; ` +
-            `nested fleets are not supported. Remove the 'fleet' entry from that recipe's modules ` +
-            `to launch it as a child. (See UNIFIED-TREE-PLAN.md §6.)`,
-        };
-      }
-    } catch {
-      // Recipe couldn't be loaded — defer to the natural spawn-time failure.
-    }
-
     const dataDir = input.dataDir
       ? (isAbsolute(input.dataDir) ? input.dataDir : resolve(process.cwd(), input.dataDir))
       : resolve(process.cwd(), 'data', input.name);
 
-    mkdirSync(dataDir, { recursive: true });
-
     const socketPath = join(dataDir, 'ipc.sock');
     const subscription = input.subscription ?? this.config.defaultSubscription;
 
+    // Reserve the name in the children map SYNCHRONOUSLY, before the first
+    // await (fragility audit 2.9): two concurrent launches with the same name
+    // could both pass the duplicate check above while the first was parked on
+    // `await loadRecipe`, then the second children.set() silently overwrote
+    // the first record — leaking an untracked child process. This record is
+    // the reservation; every early-failure path from here to spawn must
+    // delete it.
     const child: FleetChild = {
       name: input.name,
       recipePath,
@@ -981,6 +1057,48 @@ export class FleetModule implements Module {
     };
     if (input.env !== undefined) child.env = input.env;
     this.children.set(input.name, child);
+
+    try {
+      mkdirSync(dataDir, { recursive: true });
+    } catch (err) {
+      this.children.delete(input.name);
+      return {
+        success: false,
+        isError: true,
+        error: `cannot create dataDir ${dataDir}: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // No-subfleets invariant: a fleet child may not itself declare a fleet
+    // module. Enforced before subprocess spawn so the failure mode is a clean
+    // synchronous tool error rather than a child crashing mid-startup. See
+    // UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
+    // unified tree's cross-process visibility tractable).
+    //
+    // We only fail on a *confirmed* nested-fleet declaration. If the recipe
+    // can't be loaded for any other reason (file missing, unfetchable URL,
+    // malformed JSON, mock-test recipes), let the existing spawn path surface
+    // that failure naturally — pre-empting it here would mask test fixtures
+    // and unrelated misconfigurations.
+    try {
+      const childRecipe = await loadRecipe(recipePath);
+      const fleetField = childRecipe.modules?.fleet;
+      const declaresFleet = fleetField === true ||
+        (typeof fleetField === 'object' && fleetField !== null);
+      if (declaresFleet) {
+        this.children.delete(input.name);
+        return {
+          success: false,
+          isError: true,
+          error:
+            `fleet child recipe '${input.name}' (${recipePath}) declares its own 'fleet' module; ` +
+            `nested fleets are not supported. Remove the 'fleet' entry from that recipe's modules ` +
+            `to launch it as a child. (See UNIFIED-TREE-PLAN.md §6.)`,
+        };
+      }
+    } catch {
+      // Recipe couldn't be loaded — defer to the natural spawn-time failure.
+    }
 
     if (!this.config.childIndexPath) {
       this.children.delete(input.name);
@@ -1184,6 +1302,7 @@ export class FleetModule implements Module {
     if (c.status === 'starting' || c.status === 'ready') {
       await this.killChild(c);
     }
+    this.stopAdoptedPoll(c.name);
     this.children.delete(c.name);
     // Restart is implicitly allowed — we're using the exact recipe the child
     // was originally launched with (which already passed the allowlist check).

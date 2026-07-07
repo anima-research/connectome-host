@@ -35,13 +35,27 @@ interface ChildState {
   lastSnapshotTs: number;
   /** True once we've requested a describe and are awaiting a snapshot. */
   describeInFlight: boolean;
+  /** When the in-flight describe was issued. Lets the latch time out: if the
+   *  snapshot never arrives (child crashed mid-describe, message lost), the
+   *  latch used to stick forever and no describe could ever be issued again
+   *  (fragility audit 2.10). */
+  describeInFlightSince: number;
   /** Set once we've ever received a snapshot — used to detect post-restart. */
   hasInitialSnapshot: boolean;
+  /** pid carried by the most recent lifecycle:ready. A later ready with a
+   *  DIFFERENT pid means the child process was restarted — a hard crash
+   *  emits no 'exiting', so the pid change is the only reliable signal to
+   *  reset the subtree (fragility audit 2.10: post-restart events folded
+   *  onto the pre-crash tree). */
+  lastReadyPid: number | null;
   /** Unsubscribe handle for the per-child event subscription. */
   unsubscribe: () => void;
 }
 
 export type TreeUpdateListener = (childName: string | 'local') => void;
+
+/** Default timeout for the describe-in-flight latch (see ChildState). */
+const DEFAULT_DESCRIBE_TIMEOUT_MS = 30_000;
 
 export class FleetTreeAggregator {
   private fleet: FleetModule;
@@ -49,9 +63,11 @@ export class FleetTreeAggregator {
   private listeners = new Set<TreeUpdateListener>();
   /** Generation counter for corrIds; debugging convenience. */
   private corrIdSeq = 0;
+  private describeTimeoutMs: number;
 
-  constructor(fleet: FleetModule) {
+  constructor(fleet: FleetModule, opts: { describeTimeoutMs?: number } = {}) {
     this.fleet = fleet;
+    this.describeTimeoutMs = opts.describeTimeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS;
   }
 
   /** Register a child. Idempotent — re-registering with the same name is a noop
@@ -70,7 +86,9 @@ export class FleetTreeAggregator {
       reducer,
       lastSnapshotTs: 0,
       describeInFlight: false,
+      describeInFlightSince: 0,
       hasInitialSnapshot: false,
+      lastReadyPid: null,
       unsubscribe,
     });
 
@@ -153,18 +171,30 @@ export class FleetTreeAggregator {
     if (event.type === 'lifecycle') {
       const phase = (event as { phase?: string }).phase;
       if (phase === 'ready') {
+        const pid = (event as { pid?: number | null }).pid ?? null;
+        // Restart detection (fragility audit 2.10): a hard crash emits no
+        // 'exiting', so a later ready with a DIFFERENT pid is the only
+        // signal this is a new incarnation. Reset the subtree so
+        // post-restart events don't fold onto the pre-crash tree, and clear
+        // the describe latch so a fresh describe actually goes out.
+        if (pid !== null && state.lastReadyPid !== null && pid !== state.lastReadyPid) {
+          this.resetChildState(name, state);
+        }
+        if (pid !== null) state.lastReadyPid = pid;
         // Always request describe on ready — covers cold-start, reconnect, restart.
         // The reducer's applySnapshot wipes prior state, so re-requesting is safe
         // even if we have current data.
         this.requestDescribe(name);
         return;
       }
-      // 'exiting' is purely informational here. There's no reset code below;
-      // the implicit recovery is: when the child restarts and emits a fresh
-      // lifecycle:ready, the branch above triggers a describe, and
-      // applySnapshot wipes the stale reducer state at that point. The
-      // hasInitialSnapshot flag below is what gates stale-event filtering
-      // through the gap.
+      if (phase === 'exiting') {
+        // Graceful exit: drop the subtree now so a dead child doesn't keep
+        // rendering stale nodes, and clear the describe latch. When the
+        // child restarts, its fresh lifecycle:ready re-describes
+        // (fragility audit 2.10).
+        this.resetChildState(name, state);
+        return;
+      }
     }
 
     // Drop events older than the most recent snapshot — they're already
@@ -178,13 +208,32 @@ export class FleetTreeAggregator {
     this.notify(name);
   }
 
+  /** Reset a child's subtree to pristine (new reducer, no snapshot, latch
+   *  cleared) and notify listeners that the tree changed. */
+  private resetChildState(name: string, state: ChildState): void {
+    state.reducer = new AgentTreeReducer();
+    state.lastSnapshotTs = 0;
+    state.describeInFlight = false;
+    state.describeInFlightSince = 0;
+    state.hasInitialSnapshot = false;
+    this.notify(name);
+  }
+
   private requestDescribe(name: string): void {
     const state = this.childStates.get(name);
     if (!state) return;
-    if (state.describeInFlight) return;
+    if (state.describeInFlight) {
+      // Honour the latch only while it's fresh — see describeInFlightSince
+      // (fragility audit 2.10).
+      const age = Date.now() - state.describeInFlightSince;
+      if (age < this.describeTimeoutMs) return;
+    }
     const corrId = `agg-${++this.corrIdSeq}`;
     const ok = this.fleet.requestDescribe(name, corrId);
-    if (ok) state.describeInFlight = true;
+    if (ok) {
+      state.describeInFlight = true;
+      state.describeInFlightSince = Date.now();
+    }
   }
 
   private notify(scope: string | 'local'): void {
