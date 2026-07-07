@@ -120,6 +120,29 @@ interface ClientState {
    *  carries its detacher so unsubscribe and disconnect both clean up
    *  without the framework leaking listeners. */
   peeks: Map<string, () => void>;
+  /**
+   * Live trace/child-event frames that arrived while this client's welcome
+   * was being built. Non-null only during that window (welcomed=false with a
+   * welcome in flight); flushed in order right after the welcome frame so
+   * nothing fired mid-`buildWelcome()` is silently dropped. Bounded — see
+   * PENDING_TRACE_BUFFER_LIMIT.
+   */
+  pendingWelcomeTraces: WebUiServerMessage[] | null;
+  /**
+   * Server-side arming of the quit-confirm flow: epoch-millis deadline set
+   * when THIS client issued /quit and received quit-confirm-required. A
+   * `quit-confirm` frame is only honored while this is set and unexpired —
+   * without it, any authenticated (or CSRF'd) frame could SIGTERM the host.
+   * Single-use: cleared on any quit-confirm, and dies with the connection.
+   */
+  pendingQuitExpiresAt: number | null;
+  /**
+   * Consecutive ws.send() calls that reported backpressure (-1) or drop (0).
+   * Reset to 0 on any successful send or `drain` event. When it crosses
+   * BACKPRESSURE_CLOSE_AFTER the socket is closed — the client reconnects
+   * and gets a fresh welcome instead of an ever-growing kernel buffer.
+   */
+  backpressureCount: number;
 }
 
 /** Default port — picked to be memorable and unlikely to collide. */
@@ -130,6 +153,26 @@ const WELCOME_HISTORY_LIMIT = 200;
 /** Default / max page size for request-history. */
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
+/** Max buffered live frames per client while its welcome builds. A welcome
+ *  takes well under a second; 1000 frames of headroom means only a
+ *  pathological trace storm sheds (oldest first). */
+const PENDING_TRACE_BUFFER_LIMIT = 1000;
+/** How long a /quit-armed quit-confirm token stays valid. Long enough for a
+ *  human to read the three-way prompt, short enough that a forgotten modal
+ *  doesn't leave a loaded gun on the connection. */
+const QUIT_CONFIRM_TTL_MS = 60_000;
+/** Close a client after this many consecutive backpressured/dropped sends. */
+const BACKPRESSURE_CLOSE_AFTER = 50;
+/** Bun.serve websocket maxBackpressure — beyond this Bun itself starts
+ *  reporting -1 from send() instead of buffering more. */
+const WS_MAX_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+/** Timer cadence for expiring wedged fleet-child requests. Without the
+ *  timer, pruneExpiredFleetRequests only ran inside routeFleetRequest — a
+ *  wedged child meant the operator's click hung until they clicked again. */
+const FLEET_PRUNE_INTERVAL_MS = 5_000;
+/** Max lessons shipped in one lessons-list frame (most recent first by
+ *  updated/created). Beyond this the frame carries truncated + total. */
+const LESSONS_FRAME_LIMIT = 500;
 
 /**
  * Structural view of the windowed-read facade added to
@@ -211,6 +254,11 @@ interface SharedServerState {
    *  query responses (lessons / workspace) back to the requesting client.
    *  Entries are deleted on response or pruned by TTL. */
   pendingFleetRequests: Map<string, { clientId: number; kind: string; expiresAt: number }>;
+  /** Interval handle sweeping pendingFleetRequests so timeouts fire without
+   *  waiting for the operator's next request. Cleared on full teardown. */
+  fleetPruneTimer: ReturnType<typeof setInterval> | null;
+  /** Monotonic sequence counter stamped onto trace / child-event frames. */
+  traceSeq: number;
 }
 
 let sharedServer: SharedServerState | null = null;
@@ -264,6 +312,8 @@ export class WebUiModule implements Module {
       childUsage: new Map(),
       latestPerAgentCost: [],
       pendingFleetRequests: new Map(),
+      fleetPruneTimer: null,
+      traceSeq: 0,
       childRecipeCache: new Map(),
       app: null,
       treeAggregator: null,
@@ -275,11 +325,26 @@ export class WebUiModule implements Module {
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
+        // Bound so a slow reader can't grow the kernel/userspace buffer
+        // without limit; past this, send() reports -1 and the per-client
+        // backpressure accounting in sendFrame() takes over. (Bun's name for
+        // uWS's maxBackpressure.)
+        backpressureLimit: WS_MAX_BACKPRESSURE_BYTES,
         open: (ws) => this.onWsOpen(ws as ServerWebSocket<{ id: number }>),
         message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<{ id: number }>, msg),
         close: (ws) => this.onWsClose(ws as ServerWebSocket<{ id: number }>),
+        drain: (ws) => {
+          // Socket caught up — forgive prior backpressure.
+          const c = sharedServer?.clients.get((ws as ServerWebSocket<{ id: number }>).data.id);
+          if (c) c.backpressureCount = 0;
+        },
       },
     });
+    // Expire wedged fleet-child requests on a timer, not just on the next
+    // operator click. unref() (where available) keeps the sweep from holding
+    // the process open on its own.
+    state.fleetPruneTimer = setInterval(() => this.pruneExpiredFleetRequests(), FLEET_PRUNE_INTERVAL_MS);
+    (state.fleetPruneTimer as unknown as { unref?: () => void }).unref?.();
     // When port=0 is passed (test setups, ephemeral binds), the OS picks a
     // free port and Bun.serve exposes it via `.port`. Re-read so the cached
     // port and the default Origin allowlist match the actual listener.
@@ -418,8 +483,11 @@ export class WebUiModule implements Module {
     //   - Post-session-switch: every previously-welcomed client gets a fresh
     //     welcome reflecting the new framework / messages / agents / branch.
     for (const client of sharedServer!.clients.values()) {
-      // Force a re-welcome by clearing the flag and resending.
+      // Force a re-welcome by clearing the flag and resending. Arm the
+      // pending-trace buffer so live frames fired while the fresh welcome
+      // builds aren't dropped for this client.
       client.welcomed = false;
+      client.pendingWelcomeTraces = [];
       void this.sendWelcome(client);
     }
   }
@@ -493,13 +561,34 @@ export class WebUiModule implements Module {
     // per-child AgentTreeReducer for live updates.
     const msg: WebUiServerMessage = {
       type: 'child-event',
+      seq: ++sharedServer!.traceSeq,
       childName,
       event: event as unknown as { type: string; [k: string]: unknown },
     };
     for (const client of sharedServer!.clients.values()) {
-      if (!client.welcomed) continue;
+      if (!client.welcomed) {
+        this.bufferForWelcome(client, msg, usageMsg);
+        continue;
+      }
       this.send(client, msg);
       if (usageMsg) this.send(client, usageMsg);
+    }
+  }
+
+  /** Stash live frames for a client whose welcome is still building; they
+   *  flush (in order, seq intact) right after the welcome frame. No-op for
+   *  clients with no welcome in flight. Bounded: sheds oldest first. */
+  private bufferForWelcome(
+    client: ClientState,
+    msg: WebUiServerMessage,
+    extra?: WebUiServerMessage | null,
+  ): void {
+    const buf = client.pendingWelcomeTraces;
+    if (!buf) return;
+    buf.push(msg);
+    if (extra) buf.push(extra);
+    if (buf.length > PENDING_TRACE_BUFFER_LIMIT) {
+      buf.splice(0, buf.length - PENDING_TRACE_BUFFER_LIMIT);
     }
   }
 
@@ -519,10 +608,12 @@ export class WebUiModule implements Module {
     if (!client) return;
 
     if (eType === 'lessons-snapshot') {
+      const capped = capLessons((event.lessons as LessonsListMessage['lessons']) ?? []);
       this.send(client, {
         type: 'lessons-list',
         loaded: Boolean(event.loaded),
-        lessons: (event.lessons as LessonsListMessage['lessons']) ?? [],
+        lessons: capped.lessons,
+        ...(capped.truncated ? { truncated: true, total: capped.total } : {}),
       });
       return;
     }
@@ -601,6 +692,7 @@ export class WebUiModule implements Module {
     if (sharedServer!.clients.size === 0) return;
     const traceMsg: WebUiServerMessage = {
       type: 'trace',
+      seq: ++sharedServer!.traceSeq,
       event: event as unknown as { type: string; [k: string]: unknown },
     };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
@@ -613,7 +705,12 @@ export class WebUiModule implements Module {
         }
       : null;
     for (const client of sharedServer!.clients.values()) {
-      if (!client.welcomed) continue;
+      if (!client.welcomed) {
+        // Welcome in flight: buffer instead of dropping, so traces fired
+        // during buildWelcome() aren't lost to this client.
+        this.bufferForWelcome(client, traceMsg, usageMsg);
+        continue;
+      }
       this.send(client, traceMsg);
       if (usageMsg) this.send(client, usageMsg);
     }
@@ -972,7 +1069,15 @@ export class WebUiModule implements Module {
 
   private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
     const id = ws.data.id;
-    const client: ClientState = { id, ws, welcomed: false, peeks: new Map() };
+    const client: ClientState = {
+      id,
+      ws,
+      welcomed: false,
+      peeks: new Map(),
+      pendingWelcomeTraces: null,
+      pendingQuitExpiresAt: null,
+      backpressureCount: 0,
+    };
     sharedServer!.clients.set(id, client);
 
     if (sharedServer?.app) void this.sendWelcome(client);
@@ -1094,6 +1199,22 @@ export class WebUiModule implements Module {
       }
 
       case 'quit-confirm': {
+        // Only honored when THIS connection recently issued /quit and got the
+        // quit-confirm-required prompt. Without the server-side arming, any
+        // authenticated frame could SIGTERM the host. Single-use: consumed
+        // (or discarded, if expired) on every attempt.
+        const armedUntil = client.pendingQuitExpiresAt;
+        client.pendingQuitExpiresAt = null;
+        if (armedUntil === null || armedUntil <= Date.now()) {
+          console.warn(
+            `[webui] rejected quit-confirm (${parsed.action}) from client ${client.id}: no pending /quit on this connection`,
+          );
+          this.send(client, {
+            type: 'error',
+            message: 'quit-confirm rejected: no pending /quit on this connection',
+          });
+          return;
+        }
         void this.handleQuitConfirm(parsed.action);
         return;
       }
@@ -1418,7 +1539,13 @@ export class WebUiModule implements Module {
       ...(typeof l.created === 'number' ? { created: l.created } : {}),
       ...(typeof l.updated === 'number' ? { updated: l.updated } : {}),
     }));
-    this.send(client, { type: 'lessons-list', loaded: true, lessons });
+    const capped = capLessons(lessons);
+    this.send(client, {
+      type: 'lessons-list',
+      loaded: true,
+      lessons: capped.lessons,
+      ...(capped.truncated ? { truncated: true, total: capped.total } : {}),
+    });
   }
 
   /** Names of fleet children currently running. Empty when no fleet module
@@ -1728,6 +1855,10 @@ export class WebUiModule implements Module {
     if (result.quit) {
       const running = this.runningFleetChildren();
       if (running.length > 0) {
+        // Arm the quit-confirm token for THIS client only, with a short TTL.
+        // handleQuitConfirm is gated on it — see the quit-confirm case in
+        // onWsMessage.
+        client.pendingQuitExpiresAt = Date.now() + QUIT_CONFIRM_TTL_MS;
         this.send(client, { type: 'quit-confirm-required', children: running });
         return;
       }
@@ -1813,6 +1944,7 @@ export class WebUiModule implements Module {
   private refreshAllWelcomes(): void {
     for (const c of sharedServer!.clients.values()) {
       c.welcomed = false;
+      c.pendingWelcomeTraces = [];
       void this.sendWelcome(c);
     }
   }
@@ -1824,9 +1956,27 @@ export class WebUiModule implements Module {
   private async sendWelcome(client: ClientState): Promise<void> {
     if (!sharedServer?.app) return;
 
-    const welcome = await this.buildWelcome();
+    // Arm the pending buffer (idempotent if the caller already did) so live
+    // frames fired while buildWelcome() awaits are captured, not dropped —
+    // the fan-out skips un-welcomed clients.
+    client.pendingWelcomeTraces ??= [];
+    let welcome: WelcomeMessage;
+    try {
+      welcome = await this.buildWelcome();
+    } catch (err) {
+      client.pendingWelcomeTraces = null;
+      throw err;
+    }
     this.send(client, welcome);
     client.welcomed = true;
+    // Flush frames buffered during the build, in arrival order. Their seq
+    // numbers predate anything fanned out after this point, so the client
+    // still observes a strictly-increasing sequence.
+    const pending = client.pendingWelcomeTraces;
+    client.pendingWelcomeTraces = null;
+    if (pending) {
+      for (const msg of pending) this.send(client, msg);
+    }
     // Live trace forwarding is driven by the single fan-out listener
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
   }
@@ -1970,11 +2120,7 @@ export class WebUiModule implements Module {
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
-    try {
-      client.ws.send(JSON.stringify(msg));
-    } catch {
-      // Connection dropped between send attempts; close handler will clean up.
-    }
+    sendFrame(client, msg);
   }
 
   // -------------------------------------------------------------------------
@@ -2063,6 +2209,73 @@ export class WebUiModule implements Module {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Structural slice of ClientState that sendFrame needs. Kept minimal so the
+ *  backpressure logic is unit-testable with a fake ws (see
+ *  __sendFrameForTests) — Bun offers no way to induce real WS backpressure
+ *  deterministically in a test. */
+export interface SendFrameTarget {
+  id: number;
+  ws: {
+    send(data: string): number;
+    close(code?: number, reason?: string): void;
+  };
+  backpressureCount: number;
+}
+
+/**
+ * Serialize + send one frame, with backpressure accounting. Bun's ws.send()
+ * returns the number of bytes sent, -1 when the message was queued due to
+ * backpressure, or 0 when it was dropped. Discarding that value (the old
+ * behavior) meant a stalled reader silently accumulated an unbounded queue.
+ * Now: consecutive non-positive results are counted per client; once the
+ * count crosses BACKPRESSURE_CLOSE_AFTER the socket is closed with a warn —
+ * the SPA's reconnect loop brings the client back with a fresh welcome.
+ * A successful send (or a `drain` callback) resets the counter.
+ */
+function sendFrame(client: SendFrameTarget, msg: WebUiServerMessage): void {
+  let result: number;
+  try {
+    result = client.ws.send(JSON.stringify(msg));
+  } catch {
+    // Connection dropped between send attempts; close handler will clean up.
+    return;
+  }
+  if (typeof result === 'number' && result <= 0) {
+    client.backpressureCount++;
+    if (client.backpressureCount === BACKPRESSURE_CLOSE_AFTER) {
+      console.warn(
+        `[webui] closing client ${client.id}: sustained WS backpressure ` +
+        `(${client.backpressureCount} consecutive unsent frames); it will reconnect fresh`,
+      );
+      try { client.ws.close(1013, 'backpressure'); } catch { /* already gone */ }
+    }
+  } else {
+    client.backpressureCount = 0;
+  }
+}
+
+/**
+ * Cap a lessons array to the most recent LESSONS_FRAME_LIMIT entries (by
+ * `updated`, falling back to `created`), preserving the original relative
+ * order of the survivors so the SPA's sort/render behavior is unchanged.
+ * Without this, sendLessonsList shipped the ENTIRE library in one WS frame —
+ * unbounded on long-running miners.
+ */
+function capLessons<T extends { created?: number; updated?: number }>(
+  lessons: T[],
+): { lessons: T[]; truncated: boolean; total: number } {
+  if (lessons.length <= LESSONS_FRAME_LIMIT) {
+    return { lessons, truncated: false, total: lessons.length };
+  }
+  const survivors = lessons
+    .map((l, i) => ({ l, i, ts: l.updated ?? l.created ?? 0 }))
+    .sort((a, b) => (b.ts - a.ts) || (b.i - a.i)) // newest first; later index wins ties
+    .slice(0, LESSONS_FRAME_LIMIT)
+    .sort((a, b) => a.i - b.i) // restore original order
+    .map((x) => x.l);
+  return { lessons: survivors, truncated: true, total: lessons.length };
+}
 
 /**
  * Default Origin allowlist for the WebSocket upgrade. Covers the recommended
@@ -2442,8 +2655,23 @@ export function __getSharedServerPortForTests(): number | null {
 export async function __resetSharedServerForTests(): Promise<void> {
   if (!sharedServer) return;
   try { sharedServer.server.stop(true); } catch { /* ignore */ }
+  if (sharedServer.fleetPruneTimer) clearInterval(sharedServer.fleetPruneTimer);
   // Detach any fleet listener / aggregator so the next start runs clean.
   sharedServer.fleetEventDetacher?.();
   sharedServer.treeAggregator?.dispose();
   sharedServer = null;
+}
+
+/** Run the real frame-send path (incl. backpressure accounting) against a
+ *  client-shaped object with a fake ws. Tests only. */
+export function __sendFrameForTests(client: SendFrameTarget, msg: WebUiServerMessage): void {
+  sendFrame(client, msg);
+}
+
+/** Expose the pending fleet-request map so tests can shrink an entry's TTL
+ *  and observe the timer-driven prune. Tests only. */
+export function __getPendingFleetRequestsForTests():
+  | Map<string, { clientId: number; kind: string; expiresAt: number }>
+  | null {
+  return sharedServer?.pendingFleetRequests ?? null;
 }

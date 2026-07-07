@@ -14,6 +14,7 @@ import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
 import {
   WEB_PROTOCOL_VERSION,
+  isProtocolCompatible,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -377,7 +378,7 @@ export function App() {
   // -------------------------------------------------------------------------
 
   const applyWelcome = (msg: WelcomeMessage): void => {
-    if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
+    if (!isProtocolCompatible(msg.protocolVersion)) {
       setProtoMismatch(msg.protocolVersion);
       return;
     }
@@ -689,6 +690,12 @@ export function App() {
 
   onMount(() => {
     const detach = wire.onMessage((msg) => {
+      // Protocol mismatch: this bundle was compiled against a different wire
+      // shape than the server speaks. Stop folding frames entirely (they may
+      // parse but mean something else) — only a fresh `welcome` (e.g. after
+      // the host restarts on the matching version) can lift the freeze. The
+      // banner tells the operator to rebuild/reload.
+      if (protoMismatch() !== null && msg.type !== 'welcome') return;
       treeStore.ingest(msg);
       autoExpandNewFleetChildren();
       // Capture child-events into the per-childName ring buffer so a future

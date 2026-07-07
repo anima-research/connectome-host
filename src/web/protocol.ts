@@ -132,6 +132,11 @@ export interface WelcomeMessageEntry {
  *  same `AgentTreeReducer` the server uses. */
 export interface TraceMessage {
   type: 'trace';
+  /** Server-side monotonic sequence number (shared counter with
+   *  `child-event`). Lets clients detect gaps/reordering in the live
+   *  stream; frames buffered during welcome construction keep their
+   *  original seq, so a correctly-flushed stream is strictly increasing. */
+  seq?: number;
   /** TraceEvent shape — discriminated by inner `type` field. */
   event: { type: string; [k: string]: unknown };
 }
@@ -140,6 +145,8 @@ export interface TraceMessage {
  *  can route into the right reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
+  /** Monotonic sequence number — same counter as `trace.seq`. */
+  seq?: number;
   childName: string;
   event: { type: string; [k: string]: unknown };
 }
@@ -211,6 +218,12 @@ export interface PeekMessage {
 export interface LessonsListMessage {
   type: 'lessons-list';
   loaded: boolean;
+  /** True when the library exceeded the server's per-frame cap and only the
+   *  most recent entries were shipped. */
+  truncated?: boolean;
+  /** Total library size at read time — present so the SPA can say
+   *  "showing 500 of 12k" when `truncated` is set. */
+  total?: number;
   lessons: Array<{
     id: string;
     content: string;
@@ -546,6 +559,18 @@ export type WebUiClientMessage =
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Protocol-version compatibility check, shared by the SPA and any future
+ * external client. A mismatch means the client bundle was compiled against a
+ * different wire shape than the server speaks — the client must stop folding
+ * frames (they may parse but mean something else) and tell the operator to
+ * hard-reload / rebuild. Exact equality on purpose: the version only bumps on
+ * breaking changes, so there is no "compatible range".
+ */
+export function isProtocolCompatible(serverVersion: number): boolean {
+  return serverVersion === WEB_PROTOCOL_VERSION;
+}
 
 /**
  * Type guard for narrowing parsed JSON to a known client message. Per-variant
