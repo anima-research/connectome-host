@@ -25,6 +25,12 @@ import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
+import { createSignalHandler, readAlivePid, stopWithDeadline } from './shutdown.js';
+
+/** Hard ceiling on graceful shutdown. If `framework.stop()` hangs (stuck
+ *  MCPL stdio child, uncancellable inference, full-disk Chronicle flush),
+ *  we still unlink pid/socket and exit rather than parking forever. */
+const SHUTDOWN_DEADLINE_MS = 15_000;
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -101,10 +107,24 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
 
+  // -- Double-start guard (audit 1.2) --
+  // Two headless instances on one data dir means two writers on the same
+  // append-only Chronicle store — undefined behavior. Probe the PID in
+  // headless.pid before touching the socket: if that process is still
+  // alive, refuse to start instead of stealing the socket.
+  const alivePid = readAlivePid(pidPath);
+  if (alivePid !== null) {
+    const msg =
+      `refusing to start: another headless instance (pid ${alivePid}) ` +
+      `is already running on ${dataDir} (from ${pidPath})`;
+    log(msg);
+    throw new Error(msg);
+  }
+
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.
-  // The PID file would tell us if a previous instance is still alive, but
-  // for Phase 1 we assume single-tenancy per data dir and just remove.
+  // The PID probe above cleared the "still alive" case, so anything left
+  // here is genuinely stale and safe to remove.
   if (existsSync(socketPath)) {
     try {
       unlinkSync(socketPath);
@@ -154,18 +174,73 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // the lifetime of the child. Drives the 'describe' response. Same reducer
   // shape runs in the parent for fleet children — see UNIFIED-TREE-PLAN.md §2.
   const treeReducer = new AgentTreeReducer();
-  try {
-    treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
-  } catch (err) {
-    log(`seed framework agents failed: ${String(err)}`);
-  }
   const startedAt = Date.now();
 
   // -- Wire framework trace events to socket and reducer --
-  app.framework.onTrace((traceEvent) => {
+  //
+  // Handlers are named (not inline) and registered through
+  // `bindFrameworkTraces()` so a `/session switch` — which replaces
+  // `app.framework` with a brand-new instance — can re-register them.
+  // Without the rebind the socket goes dark after a switch: zero trace
+  // events forever, indistinguishable from a hung child (audit 1.5).
+  type TraceHandler = Parameters<AppContext['framework']['onTrace']>[0];
+
+  // Speech / idle bookkeeping shared between the speech handler here and
+  // the idle poll at the bottom of this function.
+  const primaryAgentName = app.recipe.agent.name ?? 'agent';
+  let hadAtLeastOneInference = false;
+  let idleEmitted = false;
+  // Speech accumulator for the primary agent.  Reset on inference:started
+  // and on inference:tool_calls_yielded (that round was a tool-use turn,
+  // not the final speech).  Emitted on inference:completed if non-empty.
+  let currentSpeech = '';
+
+  const mainTraceHandler: TraceHandler = (traceEvent) => {
     treeReducer.applyEvent(traceEvent);
     emit(traceEvent as unknown as Record<string, unknown>);
-  });
+  };
+
+  // `inference:speech` fires once per "final" inference round — the round
+  // that completed without yielding tool calls.  It carries the accumulated
+  // speech text, letting the parent implement fleet--relay without having
+  // to subscribe to the whole token stream.
+  const speechTraceHandler: TraceHandler = (event) => {
+    const t = (event as { type?: string }).type;
+    const agentName = (event as { agentName?: string }).agentName;
+
+    if (t === 'inference:started') {
+      hadAtLeastOneInference = true;
+      idleEmitted = false;  // new activity — allow another idle emit when it ends
+      if (agentName === primaryAgentName) currentSpeech = '';
+    } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
+      const content = (event as { content?: string }).content;
+      if (content) currentSpeech += content;
+    } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
+      // Tool-call round: speech so far was thought preamble, not final.
+      currentSpeech = '';
+    } else if (t === 'inference:completed' && agentName === primaryAgentName) {
+      if (currentSpeech) {
+        emit({ type: 'inference:speech', agentName, content: currentSpeech });
+      }
+      currentSpeech = '';
+    }
+  };
+
+  let boundFramework: unknown = null;
+  function bindFrameworkTraces(): void {
+    // Idempotent per framework instance: a failed switch can leave the old
+    // framework in place, and double-registering would double every event.
+    if (boundFramework === app.framework) return;
+    boundFramework = app.framework;
+    try {
+      treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
+    } catch (err) {
+      log(`seed framework agents failed: ${String(err)}`);
+    }
+    app.framework.onTrace(mainTraceHandler);
+    app.framework.onTrace(speechTraceHandler);
+  }
+  bindFrameworkTraces();
 
   // -- Command dispatch --
   async function dispatchCommand(cmd: IncomingCommand): Promise<void> {
@@ -204,8 +279,15 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           emit({ type: 'command-output', text: line.text, style: line.style ?? null });
         }
         if (result.switchToSessionId) {
-          await app.switchSession(result.switchToSessionId);
-          emit({ type: 'command-output', text: 'Session switched.', style: 'system' });
+          try {
+            await app.switchSession(result.switchToSessionId);
+            emit({ type: 'command-output', text: 'Session switched.', style: 'system' });
+          } finally {
+            // switchSession replaced app.framework (on failure, the rollback
+            // may have too) — re-register socket forwarding on whatever
+            // instance is now live (audit 1.5). Idempotent per instance.
+            bindFrameworkTraces();
+          }
         }
         if (result.quit) {
           await gracefulShutdown('command:/quit');
@@ -432,6 +514,16 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   // -- Shutdown --
   let shuttingDown = false;
+
+  /** Unlink pid + socket. Runs on every exit path — graceful, deadline
+   *  overrun, and second-signal force exit — so a hung stop() can no longer
+   *  leave artifacts behind that feed the double-start problem (1.2). */
+  function cleanupRuntimeFilesSync(): void {
+    try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
+    try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
+    try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
+  }
+
   async function gracefulShutdown(reason: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -441,21 +533,36 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Give the exiting event a tick to flush onto the socket.
     await new Promise((r) => setTimeout(r, 50));
 
-    try { await app.framework.stop(); } catch (err) { log(`framework.stop() failed: ${String(err)}`); }
-    try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
-    try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
-    try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
-    try { logStream.end(); } catch { /* noop */ }
+    // Race stop() against a deadline (audit 1.3): a hung MCPL stdio child
+    // or uncancellable inference must not park the process forever.
+    let outcome: 'stopped' | 'stop-failed' | 'timed-out' = 'stop-failed';
+    try {
+      outcome = await stopWithDeadline(() => app.framework.stop(), SHUTDOWN_DEADLINE_MS, log);
+    } finally {
+      cleanupRuntimeFilesSync();
+      try { logStream.end(); } catch { /* noop */ }
+    }
 
     // Small delay so logStream.end() can flush before we exit.
-    setTimeout(() => process.exit(0), 50);
+    // Exit 0 only when stop() actually completed; a deadline overrun exits 1
+    // so a supervising parent can tell the difference.
+    setTimeout(() => process.exit(outcome === 'stopped' ? 0 : 1), 50);
   }
 
-  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
-  process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+  const onSignal = createSignalHandler({
+    onFirstSignal: (sig) => { void gracefulShutdown(sig); },
+    onSecondSignal: () => {
+      // Second signal: the operator (or supervisor) is done waiting.
+      cleanupRuntimeFilesSync();
+      process.exit(130);
+    },
+    log,
+  });
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
 
   // ------------------------------------------------------------------
-  // Synthetic wire events: lifecycle:idle (quiescence) + inference:speech
+  // Synthetic wire event: lifecycle:idle (quiescence)
   // ------------------------------------------------------------------
   //
   // `lifecycle:idle` fires on every work→quiescent transition so the parent
@@ -463,43 +570,11 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // --exit-when-idle is a strict overlay: same detection, additionally
   // shuts down on the transition.
   //
-  // `inference:speech` fires once per "final" inference round — the round
-  // that completed without yielding tool calls.  It carries the accumulated
-  // speech text, letting the parent implement fleet--relay without having
-  // to subscribe to the whole token stream.
+  // (`inference:speech` is emitted by speechTraceHandler, registered via
+  // bindFrameworkTraces above so it survives /session switch.)
   {
     const IDLE_CONFIRM_MS = 500;
-    const primaryAgentName = app.recipe.agent.name ?? 'agent';
-    let hadAtLeastOneInference = false;
     let idleSince = 0;
-    let idleEmitted = false;
-
-    // Speech accumulator for the primary agent.  Reset on inference:started
-    // and on inference:tool_calls_yielded (that round was a tool-use turn,
-    // not the final speech).  Emitted on inference:completed if non-empty.
-    let currentSpeech = '';
-
-    app.framework.onTrace((event) => {
-      const t = (event as { type?: string }).type;
-      const agentName = (event as { agentName?: string }).agentName;
-
-      if (t === 'inference:started') {
-        hadAtLeastOneInference = true;
-        idleEmitted = false;  // new activity — allow another idle emit when it ends
-        if (agentName === primaryAgentName) currentSpeech = '';
-      } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
-        const content = (event as { content?: string }).content;
-        if (content) currentSpeech += content;
-      } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
-        // Tool-call round: speech so far was thought preamble, not final.
-        currentSpeech = '';
-      } else if (t === 'inference:completed' && agentName === primaryAgentName) {
-        if (currentSpeech) {
-          emit({ type: 'inference:speech', agentName, content: currentSpeech });
-        }
-        currentSpeech = '';
-      }
-    });
 
     const idlePoll = setInterval(() => {
       if (shuttingDown) { clearInterval(idlePoll); return; }

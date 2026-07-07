@@ -38,7 +38,8 @@ import type { AgentNode } from './state/agent-tree-reducer.js';
 import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
-import { handleCommand, resetBranchState } from './commands.js';
+import { handleCommand, handleExport, resetBranchState } from './commands.js';
+import { createSignalHandler, stopWithDeadline } from './shutdown.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
 export function fmtTokens(n: number): string {
@@ -319,9 +320,16 @@ export async function runTui(app: AppContext): Promise<void> {
   const SUMMARY_DELTA = 2000;
   const SUMMARY_WINDOW = 10_000;
 
+  /** Cap per-agent transcripts (audit 6.4): a long-lived session otherwise
+   *  accumulates unbounded text per agent. Only the tail is ever read
+   *  (summaries use the last SUMMARY_WINDOW chars), so trim from the front. */
+  const TRANSCRIPT_MAX_CHARS = 200_000;
+
   function appendTranscript(agent: string, text: string) {
     const prev = agentTranscripts.get(agent) ?? '';
-    agentTranscripts.set(agent, prev + text);
+    let next = prev + text;
+    if (next.length > TRANSCRIPT_MAX_CHARS) next = next.slice(-TRANSCRIPT_MAX_CHARS);
+    agentTranscripts.set(agent, next);
   }
 
   async function generateSummary(agentName: string) {
@@ -1117,7 +1125,11 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function appendPeekLog(name: string, text: string, color: string) {
     if (!peekLogs.has(name)) peekLogs.set(name, []);
-    peekLogs.get(name)!.push({ text, color });
+    const log = peekLogs.get(name)!;
+    log.push({ text, color });
+    // Cap at 500 lines (audit 6.4) — matches appendProcPeekLog / FleetModule
+    // buffer sizing; previously this map grew without bound per agent.
+    if (log.length > 500) log.splice(0, log.length - 500);
   }
 
   function cleanupPeek() {
@@ -1993,6 +2005,12 @@ export async function runTui(app: AppContext): Promise<void> {
           state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
           updateStatus();
         }).catch(err => {
+          // The switcher rolls back to the previous session on failure
+          // (audit 1.4) — rebind to whatever framework is now live so the
+          // TUI doesn't stay dark on a framework we offTrace'd above.
+          subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
+          fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
+          app.framework.onTrace(onTrace as (e: unknown) => void);
           addLine(`Session switch failed: ${err}`, RED);
           state.status = 'error';
           updateStatus();
@@ -2058,22 +2076,47 @@ export async function runTui(app: AppContext): Promise<void> {
 
   // ── Cleanup ────────────────────────────────────────────────────────
 
+  let cleanupStarted = false;
   function cleanup() {
+    // Re-entrancy guard: cleanup is reachable from /quit, Ctrl+C, and the
+    // SIGTERM/SIGINT handlers; running it twice would double-destroy the
+    // renderer and double-stop the framework.
+    if (cleanupStarted) return;
+    cleanupStarted = true;
     cleanupPeek();
     cleanupPeekProc();
     treeAggregator?.dispose();
     for (const unsub of subagentStreamUnsubs) unsub();
     clearInterval(pollTimer);
     app.framework.offTrace(onTrace as (e: unknown) => void);
+    // Export lessons on EVERY exit path (audit 1.6) — previously only /quit
+    // exported; Ctrl+C and signals silently skipped it. handleExport is
+    // idempotent (overwrites ./output/lessons-export.*), so the /quit path
+    // exporting first is harmless.
+    try { handleExport(app); } catch { /* best-effort */ }
     renderer.destroy();
     process.stdout.write('\x1b]0;\x07');
     // Restore stderr
     process.stderr.write = origStderrWrite;
     logStream.end();
-    app.framework.stop().then(() => {
+    // stopWithDeadline never rejects (audit 1.6: a rejecting stop() used to
+    // park the process with the terminal restored and no handlers), and the
+    // deadline bounds a hung stop().
+    void stopWithDeadline(() => app.framework.stop(), 15_000).finally(() => {
       resolveExit?.();
     });
   }
+
+  // SIGTERM/SIGINT (audit 1.1): docker stop / systemd / tmux kill previously
+  // hit the runtime default handler — immediate death, no framework.stop(),
+  // no Chronicle close, orphaned MCPL children, no lessons export. Ctrl+C
+  // arrives as a keypress in raw mode (handled above); these cover the
+  // signal-delivered cases. A second signal force-exits.
+  const onExitSignal = createSignalHandler({
+    onFirstSignal: () => { cleanup(); },
+  });
+  process.on('SIGTERM', () => onExitSignal('SIGTERM'));
+  process.on('SIGINT', () => onExitSignal('SIGINT'));
 
   // ── Wait for exit ──────────────────────────────────────────────────
 

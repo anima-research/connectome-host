@@ -49,6 +49,8 @@ import {
   parseRecipeArg,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
+import { createSessionSwitcher } from './session-switch.js';
+import { createSignalHandler, stopWithDeadline } from './shutdown.js';
 
 export type { AppContext };
 
@@ -608,6 +610,27 @@ async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
   const { handleCommand } = await import('./commands.js');
 
+  // SIGTERM/SIGINT (audit 1.1): outside headless mode these used to hit the
+  // runtime default — immediate death, framework.stop() never called,
+  // Chronicle store never closed cleanly, MCPL children orphaned, lessons
+  // never exported. Mirror the headless daemon's graceful path, with a
+  // deadline so a hung stop() can't park the process, and a second signal
+  // forcing exit.
+  const onSignal = createSignalHandler({
+    onFirstSignal: () => {
+      void (async () => {
+        try { handleExport(app); } catch { /* best-effort lessons export */ }
+        const outcome = await stopWithDeadline(
+          () => app.framework.stop(), 15_000, (m) => console.error(`[shutdown] ${m}`),
+        );
+        process.exit(outcome === 'stopped' ? 0 : 1);
+      })();
+    },
+    log: (m) => console.error(`[shutdown] ${m}`),
+  });
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
+
   let inferenceResolve: (() => void) | null = null;
 
   app.framework.onTrace((event) => {
@@ -808,23 +831,40 @@ async function main() {
     userMessageCount: 0,
 
     async switchSession(id: string) {
-      handleExport(this);
-      await this.framework.stop();
-      sessionManager.setActiveSession(id);
-      const newStorePath = sessionManager.getStorePath(id);
-      // Note: agentName stays as resolved at startup. A per-session
-      // re-resolution would matter only if recipe.agent.name is absent
-      // AND the user switches between imports that used different
-      // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule);
-      this.framework.start();
-      this.userMessageCount = 0;
-      resetBranchState(this.branchState);
-      setupSynesthete(this);
-      setupMcplStderrLog(this, newStorePath);
-      getWebUiModule(this.framework)?.setApp(this);
+      await sessionSwitcher(id);
     },
   };
+
+  // Session switching with rollback + concurrency guard (audit 1.4): if
+  // createFramework throws for the target session, the active-session
+  // pointer is rolled back and a framework for the previous session is
+  // restored, so the app is never stranded on a stopped framework with a
+  // broken session marked active.
+  //
+  // Note: agentName stays as resolved at startup. A per-session
+  // re-resolution would matter only if recipe.agent.name is absent
+  // AND the user switches between imports that used different
+  // --agent values; not the canonical flow.
+  const sessionSwitcher = createSessionSwitcher<AgentFramework>({
+    getActiveSessionId: () => sessionManager.getActiveSession()?.id ?? null,
+    exportBeforeSwitch: () => { handleExport(app); },
+    getCurrentFramework: () => app.framework,
+    stopFramework: (fw) => fw.stop(),
+    setActiveSession: (sid) => { sessionManager.setActiveSession(sid); },
+    getStorePath: (sid) => sessionManager.getStorePath(sid),
+    createFramework: (storePath) =>
+      createFramework(membrane, storePath, recipe, app.agentName, settingsModule),
+    activate: (fw, storePath) => {
+      app.framework = fw;
+      fw.start();
+      app.userMessageCount = 0;
+      resetBranchState(app.branchState);
+      setupSynesthete(app);
+      setupMcplStderrLog(app, storePath);
+      getWebUiModule(fw)?.setApp(app);
+    },
+    log: (msg) => { console.error(`[session-switch] ${msg}`); },
+  });
 
   framework.start();
   setupSynesthete(app);
