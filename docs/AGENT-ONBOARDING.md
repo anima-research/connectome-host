@@ -243,6 +243,7 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
     "maxTokens": 16384,                     // response cap
     "maxStreamTokens": 180000,              // recompile trigger; keep < model window
     "contextBudgetTokens": 160000,          // SEE §11.1 — MUST fit under (window - maxTokens)
+    "cacheTtl": "1h",                       // prompt-cache TTL; '1h' for residents replying slower than 5m (cache re-write premium dominates spend otherwise), omit/'5m' for rapid loops
     "strategy": {
       "type": "autobiographical",
       "headWindowTokens": 4000,

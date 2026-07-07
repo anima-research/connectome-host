@@ -673,6 +673,12 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
   }
 
+  // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
+  // surface as a 400 from Anthropic at the agent's first inference.
+  if (agent.cacheTtl !== undefined && agent.cacheTtl !== '5m' && agent.cacheTtl !== '1h') {
+    throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
+  }
+
   // Validate agent.thinking if present. Catches typos and constraint
   // violations (notably max_tokens > budget_tokens) at recipe-load time
   // rather than as a 400 from Anthropic at first inference.
