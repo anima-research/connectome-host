@@ -63,6 +63,8 @@ interface FleetInternals {
   startAdoptedLivenessPoll: (child: unknown) => void;
   adoptedPollTimers: Map<string, unknown>;
   stopping: boolean;
+  handleKill: (input: { name: string }) => Promise<{ success: boolean }>;
+  stop: () => Promise<void>;
 }
 
 function internals(fleet: FleetModule): FleetInternals {
@@ -135,6 +137,39 @@ describe('autoRestart flap cap survives the delete/recreate cycle (audit 2.1)', 
     expect(iv.restartHistory.get('lazarus')!.length).toBe(1);
 
     iv.stopping = true;
+  });
+});
+
+describe('restartHistory is cleaned up on permanent removal (growth-caps residue)', () => {
+  test('operator kill drops the flap history for that child', async () => {
+    const fleet = new FleetModule({ childIndexPath: '/nonexistent-index.ts' });
+    const iv = internals(fleet);
+
+    // A crashed child with an accumulated flap history.
+    iv.children.set('gone', makeRecord('gone', { status: 'crashed' }));
+    iv.restartHistory.set('gone', [Date.now(), Date.now()]);
+    iv.restartHistory.set('other', [Date.now()]);
+
+    await iv.handleKill({ name: 'gone' });
+
+    // This child's history is gone; unrelated children are untouched.
+    expect(iv.restartHistory.has('gone')).toBe(false);
+    expect(iv.restartHistory.has('other')).toBe(true);
+  });
+
+  test('stop() clears all flap history (nothing auto-restarts after a clean stop)', async () => {
+    const fleet = new FleetModule({ childIndexPath: '/nonexistent-index.ts' });
+    const iv = internals(fleet);
+
+    // Records with no process/pid so killChild is a no-op during stop().
+    iv.children.set('a', makeRecord('a', { status: 'crashed' }));
+    iv.children.set('b', makeRecord('b', { status: 'crashed' }));
+    iv.restartHistory.set('a', [Date.now()]);
+    iv.restartHistory.set('b', [Date.now(), Date.now()]);
+
+    await iv.stop();
+
+    expect(iv.restartHistory.size).toBe(0);
   });
 });
 

@@ -39,7 +39,7 @@ import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, handleExport, resetBranchState } from './commands.js';
-import { createSignalHandler, stopWithDeadline } from './shutdown.js';
+import { createSignalHandler, finalizeShutdown, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
 export function fmtTokens(n: number): string {
@@ -2099,11 +2099,26 @@ export async function runTui(app: AppContext): Promise<void> {
     // Restore stderr
     process.stderr.write = origStderrWrite;
     logStream.end();
-    // stopWithDeadline never rejects (audit 1.6: a rejecting stop() used to
-    // park the process with the terminal restored and no handlers), and the
-    // deadline bounds a hung stop().
-    void stopWithDeadline(() => app.framework.stop(), 15_000).finally(() => {
-      resolveExit?.();
+    // finalizeShutdown bounds a hung/rejecting stop() with the deadline AND —
+    // crucially — force-exits on a non-clean outcome. Resolving the promise is
+    // not the same as freeing the process: a stop() that TIMED OUT left its
+    // MCPL stdio children, fleet child sockets and the web-ui Bun.serve
+    // listener holding the event loop open, so resolveExit → runTui returns →
+    // main returns … and the process parked anyway (audit 1.6). A clean stop
+    // falls through to the natural terminal-restoring return (forceExitOnClean
+    // defaults false); a timed-out/failed stop exits 1, matching headless and
+    // piped, so `docker stop`'s single SIGTERM terminates the container instead
+    // of riding the grace period out to SIGKILL.
+    //
+    // NOTE (cross-PR): this makes the graceful framework.stop() run on every
+    // TUI shutdown. Depends on agent-framework #54 having removed MCPL
+    // checkpoint destruction from the graceful stop() path (checkpoint removal
+    // is now owned by disconnectMcplServer, not the close handler); without
+    // that fix every Ctrl+C/SIGTERM would destroy MCPL checkpoints.
+    void finalizeShutdown({
+      stop: () => app.framework.stop(),
+      deadlineMs: SHUTDOWN_DEADLINE_MS,
+      onResolved: () => resolveExit?.(),
     });
   }
 

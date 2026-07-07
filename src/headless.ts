@@ -25,12 +25,7 @@ import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
-import { createSignalHandler, readAlivePid, stopWithDeadline } from './shutdown.js';
-
-/** Hard ceiling on graceful shutdown. If `framework.stop()` hangs (stuck
- *  MCPL stdio child, uncancellable inference, full-disk Chronicle flush),
- *  we still unlink pid/socket and exit rather than parking forever. */
-const SHUTDOWN_DEADLINE_MS = 15_000;
+import { createSignalHandler, readAlivePid, stopWithDeadline, SHUTDOWN_DEADLINE_MS } from './shutdown.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -109,22 +104,53 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   // -- Double-start guard (audit 1.2) --
   // Two headless instances on one data dir means two writers on the same
-  // append-only Chronicle store — undefined behavior. Probe the PID in
-  // headless.pid before touching the socket: if that process is still
-  // alive, refuse to start instead of stealing the socket.
-  const alivePid = readAlivePid(pidPath);
-  if (alivePid !== null) {
-    const msg =
-      `refusing to start: another headless instance (pid ${alivePid}) ` +
-      `is already running on ${dataDir} (from ${pidPath})`;
-    log(msg);
-    throw new Error(msg);
+  // append-only Chronicle store — undefined behavior. A bare probe-then-write
+  // has a TOCTOU: two instances started simultaneously both read no-live-pid
+  // and both proceed. Acquire the PID file ATOMICALLY with { flag: 'wx' } so
+  // the create itself is the mutex; the loser gets EEXIST, re-probes, and
+  // either refuses (live owner) or reclaims a genuinely stale file and retries.
+  //
+  // Recycled-PID caveat: a stale file whose number is now owned by an
+  // unrelated process (EPERM from kill(pid,0) counts as "alive" per
+  // readAlivePid) permanently refuses startup until an operator deletes the
+  // file. Rare; the error message names the path so it isn't a silent surprise.
+  for (let attempt = 0; ; attempt++) {
+    const alivePid = readAlivePid(pidPath);
+    if (alivePid !== null) {
+      const msg =
+        `refusing to start: another headless instance (pid ${alivePid}) ` +
+        `is already running on ${dataDir} (from ${pidPath})`;
+      log(msg);
+      throw new Error(msg);
+    }
+    try {
+      writeFileSync(pidPath, String(process.pid), { flag: 'wx' });
+      break; // we own the pid file
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 3) {
+        // File exists but probed as dead (or appeared in the create race).
+        // Reclaim it and retry; a live owner is caught by readAlivePid next loop.
+        try { unlinkSync(pidPath); } catch { /* another racer may have won it */ }
+        continue;
+      }
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        // Kept losing the create race to another starting instance — refuse
+        // rather than fall through to a non-atomic overwrite.
+        const msg = `refusing to start: lost the pid-file create race on ${pidPath}`;
+        log(msg);
+        throw new Error(msg);
+      }
+      // Non-EEXIST write failure (e.g. read-only dir): best-effort, proceed.
+      log(`pid file write failed: ${String(err)}`);
+      break;
+    }
   }
 
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.
-  // The PID probe above cleared the "still alive" case, so anything left
-  // here is genuinely stale and safe to remove.
+  // We now own the pid file (atomic wx acquire above cleared the "still alive"
+  // case), so any socket left here is from a genuinely dead instance and safe
+  // to remove.
   if (existsSync(socketPath)) {
     try {
       unlinkSync(socketPath);
@@ -132,13 +158,6 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     } catch (err) {
       log(`stale-socket cleanup failed: ${String(err)}`);
     }
-  }
-
-  // -- PID file (for Phase 5 liveness probing by parent) --
-  try {
-    writeFileSync(pidPath, String(process.pid));
-  } catch (err) {
-    log(`pid file write failed: ${String(err)}`);
   }
 
   // -- Connection state --

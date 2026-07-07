@@ -485,6 +485,12 @@ export class LessonsModule implements Module {
       if (!Array.isArray(parsed.lessons)) {
         throw new Error('parsed JSON has no "lessons" array');
       }
+      // A clean read means any prior corruption incident is over: the file is
+      // valid again (a good save overwrote it). Clear the flag so a SECOND,
+      // independent corruption later in this process is backed up + logged
+      // afresh rather than silently clobbered. The flag means "this ongoing
+      // incident is already backed up", not "some corruption happened once".
+      this.corruptBackupDone = false;
       return parsed;
     } catch (err) {
       if (this.corruptBackupDone) return null; // already backed up + logged

@@ -715,6 +715,9 @@ export class FleetModule implements Module {
       tasks.push(this.killChild(child).catch(() => { /* swallow per-child errors */ }));
     }
     await Promise.all(tasks);
+    // Nothing will auto-restart after a normal stop — drop the flap history so
+    // it doesn't outlive the children it tracked (fragility audit growth-caps).
+    this.restartHistory.clear();
     this.ctx = null;
   }
 
@@ -1280,6 +1283,11 @@ export class FleetModule implements Module {
   private async handleKill(input: { name: string }): Promise<ToolResult> {
     const c = this.children.get(input.name);
     if (!c) return { success: false, isError: true, error: `Unknown child: ${input.name}` };
+    // Operator kill is a permanent removal — drop the flap history so a later
+    // fresh launch of the same name starts with a clean restart budget, and
+    // the map doesn't accumulate entries for names that will never restart
+    // (like adoptedPollTimers, cleaned on every removal path).
+    this.restartHistory.delete(input.name);
     if (c.status === 'exited' || c.status === 'crashed') {
       return { success: true, data: { name: c.name, status: c.status, note: 'already stopped' } };
     }
@@ -1304,6 +1312,10 @@ export class FleetModule implements Module {
     }
     this.stopAdoptedPoll(c.name);
     this.children.delete(c.name);
+    // Operator-initiated restart is a clean slate — clear the auto-restart
+    // flap history so this manual intervention isn't counted against the
+    // crash-flap budget (and the map doesn't leak the old name).
+    this.restartHistory.delete(c.name);
     // Restart is implicitly allowed — we're using the exact recipe the child
     // was originally launched with (which already passed the allowlist check).
     return await this.handleLaunch(relaunch, { viaAutoStart: true });

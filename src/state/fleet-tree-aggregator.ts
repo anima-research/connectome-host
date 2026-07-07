@@ -209,7 +209,20 @@ export class FleetTreeAggregator {
   }
 
   /** Reset a child's subtree to pristine (new reducer, no snapshot, latch
-   *  cleared) and notify listeners that the tree changed. */
+   *  cleared) and notify listeners that the tree changed.
+   *
+   *  Self-healing window (accepted, not fixed): clearing hasInitialSnapshot
+   *  releases the `eventTs < lastSnapshotTs` stale-event gate, so a straggler
+   *  frame flushed after `lifecycle:exiting` (or between crash and the new
+   *  incarnation's ready) can briefly re-create a ghost node in the just-
+   *  cleared tree. It is transient: on restart the new incarnation's ready
+   *  triggers a describe whose applySnapshot wipes the subtree from ground
+   *  truth; on a permanent exit the child state is removed by the fleet
+   *  module. We deliberately do NOT re-arm the gate with a parent-clock
+   *  timestamp here — lastSnapshotTs is a CHILD-clock value (from the
+   *  snapshot's asOfTs) compared against child-clock eventTs, and seeding it
+   *  from the parent's Date.now() would mix clocks and mis-gate under skew,
+   *  trading a self-healing ghost for silent event loss. */
   private resetChildState(name: string, state: ChildState): void {
     state.reducer = new AgentTreeReducer();
     state.lastSnapshotTs = 0;

@@ -13,7 +13,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { connect as netConnect, type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
@@ -166,6 +166,41 @@ describe('headless lifecycle drills', () => {
 
     r.stop();
     sock.destroy();
+  }, 60_000);
+});
+
+describe('headless PID acquisition (audit 1.2, TOCTOU-hardened)', () => {
+  test('a STALE pid file (dead pid) is reclaimed — startup still succeeds', async () => {
+    // The double-start guard now writes the pid file with { flag: 'wx' } so
+    // the create itself is the mutex (no probe-then-write TOCTOU). A leftover
+    // pid file from a crashed instance must not permanently block startup: the
+    // EEXIST is re-probed, found dead, reclaimed, and the write retried.
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-stalepid-'));
+    const recipePath = join(dir, 'recipe.json');
+    const pidPath = join(dir, 'headless.pid');
+    const localSocket = join(dir, 'ipc.sock');
+    writeFileSync(recipePath, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+
+    // Get a definitely-dead pid: spawn + kill + reap, then plant it.
+    const corpse = spawn('sleep', ['30'], { stdio: 'ignore' });
+    const deadPid = corpse.pid!;
+    corpse.kill('SIGKILL');
+    await new Promise<void>((r) => corpse.once('exit', () => r()));
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(pidPath, String(deadPid), 'utf-8');
+
+    const proc = spawnHost([recipePath, '--headless'], dir);
+    try {
+      // Startup succeeds despite the pre-existing (stale) pid file: the socket
+      // appears and the pid file now names the LIVE new process, not the corpse.
+      await waitFor(() => existsSync(localSocket), 15_000, 'stale-pid instance still starts');
+      const written = readFileSync(pidPath, 'utf-8').trim();
+      expect(written).toBe(String(proc.pid));
+      expect(proc.exitCode).toBeNull();
+    } finally {
+      try { if (proc.exitCode === null) proc.kill('SIGKILL'); } catch { /* noop */ }
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* noop */ }
+    }
   }, 60_000);
 });
 

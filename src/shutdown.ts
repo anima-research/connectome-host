@@ -17,6 +17,16 @@
 
 import { readFileSync } from 'node:fs';
 
+/**
+ * Hard ceiling on graceful shutdown, shared by every run mode (headless
+ * daemon, TUI, piped). If `framework.stop()` hangs — stuck MCPL stdio child,
+ * uncancellable inference, full-disk Chronicle flush — the deadline still lets
+ * the process exit rather than parking forever. One constant, three call sites
+ * (previously three independent `15_000` literals — the exact duplicate-literal
+ * smell audit 2.12 flagged for ZOMBIE_THRESHOLD_MS).
+ */
+export const SHUTDOWN_DEADLINE_MS = 15_000;
+
 export type StopOutcome = 'stopped' | 'stop-failed' | 'timed-out';
 
 /**
@@ -55,6 +65,44 @@ export async function stopWithDeadline(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Run `stop()` under the deadline, then finalize the exit decision.
+ *
+ * Always calls `onResolved` (this unblocks whatever the caller is awaiting on
+ * to leave its run loop). Then, when stop() did NOT cleanly complete
+ * ('timed-out' / 'stop-failed'), forces `process.exit(1)` — because a hung or
+ * failed stop() leaves live handles (MCPL stdio children, fleet child sockets,
+ * the web-ui Bun.serve listener) pinning the event loop, so merely resolving
+ * the promise is not enough: without an explicit exit the process parks even
+ * though the deadline fired.
+ *
+ * This is the exact seam the TUI cleanup used to get wrong (audit 1.6): it
+ * `.finally(() => resolveExit())`-ed and discarded the outcome, so a hung
+ * stop() unblocked the await but never exited, and `docker stop`'s single
+ * SIGTERM rode out the grace period to SIGKILL. Headless and piped modes
+ * force-exit unconditionally; the TUI deliberately lets a CLEAN stop fall
+ * through to its natural, terminal-restoring return, which is why
+ * `forceExitOnClean` defaults to false.
+ *
+ * `exit` is injectable purely so tests can observe the decision without
+ * killing the test runner; production passes nothing and gets `process.exit`.
+ */
+export async function finalizeShutdown(opts: {
+  stop: () => Promise<void>;
+  deadlineMs: number;
+  onResolved?: () => void;
+  exit?: (code: number) => void;
+  forceExitOnClean?: boolean;
+  log?: (msg: string) => void;
+}): Promise<StopOutcome> {
+  const outcome = await stopWithDeadline(opts.stop, opts.deadlineMs, opts.log);
+  opts.onResolved?.();
+  if (outcome !== 'stopped' || opts.forceExitOnClean) {
+    (opts.exit ?? ((code: number) => process.exit(code)))(outcome === 'stopped' ? 0 : 1);
+  }
+  return outcome;
 }
 
 export interface SignalHandlerOptions {

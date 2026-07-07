@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSignalHandler, readAlivePid, stopWithDeadline } from '../src/shutdown.js';
+import { createSignalHandler, finalizeShutdown, readAlivePid, stopWithDeadline } from '../src/shutdown.js';
 
 describe('stopWithDeadline', () => {
   test('resolves "stopped" when stop() completes in time', async () => {
@@ -41,6 +41,65 @@ describe('stopWithDeadline', () => {
     );
     expect(outcome).toBe('stop-failed');
     expect(logs.some((l) => l.includes('boom'))).toBe(true);
+  });
+});
+
+describe('finalizeShutdown (TUI hung-stop path, audit 1.6)', () => {
+  test('a HUNG stop() force-exits (code 1) after unblocking the await', async () => {
+    // This is the exact bug: the TUI cleanup used to resolveExit and discard
+    // the outcome, so a hung stop() parked the process forever. finalizeShutdown
+    // must both resolve AND force exit(1) so docker stop's single SIGTERM
+    // actually terminates the process.
+    let resolved = false;
+    const exits: number[] = [];
+    const outcome = await finalizeShutdown({
+      stop: () => new Promise<void>(() => { /* hangs forever */ }),
+      deadlineMs: 100,
+      onResolved: () => { resolved = true; },
+      exit: (code) => { exits.push(code); },
+    });
+    expect(outcome).toBe('timed-out');
+    expect(resolved).toBe(true);       // await was unblocked
+    expect(exits).toEqual([1]);         // and the process was forced to exit
+  });
+
+  test('a REJECTING stop() also force-exits (code 1)', async () => {
+    const exits: number[] = [];
+    let resolved = false;
+    const outcome = await finalizeShutdown({
+      stop: () => Promise.reject(new Error('boom')),
+      deadlineMs: 1_000,
+      onResolved: () => { resolved = true; },
+      exit: (code) => { exits.push(code); },
+    });
+    expect(outcome).toBe('stop-failed');
+    expect(resolved).toBe(true);
+    expect(exits).toEqual([1]);
+  });
+
+  test('a CLEAN stop() unblocks the await but does NOT force-exit (TUI natural return)', async () => {
+    const exits: number[] = [];
+    let resolved = false;
+    const outcome = await finalizeShutdown({
+      stop: async () => { /* immediate */ },
+      deadlineMs: 1_000,
+      onResolved: () => { resolved = true; },
+      exit: (code) => { exits.push(code); },
+    });
+    expect(outcome).toBe('stopped');
+    expect(resolved).toBe(true);
+    expect(exits).toEqual([]);          // no forced exit — natural return path
+  });
+
+  test('forceExitOnClean makes even a clean stop exit 0 (headless/piped semantics)', async () => {
+    const exits: number[] = [];
+    await finalizeShutdown({
+      stop: async () => { /* immediate */ },
+      deadlineMs: 1_000,
+      forceExitOnClean: true,
+      exit: (code) => { exits.push(code); },
+    });
+    expect(exits).toEqual([0]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LoggingAnthropicAdapter, RotatingJsonlLog } from '../src/logging-adapter.js';
@@ -82,6 +82,34 @@ describe('RotatingJsonlLog', () => {
         expect(lines.length).toBeGreaterThan(0);
         for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a STABLE filename bounds total on-disk size across process restarts', () => {
+    // Fragility audit follow-up: capping the FILE isn't enough if every boot
+    // mints a fresh per-boot `llm-calls.<ts>.jsonl` — nothing deletes the old
+    // ones, so a flapping host grows 20MB × N. A stable filename lets the
+    // rotation actually cap the DIRECTORY: each "boot" re-opens the same path,
+    // and only ever `path` + `path.1` exist.
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-llmlog-boots-'));
+    const path = join(dir, 'llm-calls.jsonl'); // STABLE, not per-boot timestamped
+    try {
+      const maxBytes = 500;
+      const record = { type: 'call', payload: 'x'.repeat(80) };
+      // Simulate 8 process restarts, each re-opening the same stable path and
+      // writing enough to force rotations.
+      for (let boot = 0; boot < 8; boot++) {
+        const log = new RotatingJsonlLog(path, maxBytes); // fresh instance = new boot
+        for (let i = 0; i < 20; i++) log.append({ ...record, boot, i });
+      }
+      // The directory holds AT MOST the two rotation files — never one-per-boot.
+      const files = readdirSync(dir);
+      expect(files.sort()).toEqual(['llm-calls.jsonl', 'llm-calls.jsonl.1'].sort());
+      // And total on-disk size is bounded by ~2× the cap regardless of boots.
+      const total = files.reduce((sum, f) => sum + statSync(join(dir, f)).size, 0);
+      expect(total).toBeLessThanOrEqual(2 * maxBytes + 400);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -202,6 +202,64 @@ describe('LessonsModule global file: corruption handling', () => {
       cleanup();
     }
   });
+
+  test('a SECOND, independent corruption in the same process is also backed up + logged (not silently clobbered)', async () => {
+    // corruptBackupDone used to be one-shot per process: once ANY corruption
+    // was backed up, a later corruption returned null silently and got
+    // overwritten with no backup, no log — the exact hole the fix claims to
+    // close. The flag must mean "this ongoing incident is already backed up",
+    // so it resets on a clean read.
+    const { dir, globalPath, cleanup } = withTmpDir();
+    const corrupt1 = '{"lessons": [ {"id": "trunc-one';
+    const corrupt2 = '}}}garbage-two not json at all';
+    const corruptLogs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      const line = args.map(String).join(' ');
+      if (line.includes('CORRUPT')) corruptLogs.push(line);
+    };
+    try {
+      mkdirSync(dirname(globalPath), { recursive: true });
+      writeFileSync(globalPath, corrupt1);
+
+      // Same module instance for the whole process lifetime.
+      const module = await makeModule(globalPath);
+
+      // Incident 1 backed up at start()-time merge.
+      let backups = readdirSync(dir).filter(f => f.startsWith(`${basename(globalPath)}.corrupt-`));
+      expect(backups.length).toBe(1);
+
+      // Two save cycles: the first rewrites the file valid (its readGlobal
+      // still saw the corrupt bytes); the second reads the NOW-VALID file,
+      // which is the clean read that resets the incident flag.
+      await createLesson(module, 'recovery lesson 1');
+      await new Promise(r => setTimeout(r, 160)); // past the 100ms debounce
+      await createLesson(module, 'recovery lesson 2');
+      await new Promise(r => setTimeout(r, 160));
+      expect(() => readGlobalFile(globalPath)).not.toThrow(); // valid again
+
+      // Second, independent corruption (older-version writer / manual edit /
+      // disk hiccup) — different bytes so the backup is distinguishable.
+      writeFileSync(globalPath, corrupt2);
+
+      await createLesson(module, 'lesson after 2nd corruption');
+      await new Promise(r => setTimeout(r, 160));
+
+      // A SECOND backup now exists, capturing corrupt2 — not silently clobbered.
+      backups = readdirSync(dir).filter(f => f.startsWith(`${basename(globalPath)}.corrupt-`));
+      expect(backups.length).toBe(2);
+      const backupContents = backups.map(b => readFileSync(join(dir, b), 'utf-8')).sort();
+      expect(backupContents).toEqual([corrupt1, corrupt2].sort());
+
+      // And it was loudly logged BOTH times.
+      expect(corruptLogs.length).toBe(2);
+
+      await module.stop();
+    } finally {
+      console.error = originalError;
+      cleanup();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
