@@ -760,6 +760,18 @@ export class WebUiModule implements Module {
       return this.handleDebugContext(url);
     }
 
+    // Liveness/health JSON for connectome-doctor and the fleet hub. Behind
+    // the same basic auth as everything else (checked above).
+    if (url.pathname === '/healthz') {
+      const app = sharedServer?.app;
+      if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+      const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
+      if (typeof fw.healthSnapshot !== 'function') {
+        return Response.json({ error: 'framework lacks healthSnapshot()' }, { status: 501 });
+      }
+      return Response.json(fw.healthSnapshot());
+    }
+
     // Workspace file passthrough: /files/<mount>/<path...>
     // Resolves through WorkspaceModule.resolveAbsolutePath, which enforces
     // mount-relative containment and the mount's read-permission. We never

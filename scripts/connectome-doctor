@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""connectome-doctor — one-shot "why isn't the agent responding?" diagnosis.
+
+Usage:  connectome-doctor [INSTALL_DIR] [UNIT]
+        connectome-doctor ~/mythos-cm mythos-agent.service
+
+Prints a pipeline ladder: the last-seen timestamp at every stage an inbound
+event passes through. The first stage whose timestamp lags its upstream is
+where events are dying.
+
+  discord event -> mcpl forward -> chronicle ingest (gate verdict)
+  -> inference (llm-call) -> routeSpeech delivery
+
+Also checks: service status/restarts, disk, journal staleness (and where the
+REAL logs are), recent inference failures, and fires the SIGUSR2 live gate
+dump if the framework supports it.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+C_RED = "\033[31m"
+C_YEL = "\033[33m"
+C_GRN = "\033[32m"
+C_DIM = "\033[2m"
+C_OFF = "\033[0m"
+if not sys.stdout.isatty():
+    C_RED = C_YEL = C_GRN = C_DIM = C_OFF = ""
+
+NOW = time.time()
+WARNINGS = []
+
+
+def sh(cmd, timeout=15):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def age(ts):
+    """Humanize seconds-since-epoch -> '3m ago' / 'never'."""
+    if ts is None:
+        return "never"
+    d = NOW - ts
+    if d < 0:
+        return "future?"
+    if d < 90:
+        return f"{d:.0f}s ago"
+    if d < 5400:
+        return f"{d/60:.0f}m ago"
+    if d < 172800:
+        return f"{d/3600:.1f}h ago"
+    return f"{d/86400:.1f}d ago"
+
+
+def hhmm(ts):
+    if ts is None:
+        return "--:--:--"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m-%d %H:%M:%S")
+
+
+def parse_iso(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def warn(msg):
+    WARNINGS.append(msg)
+
+
+def tail_bytes(path, n):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - n))
+            return f.read()
+    except Exception:
+        return b""
+
+
+def last_matching_line(path, pattern, chunk=2_000_000):
+    """Last line matching regex `pattern`, scanning only the file tail."""
+    data = tail_bytes(path, chunk).decode("utf-8", "replace")
+    matches = [ln for ln in data.splitlines() if re.search(pattern, ln)]
+    return matches[-1] if matches else None
+
+
+# ---------------------------------------------------------------------------
+# 0. Arguments / discovery
+# ---------------------------------------------------------------------------
+install_dir = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~/mythos-cm")
+unit = sys.argv[2] if len(sys.argv) > 2 else None
+if unit is None:
+    # Guess: <name>-agent.service from install dir like ~/mythos-cm
+    base = os.path.basename(install_dir.rstrip("/")).replace("-cm", "")
+    unit = f"{base}-agent.service"
+
+data_dir = os.path.join(install_dir, "data")
+logs_dir = os.path.join(install_dir, "logs")
+
+print(f"connectome-doctor — {install_dir}  ({unit})")
+print("=" * 72)
+
+# ---------------------------------------------------------------------------
+# 1. Service
+# ---------------------------------------------------------------------------
+props = {}
+for line in sh(
+    f"systemctl --user show {unit} -p ActiveState -p SubState -p NRestarts "
+    f"-p ExecMainStartTimestamp -p MainPID -p StandardOutput -p StandardError"
+).splitlines():
+    if "=" in line:
+        k, v = line.split("=", 1)
+        props[k] = v
+
+active = props.get("ActiveState", "?")
+pid = props.get("MainPID", "0")
+start_ts = None
+if props.get("ExecMainStartTimestamp"):
+    t = sh(f"date -d '{props['ExecMainStartTimestamp']}' +%s")
+    start_ts = float(t) if t else None
+
+col = C_GRN if active == "running" or active == "active" else C_RED
+print(f"service    : {col}{active}/{props.get('SubState','?')}{C_OFF}  pid={pid}  "
+      f"started {age(start_ts)}  restarts={props.get('NRestarts','?')}")
+if active not in ("active", "running"):
+    warn(f"service is {active} — start it: systemctl --user start {unit}")
+if start_ts and NOW - start_ts < 300:
+    warn(f"service started only {age(start_ts)} — recent restart/crash?")
+
+# ---------------------------------------------------------------------------
+# 2. Disk
+# ---------------------------------------------------------------------------
+df = sh("df -h / | tail -1").split()
+if len(df) >= 5:
+    pct = int(df[4].rstrip("%"))
+    col = C_GRN if pct < 80 else (C_YEL if pct < 88 else C_RED)
+    print(f"disk /     : {col}{df[4]} used{C_OFF}  ({df[3]} free)")
+    if pct >= 88:
+        warn(f"disk at {pct}% — agents corrupt stores when writes fail (see 2026-07-02)")
+
+# ---------------------------------------------------------------------------
+# 3. Journal staleness + real log location
+# ---------------------------------------------------------------------------
+jlast = sh(f"journalctl --user -u {unit} -q --no-pager -n 1 -o short-unix 2>/dev/null | tail -1")
+jts = None
+m = re.match(r"^(\d+)\.\d+", jlast)
+if m:
+    jts = float(m.group(1))
+log_redirect = None
+frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
+if frag and os.path.exists(frag):
+    m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", open(frag).read())
+    if m:
+        log_redirect = m.group(1)
+
+agent_log = log_redirect or os.path.join(logs_dir, "agent.log")
+print(f"journal    : last entry {age(jts)}" + (f"  {C_DIM}(stdout/err -> {agent_log}){C_OFF}" if log_redirect else ""))
+if jts is None or (start_ts and jts < start_ts):
+    warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}")
+
+# ---------------------------------------------------------------------------
+# 4. Pipeline ladder
+# ---------------------------------------------------------------------------
+stages = []  # (name, ts, detail)
+
+# 4a. discord-mcpl: last gateway event seen / forwarded / dropped
+dbg = os.path.join(data_dir, "discord-mcpl-debug.log")
+enter_ts = fwd_ts = None
+enter_detail = fwd_detail = ""
+if os.path.exists(dbg):
+    ln = last_matching_line(dbg, r"handleDiscordMessage:enter")
+    if ln:
+        enter_ts = parse_iso(ln.split(" ", 1)[0])
+        mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"(.{0,40})', ln)
+        if mm:
+            enter_detail = f"#{mm.group(1)}: {mm.group(2)}…"
+    ln = last_matching_line(dbg, r"handleDiscordMessage:(sent|forwarding)")
+    if ln:
+        fwd_ts = parse_iso(ln.split(" ", 1)[0])
+        fwd_detail = "push/event" if "push/event" in ln else "channels/incoming"
+    ln = last_matching_line(dbg, r"handleDiscordMessage:drop")
+    if ln:
+        dts = parse_iso(ln.split(" ", 1)[0])
+        mm = re.search(r'"reason":"([^"]*)"', ln)
+        if dts and NOW - dts < 3600 and mm:
+            stages_note = f"last drop {age(dts)}: {mm.group(1)}"
+        else:
+            stages_note = None
+    else:
+        stages_note = None
+stages.append(("discord event seen", enter_ts, enter_detail))
+stages.append(("mcpl forward to host", fwd_ts, fwd_detail))
+
+# 4b. chronicle ingest: last "messages" append in records.log (byte-encoded!)
+rec_ts = None
+rec_detail = ""
+records = None
+sessions_dir = os.path.join(data_dir, "sessions")
+if os.path.isdir(sessions_dir):
+    for s in os.listdir(sessions_dir):
+        cand = os.path.join(sessions_dir, s, "records.log")
+        if os.path.exists(cand):
+            records = cand
+if records:
+    data = tail_bytes(records, 8_000_000).decode("utf-8", "replace")
+    last_msg = None
+    for mm in re.finditer(r'\{"record_id":\d+,"global_sequence":\d+,"state_id":"messages".*?"timestamp":(\d+)\}', data):
+        last_msg = mm
+    if last_msg:
+        rec_ts = int(last_msg.group(1)) / 1_000_000  # store stamps in microseconds
+        # decode the byte-array payload to recover metadata (triggered flag etc.)
+        arr = re.search(r"\[([0-9,]{40,})\]", last_msg.group(0))
+        if arr:
+            try:
+                payload = bytes(int(x) for x in arr.group(1).split(",")).decode("utf-8", "replace")
+                trig = '"triggered":true' in payload
+                pm = re.search(r'"participant":"([^"]*)"', payload)
+                cm = re.search(r'"channelName":"([^"]*)"', payload)
+                rec_detail = (f"{'triggered=true' if trig else 'triggered=false (gate skip)'}"
+                              + (f"  #{cm.group(1)}" if cm else "")
+                              + (f"  by {pm.group(1)}" if pm else ""))
+                if trig:
+                    rec_detail = rec_detail  # noted below vs inference lag
+                globals()["_last_ingest_triggered"] = trig
+            except Exception:
+                pass
+stages.append(("chronicle ingest (+gate)", rec_ts, rec_detail))
+
+# 4c. inference: newest llm-calls file, last record stop_reason
+llm_ts = None
+llm_detail = ""
+llm_files = sorted(
+    (f for f in os.listdir(data_dir) if f.startswith("llm-calls.")),
+    key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
+)
+if llm_files:
+    newest = os.path.join(data_dir, llm_files[-1])
+    llm_ts = os.path.getmtime(newest)
+    # last complete JSON line from tail (lines can be multi-MB)
+    raw = tail_bytes(newest, 30_000_000).decode("utf-8", "replace")
+    for ln in reversed(raw.splitlines()):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            r = json.loads(ln)
+        except Exception:
+            continue
+        resp = r.get("rawResponse") or {}
+        resp = resp.get("response") or resp
+        sr = resp.get("stop_reason")
+        err = resp.get("error") or r.get("error")
+        llm_detail = f"stop={sr}" + (f"  {C_RED}err={str(err)[:80]}{C_OFF}" if err else "")
+        if sr == "refusal":
+            warn("last model response was a REFUSAL — check context contamination "
+                 "(see project_mythos: contextBudgetTokens fix)")
+        break
+stages.append(("inference (llm call)", llm_ts, llm_detail))
+
+# 4d. delivery: last routeSpeech in agent log
+del_ts = None
+del_detail = ""
+if os.path.exists(agent_log):
+    ln = last_matching_line(agent_log, r"\[routeSpeech\]")
+    if ln:
+        del_ts = os.path.getmtime(agent_log)  # agent.log lines lack timestamps
+        if "no locus" in ln:
+            del_detail = f"{C_RED}NO LOCUS — speech stayed in chronicle{C_OFF}"
+            warn("last routeSpeech had no publish locus (push-event wake quirk) — "
+                 "reply was generated but NOT delivered to Discord")
+        else:
+            mm = re.search(r"routed (\d+) chars -> (\S+)", ln)
+            del_detail = f"routed {mm.group(1)}ch -> {mm.group(2)}" if mm else ln[-60:]
+    else:
+        del_detail = "none this boot (log rotates at restart)"
+stages.append(("routeSpeech delivery", del_ts, del_detail))
+
+print()
+print("pipeline ladder (last seen per stage):")
+prev_ts = None
+for name, ts, detail in stages:
+    mark = f"{C_GRN}o{C_OFF}" if ts else f"{C_RED}x{C_OFF}"
+    lag = ""
+    if prev_ts and ts and prev_ts - ts > 300:
+        lag = f"  {C_YEL}<-- lags upstream by {age(ts).replace(' ago','')} vs {age(prev_ts).replace(' ago','')}{C_OFF}"
+        mark = f"{C_YEL}!{C_OFF}"
+    print(f"  {mark} {name:<26} {hhmm(ts)}  ({age(ts):>9})  {C_DIM}{detail}{C_OFF}{lag}")
+    if ts:
+        prev_ts = ts
+
+# triggered ingest but no inference since -> the tonight signature
+if globals().get("_last_ingest_triggered") and rec_ts and (llm_ts is None or llm_ts < rec_ts - 120):
+    warn("a gate-TRIGGERED event was ingested but NO inference followed — "
+         "events are dying between the gate and the model (check inference "
+         "policy drops / budget failures / [diagnostics] dump below)")
+
+# ---------------------------------------------------------------------------
+# 5. Recent failures (agent.log + failures.log)
+# ---------------------------------------------------------------------------
+print()
+fail_lines = []
+for path in (agent_log, os.path.join(logs_dir, "failures.log")):
+    if os.path.exists(path):
+        data = tail_bytes(path, 400_000).decode("utf-8", "replace")
+        fail_lines += [ln for ln in data.splitlines()
+                       if re.search(r"\[inference-(failed|hard-down|dropped)\]|\[push-event-rejected\]|Error", ln)][-5:]
+if fail_lines:
+    print("recent failures:")
+    for ln in fail_lines[-5:]:
+        print(f"  {C_RED}{ln[:150]}{C_OFF}")
+    if any("inference-failed" in ln for ln in fail_lines):
+        warn("inference failures present — if the reason repeats identically, "
+             "the agent is hard-down until config changes (e.g. budget)")
+else:
+    print(f"recent failures: {C_GRN}none found{C_OFF} in {agent_log}")
+
+# ---------------------------------------------------------------------------
+# 6. Live gate dump (SIGUSR2)
+# ---------------------------------------------------------------------------
+if pid not in ("0", "", None) and active in ("active", "running"):
+    before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
+    sh(f"kill -USR2 {pid} 2>/dev/null")
+    time.sleep(0.7)
+    dump = None
+    if os.path.exists(agent_log):
+        with open(agent_log, "rb") as f:
+            f.seek(before)
+            for ln in f.read().decode("utf-8", "replace").splitlines():
+                if "[diagnostics]" in ln:
+                    dump = ln
+    print()
+    if dump:
+        print(f"live gate dump (SIGUSR2): {dump.split('[diagnostics] ',1)[-1]}")
+        try:
+            d = json.loads(dump.split("[diagnostics] ", 1)[-1])
+            g = d.get("gate") or {}
+            if g.get("inferring") and g.get("bufferedEvents", 0) > 0:
+                warn("WAKE-WEDGE signature: agent stuck in `inferring` with events buffering")
+            if g.get("sleepUntil", 0) > NOW * 1000:
+                warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}")
+            if d.get("activeStreams"):
+                # a turn is running right now — the "no inference followed"
+                # heuristic is premature; the model is just still thinking.
+                WARNINGS[:] = [w for w in WARNINGS if "NO inference followed" not in w]
+                print(f"  {C_GRN}turn in-flight for: {', '.join(d['activeStreams'])}{C_OFF}")
+        except Exception:
+            pass
+    else:
+        print(f"live gate dump: {C_DIM}no [diagnostics] response to SIGUSR2 "
+              f"(framework predates the diagnostics patch?){C_OFF}")
+
+# ---------------------------------------------------------------------------
+# 7. Verdict
+# ---------------------------------------------------------------------------
+print()
+if WARNINGS:
+    print(f"{C_YEL}=== findings ==={C_OFF}")
+    for w in WARNINGS:
+        print(f"  {C_YEL}*{C_OFF} {w}")
+    sys.exit(1)
+else:
+    print(f"{C_GRN}=== no obvious problems — pipeline looks alive ==={C_OFF}")
