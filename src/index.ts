@@ -57,12 +57,15 @@ const noTui = !headless && (process.argv.includes('--no-tui') || !process.stdin.
 
 const config = {
   apiKey: process.env.ANTHROPIC_API_KEY,
+  // OAuth/Bearer token (e.g. a Claude subscription token). When set, it takes
+  // precedence over the API key so requests never carry both auth schemes.
+  authToken: process.env.ANTHROPIC_AUTH_TOKEN,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
 
-if (!config.apiKey) {
-  console.error('Missing ANTHROPIC_API_KEY. Set it in .env or environment.');
+if (!config.apiKey && !config.authToken) {
+  console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
   process.exit(1);
 }
 
@@ -750,8 +753,19 @@ async function main() {
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
+  // OAuth (subscription) auth wins over API-key auth when both are present.
+  // Subscription tokens (sk-ant-oat…) additionally require the oauth beta
+  // header on every request.
   const adapter = new LoggingAnthropicAdapter(
-    { apiKey: config.apiKey!, baseURL: process.env.ANTHROPIC_BASE_URL || undefined },
+    {
+      ...(config.authToken
+        ? {
+            authToken: config.authToken,
+            defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+          }
+        : { apiKey: config.apiKey! }),
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+    },
     llmLogPath,
     () => settingsModule.getReasoning(),
   );

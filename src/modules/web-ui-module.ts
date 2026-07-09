@@ -891,7 +891,14 @@ export class WebUiModule implements Module {
         const res = await fetch(base + '/v1/messages/count_tokens', {
           method: 'POST',
           headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY ?? '',
+            // Mirror the main adapter's auth: OAuth Bearer (subscription) when
+            // ANTHROPIC_AUTH_TOKEN is set, x-api-key otherwise.
+            ...(process.env.ANTHROPIC_AUTH_TOKEN
+              ? {
+                  authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+                  'anthropic-beta': 'oauth-2025-04-20',
+                }
+              : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
             'anthropic-version': '2023-06-01',
             'content-type': 'application/json',
             'user-agent': 'conhost/1.0',
