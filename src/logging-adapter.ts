@@ -29,9 +29,20 @@ import { appendFileSync } from 'node:fs';
  *  tools take effect on the next call without restart. */
 export type ReasoningGetter = () => { enabled: boolean; budgetTokens: number };
 
+/** Exact first-system-block identity Anthropic requires on subscription
+ *  (sk-ant-oat…) OAuth traffic. Verified 2026-07-09: any other first block —
+ *  including this text with a suffix appended in the SAME block — is rejected
+ *  with a masked 429 rate_limit_error; this block followed by arbitrary
+ *  persona blocks is accepted (the mechanism the Agent SDK's
+ *  system-prompt-append uses). */
+const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly logPath: string;
   private readonly getReasoning?: ReasoningGetter;
+  /** True when authenticated with an OAuth/Bearer token instead of an API
+   *  key; requests then need the identity block prepended (see above). */
+  private readonly oauthMode: boolean;
 
   constructor(
     config: ConstructorParameters<typeof AnthropicAdapter>[0],
@@ -41,6 +52,26 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     super(config);
     this.logPath = logPath;
     this.getReasoning = getReasoning;
+    this.oauthMode = Boolean(config?.authToken);
+  }
+
+  /** Under OAuth subscription auth, prepend the required identity block to the
+   *  system prompt (converting a string system to blocks). No-op under API-key
+   *  auth or when the identity block is already first. The block is plain
+   *  (no cache_control) and a stable prefix, so caching is unaffected. */
+  private withOAuthIdentity(request: ProviderRequest): ProviderRequest {
+    if (!this.oauthMode) return request;
+    const sys = request.system;
+    const blocks: unknown[] =
+      typeof sys === 'string' && sys.length > 0
+        ? [{ type: 'text', text: sys }]
+        : Array.isArray(sys) ? sys : [];
+    const first = blocks[0] as { type?: string; text?: string } | undefined;
+    if (first?.type === 'text' && first.text === OAUTH_SYSTEM_IDENTITY) return request;
+    return {
+      ...request,
+      system: [{ type: 'text', text: OAUTH_SYSTEM_IDENTITY }, ...blocks],
+    };
   }
 
   /** If reasoning is enabled, inject `thinking` into the request before the
@@ -101,7 +132,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withReasoning(request);
+    const effective = this.withOAuthIdentity(this.withReasoning(request));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     try {
@@ -133,7 +164,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withReasoning(request);
+    const effective = this.withOAuthIdentity(this.withReasoning(request));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     try {
