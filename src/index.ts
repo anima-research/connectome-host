@@ -417,6 +417,7 @@ async function createFramework(
     'compressionSlackRatio',
     'foldingStrategy',
     'speculativeProduction',
+    'productionBudgetTokens',
     'summaryParticipant',
     'summarySystemPrompt',
     'summaryUserPrompt',

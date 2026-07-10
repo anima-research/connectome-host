@@ -39,6 +39,10 @@ export interface RecipeStrategy {
   targetChunkTokens?: number;
   mergeThreshold?: number;
   summaryTargetTokens?: number;
+  /** Standing production target: keep the summary forest deep enough to fit
+   *  this budget, enabling a later live-budget descent with no fold-storm and
+   *  a single KV invalidation (see context-manager productionBudgetTokens). */
+  productionBudgetTokens?: number;
   l1BudgetTokens?: number;
   l2BudgetTokens?: number;
   l3BudgetTokens?: number;
