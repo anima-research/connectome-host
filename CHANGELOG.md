@@ -5,8 +5,8 @@
 ### Added
 
 - Contribution policy: `CONTRIBUTING.md` (how changes land, review process,
-  AI-attribution convention, changelog rules), a PR template, and
-  `CLAUDE.md` with the definition-of-done for AI-assisted sessions.
+  AI-attribution convention, changelog rules — binding for PRs and direct
+  pushes, humans and AIs alike) and a PR template.
 - CI `changelog` check: PRs touching `src/` must also touch `CHANGELOG.md`,
   opt out with the `no-changelog` label. The publish workflow now refuses to
   release a `vX.Y.Z` tag with no matching `## X.Y.Z` changelog section.

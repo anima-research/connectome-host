@@ -8,6 +8,10 @@ connectome-host is part of the Connectome ecosystem
 describe how work actually lands here — they codify existing practice rather
 than aspiration. When in doubt, recent merged PRs are the best reference.
 
+Everything below applies to every change however it lands — external PR or
+maintainer direct push — and to human and AI authors identically. There is
+no separate rulebook for either.
+
 ## How changes land
 
 - External contributions come as PRs against `main`, from a fork or a repo
@@ -80,9 +84,10 @@ that don't fail on unfixed code, or with claims the branch itself disproves.
 `### Breaking` / `### Added` / `### Changed` / `### Fixed` subsections
 (loosely [Keep a Changelog](https://keepachangelog.com/)).
 
-- **The entry lands with the change** — same PR, ideally same commit. CI
-  enforces this softly: a PR touching `src/` without touching `CHANGELOG.md`
-  fails the `changelog` check unless the `no-changelog` label is applied.
+- **The entry lands with the change** — same commit, or at least the same
+  PR. This binds direct pushes to `main` just as much as PRs. On PRs, CI
+  enforces it softly: touching `src/` without touching `CHANGELOG.md` fails
+  the `changelog` check unless the `no-changelog` label is applied.
 - **What needs an entry:** anything an operator, recipe author, or module
   developer would notice — behavior, config/recipe schema, CLI, tool
   surfaces, defaults. Internal refactors, test-only, and docs-only changes
