@@ -132,6 +132,161 @@ const WELCOME_HISTORY_LIMIT = 200;
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
 
+interface CoverageSummary {
+  id: string;
+  level: number;
+  tokens?: number;
+  sourceIds?: string[];
+  mergedInto?: string;
+}
+
+interface CoverageChunk {
+  index: number;
+  tokens?: number;
+  compressed?: boolean;
+  summaryId?: string;
+  messages?: Array<{ id?: string }>;
+}
+
+interface CoverageStrategy {
+  summaries?: CoverageSummary[];
+  chunks?: CoverageChunk[];
+  compressionQueue?: number[];
+  mergeQueue?: Array<{ level: number; sourceIds: string[] }>;
+  resolutions?: Map<string, number>;
+  pendingCompression?: Promise<void> | null;
+}
+
+export interface ContextCoverageSnapshot {
+  agent: string;
+  branch: string;
+  generatedAt: string;
+  supported: boolean;
+  totals: {
+    chunks: number;
+    compressedChunks: number;
+    coveredMessages: number;
+    coveredTokens: number;
+    summaries: number;
+  };
+  levels: Array<{
+    level: number;
+    summaries: number;
+    frontier: number;
+    tokens: number;
+    coveredChunks: number;
+    coveredMessages: number;
+    coveredTokens: number;
+  }>;
+  chunks: Array<{
+    index: number;
+    messages: number;
+    tokens: number;
+    compressed: boolean;
+    summaryId: string | null;
+    maxLevel: number;
+    selectedMin: number;
+    selectedMax: number;
+    queued: boolean;
+  }>;
+  queue: {
+    inFlight: boolean;
+    pending: string | null;
+    l1: number[];
+    merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
+  };
+}
+
+/** Build a text-free projection of the autobiographical summary pyramid. */
+export function buildContextCoverageSnapshot(
+  agentName: string,
+  cm: {
+    currentBranch: () => { name: string };
+    getStrategy: () => unknown;
+    getPendingWork?: () => { description?: string } | null;
+  },
+): ContextCoverageSnapshot {
+  const strategy = cm.getStrategy() as CoverageStrategy;
+  const summaries = Array.isArray(strategy.summaries) ? strategy.summaries : [];
+  const chunks = Array.isArray(strategy.chunks) ? strategy.chunks : [];
+  const compressionQueue = Array.isArray(strategy.compressionQueue) ? strategy.compressionQueue : [];
+  const mergeQueue = Array.isArray(strategy.mergeQueue) ? strategy.mergeQueue : [];
+  const resolutions = strategy.resolutions instanceof Map ? strategy.resolutions : new Map<string, number>();
+  const summaryById = new Map(summaries.map(summary => [summary.id, summary]));
+  const queuedChunks = new Set(compressionQueue);
+
+  const projectedChunks = chunks.map((chunk) => {
+    let maxLevel = 0;
+    let current = chunk.summaryId ? summaryById.get(chunk.summaryId) : undefined;
+    const seen = new Set<string>();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      maxLevel = Math.max(maxLevel, current.level);
+      current = current.mergedInto ? summaryById.get(current.mergedInto) : undefined;
+    }
+
+    const selected = (chunk.messages ?? [])
+      .map(message => typeof message.id === 'string' ? (resolutions.get(message.id) ?? 0) : 0);
+    return {
+      index: chunk.index,
+      messages: chunk.messages?.length ?? 0,
+      tokens: Math.max(0, chunk.tokens ?? 0),
+      compressed: chunk.compressed === true,
+      summaryId: chunk.summaryId ?? null,
+      maxLevel,
+      selectedMin: selected.length > 0 ? Math.min(...selected) : 0,
+      selectedMax: selected.length > 0 ? Math.max(...selected) : 0,
+      queued: queuedChunks.has(chunk.index),
+    };
+  });
+
+  const levelNumbers = [...new Set(summaries.map(summary => summary.level))]
+    .filter(level => Number.isFinite(level) && level > 0)
+    .sort((a, b) => a - b);
+  const levels = levelNumbers.map((level) => {
+    const atLevel = summaries.filter(summary => summary.level === level);
+    const covered = projectedChunks.filter(chunk => chunk.maxLevel >= level);
+    return {
+      level,
+      summaries: atLevel.length,
+      frontier: atLevel.filter(summary => !summary.mergedInto).length,
+      tokens: atLevel.reduce((total, summary) => total + Math.max(0, summary.tokens ?? 0), 0),
+      coveredChunks: covered.length,
+      coveredMessages: covered.reduce((total, chunk) => total + chunk.messages, 0),
+      coveredTokens: covered.reduce((total, chunk) => total + chunk.tokens, 0),
+    };
+  });
+  const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
+  const pending = cm.getPendingWork?.()?.description ?? null;
+
+  return {
+    agent: agentName,
+    branch: cm.currentBranch().name,
+    generatedAt: new Date().toISOString(),
+    supported: Array.isArray(strategy.summaries) && Array.isArray(strategy.chunks),
+    totals: {
+      chunks: projectedChunks.length,
+      compressedChunks: projectedChunks.filter(chunk => chunk.compressed).length,
+      coveredMessages: covered.reduce((total, chunk) => total + chunk.messages, 0),
+      coveredTokens: covered.reduce((total, chunk) => total + chunk.tokens, 0),
+      summaries: summaries.length,
+    },
+    levels,
+    chunks: projectedChunks,
+    queue: {
+      inFlight: strategy.pendingCompression != null,
+      pending,
+      l1: [...compressionQueue],
+      merges: mergeQueue.map(merge => ({
+        targetLevel: merge.level,
+        sourceCount: merge.sourceIds.length,
+        firstSource: merge.sourceIds[0] ?? null,
+        lastSource: merge.sourceIds[merge.sourceIds.length - 1] ?? null,
+      })),
+    },
+  };
+}
+
 /**
  * Structural view of the windowed-read facade added to
  * @animalabs/context-manager alongside this protocol version. Typed
@@ -763,6 +918,9 @@ export class WebUiModule implements Module {
     if (url.pathname === '/debug/context/curve') {
       return this.handleContextCurve(url);
     }
+    if (url.pathname === '/debug/context/coverage') {
+      return this.handleContextCoverage(url);
+    }
     if (url.pathname === '/debug/context/maintenance') {
       return this.handleContextMaintenance();
     }
@@ -819,6 +977,19 @@ export class WebUiModule implements Module {
       );
     }
     return Response.json(framework.getContextMaintenanceSnapshot());
+  }
+
+  /** Summary-tree coverage and queued work, with no message or summary text. */
+  private handleContextCoverage(url: URL): Response {
+    const app = sharedServer?.app;
+    if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return Response.json({ error: `Agent not found: ${agentName}` }, { status: 404 });
+    }
+    const cm = agent.getContextManager();
+    return Response.json(buildContextCoverageSnapshot(agentName, cm));
   }
 
   /**

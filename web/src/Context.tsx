@@ -8,7 +8,7 @@
  * a per-segment table, with an exact total token count.
  */
 
-import { createSignal, onMount, For, Show } from 'solid-js';
+import { createSignal, onCleanup, onMount, For, Show } from 'solid-js';
 
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -28,9 +28,55 @@ interface Makeup {
   error?: string;
 }
 
+interface CoverageLevel {
+  level: number;
+  summaries: number;
+  frontier: number;
+  tokens: number;
+  coveredChunks: number;
+  coveredMessages: number;
+  coveredTokens: number;
+}
+
+interface CoverageChunk {
+  index: number;
+  messages: number;
+  tokens: number;
+  compressed: boolean;
+  summaryId: string | null;
+  maxLevel: number;
+  selectedMin: number;
+  selectedMax: number;
+  queued: boolean;
+}
+
+interface Coverage {
+  agent: string;
+  branch: string;
+  generatedAt: string;
+  supported: boolean;
+  totals: {
+    chunks: number;
+    compressedChunks: number;
+    coveredMessages: number;
+    coveredTokens: number;
+    summaries: number;
+  };
+  levels: CoverageLevel[];
+  chunks: CoverageChunk[];
+  queue: {
+    inFlight: boolean;
+    pending: string | null;
+    l1: number[];
+    merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
+  };
+}
+
 type Row = { key: string; label: string; messages: number; tokens: number; color: string };
 
 const fmt = (n: number) => n.toLocaleString();
+const levelColors = ['#52525b', '#06b6d4', '#10b981', '#f59e0b', '#f43f5e', '#a78bfa', '#60a5fa'];
+const levelColor = (level: number) => levelColors[Math.min(level, levelColors.length - 1)];
 
 function rowsOf(s: Stats): Row[] {
   return [
@@ -45,15 +91,19 @@ function rowsOf(s: Stats): Row[] {
 
 export function ContextPanel(props: { agent?: string }) {
   const [data, setData] = createSignal<Makeup | null>(null);
+  const [coverage, setCoverage] = createSignal<Coverage | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [coverageLoading, setCoverageLoading] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
+  const [coverageErr, setCoverageErr] = createSignal<string | null>(null);
+
+  const query = () => props.agent ? `?agent=${encodeURIComponent(props.agent)}` : '';
 
   const load = async () => {
     setLoading(true);
     setErr(null);
     try {
-      const q = props.agent ? `?agent=${encodeURIComponent(props.agent)}` : '';
-      const res = await fetch(`/debug/context/makeup${q}`, { credentials: 'same-origin' });
+      const res = await fetch(`/debug/context/makeup${query()}`, { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = (await res.json()) as Makeup;
       if (j.error) throw new Error(j.error);
@@ -65,7 +115,30 @@ export function ContextPanel(props: { agent?: string }) {
     }
   };
 
-  onMount(load);
+  const loadCoverage = async () => {
+    setCoverageLoading(true);
+    setCoverageErr(null);
+    try {
+      const res = await fetch(`/debug/context/coverage${query()}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setCoverage((await res.json()) as Coverage);
+    } catch (e) {
+      setCoverageErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCoverageLoading(false);
+    }
+  };
+
+  const refreshAll = () => {
+    void load();
+    void loadCoverage();
+  };
+
+  onMount(() => {
+    refreshAll();
+    const timer = window.setInterval(() => void loadCoverage(), 5_000);
+    onCleanup(() => window.clearInterval(timer));
+  });
 
   const estTotal = () => data()?.stats?.total.tokens ?? 0;
   const rows = () => {
@@ -80,15 +153,116 @@ export function ContextPanel(props: { agent?: string }) {
         <button
           type="button"
           class="px-2 py-0.5 text-neutral-400 hover:text-neutral-100 border border-neutral-700 rounded"
-          onClick={load}
-          disabled={loading()}
+          onClick={refreshAll}
+          disabled={loading() || coverageLoading()}
+          title="Refresh context diagnostics"
         >
-          {loading() ? '…' : 'refresh'}
+          {loading() || coverageLoading() ? '…' : 'refresh'}
         </button>
       </div>
 
       <Show when={err()}>
         <div class="text-rose-400">error: {err()}</div>
+      </Show>
+
+      <Show when={coverageErr()}>
+        <div class="text-rose-400">coverage: {coverageErr()}</div>
+      </Show>
+
+      <Show when={coverage()?.supported}>
+        <section class="border-y border-neutral-800 py-3 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-neutral-300">Summary coverage</span>
+            <span class="text-neutral-600">
+              {coverage()!.queue.inFlight || coverage()!.queue.l1.length > 0 || coverage()!.queue.merges.length > 0
+                ? 'active'
+                : 'idle'}
+            </span>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2 text-neutral-500">
+            <div>
+              <div class="text-base text-neutral-200">{coverage()!.totals.compressedChunks}/{coverage()!.totals.chunks}</div>
+              <div>chunks</div>
+            </div>
+            <div>
+              <div class="text-base text-neutral-200">{fmt(coverage()!.totals.coveredMessages)}</div>
+              <div>msgs covered</div>
+            </div>
+            <div>
+              <div class="text-base text-neutral-200">{fmt(coverage()!.totals.summaries)}</div>
+              <div>summaries</div>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <div class="flex justify-between text-neutral-500"><span>available depth</span><span>oldest → newest</span></div>
+            <CoverageStrip chunks={coverage()!.chunks} field="available" />
+            <div class="flex justify-between text-neutral-500"><span>selected depth</span><span>{fmt(coverage()!.totals.coveredTokens)} tok covered</span></div>
+            <CoverageStrip chunks={coverage()!.chunks} field="selected" />
+          </div>
+
+          <div class="flex flex-wrap gap-x-2.5 gap-y-1 text-neutral-500">
+            <For each={[0, ...coverage()!.levels.map(level => level.level)]}>
+              {(level) => (
+                <span><span class="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: levelColor(level) }} />L{level}</span>
+              )}
+            </For>
+          </div>
+
+          <table class="w-full">
+            <thead>
+              <tr class="text-neutral-500 text-left">
+                <th class="font-normal py-1">level</th>
+                <th class="font-normal text-right">frontier</th>
+                <th class="font-normal text-right">total</th>
+                <th class="font-normal text-right">coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              <For each={coverage()!.levels}>
+                {(level) => (
+                  <tr class="border-t border-neutral-900">
+                    <td class="py-1 text-neutral-200">L{level.level}</td>
+                    <td class="text-right text-neutral-300">{level.frontier}</td>
+                    <td class="text-right text-neutral-500">{level.summaries}</td>
+                    <td class="text-right text-neutral-400">{fmt(level.coveredMessages)} msg</td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+
+          <div class="border-t border-neutral-900 pt-2 space-y-1">
+            <div class="flex items-center justify-between">
+              <span class="text-neutral-400">Queue</span>
+              <span class={coverage()!.queue.inFlight ? 'text-amber-300' : 'text-neutral-600'}>
+                {coverage()!.queue.inFlight ? 'in flight' : 'waiting'}
+              </span>
+            </div>
+            <Show when={coverage()!.queue.pending}>
+              <div class="text-amber-200 truncate" title={coverage()!.queue.pending ?? ''}>{coverage()!.queue.pending}</div>
+            </Show>
+            <For each={coverage()!.queue.l1}>
+              {(index) => <div class="text-neutral-400">L1 · chunk {index}</div>}
+            </For>
+            <For each={coverage()!.queue.merges}>
+              {(merge) => (
+                <div class="text-neutral-400" title={`${merge.firstSource ?? ''} → ${merge.lastSource ?? ''}`}>
+                  L{merge.targetLevel} · {merge.sourceCount} source summaries
+                </div>
+              )}
+            </For>
+            <Show when={!coverage()!.queue.inFlight && coverage()!.queue.l1.length === 0 && coverage()!.queue.merges.length === 0}>
+              <div class="text-neutral-600">No queued work</div>
+            </Show>
+          </div>
+
+          <div class="flex items-center justify-between gap-2 text-neutral-600">
+            <span class="min-w-0 truncate" title={coverage()!.branch}>{coverage()!.branch}</span>
+            <a class="shrink-0 text-cyan-500 hover:text-cyan-300" href="/curve" target="_blank" rel="noreferrer">curve ↗</a>
+          </div>
+        </section>
       </Show>
 
       <Show when={data()?.stats} fallback={<Show when={!err()}><div class="text-neutral-500">loading…</div></Show>}>
@@ -153,6 +327,32 @@ export function ContextPanel(props: { agent?: string }) {
           </div>
         </div>
       </Show>
+    </div>
+  );
+}
+
+function CoverageStrip(props: { chunks: CoverageChunk[]; field: 'available' | 'selected' }) {
+  const total = () => props.chunks.reduce((sum, chunk) => sum + Math.max(1, chunk.tokens), 0);
+  return (
+    <div class="flex h-4 w-full overflow-hidden rounded border border-neutral-800 bg-neutral-900">
+      <For each={props.chunks}>
+        {(chunk) => {
+          const level = () => props.field === 'available' ? chunk.maxLevel : chunk.selectedMax;
+          const title = () => {
+            const selected = chunk.selectedMin === chunk.selectedMax
+              ? `L${chunk.selectedMax}`
+              : `L${chunk.selectedMin}–L${chunk.selectedMax}`;
+            return `chunk ${chunk.index} · ${chunk.messages} msg · ${fmt(chunk.tokens)} tok · available L${chunk.maxLevel} · selected ${selected}${chunk.queued ? ' · queued' : ''}`;
+          };
+          return (
+            <div
+              class={`h-full min-w-px ${chunk.queued ? 'ring-1 ring-inset ring-amber-200' : ''}`}
+              style={{ width: `${(Math.max(1, chunk.tokens) / Math.max(1, total())) * 100}%`, background: levelColor(level()) }}
+              title={title()}
+            />
+          );
+        }}
+      </For>
     </div>
   );
 }
