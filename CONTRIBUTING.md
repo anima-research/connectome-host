@@ -97,11 +97,14 @@ that don't fail on unfixed code, or with claims the branch itself disproves.
   **migration**, and **unchanged** (what readers might fear broke but
   didn't). The fleet recipe-path entry in `CHANGELOG.md` is the canonical
   example of the format.
-- **Releases:** the release commit retitles `Unreleased` to
-  `## X.Y.Z — YYYY-MM-DD` and bumps `package.json` — then the `vX.Y.Z` tag is
-  pushed. The publish workflow refuses to release a version with no matching
-  changelog section. Version bumps are a maintainer release-time action, not
-  part of feature PRs.
+- **Releases** (maintainers): `npm version <patch|minor|major>` does the
+  whole cut — the `version` hook retitles `Unreleased` to
+  `## X.Y.Z — YYYY-MM-DD` (keeping a fresh `Unreleased` above it, and
+  refusing to release when there are no entries), then npm commits and tags.
+  `git push --follow-tags` triggers CI, which refuses a tag with no matching
+  changelog section, publishes to npm, and mirrors the section into the
+  GitHub release notes. Version bumps are a maintainer release-time action,
+  not part of feature PRs.
 
 ## Building and testing
 

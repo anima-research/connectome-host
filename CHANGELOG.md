@@ -10,6 +10,10 @@
 - CI `changelog` check: PRs touching `src/` must also touch `CHANGELOG.md`,
   opt out with the `no-changelog` label. The publish workflow now refuses to
   release a `vX.Y.Z` tag with no matching `## X.Y.Z` changelog section.
+- Release mechanics automated: `npm version <level>` cuts `Unreleased` into
+  `## X.Y.Z — date` via the `version` hook (`scripts/release-changelog.ts`),
+  and after publishing, CI mirrors that section into the GitHub release
+  notes for the tag.
 
 ### Breaking (recipe authors only)
 
