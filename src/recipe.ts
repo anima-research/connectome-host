@@ -58,6 +58,9 @@ export interface RecipeStrategy {
   compressionSlackRatio?: number;
   foldingStrategy?: 'flat-profile' | 'oldest-first' | 'kv-stable';
   speculativeProduction?: boolean;
+  /** L1 production holdback: keep the newest N closed chunks out of the
+   *  speculative compression queue (default 1); demand still overrides. */
+  l1HoldbackChunks?: number;
   // Self-voice / compression framing. When the agent's name differs from
   // 'Claude' (the strategy default for summaryParticipant), these MUST be set
   // (especially summaryParticipant: <agent.name>) — otherwise self-recollections

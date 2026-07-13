@@ -420,6 +420,7 @@ async function createFramework(
     'overBudgetGraceRatio',
     'foldingStrategy',
     'speculativeProduction',
+    'l1HoldbackChunks',
     'summaryParticipant',
     'summarySystemPrompt',
     'summaryUserPrompt',
