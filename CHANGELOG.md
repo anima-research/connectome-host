@@ -12,8 +12,9 @@
   release a `vX.Y.Z` tag with no matching `## X.Y.Z` changelog section.
 - Release mechanics automated: `npm version <level>` cuts `Unreleased` into
   `## X.Y.Z — date` via the `version` hook (`scripts/release-changelog.ts`),
-  and after publishing, CI mirrors that section into the GitHub release
-  notes for the tag.
+  and on release tags CI creates the GitHub release with that section as
+  its notes — independent of the npm publish job, which stays dormant until
+  the package actually exists on npm.
 
 ### Breaking (recipe authors only)
 

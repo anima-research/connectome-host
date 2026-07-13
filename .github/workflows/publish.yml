@@ -76,7 +76,11 @@ jobs:
   github-release:
     name: GitHub release notes
     runs-on: ubuntu-latest
-    needs: publish
+    needs: build-and-test
+    # Deliberately independent of the npm publish job: the package is
+    # consumed by github-clone today (not on npm), so the GitHub release is
+    # the primary release artifact and must not be gated on npm succeeding.
+    if: startsWith(github.ref, 'refs/tags/v')
 
     permissions:
       contents: write
