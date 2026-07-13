@@ -25,6 +25,7 @@ export interface RecipeStrategy {
   recentWindowTokens?: number;
   compressionModel?: string;
   maxMessageTokens?: number;
+  overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying
   // autobiographical strategy (and frontdesk, which extends it).
   // Declared here so a typo in a recipe (e.g. `l1BudgetTokes`) fails
@@ -49,6 +50,11 @@ export interface RecipeStrategy {
   // `adaptiveResolution: false` to opt back to the count-based hierarchical
   // renderer. The remaining knobs only apply when adaptiveResolution is true.
   adaptiveResolution?: boolean;
+  /** kv-stable: trust region P on per-turn perturbation (tokens re-read).
+   *  See context-manager adaptive-resolution-design.md §13. */
+  kvStableReachTokens?: number;
+  /** kv-stable: quality-gap override threshold (§13.4). Default 0.35. */
+  kvStableQualityGapRatio?: number;
   compressionSlackRatio?: number;
   foldingStrategy?: 'flat-profile' | 'oldest-first' | 'kv-stable';
   speculativeProduction?: boolean;
