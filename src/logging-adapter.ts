@@ -1,7 +1,11 @@
 // AnthropicAdapter wrapper that appends each LLM call's RAW request, RAW
 // response, and any error to a JSONL log file. Restores the Hermes-era
 // `llm-calls.<iso>.jsonl` visibility we lose on the connectome stack by
-// default.
+// default. Successful calls keep a compact request summary; the full raw
+// request is retained only for refusals and errors, where forensic inspection
+// matters. Serializing the full raw + normalized request on every tool-loop
+// turn previously created several simultaneous copies of a large context and
+// contributed to production OOMs.
 //
 // "Raw" means the actual Anthropic API payload (post-buildRequest, including
 // `thinking`, tool definitions in Anthropic shape, etc.) and the raw provider
@@ -13,7 +17,7 @@
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
 //   { type: 'call'|'error', kind: 'complete'|'stream', timestamp, durationMs,
-//     rawRequest, rawResponse, normalizedRequest, normalizedResponse }
+//     requestSummary, rawRequest?, rawResponse, error? }
 
 import { AnthropicAdapter } from '@animalabs/membrane';
 import type {
@@ -111,6 +115,20 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  private requestSummary(request: ProviderRequest): Record<string, unknown> {
+    return {
+      model: request.model,
+      maxTokens: request.maxTokens,
+      messages: request.messages.length,
+      tools: request.tools?.length ?? 0,
+    };
+  }
+
+  private refusalRawRequest(response: ProviderResponse, rawRequest: unknown): unknown {
+    const raw = (response as { raw?: { stop_reason?: string } }).raw;
+    return raw?.stop_reason === 'refusal' ? rawRequest : undefined;
+  }
+
   /** Wrap options to capture the raw provider request via the membrane
    *  onRequest hook, then chain to any caller-supplied onRequest. */
   private captureRawRequest(
@@ -140,18 +158,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       this.log({
         type: 'call', kind: 'complete',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
-        rawRequest: sink.rawRequest,
+        requestSummary: this.requestSummary(request),
+        rawRequest: this.refusalRawRequest(response, sink.rawRequest),
         rawResponse: (response as { raw?: unknown }).raw ?? null,
-        normalizedRequest: request,
-        normalizedResponse: response,
       });
       return response;
     } catch (err) {
       this.log({
         type: 'error', kind: 'complete',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
+        requestSummary: this.requestSummary(request),
         rawRequest: sink.rawRequest,
-        normalizedRequest: request,
         error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : String(err),
       });
       throw err;
@@ -172,18 +189,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       this.log({
         type: 'call', kind: 'stream',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
-        rawRequest: sink.rawRequest,
+        requestSummary: this.requestSummary(request),
+        rawRequest: this.refusalRawRequest(response, sink.rawRequest),
         rawResponse: (response as { raw?: unknown }).raw ?? null,
-        normalizedRequest: request,
-        normalizedResponse: response,
       });
       return response;
     } catch (err) {
       this.log({
         type: 'error', kind: 'stream',
         timestamp: new Date().toISOString(), durationMs: Date.now() - t0,
+        requestSummary: this.requestSummary(request),
         rawRequest: sink.rawRequest,
-        normalizedRequest: request,
         error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : String(err),
       });
       throw err;

@@ -19,6 +19,7 @@
  * See WEBUI-PLAN.md and src/web/protocol.ts for the wire shape.
  */
 
+import { CURVE_PAGE_HTML } from './web-ui-curve-page.js';
 import type {
   AgentFramework,
   Module,
@@ -756,6 +757,18 @@ export class WebUiModule implements Module {
       return this.handleContextMakeup(url);
     }
 
+    // Context curve: per-entry provenance of the live compiled window —
+    // cumulative raw-history tokens vs rendered tokens, by fold level.
+    // JSON at /debug/context/curve; the visualization page at /curve.
+    if (url.pathname === '/debug/context/curve') {
+      return this.handleContextCurve(url);
+    }
+    if (url.pathname === '/curve') {
+      return new Response(CURVE_PAGE_HTML, {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    }
+
     if (url.pathname === '/debug/context') {
       return this.handleDebugContext(url);
     }
@@ -831,6 +844,120 @@ export class WebUiModule implements Module {
         JSON.stringify({ error: message }),
         { status: 500, headers: { 'content-type': 'application/json' } },
       );
+    }
+  }
+
+  /**
+   * Context curve (GET /debug/context/curve[?agent=<name>]): compile the
+   * agent's window and return one record per compiled entry with its
+   * provenance — kind (raw / L1..Ln summary), rendered token estimate, the
+   * raw-history tokens it covers (leaf messages, recursively through the
+   * summary tree), date span, and full text. The /curve page plots the
+   * cumulative raw→rendered curve from this; slope = local compression rate.
+   *
+   * Same side-effect class as previewActivation / makeup: the compile may
+   * commit resolution updates, exactly as the agent's own next turn would.
+   * No inference, no message writes.
+   */
+  private async handleContextCurve(url: URL): Promise<Response> {
+    const app = sharedServer?.app;
+    if (!app) return new Response('Not ready', { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return new Response(JSON.stringify({ error: `Agent not found: ${agentName}` }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      });
+    }
+    try {
+      const cm = (agent as unknown as { getContextManager: () => any }).getContextManager();
+      const maxTokens = app.recipe.agent.contextBudgetTokens ?? 200_000;
+      const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
+      const compiled = await cm.compile({ maxTokens, reserveForResponse });
+
+      // Curve inspection only needs text and source metadata. Resolving every
+      // historical blob here re-inlines all base64 media and can expand a
+      // few-hundred-MB Chronicle into several GB of JS heap. Use the windowed
+      // reader with blob resolution disabled so production diagnostics stay
+      // bounded by text history rather than the media archive.
+      const messageCount = cm.getMessageCount();
+      const messages: Array<{ id: string; timestamp?: unknown; content?: unknown[] }> =
+        cm.getMessageWindow(0, messageCount, { resolveBlobs: false }).messages;
+      const msgById = new Map(messages.map((mm) => [mm.id, mm]));
+      const estimate = (mm: { content?: unknown[] }): number => {
+        let t = 0;
+        for (const b of (mm.content ?? []) as Array<Record<string, unknown>>) {
+          if (b?.type === 'text') t += Math.ceil(String(b.text ?? '').length / 4);
+          else if (b?.type === 'image') t += 1600;
+          else if (b?.type === 'tool_result') t += Math.ceil(JSON.stringify(b.content ?? '').length / 4);
+          else if (b?.type === 'tool_use') t += Math.ceil(JSON.stringify(b.input ?? {}).length / 4);
+          else if (b?.type === 'thinking') t += Math.ceil(String(b.thinking ?? '').length / 4);
+        }
+        return t;
+      };
+
+      type Summary = { id: string; level: number; content: string; sourceLevel: number; sourceIds: string[] };
+      const strategy = cm.getStrategy() as { summaries?: Summary[] };
+      const sums: Summary[] = strategy.summaries ?? [];
+      const sumById = new Map(sums.map((x) => [x.id, x]));
+      const headOf = (txt: string): string => txt.replace(/\s+/g, ' ').slice(0, 100);
+      const byHead = new Map(sums.map((x) => [headOf(x.content), x]));
+      const leaves = (x: Summary, seen = new Set<string>()): string[] => {
+        if (seen.has(x.id)) return [];
+        seen.add(x.id);
+        if (x.sourceLevel === 0) return x.sourceIds;
+        const out: string[] = [];
+        for (const cid of x.sourceIds) {
+          const c = sumById.get(cid);
+          if (c) out.push(...leaves(c, seen));
+        }
+        return out;
+      };
+
+      const entries = [];
+      let i = 0;
+      for (const e of compiled.messages as Array<{ participant: string; content?: unknown[]; sourceMessageId?: string }>) {
+        const blocks = (e.content ?? []) as Array<Record<string, unknown>>;
+        const text = blocks.filter((b) => b?.type === 'text').map((b) => String(b.text ?? '')).join('\n');
+        const nImages = blocks.filter((b) => b?.type === 'image').length;
+        const rendered = Math.ceil(text.length / 4) + nImages * 1600 +
+          blocks.filter((b) => b?.type === 'tool_result' || b?.type === 'tool_use')
+            .reduce((a, b) => a + Math.ceil(JSON.stringify(b.input ?? b.content ?? '').length / 4), 0);
+        const sum = byHead.get(headOf(text));
+        if (sum) {
+          const leafIds = leaves(sum).filter((id) => msgById.has(id));
+          const rawCovered = leafIds.reduce((a, id) => a + estimate(msgById.get(id)!), 0);
+          const dates = leafIds.map((id) => msgById.get(id)!.timestamp).filter(Boolean).sort();
+          entries.push({
+            i: i++, kind: `L${sum.level}`, id: sum.id, participant: e.participant,
+            rendered, rawCovered, msgCount: leafIds.length, nImages,
+            dateFirst: dates[0] ?? null, dateLast: dates[dates.length - 1] ?? null, text,
+          });
+        } else {
+          const src = e.sourceMessageId ? msgById.get(e.sourceMessageId) : null;
+          entries.push({
+            i: i++, kind: 'raw', id: e.sourceMessageId ?? null, participant: e.participant,
+            rendered, rawCovered: src ? estimate(src) : rendered, msgCount: 1, nImages,
+            dateFirst: src?.timestamp ?? null, dateLast: src?.timestamp ?? null, text,
+          });
+        }
+      }
+      return Response.json({
+        agent: agentName,
+        generatedAt: new Date().toISOString(),
+        branch: cm.currentBranch().name,
+        budget: { maxTokens, reserveForResponse },
+        totals: {
+          entries: entries.length,
+          rendered: entries.reduce((a, e) => a + e.rendered, 0),
+          rawCovered: entries.reduce((a, e) => a + e.rawCovered, 0),
+        },
+        entries,
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
+        status: 500, headers: { 'content-type': 'application/json' },
+      });
     }
   }
 
