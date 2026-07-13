@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Contribution policy: `CONTRIBUTING.md` (how changes land, review process,
+  AI-attribution convention, changelog rules), a PR template, and
+  `CLAUDE.md` with the definition-of-done for AI-assisted sessions.
+- CI `changelog` check: PRs touching `src/` must also touch `CHANGELOG.md`,
+  opt out with the `no-changelog` label. The publish workflow now refuses to
+  release a `vX.Y.Z` tag with no matching `## X.Y.Z` changelog section.
+
 ### Breaking (recipe authors only)
 
 - `modules.fleet.children[].recipe` paths now resolve at recipe-load time

@@ -48,6 +48,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require changelog section for this release
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          esc=$(printf '%s' "$ver" | sed 's/[.]/\\./g')
+          if ! grep -Eq "^## ${esc}([^0-9]|$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${ver}' section for tag ${GITHUB_REF_NAME}. Retitle the Unreleased section before tagging (see CONTRIBUTING.md)."
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

@@ -1,0 +1,32 @@
+name: Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog-entry:
+    name: Changelog entry present
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.pull_request.labels.*.name, 'no-changelog')"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require CHANGELOG.md update when src/ changes
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          changed=$(git diff --name-only "$base...$head")
+          echo "Changed files:"
+          echo "$changed"
+          if echo "$changed" | grep -q '^src/' && ! echo "$changed" | grep -qx 'CHANGELOG.md'; then
+            echo "::error::This PR touches src/ but not CHANGELOG.md. Add an entry under 'Unreleased' (see CONTRIBUTING.md), or apply the 'no-changelog' label if the change is internal-only."
+            exit 1
+          fi
+          echo "OK"
