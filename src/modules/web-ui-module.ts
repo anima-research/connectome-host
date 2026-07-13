@@ -763,6 +763,9 @@ export class WebUiModule implements Module {
     if (url.pathname === '/debug/context/curve') {
       return this.handleContextCurve(url);
     }
+    if (url.pathname === '/debug/context/maintenance') {
+      return this.handleContextMaintenance();
+    }
     if (url.pathname === '/curve') {
       return new Response(CURVE_PAGE_HTML, {
         headers: { 'content-type': 'text/html; charset=utf-8' },
@@ -796,6 +799,26 @@ export class WebUiModule implements Module {
     // Static SPA
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     return this.serveStatic(requested);
+  }
+
+  /**
+   * Counts-only state and bounded history for periodic context maintenance.
+   * Authentication is enforced by handleHttp before this method is reached.
+   * The framework snapshot deliberately contains no message or summary text.
+   */
+  private handleContextMaintenance(): Response {
+    const app = sharedServer?.app;
+    if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+    const framework = app.framework as unknown as {
+      getContextMaintenanceSnapshot?: () => Record<string, unknown>;
+    };
+    if (typeof framework.getContextMaintenanceSnapshot !== 'function') {
+      return Response.json(
+        { error: 'framework lacks context-maintenance diagnostics' },
+        { status: 501 },
+      );
+    }
+    return Response.json(framework.getContextMaintenanceSnapshot());
   }
 
   /**
