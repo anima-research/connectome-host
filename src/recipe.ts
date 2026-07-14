@@ -90,9 +90,8 @@ export interface RecipeAgent {
   /** Per-agent context compile budget (input tokens). When unset, the
    *  ContextManager default (100k) applies. Raise for large-context models. */
   contextBudgetTokens?: number;
-  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Set '1h' for
-   *  agents whose reply cadence is slower than 5 minutes — avoids re-writing
-   *  the full context to cache after every gap. Unset: provider default (5m). */
+  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
+   *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads. */
   cacheTtl?: '5m' | '1h';
   strategy?: RecipeStrategy;
   /**
@@ -511,6 +510,7 @@ export const DEFAULT_RECIPE: Recipe = {
   description: 'General-purpose assistant with tool access',
   agent: {
     name: 'agent',
+    cacheTtl: '1h',
     systemPrompt: [
       'You are a helpful assistant. You have access to tools provided by connected MCP servers.',
       'Use them to help the user with their tasks.',
@@ -731,6 +731,7 @@ export function validateRecipe(raw: unknown): Recipe {
   if (agent.cacheTtl !== undefined && agent.cacheTtl !== '5m' && agent.cacheTtl !== '1h') {
     throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
   }
+  agent.cacheTtl ??= '1h';
 
   // Validate agent.thinking if present. Catches typos and constraint
   // violations (notably max_tokens > budget_tokens) at recipe-load time

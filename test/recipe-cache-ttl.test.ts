@@ -4,7 +4,7 @@
  * inference).
  */
 import { describe, test, expect } from 'bun:test';
-import { validateRecipe } from '../src/recipe.js';
+import { DEFAULT_RECIPE, validateRecipe } from '../src/recipe.js';
 
 function recipeWithCacheTtl(cacheTtl?: unknown) {
   return {
@@ -17,6 +17,10 @@ function recipeWithCacheTtl(cacheTtl?: unknown) {
 }
 
 describe('recipe agent.cacheTtl validation', () => {
+  test('the shipped default recipe explicitly uses "1h"', () => {
+    expect(DEFAULT_RECIPE.agent.cacheTtl).toBe('1h');
+  });
+
   test('accepts "5m"', () => {
     expect(validateRecipe(recipeWithCacheTtl('5m')).agent.cacheTtl).toBe('5m');
   });
@@ -25,8 +29,8 @@ describe('recipe agent.cacheTtl validation', () => {
     expect(validateRecipe(recipeWithCacheTtl('1h')).agent.cacheTtl).toBe('1h');
   });
 
-  test('accepts unset (provider default applies)', () => {
-    expect(validateRecipe(recipeWithCacheTtl()).agent.cacheTtl).toBeUndefined();
+  test('defaults unset cacheTtl to "1h"', () => {
+    expect(validateRecipe(recipeWithCacheTtl()).agent.cacheTtl).toBe('1h');
   });
 
   test('rejects a typo\'d TTL at load time', () => {
