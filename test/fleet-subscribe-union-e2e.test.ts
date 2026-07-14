@@ -45,8 +45,11 @@ describe('FleetModule subscribe union e2e', () => {
   let tmpDir: string;
   let recipePath: string;
   let fleet: FleetModule;
+  let previousApiKey: string | undefined;
 
   beforeAll(async () => {
+    previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = previousApiKey || 'sk-test-fleet-subscribe-union';
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-sub-union-'));
     recipePath = join(tmpDir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(NARROW_RECIPE), 'utf-8');
@@ -68,6 +71,8 @@ describe('FleetModule subscribe union e2e', () => {
     } catch { /* noop */ }
     await new Promise((r) => setTimeout(r, 500));
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousApiKey;
   });
 
   test('narrow recipe subscription gets reducer-required events forced in by FleetModule', async () => {
