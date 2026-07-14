@@ -93,6 +93,9 @@ export interface WelcomeMessage {
   /** Per-agent cost breakdown for the parent process, present when the
    *  framework's usage tracker has data. Empty during cold start. */
   perAgentCost?: PerAgentCost[];
+  /** Recent provider calls with cache verdicts. Present when the host's
+   *  provider adapter exposes the call ledger. */
+  callLedger?: CallLedgerSnapshot;
 }
 
 /**
@@ -162,6 +165,91 @@ export interface UsageMessage {
   type: 'usage';
   usage: TokenUsage;
   perAgentCost?: PerAgentCost[];
+}
+
+/** Live replacement snapshot emitted after each provider call. */
+export interface CallLedgerMessage {
+  type: 'call-ledger';
+  ledger: CallLedgerSnapshot;
+}
+
+export type CallLedgerVerdict =
+  | 'HIT'
+  | 'hit+extend'
+  | 'uncached'
+  | 'rewrite:expired'
+  | 'rewrite:prefix-mutated'
+  | 'rewrite:prefix-truncated'
+  | 'rewrite:unexplained'
+  | 'first-write'
+  | 'ERROR'
+  | 'empty'
+  | 'unknown';
+
+export interface CallLedgerRow {
+  id: string;
+  timestamp: string;
+  kind: 'complete' | 'stream';
+  /** Honest call-class estimate; `~` means the trigger plumbing did not
+   *  provide a definitive origin. */
+  originEstimate: 'turn~' | 'aux~';
+  model: string;
+  messages: number;
+  durationMs: number;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  cost?: CallCostBreakdown;
+  cache: {
+    /** Undefined for older compact logs that predate marker summaries. */
+    breakpoints?: number;
+    ttls: string[];
+    effectiveTtl: '5m' | '1h';
+  };
+  verdict: CallLedgerVerdict;
+  cause: string;
+  stopReason?: string;
+  error?: string;
+}
+
+export interface CallCostBreakdown {
+  input: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  cacheRead: number;
+  output: number;
+  total: number;
+  currency: 'USD';
+  /** `billing` means every charged usage bucket and pricing modifier was
+   *  known. Unknown/mixed buckets are left unpriced rather than estimated. */
+  grade: 'billing';
+  pricingVersion: string;
+  rates: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cacheWrite5mPerMillion: number;
+    cacheWrite1hPerMillion: number;
+    cacheReadPerMillion: number;
+  };
+}
+
+export interface CallLedgerSnapshot {
+  /** Oldest to newest; clients may reverse for display. */
+  rows: CallLedgerRow[];
+  summary: {
+    calls: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheHitRatio: number;
+    cost?: {
+      total: number;
+      currency: 'USD';
+      pricedCalls: number;
+      unpricedCalls: number;
+      pricingVersion: string;
+    };
+    byVerdict: Partial<Record<CallLedgerVerdict, number>>;
+  };
 }
 
 export interface TokenUsage {
@@ -352,6 +440,7 @@ export type WebUiServerMessage =
   | ChildEventMessage
   | CommandResultMessage
   | UsageMessage
+  | CallLedgerMessage
   | BranchChangedMessage
   | SessionChangedMessage
   | PeekMessage

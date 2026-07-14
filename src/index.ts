@@ -17,6 +17,7 @@
 
 import { Membrane, NativeFormatter } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
@@ -138,6 +139,7 @@ async function createFramework(
   recipe: Recipe,
   agentName: string,
   settingsModule: SettingsModule,
+  callLedger: CallLedger,
 ): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
@@ -332,6 +334,7 @@ async function createFramework(
       basicAuth: webuiConfig.basicAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
       observersPath,
+      callLedger,
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({ path: observersPath }));
@@ -775,6 +778,10 @@ async function main() {
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
+  const callLedger = new CallLedger({
+    dataDir: config.dataDir,
+    defaultTtl: recipe.agent.cacheTtl ?? '5m',
+  });
   // OAuth (subscription) auth wins over API-key auth when both are present.
   // Subscription tokens (sk-ant-oat…) additionally require the oauth beta
   // header on every request.
@@ -790,6 +797,7 @@ async function main() {
     },
     llmLogPath,
     () => settingsModule.getReasoning(),
+    (record) => callLedger.record(record),
   );
 
   // Session management — resolved before Membrane construction so the
@@ -832,7 +840,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger);
 
   // Build app context
   const app: AppContext = {
@@ -853,7 +861,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

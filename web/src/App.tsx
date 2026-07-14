@@ -22,6 +22,7 @@ import {
   type MessageBlock,
   type TokenUsage,
   type PerAgentCost,
+  type CallLedgerSnapshot,
 } from '@conhost/web/protocol';
 
 /** Client-side block: the wire MessageBlock plus live-stream bookkeeping. */
@@ -116,6 +117,7 @@ export function App() {
   let pendingHistoryTimer: number | undefined;
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
+  const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
   /** Currently-focused tree node + the panel mode rendered on its behalf.
    *  `mode` decides whether the side panel shows live stream events or a
@@ -705,6 +707,7 @@ export function App() {
         appendMessage: (m) => setMessages(produce(arr => arr.push(m))),
         setUsage,
         setPerAgentCost,
+        setCallLedger,
         appendStreamToken,
         appendToolUseBlocks,
         updateToolStatus,
@@ -967,6 +970,7 @@ export function App() {
               node={focusedNode()!}
               sessionUsage={usage()}
               perAgentCost={perAgentCost()}
+              callLedger={callLedger()}
               onClose={closePanel}
             />
           )}
@@ -1066,6 +1070,7 @@ interface HandlerHooks {
   appendMessage: (msg: Message) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
+  setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
   appendStreamToken: (token: string, blockType?: string) => void;
   /** Attach yielded tool calls to the streaming assistant message. */
   appendToolUseBlocks: (calls: Array<{ id: string; name: string; input?: unknown }>) => void;
@@ -1099,6 +1104,7 @@ function handleServerMessage(
       hooks.applyWelcome(msg);
       hooks.setUsage(msg.usage);
       hooks.setPerAgentCost(msg.perAgentCost ?? []);
+      hooks.setCallLedger(msg.callLedger ?? null);
       return;
     }
     case 'message-appended':
@@ -1110,6 +1116,9 @@ function handleServerMessage(
     case 'usage':
       hooks.setUsage(msg.usage);
       if (msg.perAgentCost) hooks.setPerAgentCost(msg.perAgentCost);
+      return;
+    case 'call-ledger':
+      hooks.setCallLedger(msg.ledger);
       return;
     case 'trace': {
       const e = msg.event;

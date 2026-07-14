@@ -14,7 +14,13 @@
 import { For, Show } from 'solid-js';
 import type { UiNode } from './tree';
 import { aggregateTokens } from './tree';
-import type { TokenUsage, PerAgentCost } from '@conhost/web/protocol';
+import type {
+  TokenUsage,
+  PerAgentCost,
+  CallLedgerSnapshot,
+  CallLedgerRow,
+  CallLedgerVerdict,
+} from '@conhost/web/protocol';
 
 export function UsagePanel(props: {
   node: UiNode;
@@ -24,6 +30,10 @@ export function UsagePanel(props: {
   /** Per-agent cost slice (parent-process agents only). Used to label
    *  per-agent cost in process / per-agent breakdown views. */
   perAgentCost: PerAgentCost[];
+  /** Recent provider calls. The ledger is process-local, so it is shown on
+   *  the process usage view rather than pretending it can be split across
+   *  fleet children. */
+  callLedger: CallLedgerSnapshot | null;
   onClose(): void;
 }) {
   const costFor = (agentName: string): { total: number; currency: string } | undefined => {
@@ -70,7 +80,7 @@ export function UsagePanel(props: {
   };
 
   return (
-    <div class="border-l border-neutral-800 w-96 shrink-0 bg-neutral-950 flex flex-col h-full">
+    <div class="border-l border-neutral-800 w-[52rem] max-w-[68vw] shrink-0 bg-neutral-950 flex flex-col h-full">
       <div class="border-b border-neutral-800 px-3 py-2 flex items-center gap-2">
         <span class="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">usage</span>
         <span class="font-mono text-sm text-neutral-200 truncate">{props.node.label}</span>
@@ -99,6 +109,8 @@ export function UsagePanel(props: {
         </Show>
 
         <Show when={props.node.kind === 'process'}>
+          <CallLedgerSection ledger={props.callLedger} />
+
           <section class="text-[10px] text-neutral-600 italic leading-snug">
             Session total comes from the membrane's per-call usage stream.
             "By node" is the per-agent ledger from the tree reducer; the two
@@ -108,6 +120,108 @@ export function UsagePanel(props: {
       </div>
     </div>
   );
+}
+
+function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null }) {
+  const rows = (): CallLedgerRow[] => [...(props.ledger?.rows ?? [])].slice(-30).reverse();
+  return (
+    <section>
+      <div class="flex items-baseline gap-2 mb-1">
+        <div class="text-neutral-500 uppercase tracking-wider text-[10px]">recent calls · cache ledger</div>
+        <Show when={props.ledger}>
+          {(ledger) => (
+            <span class="ml-auto text-[10px] text-neutral-500">
+              ${fmtCost(ledger().summary.cost?.total ?? 0)} retained · {Math.round(ledger().summary.cacheHitRatio * 100)}% cached
+              <Show when={(ledger().summary.cost?.unpricedCalls ?? 0) > 0}>
+                {' '}· <span class="text-amber-400">{ledger().summary.cost!.unpricedCalls} unpriced</span>
+              </Show>
+            </span>
+          )}
+        </Show>
+      </div>
+
+      <Show
+        when={rows().length > 0}
+        fallback={<div class="border border-neutral-800 rounded px-2 py-2 text-neutral-600">No provider calls recorded yet.</div>}
+      >
+        <div class="border border-neutral-800 rounded overflow-hidden">
+          <div class="grid grid-cols-[4.7rem_3.5rem_3rem_4rem_4rem_4rem_4rem_4.7rem_minmax(8rem,1fr)] gap-x-2 px-2 py-1 bg-neutral-900 text-[9px] uppercase tracking-wider text-neutral-600">
+            <span>time</span><span>origin</span><span>msgs</span><span class="text-right">in</span>
+            <span class="text-right">read</span><span class="text-right">write</span><span class="text-right">out</span>
+            <span class="text-right">cost</span><span>verdict / cause</span>
+          </div>
+          <div class="max-h-80 overflow-y-auto divide-y divide-neutral-900">
+            <For each={rows()}>{(row) => <CallLedgerRowView row={row} />}</For>
+          </div>
+        </div>
+        <div class="mt-1 text-[9px] text-neutral-600">
+          Costs marked in USD use provider-reported token buckets and the versioned public rate card. Calls missing an exact cache-write split or known rate stay explicitly unpriced. origin~ remains an estimated call class.
+        </div>
+      </Show>
+    </section>
+  );
+}
+
+function CallLedgerRowView(props: { row: CallLedgerRow }) {
+  const time = (): string => {
+    const d = new Date(props.row.timestamp);
+    return Number.isNaN(d.getTime()) ? '?' : d.toLocaleTimeString([], { hour12: false });
+  };
+  const flags = (): string => {
+    const bp = props.row.cache.breakpoints;
+    if (bp === undefined) return 'flags unknown';
+    if (bp === 0) return 'no cache flags';
+    return `${bp}bp:${props.row.cache.effectiveTtl}`;
+  };
+  const costTitle = (): string => {
+    const c = props.row.cost;
+    if (!c) return 'Unpriced: an authoritative usage bucket or public rate was unavailable';
+    return [
+      `billing-grade ${c.currency} · ${c.pricingVersion}`,
+      `input $${c.input.toFixed(6)}`,
+      `read $${c.cacheRead.toFixed(6)}`,
+      `write 5m $${c.cacheWrite5m.toFixed(6)}`,
+      `write 1h $${c.cacheWrite1h.toFixed(6)}`,
+      `output $${c.output.toFixed(6)}`,
+    ].join(' · ');
+  };
+  return (
+    <div class="grid grid-cols-[4.7rem_3.5rem_3rem_4rem_4rem_4rem_4rem_4.7rem_minmax(8rem,1fr)] gap-x-2 px-2 py-1.5 items-start hover:bg-neutral-900/60">
+      <span class="text-neutral-400" title={`${props.row.timestamp} · ${Math.round(props.row.durationMs / 1000)}s`}>{time()}</span>
+      <span class="text-neutral-500">{props.row.originEstimate}</span>
+      <span class="text-neutral-400">{props.row.messages}</span>
+      <span class="text-right text-neutral-400">{fmt(props.row.tokens.input)}</span>
+      <span class="text-right text-sky-300">{fmt(props.row.tokens.cacheRead)}</span>
+      <span class="text-right text-amber-300">{fmt(props.row.tokens.cacheWrite)}</span>
+      <span class="text-right text-neutral-400">{fmt(props.row.tokens.output)}</span>
+      <span
+        class={`text-right ${props.row.cost ? 'text-emerald-300' : 'text-amber-500'}`}
+        title={costTitle()}
+      >
+        {props.row.cost ? `$${fmtCost(props.row.cost.total)}` : 'unpriced'}
+      </span>
+      <span class="min-w-0">
+        <span class={`font-semibold ${verdictColor(props.row.verdict)}`}>{props.row.verdict}</span>
+        <span class="ml-1 text-[9px] text-neutral-600">{flags()}</span>
+        <span class="block text-[9px] leading-snug text-neutral-500 break-words">{props.row.cause}</span>
+      </span>
+    </div>
+  );
+}
+
+function verdictColor(verdict: CallLedgerVerdict): string {
+  switch (verdict) {
+    case 'HIT': return 'text-emerald-300';
+    case 'hit+extend': return 'text-lime-300';
+    case 'rewrite:expired': return 'text-orange-300';
+    case 'rewrite:prefix-mutated':
+    case 'rewrite:prefix-truncated': return 'text-red-300';
+    case 'rewrite:unexplained': return 'text-violet-300';
+    case 'ERROR': return 'text-red-400';
+    case 'first-write': return 'text-slate-300';
+    case 'uncached': return 'text-stone-400';
+    default: return 'text-neutral-400';
+  }
 }
 
 function TotalsBlock(props: { totals: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number; currency: string } } }) {
