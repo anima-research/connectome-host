@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "General-purpose agent TUI host with recipe-based configuration",
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
     "@animalabs/agent-framework": "^0.6.0",
     "@animalabs/chronicle": "^0.2.0",
     "@animalabs/context-manager": "^0.5.5",
-    "@animalabs/membrane": "^0.5.68",
+    "@animalabs/membrane": "^0.5.70",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {

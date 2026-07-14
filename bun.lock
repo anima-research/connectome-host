@@ -8,7 +8,7 @@
         "@animalabs/agent-framework": "^0.6.0",
         "@animalabs/chronicle": "^0.2.0",
         "@animalabs/context-manager": "^0.5.5",
-        "@animalabs/membrane": "^0.5.68",
+        "@animalabs/membrane": "^0.5.70",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -25,7 +25,7 @@
 
     "@animalabs/context-manager": ["@animalabs/context-manager@0.5.5", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.64" } }, "sha512-KWTluwU5VIZKIPF/IdfUbkvPNZ5zMxSfZjaxZb81IXe+DBPmjHuUVNIqgXIQ2Mv1pCn1vCNqieZ/iSrc6dFH8w=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.68", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-MfSERy0ECxdBZ4NelHdZbqsP/ORWJsfeAI6vuyy6gP77aGcdJL8qf4XrUkOox5yZa5MqB50y0K58Ffv79jCnbg=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.70", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-AxF9A88Oz6gPJxr6A32nDQ+byQEWDqbAZCDugilaUy6lGZvrKun/k4qU5cAHf9s8xGQl4T3afzTAT8yF69UogA=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
@@ -274,6 +274,10 @@
     "yoga-layout": ["yoga-layout@3.2.1", "", {}, "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="],
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@animalabs/agent-framework/@animalabs/membrane": ["@animalabs/membrane@0.5.68", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-MfSERy0ECxdBZ4NelHdZbqsP/ORWJsfeAI6vuyy6gP77aGcdJL8qf4XrUkOox5yZa5MqB50y0K58Ffv79jCnbg=="],
+
+    "@animalabs/context-manager/@animalabs/membrane": ["@animalabs/membrane@0.5.68", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-MfSERy0ECxdBZ4NelHdZbqsP/ORWJsfeAI6vuyy6gP77aGcdJL8qf4XrUkOox5yZa5MqB50y0K58Ffv79jCnbg=="],
 
     "@discordjs/rest/@discordjs/collection": ["@discordjs/collection@2.1.1", "", {}, "sha512-LiSusze9Tc7qF03sLCujF5iZp7K+vRNEDBZ86FT9aQAv3vxMLihUvKvpsCWiQ2DJq1tVckopKm1rxomgNUc9hg=="],
 
