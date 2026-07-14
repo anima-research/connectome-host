@@ -239,6 +239,7 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
   "agent": {
     "name": "<agent>",                      // = chronicle "self" participant
     "model": "<model-id>",                  // or gateway-prefixed, e.g. anthropic/claude-opus-4
+    "timezone": "America/Los_Angeles",      // agent-visible wall clock only; storage stays UTC
     "systemPrompt": "<persona / or minimal>",
     "maxTokens": 16384,                     // response cap
     "maxStreamTokens": 180000,              // recompile trigger; keep < model window
