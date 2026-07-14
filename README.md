@@ -27,6 +27,7 @@ A recipe is a JSON file that configures everything domain-specific:
   "agent": {
     "name": "researcher",
     "model": "claude-opus-4-6",
+    "timezone": "America/Los_Angeles",
     "systemPrompt": "You are a ...",
     "maxTokens": 16384,
     "strategy": {
@@ -54,6 +55,10 @@ A recipe is a JSON file that configures everything domain-specific:
   }
 }
 ```
+
+`agent.timezone` is an IANA zone used only for times rendered to the agent.
+Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
+it, `AGENT_TIMEZONE` is used, then the process timezone.
 
 ### Recipe loading
 
