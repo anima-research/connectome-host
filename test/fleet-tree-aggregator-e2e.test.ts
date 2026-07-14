@@ -51,6 +51,8 @@ describe('FleetTreeAggregator — e2e against headless child', () => {
   let aggregator: FleetTreeAggregator;
 
   beforeAll(async () => {
+    // Children validate credentials during startup but never infer in this test.
+    process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'sk-test-fleet-aggregator';
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-agg-e2e-'));
     recipePath = join(tmpDir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(CHILD_RECIPE), 'utf-8');
