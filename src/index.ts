@@ -15,8 +15,14 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
-import { Membrane, NativeFormatter } from '@animalabs/membrane';
+import {
+  Membrane,
+  NativeFormatter,
+  OpenAIResponsesAPIAdapter,
+  OpenAIResponsesFormatter,
+} from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
@@ -61,14 +67,10 @@ const config = {
   // OAuth/Bearer token (e.g. a Claude subscription token). When set, it takes
   // precedence over the API key so requests never carry both auth schemes.
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  openaiApiKey: process.env.OPENAI_API_KEY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
-
-if (!config.apiKey && !config.authToken) {
-  console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
-  process.exit(1);
-}
 
 // ---------------------------------------------------------------------------
 // AppContext — mutable container for session switching
@@ -138,6 +140,7 @@ async function createFramework(
   recipe: Recipe,
   agentName: string,
   settingsModule: SettingsModule,
+  callLedger: CallLedger | null,
 ): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
@@ -332,6 +335,7 @@ async function createFramework(
       basicAuth: webuiConfig.basicAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
       observersPath,
+      ...(callLedger ? { callLedger } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({ path: observersPath }));
@@ -473,6 +477,20 @@ async function createFramework(
         maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
         contextBudgetTokens: recipe.agent.contextBudgetTokens,
         ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
+        ...(recipe.agent.provider === 'openai-responses' && {
+          providerParams: {
+            reasoning: {
+              effort: recipe.agent.responses?.reasoningEffort ?? 'high',
+              context: recipe.agent.responses?.reasoningContext ?? 'all_turns',
+            },
+            ...(recipe.agent.responses?.compactThreshold ? {
+              context_management: [{
+                type: 'compaction',
+                compact_threshold: recipe.agent.responses.compactThreshold,
+              }],
+            } : {}),
+          },
+        }),
         strategy,
         ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
         ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
@@ -761,6 +779,16 @@ function countLines(path: string): number {
 
 async function main() {
   const recipe = await resolveRecipe();
+  const provider = recipe.agent.provider ?? 'anthropic';
+
+  if (provider === 'openai-responses' && !config.openaiApiKey) {
+    console.error('Missing OPENAI_API_KEY for recipe provider "openai-responses".');
+    process.exit(1);
+  }
+  if (provider === 'anthropic' && !config.apiKey && !config.authToken) {
+    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
+    process.exit(1);
+  }
 
   // SettingsModule constructed early so the adapter can read its state for
   // cross-cutting concerns (currently: reasoning). It's wired into the
@@ -775,22 +803,34 @@ async function main() {
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
+  const callLedger = provider === 'anthropic'
+    ? new CallLedger({
+        dataDir: config.dataDir,
+        defaultTtl: recipe.agent.cacheTtl ?? '5m',
+      })
+    : null;
   // OAuth (subscription) auth wins over API-key auth when both are present.
   // Subscription tokens (sk-ant-oat…) additionally require the oauth beta
   // header on every request.
-  const adapter = new LoggingAnthropicAdapter(
-    {
-      ...(config.authToken
-        ? {
-            authToken: config.authToken,
-            defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
-          }
-        : { apiKey: config.apiKey! }),
-      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
-    },
-    llmLogPath,
-    () => settingsModule.getReasoning(),
-  );
+  const adapter = provider === 'openai-responses'
+    ? new OpenAIResponsesAPIAdapter({
+        apiKey: config.openaiApiKey!,
+        baseURL: process.env.OPENAI_BASE_URL || undefined,
+      })
+    : new LoggingAnthropicAdapter(
+        {
+          ...(config.authToken
+            ? {
+                authToken: config.authToken,
+                defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+              }
+            : { apiKey: config.apiKey! }),
+          baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+        },
+        llmLogPath,
+        () => settingsModule.getReasoning(),
+        (record) => callLedger!.record(record),
+      );
 
   // Session management — resolved before Membrane construction so the
   // active session's import-source sidecar can contribute to agent-name
@@ -823,7 +863,9 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
-    formatter: new NativeFormatter(),
+    formatter: provider === 'openai-responses'
+      ? new OpenAIResponsesFormatter()
+      : new NativeFormatter(),
     // Anchor the assistant role for internal callers that don't set
     // request.assistantParticipant themselves (autobio compression,
     // executeMerge). Mismatch here flips stored assistant turns to
@@ -832,7 +874,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger);
 
   // Build app context
   const app: AppContext = {
@@ -853,7 +895,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

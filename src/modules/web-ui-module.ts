@@ -41,6 +41,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
+import type { CallLedger } from '../call-ledger.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -54,6 +55,7 @@ import {
   type WelcomeMessageEntry,
   type RequestHistoryMessage,
   type TokenUsage,
+  type CallLedgerSnapshot,
   type McplListMessage,
   type LessonsListMessage,
 } from '../web/protocol.js';
@@ -128,6 +130,8 @@ export interface WebUiModuleConfig {
    * scope mask. With no grants the webui behaves exactly as before.
    */
   observersPath?: string;
+  /** Content-free recent provider-call ledger for spend/cache diagnostics. */
+  callLedger?: CallLedger;
 }
 
 /** Data stashed on the Bun WS upgrade. */
@@ -389,6 +393,9 @@ interface SharedServerState {
    *  every usage:updated event so the welcome and live UsageMessage frames
    *  carry consistent values. */
   latestPerAgentCost: import('../web/protocol.js').PerAgentCost[];
+  /** Recent per-call cache diagnostics, updated directly by the adapter. */
+  latestCallLedger?: CallLedgerSnapshot;
+  callLedgerDetacher: (() => void) | null;
   /** Currently-bound app, refreshed on every setApp() call. WS handlers read
    *  from here so the singleton always points at the live framework regardless
    *  of which WebUiModule instance is "active". */
@@ -464,6 +471,8 @@ export class WebUiModule implements Module {
       parentUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       childUsage: new Map(),
       latestPerAgentCost: [],
+      latestCallLedger: this.config.callLedger?.snapshot(),
+      callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
       app: null,
@@ -494,6 +503,19 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+
+    // Provider calls include auxiliary compression requests that never emit a
+    // framework usage trace, so subscribe at the adapter ledger itself. This
+    // keeps the panel live for both conversational and memory-maintenance
+    // calls without polling the JSONL log.
+    state.callLedgerDetacher = this.config.callLedger?.onUpdate((ledger) => {
+      state.latestCallLedger = ledger;
+      const msg: WebUiServerMessage = { type: 'call-ledger', ledger };
+      for (const client of state.clients.values()) {
+        if (!client.welcomed) continue;
+        if (client.scopes === null || client.scopes.has('health')) this.send(client, msg);
+      }
+    }) ?? null;
 
     console.log(`[webui] listening on http://${host}:${boundPort}`);
   }
@@ -2485,6 +2507,9 @@ export class WebUiModule implements Module {
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
         ? { perAgentCost: sharedServer!.latestPerAgentCost }
+        : {}),
+      ...(sharedServer!.latestCallLedger
+        ? { callLedger: sharedServer!.latestCallLedger }
         : {}),
     };
   }

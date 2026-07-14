@@ -244,7 +244,7 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
     "maxTokens": 16384,                     // response cap
     "maxStreamTokens": 180000,              // recompile trigger; keep < model window
     "contextBudgetTokens": 160000,          // SEE §11.1 — MUST fit under (window - maxTokens)
-    "cacheTtl": "1h",                       // prompt-cache TTL; '1h' for residents replying slower than 5m (cache re-write premium dominates spend otherwise), omit/'5m' for rapid loops
+    "cacheTtl": "1h",                       // prompt-cache TTL; defaults to '1h', set '5m' explicitly for rapid sub-5m loops
     "strategy": {
       "type": "autobiographical",
       "headWindowTokens": 4000,
@@ -266,6 +266,10 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
   }
 }
 ```
+
+Use `"cacheTtl": "1h"` for Connectome deployments. This is also the runtime
+default when the field is omitted. Set `"5m"` only for intentionally rapid
+workloads whose cache is normally reused within five minutes.
 
 **`.env`** (`chmod 600`). Common vars:
 
