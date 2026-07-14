@@ -283,12 +283,25 @@ export function filterEntryForScopes(
 /** Project a welcome through an observer's scope mask. Without 'messages'
  *  the entire conversation payload (entries + agent trees, which carry
  *  streaming buffers) is emptied — a health/ops observer like the fleet hub
- *  gets structure and usage, never content. */
+ *  gets structure and usage, never content. Without 'health' the telemetry
+ *  fields (usage / perAgentCost / callLedger) are masked too: their live
+ *  frames (`usage`, `call-ledger`) are gated on 'health', and the welcome
+ *  must refuse exactly what the stream refuses — otherwise a messages-only
+ *  observer reads model IDs, per-call costs, and raw provider errors on
+ *  connect that it is denied a second later. */
 export function scopeWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>): WelcomeMessage {
   const emptyTree = { asOfTs: Date.now(), nodes: [], callIdIndex: {} };
+  const scoped: WelcomeMessage = { ...welcome };
+  if (!scopes.has('health')) {
+    delete scoped.callLedger;
+    delete scoped.perAgentCost;
+    // `usage` is required by the wire type, so it is zeroed rather than
+    // dropped (matches the emptied-not-deleted style of the fields below).
+    scoped.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  }
   if (!scopes.has('messages')) {
     return {
-      ...welcome,
+      ...scoped,
       messages: [],
       history: { startIndex: welcome.history.totalCount, totalCount: welcome.history.totalCount },
       localTree: emptyTree,
@@ -296,7 +309,7 @@ export function scopeWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>
     };
   }
   return {
-    ...welcome,
+    ...scoped,
     messages: welcome.messages
       .map((e) => filterEntryForScopes(e, scopes))
       .filter((e): e is WelcomeMessageEntry => e !== null),

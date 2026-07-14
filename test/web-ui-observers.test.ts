@@ -174,6 +174,49 @@ describe('scope filters', () => {
     expect(w.history.startIndex).toBe(240);
     expect(w.usage.input).toBe(1); // structure/usage survive
   });
+
+  // Health-gated telemetry must be masked exactly like its live frames:
+  // `usage` and `call-ledger` pushes require the 'health' scope, so the
+  // welcome cannot hand the same data to a messages-only observer.
+  test('scopeWelcome without health strips callLedger/perAgentCost and zeroes usage', () => {
+    const welcome = {
+      type: 'welcome', protocolVersion: 1,
+      messages: [entry],
+      history: { startIndex: 40, totalCount: 240 },
+      localTree: { asOfTs: 1, nodes: [], callIdIndex: {} },
+      childTrees: [],
+      usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: { total: 5, currency: 'USD' } },
+      perAgentCost: [{ name: 'main', usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } }],
+      callLedger: {
+        calls: [{ model: 'secret-model', error: 'raw provider error', costUsd: 0.42 }],
+      },
+    } as unknown as WelcomeMessage;
+
+    const w = scopeWelcome(welcome, new Set<ObserverScope>(['messages']));
+    expect(w.callLedger).toBeUndefined();
+    expect(w.perAgentCost).toBeUndefined();
+    expect(w.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(w.messages.length).toBe(1); // messages scope still gets content
+    // No trace of the ledger anywhere in the serialized frame.
+    expect(JSON.stringify(w)).not.toContain('secret-model');
+    expect(JSON.stringify(w)).not.toContain('raw provider error');
+
+    // Same masking on the no-messages branch (e.g. ops-only observer).
+    const opsOnly = scopeWelcome(welcome, new Set<ObserverScope>(['ops']));
+    expect(opsOnly.callLedger).toBeUndefined();
+    expect(opsOnly.perAgentCost).toBeUndefined();
+    expect(opsOnly.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+
+    // A health-scoped observer keeps the telemetry verbatim.
+    const h = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
+    expect(h.callLedger).toEqual(welcome.callLedger);
+    expect(h.perAgentCost).toEqual(welcome.perAgentCost);
+    expect(h.usage).toEqual(welcome.usage);
+
+    // Input welcome is never mutated (shared across clients in sendWelcome).
+    expect(welcome.callLedger).toBeDefined();
+    expect(welcome.usage.input).toBe(1);
+  });
 });
 
 describe('ObserverSessions', () => {
