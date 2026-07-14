@@ -77,6 +77,8 @@ export interface RecipeAgent {
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
   timezone?: string;
+  /** Provider transport. Omitted preserves the historical Anthropic default. */
+  provider?: 'anthropic' | 'openai-responses';
   systemPrompt: string;
   maxTokens?: number;
   /**
@@ -101,6 +103,13 @@ export interface RecipeAgent {
   thinking?: {
     enabled: boolean;
     budgetTokens?: number;
+  };
+  /** Stateless OpenAI Responses settings. Only used with
+   * `provider: "openai-responses"`. */
+  responses?: {
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    reasoningContext?: 'current_turn' | 'all_turns';
+    compactThreshold?: number;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -680,6 +689,10 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent must have a "systemPrompt" string');
   }
 
+  if (agent.provider !== undefined && agent.provider !== 'anthropic' && agent.provider !== 'openai-responses') {
+    throw new Error(`Recipe agent.provider must be 'anthropic' or 'openai-responses', got ${JSON.stringify(agent.provider)}.`);
+  }
+
   if (agent.timezone !== undefined) {
     if (typeof agent.timezone !== 'string' || !agent.timezone.trim()) {
       throw new Error('Recipe agent.timezone must be a non-empty IANA time zone string.');
@@ -688,6 +701,24 @@ export function validateRecipe(raw: unknown): Recipe {
       new Intl.DateTimeFormat('en-US', { timeZone: agent.timezone }).format(new Date(0));
     } catch {
       throw new Error(`Recipe agent.timezone is not a valid IANA time zone: ${JSON.stringify(agent.timezone)}.`);
+    }
+  }
+
+  if (agent.responses !== undefined) {
+    if (!agent.responses || typeof agent.responses !== 'object' || Array.isArray(agent.responses)) {
+      throw new Error('Recipe agent.responses must be an object.');
+    }
+    const responses = agent.responses as Record<string, unknown>;
+    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (responses.reasoningEffort !== undefined && !efforts.includes(String(responses.reasoningEffort))) {
+      throw new Error(`Invalid agent.responses.reasoningEffort ${JSON.stringify(responses.reasoningEffort)}.`);
+    }
+    if (responses.reasoningContext !== undefined && responses.reasoningContext !== 'current_turn' && responses.reasoningContext !== 'all_turns') {
+      throw new Error(`Invalid agent.responses.reasoningContext ${JSON.stringify(responses.reasoningContext)}.`);
+    }
+    if (responses.compactThreshold !== undefined &&
+        (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
+      throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
     }
   }
 
