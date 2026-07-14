@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "General-purpose agent TUI host with recipe-based configuration",
   "type": "module",
   "scripts": {
