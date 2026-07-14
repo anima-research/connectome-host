@@ -128,8 +128,11 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
       }
       if (ev.code === 4401) {
         // Observer auth rejected — reconnect loops would spam the server;
-        // hold in 'denied' until the user acts (grant lands / password).
-        setObserverState('denied');
+        // hold until the user acts (grant lands / password). The server also
+        // closes never-authenticated connections with 4401 on timeout, so
+        // don't overwrite 'unavailable' (no WebCrypto — a hello was never
+        // possible) with 'denied' (a key exists but holds no grant).
+        if (observerState() !== 'unavailable') setObserverState('denied');
         setStatus('closed');
         return;
       }
