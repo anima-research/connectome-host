@@ -1,14 +1,14 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "General-purpose agent TUI host with recipe-based configuration",
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "build:web": "cd web && bun install && bun run build",
-    "postinstall": "test -d web && cd web && bun install && bun run build || true"
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "postinstall": "test -d web && npm --prefix web install && npm --prefix web run build || true"
   },
   "dependencies": {
     "@animalabs/agent-framework": "^0.6.0",
