@@ -12,6 +12,7 @@ import { McplPanel, type McplServerRow } from './Mcpl';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
+import { ObserverGateScreen } from './ObserverGate';
 import {
   WEB_PROTOCOL_VERSION,
   type WebUiServerMessage,
@@ -836,6 +837,20 @@ export function App() {
     <div class="flex flex-col h-screen">
       <Header welcome={welcome()} usage={usage()} status={wire.status()} />
       <ReconnectBanner status={wire.status()} />
+      <Show when={wire.observerState() === 'observer' && wire.observer()}>
+        {(info) => (
+          <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-violet-500" />
+            <span>
+              Observing as <span class="font-semibold">{info().label}</span> — read-only, scopes:{' '}
+              <code class="font-mono">{info().scopes.join(', ')}</code>. Content outside your scopes is elided.
+            </span>
+          </div>
+        )}
+      </Show>
+      <Show when={wire.observerState() === 'denied' || wire.observerState() === 'unavailable'}>
+        <ObserverGateScreen state={wire.observerState() as 'denied' | 'unavailable'} />
+      </Show>
       <Show when={protoMismatch() !== null}>
         <div class="bg-amber-950/60 border-b border-amber-900 px-4 py-1.5 text-xs text-amber-200 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-amber-500" />

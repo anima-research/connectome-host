@@ -986,6 +986,15 @@ export class WebUiModule implements Module {
       : sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
     const httpAllowed = (scope: ObserverScope): boolean =>
       basicOk || (sessionScopes?.has(scope) ?? false);
+    // /auth/basic: deliberate basic-auth challenge point. fetch() never
+    // triggers the browser's native credential prompt, but a top-level
+    // navigation here does — the SPA's "sign in with password" fallback for
+    // devices without an observer grant. Once credentials are cached for
+    // the realm, the WS upgrade carries them and the client is 'full'.
+    if (url.pathname === '/auth/basic') {
+      if (basicOk) return new Response(null, { status: 302, headers: { location: '/' } });
+      return this.unauthorized();
+    }
     const isStatic = !url.pathname.startsWith('/debug/')
       && url.pathname !== '/curve'
       && url.pathname !== '/healthz'
