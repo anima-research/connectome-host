@@ -31,7 +31,7 @@ import type {
 } from '@animalabs/agent-framework';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { connect as netConnect, type Socket } from 'node:net';
-import { existsSync, mkdirSync, unlinkSync, openSync, closeSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, unlinkSync, openSync, closeSync, appendFileSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { type IncomingCommand, type WireEvent, matchesSubscription } from './fleet-types.js';
 import { loadRecipe } from '../recipe.js';
@@ -1202,9 +1202,11 @@ export class FleetModule implements Module {
    * entries derived from `children[]`, which are absolute post-load).
    */
   private matchesAllowlist(recipe: string, resolved: string): boolean {
+    const canonicalResolved = existsSync(resolved) ? realpathSync(resolved) : resolved;
     for (const entry of this.allowlist) {
       if (entry === '*') return true;
-      if (entry === recipe || entry === resolved) return true;
+      const canonicalEntry = !entry.includes('*') && existsSync(entry) ? realpathSync(entry) : entry;
+      if (entry === recipe || entry === resolved || canonicalEntry === canonicalResolved) return true;
       if (entry.endsWith('*') && !entry.slice(0, -1).includes('*')) {
         const prefix = entry.slice(0, -1);
         if (recipe.startsWith(prefix) || resolved.startsWith(prefix)) return true;
