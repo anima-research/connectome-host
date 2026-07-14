@@ -8,6 +8,8 @@
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
     "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:web:ci": "npm ci --prefix web && npm --prefix web run build",
+    "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install",
     "postinstall": "test -d web && npm --prefix web install && npm --prefix web run build || true"
   },
   "dependencies": {

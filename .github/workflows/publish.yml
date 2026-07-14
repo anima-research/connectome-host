@@ -31,7 +31,7 @@ jobs:
         run: npm install
 
       - name: Build web assets
-        run: npm run build:web
+        run: npm run build:web:ci
 
       - name: Test
         run: npm test
@@ -64,7 +64,7 @@ jobs:
         run: npm install
 
       - name: Build web assets
-        run: npm run build:web
+        run: npm run build:web:ci
 
       - name: Publish
         run: npm publish --access public --provenance

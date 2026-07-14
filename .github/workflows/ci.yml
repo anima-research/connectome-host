@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # Both platforms on purpose: a package-lock.json regenerated over an
+      # existing node_modules tree records only that machine's native binaries
+      # (esbuild/rollup/tailwind-oxide), so a lock made on macOS breaks Linux
+      # installs and vice versa. Each runner catches the lock the other's
+      # platform produced. macOS runs the install+build lock guard only;
+      # the full test suite runs on ubuntu.
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: npm install
+
+      # npm ci is the actual lockfile guard: `npm install` (npm >= 11)
+      # silently re-resolves platform packages missing from the lock, so a
+      # broken lock sails through it. npm ci installs the lock verbatim and
+      # the vite build then fails loudly on the missing rollup binary.
+      - name: Build web assets (strict lockfile)
+        run: npm run build:web:ci
+
+      - name: Test
+        if: matrix.os == 'ubuntu-latest'
+        run: npm test
