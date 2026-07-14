@@ -364,7 +364,34 @@ export type WebUiServerMessage =
   | WorkspaceFileMessage
   | HistoryPageMessage
   | MessageAppendedMessage
+  | ObserverAuthRequiredMessage
+  | ObserverAckMessage
   | ErrorMessage;
+
+// ---------------------------------------------------------------------------
+// Observer identity (docs/observability.md M2) — additive to protocol v1.
+// Basic-auth clients never see these frames; key-authenticated observers
+// authenticate in-band over the WS before any data flows.
+// ---------------------------------------------------------------------------
+
+/** Sent to a connection that upgraded without basic auth (allowed only when
+ *  observer grants exist): the client must reply with observer-hello before
+ *  anything else is sent. `host` is what the server will verify the signed
+ *  statement against — the Host header of the upgrade request. */
+export interface ObserverAuthRequiredMessage {
+  type: 'observer-auth-required';
+  host: string;
+}
+
+/** Successful observer authentication. `sessionToken` is a short-lived
+ *  bearer for HTTP routes (set as the `fkm_obs` cookie by the SPA);
+ *  `scopes` is the grant's mask — the SPA adapts its UI to it. */
+export interface ObserverAckMessage {
+  type: 'observer-ack';
+  scopes: string[];
+  sessionToken: string;
+  label: string;
+}
 
 // ---------------------------------------------------------------------------
 // Client → Server
@@ -522,8 +549,26 @@ export interface RequestHistoryMessage {
   limit?: number;
 }
 
+/** In-band observer authentication (docs/observability.md §3): the client
+ *  signs `connectome-observer|v1|<host>|<timestamp>` with its ed25519 key.
+ *  Challenge-less — the Host binding + freshness window replace a nonce. */
+export interface ObserverHelloMessage {
+  type: 'observer-hello';
+  identity: {
+    scheme: 'ed25519';
+    /** `ed25519:<base64url raw 32-byte public key>` */
+    id: string;
+    /** base64url signature over the bound statement. */
+    proof: string;
+    /** ISO timestamp used in the statement (±5 min freshness). */
+    timestamp: string;
+    displayName?: string;
+  };
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
+  | ObserverHelloMessage
   | RequestHistoryMessage
   | CommandMessage
   | RouteToChildMessage
@@ -565,6 +610,13 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
       return true;
     case 'user-message':
       return typeof v.content === 'string';
+    case 'observer-hello': {
+      const id = v.identity as Record<string, unknown> | undefined;
+      return !!id && id.scheme === 'ed25519'
+        && typeof id.id === 'string'
+        && typeof id.proof === 'string'
+        && typeof id.timestamp === 'string';
+    }
     case 'command':
       return typeof v.command === 'string'
         && (v.corrId === undefined || typeof v.corrId === 'string');

@@ -34,6 +34,7 @@ import { ActivityModule } from './modules/activity-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
+import { ObserversModule } from './modules/observers-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { loadMcplServers, applyAgentOverlay, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
@@ -317,13 +318,21 @@ async function createFramework(
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
     const webuiConfig = typeof modules.webui === 'object' ? modules.webui : {};
+    // Observer grants (docs/observability.md): data/observers.json by
+    // default, overridable via OBSERVERS_FILE. The feature is inert until
+    // the file holds at least one grant. The companion ObserversModule
+    // gives the agent grant/revoke tools over the same file — interiority
+    // access is the agent's to give.
+    const observersPath = process.env.OBSERVERS_FILE || resolve(config.dataDir, 'observers.json');
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
       host: webuiConfig.host,
       basicAuth: webuiConfig.basicAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
+      observersPath,
     });
     moduleInstances.push(webUiModule);
+    moduleInstances.push(new ObserversModule({ path: observersPath }));
   }
 
   // -- Build MCP server list --

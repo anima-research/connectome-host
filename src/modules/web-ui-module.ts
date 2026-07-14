@@ -63,6 +63,16 @@ import {
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
 import { loadRecipe } from '../recipe.js';
+import {
+  ObserverRegistry,
+  ObserverSessions,
+  sessionTokenFromRequest,
+  traceRequiredScope,
+  filterEntryForScopes,
+  scopeWelcome,
+  type ObserverScope,
+  type ObserverHelloIdentity,
+} from './web-ui-observers.js';
 
 /**
  * Minimal slice of AppContext the module needs. Defined locally to avoid
@@ -108,15 +118,44 @@ export interface WebUiModuleConfig {
    * the entire host is firewalled off from browsers.
    */
   allowedOrigins?: string[];
+  /**
+   * Path to the observer grant file (data/observers.json — see connectome
+   * docs/observability.md). When set AND the file holds at least one grant,
+   * key-authenticated observers may connect: static assets are served
+   * without basic auth (the app shell carries no data), /ws upgrades are
+   * accepted unauthenticated and must present a signed observer-hello
+   * before anything is sent, and every frame is filtered by the grant's
+   * scope mask. With no grants the webui behaves exactly as before.
+   */
+  observersPath?: string;
+}
+
+/** Data stashed on the Bun WS upgrade. */
+interface WsData {
+  id: number;
+  /** True when the upgrade carried valid basic auth (full access). */
+  authed: boolean;
+  /** Host header of the upgrade request — the observer statement binds it. */
+  host: string;
 }
 
 /** Per-connection state. */
 interface ClientState {
   /** Stable id matching ws.data.id; used for routing fleet IPC responses. */
   id: number;
-  ws: ServerWebSocket<{ id: number }>;
+  ws: ServerWebSocket<WsData>;
   /** True after we've sent the welcome message. */
   welcomed: boolean;
+  /**
+   * Authorization state. 'full' = basic-auth (or open loopback) — behavior
+   * identical to pre-observer builds, scopes null. 'pending' = upgraded
+   * without auth, must observer-hello before any data flows. 'observer' =
+   * key-authenticated; `scopes` is the grant's mask.
+   */
+  auth: 'full' | 'pending' | 'observer';
+  scopes: Set<ObserverScope> | null;
+  /** Kills pending connections that never complete the hello. */
+  authTimer?: ReturnType<typeof setTimeout>;
   /** Open peek subscriptions for this client, keyed by scope. Each entry
    *  carries its detacher so unsubscribe and disconnect both clean up
    *  without the framework leaking listeners. */
@@ -329,6 +368,10 @@ interface SharedServerState {
   allowedOrigins: string[];
   clients: Map<number, ClientState>;
   nextClientId: number;
+  /** Observer grant registry (hot-reloaded) — null when not configured. */
+  observers: ObserverRegistry | null;
+  /** Short-lived HTTP session tokens minted after observer WS auth. */
+  observerSessions: ObserverSessions;
   /** Aggregate session usage published to clients: parent's own totals plus
    *  the most-recent `usage:updated` totals reported by each fleet child.
    *  Recomputed from `parentUsage` + `childUsage` on every relevant event. */
@@ -415,6 +458,8 @@ export class WebUiModule implements Module {
       allowedOrigins: this.config.allowedOrigins ?? defaultAllowedOrigins(port),
       clients: new Map(),
       nextClientId: 1,
+      observers: this.config.observersPath ? new ObserverRegistry(this.config.observersPath) : null,
+      observerSessions: new ObserverSessions(),
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       parentUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       childUsage: new Map(),
@@ -426,14 +471,15 @@ export class WebUiModule implements Module {
       fleetEventDetacher: null,
       messageListenerDetacher: null,
     };
+    state.observers?.start();
     state.server = Bun.serve({
       port,
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
-        open: (ws) => this.onWsOpen(ws as ServerWebSocket<{ id: number }>),
-        message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<{ id: number }>, msg),
-        close: (ws) => this.onWsClose(ws as ServerWebSocket<{ id: number }>),
+        open: (ws) => this.onWsOpen(ws as ServerWebSocket<WsData>),
+        message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<WsData>, msg),
+        close: (ws) => this.onWsClose(ws as ServerWebSocket<WsData>),
       },
     });
     // When port=0 is passed (test setups, ephemeral binds), the OS picks a
@@ -507,7 +553,10 @@ export class WebUiModule implements Module {
           const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
           const push: WebUiServerMessage = { type: 'message-appended', entry };
           for (const c of ss.clients.values()) {
-            if (c.welcomed) this.send(c, push);
+            if (!c.welcomed) continue;
+            if (c.scopes === null) { this.send(c, push); continue; }
+            const filtered = filterEntryForScopes(entry, c.scopes);
+            if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
           }
         } catch (err) {
           // Never let a viewer-side projection error break the store's
@@ -732,6 +781,17 @@ export class WebUiModule implements Module {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Observer scope filtering — event-family masks (docs/observability.md §4).
+  // Full clients (scopes === null) bypass everything: historical behavior.
+  // Pure projections live in web-ui-observers.ts (unit-tested there).
+  // -------------------------------------------------------------------------
+
+  private clientAllowsTrace(client: ClientState, event: { type: string }): boolean {
+    if (client.scopes === null) return true;
+    return client.scopes.has(traceRequiredScope(event));
+  }
+
   private fanOutTrace(event: TraceEvent): void {
     // Update cached usage snapshot first so welcomes for late-connecting
     // clients get a current value.
@@ -770,8 +830,10 @@ export class WebUiModule implements Module {
       : null;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      this.send(client, traceMsg);
-      if (usageMsg) this.send(client, usageMsg);
+      if (this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
+      if (usageMsg && (client.scopes === null || client.scopes.has('health'))) {
+        this.send(client, usageMsg);
+      }
     }
   }
 
@@ -888,6 +950,10 @@ export class WebUiModule implements Module {
   private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
     const url = new URL(req.url);
 
+    // Observer feature gate: live only when grants exist. With no grants
+    // every path below reduces to the historical basic-auth-only behavior.
+    const observersActive = sharedServer!.observers?.active() ?? false;
+
     // WebSocket upgrade
     if (url.pathname === '/ws') {
       // Origin check FIRST — drive-by CSRF on a localhost-bound WS is the
@@ -895,15 +961,52 @@ export class WebUiModule implements Module {
       // `new WebSocket(...)` the way they do on fetch, so without an
       // explicit check, any tab the operator opens could connect here.
       if (!this.checkOrigin(req)) return new Response('Forbidden', { status: 403 });
-      if (!this.checkAuth(req)) return this.unauthorized();
+      const basicOk = this.checkAuth(req);
+      // Without basic auth the upgrade is allowed only when observer grants
+      // exist — and then NOTHING is sent until a signed observer-hello
+      // verifies (in-band auth; see onWsOpen/onWsMessage).
+      if (!basicOk && !observersActive) return this.unauthorized();
       const id = sharedServer!.nextClientId++;
-      const ok = server.upgrade(req, { data: { id } });
+      const ok = server.upgrade(req, {
+        data: { id, authed: basicOk, host: req.headers.get('host') ?? '' } satisfies WsData,
+      });
       if (!ok) return new Response('Upgrade failed', { status: 400 });
       // Bun returns undefined on success; the response is taken over by the upgrade.
       return new Response(null, { status: 101 });
     }
 
-    if (!this.checkAuth(req)) return this.unauthorized();
+    // HTTP auth: basic auth grants everything (historical behavior); an
+    // observer session cookie (minted after WS key auth) grants by scope;
+    // when observers are active the static app shell is public — it carries
+    // no data, and key-only devices must be able to load the SPA to
+    // authenticate at all.
+    const basicOk = this.checkAuth(req);
+    const sessionScopes = basicOk
+      ? null
+      : sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+    const httpAllowed = (scope: ObserverScope): boolean =>
+      basicOk || (sessionScopes?.has(scope) ?? false);
+    const isStatic = !url.pathname.startsWith('/debug/')
+      && url.pathname !== '/curve'
+      && url.pathname !== '/healthz'
+      && !url.pathname.startsWith('/files/');
+    if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
+      return this.unauthorized();
+    }
+
+    // Per-route scope gates for observer sessions (basic auth passes all).
+    if ((url.pathname.startsWith('/debug/') || url.pathname === '/curve') && !httpAllowed('debug')) {
+      return this.unauthorized();
+    }
+    if (url.pathname === '/healthz' && !httpAllowed('health')) {
+      return this.unauthorized();
+    }
+    if (url.pathname.startsWith('/files/') && !basicOk) {
+      // Workspace files stay basic-auth-only: mount contents are outside the
+      // observer scope model (they are the agent's working files, not wire
+      // events). Revisit if a 'files' scope is ever warranted.
+      return this.unauthorized();
+    }
 
     // Debug: the membrane-normalized request that WOULD be emitted if the
     // agent were activated right now — no inference, no state mutation.
@@ -1310,16 +1413,60 @@ export class WebUiModule implements Module {
   // WebSocket lifecycle
   // -------------------------------------------------------------------------
 
-  private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
+  private onWsOpen(ws: ServerWebSocket<WsData>): void {
     const id = ws.data.id;
-    const client: ClientState = { id, ws, welcomed: false, peeks: new Map() };
+    const client: ClientState = {
+      id, ws, welcomed: false, peeks: new Map(),
+      auth: ws.data.authed ? 'full' : 'pending',
+      scopes: null,
+    };
     sharedServer!.clients.set(id, client);
+
+    if (client.auth === 'pending') {
+      // In-band observer auth: tell the client what host its statement must
+      // bind, and give it a bounded window to present a verifiable hello.
+      // No data flows on this connection until then.
+      this.send(client, { type: 'observer-auth-required', host: ws.data.host });
+      client.authTimer = setTimeout(() => {
+        if (client.auth === 'pending') ws.close(4401, 'observer auth timeout');
+      }, 15_000);
+      return;
+    }
 
     if (sharedServer?.app) void this.sendWelcome(client);
     // Else: park until setApp() flushes welcomes.
   }
 
-  private onWsMessage(ws: ServerWebSocket<{ id: number }>, raw: string | Buffer): void {
+  private handleObserverHello(client: ClientState, identity: ObserverHelloIdentity): void {
+    const registry = sharedServer!.observers;
+    const result = registry?.verifyHello(identity, client.ws.data.host) ?? null;
+    if (!result) {
+      this.send(client, { type: 'error', message: 'observer auth failed' });
+      client.ws.close(4401, 'observer auth failed');
+      return;
+    }
+    if (client.authTimer) clearTimeout(client.authTimer);
+    client.auth = 'observer';
+    client.scopes = result.scopes;
+    this.send(client, {
+      type: 'observer-ack',
+      scopes: [...result.scopes],
+      sessionToken: sharedServer!.observerSessions.mint(result.scopes),
+      label: result.grant.label,
+    });
+    console.error(`[webui-observers] observer connected: ${result.grant.label} scopes=[${[...result.scopes].join(',')}]`);
+    if (sharedServer?.app) void this.sendWelcome(client);
+  }
+
+  /** Client message types a scoped (non-full) observer may send. */
+  private observerMaySend(client: ClientState, type: string): boolean {
+    if (client.auth !== 'observer') return false;
+    if (type === 'ping') return true;
+    if (type === 'request-history') return client.scopes?.has('messages') ?? false;
+    return false; // observers are read-only: no user-message/command/mcpl/fleet
+  }
+
+  private onWsMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer): void {
     const id = ws.data.id;
     const client = sharedServer!.clients.get(id);
     if (!client) return;
@@ -1333,6 +1480,20 @@ export class WebUiModule implements Module {
     }
     if (!isClientMessage(parsed)) {
       this.send(client, { type: 'error', message: 'unknown message shape' });
+      return;
+    }
+
+    // Observer auth interlock: a pending connection may ONLY hello; a
+    // key-authenticated observer is read-only within its scopes. Full
+    // (basic-auth) clients skip both gates — historical behavior.
+    if (parsed.type === 'observer-hello') {
+      if (client.auth === 'pending') this.handleObserverHello(client, parsed.identity);
+      // hello on an already-authenticated connection is a no-op
+      return;
+    }
+    if (client.auth === 'pending') return; // nothing else before auth
+    if (client.auth === 'observer' && !this.observerMaySend(client, parsed.type)) {
+      this.send(client, { type: 'error', message: `forbidden for observer scope (${parsed.type})` });
       return;
     }
 
@@ -2019,10 +2180,11 @@ export class WebUiModule implements Module {
     }
   }
 
-  private onWsClose(ws: ServerWebSocket<{ id: number }>): void {
+  private onWsClose(ws: ServerWebSocket<WsData>): void {
     const id = ws.data.id;
     const client = sharedServer?.clients.get(id);
     if (client) {
+      if (client.authTimer) clearTimeout(client.authTimer);
       for (const detach of client.peeks.values()) {
         try { detach(); } catch { /* ignore */ }
       }
@@ -2163,9 +2325,12 @@ export class WebUiModule implements Module {
 
   private async sendWelcome(client: ClientState): Promise<void> {
     if (!sharedServer?.app) return;
+    // Never send data to a connection that hasn't authenticated. Parked
+    // pending connections get their welcome from handleObserverHello.
+    if (client.auth === 'pending') return;
 
     const welcome = await this.buildWelcome();
-    this.send(client, welcome);
+    this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
     client.welcomed = true;
     // Live trace forwarding is driven by the single fan-out listener
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
@@ -2197,10 +2362,16 @@ export class WebUiModule implements Module {
       resolveBlobs: false,
       alignToBodyGroups: true,
     });
+    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+    if (client.scopes !== null) {
+      entries = entries
+        .map((e) => filterEntryForScopes(e, client.scopes!))
+        .filter((e): e is WelcomeMessageEntry => e !== null);
+    }
     this.send(client, {
       type: 'history-page',
       corrId: req.corrId,
-      entries: coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex),
+      entries,
       startIndex: win.startIndex,
       totalCount: win.totalCount,
     });
