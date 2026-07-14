@@ -13,9 +13,9 @@
     "postinstall": "test -d web && npm --prefix web install && npm --prefix web run build || true"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.6.4",
+    "@animalabs/agent-framework": "^0.6.5",
     "@animalabs/chronicle": "^0.2.0",
-    "@animalabs/context-manager": "^0.5.5",
+    "@animalabs/context-manager": "^0.5.9",
     "@animalabs/membrane": "^0.5.71",
     "@opentui/core": "^0.1.82"
   },

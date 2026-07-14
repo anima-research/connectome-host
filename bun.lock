@@ -5,9 +5,9 @@
     "": {
       "name": "connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.6.4",
+        "@animalabs/agent-framework": "^0.6.5",
         "@animalabs/chronicle": "^0.2.0",
-        "@animalabs/context-manager": "^0.5.5",
+        "@animalabs/context-manager": "^0.5.9",
         "@animalabs/membrane": "^0.5.71",
         "@opentui/core": "^0.1.82",
       },
@@ -19,11 +19,11 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.6.4", "", { "dependencies": { "@animalabs/chronicle": "^0.2.2", "@animalabs/context-manager": "^0.5.5", "@animalabs/membrane": "^0.5.64", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-jLDNNrE7rEI017loFwIx2zTxTBQDwXgo5taqGBrG84Ve0Kaiykj5Cm8pnGm8Mlidl2FtXp5v1NqpRntwZT2idA=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.6.5", "", { "dependencies": { "@animalabs/chronicle": "^0.2.2", "@animalabs/context-manager": "^0.5.5", "@animalabs/membrane": "^0.5.64", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-p0MI4vVwXZwBK6DLBktrFmgOnrjh8gxXY4QTqeNrrc4Ha8m7HfELs0ge6X57wuTevQH9i+98jllWNkEurZWhLw=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.2.1", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.1", "@animalabs/chronicle-darwin-x64": "0.2.1", "@animalabs/chronicle-linux-arm64-gnu": "0.2.1", "@animalabs/chronicle-linux-x64-gnu": "0.2.1", "@animalabs/chronicle-win32-x64-msvc": "0.2.1" } }, "sha512-rDFc069yfi7BQUusgsXBwBdqljUWLByXSYaTF40AP+tonBh0No3eF9VzKTSy1I8DYg/jAUHIKtVdKDGsVMVubw=="],
 
-    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.5", "", { "dependencies": { "@animalabs/chronicle": "^0.2.0", "@animalabs/membrane": "^0.5.64" } }, "sha512-KWTluwU5VIZKIPF/IdfUbkvPNZ5zMxSfZjaxZb81IXe+DBPmjHuUVNIqgXIQ2Mv1pCn1vCNqieZ/iSrc6dFH8w=="],
+    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.10", "", { "dependencies": { "@animalabs/chronicle": "^0.2.6", "@animalabs/membrane": "^0.5.69" } }, "sha512-D2JEleArh+8Jq9SljFJcFJtHlTkn+MByXJjvO0dTfeeAFNmOZz4YXHfO2qZx2KIjSYtypDNKNboyCXEGuRCyLw=="],
 
     "@animalabs/membrane": ["@animalabs/membrane@0.5.71", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-Jos4Fh/kIbpOiJ43LKIFpmaCmWIzE6ly1x/4c5iHaMw8n6D8OJ2f4va7xo3vNdvfKWBbln4QghmNg4NWo3oFGA=="],
 
@@ -277,7 +277,7 @@
 
     "@animalabs/agent-framework/@animalabs/chronicle": ["@animalabs/chronicle@0.2.6", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.6", "@animalabs/chronicle-darwin-x64": "0.2.6", "@animalabs/chronicle-linux-arm64-gnu": "0.2.6", "@animalabs/chronicle-linux-x64-gnu": "0.2.6", "@animalabs/chronicle-win32-x64-msvc": "0.2.6" } }, "sha512-+gbt2GR4SP8MnKxeqkJZf6oZn339fLiBtk6GHyBD/gHQ4e4eFqBpTaTd5eKycKBws0xWGcOqyiJFH4IdBkweUA=="],
 
-    "@animalabs/context-manager/@animalabs/membrane": ["@animalabs/membrane@0.5.68", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-MfSERy0ECxdBZ4NelHdZbqsP/ORWJsfeAI6vuyy6gP77aGcdJL8qf4XrUkOox5yZa5MqB50y0K58Ffv79jCnbg=="],
+    "@animalabs/context-manager/@animalabs/chronicle": ["@animalabs/chronicle@0.2.6", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.6", "@animalabs/chronicle-darwin-x64": "0.2.6", "@animalabs/chronicle-linux-arm64-gnu": "0.2.6", "@animalabs/chronicle-linux-x64-gnu": "0.2.6", "@animalabs/chronicle-win32-x64-msvc": "0.2.6" } }, "sha512-+gbt2GR4SP8MnKxeqkJZf6oZn339fLiBtk6GHyBD/gHQ4e4eFqBpTaTd5eKycKBws0xWGcOqyiJFH4IdBkweUA=="],
 
     "@discordjs/rest/@discordjs/collection": ["@discordjs/collection@2.1.1", "", {}, "sha512-LiSusze9Tc7qF03sLCujF5iZp7K+vRNEDBZ86FT9aQAv3vxMLihUvKvpsCWiQ2DJq1tVckopKm1rxomgNUc9hg=="],
 
