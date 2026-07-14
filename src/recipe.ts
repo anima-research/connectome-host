@@ -154,9 +154,8 @@ export interface RecipeMcpServer {
   /** Ceiling for the exponential reconnect backoff. Default: 5 minutes. */
   reconnectMaxIntervalMs?: number;
   /**
-   * Channel auto-open policy. 'auto' (default) opens everything the server
-   * registers; 'manual' opens nothing (agent calls channel_open as needed);
-   * a string[] is an allow-list of channel ids.
+   * @deprecated One-time migration input for legacy recipes. Runtime channel
+   * desired state is Chronicle-backed and changed with channel_open/close.
    */
   channelSubscription?: 'auto' | 'manual' | string[];
   /**

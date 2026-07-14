@@ -7,22 +7,22 @@
  * have to remember (and keep in sync) all three:
  *
  *   debounced  (wake on every message, batched):
- *     1. subscribe to the channel's ambient traffic (`<toolPrefix>--subscribe_channel`)
+ *     1. open the channel (`channel_open`)
  *     2. upsert a per-channel gate policy that DEBOUNCES the ambient tag
  *        (framework.addGatePolicy → gate.json, hot-reloaded) so a burst wakes the
  *        agent once after it settles
  *     3. pin subscription-gc to "off" for the channel, else a chatty channel
- *        auto-unsubscribes itself at the idle-char limit and silently leaves
+ *        auto-closes itself at the idle-char limit and silently leaves
  *        debounced mode
  *
  *   mentions  (revert to mentions/DMs only):
  *     1. remove the per-channel debounce gate policy
- *     2. unsubscribe from ambient traffic
+ *     2. close the channel
  *     3. restore subscription-gc to its default limit
  *
  * The SAME `channelId` string is used for all three subsystems — it's the id the
  * gate sees on an incoming event (`GateEventInfo.channelId`) and the id
- * subscription-gc counts/unsubscribes, so they line up by construction (this is
+ * subscription-gc counts/closes, so they line up by construction (this is
  * exactly how SubscriptionGcModule already operates).
  *
  * Steps are best-effort with per-step reporting rather than a hard transaction:
@@ -45,7 +45,7 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 export interface ChannelModeConfig {
   /** MCPL server id that owns subscriptions (default 'discord'). */
   serverId?: string;
-  /** Tool-name prefix for that server (default `mcpl--<serverId>`). */
+  /** @deprecated Lifecycle tools are host-generic; retained for config compatibility. */
   toolPrefix?: string;
   /** subscription-gc module name, for pinning the idle limit (default 'subscription-gc'). */
   gcModuleName?: string;
@@ -69,13 +69,11 @@ export class ChannelModeModule implements Module {
   private callSeq = 0;
 
   private readonly serverId: string;
-  private readonly toolPrefix: string;
   private readonly gcModuleName: string;
   private readonly defaultDebounceMs: number;
 
   constructor(config: ChannelModeConfig = {}) {
     this.serverId = config.serverId ?? 'discord';
-    this.toolPrefix = config.toolPrefix ?? `mcpl--${this.serverId}`;
     this.gcModuleName = config.gcModuleName ?? 'subscription-gc';
     this.defaultDebounceMs =
       typeof config.defaultDebounceMs === 'number' && config.defaultDebounceMs > 0
@@ -103,12 +101,12 @@ export class ChannelModeModule implements Module {
         name: 'set_channel_mode',
         description:
           'Set how a channel gets your attention, in one step. ' +
-          '`mode: "debounced"` = wake on EVERY message but batched: it subscribes ' +
+          '`mode: "debounced"` = wake on EVERY message but batched: it opens ' +
           'to the channel, adds a gate rule that debounces its ambient traffic ' +
           '(one wake after the burst settles), and pins the channel so it is never ' +
-          'auto-unsubscribed for being chatty. `mode: "mentions"` reverts to ' +
-          'mentions/DMs only: it removes that gate rule, unsubscribes, and restores ' +
-          'the default auto-unsubscribe limit. `debounceMs` (100–300000, default ' +
+          'auto-closed for being chatty. `mode: "mentions"` reverts to ' +
+          'direct-address-only: it removes that gate rule, closes, and restores ' +
+          'the default auto-close limit. `debounceMs` (100–300000, default ' +
           `${this.defaultDebounceMs}) sets the quiet window for debounced mode.`,
         inputSchema: {
           type: 'object',
@@ -182,7 +180,7 @@ export class ChannelModeModule implements Module {
     const steps: StepResult[] = [];
 
     // 1. Subscribe to ambient traffic.
-    steps.push(await this.callToolStep('subscribe', `${this.toolPrefix}--subscribe_channel`, { channelId }));
+    steps.push(await this.callToolStep('open', 'channel_open', { channelId, serverId: this.serverId }));
 
     // 2. Upsert the per-channel ambient debounce policy (prepend so it beats a
     //    broad ambient defer/debounce — first match wins). Validation lives in
@@ -201,7 +199,7 @@ export class ChannelModeModule implements Module {
       steps.push({ step: 'gate-policy', ok: false, detail: errMsg(err) });
     }
 
-    // 3. Pin subscription-gc off so a chatty channel doesn't auto-unsubscribe
+    // 3. Pin subscription-gc off so a chatty channel doesn't auto-close
     //    itself back out of debounced mode.
     steps.push(
       await this.callToolStep('gc-off', `${this.gcModuleName}--set_channel_idle_limit`, {
@@ -224,10 +222,10 @@ export class ChannelModeModule implements Module {
       steps.push({ step: 'gate-policy', ok: false, detail: errMsg(err) });
     }
 
-    // 2. Unsubscribe from ambient traffic.
-    steps.push(await this.callToolStep('unsubscribe', `${this.toolPrefix}--unsubscribe_channel`, { channelId }));
+    // 2. Close ambient traffic through the generic host lifecycle.
+    steps.push(await this.callToolStep('close', 'channel_close', { channelId, serverId: this.serverId }));
 
-    // 3. Restore the default auto-unsubscribe limit.
+    // 3. Restore the default auto-close limit.
     steps.push(
       await this.callToolStep('gc-default', `${this.gcModuleName}--set_channel_idle_limit`, {
         channelId,

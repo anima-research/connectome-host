@@ -114,16 +114,6 @@ export class McplAdminModule implements Module {
             token: { type: 'string', description: 'Bearer token for WebSocket auth.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
             reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure (default false). Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
-            channelSubscription: {
-              type: 'string',
-              enum: ['auto', 'manual'],
-              description: "Channel auto-open policy: 'auto' (default) opens every channel the server registers; 'manual' opens none. For an allow-list, use channelAllowlist instead.",
-            },
-            channelAllowlist: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Allow-list of channel ids to auto-open (overrides channelSubscription).',
-            },
             enabledFeatureSets: { type: 'array', items: { type: 'string' } },
             disabledFeatureSets: { type: 'array', items: { type: 'string' } },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard).' },
@@ -263,11 +253,6 @@ export class McplAdminModule implements Module {
     if (typeof input.token === 'string') entry.token = input.token;
     if (typeof input.toolPrefix === 'string') entry.toolPrefix = input.toolPrefix;
     if (typeof input.reconnect === 'boolean') entry.reconnect = input.reconnect;
-    if (Array.isArray(input.channelAllowlist)) {
-      entry.channelSubscription = input.channelAllowlist.map(String);
-    } else if (input.channelSubscription === 'auto' || input.channelSubscription === 'manual') {
-      entry.channelSubscription = input.channelSubscription;
-    }
     if (Array.isArray(input.enabledFeatureSets)) entry.enabledFeatureSets = input.enabledFeatureSets.map(String);
     if (Array.isArray(input.disabledFeatureSets)) entry.disabledFeatureSets = input.disabledFeatureSets.map(String);
     if (Array.isArray(input.enabledTools)) entry.enabledTools = input.enabledTools.map(String);

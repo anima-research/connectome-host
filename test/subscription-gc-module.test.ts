@@ -37,6 +37,7 @@ function ambient(
     origin: {
       source: 'discord',
       channelId,
+      mcplChannelId: `discord:g1:${channelId}`,
       isMention: !!opts.isMention,
       isDM: !!opts.isDM,
     },
@@ -59,8 +60,9 @@ describe('SubscriptionGcModule', () => {
 
     r = await m.onProcess(ambient('c1', 'ghijkl'), PS); // +6 = 12 > 10 → unsub
     expect(toolCalls.length).toBe(1);
-    expect(toolCalls[0].name).toBe('mcpl--discord--unsubscribe_channel');
-    expect(toolCalls[0].input.channelId).toBe('c1');
+    expect(toolCalls[0].name).toBe('channel_close');
+    expect(toolCalls[0].input.channelId).toBe('discord:g1:c1');
+    expect(toolCalls[0].input.serverId).toBe('discord');
     expect(r.addMessages?.length).toBe(1);
 
     await m.stop();
@@ -100,7 +102,7 @@ describe('SubscriptionGcModule', () => {
     await m.handleToolCall({
       id: 't1',
       name: 'set_channel_idle_limit',
-      input: { channelId: 'c1', limit: 'off' },
+      input: { channelId: 'discord:g1:c1', limit: 'off' },
     });
     await m.onProcess(ambient('c1', 'waytoolongambient'), PS);
     expect(toolCalls.length).toBe(0); // pinned → never unsubscribed
@@ -108,7 +110,7 @@ describe('SubscriptionGcModule', () => {
     // A different channel still accrues, and state is persisted.
     await m.onProcess(ambient('c2', 'abc'), PS);
     const persisted = getState() as { overrides: Record<string, unknown>; counters: Record<string, number> };
-    expect(persisted.overrides.c1).toBe('off');
+    expect(persisted.overrides['discord:g1:c1']).toBe('off');
 
     // Simulate restart: a new module loads the persisted state (counters carry
     // across — a restart is not an activation).
@@ -128,7 +130,7 @@ describe('SubscriptionGcModule', () => {
     // c2 was at 3; +3 = 6 > 5 → unsubscribe (counter survived the "restart")
     await m2.onProcess(ambient('c2', 'def'), PS);
     expect(restart.toolCalls.length).toBe(1);
-    expect(restart.toolCalls[0].input.channelId).toBe('c2');
+    expect(restart.toolCalls[0].input.channelId).toBe('discord:g1:c2');
 
     await m.stop();
     await m2.stop();

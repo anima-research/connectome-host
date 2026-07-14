@@ -25,6 +25,7 @@ export interface ServerFileEntry {
   disabledFeatureSets?: string[];
   enabledTools?: string[];
   disabledTools?: string[];
+  /** @deprecated One-time migration input for legacy installations. */
   channelSubscription?: 'auto' | 'manual' | string[];
 }
 

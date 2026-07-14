@@ -1,5 +1,5 @@
 /**
- * SubscriptionGcModule — auto-unsubscribe noisy ambient Discord channels.
+ * SubscriptionGcModule — auto-close noisy ordinary channel traffic.
  *
  * Problem: a subscribed channel delivers ambient (non-mention, non-DM) messages
  * into the agent's context whether or not the agent ever acts on them. A busy
@@ -12,7 +12,7 @@
  *     the agent saw every subscribed channel in that context (compressed if
  *     large; nothing is dropped), so the slate is clean.
  *   - The instant a channel's since-last-activation count crosses its limit, it
- *     is auto-unsubscribed via the surface's `unsubscribe_channel` tool. This
+ *     is auto-closed via the host's generic `channel_close` tool. This
  *     bounds any one channel's context pollution to ~limit characters.
  *
  * Everything is durable across restarts: counters + per-channel overrides
@@ -36,15 +36,15 @@ import type {
 } from '@animalabs/agent-framework';
 
 export interface SubscriptionGcConfig {
-  /** Default ambient-character budget per channel before auto-unsubscribe. */
+  /** Default ambient-character budget per channel before auto-close. */
   defaultLimitChars?: number;
   /** MCPL server id that owns subscriptions (default 'discord'). */
   serverId?: string;
-  /** Tool-name prefix for that server (default `mcpl--<serverId>`). */
+  /** @deprecated Lifecycle tools are host-generic; retained for config compatibility. */
   toolPrefix?: string;
 }
 
-/** `'off'` pins a channel (never auto-unsubscribe); a number overrides the
+/** `'off'` pins a channel (never auto-close); a number overrides the
  *  default limit; absence falls back to the default. */
 type LimitOverride = number | 'off';
 
@@ -66,7 +66,6 @@ export class SubscriptionGcModule implements Module {
 
   private readonly defaultLimitChars: number;
   private readonly serverId: string;
-  private readonly toolPrefix: string;
 
   private state: GcState = { overrides: {}, counters: {} };
 
@@ -76,7 +75,6 @@ export class SubscriptionGcModule implements Module {
         ? Math.round(config.defaultLimitChars)
         : 20000;
     this.serverId = config.serverId ?? 'discord';
-    this.toolPrefix = config.toolPrefix ?? `mcpl--${this.serverId}`;
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -121,9 +119,9 @@ export class SubscriptionGcModule implements Module {
         description:
           'Set how many characters of ambient (non-mention, non-DM) traffic a ' +
           'subscribed channel may emit between your activations before it is ' +
-          'auto-unsubscribed. `limit` is a number of characters, "default" to ' +
+          'auto-closed. `limit` is a number of characters, "default" to ' +
           `use the global default (${this.defaultLimitChars}), or "off" to ` +
-          'never auto-unsubscribe this channel.',
+          'never auto-close this channel.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -139,7 +137,7 @@ export class SubscriptionGcModule implements Module {
       {
         name: 'list_channel_idle_limits',
         description:
-          'Show the auto-unsubscribe configuration: the global default limit, ' +
+          'Show the auto-close configuration: the global default limit, ' +
           'per-channel overrides, and the current since-last-activation ambient ' +
           'character counts per channel.',
         inputSchema: { type: 'object', properties: {} },
@@ -169,7 +167,7 @@ export class SubscriptionGcModule implements Module {
           desc = `default (${this.defaultLimitChars})`;
         } else if (limit === 'off') {
           this.state.overrides[channelId] = 'off';
-          desc = 'off (never auto-unsubscribe)';
+          desc = 'off (never auto-close)';
         } else if (Number.isFinite(numeric) && numeric > 0) {
           this.state.overrides[channelId] = Math.round(numeric);
           desc = `${Math.round(numeric)} characters`;
@@ -207,14 +205,14 @@ export class SubscriptionGcModule implements Module {
     const next = (this.state.counters[channelId] ?? 0) + chars;
 
     if (limit !== Infinity && next > limit) {
-      // Cross the threshold → unsubscribe and clear the counter.
+      // Cross the threshold → close and clear the counter.
       delete this.state.counters[channelId];
       this.persistNow();
       const result = await this.ctx
         ?.callTool({
           id: `gc-unsub-${this.callSeq++}`,
-          name: `${this.toolPrefix}--unsubscribe_channel`,
-          input: { channelId },
+          name: 'channel_close',
+          input: { channelId, serverId: this.serverId },
         })
         .catch((err: unknown) => ({
           success: false,
@@ -231,18 +229,17 @@ export class SubscriptionGcModule implements Module {
                 {
                   type: 'text',
                   text:
-                    `[subscription-gc] Auto-unsubscribed from channel ${channelId}: it emitted ` +
+                    `[subscription-gc] Auto-closed channel ${channelId}: it emitted ` +
                     `over ${limit} characters of ambient traffic since your last activation without ` +
-                    `engagement. Mentions and DMs there still reach you. Resubscribe with ` +
-                    `${this.toolPrefix}--subscribe_channel, raise/disable its limit with ` +
-                    `set_channel_idle_limit, or check what you're missing with ${this.toolPrefix}--channel_missed.`,
+                    `engagement. Direct addresses there still reach you. Reopen with channel_open, ` +
+                    `or raise/disable its limit with set_channel_idle_limit.`,
                 },
               ],
             },
           ],
         };
       }
-      // Unsubscribe failed — keep the channel counted so we retry on the next
+      // Close failed — keep the channel counted so we retry on the next
       // ambient message rather than silently giving up.
       this.state.counters[channelId] = next;
       this.persistNow();
@@ -270,7 +267,7 @@ export class SubscriptionGcModule implements Module {
       if (event.serverId !== this.serverId) return null;
       const origin = (event.origin ?? {}) as Record<string, unknown>;
       if (origin.isMention || origin.isDM) return null;
-      const channelId = origin.channelId;
+      const channelId = origin.mcplChannelId ?? origin.channelId;
       if (typeof channelId !== 'string' || channelId.length === 0) return null;
       return { channelId, chars: textLen(event.content) };
     }
