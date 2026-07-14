@@ -9,6 +9,7 @@ import type {
   SummaryEntry,
 } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
+import { formatZonedTime, resolveTimeZone } from '@animalabs/agent-framework';
 
 // Structural mirror of AutobiographicalStrategy's internal Chunk.
 // Kept inline because @animalabs/context-manager does not currently export it.
@@ -24,7 +25,7 @@ interface Chunk {
   phaseType?: string;
 }
 
-export type FrontdeskStrategyOptions = Partial<AutobiographicalConfig>;
+export type FrontdeskStrategyOptions = Partial<AutobiographicalConfig> & { timeZone?: string };
 
 /**
  * Chatbot-flavoured context strategy for agents that receive messages via
@@ -43,6 +44,13 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
   override readonly name: string = 'frontdesk';
 
   private salientSourceIds: Set<string> = new Set();
+  private readonly timeZone: string;
+
+  constructor(options: FrontdeskStrategyOptions = {}) {
+    const { timeZone, ...strategyOptions } = options;
+    super(strategyOptions);
+    this.timeZone = resolveTimeZone(timeZone);
+  }
 
   override select(
     store: MessageStoreView,
@@ -146,9 +154,7 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
     }
     if (!d && msgTs instanceof Date && !isNaN(msgTs.getTime())) d = msgTs;
     if (!d) return null;
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
+    return formatZonedTime(d, this.timeZone);
   }
 
   // ==========================================================================

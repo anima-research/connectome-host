@@ -33,6 +33,7 @@ import type {
   AgentFramework,
   McplServerConfig,
 } from '@animalabs/agent-framework';
+import { resolveTimeZone } from '@animalabs/agent-framework';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
@@ -44,6 +45,8 @@ import {
 } from '../mcpl-config.js';
 
 export interface McplAdminModuleConfig {
+  /** IANA zone propagated to newly deployed stdio servers. */
+  timeZone?: string;
   /** Path to the agent overlay file. Default: `mcpl-servers.agent.json` in cwd. */
   overlayPath?: string;
   /** Path to the human-owned server config file (read-only here). */
@@ -64,10 +67,12 @@ export class McplAdminModule implements Module {
   private framework: AgentFramework | null = null;
   private overlayPath: string;
   private configPath: string;
+  private timeZone: string;
 
   constructor(config?: McplAdminModuleConfig) {
     this.overlayPath = config?.overlayPath ?? DEFAULT_AGENT_OVERLAY_PATH;
     this.configPath = config?.configPath ?? DEFAULT_CONFIG_PATH;
+    this.timeZone = resolveTimeZone(config?.timeZone);
   }
 
   /** Post-creation wiring (called from index.ts, mirrors ActivityModule.setFramework). */
@@ -275,6 +280,7 @@ export class McplAdminModule implements Module {
     saveAgentOverlay(this.overlayPath, overlay);
 
     const config = resolveOverlayEntry(id, entry, this.overlayPath) as unknown as McplServerConfig;
+    config.env = { ...(config.env ?? {}), AGENT_TIMEZONE: this.timeZone };
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
     try {

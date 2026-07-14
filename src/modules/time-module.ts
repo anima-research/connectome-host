@@ -15,21 +15,23 @@ import type {
   ToolCall,
   ToolResult,
 } from '@animalabs/agent-framework';
+import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 
 interface TimeState {
   sessionStartAnnounced?: boolean;
 }
 
-function formatNow(date: Date = new Date()): {
+export function formatNow(date: Date = new Date(), configuredTimeZone?: string): {
   iso: string;
   local: string;
   timezone: string;
   unixMs: number;
 } {
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timezone = resolveTimeZone(configuredTimeZone);
+  const local = formatZonedDateTime(date, timezone);
   return {
-    iso: date.toISOString(),
-    local: date.toString(),
+    iso: local.slice(0, local.indexOf(' [')),
+    local,
     timezone,
     unixMs: date.getTime(),
   };
@@ -39,6 +41,11 @@ export class TimeModule implements Module {
   readonly name = 'time';
 
   private ctx: ModuleContext | null = null;
+  private readonly timeZone: string;
+
+  constructor(timeZone?: string) {
+    this.timeZone = resolveTimeZone(timeZone);
+  }
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
@@ -46,10 +53,9 @@ export class TimeModule implements Module {
     const state = ctx.getState<TimeState>() ?? {};
     if (state.sessionStartAnnounced) return;
 
-    const now = formatNow();
+    const now = formatNow(new Date(), this.timeZone);
     const text =
-      `The time at the start of this session is: ${now.iso} ` +
-      `(local: ${now.local}, timezone: ${now.timezone}).`;
+      `The local time at the start of this session is ${now.local}.`;
 
     ctx.addMessage('user', [{ type: 'text', text }]);
     ctx.setState<TimeState>({ ...state, sessionStartAnnounced: true });
@@ -67,7 +73,7 @@ export class TimeModule implements Module {
     return [
       {
         name: 'now',
-        description: 'Return the current wall-clock time as ISO 8601, local string, timezone, and unix milliseconds.',
+        description: 'Return the current wall-clock time in the agent-configured timezone, plus unix milliseconds.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -78,7 +84,7 @@ export class TimeModule implements Module {
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     if (call.name === 'now') {
-      return { success: true, data: formatNow() };
+      return { success: true, data: formatNow(new Date(), this.timeZone) };
     }
     return { success: false, isError: true, error: `Unknown tool: ${call.name}` };
   }

@@ -18,7 +18,7 @@
 import { Membrane, NativeFormatter } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { SettingsModule } from './modules/settings-module.js';
-import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
+import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
@@ -141,11 +141,12 @@ async function createFramework(
 ): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
+  const timeZone = resolveTimeZone(recipe.agent.timezone);
 
   // -- Build module list --
   // SettingsModule is constructed in main() (before the adapter, so the
   // adapter can read its state for cross-cutting concerns like reasoning).
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(), settingsModule];
+  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule];
 
   // Subagents
   let subagentModule: SubagentModule | null = null;
@@ -169,10 +170,11 @@ async function createFramework(
 
   // Fleet (cross-process child orchestration). Opt-in via recipe.
   if (modules.fleet === true) {
-    moduleInstances.push(new FleetModule());
+    moduleInstances.push(new FleetModule({ timeZone }));
   } else if (modules.fleet && typeof modules.fleet === 'object') {
     const fleetCfg = modules.fleet;
     const fleetModuleConfig: FleetModuleConfig = {};
+    fleetModuleConfig.timeZone = timeZone;
     if (fleetCfg.children) {
       fleetModuleConfig.autoStart = fleetCfg.children.map((c) => {
         const entry: NonNullable<FleetModuleConfig['autoStart']>[number] = {
@@ -310,7 +312,7 @@ async function createFramework(
   // ability to spawn arbitrary commands via mcpl_deploy; see recipe.ts).
   let mcplAdminModule: McplAdminModule | null = null;
   if (modules.mcplAdmin === true) {
-    mcplAdminModule = new McplAdminModule();
+    mcplAdminModule = new McplAdminModule({ timeZone });
     moduleInstances.push(mcplAdminModule);
   }
 
@@ -384,7 +386,12 @@ async function createFramework(
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
   // tombstones suppress recipe/file servers the agent unloaded.
-  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH);
+  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => ({
+    ...server,
+    // Stdio MCPL children inherit a single agent-facing wall clock. Protocol
+    // timestamps remain UTC; only their rendered text uses this setting.
+    env: { ...(server.env ?? {}), AGENT_TIMEZONE: timeZone },
+  }));
 
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
@@ -405,6 +412,7 @@ async function createFramework(
     compressionModel: strategyConfig?.compressionModel ?? model,
     autoTickOnNewMessage: true,
     maxMessageTokens: strategyConfig?.maxMessageTokens ?? 10000,
+    ...(strategyType === 'frontdesk' ? { timeZone } : {}),
   };
   // Forward optional tuning fields when set. The key list is typed
   // against `RecipeStrategy`, so an unknown field name is a compile
@@ -473,6 +481,7 @@ async function createFramework(
     modules: moduleInstances,
     mcplServers: finalServers,
     gate: gateOptions,
+    timeZone,
   });
 
   // Wire post-creation hooks

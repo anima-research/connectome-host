@@ -29,6 +29,7 @@ import type {
   ToolCall,
   ToolResult,
 } from '@animalabs/agent-framework';
+import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { connect as netConnect, type Socket } from 'node:net';
 import { existsSync, mkdirSync, unlinkSync, openSync, closeSync, appendFileSync } from 'node:fs';
@@ -81,6 +82,8 @@ interface FleetEventSubscription {
 // ---------------------------------------------------------------------------
 
 export interface FleetModuleConfig {
+  /** IANA zone for wall-clock timestamps returned by fleet tools. */
+  timeZone?: string;
   /** Default subscription sent to children at handshake (default: ['*']). */
   defaultSubscription?: string[];
   /** Max events to retain per child for peek (default: 500). */
@@ -255,6 +258,7 @@ export class FleetModule implements Module {
       sigtermEscalationMs: config.sigtermEscalationMs ?? 5_000,
       childIndexPath: config.childIndexPath ?? process.argv[1] ?? '',
       childRuntimePath: config.childRuntimePath ?? process.execPath,
+      timeZone: resolveTimeZone(config.timeZone),
     };
 
     this.autoStartChildren = config.autoStart ?? [];
@@ -1014,7 +1018,12 @@ export class FleetModule implements Module {
       {
         detached: true,
         stdio: startupFd !== null ? ['ignore', startupFd, startupFd] : 'ignore',
-        env: { ...process.env, ...input.env, DATA_DIR: dataDir },
+        env: {
+          ...process.env,
+          ...input.env,
+          AGENT_TIMEZONE: this.config.timeZone,
+          DATA_DIR: dataDir,
+        },
       },
     );
     proc.unref();
@@ -1095,9 +1104,9 @@ export class FleetModule implements Module {
       name: c.name,
       status: c.status,
       pid: c.pid,
-      startedAt: c.startedAt,
-      exitedAt: c.exitedAt,
-      lastEventAt: c.lastEventAt,
+      startedAt: formatZonedDateTime(c.startedAt, this.config.timeZone),
+      exitedAt: c.exitedAt === null ? null : formatZonedDateTime(c.exitedAt, this.config.timeZone),
+      lastEventAt: c.lastEventAt === null ? null : formatZonedDateTime(c.lastEventAt, this.config.timeZone),
       eventCount: c.events.length,
     }));
     return { success: true, data: list };
@@ -1120,9 +1129,10 @@ export class FleetModule implements Module {
       socketPath: c.socketPath,
       pid: c.pid,
       status: c.status,
-      startedAt: c.startedAt,
-      exitedAt: c.exitedAt,
-      lastEventAt: c.lastEventAt,
+      startedAt: formatZonedDateTime(c.startedAt, this.config.timeZone),
+      exitedAt: c.exitedAt === null ? null : formatZonedDateTime(c.exitedAt, this.config.timeZone),
+      lastEventAt: c.lastEventAt === null ? null : formatZonedDateTime(c.lastEventAt, this.config.timeZone),
+      timeZone: this.config.timeZone,
       exitCode: c.exitCode,
       exitReason: c.exitReason,
       eventCount: c.events.length,

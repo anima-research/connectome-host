@@ -75,6 +75,8 @@ export interface RecipeStrategy {
 export interface RecipeAgent {
   name?: string;
   model?: string;
+  /** IANA zone used when rendering wall-clock times to the agent. */
+  timezone?: string;
   systemPrompt: string;
   maxTokens?: number;
   /**
@@ -676,6 +678,17 @@ export function validateRecipe(raw: unknown): Recipe {
   const agent = obj.agent as Record<string, unknown>;
   if (typeof agent.systemPrompt !== 'string' || !agent.systemPrompt) {
     throw new Error('Recipe agent must have a "systemPrompt" string');
+  }
+
+  if (agent.timezone !== undefined) {
+    if (typeof agent.timezone !== 'string' || !agent.timezone.trim()) {
+      throw new Error('Recipe agent.timezone must be a non-empty IANA time zone string.');
+    }
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: agent.timezone }).format(new Date(0));
+    } catch {
+      throw new Error(`Recipe agent.timezone is not a valid IANA time zone: ${JSON.stringify(agent.timezone)}.`);
+    }
   }
 
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
