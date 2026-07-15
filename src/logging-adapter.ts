@@ -131,6 +131,24 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     };
   }
 
+  /**
+   * Off-path refusal dragnet (observability M3). The main inference driver
+   * instruments its own refusals (agent-framework noteRefusal), but that
+   * covers ONLY streamed agent turns. Every other model call in the process
+   * — compression/summarizer drains, maintenance — flows through this
+   * adapter's complete() and previously refused in silence; the 2026-07-15
+   * mythos cascade STARTED there and alerted nowhere. Fired for
+   * kind==='complete' only: agent turns stream, so this never double-reports
+   * a refusal the main driver already escalated.
+   */
+  onRefusal?: (info: {
+    kind: 'complete' | 'stream';
+    category?: string;
+    model: string;
+    messages: number;
+    inputTokens: number;
+  }) => void;
+
   private observeCall(
     kind: 'complete' | 'stream',
     timestamp: string,
@@ -140,6 +158,18 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
+    const raw0 = (response as { raw?: { stop_reason?: string; stop_details?: { category?: string } } } | undefined)?.raw;
+    if (kind === 'complete' && raw0?.stop_reason === 'refusal' && this.onRefusal) {
+      try {
+        this.onRefusal({
+          kind,
+          category: raw0.stop_details?.category,
+          model: request.model,
+          messages: request.messages.length,
+          inputTokens: response?.usage.inputTokens ?? 0,
+        });
+      } catch { /* observers never affect provider traffic */ }
+    }
     if (!this.onCall) return;
     const cache = summarizeCacheControls(rawRequest);
     const raw = (response as { raw?: Record<string, unknown> } | undefined)?.raw;

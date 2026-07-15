@@ -483,6 +483,9 @@ async function createFramework(
               effort: recipe.agent.responses?.reasoningEffort ?? 'high',
               context: recipe.agent.responses?.reasoningContext ?? 'all_turns',
             },
+            ...(recipe.agent.responses?.serviceTier ? {
+              service_tier: recipe.agent.responses.serviceTier,
+            } : {}),
             ...(recipe.agent.responses?.compactThreshold ? {
               context_management: [{
                 type: 'compaction',
@@ -904,6 +907,28 @@ async function main() {
       getWebUiModule(this.framework)?.setApp(this);
     },
   };
+
+  // Off-path refusal dragnet → ops alerts (observability M3): refusals on
+  // non-streamed calls (compression/summarizer drains, maintenance) never
+  // reach the framework's own noteRefusal — the 2026-07-15 mythos cascade
+  // started exactly there, silently. Surface them through the same
+  // opsAlert pipeline (failures.log + ops:alert trace + throttled webhook).
+  // Reads app.framework (not the closure) so session switches stay wired;
+  // feature-detects notifyOpsAlert for older framework versions.
+  if (adapter instanceof LoggingAnthropicAdapter) {
+    adapter.onRefusal = (info) => {
+      const fw = app.framework as unknown as {
+        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
+      };
+      fw.notifyOpsAlert?.(
+        'refusal-offpath',
+        app.agentName,
+        `off-path refusal (category=${info.category ?? 'unknown'}) on a ${info.messages}-message ` +
+          `complete() call (~${Math.round(info.inputTokens / 1000)}k tok) — likely compression/summarizer`,
+        { ...info },
+      );
+    };
+  }
 
   framework.start();
   setupSynesthete(app);
