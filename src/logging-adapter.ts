@@ -30,8 +30,8 @@ import { appendFileSync } from 'node:fs';
 import { summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 
 /** Live read of the current reasoning setting. The host wires this to
- *  `SettingsModule.getReasoning()` so toggles via the `settings--reasoning_*`
- *  tools take effect on the next call without restart. */
+ *  `SettingsModule.getReasoning()` so toggles via the `agent_settings` tool's
+ *  reasoning_enabled field take effect on the next call without restart. */
 export type ReasoningGetter = () => { enabled: boolean; budgetTokens: number };
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
@@ -95,7 +95,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // form with: `"thinking.type.enabled" is not supported for this model.
     // Use "thinking.type.adaptive"`. Under adaptive the model sizes its own
     // thinking, so `budgetTokens` is no longer sent (it still shows in
-    // reasoning_status as an informational hint).
+    // agent_settings as an informational hint).
     //
     // membrane's `ProviderRequest` doesn't type a top-level `thinking` field
     // (membrane is 0.5.68 — agent-framework is the package that went 0.6.0;

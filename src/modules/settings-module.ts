@@ -3,10 +3,11 @@
  * itself. State persists to chronicle via ModuleContext (`setState`/`getState`)
  * so changes survive restarts.
  *
- * First domain: **reasoning** (Anthropic extended thinking). Tools:
- *   - reasoning_status                    → show current state
- *   - reasoning_enable {budgetTokens?}    → turn on with optional budget
- *   - reasoning_disable                   → turn off
+ * First domain: **reasoning** (Anthropic extended thinking), surfaced to the
+ * agent as `agent_settings` fields (reasoning_enabled /
+ * reasoning_budget_tokens) via the framework's settings-extension hook —
+ * NOT as standalone tools (the former reasoning_status/enable/disable trio
+ * was tool bloat for one boolean + number).
  *
  * The host's adapter wrapper (LoggingAnthropicAdapter) reads `getReasoning()`
  * on each call and injects `thinking: {type:'enabled', budget_tokens: N}` into
@@ -69,75 +70,98 @@ export class SettingsModule implements Module {
     return { ...this.state.reasoning };
   }
 
+  /** No standalone tools — reasoning controls live inside the framework's
+   *  `agent_settings` tool via getAgentSettingsExtension() below. The three
+   *  former reasoning_* tools were pure tool bloat for one boolean + number. */
   getTools(): ToolDefinition[] {
-    return [
-      {
-        name: 'reasoning_status',
-        description:
-          'Show whether extended thinking (reasoning) is currently enabled and the token budget.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'reasoning_enable',
-        description:
-          'Enable extended thinking (reasoning) on your subsequent inference calls. ' +
-          'Optional budgetTokens in tokens (default: current value, initially 8192; min 1024).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            budgetTokens: {
-              type: 'number',
-              description: 'Token budget for thinking blocks (min 1024).',
-            },
-          },
-        },
-      },
-      {
-        name: 'reasoning_disable',
-        description:
-          'Disable extended thinking (reasoning). Subsequent inference calls will not request thinking blocks.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-    ];
+    return [];
   }
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
-    const input = (call.input ?? {}) as Record<string, unknown>;
-    switch (call.name) {
-      case 'reasoning_status':
-        return ok(this.reasoningStatusText());
-      case 'reasoning_enable': {
-        const budget =
-          typeof input.budgetTokens === 'number'
-            ? Math.max(1024, Math.round(input.budgetTokens))
-            : this.state.reasoning.budgetTokens;
-        this.state.reasoning = { enabled: true, budgetTokens: budget };
+    return {
+      success: false,
+      error:
+        `Unknown tool: ${call.name}. Reasoning controls moved into agent_settings ` +
+        `(fields reasoning_enabled / reasoning_budget_tokens).`,
+      isError: true,
+    };
+  }
+
+  /**
+   * Declare reasoning as an agent_settings extension: the framework merges
+   * these fields into the agent_settings tool and routes get/update/reset for
+   * them back here. Framework versions predating the hook simply never call
+   * this — in that case reasoning is temporarily not agent-tunable (the
+   * adapter still honors persisted state).
+   */
+  getAgentSettingsExtension(): {
+    properties: Record<string, unknown>;
+    keys: string[];
+    get(agentName: string): Record<string, unknown>;
+    update(agentName: string, patch: Record<string, unknown>): Record<string, unknown>;
+    reset(agentName: string, keys?: string[]): Record<string, unknown>;
+  } {
+    return {
+      properties: {
+        reasoning_enabled: {
+          type: 'boolean',
+          description:
+            'Extended thinking (reasoning) on subsequent inference calls.',
+        },
+        reasoning_budget_tokens: {
+          type: 'number',
+          description: 'Token budget for thinking blocks (min 1024).',
+        },
+      },
+      keys: ['reasoning_enabled', 'reasoning_budget_tokens'],
+      get: () => this.reasoningSettingsView(),
+      update: (_agentName, patch) => {
+        const next = { ...this.state.reasoning };
+        if (patch.reasoning_enabled !== undefined) {
+          if (typeof patch.reasoning_enabled !== 'boolean') {
+            throw new Error('reasoning_enabled must be a boolean');
+          }
+          next.enabled = patch.reasoning_enabled;
+        }
+        if (patch.reasoning_budget_tokens !== undefined) {
+          const budget = Number(patch.reasoning_budget_tokens);
+          if (!Number.isFinite(budget)) {
+            throw new Error('reasoning_budget_tokens must be a number');
+          }
+          next.budgetTokens = Math.max(1024, Math.round(budget));
+        }
+        this.state.reasoning = next;
         this.ctx?.setState(this.state);
-        return ok('Reasoning enabled. ' + this.reasoningStatusText());
-      }
-      case 'reasoning_disable':
-        this.state.reasoning = { ...this.state.reasoning, enabled: false };
+        return this.reasoningSettingsView();
+      },
+      reset: (_agentName, keys) => {
+        const all = !keys || keys.length === 0;
+        if (all || keys?.includes('reasoning_enabled')) {
+          this.state.reasoning.enabled = DEFAULTS.reasoning.enabled;
+        }
+        if (all || keys?.includes('reasoning_budget_tokens')) {
+          this.state.reasoning.budgetTokens = DEFAULTS.reasoning.budgetTokens;
+        }
         this.ctx?.setState(this.state);
-        return ok('Reasoning disabled. ' + this.reasoningStatusText());
-      default:
-        return { success: false, error: `Unknown tool: ${call.name}`, isError: true };
-    }
+        return this.reasoningSettingsView();
+      },
+    };
+  }
+
+  /** The extension's wire view of reasoning state (flat agent_settings keys). */
+  private reasoningSettingsView(): Record<string, unknown> {
+    return {
+      reasoning_enabled: this.state.reasoning.enabled,
+      reasoning_budget_tokens: this.state.reasoning.budgetTokens,
+    };
   }
 
   async onProcess(_event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     return {};
   }
 
-  private reasoningStatusText(): string {
-    const r = this.state.reasoning;
-    return `reasoning=${r.enabled ? 'ENABLED' : 'disabled'}, budgetTokens=${r.budgetTokens}`;
-  }
 }
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
-}
-
-function ok(message: string): ToolResult {
-  return { success: true, data: { message }, isError: false };
 }
