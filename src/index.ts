@@ -22,6 +22,7 @@ import {
   OpenAIResponsesFormatter,
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
@@ -68,6 +69,7 @@ const config = {
   // precedence over the API key so requests never carry both auth schemes.
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
   openaiApiKey: process.env.OPENAI_API_KEY,
+  codexBinary: process.env.CODEX_BINARY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -90,6 +92,7 @@ interface AppContext {
   agentName: string;
   branchState: BranchState;
   userMessageCount: number;
+  codexAdapter?: CodexSubscriptionAdapter;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -142,7 +145,8 @@ async function createFramework(
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
 ): Promise<AgentFramework> {
-  const model = config.model || recipe.agent.model || 'claude-opus-4-6';
+  const model = config.model || recipe.agent.model ||
+    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
   const modules = recipe.modules ?? {};
   const timeZone = resolveTimeZone(recipe.agent.timezone);
 
@@ -479,20 +483,22 @@ async function createFramework(
         maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
         contextBudgetTokens: recipe.agent.contextBudgetTokens,
         ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
-        ...(recipe.agent.provider === 'openai-responses' && {
+        ...((recipe.agent.provider === 'openai-responses' || recipe.agent.provider === 'openai-codex') && {
           providerParams: {
             reasoning: {
               effort: recipe.agent.responses?.reasoningEffort ?? 'high',
               context: recipe.agent.responses?.reasoningContext ?? 'all_turns',
             },
-            ...(recipe.agent.responses?.serviceTier ? {
-              service_tier: recipe.agent.responses.serviceTier,
-            } : {}),
-            ...(recipe.agent.responses?.compactThreshold ? {
-              context_management: [{
-                type: 'compaction',
-                compact_threshold: recipe.agent.responses.compactThreshold,
-              }],
+            ...(recipe.agent.provider === 'openai-responses' ? {
+              ...(recipe.agent.responses?.serviceTier ? {
+                service_tier: recipe.agent.responses.serviceTier,
+              } : {}),
+              ...(recipe.agent.responses?.compactThreshold ? {
+                context_management: [{
+                  type: 'compaction',
+                  compact_threshold: recipe.agent.responses.compactThreshold,
+                }],
+              } : {}),
             } : {}),
           },
         }),
@@ -525,6 +531,18 @@ async function createFramework(
     }).notifyOps?.bind(framework);
     if (alarmCapable.setQuarantineAlarmHandler && notify) {
       alarmCapable.setQuarantineAlarmHandler((status) => {
+        if (status.count === 0) {
+          // All-clear travels the same channel the alarm did, under a
+          // DISTINCT kind: the alarm kind's 15-min ops cooldown must never
+          // swallow the stand-down (silence after an alarm is ambiguous).
+          notify(
+            'compression-quarantine-clear',
+            agentName,
+            'compression quarantine EMPTY — all debt paid; alarm stands down.',
+            { count: 0 },
+          );
+          return;
+        }
         notify(
           'compression-quarantine',
           agentName,
@@ -841,22 +859,38 @@ async function main() {
         defaultTtl: recipe.agent.cacheTtl ?? '5m',
       })
     : null;
-  // OAuth (subscription) auth wins over API-key auth when both are present.
-  // Subscription tokens (sk-ant-oat…) additionally require the oauth beta
-  // header on every request.
+  // The Codex subscription adapter owns ChatGPT login/refresh independently
+  // of the API-key transports below.
+  const codexAdapter = provider === 'openai-codex'
+    ? new CodexSubscriptionAdapter({
+        codexBinary: config.codexBinary,
+        fastMode: recipe.agent.codex?.fastMode ?? false,
+      })
+    : undefined;
   const adapter = provider === 'openai-responses'
     ? new OpenAIResponsesAPIAdapter({
         apiKey: config.openaiApiKey!,
         baseURL: process.env.OPENAI_BASE_URL || undefined,
       })
-    : new LoggingAnthropicAdapter(
+    : codexAdapter ?? new LoggingAnthropicAdapter(
         {
+          // Anthropic OAuth wins over API-key auth when both are present.
+          // Subscription tokens additionally require this beta header.
+          // Recipe-declared betas (agent.anthropicBetas, e.g. context-1m)
+          // are merged into the same anthropic-beta header either way.
           ...(config.authToken
             ? {
                 authToken: config.authToken,
-                defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+                defaultHeaders: {
+                  'anthropic-beta': ['oauth-2025-04-20', ...(recipe.agent.anthropicBetas ?? [])].join(','),
+                },
               }
-            : { apiKey: config.apiKey! }),
+            : {
+                apiKey: config.apiKey!,
+                ...(recipe.agent.anthropicBetas?.length
+                  ? { defaultHeaders: { 'anthropic-beta': recipe.agent.anthropicBetas.join(',') } }
+                  : {}),
+              }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
         },
         llmLogPath,
@@ -895,7 +929,7 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
-    formatter: provider === 'openai-responses'
+    formatter: provider === 'openai-responses' || provider === 'openai-codex'
       ? new OpenAIResponsesFormatter()
       : new NativeFormatter(),
     // Anchor the assistant role for internal callers that don't set
@@ -917,6 +951,7 @@ async function main() {
     agentName,
     branchState: createBranchState(),
     userMessageCount: 0,
+    codexAdapter,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -964,14 +999,18 @@ async function main() {
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);
 
-  if (headless) {
-    const { runHeadless } = await import('./headless.js');
-    await runHeadless(app, process.argv.slice(2));
-  } else if (noTui) {
-    await runPiped(app);
-  } else {
-    const { runTui } = await import('./tui.js');
-    await runTui(app);
+  try {
+    if (headless) {
+      const { runHeadless } = await import('./headless.js');
+      await runHeadless(app, process.argv.slice(2));
+    } else if (noTui) {
+      await runPiped(app);
+    } else {
+      const { runTui } = await import('./tui.js');
+      await runTui(app);
+    }
+  } finally {
+    codexAdapter?.dispose();
   }
 }
 
