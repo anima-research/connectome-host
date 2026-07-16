@@ -1077,7 +1077,25 @@ export class WebUiModule implements Module {
       if (typeof fw.healthSnapshot !== 'function') {
         return Response.json({ error: 'framework lacks healthSnapshot()' }, { status: 501 });
       }
-      return Response.json(fw.healthSnapshot());
+      const snapshot = fw.healthSnapshot();
+      // Compression quarantine is a guaranteed-eventual-outage state (raw
+      // spans accumulate until the picker cannot fit the window). Surface it
+      // here so the fleet hub and connectome-doctor can alarm on it — it
+      // must never be observable only in agent.log.
+      try {
+        const quarantine: Record<string, unknown> = {};
+        for (const agent of app.framework.getAllAgents()) {
+          const strategy = (agent.getContextManager() as unknown as {
+            getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
+          }).getStrategy?.();
+          const status = strategy?.getCompressionQuarantineStatus?.();
+          if (status) quarantine[(agent as unknown as { name: string }).name] = status;
+        }
+        (snapshot as Record<string, unknown>).compressionQuarantine = quarantine;
+      } catch {
+        // Health reads never throw.
+      }
+      return Response.json(snapshot);
     }
 
     // Workspace file passthrough: /files/<mount>/<path...>

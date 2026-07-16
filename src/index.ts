@@ -506,6 +506,33 @@ async function createFramework(
   });
 
   // Wire post-creation hooks
+  // Compression-quarantine klaxon → the framework's ops-alert channel
+  // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
+  // re-fires this every alarm interval for as long as ANY chunk is
+  // quarantined: quarantined spans stay raw, the fold floor creeps, and the
+  // picker eventually cannot fit the window — a guaranteed future outage
+  // that must never be a silent state.
+  // Duck-typed on both sides so version skew in either dep degrades to a
+  // no-op (the strategy's own stderr klaxon still fires) instead of a crash.
+  {
+    const alarmCapable = strategy as unknown as {
+      setQuarantineAlarmHandler?: (fn: (status: { count: number; keys: string[] }) => void) => void;
+    };
+    const notify = (framework as unknown as {
+      notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+    }).notifyOps?.bind(framework);
+    if (alarmCapable.setQuarantineAlarmHandler && notify) {
+      alarmCapable.setQuarantineAlarmHandler((status) => {
+        notify(
+          'compression-quarantine',
+          agentName,
+          `${status.count} chunk(s) in compression quarantine — spans stay raw and WILL eventually exhaust the context budget. Operator action required (inspect refusing content; branch, pin, or clear).`,
+          { count: status.count, keys: status.keys },
+        );
+      });
+    }
+  }
+
   if (subagentModule) {
     subagentModule.setFramework(framework);
   }
