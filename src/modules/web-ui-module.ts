@@ -1095,6 +1095,25 @@ export class WebUiModule implements Module {
       } catch {
         // Health reads never throw.
       }
+      // Per-agent runtime settings (context budget, tail, transition pace +
+      // convergence state) — the same numbers `agent_settings get` returns,
+      // exposed externally so the fleet hub / connectome-doctor can watch
+      // budget convergence without an agent turn.
+      try {
+        const fw2 = app.framework as unknown as {
+          getAgentRuntimeSettings?: (name: string) => unknown;
+        };
+        if (typeof fw2.getAgentRuntimeSettings === 'function') {
+          const settings: Record<string, unknown> = {};
+          for (const agent of app.framework.getAllAgents()) {
+            const name = (agent as unknown as { name: string }).name;
+            settings[name] = fw2.getAgentRuntimeSettings(name);
+          }
+          (snapshot as Record<string, unknown>).runtimeSettings = settings;
+        }
+      } catch {
+        // Health reads never throw.
+      }
       return Response.json(snapshot);
     }
 
