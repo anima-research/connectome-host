@@ -424,6 +424,8 @@ async function createFramework(
   const passthroughKeys: ReadonlyArray<keyof RecipeStrategy> = [
     'enforceBudget',
     'maxSpeculativeL1s',
+    'compressionRefusalCurveFallbacks',
+    'compressionContextBudgetTokens',
     'positionedRecallPairs',
     'recallHeaderTemplate',
     'targetChunkTokens',

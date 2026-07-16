@@ -35,6 +35,13 @@ export interface RecipeStrategy {
   // for what the recipe loader accepts under `agent.strategy`.
   enforceBudget?: boolean;
   maxSpeculativeL1s?: number;
+  /** Number of coverage-equivalent recall curves to try after the canonical
+   * autobiographical compression request is explicitly refused. Zero disables
+   * fallback while retaining the canonical attempt. */
+  compressionRefusalCurveFallbacks?: number;
+  /** Complete provider-request admission ceiling for compression fallbacks,
+   * including the output reserve. */
+  compressionContextBudgetTokens?: number;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
@@ -768,6 +775,26 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error(
         `Invalid strategy type "${strategy.type}". Must be "autobiographical", "passthrough", or "frontdesk".`,
       );
+    }
+    if (
+      strategy.compressionRefusalCurveFallbacks !== undefined
+      && (
+        typeof strategy.compressionRefusalCurveFallbacks !== 'number'
+        || !Number.isSafeInteger(strategy.compressionRefusalCurveFallbacks)
+        || strategy.compressionRefusalCurveFallbacks < 0
+      )
+    ) {
+      throw new Error('Recipe agent.strategy.compressionRefusalCurveFallbacks must be a non-negative safe integer.');
+    }
+    if (
+      strategy.compressionContextBudgetTokens !== undefined
+      && (
+        typeof strategy.compressionContextBudgetTokens !== 'number'
+        || !Number.isSafeInteger(strategy.compressionContextBudgetTokens)
+        || strategy.compressionContextBudgetTokens <= 0
+      )
+    ) {
+      throw new Error('Recipe agent.strategy.compressionContextBudgetTokens must be a positive safe integer.');
     }
   }
 
