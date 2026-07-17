@@ -100,6 +100,11 @@ export interface RecipeAgent {
   /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
    *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads. */
   cacheTtl?: '5m' | '1h';
+  /**
+   * Same-round routing policy for ordinary text emitted beside think().
+   * Omitted preserves the compatibility carry-forward in Agent Framework.
+   */
+  sameRoundThinkTextPolicy?: 'public' | 'private';
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -116,6 +121,7 @@ export interface RecipeAgent {
     reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningContext?: 'current_turn' | 'all_turns';
     compactThreshold?: number;
+    serviceTier?: string;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -738,6 +744,16 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
   }
   agent.cacheTtl ??= '1h';
+
+  if (
+    agent.sameRoundThinkTextPolicy !== undefined &&
+    agent.sameRoundThinkTextPolicy !== 'public' &&
+    agent.sameRoundThinkTextPolicy !== 'private'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundThinkTextPolicy must be 'public' or 'private', got ${JSON.stringify(agent.sameRoundThinkTextPolicy)}.`,
+    );
+  }
 
   // Validate agent.thinking if present. Catches typos and constraint
   // violations (notably max_tokens > budget_tokens) at recipe-load time
