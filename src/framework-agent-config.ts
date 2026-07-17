@@ -1,7 +1,12 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
 
-export type FrameworkAgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number] & {
+type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
+
+export type FrameworkAgentConfig = AgentConfig & {
+  // Forward recipe fields that newer Agent Framework releases understand
+  // while remaining structurally compatible with older installs.
+  refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
 };
 

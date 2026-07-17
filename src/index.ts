@@ -24,15 +24,14 @@ import {
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
-import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
+import { AgentFramework, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
-import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
-import type { RecipeWorkspaceMount, RecipeStrategy } from './recipe.js';
+import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -57,6 +56,7 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig } from './framework-agent-config.js';
+import { buildFrameworkStrategy } from './framework-strategy.js';
 
 export type { AppContext };
 
@@ -401,71 +401,7 @@ async function createFramework(
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
   // -- Build strategy --
-  //
-  // Build the options object with typed property access — no
-  // `Record<string, unknown>` cast on `strategyConfig`. Every field we
-  // forward is declared on `RecipeStrategy` (see recipe.ts); a typo in a
-  // recipe (e.g. `l1BudgetTokes`) now fails at recipe validation rather
-  // than silently being a no-op at strategy construction. AutobiographicalStrategy
-  // and FrontdeskStrategy share this option bag today; if strategy-specific
-  // fields are ever added, this should split into per-strategy types.
-  const strategyConfig = recipe.agent.strategy;
-  const strategyType = strategyConfig?.type ?? 'autobiographical';
-  const autobiographicalOpts: Record<string, unknown> = {
-    headWindowTokens: strategyConfig?.headWindowTokens ?? 4000,
-    recentWindowTokens: strategyConfig?.recentWindowTokens ?? 30000,
-    compressionModel: strategyConfig?.compressionModel ?? model,
-    autoTickOnNewMessage: true,
-    maxMessageTokens: strategyConfig?.maxMessageTokens ?? 10000,
-    ...(strategyType === 'frontdesk' ? { timeZone } : {}),
-  };
-  // Forward optional tuning fields when set. The key list is typed
-  // against `RecipeStrategy`, so an unknown field name is a compile
-  // error here rather than a silent no-op at runtime.
-  const passthroughKeys: ReadonlyArray<keyof RecipeStrategy> = [
-    'enforceBudget',
-    'maxSpeculativeL1s',
-    'compressionRefusalCurveFallbacks',
-    'compressionContextBudgetTokens',
-    'positionedRecallPairs',
-    'recallHeaderTemplate',
-    'targetChunkTokens',
-    'mergeThreshold',
-    'summaryTargetTokens',
-    'l1BudgetTokens',
-    'l2BudgetTokens',
-    'l3BudgetTokens',
-    'toolResultMaxLastN',
-    'toolUseInputMaxTokens',
-    'adaptiveResolution',
-    'kvStableReachTokens',
-    'kvStableQualityGapRatio',
-    'compressionSlackRatio',
-    'overBudgetGraceRatio',
-    'foldingStrategy',
-    'speculativeProduction',
-    'l1HoldbackChunks',
-    'summaryParticipant',
-    'summarySystemPrompt',
-    'summaryUserPrompt',
-    'summaryContextLabel',
-  ];
-  for (const key of passthroughKeys) {
-    const v = strategyConfig?.[key];
-    if (v !== undefined) autobiographicalOpts[key] = v;
-  }
-  // Adaptive resolution (document-based gradual compression) is the intended
-  // default for autobiographical agents. Frontdesk keeps the hierarchical
-  // renderer (its salience-biased L1 selection); it can still opt in via the
-  // recipe. A recipe may set `adaptiveResolution: false` to opt back out.
-  if (strategyType === 'autobiographical' && autobiographicalOpts.adaptiveResolution === undefined) {
-    autobiographicalOpts.adaptiveResolution = true;
-  }
-  const strategy = strategyType === 'passthrough'
-    ? new PassthroughStrategy()
-    : strategyType === 'frontdesk'
-      ? new FrontdeskStrategy(autobiographicalOpts)
-      : new AutobiographicalStrategy(autobiographicalOpts);
+  const strategy = buildFrameworkStrategy(recipe, model, timeZone);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   // -- Create framework --
