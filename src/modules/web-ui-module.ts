@@ -983,8 +983,14 @@ export class WebUiModule implements Module {
       // `new WebSocket(...)` the way they do on fetch, so without an
       // explicit check, any tab the operator opens could connect here.
       if (!this.checkOrigin(req)) return new Response('Forbidden', { status: 403 });
-      const basicOk = this.checkAuth(req);
-      // Without basic auth the upgrade is allowed only when observer grants
+      // Full authority = basic auth OR a full session cookie (minted by
+      // /auth/basic). The cookie path exists because browsers reliably send
+      // cookies on WS upgrades but Chrome does NOT send cached basic-auth
+      // credentials — without it, password sign-in bounced back to the
+      // observer gate in a loop.
+      const wsSession = sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+      const basicOk = this.checkAuth(req) || (wsSession?.full ?? false);
+      // Without full auth the upgrade is allowed only when observer grants
       // exist — and then NOTHING is sent until a signed observer-hello
       // verifies (in-band auth; see onWsOpen/onWsMessage).
       if (!basicOk && !observersActive) return this.unauthorized();
@@ -1002,19 +1008,29 @@ export class WebUiModule implements Module {
     // when observers are active the static app shell is public — it carries
     // no data, and key-only devices must be able to load the SPA to
     // authenticate at all.
-    const basicOk = this.checkAuth(req);
-    const sessionScopes = basicOk
-      ? null
-      : sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+    const session = sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+    const basicOk = this.checkAuth(req) || (session?.full ?? false);
+    const sessionScopes = basicOk ? null : session?.scopes ?? null;
     const httpAllowed = (scope: ObserverScope): boolean =>
       basicOk || (sessionScopes?.has(scope) ?? false);
     // /auth/basic: deliberate basic-auth challenge point. fetch() never
     // triggers the browser's native credential prompt, but a top-level
     // navigation here does — the SPA's "sign in with password" fallback for
-    // devices without an observer grant. Once credentials are cached for
-    // the realm, the WS upgrade carries them and the client is 'full'.
+    // devices without an observer grant. On success it mints a FULL session
+    // cookie: the subsequent WS upgrade authenticates via that cookie
+    // (browsers send cookies on upgrades; Chrome does not send cached basic
+    // credentials, which used to loop users back to the gate).
     if (url.pathname === '/auth/basic') {
-      if (basicOk) return new Response(null, { status: 302, headers: { location: '/' } });
+      if (basicOk) {
+        const token = sharedServer!.observerSessions.mint(new Set(), { full: true });
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: '/',
+            'set-cookie': `fkm_obs=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${12 * 3600}`,
+          },
+        });
+      }
       return this.unauthorized();
     }
     const isStatic = !url.pathname.startsWith('/debug/')

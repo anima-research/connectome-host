@@ -220,14 +220,19 @@ describe('scope filters', () => {
 });
 
 describe('ObserverSessions', () => {
-  test('mint/lookup round-trip; bad token null', () => {
+  test('mint/lookup round-trip; bad token null; full flag carried', () => {
     const s = new ObserverSessions();
     const scopes = new Set<ObserverScope>(['health']);
     const token = s.mint(scopes);
     expect(token).toMatch(/^[a-f0-9]{64}$/);
-    expect(s.lookup(token)).toBe(scopes);
+    expect(s.lookup(token)!.scopes).toBe(scopes);
+    expect(s.lookup(token)!.full).toBe(false);
     expect(s.lookup('0'.repeat(64))).toBeNull();
     expect(s.lookup(null)).toBeNull();
+
+    // Full sessions (password sign-in path) carry operator authority.
+    const fullToken = s.mint(new Set(), { full: true });
+    expect(s.lookup(fullToken)!.full).toBe(true);
   });
 });
 
@@ -331,6 +336,26 @@ describe('WebUiModule observer flow (e2e)', () => {
 
     ws.close();
   }, 15_000);
+
+  test('password sign-in mints a full-session cookie the WS upgrade honors', async () => {
+    // /auth/basic with valid credentials → 302 + full-session cookie.
+    const res = await fetch(`${base()}/auth/basic`, { headers: { authorization: BASIC }, redirect: 'manual' });
+    expect(res.status).toBe(302);
+    const m = /fkm_obs=([a-f0-9]{64})/.exec(res.headers.get('set-cookie') ?? '');
+    expect(m).not.toBeNull();
+
+    // A WS upgrade carrying ONLY the cookie (no Authorization — the Chrome
+    // situation) must be treated as a FULL client: no observer-auth-required
+    // demand. (Full clients are parked silently in this app-less harness;
+    // the observer path would send auth-required immediately.)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { cookie: `fkm_obs=${m![1]}` } } as never);
+    const firstFrame = await Promise.race([
+      new Promise<string>((r) => ws.addEventListener('message', (ev) => r(String((ev as MessageEvent).data)))),
+      new Promise<string>((r) => setTimeout(() => r('SILENCE'), 1500)),
+    ]);
+    ws.close();
+    expect(firstFrame).toBe('SILENCE'); // not observer-auth-required
+  }, 10_000);
 
   test('wrong key: hello rejected and socket closed', async () => {
     const stranger = makeKeypair();

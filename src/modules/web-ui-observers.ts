@@ -210,23 +210,36 @@ export class ObserverRegistry {
 
 const SESSION_TTL_MS = 12 * 60 * 60_000;
 
-export class ObserverSessions {
-  private sessions = new Map<string, { scopes: Set<ObserverScope>; expiresAt: number }>();
+export interface ObserverSession {
+  scopes: Set<ObserverScope>;
+  /**
+   * Full sessions carry OPERATOR authority (equivalent to basic auth): the
+   * WS upgrade treats the connection as a full client, not a read-only
+   * observer. Minted only by /auth/basic after a successful password
+   * challenge. Exists because browsers reliably attach cookies to WebSocket
+   * upgrades but (Chrome, notably) do NOT attach cached basic-auth
+   * credentials — without this, password sign-in loops back to the gate.
+   */
+  full: boolean;
+}
 
-  mint(scopes: Set<ObserverScope>): string {
-    // Opportunistic sweep — the map stays tiny (one entry per WS auth).
+export class ObserverSessions {
+  private sessions = new Map<string, ObserverSession & { expiresAt: number }>();
+
+  mint(scopes: Set<ObserverScope>, opts?: { full?: boolean }): string {
+    // Opportunistic sweep — the map stays tiny (one entry per auth event).
     const now = Date.now();
     for (const [t, s] of this.sessions) if (s.expiresAt < now) this.sessions.delete(t);
     const token = randomBytes(32).toString('hex');
-    this.sessions.set(token, { scopes, expiresAt: now + SESSION_TTL_MS });
+    this.sessions.set(token, { scopes, full: opts?.full ?? false, expiresAt: now + SESSION_TTL_MS });
     return token;
   }
 
-  lookup(token: string | null | undefined): Set<ObserverScope> | null {
+  lookup(token: string | null | undefined): ObserverSession | null {
     if (!token) return null;
     const s = this.sessions.get(token);
     if (!s || s.expiresAt < Date.now()) return null;
-    return s.scopes;
+    return { scopes: s.scopes, full: s.full };
   }
 }
 
