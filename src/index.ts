@@ -56,6 +56,7 @@ import {
   parseRecipeArg,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
+import { buildFrameworkAgentConfig } from './framework-agent-config.js';
 
 export type { AppContext };
 
@@ -465,42 +466,13 @@ async function createFramework(
     : strategyType === 'frontdesk'
       ? new FrontdeskStrategy(autobiographicalOpts)
       : new AutobiographicalStrategy(autobiographicalOpts);
+  const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   // -- Create framework --
   const framework = await AgentFramework.create({
     storePath,
     membrane,
-    agents: [
-      {
-        name: agentName,
-        model,
-        systemPrompt: recipe.agent.systemPrompt,
-        maxTokens: recipe.agent.maxTokens ?? 16384,
-        maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
-        contextBudgetTokens: recipe.agent.contextBudgetTokens,
-        ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
-        ...(recipe.agent.provider === 'openai-responses' && {
-          providerParams: {
-            reasoning: {
-              effort: recipe.agent.responses?.reasoningEffort ?? 'high',
-              context: recipe.agent.responses?.reasoningContext ?? 'all_turns',
-            },
-            ...(recipe.agent.responses?.serviceTier ? {
-              service_tier: recipe.agent.responses.serviceTier,
-            } : {}),
-            ...(recipe.agent.responses?.compactThreshold ? {
-              context_management: [{
-                type: 'compaction',
-                compact_threshold: recipe.agent.responses.compactThreshold,
-              }],
-            } : {}),
-          },
-        }),
-        strategy,
-        ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
-        ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
-      },
-    ],
+    agents: [agentConfig],
     modules: moduleInstances,
     mcplServers: finalServers,
     gate: gateOptions,
