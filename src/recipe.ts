@@ -122,7 +122,6 @@ export interface RecipeAgent {
     reasoningContext?: 'current_turn' | 'all_turns';
     serviceTier?: string;
     compactThreshold?: number;
-    serviceTier?: string;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
