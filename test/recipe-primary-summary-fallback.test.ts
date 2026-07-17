@@ -14,6 +14,11 @@ function recipe(primarySummaryFallback?: Record<string, unknown>) {
 }
 
 describe('recipe primary summary fallback validation', () => {
+  test('leaves the fallback disabled by default when omitted', () => {
+    const parsed = validateRecipe(recipe());
+    expect(parsed.agent.refusalHandling?.primarySummaryFallback).toBeUndefined();
+  });
+
   test('preserves valid fallback settings', () => {
     const parsed = validateRecipe(recipe({
       enabled: true,
