@@ -126,6 +126,11 @@ export interface RecipeAgent {
     autoRewind?: boolean;
     maxRewinds?: number;
     announceHumanTurns?: boolean;
+    primarySummaryFallback?: {
+      enabled?: boolean;
+      maxNewSummaries?: number;
+      requestBudgetTokens?: number;
+    };
   };
 }
 
@@ -795,6 +800,33 @@ export function validateRecipe(raw: unknown): Recipe {
       )
     ) {
       throw new Error('Recipe agent.strategy.compressionContextBudgetTokens must be a positive safe integer.');
+    }
+  }
+
+  if (agent.refusalHandling?.primarySummaryFallback) {
+    const fallback = agent.refusalHandling.primarySummaryFallback as Record<string, unknown>;
+    if (fallback.enabled !== undefined && typeof fallback.enabled !== 'boolean') {
+      throw new Error('Recipe agent.refusalHandling.primarySummaryFallback.enabled must be a boolean.');
+    }
+    if (
+      fallback.maxNewSummaries !== undefined &&
+      (
+        typeof fallback.maxNewSummaries !== 'number' ||
+        !Number.isSafeInteger(fallback.maxNewSummaries) ||
+        fallback.maxNewSummaries < 0
+      )
+    ) {
+      throw new Error('Recipe agent.refusalHandling.primarySummaryFallback.maxNewSummaries must be a non-negative safe integer.');
+    }
+    if (
+      fallback.requestBudgetTokens !== undefined &&
+      (
+        typeof fallback.requestBudgetTokens !== 'number' ||
+        !Number.isSafeInteger(fallback.requestBudgetTokens) ||
+        fallback.requestBudgetTokens <= 0
+      )
+    ) {
+      throw new Error('Recipe agent.refusalHandling.primarySummaryFallback.requestBudgetTokens must be a positive safe integer.');
     }
   }
 
