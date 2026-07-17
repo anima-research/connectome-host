@@ -123,15 +123,15 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
     if (ts) parts.push(ts);
 
     if (meta.messageId !== undefined && meta.messageId !== null && meta.messageId !== '') {
-      const mid = String(meta.messageId);
-      const short = mid.length > 12 ? mid.slice(0, 12) : mid;
-      parts.push(`msg ${short}`);
+      // Render the FULL id — truncating (an old token-saving trim) corrupts
+      // Discord snowflakes, so every reply_message/fetch_around/add_reaction
+      // call the agent copies from its own context 404s with Unknown message.
+      parts.push(`msg ${String(meta.messageId)}`);
     }
 
     const threadId = meta.threadId !== undefined && meta.threadId !== null ? String(meta.threadId) : '';
     if (threadId && threadId !== topic) {
-      const short = threadId.length > 12 ? threadId.slice(0, 12) : threadId;
-      parts.push(`thread ${short}`);
+      parts.push(`thread ${threadId}`);
     }
 
     if (parts.length === 0) return null;
