@@ -5,9 +5,9 @@
     "": {
       "name": "connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.6.5",
+        "@animalabs/agent-framework": "^0.6.7",
         "@animalabs/chronicle": "^0.2.0",
-        "@animalabs/context-manager": "^0.5.9",
+        "@animalabs/context-manager": "^0.5.12",
         "@animalabs/membrane": "^0.5.71",
         "@opentui/core": "^0.1.82",
       },
@@ -19,11 +19,11 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.6.5", "", { "dependencies": { "@animalabs/chronicle": "^0.2.2", "@animalabs/context-manager": "^0.5.5", "@animalabs/membrane": "^0.5.64", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js" } }, "sha512-p0MI4vVwXZwBK6DLBktrFmgOnrjh8gxXY4QTqeNrrc4Ha8m7HfELs0ge6X57wuTevQH9i+98jllWNkEurZWhLw=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.6.7", "", { "dependencies": { "@animalabs/chronicle": "^0.2.2", "@animalabs/context-manager": "^0.5.12", "@animalabs/membrane": "^0.5.73", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-I6hOhmF75AQDeyd2r0JFaR2QHyEAXiVQlr5MgsriUTcFJbtZM7n+yd4aiWbqeXGDeEHjbEpkiifn7vMeOfIeog=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.2.1", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.1", "@animalabs/chronicle-darwin-x64": "0.2.1", "@animalabs/chronicle-linux-arm64-gnu": "0.2.1", "@animalabs/chronicle-linux-x64-gnu": "0.2.1", "@animalabs/chronicle-win32-x64-msvc": "0.2.1" } }, "sha512-rDFc069yfi7BQUusgsXBwBdqljUWLByXSYaTF40AP+tonBh0No3eF9VzKTSy1I8DYg/jAUHIKtVdKDGsVMVubw=="],
 
-    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.10", "", { "dependencies": { "@animalabs/chronicle": "^0.2.6", "@animalabs/membrane": "^0.5.69" } }, "sha512-D2JEleArh+8Jq9SljFJcFJtHlTkn+MByXJjvO0dTfeeAFNmOZz4YXHfO2qZx2KIjSYtypDNKNboyCXEGuRCyLw=="],
+    "@animalabs/context-manager": ["@animalabs/context-manager@0.5.12", "", { "dependencies": { "@animalabs/chronicle": "^0.2.6", "@animalabs/membrane": "^0.5.69" } }, "sha512-V/TTnIuvFtVYu+A9UTi7A0Q8gCuMTRUatt27JuC9nSDVIQ5L2sMlnsVGbIS8rqOkB8i9o5+Rq/itH5wZVQgaVA=="],
 
     "@animalabs/membrane": ["@animalabs/membrane@0.5.71", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-Jos4Fh/kIbpOiJ43LKIFpmaCmWIzE6ly1x/4c5iHaMw8n6D8OJ2f4va7xo3vNdvfKWBbln4QghmNg4NWo3oFGA=="],
 
@@ -277,7 +277,11 @@
 
     "@animalabs/agent-framework/@animalabs/chronicle": ["@animalabs/chronicle@0.2.6", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.6", "@animalabs/chronicle-darwin-x64": "0.2.6", "@animalabs/chronicle-linux-arm64-gnu": "0.2.6", "@animalabs/chronicle-linux-x64-gnu": "0.2.6", "@animalabs/chronicle-win32-x64-msvc": "0.2.6" } }, "sha512-+gbt2GR4SP8MnKxeqkJZf6oZn339fLiBtk6GHyBD/gHQ4e4eFqBpTaTd5eKycKBws0xWGcOqyiJFH4IdBkweUA=="],
 
+    "@animalabs/agent-framework/@animalabs/membrane": ["@animalabs/membrane@0.5.73", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-w1rt/JVOD6dWwEO54tfR0yrLzwwD45cpYJ9hWJhHxs8k9FvW1PgIIV1KmNFNbpY8MR9HC5g7Lqgvhzs3pDst+g=="],
+
     "@animalabs/context-manager/@animalabs/chronicle": ["@animalabs/chronicle@0.2.6", "", { "optionalDependencies": { "@animalabs/chronicle-darwin-arm64": "0.2.6", "@animalabs/chronicle-darwin-x64": "0.2.6", "@animalabs/chronicle-linux-arm64-gnu": "0.2.6", "@animalabs/chronicle-linux-x64-gnu": "0.2.6", "@animalabs/chronicle-win32-x64-msvc": "0.2.6" } }, "sha512-+gbt2GR4SP8MnKxeqkJZf6oZn339fLiBtk6GHyBD/gHQ4e4eFqBpTaTd5eKycKBws0xWGcOqyiJFH4IdBkweUA=="],
+
+    "@animalabs/context-manager/@animalabs/membrane": ["@animalabs/membrane@0.5.73", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-w1rt/JVOD6dWwEO54tfR0yrLzwwD45cpYJ9hWJhHxs8k9FvW1PgIIV1KmNFNbpY8MR9HC5g7Lqgvhzs3pDst+g=="],
 
     "@discordjs/rest/@discordjs/collection": ["@discordjs/collection@2.1.1", "", {}, "sha512-LiSusze9Tc7qF03sLCujF5iZp7K+vRNEDBZ86FT9aQAv3vxMLihUvKvpsCWiQ2DJq1tVckopKm1rxomgNUc9hg=="],
 
