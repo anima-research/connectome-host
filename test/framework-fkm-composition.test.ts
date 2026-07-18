@@ -98,11 +98,6 @@ describe('framework FKM composition', () => {
       sameRoundThinkTextPolicy: 'private',
       refusalHandling: {
         autoRewind: true,
-        primarySummaryFallback: {
-          enabled: true,
-          maxNewSummaries: 4,
-          requestBudgetTokens: 216_000,
-        },
       },
       strategy: {
         type: 'autobiographical',
@@ -118,10 +113,8 @@ describe('framework FKM composition', () => {
     expect(reloaded).not.toBeNull();
 
     expect(reloaded!.agent.sameRoundThinkTextPolicy).toBe('private');
-    expect(reloaded!.agent.refusalHandling?.primarySummaryFallback).toEqual({
-      enabled: true,
-      maxNewSummaries: 4,
-      requestBudgetTokens: 216_000,
+    expect(reloaded!.agent.refusalHandling).toEqual({
+      autoRewind: true,
     });
     expect(reloaded!.agent.strategy?.compressionRefusalCurveFallbacks).toBe(2);
     expect(reloaded!.agent.strategy?.compressionContextBudgetTokens).toBe(19_000);
@@ -133,10 +126,8 @@ describe('framework FKM composition', () => {
 
     const agentConfig = buildFrameworkAgentConfig(reloaded!, 'agent', 'model', runtimeStrategy);
     expect(agentConfig.sameRoundThinkTextPolicy).toBe('private');
-    expect(agentConfig.refusalHandling?.primarySummaryFallback).toEqual({
-      enabled: true,
-      maxNewSummaries: 4,
-      requestBudgetTokens: 216_000,
+    expect(agentConfig.refusalHandling).toEqual({
+      autoRewind: true,
     });
     expect((agentConfig.providerParams as Record<string, unknown>).service_tier).toBe('priority');
     expect(Object.keys(agentConfig.providerParams as Record<string, unknown>)
