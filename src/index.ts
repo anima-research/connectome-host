@@ -57,6 +57,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig } from './framework-agent-config.js';
 import { buildFrameworkStrategy } from './framework-strategy.js';
+import { loadExtensions } from './extensions.js';
 
 export type { AppContext };
 
@@ -146,6 +147,11 @@ async function createFramework(
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
   const timeZone = resolveTimeZone(recipe.agent.timezone);
+
+  // Load recipe extensions first — custom strategies must be registered
+  // before buildFrameworkStrategy runs, and custom modules join the module
+  // list below. The loader is a dumb local import; see src/extensions.ts.
+  const extensionRegistry = await loadExtensions(recipe);
 
   // -- Build module list --
   // SettingsModule is constructed in main() (before the adapter, so the
@@ -342,6 +348,16 @@ async function createFramework(
     moduleInstances.push(new ObserversModule({ path: observersPath }));
   }
 
+  // Extension-registered modules. Instantiated last so built-in modules keep
+  // their historical positions; each factory gets the minimal runtime context
+  // plus its declaring extension's config blob.
+  const extensionModules: Module[] = [];
+  for (const entry of extensionRegistry.modules) {
+    const instance = entry.factory({ timeZone, storePath, model, config: entry.config });
+    extensionModules.push(instance);
+    moduleInstances.push(instance);
+  }
+
   // -- Build MCP server list --
   //
   // Recipes are opt-in: a file entry from mcpl-servers.json is loaded only
@@ -401,7 +417,7 @@ async function createFramework(
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
   // -- Build strategy --
-  const strategy = buildFrameworkStrategy(recipe, model, timeZone);
+  const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   // -- Create framework --
@@ -465,6 +481,13 @@ async function createFramework(
 
   if (channelModeModule) {
     channelModeModule.setFramework(framework);
+  }
+
+  // Extension modules get the same duck-typed post-creation hook the
+  // built-ins use: if the instance exposes setFramework, call it.
+  for (const instance of extensionModules) {
+    const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
+    hooked.setFramework?.(framework);
   }
 
   if (mcplAdminModule) {
