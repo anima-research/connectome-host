@@ -280,6 +280,31 @@ export interface BranchChangedMessage {
   branch: { id: string; name: string };
 }
 
+/** One Chronicle branch with its lineage. `parentId`/`branchPoint` are
+ *  undefined for the root branch; together they place the fork in the
+ *  parent's sequence so the SPA can render a lineage tree. */
+export interface BranchRow {
+  id: string;
+  name: string;
+  /** Head sequence number of the branch. */
+  head: number;
+  parentId?: string;
+  /** Sequence in the PARENT at which this branch forked. */
+  branchPoint?: number;
+  /** Epoch millis creation time. */
+  created: number;
+}
+
+/** Full branch listing with lineage — response to `request-branches`, routed
+ *  only to the requesting client. The SPA refreshes it after every
+ *  `branch-changed` while its branch panel is open. */
+export interface BranchesListMessage {
+  type: 'branches-list';
+  branches: BranchRow[];
+  /** id of the branch the agent is currently on. */
+  currentId: string;
+}
+
 /** Sent when the active session changes. Clients should soft-reconnect. */
 export interface SessionChangedMessage {
   type: 'session-changed';
@@ -442,6 +467,7 @@ export type WebUiServerMessage =
   | UsageMessage
   | CallLedgerMessage
   | BranchChangedMessage
+  | BranchesListMessage
   | SessionChangedMessage
   | PeekMessage
   | InboundTriggerMessage
@@ -576,6 +602,13 @@ export interface RequestMcplMessage {
   type: 'request-mcpl';
 }
 
+/** Pull the Chronicle branch listing. Response is a `branches-list` envelope
+ *  routed only to the requesting client. Read-only; switching branches goes
+ *  through the `/checkout` command (full-auth clients only). */
+export interface RequestBranchesMessage {
+  type: 'request-branches';
+}
+
 /** Add or overwrite an MCPL server entry in mcpl-servers.json. Restart is
  *  required for the host to pick up the change; the response is a fresh
  *  `mcpl-list` so the SPA reflects the new state. */
@@ -669,6 +702,7 @@ export type WebUiClientMessage =
   | QuitConfirmMessage
   | RequestLessonsMessage
   | RequestMcplMessage
+  | RequestBranchesMessage
   | McplAddMessage
   | McplRemoveMessage
   | McplSetEnvMessage
@@ -696,6 +730,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'ping':
     case 'interrupt':
     case 'request-mcpl':
+    case 'request-branches':
       return true;
     case 'user-message':
       return typeof v.content === 'string';

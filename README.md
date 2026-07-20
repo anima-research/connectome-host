@@ -1,6 +1,6 @@
 # connectome-host
 
-A general-purpose agent TUI host with recipe-based configuration. Point it at any use case by loading a recipe — a JSON file that defines the system prompt, MCP servers, modules, and agent settings.
+A general-purpose agent host with recipe-based configuration. Point it at any use case by loading a recipe — a JSON file that defines the system prompt, MCP servers, modules, and agent settings. Interact through the web UI (browser operator console), the interactive TUI, or run headless under a fleet parent.
 
 Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/anima-research/agent-framework) + [@animalabs/context-manager](https://github.com/anima-research/context-manager) + [@animalabs/chronicle](https://github.com/anima-research/chronicle) + [@animalabs/membrane](https://github.com/anima-research/membrane).
 
@@ -98,6 +98,7 @@ See [`recipes/SETUP.md`](recipes/SETUP.md) for a detailed setup guide for the kn
 
 ## What it provides
 
+- **Web UI**: browser operator console (`modules.webui`) — live chat with full interiority (thinking, tool calls, streaming), agent/fleet tree, context makeup + compression coverage, call ledger with cache verdicts and billing-grade costs, health/ops alerts, Chronicle branch tree, lessons, MCPL config, workspace files; scoped read-only observer access via device keys
 - **TUI + readline modes**: OpenTUI interactive terminal or `--no-tui` for pipes/CI
 - **Subagent forking**: Spawn/fork parallel agents with fleet tree view (Tab to toggle)
 - **Persistent lessons**: Knowledge store with confidence scores, tags, and semantic retrieval
@@ -130,9 +131,28 @@ npm install
 ```bash
 bun src/index.ts                    # Interactive TUI
 bun src/index.ts --no-tui           # Readline mode
+bun src/index.ts --headless         # Daemon: JSONL IPC over unix socket, no terminal
 echo "Hello" | bun src/index.ts     # Piped mode
 bun --watch src/index.ts            # Dev mode
 ```
+
+## Web UI
+
+Enable with `"modules": { "webui": true }` (or `{ "port": 7340, "host": "0.0.0.0" }`)
+in the recipe. The host serves the SPA and its WebSocket protocol on port 7340;
+non-loopback binds require basic-auth credentials. Build the SPA bundle once with
+`bun run build:web` (also runs on `npm install` via postinstall).
+
+- Chat with full interiority: thinking blocks, tool calls + results, live streaming
+- Sidebar: agent/fleet tree, lessons, MCPL servers, workspace files, context makeup + compression coverage, health (runtime settings, failure streaks, compression quarantine)
+- Header branch chip opens the Chronicle branch lineage tree (checkout from the UI)
+- Ops alerts (compression quarantine, refusal streaks, inference-exhausted) render as persistent banner rows
+- Usage panel: per-agent costs and a billing-grade call ledger with cache verdicts
+- `/curve` — compression-curve visualization; `/healthz` — liveness JSON for doctor/fleet tooling
+- Read-only observer access via Ed25519 device keys with per-grant scopes (see `docs/webui-deployment.md`)
+
+For SPA development: `cd web && bun run dev` proxies the Vite dev server onto a
+locally running host.
 
 ## Slash commands
 
@@ -176,7 +196,7 @@ bun --watch src/index.ts            # Dev mode
 | Up/Down | Navigate tree |
 | Enter/Right | Expand/collapse |
 | Left | Collapse |
-| `p` | Peek at running subagent's stream |
+| `p` | Peek the selected node's live stream — local subagents, fleet children, or a single agent/subagent inside a fleet child |
 | `Delete` | Stop a running subagent |
 
 ## Architecture

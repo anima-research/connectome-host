@@ -326,6 +326,20 @@ describe('WebUiModule observer flow (e2e)', () => {
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
 
+    // Branch listing rides the 'messages' scope, which this grant lacks.
+    ws.send(JSON.stringify({ type: 'request-branches' }));
+    const branchErr = await new Promise<Record<string, unknown>>((resolvePromise, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout waiting for request-branches refusal')), 5000);
+      const check = () => {
+        const f = frames.find((m) => m.type === 'error' && String(m.message).includes('request-branches'));
+        if (f) { clearTimeout(t); resolvePromise(f); return true; }
+        return false;
+      };
+      if (check()) return;
+      ws.addEventListener('message', () => { check(); });
+    });
+    expect(String(branchErr.message)).toContain('forbidden');
+
     // Session cookie: health allowed, debug denied (not in scopes).
     const cookie = `fkm_obs=${ack.sessionToken}`;
     // healthz returns 503 (app not bound in this harness) — auth passed.

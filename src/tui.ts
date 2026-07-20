@@ -66,6 +66,17 @@ interface TokenUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Session cost estimate from the framework's UsageTracker, when priced. */
+  cost?: { total: number; currency: string };
+}
+
+/** One active operator alert from the ops:alert pipeline, keyed
+ *  `${agent}:${kind}` (fleet-child alerts prefix the child name). */
+interface OpsAlertEntry {
+  kind: string;
+  agent: string;
+  message: string;
+  count: number;
 }
 
 interface TuiState {
@@ -84,6 +95,10 @@ interface TuiState {
   peekTarget: string | null;
   /** Name of the child process being peeked at (peek-proc mode). */
   peekProcTarget: string | null;
+  /** When set, peek-proc is filtered to this one agent inside the child —
+   *  the honest per-agent view for agents and sub-subagents living in a
+   *  fleet child. Null = whole-process stream. */
+  peekProcAgent: string | null;
   /** True while we're waiting for the user to resolve a pending /quit with children still running. */
   pendingQuitConfirm: boolean;
 }
@@ -169,8 +184,34 @@ export async function runTui(app: AppContext): Promise<void> {
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     peekTarget: null,
     peekProcTarget: null,
+    peekProcAgent: null,
     pendingQuitConfirm: false,
   };
+
+  /** Active ops alerts (quarantine klaxon, refusal streaks, …), keyed
+   *  `${agent}:${kind}`. Drives the status-bar ⚠ segment; each firing also
+   *  prints a chat line so the alert exists in scrollback. */
+  const opsAlerts = new Map<string, OpsAlertEntry>();
+
+  function handleOpsAlert(kind: string, agent: string, message: string): void {
+    // All-clears travel as a distinct `<kind>-clear` kind (the alarm kind's
+    // ops cooldown must never swallow the stand-down). Remove the base alert
+    // and announce the recovery instead of adding a row.
+    if (kind.endsWith('-clear')) {
+      const baseKey = `${agent}:${kind.slice(0, -'-clear'.length)}`;
+      if (opsAlerts.delete(baseKey)) {
+        addLine(`✓ [${agent}] ${kind}: ${message}`, CYAN);
+        updateStatus();
+      }
+      return;
+    }
+    const key = `${agent}:${kind}`;
+    const existing = opsAlerts.get(key);
+    opsAlerts.set(key, { kind, agent, message, count: (existing?.count ?? 0) + 1 });
+    const times = existing ? ` (×${existing.count + 1})` : '';
+    addLine(`⚠ [${agent}] ${kind}${times}: ${message}`, RED);
+    updateStatus();
+  }
 
   let streaming = false;
   let currentStreamText: TextRenderable | null = null;
@@ -370,7 +411,10 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function updateStatus() {
-    statusLeft.content = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens);
+    statusLeft.content = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens, opsAlerts.size);
+    // An active ops alert repaints the whole left segment — a one-cell glyph
+    // in default gray is exactly the kind of signal that gets scrolled past.
+    statusLeft.fg = opsAlerts.size > 0 ? RED : GRAY;
     statusRight.content = formatTokens(state.tokens, verboseChat) + formatMemStats(getRootCM());
   }
 
@@ -849,9 +893,7 @@ export async function runTui(app: AppContext): Promise<void> {
         const fc = fleetMod?.getChildren().get(node.fleetChildName!);
         hints = fc?.status === 'ready' ? '  ⏎:fold p:peek Del:stop' : '  ⏎:fold';
       } else if (node.kind === 'fleet-child-agent') {
-        // Per-agent peek isn't separately supported yet; peek opens the
-        // owning child process's stream, which still contains this agent's events.
-        hints = '  ⏎:fold p:peek-proc';
+        hints = '  ⏎:fold p:peek';
       } else {
         hints = '  ⏎:fold';
       }
@@ -976,12 +1018,36 @@ export async function runTui(app: AppContext): Promise<void> {
     const name = state.peekProcTarget;
     if (!name || !fleetMod) return;
     const child = fleetMod.getChildren().get(name);
+    const agentFilter = state.peekProcAgent ?? undefined;
+    const key = procLogKey(name, agentFilter);
 
     const lines: FleetLine[] = [];
-    lines.push({ text: `─── Peek proc: ${name} ──────────────── Esc:back ───`, color: GRAY });
+    const title = agentFilter ? `Peek: ${name} › ${agentFilter}` : `Peek proc: ${name}`;
+    lines.push({ text: `─── ${title} ──────────────── Esc:back ───`, color: GRAY });
     lines.push({ text: '', color: GRAY });
 
-    if (child) {
+    if (child && agentFilter) {
+      // Per-agent header: the reducer node carries the honest phase/tokens/
+      // task for this one agent inside the child.
+      const rn = treeAggregator?.getChildNodes(name).find(n => n.name === agentFilter);
+      if (rn) {
+        const elapsed = rn.startedAt ? Math.floor(((rn.completedAt ?? Date.now()) - rn.startedAt) / 1000) : 0;
+        const phaseColor = rn.status === 'failed' ? RED
+          : rn.phase === 'idle' || rn.phase === 'done' || rn.phase === 'cancelled' ? DIM_GRAY
+          : PHASE_COLOR[rn.phase as SubagentPhase] ?? CYAN;
+        const ctx = rn.tokens.input > 0 ? `  ${fmtK(rn.tokens.input)}ctx` : '';
+        lines.push({ text: `  ${rn.phase}  ${elapsed}s  ${rn.toolCallsCount} tool calls${ctx}`, color: phaseColor });
+        if (rn.task) {
+          const task = rn.task.length > 70 ? rn.task.slice(0, 67) + '...' : rn.task;
+          lines.push({ text: `  task: ${task}`, color: GRAY });
+        }
+        if (rn.parent) {
+          lines.push({ text: `  parent: ${rn.parent} (in ${name})`, color: DIM_GRAY });
+        }
+      } else {
+        lines.push({ text: `  (agent not currently tracked in ${name} — events stream as they arrive)`, color: DIM_GRAY });
+      }
+    } else if (child) {
       const elapsed = Math.floor((Date.now() - child.startedAt) / 1000);
       const min = Math.floor(elapsed / 60);
       const sec = elapsed % 60;
@@ -1002,7 +1068,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     lines.push({ text: '', color: GRAY });
 
-    const log = procPeekLogs.get(name);
+    const log = procPeekLogs.get(key);
     if (log && log.length > 0) {
       const maxLines = Math.max(10, renderer.terminalHeight - 10);
       const tail = log.slice(-maxLines);
@@ -1013,11 +1079,13 @@ export async function runTui(app: AppContext): Promise<void> {
         lines.push({ text: `  ${entry.text}`, color: entry.color });
       }
     } else {
-      lines.push({ text: '  (no events yet — child may be idle)', color: DIM_GRAY });
+      lines.push({ text: agentFilter
+        ? '  (no events from this agent yet)'
+        : '  (no events yet — child may be idle)', color: DIM_GRAY });
     }
 
     // In-progress token line (not yet flushed to log) — shows live streaming output.
-    const pending = procPeekTokenLine.get(name);
+    const pending = procPeekTokenLine.get(key);
     if (pending) {
       lines.push({ text: `  ${pending}`, color: WHITE });
     }
@@ -1032,19 +1100,32 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
-  function enterPeekProc(name: string): void {
+  /**
+   * Peek a fleet child's live event stream. With `agentFilter` set, the view
+   * narrows to that one agent inside the child — the honest per-agent peek
+   * for fleet-child agents and their subagents (sub-subagents from the
+   * parent's point of view). Events on the fleet IPC carry `agentName`
+   * verbatim from the child's framework traces, so the filter sees exactly
+   * what a local peek of that agent would.
+   */
+  function enterPeekProc(name: string, agentFilter?: string): void {
     if (!fleetMod) return;
     const child = fleetMod.getChildren().get(name);
     if (!child) return;
 
     state.peekProcTarget = name;
+    state.peekProcAgent = agentFilter ?? null;
+    const key = procLogKey(name, agentFilter);
+    const matches = (evt: WireEvent): boolean =>
+      !agentFilter || (evt as { agentName?: string }).agentName === agentFilter;
 
     // Seed the log from the child's existing event buffer so the user
     // doesn't have to wait for the next event to see history.
-    if (!procPeekLogs.has(name)) procPeekLogs.set(name, []);
-    const log = procPeekLogs.get(name)!;
+    if (!procPeekLogs.has(key)) procPeekLogs.set(key, []);
+    const log = procPeekLogs.get(key)!;
     if (log.length === 0) {
       for (const evt of child.events) {
+        if (!matches(evt)) continue;
         const formatted = formatWireEvent(evt);
         if (formatted) log.push(formatted);
       }
@@ -1055,39 +1136,39 @@ export async function runTui(app: AppContext): Promise<void> {
     // than one log entry per token.
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
     procPeekUnsub = fleetMod.onChildEvent(name, (_childName, evt) => {
+      if (!matches(evt)) return;
       const type = typeof evt.type === 'string' ? evt.type : '';
+      const active = state.viewMode === 'peek-proc'
+        && state.peekProcTarget === name
+        && state.peekProcAgent === (agentFilter ?? null);
 
       if (type === 'inference:tokens') {
         const content = (evt as { content?: string }).content ?? '';
         if (!content) return;
-        const prev = procPeekTokenLine.get(name) ?? '';
+        const prev = procPeekTokenLine.get(key) ?? '';
         const merged = prev + content;
         const parts = merged.split('\n');
         // Flush completed lines (everything except the last segment).
         for (let i = 0; i < parts.length - 1; i++) {
-          if (parts[i]!.trim()) appendProcPeekLog(name, parts[i]!, WHITE);
+          if (parts[i]!.trim()) appendProcPeekLog(key, parts[i]!, WHITE);
         }
-        procPeekTokenLine.set(name, parts[parts.length - 1]!);
-        if (state.viewMode === 'peek-proc' && state.peekProcTarget === name) {
-          updatePeekProcView();
-        }
+        procPeekTokenLine.set(key, parts[parts.length - 1]!);
+        if (active) updatePeekProcView();
         return;
       }
 
       // Non-token event: flush any pending token line first so its text
       // doesn't get visually chopped by subsequent log entries.
-      const pending = procPeekTokenLine.get(name);
+      const pending = procPeekTokenLine.get(key);
       if (pending?.trim()) {
-        appendProcPeekLog(name, pending, WHITE);
+        appendProcPeekLog(key, pending, WHITE);
       }
-      procPeekTokenLine.delete(name);
+      procPeekTokenLine.delete(key);
 
       const formatted = formatWireEvent(evt);
       if (!formatted) return;
-      appendProcPeekLog(name, formatted.text, formatted.color);
-      if (state.viewMode === 'peek-proc' && state.peekProcTarget === name) {
-        updatePeekProcView();
-      }
+      appendProcPeekLog(key, formatted.text, formatted.color);
+      if (active) updatePeekProcView();
     });
 
     switchView('peek-proc');
@@ -1098,13 +1179,15 @@ export async function runTui(app: AppContext): Promise<void> {
     // Flush any in-progress token line into the log before clearing it so
     // re-entering peek-proc doesn't lose the last few tokens mid-stream.
     if (state.peekProcTarget) {
-      const pending = procPeekTokenLine.get(state.peekProcTarget);
+      const key = procLogKey(state.peekProcTarget, state.peekProcAgent ?? undefined);
+      const pending = procPeekTokenLine.get(key);
       if (pending?.trim()) {
-        appendProcPeekLog(state.peekProcTarget, pending, WHITE);
+        appendProcPeekLog(key, pending, WHITE);
       }
-      procPeekTokenLine.delete(state.peekProcTarget);
+      procPeekTokenLine.delete(key);
     }
     state.peekProcTarget = null;
+    state.peekProcAgent = null;
   }
 
   // ── Peek view ────────────────────────────────────────────────────────
@@ -1353,7 +1436,17 @@ export async function runTui(app: AppContext): Promise<void> {
         state.tokens.output = totals.outputTokens;
         state.tokens.cacheRead = totals.cacheReadTokens;
         state.tokens.cacheWrite = totals.cacheCreationTokens;
+        if (totals.estimatedCost) state.tokens.cost = totals.estimatedCost;
         updateStatus();
+        break;
+      }
+
+      case 'ops:alert': {
+        handleOpsAlert(
+          typeof event.kind === 'string' ? event.kind : 'unknown',
+          typeof event.agentName === 'string' ? event.agentName : '?',
+          typeof event.message === 'string' ? event.message : '',
+        );
         break;
       }
 
@@ -1529,8 +1622,33 @@ export async function runTui(app: AppContext): Promise<void> {
     });
   }
 
+  // Fleet-child ops alerts: a quarantine klaxon or refusal streak inside a
+  // child process must be as loud here as a local one — the operator is
+  // looking at THIS terminal, not the child's log. Default subscription is
+  // '*' so ops:alert events flow over the IPC with agentName intact.
+  // Re-bound on session switch alongside fleetMod itself.
+  let fleetOpsUnsub: (() => void) | null = null;
+  function subscribeFleetOps(): void {
+    fleetOpsUnsub?.();
+    fleetOpsUnsub = fleetMod?.onChildEvent('*', (childName, evt) => {
+      if (evt.type !== 'ops:alert') return;
+      const e = evt as Record<string, unknown>;
+      handleOpsAlert(
+        typeof e.kind === 'string' ? e.kind : 'unknown',
+        `${childName}/${typeof e.agentName === 'string' ? e.agentName : '?'}`,
+        typeof e.message === 'string' ? e.message : '',
+      );
+    }) ?? null;
+  }
+  subscribeFleetOps();
+
   // Per-child event log (analogue of peekLogs but for child processes).
+  // Keys come from procLogKey: bare child name for the whole-process stream,
+  // `child#agent` for an agent-filtered stream — the two never mix.
   const procPeekLogs = new Map<string, FleetLine[]>();
+  function procLogKey(child: string, agentFilter?: string): string {
+    return agentFilter ? `${child}#${agentFilter}` : child;
+  }
   // In-progress token line buffer per child (flushed to log on newline / next event).
   const procPeekTokenLine = new Map<string, string>();
   let procPeekUnsub: (() => void) | null = null;
@@ -1847,12 +1965,11 @@ export async function runTui(app: AppContext): Promise<void> {
           // Dispatch by node kind, not string-prefix surgery on the ID.
           if (node.kind === 'fleet-child') {
             enterPeekProc(node.fleetChildName!);
-            switchView('peek-proc');
           } else if (node.kind === 'fleet-child-agent') {
-            // Per-agent peek isn't separately supported yet; peek the
-            // owning process — its event stream still includes this agent.
-            enterPeekProc(node.fleetChildName!);
-            switchView('peek-proc');
+            // Honest per-agent peek: the child's event stream filtered to
+            // this one agent (works for the child's root agent and for its
+            // subagents — sub-subagents from where we stand).
+            enterPeekProc(node.fleetChildName!, node.fullName);
           } else {
             // node.kind === 'subagent' — local in-process peek.
             enterPeek(nodeId!);
@@ -1985,12 +2102,18 @@ export async function runTui(app: AppContext): Promise<void> {
           // Rebind to new framework
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
+          subscribeFleetOps();
           app.framework.onTrace(onTrace as (e: unknown) => void);
 
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
           addLine(`Session: ${session?.name ?? 'unknown'}`, GRAY);
           state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          // Alerts describe the OLD session's strategy/agents; the new
+          // session's own klaxons re-fire within their alarm interval if the
+          // condition still holds there. A stale alert with no reachable
+          // all-clear would otherwise pin the status bar red forever.
+          opsAlerts.clear();
           updateStatus();
         }).catch(err => {
           addLine(`Session switch failed: ${err}`, RED);
@@ -2061,6 +2184,7 @@ export async function runTui(app: AppContext): Promise<void> {
   function cleanup() {
     cleanupPeek();
     cleanupPeekProc();
+    fleetOpsUnsub?.();
     treeAggregator?.dispose();
     for (const unsub of subagentStreamUnsubs) unsub();
     clearInterval(pollTimer);
@@ -2090,9 +2214,11 @@ function formatStatusLeft(
   state: TuiState,
   spinnerChar?: string,
   outputTokens?: number,
+  alertCount = 0,
 ): string {
   const sColor = state.status === 'idle' ? '✓' : state.status === 'error' ? '✗' : state.status === 'background' ? '↓' : state.status === 'queued' ? '⏳' : '…';
   let bar = `[${sColor} ${state.status}`;
+  if (alertCount > 0) bar += ` | ⚠ ${alertCount} alert${alertCount === 1 ? '' : 's'}`;
   if (spinnerChar !== undefined && state.status !== 'idle' && state.status !== 'error' && state.status !== 'background') {
     bar += ` ${spinnerChar}`;
     if (state.status === 'thinking' && outputTokens !== undefined && outputTokens > 0) {
@@ -2108,7 +2234,9 @@ function formatStatusLeft(
   if (state.viewMode === 'fleet' || state.viewMode === 'peek') {
     bar += state.viewMode === 'peek' ? ` | peek: ${state.peekTarget}` : ' | fleet view';
   } else if (state.viewMode === 'peek-proc') {
-    bar += ` | peek-proc: ${state.peekProcTarget}`;
+    bar += state.peekProcAgent
+      ? ` | peek: ${state.peekProcTarget}›${state.peekProcAgent}`
+      : ` | peek-proc: ${state.peekProcTarget}`;
   } else if (state.viewMode === 'chat') {
     if (state.status === 'background') bar += ' Esc:stop';
     else if (state.status !== 'idle' && state.status !== 'error') bar += ' Ctrl+B:bg Esc:stop';
@@ -2126,6 +2254,9 @@ function formatTokens(tokens: TokenUsage, verbose: boolean): string {
     let s = `${fmtTokens(tokens.input)}in ${fmtTokens(tokens.output)}out`;
     if (tokens.cacheRead > 0) s += ` ${fmtTokens(tokens.cacheRead)}hit`;
     if (tokens.cacheWrite > 0) s += ` ${fmtTokens(tokens.cacheWrite)}write`;
+    if (tokens.cost && tokens.cost.total > 0) {
+      s += ` $${tokens.cost.total.toFixed(tokens.cost.total < 1 ? 3 : 2)}`;
+    }
     parts.push(s);
   }
 

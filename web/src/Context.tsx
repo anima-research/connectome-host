@@ -150,15 +150,26 @@ export function ContextPanel(props: { agent?: string }) {
     <div class="p-2 text-[11px] font-mono text-neutral-300 space-y-3">
       <div class="flex items-center justify-between">
         <span class="text-neutral-400">Context makeup{data()?.agent ? ` · ${data()!.agent}` : ''}</span>
-        <button
-          type="button"
-          class="px-2 py-0.5 text-neutral-400 hover:text-neutral-100 border border-neutral-700 rounded"
-          onClick={refreshAll}
-          disabled={loading() || coverageLoading()}
-          title="Refresh context diagnostics"
-        >
-          {loading() || coverageLoading() ? '…' : 'refresh'}
-        </button>
+        <div class="flex items-center gap-2">
+          <a
+            class="text-cyan-500 hover:text-cyan-300"
+            href="/curve"
+            target="_blank"
+            rel="noreferrer"
+            title="Compression curve — raw vs rendered tokens per compiled entry"
+          >
+            curve ↗
+          </a>
+          <button
+            type="button"
+            class="px-2 py-0.5 text-neutral-400 hover:text-neutral-100 border border-neutral-700 rounded"
+            onClick={refreshAll}
+            disabled={loading() || coverageLoading()}
+            title="Refresh context diagnostics"
+          >
+            {loading() || coverageLoading() ? '…' : 'refresh'}
+          </button>
+        </div>
       </div>
 
       <Show when={err()}>
@@ -258,10 +269,7 @@ export function ContextPanel(props: { agent?: string }) {
             </Show>
           </div>
 
-          <div class="flex items-center justify-between gap-2 text-neutral-600">
-            <span class="min-w-0 truncate" title={coverage()!.branch}>{coverage()!.branch}</span>
-            <a class="shrink-0 text-cyan-500 hover:text-cyan-300" href="/curve" target="_blank" rel="noreferrer">curve ↗</a>
-          </div>
+          <div class="text-neutral-600 min-w-0 truncate" title={coverage()!.branch}>{coverage()!.branch}</div>
         </section>
       </Show>
 
