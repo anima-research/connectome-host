@@ -1,14 +1,32 @@
 import { describe, test, expect } from 'bun:test';
 import { AutobiographicalStrategy } from '@animalabs/agent-framework';
+import { ContextManager } from '@animalabs/context-manager';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+async function initializedStrategy() {
+  const root = mkdtempSync(join(tmpdir(), 'autobio-progress-'));
+  const path = join(root, 'store');
+  const strategy = new AutobiographicalStrategy({
+    compressionModel: 'claude-sonnet-4-5-20250929',
+    autoTickOnNewMessage: false,
+  });
+  const cm = await ContextManager.open({ path, strategy });
+  return {
+    strategy,
+    close: () => {
+      cm.close();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
 
 // Guards against silent breakage if upstream renames the protected fields
 // that getProgressSnapshot reads. The shape is what warmup-session.ts relies on.
 describe('AutobiographicalStrategy.getProgressSnapshot', () => {
-  test('returns the expected shape on a fresh strategy', () => {
-    const strategy = new AutobiographicalStrategy({
-      compressionModel: 'claude-sonnet-4-5-20250929',
-      autoTickOnNewMessage: false,
-    });
+  test('returns the expected shape after branch state is initialized', async () => {
+    const { strategy, close } = await initializedStrategy();
     const snapshot = strategy.getProgressSnapshot();
     expect(snapshot).toEqual({
       totalChunks: 0,
@@ -18,16 +36,12 @@ describe('AutobiographicalStrategy.getProgressSnapshot', () => {
       summaryCounts: { l1: 0, l2: 0, l3: 0 },
       pending: false,
     });
+    close();
   });
 
-  test('exposes the keys warmup-session.ts depends on', () => {
-    const strategy = new AutobiographicalStrategy({
-      compressionModel: 'claude-sonnet-4-5-20250929',
-      autoTickOnNewMessage: false,
-    });
+  test('exposes the keys warmup-session.ts depends on', async () => {
+    const { strategy, close } = await initializedStrategy();
     const s = strategy.getProgressSnapshot();
-    // Property access — if any rename happens upstream these become undefined
-    // and the test fails loudly.
     expect(typeof s.totalChunks).toBe('number');
     expect(typeof s.chunksCompressed).toBe('number');
     expect(typeof s.l1QueueLength).toBe('number');
@@ -36,5 +50,6 @@ describe('AutobiographicalStrategy.getProgressSnapshot', () => {
     expect(typeof s.summaryCounts.l1).toBe('number');
     expect(typeof s.summaryCounts.l2).toBe('number');
     expect(typeof s.summaryCounts.l3).toBe('number');
+    close();
   });
 });

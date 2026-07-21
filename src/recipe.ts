@@ -19,7 +19,11 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 // ---------------------------------------------------------------------------
 
 export interface RecipeStrategy {
-  type: 'autobiographical' | 'passthrough' | 'frontdesk';
+  /** Built-in strategy name, or a custom type registered by a
+   *  `kind: "strategy"` extension (see `Recipe.extensions`). The
+   *  `string & {}` arm keeps literal autocompletion while admitting
+   *  extension-registered names. */
+  type: 'autobiographical' | 'passthrough' | 'frontdesk' | (string & {});
   // Core window/compression sizing
   headWindowTokens?: number;
   recentWindowTokens?: number;
@@ -35,6 +39,13 @@ export interface RecipeStrategy {
   // for what the recipe loader accepts under `agent.strategy`.
   enforceBudget?: boolean;
   maxSpeculativeL1s?: number;
+  /** Number of coverage-equivalent recall curves to try after the canonical
+   * autobiographical compression request is explicitly refused. Zero disables
+   * fallback while retaining the canonical attempt. */
+  compressionRefusalCurveFallbacks?: number;
+  /** Complete provider-request admission ceiling for compression fallbacks,
+   * including the output reserve. */
+  compressionContextBudgetTokens?: number;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
@@ -75,6 +86,10 @@ export interface RecipeStrategy {
 export interface RecipeAgent {
   name?: string;
   model?: string;
+  /** IANA zone used when rendering wall-clock times to the agent. */
+  timezone?: string;
+  /** Provider transport. Omitted preserves the historical Anthropic default. */
+  provider?: 'anthropic' | 'openai-responses';
   systemPrompt: string;
   maxTokens?: number;
   /**
@@ -86,10 +101,14 @@ export interface RecipeAgent {
   /** Per-agent context compile budget (input tokens). When unset, the
    *  ContextManager default (100k) applies. Raise for large-context models. */
   contextBudgetTokens?: number;
-  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Set '1h' for
-   *  agents whose reply cadence is slower than 5 minutes — avoids re-writing
-   *  the full context to cache after every gap. Unset: provider default (5m). */
+  /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
+   *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads. */
   cacheTtl?: '5m' | '1h';
+  /**
+   * Same-round routing policy for ordinary text emitted beside think().
+   * Omitted preserves the compatibility carry-forward in Agent Framework.
+   */
+  sameRoundThinkTextPolicy?: 'public' | 'private';
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -99,6 +118,14 @@ export interface RecipeAgent {
   thinking?: {
     enabled: boolean;
     budgetTokens?: number;
+  };
+  /** Stateless OpenAI Responses settings. Only used with
+   * `provider: "openai-responses"`. */
+  responses?: {
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    reasoningContext?: 'current_turn' | 'all_turns';
+    serviceTier?: string;
+    compactThreshold?: number;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -144,9 +171,8 @@ export interface RecipeMcpServer {
   /** Ceiling for the exponential reconnect backoff. Default: 5 minutes. */
   reconnectMaxIntervalMs?: number;
   /**
-   * Channel auto-open policy. 'auto' (default) opens everything the server
-   * registers; 'manual' opens nothing (agent calls channel_open as needed);
-   * a string[] is an allow-list of channel ids.
+   * @deprecated One-time migration input for legacy recipes. Runtime channel
+   * desired state is Chronicle-backed and changed with channel_open/close.
    */
   channelSubscription?: 'auto' | 'manual' | string[];
   /**
@@ -481,6 +507,31 @@ export interface RecipeFleetChild {
   autoRestart?: boolean;
 }
 
+/**
+ * A deployment-specific code extension: a local TS/JS module that registers
+ * custom context strategies and/or framework modules at boot. See
+ * src/extensions.ts for the loader and the `register(api, config)` contract.
+ */
+export interface RecipeExtension {
+  /** Primary purpose. Gates validation (a non-built-in `agent.strategy.type`
+   *  requires at least one `kind: "strategy"` extension) and informs build
+   *  tooling; does not restrict what `register` may call. */
+  kind: 'strategy' | 'module';
+  /** Path to the extension entry module. Relative paths resolve against the
+   *  recipe file's directory at load time; URL-loaded recipes must use
+   *  absolute paths (the host never imports code over the network). */
+  path: string;
+  /** Opaque blob passed verbatim to the extension's `register` function and
+   *  to module factory contexts. */
+  config?: Record<string, unknown>;
+  /** Build-tooling acquisition metadata (git url/ref/install pattern) —
+   *  consumed by connectome-cook at build time, ignored at runtime. */
+  source?: Record<string, unknown>;
+  /** Build-only provenance: `source` demoted by build tooling into the
+   *  shipped recipe. Ignored at runtime. */
+  sourceMeta?: Record<string, unknown>;
+}
+
 export interface Recipe {
   name: string;
   description?: string;
@@ -488,6 +539,8 @@ export interface Recipe {
   agent: RecipeAgent;
   mcpServers?: Record<string, RecipeMcpServer>;
   modules?: RecipeModules;
+  /** Deployment-specific code extensions, keyed by a human-readable name. */
+  extensions?: Record<string, RecipeExtension>;
   sessionNaming?: { examples?: string[] };
 }
 
@@ -500,6 +553,7 @@ export const DEFAULT_RECIPE: Recipe = {
   description: 'General-purpose assistant with tool access',
   agent: {
     name: 'agent',
+    cacheTtl: '1h',
     systemPrompt: [
       'You are a helpful assistant. You have access to tools provided by connected MCP servers.',
       'Use them to help the user with their tasks.',
@@ -616,6 +670,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
+  resolveExtensionPaths(recipe, sourceBase);
   return resolveSystemPrompt(recipe);
 }
 
@@ -637,6 +692,25 @@ function resolveChildRecipePaths(recipe: Recipe, base: RecipeSourceBase): void {
   if (!fleet.children) return;
   for (const child of fleet.children) {
     child.recipe = resolveRecipeRelative(child.recipe, base);
+  }
+}
+
+/**
+ * Resolve relative `extensions[].path` values against the recipe file's
+ * directory. URL-loaded recipes cannot carry relative extension paths — the
+ * host never fetches code over the network, so there is nothing local to
+ * resolve them against.
+ */
+function resolveExtensionPaths(recipe: Recipe, base: RecipeSourceBase): void {
+  for (const [name, ext] of Object.entries(recipe.extensions ?? {})) {
+    if (isAbsolute(ext.path)) continue;
+    if (base.kind === 'url') {
+      throw new Error(
+        `extensions.${name}.path "${ext.path}" is relative, but the recipe was loaded from a URL. ` +
+        `Extension code is never fetched remotely — use an absolute path to a local install.`,
+      );
+    }
+    ext.path = resolve(base.dir, ext.path);
   }
 }
 
@@ -678,6 +752,42 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent must have a "systemPrompt" string');
   }
 
+  if (agent.provider !== undefined && agent.provider !== 'anthropic' && agent.provider !== 'openai-responses') {
+    throw new Error(`Recipe agent.provider must be 'anthropic' or 'openai-responses', got ${JSON.stringify(agent.provider)}.`);
+  }
+
+  if (agent.timezone !== undefined) {
+    if (typeof agent.timezone !== 'string' || !agent.timezone.trim()) {
+      throw new Error('Recipe agent.timezone must be a non-empty IANA time zone string.');
+    }
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: agent.timezone }).format(new Date(0));
+    } catch {
+      throw new Error(`Recipe agent.timezone is not a valid IANA time zone: ${JSON.stringify(agent.timezone)}.`);
+    }
+  }
+
+  if (agent.responses !== undefined) {
+    if (!agent.responses || typeof agent.responses !== 'object' || Array.isArray(agent.responses)) {
+      throw new Error('Recipe agent.responses must be an object.');
+    }
+    const responses = agent.responses as Record<string, unknown>;
+    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (responses.reasoningEffort !== undefined && !efforts.includes(String(responses.reasoningEffort))) {
+      throw new Error(`Invalid agent.responses.reasoningEffort ${JSON.stringify(responses.reasoningEffort)}.`);
+    }
+    if (responses.reasoningContext !== undefined && responses.reasoningContext !== 'current_turn' && responses.reasoningContext !== 'all_turns') {
+      throw new Error(`Invalid agent.responses.reasoningContext ${JSON.stringify(responses.reasoningContext)}.`);
+    }
+    if (responses.serviceTier !== undefined && (typeof responses.serviceTier !== 'string' || !responses.serviceTier.trim())) {
+      throw new Error('Recipe agent.responses.serviceTier must be a non-empty string.');
+    }
+    if (responses.compactThreshold !== undefined &&
+        (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
+      throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
+    }
+  }
+
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
   }
@@ -686,6 +796,17 @@ export function validateRecipe(raw: unknown): Recipe {
   // surface as a 400 from Anthropic at the agent's first inference.
   if (agent.cacheTtl !== undefined && agent.cacheTtl !== '5m' && agent.cacheTtl !== '1h') {
     throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
+  }
+  agent.cacheTtl ??= '1h';
+
+  if (
+    agent.sameRoundThinkTextPolicy !== undefined &&
+    agent.sameRoundThinkTextPolicy !== 'public' &&
+    agent.sameRoundThinkTextPolicy !== 'private'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundThinkTextPolicy must be 'public' or 'private', got ${JSON.stringify(agent.sameRoundThinkTextPolicy)}.`,
+    );
   }
 
   // Validate agent.thinking if present. Catches typos and constraint
@@ -712,6 +833,37 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
+  // Validate the extensions block if present (before the strategy check,
+  // which consults it to admit custom strategy types).
+  let hasStrategyExtension = false;
+  if (obj.extensions !== undefined) {
+    if (!obj.extensions || typeof obj.extensions !== 'object' || Array.isArray(obj.extensions)) {
+      throw new Error('Recipe "extensions" must be an object mapping names to extension entries.');
+    }
+    for (const [name, entry] of Object.entries(obj.extensions as Record<string, unknown>)) {
+      if (!name) throw new Error('Recipe extensions keys must be non-empty names.');
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new Error(`extensions.${name} must be an object.`);
+      }
+      const ext = entry as Record<string, unknown>;
+      if (ext.kind !== 'strategy' && ext.kind !== 'module') {
+        throw new Error(`extensions.${name}.kind must be "strategy" or "module", got ${JSON.stringify(ext.kind)}.`);
+      }
+      if (typeof ext.path !== 'string' || !ext.path) {
+        throw new Error(`extensions.${name}.path must be a non-empty string.`);
+      }
+      if (ext.config !== undefined && (!ext.config || typeof ext.config !== 'object' || Array.isArray(ext.config))) {
+        throw new Error(`extensions.${name}.config must be an object.`);
+      }
+      for (const metaKey of ['source', 'sourceMeta'] as const) {
+        if (ext[metaKey] !== undefined && (!ext[metaKey] || typeof ext[metaKey] !== 'object' || Array.isArray(ext[metaKey]))) {
+          throw new Error(`extensions.${name}.${metaKey} must be an object.`);
+        }
+      }
+      if (ext.kind === 'strategy') hasStrategyExtension = true;
+    }
+  }
+
   // Validate strategy type if present
   if (agent.strategy) {
     const strategy = agent.strategy as Record<string, unknown>;
@@ -719,12 +871,40 @@ export function validateRecipe(raw: unknown): Recipe {
       strategy.type &&
       strategy.type !== 'autobiographical' &&
       strategy.type !== 'passthrough' &&
-      strategy.type !== 'frontdesk'
+      strategy.type !== 'frontdesk' &&
+      !hasStrategyExtension
     ) {
       throw new Error(
-        `Invalid strategy type "${strategy.type}". Must be "autobiographical", "passthrough", or "frontdesk".`,
+        `Invalid strategy type "${strategy.type}". Must be "autobiographical", "passthrough", ` +
+        `or "frontdesk" — or a custom type registered by a "kind": "strategy" entry in the ` +
+        `recipe's "extensions" block (none is declared).`,
       );
     }
+    if (
+      strategy.compressionRefusalCurveFallbacks !== undefined
+      && (
+        typeof strategy.compressionRefusalCurveFallbacks !== 'number'
+        || !Number.isSafeInteger(strategy.compressionRefusalCurveFallbacks)
+        || strategy.compressionRefusalCurveFallbacks < 0
+      )
+    ) {
+      throw new Error('Recipe agent.strategy.compressionRefusalCurveFallbacks must be a non-negative safe integer.');
+    }
+    if (
+      strategy.compressionContextBudgetTokens !== undefined
+      && (
+        typeof strategy.compressionContextBudgetTokens !== 'number'
+        || !Number.isSafeInteger(strategy.compressionContextBudgetTokens)
+        || strategy.compressionContextBudgetTokens <= 0
+      )
+    ) {
+      throw new Error('Recipe agent.strategy.compressionContextBudgetTokens must be a positive safe integer.');
+    }
+  }
+
+  const refusalHandling = agent.refusalHandling as Record<string, unknown> | undefined;
+  if (refusalHandling && Object.hasOwn(refusalHandling, 'primarySummaryFallback')) {
+    throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
   }
 
   // Validate mcpServers entries if present

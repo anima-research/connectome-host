@@ -16,9 +16,11 @@
  * fan-out across many VMs are the reverse-proxy's job; an optional Basic-Auth
  * check is available as defense-in-depth.
  *
- * See WEBUI-PLAN.md and src/web/protocol.ts for the wire shape.
+ * See src/web/protocol.ts for the wire shape and docs/webui-deployment.md
+ * for the deployment story.
  */
 
+import { CURVE_PAGE_HTML } from './web-ui-curve-page.js';
 import type {
   AgentFramework,
   Module,
@@ -40,6 +42,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
+import type { CallLedger } from '../call-ledger.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -53,7 +56,9 @@ import {
   type WelcomeMessageEntry,
   type RequestHistoryMessage,
   type TokenUsage,
+  type CallLedgerSnapshot,
   type McplListMessage,
+  type BranchesListMessage,
   type LessonsListMessage,
 } from '../web/protocol.js';
 import {
@@ -62,6 +67,16 @@ import {
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
 import { loadRecipe } from '../recipe.js';
+import {
+  ObserverRegistry,
+  ObserverSessions,
+  sessionTokenFromRequest,
+  traceRequiredScope,
+  filterEntryForScopes,
+  scopeWelcome,
+  type ObserverScope,
+  type ObserverHelloIdentity,
+} from './web-ui-observers.js';
 
 /**
  * Minimal slice of AppContext the module needs. Defined locally to avoid
@@ -107,15 +122,46 @@ export interface WebUiModuleConfig {
    * the entire host is firewalled off from browsers.
    */
   allowedOrigins?: string[];
+  /**
+   * Path to the observer grant file (data/observers.json — see connectome
+   * docs/observability.md). When set AND the file holds at least one grant,
+   * key-authenticated observers may connect: static assets are served
+   * without basic auth (the app shell carries no data), /ws upgrades are
+   * accepted unauthenticated and must present a signed observer-hello
+   * before anything is sent, and every frame is filtered by the grant's
+   * scope mask. With no grants the webui behaves exactly as before.
+   */
+  observersPath?: string;
+  /** Content-free recent provider-call ledger for spend/cache diagnostics. */
+  callLedger?: CallLedger;
+}
+
+/** Data stashed on the Bun WS upgrade. */
+interface WsData {
+  id: number;
+  /** True when the upgrade carried valid basic auth (full access). */
+  authed: boolean;
+  /** Host header of the upgrade request — the observer statement binds it. */
+  host: string;
 }
 
 /** Per-connection state. */
 interface ClientState {
   /** Stable id matching ws.data.id; used for routing fleet IPC responses. */
   id: number;
-  ws: ServerWebSocket<{ id: number }>;
+  ws: ServerWebSocket<WsData>;
   /** True after we've sent the welcome message. */
   welcomed: boolean;
+  /**
+   * Authorization state. 'full' = basic-auth (or open loopback) — behavior
+   * identical to pre-observer builds, scopes null. 'pending' = upgraded
+   * without auth, must observer-hello before any data flows. 'observer' =
+   * key-authenticated; `scopes` is the grant's mask.
+   */
+  auth: 'full' | 'pending' | 'observer';
+  scopes: Set<ObserverScope> | null;
+  /** Kills pending connections that never complete the hello. */
+  authTimer?: ReturnType<typeof setTimeout>;
   /** Open peek subscriptions for this client, keyed by scope. Each entry
    *  carries its detacher so unsubscribe and disconnect both clean up
    *  without the framework leaking listeners. */
@@ -130,6 +176,161 @@ const WELCOME_HISTORY_LIMIT = 200;
 /** Default / max page size for request-history. */
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
+
+interface CoverageSummary {
+  id: string;
+  level: number;
+  tokens?: number;
+  sourceIds?: string[];
+  mergedInto?: string;
+}
+
+interface CoverageChunk {
+  index: number;
+  tokens?: number;
+  compressed?: boolean;
+  summaryId?: string;
+  messages?: Array<{ id?: string }>;
+}
+
+interface CoverageStrategy {
+  summaries?: CoverageSummary[];
+  chunks?: CoverageChunk[];
+  compressionQueue?: number[];
+  mergeQueue?: Array<{ level: number; sourceIds: string[] }>;
+  resolutions?: Map<string, number>;
+  pendingCompression?: Promise<void> | null;
+}
+
+export interface ContextCoverageSnapshot {
+  agent: string;
+  branch: string;
+  generatedAt: string;
+  supported: boolean;
+  totals: {
+    chunks: number;
+    compressedChunks: number;
+    coveredMessages: number;
+    coveredTokens: number;
+    summaries: number;
+  };
+  levels: Array<{
+    level: number;
+    summaries: number;
+    frontier: number;
+    tokens: number;
+    coveredChunks: number;
+    coveredMessages: number;
+    coveredTokens: number;
+  }>;
+  chunks: Array<{
+    index: number;
+    messages: number;
+    tokens: number;
+    compressed: boolean;
+    summaryId: string | null;
+    maxLevel: number;
+    selectedMin: number;
+    selectedMax: number;
+    queued: boolean;
+  }>;
+  queue: {
+    inFlight: boolean;
+    pending: string | null;
+    l1: number[];
+    merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
+  };
+}
+
+/** Build a text-free projection of the autobiographical summary pyramid. */
+export function buildContextCoverageSnapshot(
+  agentName: string,
+  cm: {
+    currentBranch: () => { name: string };
+    getStrategy: () => unknown;
+    getPendingWork?: () => { description?: string } | null;
+  },
+): ContextCoverageSnapshot {
+  const strategy = cm.getStrategy() as CoverageStrategy;
+  const summaries = Array.isArray(strategy.summaries) ? strategy.summaries : [];
+  const chunks = Array.isArray(strategy.chunks) ? strategy.chunks : [];
+  const compressionQueue = Array.isArray(strategy.compressionQueue) ? strategy.compressionQueue : [];
+  const mergeQueue = Array.isArray(strategy.mergeQueue) ? strategy.mergeQueue : [];
+  const resolutions = strategy.resolutions instanceof Map ? strategy.resolutions : new Map<string, number>();
+  const summaryById = new Map(summaries.map(summary => [summary.id, summary]));
+  const queuedChunks = new Set(compressionQueue);
+
+  const projectedChunks = chunks.map((chunk) => {
+    let maxLevel = 0;
+    let current = chunk.summaryId ? summaryById.get(chunk.summaryId) : undefined;
+    const seen = new Set<string>();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      maxLevel = Math.max(maxLevel, current.level);
+      current = current.mergedInto ? summaryById.get(current.mergedInto) : undefined;
+    }
+
+    const selected = (chunk.messages ?? [])
+      .map(message => typeof message.id === 'string' ? (resolutions.get(message.id) ?? 0) : 0);
+    return {
+      index: chunk.index,
+      messages: chunk.messages?.length ?? 0,
+      tokens: Math.max(0, chunk.tokens ?? 0),
+      compressed: chunk.compressed === true,
+      summaryId: chunk.summaryId ?? null,
+      maxLevel,
+      selectedMin: selected.length > 0 ? Math.min(...selected) : 0,
+      selectedMax: selected.length > 0 ? Math.max(...selected) : 0,
+      queued: queuedChunks.has(chunk.index),
+    };
+  });
+
+  const levelNumbers = [...new Set(summaries.map(summary => summary.level))]
+    .filter(level => Number.isFinite(level) && level > 0)
+    .sort((a, b) => a - b);
+  const levels = levelNumbers.map((level) => {
+    const atLevel = summaries.filter(summary => summary.level === level);
+    const covered = projectedChunks.filter(chunk => chunk.maxLevel >= level);
+    return {
+      level,
+      summaries: atLevel.length,
+      frontier: atLevel.filter(summary => !summary.mergedInto).length,
+      tokens: atLevel.reduce((total, summary) => total + Math.max(0, summary.tokens ?? 0), 0),
+      coveredChunks: covered.length,
+      coveredMessages: covered.reduce((total, chunk) => total + chunk.messages, 0),
+      coveredTokens: covered.reduce((total, chunk) => total + chunk.tokens, 0),
+    };
+  });
+  const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
+  const pending = cm.getPendingWork?.()?.description ?? null;
+
+  return {
+    agent: agentName,
+    branch: cm.currentBranch().name,
+    generatedAt: new Date().toISOString(),
+    supported: Array.isArray(strategy.summaries) && Array.isArray(strategy.chunks),
+    totals: {
+      chunks: projectedChunks.length,
+      compressedChunks: projectedChunks.filter(chunk => chunk.compressed).length,
+      coveredMessages: covered.reduce((total, chunk) => total + chunk.messages, 0),
+      coveredTokens: covered.reduce((total, chunk) => total + chunk.tokens, 0),
+      summaries: summaries.length,
+    },
+    levels,
+    chunks: projectedChunks,
+    queue: {
+      inFlight: strategy.pendingCompression != null,
+      pending,
+      l1: [...compressionQueue],
+      merges: mergeQueue.map(merge => ({
+        targetLevel: merge.level,
+        sourceCount: merge.sourceIds.length,
+        firstSource: merge.sourceIds[0] ?? null,
+        lastSource: merge.sourceIds[merge.sourceIds.length - 1] ?? null,
+      })),
+    },
+  };
+}
 
 /**
  * Structural view of the windowed-read facade added to
@@ -173,6 +374,10 @@ interface SharedServerState {
   allowedOrigins: string[];
   clients: Map<number, ClientState>;
   nextClientId: number;
+  /** Observer grant registry (hot-reloaded) — null when not configured. */
+  observers: ObserverRegistry | null;
+  /** Short-lived HTTP session tokens minted after observer WS auth. */
+  observerSessions: ObserverSessions;
   /** Aggregate session usage published to clients: parent's own totals plus
    *  the most-recent `usage:updated` totals reported by each fleet child.
    *  Recomputed from `parentUsage` + `childUsage` on every relevant event. */
@@ -190,6 +395,9 @@ interface SharedServerState {
    *  every usage:updated event so the welcome and live UsageMessage frames
    *  carry consistent values. */
   latestPerAgentCost: import('../web/protocol.js').PerAgentCost[];
+  /** Recent per-call cache diagnostics, updated directly by the adapter. */
+  latestCallLedger?: CallLedgerSnapshot;
+  callLedgerDetacher: (() => void) | null;
   /** Currently-bound app, refreshed on every setApp() call. WS handlers read
    *  from here so the singleton always points at the live framework regardless
    *  of which WebUiModule instance is "active". */
@@ -259,10 +467,14 @@ export class WebUiModule implements Module {
       allowedOrigins: this.config.allowedOrigins ?? defaultAllowedOrigins(port),
       clients: new Map(),
       nextClientId: 1,
+      observers: this.config.observersPath ? new ObserverRegistry(this.config.observersPath) : null,
+      observerSessions: new ObserverSessions(),
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       parentUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       childUsage: new Map(),
       latestPerAgentCost: [],
+      latestCallLedger: this.config.callLedger?.snapshot(),
+      callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
       app: null,
@@ -270,14 +482,15 @@ export class WebUiModule implements Module {
       fleetEventDetacher: null,
       messageListenerDetacher: null,
     };
+    state.observers?.start();
     state.server = Bun.serve({
       port,
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
-        open: (ws) => this.onWsOpen(ws as ServerWebSocket<{ id: number }>),
-        message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<{ id: number }>, msg),
-        close: (ws) => this.onWsClose(ws as ServerWebSocket<{ id: number }>),
+        open: (ws) => this.onWsOpen(ws as ServerWebSocket<WsData>),
+        message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<WsData>, msg),
+        close: (ws) => this.onWsClose(ws as ServerWebSocket<WsData>),
       },
     });
     // When port=0 is passed (test setups, ephemeral binds), the OS picks a
@@ -292,6 +505,19 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+
+    // Provider calls include auxiliary compression requests that never emit a
+    // framework usage trace, so subscribe at the adapter ledger itself. This
+    // keeps the panel live for both conversational and memory-maintenance
+    // calls without polling the JSONL log.
+    state.callLedgerDetacher = this.config.callLedger?.onUpdate((ledger) => {
+      state.latestCallLedger = ledger;
+      const msg: WebUiServerMessage = { type: 'call-ledger', ledger };
+      for (const client of state.clients.values()) {
+        if (!client.welcomed) continue;
+        if (client.scopes === null || client.scopes.has('health')) this.send(client, msg);
+      }
+    }) ?? null;
 
     console.log(`[webui] listening on http://${host}:${boundPort}`);
   }
@@ -351,7 +577,10 @@ export class WebUiModule implements Module {
           const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
           const push: WebUiServerMessage = { type: 'message-appended', entry };
           for (const c of ss.clients.values()) {
-            if (c.welcomed) this.send(c, push);
+            if (!c.welcomed) continue;
+            if (c.scopes === null) { this.send(c, push); continue; }
+            const filtered = filterEntryForScopes(entry, c.scopes);
+            if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
           }
         } catch (err) {
           // Never let a viewer-side projection error break the store's
@@ -576,6 +805,17 @@ export class WebUiModule implements Module {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Observer scope filtering — event-family masks (docs/observability.md §4).
+  // Full clients (scopes === null) bypass everything: historical behavior.
+  // Pure projections live in web-ui-observers.ts (unit-tested there).
+  // -------------------------------------------------------------------------
+
+  private clientAllowsTrace(client: ClientState, event: { type: string }): boolean {
+    if (client.scopes === null) return true;
+    return client.scopes.has(traceRequiredScope(event));
+  }
+
   private fanOutTrace(event: TraceEvent): void {
     // Update cached usage snapshot first so welcomes for late-connecting
     // clients get a current value.
@@ -614,8 +854,10 @@ export class WebUiModule implements Module {
       : null;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      this.send(client, traceMsg);
-      if (usageMsg) this.send(client, usageMsg);
+      if (this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
+      if (usageMsg && (client.scopes === null || client.scopes.has('health'))) {
+        this.send(client, usageMsg);
+      }
     }
   }
 
@@ -732,6 +974,10 @@ export class WebUiModule implements Module {
   private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
     const url = new URL(req.url);
 
+    // Observer feature gate: live only when grants exist. With no grants
+    // every path below reduces to the historical basic-auth-only behavior.
+    const observersActive = sharedServer!.observers?.active() ?? false;
+
     // WebSocket upgrade
     if (url.pathname === '/ws') {
       // Origin check FIRST — drive-by CSRF on a localhost-bound WS is the
@@ -739,21 +985,101 @@ export class WebUiModule implements Module {
       // `new WebSocket(...)` the way they do on fetch, so without an
       // explicit check, any tab the operator opens could connect here.
       if (!this.checkOrigin(req)) return new Response('Forbidden', { status: 403 });
-      if (!this.checkAuth(req)) return this.unauthorized();
+      // Full authority = basic auth OR a full session cookie (minted by
+      // /auth/basic). The cookie path exists because browsers reliably send
+      // cookies on WS upgrades but Chrome does NOT send cached basic-auth
+      // credentials — without it, password sign-in bounced back to the
+      // observer gate in a loop.
+      const wsSession = sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+      const basicOk = this.checkAuth(req) || (wsSession?.full ?? false);
+      // Without full auth the upgrade is allowed only when observer grants
+      // exist — and then NOTHING is sent until a signed observer-hello
+      // verifies (in-band auth; see onWsOpen/onWsMessage).
+      if (!basicOk && !observersActive) return this.unauthorized();
       const id = sharedServer!.nextClientId++;
-      const ok = server.upgrade(req, { data: { id } });
+      const ok = server.upgrade(req, {
+        data: { id, authed: basicOk, host: req.headers.get('host') ?? '' } satisfies WsData,
+      });
       if (!ok) return new Response('Upgrade failed', { status: 400 });
       // Bun returns undefined on success; the response is taken over by the upgrade.
       return new Response(null, { status: 101 });
     }
 
-    if (!this.checkAuth(req)) return this.unauthorized();
+    // HTTP auth: basic auth grants everything (historical behavior); an
+    // observer session cookie (minted after WS key auth) grants by scope;
+    // when observers are active the static app shell is public — it carries
+    // no data, and key-only devices must be able to load the SPA to
+    // authenticate at all.
+    const session = sharedServer!.observerSessions.lookup(sessionTokenFromRequest(req));
+    const basicOk = this.checkAuth(req) || (session?.full ?? false);
+    const sessionScopes = basicOk ? null : session?.scopes ?? null;
+    const httpAllowed = (scope: ObserverScope): boolean =>
+      basicOk || (sessionScopes?.has(scope) ?? false);
+    // /auth/basic: deliberate basic-auth challenge point. fetch() never
+    // triggers the browser's native credential prompt, but a top-level
+    // navigation here does — the SPA's "sign in with password" fallback for
+    // devices without an observer grant. On success it mints a FULL session
+    // cookie: the subsequent WS upgrade authenticates via that cookie
+    // (browsers send cookies on upgrades; Chrome does not send cached basic
+    // credentials, which used to loop users back to the gate).
+    if (url.pathname === '/auth/basic') {
+      if (basicOk) {
+        const token = sharedServer!.observerSessions.mint(new Set(), { full: true });
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: '/',
+            'set-cookie': `fkm_obs=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${12 * 3600}`,
+          },
+        });
+      }
+      return this.unauthorized();
+    }
+    const isStatic = !url.pathname.startsWith('/debug/')
+      && url.pathname !== '/curve'
+      && url.pathname !== '/healthz'
+      && !url.pathname.startsWith('/files/');
+    if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
+      return this.unauthorized();
+    }
+
+    // Per-route scope gates for observer sessions (basic auth passes all).
+    if ((url.pathname.startsWith('/debug/') || url.pathname === '/curve') && !httpAllowed('debug')) {
+      return this.unauthorized();
+    }
+    if (url.pathname === '/healthz' && !httpAllowed('health')) {
+      return this.unauthorized();
+    }
+    if (url.pathname.startsWith('/files/') && !basicOk) {
+      // Workspace files stay basic-auth-only: mount contents are outside the
+      // observer scope model (they are the agent's working files, not wire
+      // events). Revisit if a 'files' scope is ever warranted.
+      return this.unauthorized();
+    }
 
     // Debug: the membrane-normalized request that WOULD be emitted if the
     // agent were activated right now — no inference, no state mutation.
     //   GET /debug/context[?agent=<name>][&hooks=false][&pretty=1]
     if (url.pathname === '/debug/context/makeup') {
       return this.handleContextMakeup(url);
+    }
+
+    // Context curve: per-entry provenance of the live compiled window —
+    // cumulative raw-history tokens vs rendered tokens, by fold level.
+    // JSON at /debug/context/curve; the visualization page at /curve.
+    if (url.pathname === '/debug/context/curve') {
+      return this.handleContextCurve(url);
+    }
+    if (url.pathname === '/debug/context/coverage') {
+      return this.handleContextCoverage(url);
+    }
+    if (url.pathname === '/debug/context/maintenance') {
+      return this.handleContextMaintenance();
+    }
+    if (url.pathname === '/curve') {
+      return new Response(CURVE_PAGE_HTML, {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
     }
 
     if (url.pathname === '/debug/context') {
@@ -769,7 +1095,44 @@ export class WebUiModule implements Module {
       if (typeof fw.healthSnapshot !== 'function') {
         return Response.json({ error: 'framework lacks healthSnapshot()' }, { status: 501 });
       }
-      return Response.json(fw.healthSnapshot());
+      const snapshot = fw.healthSnapshot();
+      // Compression quarantine is a guaranteed-eventual-outage state (raw
+      // spans accumulate until the picker cannot fit the window). Surface it
+      // here so the fleet hub and connectome-doctor can alarm on it — it
+      // must never be observable only in agent.log.
+      try {
+        const quarantine: Record<string, unknown> = {};
+        for (const agent of app.framework.getAllAgents()) {
+          const strategy = (agent.getContextManager() as unknown as {
+            getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
+          }).getStrategy?.();
+          const status = strategy?.getCompressionQuarantineStatus?.();
+          if (status) quarantine[(agent as unknown as { name: string }).name] = status;
+        }
+        (snapshot as Record<string, unknown>).compressionQuarantine = quarantine;
+      } catch {
+        // Health reads never throw.
+      }
+      // Per-agent runtime settings (context budget, tail, transition pace +
+      // convergence state) — the same numbers `agent_settings get` returns,
+      // exposed externally so the fleet hub / connectome-doctor can watch
+      // budget convergence without an agent turn.
+      try {
+        const fw2 = app.framework as unknown as {
+          getAgentRuntimeSettings?: (name: string) => unknown;
+        };
+        if (typeof fw2.getAgentRuntimeSettings === 'function') {
+          const settings: Record<string, unknown> = {};
+          for (const agent of app.framework.getAllAgents()) {
+            const name = (agent as unknown as { name: string }).name;
+            settings[name] = fw2.getAgentRuntimeSettings(name);
+          }
+          (snapshot as Record<string, unknown>).runtimeSettings = settings;
+        }
+      } catch {
+        // Health reads never throw.
+      }
+      return Response.json(snapshot);
     }
 
     // Workspace file passthrough: /files/<mount>/<path...>
@@ -783,6 +1146,39 @@ export class WebUiModule implements Module {
     // Static SPA
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     return this.serveStatic(requested);
+  }
+
+  /**
+   * Counts-only state and bounded history for periodic context maintenance.
+   * Authentication is enforced by handleHttp before this method is reached.
+   * The framework snapshot deliberately contains no message or summary text.
+   */
+  private handleContextMaintenance(): Response {
+    const app = sharedServer?.app;
+    if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+    const framework = app.framework as unknown as {
+      getContextMaintenanceSnapshot?: () => Record<string, unknown>;
+    };
+    if (typeof framework.getContextMaintenanceSnapshot !== 'function') {
+      return Response.json(
+        { error: 'framework lacks context-maintenance diagnostics' },
+        { status: 501 },
+      );
+    }
+    return Response.json(framework.getContextMaintenanceSnapshot());
+  }
+
+  /** Summary-tree coverage and queued work, with no message or summary text. */
+  private handleContextCoverage(url: URL): Response {
+    const app = sharedServer?.app;
+    if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return Response.json({ error: `Agent not found: ${agentName}` }, { status: 404 });
+    }
+    const cm = agent.getContextManager();
+    return Response.json(buildContextCoverageSnapshot(agentName, cm));
   }
 
   /**
@@ -831,6 +1227,120 @@ export class WebUiModule implements Module {
         JSON.stringify({ error: message }),
         { status: 500, headers: { 'content-type': 'application/json' } },
       );
+    }
+  }
+
+  /**
+   * Context curve (GET /debug/context/curve[?agent=<name>]): compile the
+   * agent's window and return one record per compiled entry with its
+   * provenance — kind (raw / L1..Ln summary), rendered token estimate, the
+   * raw-history tokens it covers (leaf messages, recursively through the
+   * summary tree), date span, and full text. The /curve page plots the
+   * cumulative raw→rendered curve from this; slope = local compression rate.
+   *
+   * Same side-effect class as previewActivation / makeup: the compile may
+   * commit resolution updates, exactly as the agent's own next turn would.
+   * No inference, no message writes.
+   */
+  private async handleContextCurve(url: URL): Promise<Response> {
+    const app = sharedServer?.app;
+    if (!app) return new Response('Not ready', { status: 503 });
+    const agentName = url.searchParams.get('agent') || app.recipe.agent.name || 'agent';
+    const agent = app.framework.getAgent(agentName);
+    if (!agent) {
+      return new Response(JSON.stringify({ error: `Agent not found: ${agentName}` }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      });
+    }
+    try {
+      const cm = (agent as unknown as { getContextManager: () => any }).getContextManager();
+      const maxTokens = app.recipe.agent.contextBudgetTokens ?? 200_000;
+      const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
+      const compiled = await cm.compile({ maxTokens, reserveForResponse });
+
+      // Curve inspection only needs text and source metadata. Resolving every
+      // historical blob here re-inlines all base64 media and can expand a
+      // few-hundred-MB Chronicle into several GB of JS heap. Use the windowed
+      // reader with blob resolution disabled so production diagnostics stay
+      // bounded by text history rather than the media archive.
+      const messageCount = cm.getMessageCount();
+      const messages: Array<{ id: string; timestamp?: unknown; content?: unknown[] }> =
+        cm.getMessageWindow(0, messageCount, { resolveBlobs: false }).messages;
+      const msgById = new Map(messages.map((mm) => [mm.id, mm]));
+      const estimate = (mm: { content?: unknown[] }): number => {
+        let t = 0;
+        for (const b of (mm.content ?? []) as Array<Record<string, unknown>>) {
+          if (b?.type === 'text') t += Math.ceil(String(b.text ?? '').length / 4);
+          else if (b?.type === 'image') t += 1600;
+          else if (b?.type === 'tool_result') t += Math.ceil(JSON.stringify(b.content ?? '').length / 4);
+          else if (b?.type === 'tool_use') t += Math.ceil(JSON.stringify(b.input ?? {}).length / 4);
+          else if (b?.type === 'thinking') t += Math.ceil(String(b.thinking ?? '').length / 4);
+        }
+        return t;
+      };
+
+      type Summary = { id: string; level: number; content: string; sourceLevel: number; sourceIds: string[] };
+      const strategy = cm.getStrategy() as { summaries?: Summary[] };
+      const sums: Summary[] = strategy.summaries ?? [];
+      const sumById = new Map(sums.map((x) => [x.id, x]));
+      const headOf = (txt: string): string => txt.replace(/\s+/g, ' ').slice(0, 100);
+      const byHead = new Map(sums.map((x) => [headOf(x.content), x]));
+      const leaves = (x: Summary, seen = new Set<string>()): string[] => {
+        if (seen.has(x.id)) return [];
+        seen.add(x.id);
+        if (x.sourceLevel === 0) return x.sourceIds;
+        const out: string[] = [];
+        for (const cid of x.sourceIds) {
+          const c = sumById.get(cid);
+          if (c) out.push(...leaves(c, seen));
+        }
+        return out;
+      };
+
+      const entries = [];
+      let i = 0;
+      for (const e of compiled.messages as Array<{ participant: string; content?: unknown[]; sourceMessageId?: string }>) {
+        const blocks = (e.content ?? []) as Array<Record<string, unknown>>;
+        const text = blocks.filter((b) => b?.type === 'text').map((b) => String(b.text ?? '')).join('\n');
+        const nImages = blocks.filter((b) => b?.type === 'image').length;
+        const rendered = Math.ceil(text.length / 4) + nImages * 1600 +
+          blocks.filter((b) => b?.type === 'tool_result' || b?.type === 'tool_use')
+            .reduce((a, b) => a + Math.ceil(JSON.stringify(b.input ?? b.content ?? '').length / 4), 0);
+        const sum = byHead.get(headOf(text));
+        if (sum) {
+          const leafIds = leaves(sum).filter((id) => msgById.has(id));
+          const rawCovered = leafIds.reduce((a, id) => a + estimate(msgById.get(id)!), 0);
+          const dates = leafIds.map((id) => msgById.get(id)!.timestamp).filter(Boolean).sort();
+          entries.push({
+            i: i++, kind: `L${sum.level}`, id: sum.id, participant: e.participant,
+            rendered, rawCovered, msgCount: leafIds.length, nImages,
+            dateFirst: dates[0] ?? null, dateLast: dates[dates.length - 1] ?? null, text,
+          });
+        } else {
+          const src = e.sourceMessageId ? msgById.get(e.sourceMessageId) : null;
+          entries.push({
+            i: i++, kind: 'raw', id: e.sourceMessageId ?? null, participant: e.participant,
+            rendered, rawCovered: src ? estimate(src) : rendered, msgCount: 1, nImages,
+            dateFirst: src?.timestamp ?? null, dateLast: src?.timestamp ?? null, text,
+          });
+        }
+      }
+      return Response.json({
+        agent: agentName,
+        generatedAt: new Date().toISOString(),
+        branch: cm.currentBranch().name,
+        budget: { maxTokens, reserveForResponse },
+        totals: {
+          entries: entries.length,
+          rendered: entries.reduce((a, e) => a + e.rendered, 0),
+          rawCovered: entries.reduce((a, e) => a + e.rawCovered, 0),
+        },
+        entries,
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
+        status: 500, headers: { 'content-type': 'application/json' },
+      });
     }
   }
 
@@ -989,16 +1499,63 @@ export class WebUiModule implements Module {
   // WebSocket lifecycle
   // -------------------------------------------------------------------------
 
-  private onWsOpen(ws: ServerWebSocket<{ id: number }>): void {
+  private onWsOpen(ws: ServerWebSocket<WsData>): void {
     const id = ws.data.id;
-    const client: ClientState = { id, ws, welcomed: false, peeks: new Map() };
+    const client: ClientState = {
+      id, ws, welcomed: false, peeks: new Map(),
+      auth: ws.data.authed ? 'full' : 'pending',
+      scopes: null,
+    };
     sharedServer!.clients.set(id, client);
+
+    if (client.auth === 'pending') {
+      // In-band observer auth: tell the client what host its statement must
+      // bind, and give it a bounded window to present a verifiable hello.
+      // No data flows on this connection until then.
+      this.send(client, { type: 'observer-auth-required', host: ws.data.host });
+      client.authTimer = setTimeout(() => {
+        if (client.auth === 'pending') ws.close(4401, 'observer auth timeout');
+      }, 15_000);
+      return;
+    }
 
     if (sharedServer?.app) void this.sendWelcome(client);
     // Else: park until setApp() flushes welcomes.
   }
 
-  private onWsMessage(ws: ServerWebSocket<{ id: number }>, raw: string | Buffer): void {
+  private handleObserverHello(client: ClientState, identity: ObserverHelloIdentity): void {
+    const registry = sharedServer!.observers;
+    const result = registry?.verifyHello(identity, client.ws.data.host) ?? null;
+    if (!result) {
+      this.send(client, { type: 'error', message: 'observer auth failed' });
+      client.ws.close(4401, 'observer auth failed');
+      return;
+    }
+    if (client.authTimer) clearTimeout(client.authTimer);
+    client.auth = 'observer';
+    client.scopes = result.scopes;
+    this.send(client, {
+      type: 'observer-ack',
+      scopes: [...result.scopes],
+      sessionToken: sharedServer!.observerSessions.mint(result.scopes),
+      label: result.grant.label,
+    });
+    console.error(`[webui-observers] observer connected: ${result.grant.label} scopes=[${[...result.scopes].join(',')}]`);
+    if (sharedServer?.app) void this.sendWelcome(client);
+  }
+
+  /** Client message types a scoped (non-full) observer may send. */
+  private observerMaySend(client: ClientState, type: string): boolean {
+    if (client.auth !== 'observer') return false;
+    if (type === 'ping') return true;
+    if (type === 'request-history') return client.scopes?.has('messages') ?? false;
+    // Branch listing is conversation-shape metadata (names, fork points) —
+    // same sensitivity tier as the message window, so same scope.
+    if (type === 'request-branches') return client.scopes?.has('messages') ?? false;
+    return false; // observers are read-only: no user-message/command/mcpl/fleet
+  }
+
+  private onWsMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer): void {
     const id = ws.data.id;
     const client = sharedServer!.clients.get(id);
     if (!client) return;
@@ -1012,6 +1569,20 @@ export class WebUiModule implements Module {
     }
     if (!isClientMessage(parsed)) {
       this.send(client, { type: 'error', message: 'unknown message shape' });
+      return;
+    }
+
+    // Observer auth interlock: a pending connection may ONLY hello; a
+    // key-authenticated observer is read-only within its scopes. Full
+    // (basic-auth) clients skip both gates — historical behavior.
+    if (parsed.type === 'observer-hello') {
+      if (client.auth === 'pending') this.handleObserverHello(client, parsed.identity);
+      // hello on an already-authenticated connection is a no-op
+      return;
+    }
+    if (client.auth === 'pending') return; // nothing else before auth
+    if (client.auth === 'observer' && !this.observerMaySend(client, parsed.type)) {
+      this.send(client, { type: 'error', message: `forbidden for observer scope (${parsed.type})` });
       return;
     }
 
@@ -1129,6 +1700,11 @@ export class WebUiModule implements Module {
 
       case 'request-mcpl': {
         this.sendMcplList(client);
+        return;
+      }
+
+      case 'request-branches': {
+        this.sendBranchesList(client);
         return;
       }
 
@@ -1417,6 +1993,40 @@ export class WebUiModule implements Module {
     this.send(client, out);
   }
 
+  /** Build a BranchesListMessage from the agent's context manager. Lineage
+   *  (parentId + branchPoint) comes straight from Chronicle's branch records;
+   *  the SPA folds it into a tree. */
+  private sendBranchesList(client: ClientState): void {
+    if (!sharedServer?.app) return;
+    const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
+    if (!cm) {
+      this.send(client, { type: 'error', message: 'no agent context manager' });
+      return;
+    }
+    try {
+      const branches = cm.listBranches();
+      const current = cm.currentBranch();
+      const out: BranchesListMessage = {
+        type: 'branches-list',
+        branches: branches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          head: b.head,
+          ...(b.parentId !== undefined ? { parentId: b.parentId } : {}),
+          ...(b.branchPoint !== undefined ? { branchPoint: b.branchPoint } : {}),
+          created: b.created instanceof Date ? b.created.getTime() : Number(b.created),
+        })),
+        currentId: current.id,
+      };
+      this.send(client, out);
+    } catch (err) {
+      this.send(client, {
+        type: 'error',
+        message: `branch listing failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   /** Build a LessonsListMessage from the bound LessonsModule, if present. */
   private sendLessonsList(client: ClientState): void {
     if (!sharedServer?.app) return;
@@ -1698,10 +2308,11 @@ export class WebUiModule implements Module {
     }
   }
 
-  private onWsClose(ws: ServerWebSocket<{ id: number }>): void {
+  private onWsClose(ws: ServerWebSocket<WsData>): void {
     const id = ws.data.id;
     const client = sharedServer?.clients.get(id);
     if (client) {
+      if (client.authTimer) clearTimeout(client.authTimer);
       for (const detach of client.peeks.values()) {
         try { detach(); } catch { /* ignore */ }
       }
@@ -1842,9 +2453,12 @@ export class WebUiModule implements Module {
 
   private async sendWelcome(client: ClientState): Promise<void> {
     if (!sharedServer?.app) return;
+    // Never send data to a connection that hasn't authenticated. Parked
+    // pending connections get their welcome from handleObserverHello.
+    if (client.auth === 'pending') return;
 
     const welcome = await this.buildWelcome();
-    this.send(client, welcome);
+    this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
     client.welcomed = true;
     // Live trace forwarding is driven by the single fan-out listener
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
@@ -1876,10 +2490,16 @@ export class WebUiModule implements Module {
       resolveBlobs: false,
       alignToBodyGroups: true,
     });
+    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+    if (client.scopes !== null) {
+      entries = entries
+        .map((e) => filterEntryForScopes(e, client.scopes!))
+        .filter((e): e is WelcomeMessageEntry => e !== null);
+    }
     this.send(client, {
       type: 'history-page',
       corrId: req.corrId,
-      entries: coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex),
+      entries,
       startIndex: win.startIndex,
       totalCount: win.totalCount,
     });
@@ -1984,6 +2604,9 @@ export class WebUiModule implements Module {
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
         ? { perAgentCost: sharedServer!.latestPerAgentCost }
+        : {}),
+      ...(sharedServer!.latestCallLedger
+        ? { callLedger: sharedServer!.latestCallLedger }
         : {}),
     };
   }

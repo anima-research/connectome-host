@@ -93,6 +93,9 @@ export interface WelcomeMessage {
   /** Per-agent cost breakdown for the parent process, present when the
    *  framework's usage tracker has data. Empty during cold start. */
   perAgentCost?: PerAgentCost[];
+  /** Recent provider calls with cache verdicts. Present when the host's
+   *  provider adapter exposes the call ledger. */
+  callLedger?: CallLedgerSnapshot;
 }
 
 /**
@@ -164,6 +167,91 @@ export interface UsageMessage {
   perAgentCost?: PerAgentCost[];
 }
 
+/** Live replacement snapshot emitted after each provider call. */
+export interface CallLedgerMessage {
+  type: 'call-ledger';
+  ledger: CallLedgerSnapshot;
+}
+
+export type CallLedgerVerdict =
+  | 'HIT'
+  | 'hit+extend'
+  | 'uncached'
+  | 'rewrite:expired'
+  | 'rewrite:prefix-mutated'
+  | 'rewrite:prefix-truncated'
+  | 'rewrite:unexplained'
+  | 'first-write'
+  | 'ERROR'
+  | 'empty'
+  | 'unknown';
+
+export interface CallLedgerRow {
+  id: string;
+  timestamp: string;
+  kind: 'complete' | 'stream';
+  /** Honest call-class estimate; `~` means the trigger plumbing did not
+   *  provide a definitive origin. */
+  originEstimate: 'turn~' | 'aux~';
+  model: string;
+  messages: number;
+  durationMs: number;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  cost?: CallCostBreakdown;
+  cache: {
+    /** Undefined for older compact logs that predate marker summaries. */
+    breakpoints?: number;
+    ttls: string[];
+    effectiveTtl: '5m' | '1h';
+  };
+  verdict: CallLedgerVerdict;
+  cause: string;
+  stopReason?: string;
+  error?: string;
+}
+
+export interface CallCostBreakdown {
+  input: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  cacheRead: number;
+  output: number;
+  total: number;
+  currency: 'USD';
+  /** `billing` means every charged usage bucket and pricing modifier was
+   *  known. Unknown/mixed buckets are left unpriced rather than estimated. */
+  grade: 'billing';
+  pricingVersion: string;
+  rates: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cacheWrite5mPerMillion: number;
+    cacheWrite1hPerMillion: number;
+    cacheReadPerMillion: number;
+  };
+}
+
+export interface CallLedgerSnapshot {
+  /** Oldest to newest; clients may reverse for display. */
+  rows: CallLedgerRow[];
+  summary: {
+    calls: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheHitRatio: number;
+    cost?: {
+      total: number;
+      currency: 'USD';
+      pricedCalls: number;
+      unpricedCalls: number;
+      pricingVersion: string;
+    };
+    byVerdict: Partial<Record<CallLedgerVerdict, number>>;
+  };
+}
+
 export interface TokenUsage {
   input: number;
   output: number;
@@ -190,6 +278,31 @@ export interface PerAgentCost {
 export interface BranchChangedMessage {
   type: 'branch-changed';
   branch: { id: string; name: string };
+}
+
+/** One Chronicle branch with its lineage. `parentId`/`branchPoint` are
+ *  undefined for the root branch; together they place the fork in the
+ *  parent's sequence so the SPA can render a lineage tree. */
+export interface BranchRow {
+  id: string;
+  name: string;
+  /** Head sequence number of the branch. */
+  head: number;
+  parentId?: string;
+  /** Sequence in the PARENT at which this branch forked. */
+  branchPoint?: number;
+  /** Epoch millis creation time. */
+  created: number;
+}
+
+/** Full branch listing with lineage — response to `request-branches`, routed
+ *  only to the requesting client. The SPA refreshes it after every
+ *  `branch-changed` while its branch panel is open. */
+export interface BranchesListMessage {
+  type: 'branches-list';
+  branches: BranchRow[];
+  /** id of the branch the agent is currently on. */
+  currentId: string;
 }
 
 /** Sent when the active session changes. Clients should soft-reconnect. */
@@ -352,7 +465,9 @@ export type WebUiServerMessage =
   | ChildEventMessage
   | CommandResultMessage
   | UsageMessage
+  | CallLedgerMessage
   | BranchChangedMessage
+  | BranchesListMessage
   | SessionChangedMessage
   | PeekMessage
   | InboundTriggerMessage
@@ -364,7 +479,34 @@ export type WebUiServerMessage =
   | WorkspaceFileMessage
   | HistoryPageMessage
   | MessageAppendedMessage
+  | ObserverAuthRequiredMessage
+  | ObserverAckMessage
   | ErrorMessage;
+
+// ---------------------------------------------------------------------------
+// Observer identity (docs/observability.md M2) — additive to protocol v1.
+// Basic-auth clients never see these frames; key-authenticated observers
+// authenticate in-band over the WS before any data flows.
+// ---------------------------------------------------------------------------
+
+/** Sent to a connection that upgraded without basic auth (allowed only when
+ *  observer grants exist): the client must reply with observer-hello before
+ *  anything else is sent. `host` is what the server will verify the signed
+ *  statement against — the Host header of the upgrade request. */
+export interface ObserverAuthRequiredMessage {
+  type: 'observer-auth-required';
+  host: string;
+}
+
+/** Successful observer authentication. `sessionToken` is a short-lived
+ *  bearer for HTTP routes (set as the `fkm_obs` cookie by the SPA);
+ *  `scopes` is the grant's mask — the SPA adapts its UI to it. */
+export interface ObserverAckMessage {
+  type: 'observer-ack';
+  scopes: string[];
+  sessionToken: string;
+  label: string;
+}
 
 // ---------------------------------------------------------------------------
 // Client → Server
@@ -460,6 +602,13 @@ export interface RequestMcplMessage {
   type: 'request-mcpl';
 }
 
+/** Pull the Chronicle branch listing. Response is a `branches-list` envelope
+ *  routed only to the requesting client. Read-only; switching branches goes
+ *  through the `/checkout` command (full-auth clients only). */
+export interface RequestBranchesMessage {
+  type: 'request-branches';
+}
+
 /** Add or overwrite an MCPL server entry in mcpl-servers.json. Restart is
  *  required for the host to pick up the change; the response is a fresh
  *  `mcpl-list` so the SPA reflects the new state. */
@@ -522,8 +671,26 @@ export interface RequestHistoryMessage {
   limit?: number;
 }
 
+/** In-band observer authentication (docs/observability.md §3): the client
+ *  signs `connectome-observer|v1|<host>|<timestamp>` with its ed25519 key.
+ *  Challenge-less — the Host binding + freshness window replace a nonce. */
+export interface ObserverHelloMessage {
+  type: 'observer-hello';
+  identity: {
+    scheme: 'ed25519';
+    /** `ed25519:<base64url raw 32-byte public key>` */
+    id: string;
+    /** base64url signature over the bound statement. */
+    proof: string;
+    /** ISO timestamp used in the statement (±5 min freshness). */
+    timestamp: string;
+    displayName?: string;
+  };
+}
+
 export type WebUiClientMessage =
   | UserMessageMessage
+  | ObserverHelloMessage
   | RequestHistoryMessage
   | CommandMessage
   | RouteToChildMessage
@@ -535,6 +702,7 @@ export type WebUiClientMessage =
   | QuitConfirmMessage
   | RequestLessonsMessage
   | RequestMcplMessage
+  | RequestBranchesMessage
   | McplAddMessage
   | McplRemoveMessage
   | McplSetEnvMessage
@@ -562,9 +730,17 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'ping':
     case 'interrupt':
     case 'request-mcpl':
+    case 'request-branches':
       return true;
     case 'user-message':
       return typeof v.content === 'string';
+    case 'observer-hello': {
+      const id = v.identity as Record<string, unknown> | undefined;
+      return !!id && id.scheme === 'ed25519'
+        && typeof id.id === 'string'
+        && typeof id.proof === 'string'
+        && typeof id.timestamp === 'string';
+    }
     case 'command':
       return typeof v.command === 'string'
         && (v.corrId === undefined || typeof v.corrId === 'string');

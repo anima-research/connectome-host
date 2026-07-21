@@ -81,6 +81,7 @@ function makeStrategy(): TestFrontdesk {
     targetChunkTokens: 50,
     autoTickOnNewMessage: false,
     maxMessageTokens: 0,
+    timeZone: 'UTC',
   });
 }
 
@@ -108,6 +109,15 @@ describe('provenance wrapping', () => {
     expect(header).toContain('14:32');
     expect(header).toContain('msg M987654');
     expect(header!.endsWith('\n')).toBe(true);
+  });
+
+  test('renders provenance time in the configured zone', () => {
+    const s = new TestFrontdesk({ timeZone: 'America/Los_Angeles' });
+    const m = msg('User', 'hello', {
+      serverId: 'zulip',
+      timestamp: '2026-07-17T14:32:00Z',
+    });
+    expect(s.pub_buildHeader(m)).toContain('07:32');
   });
 
   test('wrapProvenance prepends header into the first text block', () => {

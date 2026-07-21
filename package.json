@@ -1,6 +1,6 @@
 {
-  "name": "connectome-host",
-  "version": "0.3.1",
+  "name": "@animalabs/connectome-host",
+  "version": "0.3.9",
   "description": "General-purpose agent TUI host with recipe-based configuration",
   "type": "module",
   "scripts": {
@@ -8,14 +8,16 @@
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
     "version": "bun scripts/release-changelog.ts && git add CHANGELOG.md",
-    "build:web": "cd web && bun install && bun run build",
-    "postinstall": "test -d web && cd web && bun install && bun run build || true"
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:web:ci": "npm ci --prefix web && npm --prefix web run build",
+    "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install",
+    "postinstall": "test -d web && npm --prefix web install && npm --prefix web run build || true"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.6.0",
+    "@animalabs/agent-framework": "^0.6.8",
     "@animalabs/chronicle": "^0.2.0",
-    "@animalabs/context-manager": "^0.5.5",
-    "@animalabs/membrane": "^0.5.68",
+    "@animalabs/context-manager": "^0.5.13",
+    "@animalabs/membrane": "^0.5.73",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {

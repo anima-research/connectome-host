@@ -15,18 +15,23 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
-import { Membrane, NativeFormatter } from '@animalabs/membrane';
+import {
+  Membrane,
+  NativeFormatter,
+  OpenAIResponsesAPIAdapter,
+  OpenAIResponsesFormatter,
+} from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
-import { AgentFramework, AutobiographicalStrategy, PassthroughStrategy, WorkspaceModule, type Module, type MountConfig } from '@animalabs/agent-framework';
+import { AgentFramework, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
-import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
-import type { RecipeWorkspaceMount, RecipeStrategy } from './recipe.js';
+import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -34,6 +39,7 @@ import { ActivityModule } from './modules/activity-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
+import { ObserversModule } from './modules/observers-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { loadMcplServers, applyAgentOverlay, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
@@ -49,6 +55,9 @@ import {
   parseRecipeArg,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
+import { buildFrameworkAgentConfig } from './framework-agent-config.js';
+import { buildFrameworkStrategy } from './framework-strategy.js';
+import { loadExtensions } from './extensions.js';
 
 export type { AppContext };
 
@@ -60,14 +69,10 @@ const config = {
   // OAuth/Bearer token (e.g. a Claude subscription token). When set, it takes
   // precedence over the API key so requests never carry both auth schemes.
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  openaiApiKey: process.env.OPENAI_API_KEY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
-
-if (!config.apiKey && !config.authToken) {
-  console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
-  process.exit(1);
-}
 
 // ---------------------------------------------------------------------------
 // AppContext — mutable container for session switching
@@ -137,14 +142,21 @@ async function createFramework(
   recipe: Recipe,
   agentName: string,
   settingsModule: SettingsModule,
+  callLedger: CallLedger | null,
 ): Promise<AgentFramework> {
   const model = config.model || recipe.agent.model || 'claude-opus-4-6';
   const modules = recipe.modules ?? {};
+  const timeZone = resolveTimeZone(recipe.agent.timezone);
+
+  // Load recipe extensions first — custom strategies must be registered
+  // before buildFrameworkStrategy runs, and custom modules join the module
+  // list below. The loader is a dumb local import; see src/extensions.ts.
+  const extensionRegistry = await loadExtensions(recipe);
 
   // -- Build module list --
   // SettingsModule is constructed in main() (before the adapter, so the
   // adapter can read its state for cross-cutting concerns like reasoning).
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(), settingsModule];
+  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule];
 
   // Subagents
   let subagentModule: SubagentModule | null = null;
@@ -168,10 +180,11 @@ async function createFramework(
 
   // Fleet (cross-process child orchestration). Opt-in via recipe.
   if (modules.fleet === true) {
-    moduleInstances.push(new FleetModule());
+    moduleInstances.push(new FleetModule({ timeZone }));
   } else if (modules.fleet && typeof modules.fleet === 'object') {
     const fleetCfg = modules.fleet;
     const fleetModuleConfig: FleetModuleConfig = {};
+    fleetModuleConfig.timeZone = timeZone;
     if (fleetCfg.children) {
       fleetModuleConfig.autoStart = fleetCfg.children.map((c) => {
         const entry: NonNullable<FleetModuleConfig['autoStart']>[number] = {
@@ -309,7 +322,7 @@ async function createFramework(
   // ability to spawn arbitrary commands via mcpl_deploy; see recipe.ts).
   let mcplAdminModule: McplAdminModule | null = null;
   if (modules.mcplAdmin === true) {
-    mcplAdminModule = new McplAdminModule();
+    mcplAdminModule = new McplAdminModule({ timeZone });
     moduleInstances.push(mcplAdminModule);
   }
 
@@ -317,13 +330,32 @@ async function createFramework(
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
     const webuiConfig = typeof modules.webui === 'object' ? modules.webui : {};
+    // Observer grants (docs/observability.md): data/observers.json by
+    // default, overridable via OBSERVERS_FILE. The feature is inert until
+    // the file holds at least one grant. The companion ObserversModule
+    // gives the agent grant/revoke tools over the same file — interiority
+    // access is the agent's to give.
+    const observersPath = process.env.OBSERVERS_FILE || resolve(config.dataDir, 'observers.json');
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
       host: webuiConfig.host,
       basicAuth: webuiConfig.basicAuth,
       allowedOrigins: webuiConfig.allowedOrigins,
+      observersPath,
+      ...(callLedger ? { callLedger } : {}),
     });
     moduleInstances.push(webUiModule);
+    moduleInstances.push(new ObserversModule({ path: observersPath }));
+  }
+
+  // Extension-registered modules. Instantiated last so built-in modules keep
+  // their historical positions; each factory gets the minimal runtime context
+  // plus its declaring extension's config blob.
+  const extensionModules: Module[] = [];
+  for (const entry of extensionRegistry.modules) {
+    const instance = entry.factory({ timeZone, storePath, model, config: entry.config });
+    extensionModules.push(instance);
+    moduleInstances.push(instance);
   }
 
   // -- Build MCP server list --
@@ -375,98 +407,70 @@ async function createFramework(
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
   // tombstones suppress recipe/file servers the agent unloaded.
-  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH);
+  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => ({
+    ...server,
+    // Stdio MCPL children inherit a single agent-facing wall clock. Protocol
+    // timestamps remain UTC; only their rendered text uses this setting.
+    env: { ...(server.env ?? {}), AGENT_TIMEZONE: timeZone },
+  }));
 
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
   // -- Build strategy --
-  //
-  // Build the options object with typed property access — no
-  // `Record<string, unknown>` cast on `strategyConfig`. Every field we
-  // forward is declared on `RecipeStrategy` (see recipe.ts); a typo in a
-  // recipe (e.g. `l1BudgetTokes`) now fails at recipe validation rather
-  // than silently being a no-op at strategy construction. AutobiographicalStrategy
-  // and FrontdeskStrategy share this option bag today; if strategy-specific
-  // fields are ever added, this should split into per-strategy types.
-  const strategyConfig = recipe.agent.strategy;
-  const strategyType = strategyConfig?.type ?? 'autobiographical';
-  const autobiographicalOpts: Record<string, unknown> = {
-    headWindowTokens: strategyConfig?.headWindowTokens ?? 4000,
-    recentWindowTokens: strategyConfig?.recentWindowTokens ?? 30000,
-    compressionModel: strategyConfig?.compressionModel ?? model,
-    autoTickOnNewMessage: true,
-    maxMessageTokens: strategyConfig?.maxMessageTokens ?? 10000,
-  };
-  // Forward optional tuning fields when set. The key list is typed
-  // against `RecipeStrategy`, so an unknown field name is a compile
-  // error here rather than a silent no-op at runtime.
-  const passthroughKeys: ReadonlyArray<keyof RecipeStrategy> = [
-    'enforceBudget',
-    'maxSpeculativeL1s',
-    'positionedRecallPairs',
-    'recallHeaderTemplate',
-    'targetChunkTokens',
-    'mergeThreshold',
-    'summaryTargetTokens',
-    'l1BudgetTokens',
-    'l2BudgetTokens',
-    'l3BudgetTokens',
-    'toolResultMaxLastN',
-    'toolUseInputMaxTokens',
-    'adaptiveResolution',
-    'kvStableReachTokens',
-    'kvStableQualityGapRatio',
-    'compressionSlackRatio',
-    'overBudgetGraceRatio',
-    'foldingStrategy',
-    'speculativeProduction',
-    'l1HoldbackChunks',
-    'summaryParticipant',
-    'summarySystemPrompt',
-    'summaryUserPrompt',
-    'summaryContextLabel',
-  ];
-  for (const key of passthroughKeys) {
-    const v = strategyConfig?.[key];
-    if (v !== undefined) autobiographicalOpts[key] = v;
-  }
-  // Adaptive resolution (document-based gradual compression) is the intended
-  // default for autobiographical agents. Frontdesk keeps the hierarchical
-  // renderer (its salience-biased L1 selection); it can still opt in via the
-  // recipe. A recipe may set `adaptiveResolution: false` to opt back out.
-  if (strategyType === 'autobiographical' && autobiographicalOpts.adaptiveResolution === undefined) {
-    autobiographicalOpts.adaptiveResolution = true;
-  }
-  const strategy = strategyType === 'passthrough'
-    ? new PassthroughStrategy()
-    : strategyType === 'frontdesk'
-      ? new FrontdeskStrategy(autobiographicalOpts)
-      : new AutobiographicalStrategy(autobiographicalOpts);
+  const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
+  const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   // -- Create framework --
   const framework = await AgentFramework.create({
     storePath,
     membrane,
-    agents: [
-      {
-        name: agentName,
-        model,
-        systemPrompt: recipe.agent.systemPrompt,
-        maxTokens: recipe.agent.maxTokens ?? 16384,
-        maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
-        contextBudgetTokens: recipe.agent.contextBudgetTokens,
-        ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
-        strategy,
-        ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
-        ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
-      },
-    ],
+    agents: [agentConfig],
     modules: moduleInstances,
     mcplServers: finalServers,
     gate: gateOptions,
+    timeZone,
   });
 
   // Wire post-creation hooks
+  // Compression-quarantine klaxon → the framework's ops-alert channel
+  // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
+  // re-fires this every alarm interval for as long as ANY chunk is
+  // quarantined: quarantined spans stay raw, the fold floor creeps, and the
+  // picker eventually cannot fit the window — a guaranteed future outage
+  // that must never be a silent state.
+  // Duck-typed on both sides so version skew in either dep degrades to a
+  // no-op (the strategy's own stderr klaxon still fires) instead of a crash.
+  {
+    const alarmCapable = strategy as unknown as {
+      setQuarantineAlarmHandler?: (fn: (status: { count: number; keys: string[] }) => void) => void;
+    };
+    const notify = (framework as unknown as {
+      notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+    }).notifyOps?.bind(framework);
+    if (alarmCapable.setQuarantineAlarmHandler && notify) {
+      alarmCapable.setQuarantineAlarmHandler((status) => {
+        if (status.count === 0) {
+          // All-clear travels the same channel the alarm did, under a
+          // DISTINCT kind: the alarm kind's 15-min ops cooldown must never
+          // swallow the stand-down (silence after an alarm is ambiguous).
+          notify(
+            'compression-quarantine-clear',
+            agentName,
+            'compression quarantine EMPTY — all debt paid; alarm stands down.',
+            { count: 0 },
+          );
+          return;
+        }
+        notify(
+          'compression-quarantine',
+          agentName,
+          `${status.count} chunk(s) in compression quarantine — spans stay raw and WILL eventually exhaust the context budget. Operator action required (inspect refusing content; branch, pin, or clear).`,
+          { count: status.count, keys: status.keys },
+        );
+      });
+    }
+  }
+
   if (subagentModule) {
     subagentModule.setFramework(framework);
   }
@@ -477,6 +481,13 @@ async function createFramework(
 
   if (channelModeModule) {
     channelModeModule.setFramework(framework);
+  }
+
+  // Extension modules get the same duck-typed post-creation hook the
+  // built-ins use: if the instance exposes setFramework, call it.
+  for (const instance of extensionModules) {
+    const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
+    hooked.setFramework?.(framework);
   }
 
   if (mcplAdminModule) {
@@ -743,6 +754,16 @@ function countLines(path: string): number {
 
 async function main() {
   const recipe = await resolveRecipe();
+  const provider = recipe.agent.provider ?? 'anthropic';
+
+  if (provider === 'openai-responses' && !config.openaiApiKey) {
+    console.error('Missing OPENAI_API_KEY for recipe provider "openai-responses".');
+    process.exit(1);
+  }
+  if (provider === 'anthropic' && !config.apiKey && !config.authToken) {
+    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
+    process.exit(1);
+  }
 
   // SettingsModule constructed early so the adapter can read its state for
   // cross-cutting concerns (currently: reasoning). It's wired into the
@@ -757,22 +778,34 @@ async function main() {
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
+  const callLedger = provider === 'anthropic'
+    ? new CallLedger({
+        dataDir: config.dataDir,
+        defaultTtl: recipe.agent.cacheTtl ?? '5m',
+      })
+    : null;
   // OAuth (subscription) auth wins over API-key auth when both are present.
   // Subscription tokens (sk-ant-oat…) additionally require the oauth beta
   // header on every request.
-  const adapter = new LoggingAnthropicAdapter(
-    {
-      ...(config.authToken
-        ? {
-            authToken: config.authToken,
-            defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
-          }
-        : { apiKey: config.apiKey! }),
-      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
-    },
-    llmLogPath,
-    () => settingsModule.getReasoning(),
-  );
+  const adapter = provider === 'openai-responses'
+    ? new OpenAIResponsesAPIAdapter({
+        apiKey: config.openaiApiKey!,
+        baseURL: process.env.OPENAI_BASE_URL || undefined,
+      })
+    : new LoggingAnthropicAdapter(
+        {
+          ...(config.authToken
+            ? {
+                authToken: config.authToken,
+                defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+              }
+            : { apiKey: config.apiKey! }),
+          baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+        },
+        llmLogPath,
+        () => settingsModule.getReasoning(),
+        (record) => callLedger!.record(record),
+      );
 
   // Session management — resolved before Membrane construction so the
   // active session's import-source sidecar can contribute to agent-name
@@ -805,7 +838,9 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
-    formatter: new NativeFormatter(),
+    formatter: provider === 'openai-responses'
+      ? new OpenAIResponsesFormatter()
+      : new NativeFormatter(),
     // Anchor the assistant role for internal callers that don't set
     // request.assistantParticipant themselves (autobio compression,
     // executeMerge). Mismatch here flips stored assistant turns to
@@ -814,7 +849,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger);
 
   // Build app context
   const app: AppContext = {
@@ -835,7 +870,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
@@ -844,6 +879,28 @@ async function main() {
       getWebUiModule(this.framework)?.setApp(this);
     },
   };
+
+  // Off-path refusal dragnet → ops alerts (observability M3): refusals on
+  // non-streamed calls (compression/summarizer drains, maintenance) never
+  // reach the framework's own noteRefusal — the 2026-07-15 mythos cascade
+  // started exactly there, silently. Surface them through the same
+  // opsAlert pipeline (failures.log + ops:alert trace + throttled webhook).
+  // Reads app.framework (not the closure) so session switches stay wired;
+  // feature-detects notifyOpsAlert for older framework versions.
+  if (adapter instanceof LoggingAnthropicAdapter) {
+    adapter.onRefusal = (info) => {
+      const fw = app.framework as unknown as {
+        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
+      };
+      fw.notifyOpsAlert?.(
+        'refusal-offpath',
+        app.agentName,
+        `off-path refusal (category=${info.category ?? 'unknown'}) on a ${info.messages}-message ` +
+          `complete() call (~${Math.round(info.inputTokens / 1000)}k tok) — likely compression/summarizer`,
+        { ...info },
+      );
+    };
+  }
 
   framework.start();
   setupSynesthete(app);

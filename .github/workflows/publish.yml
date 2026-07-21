@@ -15,18 +15,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
 
       - name: Install dependencies
         run: npm install
 
       - name: Build web assets
-        run: npm run build:web
+        run: npm run build:web:ci
 
       - name: Test
         run: npm test
@@ -46,7 +51,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Require changelog section for this release
         run: |
@@ -58,7 +63,7 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # node 24 ships npm >= 11.5.1, required for OIDC publishing.
           node-version: 24
@@ -68,7 +73,7 @@ jobs:
         run: npm install
 
       - name: Build web assets
-        run: npm run build:web
+        run: npm run build:web:ci
 
       - name: Publish
         run: npm publish --access public --provenance

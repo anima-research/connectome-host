@@ -197,7 +197,13 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return handleCheckout(framework, args[0]);
 
     case 'history':
-      return handleHistory(framework);
+      return handleHistory(framework, args[0]);
+
+    case 'branchto':
+      return handleBranchTo(app, args[0]);
+
+    case 'find':
+      return handleFind(framework, args.join(' '));
 
     case 'mcp':
       return handleMcp(args);
@@ -793,7 +799,55 @@ function handleCheckout(framework: AgentFramework, name?: string): CommandResult
   };
 }
 
-function handleHistory(framework: AgentFramework): CommandResult {
+function handleFind(framework: AgentFramework, needle: string): CommandResult {
+  const cm = getAgentCM(framework);
+  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
+  if (!needle) return { lines: [{ text: 'Usage: /find <text>', style: 'system' }] };
+  const { messages } = cm.queryMessages({});
+  const lines: Line[] = [{ text: `--- Find "${needle}" in ${messages.length} msgs ---`, style: 'system' }];
+  const needleLc = needle.toLowerCase();
+  for (const msg of messages) {
+    // Search text blocks plus stringified tool i/o (case-insensitive), so ids
+    // buried in tool_use inputs / tool_result payloads are findable too.
+    const full = msg.content
+      .map((b) => b.type === 'text' ? b.text : JSON.stringify(b))
+      .join(' ');
+    const at = full.toLowerCase().indexOf(needleLc);
+    if (at >= 0) {
+      const snip = full.slice(Math.max(0, at - 30), at + needle.length + 45).replace(/\s+/g, ' ');
+      lines.push({ text: `  [${msg.id}] ${msg.participant}: ...${snip}...`, style: 'system' });
+    }
+  }
+  if (lines.length === 1) lines.push({ text: '  (no matches)', style: 'system' });
+  return { lines };
+}
+
+function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
+  const cm = getAgentCM(app.framework);
+  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
+  if (!messageId) return { lines: [{ text: 'Usage: /branchto <messageId>', style: 'system' }] };
+  const { messages } = cm.queryMessages({});
+  const target = messages.find(m => String(m.id) === String(messageId));
+  if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
+  const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
+  let createdBranchName: string;
+  try {
+    createdBranchName = cm.branchAt(String(messageId), newBranchName);
+  } catch (err) {
+    return { lines: [{ text: `branchto failed (branchAt): ${err}`, style: 'system' }] };
+  }
+  const asyncWork = Promise.resolve(cm.switchBranch(createdBranchName))
+    .then(() => ({
+      lines: [{ text: `Branched at [${messageId}] -> "${createdBranchName}" and switched. Everything after [${messageId}] is dropped on this branch; old branch preserved.`, style: 'system' as const }],
+      branchChanged: true,
+    }))
+    .catch((err: unknown) => ({
+      lines: [{ text: `branchto failed (switchBranch): ${err}`, style: 'system' as const }],
+    }));
+  return { lines: [{ text: `Branching at [${messageId}] -> "${createdBranchName}"...`, style: 'system' }], asyncWork };
+}
+
+function handleHistory(framework: AgentFramework, countArg?: string): CommandResult {
   const cm = getAgentCM(framework);
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
@@ -801,7 +855,7 @@ function handleHistory(framework: AgentFramework): CommandResult {
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
 
   // Show the last 20 messages in summary form
-  const recent = messages.slice(-20);
+  const recent = messages.slice(-(countArg && Number(countArg) > 0 ? Number(countArg) : 20));
   for (const msg of recent) {
     const text = msg.content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')

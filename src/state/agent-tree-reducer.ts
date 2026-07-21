@@ -202,10 +202,13 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.lastEventAt = ts;
   },
 
-  // inference:exhausted = budget exhaustion / stream-side cancel / reboot-
+  // inference:exhausted = retries exhausted / genuine stream cancel / reboot-
   // induced. Postmortem 2026-05-28 P1 #3: not strictly a fault — flip both
   // fields to the dedicated 'cancelled' terminal state so the renderer can
-  // distinguish "stopped on purpose" from "errored out".
+  // distinguish "stopped on purpose" from "errored out". (AF PR #55 / ≥ 0.6.5
+  // stopped emitting this for endTurn and context-budget restarts — those are
+  // no longer terminal at all — but user cancels and reboots still land here,
+  // and older AF still sends the endTurn-trailing one.)
   'inference:exhausted': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
@@ -236,9 +239,20 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     r._ensureNode(e.agentName).lastEventAt = ts;
   },
 
+  // endTurn tool result: the agent deliberately ended its turn — a successful
+  // terminal, same family as inference:completed. This event must be terminal
+  // in its own right: agent-framework PR #55 (≥ 0.6.5) settles endTurn from
+  // the state machine and no longer follows it with the spurious
+  // inference:exhausted that used to flip these nodes to 'cancelled'. On
+  // older AF the trailing exhausted still arrives and (harmlessly)
+  // re-terminates the node as cancelled one event later.
   'inference:turn_ended': (r, e, ts) => {
     if (!e.agentName) return;
-    r._ensureNode(e.agentName).lastEventAt = ts;
+    const node = r._ensureNode(e.agentName);
+    node.phase = 'done';
+    node.status = 'completed';
+    node.completedAt = ts;
+    node.lastEventAt = ts;
   },
 
   'tool:started': (r, e, ts) => {

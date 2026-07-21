@@ -33,6 +33,7 @@ import type {
   AgentFramework,
   McplServerConfig,
 } from '@animalabs/agent-framework';
+import { resolveTimeZone } from '@animalabs/agent-framework';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
@@ -44,6 +45,8 @@ import {
 } from '../mcpl-config.js';
 
 export interface McplAdminModuleConfig {
+  /** IANA zone propagated to newly deployed stdio servers. */
+  timeZone?: string;
   /** Path to the agent overlay file. Default: `mcpl-servers.agent.json` in cwd. */
   overlayPath?: string;
   /** Path to the human-owned server config file (read-only here). */
@@ -64,10 +67,12 @@ export class McplAdminModule implements Module {
   private framework: AgentFramework | null = null;
   private overlayPath: string;
   private configPath: string;
+  private timeZone: string;
 
   constructor(config?: McplAdminModuleConfig) {
     this.overlayPath = config?.overlayPath ?? DEFAULT_AGENT_OVERLAY_PATH;
     this.configPath = config?.configPath ?? DEFAULT_CONFIG_PATH;
+    this.timeZone = resolveTimeZone(config?.timeZone);
   }
 
   /** Post-creation wiring (called from index.ts, mirrors ActivityModule.setFramework). */
@@ -109,16 +114,6 @@ export class McplAdminModule implements Module {
             token: { type: 'string', description: 'Bearer token for WebSocket auth.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
             reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure (default false). Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
-            channelSubscription: {
-              type: 'string',
-              enum: ['auto', 'manual'],
-              description: "Channel auto-open policy: 'auto' (default) opens every channel the server registers; 'manual' opens none. For an allow-list, use channelAllowlist instead.",
-            },
-            channelAllowlist: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Allow-list of channel ids to auto-open (overrides channelSubscription).',
-            },
             enabledFeatureSets: { type: 'array', items: { type: 'string' } },
             disabledFeatureSets: { type: 'array', items: { type: 'string' } },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard).' },
@@ -258,11 +253,6 @@ export class McplAdminModule implements Module {
     if (typeof input.token === 'string') entry.token = input.token;
     if (typeof input.toolPrefix === 'string') entry.toolPrefix = input.toolPrefix;
     if (typeof input.reconnect === 'boolean') entry.reconnect = input.reconnect;
-    if (Array.isArray(input.channelAllowlist)) {
-      entry.channelSubscription = input.channelAllowlist.map(String);
-    } else if (input.channelSubscription === 'auto' || input.channelSubscription === 'manual') {
-      entry.channelSubscription = input.channelSubscription;
-    }
     if (Array.isArray(input.enabledFeatureSets)) entry.enabledFeatureSets = input.enabledFeatureSets.map(String);
     if (Array.isArray(input.disabledFeatureSets)) entry.disabledFeatureSets = input.disabledFeatureSets.map(String);
     if (Array.isArray(input.enabledTools)) entry.enabledTools = input.enabledTools.map(String);
@@ -275,6 +265,7 @@ export class McplAdminModule implements Module {
     saveAgentOverlay(this.overlayPath, overlay);
 
     const config = resolveOverlayEntry(id, entry, this.overlayPath) as unknown as McplServerConfig;
+    config.env = { ...(config.env ?? {}), AGENT_TIMEZONE: this.timeZone };
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
     try {

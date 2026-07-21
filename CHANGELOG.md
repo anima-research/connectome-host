@@ -15,6 +15,30 @@
   and on release tags CI creates the GitHub release with that section as
   its notes — independent of the npm publish job, which stays dormant until
   the package actually exists on npm.
+- **Web UI observability catch-up**: `ops:alert` traces render as persistent
+  banner rows in the SPA (compression quarantine, refusal streaks,
+  inference-exhausted; `<kind>-clear` stands them down); a Health sidebar tab
+  polls `/healthz` for per-agent status, failure streaks, refusal stats,
+  runtime settings, and quarantine, and reconciles durable-state alerts on
+  connect. New protocol frames `request-branches`/`branches-list` back a
+  Chronicle branch-lineage panel opened from the header branch chip, with
+  checkout via the existing `/checkout` command path (read-only for
+  observers; listing rides the `messages` scope). The `/curve` link now
+  lives in the Context panel header.
+- **TUI modernization**: `p` on an agent inside a fleet child opens an
+  honest per-agent peek — the child's event stream filtered by `agentName`,
+  covering the child's root agent and its subagents (sub-subagents of the
+  parent), with phase/tokens/task header from the tree reducer. `ops:alert`
+  traces from the local framework AND from every fleet child surface as red
+  chat lines plus a persistent `⚠ N alerts` status-bar segment; all-clears
+  stand alerts down. The token line now shows the session cost estimate
+  when priced.
+
+### Fixed
+
+- Dead `PlaceholderPanel` removed from the SPA; stale doc pointers
+  (`WEBUI-PLAN.md`, knowledge-miner references) corrected; README now
+  documents the web UI, headless mode, and current TUI peek semantics.
 
 ### Breaking (recipe authors only)
 

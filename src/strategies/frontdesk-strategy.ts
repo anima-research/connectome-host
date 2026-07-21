@@ -9,6 +9,7 @@ import type {
   SummaryEntry,
 } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
+import { formatZonedTime, resolveTimeZone } from '@animalabs/agent-framework';
 
 // Structural mirror of AutobiographicalStrategy's internal Chunk.
 // Kept inline because @animalabs/context-manager does not currently export it.
@@ -24,7 +25,7 @@ interface Chunk {
   phaseType?: string;
 }
 
-export type FrontdeskStrategyOptions = Partial<AutobiographicalConfig>;
+export type FrontdeskStrategyOptions = Partial<AutobiographicalConfig> & { timeZone?: string };
 
 /**
  * Chatbot-flavoured context strategy for agents that receive messages via
@@ -43,6 +44,13 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
   override readonly name: string = 'frontdesk';
 
   private salientSourceIds: Set<string> = new Set();
+  private readonly timeZone: string;
+
+  constructor(options: FrontdeskStrategyOptions = {}) {
+    const { timeZone, ...strategyOptions } = options;
+    super(strategyOptions);
+    this.timeZone = resolveTimeZone(timeZone);
+  }
 
   override select(
     store: MessageStoreView,
@@ -115,15 +123,15 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
     if (ts) parts.push(ts);
 
     if (meta.messageId !== undefined && meta.messageId !== null && meta.messageId !== '') {
-      const mid = String(meta.messageId);
-      const short = mid.length > 12 ? mid.slice(0, 12) : mid;
-      parts.push(`msg ${short}`);
+      // Render the FULL id — truncating (an old token-saving trim) corrupts
+      // Discord snowflakes, so every reply_message/fetch_around/add_reaction
+      // call the agent copies from its own context 404s with Unknown message.
+      parts.push(`msg ${String(meta.messageId)}`);
     }
 
     const threadId = meta.threadId !== undefined && meta.threadId !== null ? String(meta.threadId) : '';
     if (threadId && threadId !== topic) {
-      const short = threadId.length > 12 ? threadId.slice(0, 12) : threadId;
-      parts.push(`thread ${short}`);
+      parts.push(`thread ${threadId}`);
     }
 
     if (parts.length === 0) return null;
@@ -146,9 +154,7 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
     }
     if (!d && msgTs instanceof Date && !isNaN(msgTs.getTime())) d = msgTs;
     if (!d) return null;
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
+    return formatZonedTime(d, this.timeZone);
   }
 
   // ==========================================================================
