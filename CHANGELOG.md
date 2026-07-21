@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Provider transports**: `provider: "bedrock"` for legacy Claude models
+  (3.5 Sonnet 0620/1022, Opus 3) surviving on AWS APAC after Anthropic API
+  retirement — AWS_* env credentials, model-ID mapping via membrane, prompt
+  caching forced off (legacy models reject `cache_control`; verified live).
+  `provider: "openai-codex"` (ChatGPT subscription, device-code login,
+  `/fast` toggle) and `provider: "openrouter"` formalized with validation.
+- **Bedrock wire logging**: `LoggingBedrockAdapter` writes
+  `llm-calls.<iso>.jsonl` on the bedrock path — tool names per request,
+  stop_reason + block shapes per response, raw request retained on errors.
+- **Prefill-era bot migration**: recipe `agent.formatter: "anthropic-xml"`
+  (membrane classic prefill) + `agent.prefillUserMessage` scaffold — together
+  reproduce a chapterx borg's exact prompting structure inside a resident
+  (first used for the Supreme Sonnet isekai, 2026-07-21).
+
 - Contribution policy: `CONTRIBUTING.md` (how changes land, review process,
   AI-attribution convention, changelog rules — binding for PRs and direct
   pushes, humans and AIs alike) and a PR template.
