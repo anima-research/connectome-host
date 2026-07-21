@@ -6,10 +6,19 @@ function recipe(agent: Record<string, unknown> = {}) {
 }
 
 describe('recipe provider validation', () => {
-  test('preserves Anthropic as the omitted provider and accepts Responses', () => {
+  test('preserves Anthropic as the omitted provider and accepts OpenAI providers', () => {
     expect(validateRecipe(recipe()).agent.provider).toBeUndefined();
     expect(validateRecipe(recipe({ provider: 'openai-responses' })).agent.provider)
       .toBe('openai-responses');
+    expect(validateRecipe(recipe({ provider: 'openai-codex' })).agent.provider)
+      .toBe('openai-codex');
+  });
+
+  test('accepts Codex subscription settings', () => {
+    expect(validateRecipe(recipe({
+      provider: 'openai-codex',
+      codex: { fastMode: true },
+    })).agent.codex).toEqual({ fastMode: true });
   });
 
   test('accepts Responses reasoning and compaction settings', () => {
@@ -19,11 +28,13 @@ describe('recipe provider validation', () => {
         reasoningEffort: 'xhigh',
         reasoningContext: 'all_turns',
         compactThreshold: 100_000,
+        serviceTier: 'priority',
       },
     })).agent.responses).toEqual({
       reasoningEffort: 'xhigh',
       reasoningContext: 'all_turns',
       compactThreshold: 100_000,
+      serviceTier: 'priority',
     });
   });
 
@@ -32,5 +43,7 @@ describe('recipe provider validation', () => {
     expect(() => validateRecipe(recipe({ responses: { reasoningEffort: 'ultra' } }))).toThrow(/reasoningEffort/);
     expect(() => validateRecipe(recipe({ responses: { reasoningContext: 'previous_turn' } }))).toThrow(/reasoningContext/);
     expect(() => validateRecipe(recipe({ responses: { compactThreshold: 0 } }))).toThrow(/compactThreshold/);
+    expect(() => validateRecipe(recipe({ responses: { serviceTier: 'fast' } }))).toThrow(/serviceTier/);
+    expect(() => validateRecipe(recipe({ codex: { fastMode: 'yes' } }))).toThrow(/fastMode/);
   });
 });

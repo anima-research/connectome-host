@@ -24,20 +24,28 @@ export function buildFrameworkAgentConfig(
     maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
     contextBudgetTokens: recipe.agent.contextBudgetTokens,
     ...(recipe.agent.cacheTtl && { cacheTtl: recipe.agent.cacheTtl }),
-    ...(recipe.agent.provider === 'openai-responses' && {
+    // Bedrock legacy Claude models reject cache_control outright
+    // ("your request did not allow prompt caching") — suppress markers.
+    ...(recipe.agent.provider === 'bedrock' && { promptCaching: false }),
+    // Prefill scaffold (anthropic-xml formatter), e.g. chapterx CLI-sim's
+    // '<cmd>cat untitled.txt</cmd>' — part of migrating prefill-era bots.
+    ...(recipe.agent.prefillUserMessage && { prefillUserMessage: recipe.agent.prefillUserMessage }),
+    ...((recipe.agent.provider === 'openai-responses' || recipe.agent.provider === 'openai-codex') && {
       providerParams: {
         reasoning: {
           effort: recipe.agent.responses?.reasoningEffort ?? 'high',
           context: recipe.agent.responses?.reasoningContext ?? 'all_turns',
         },
-        ...(recipe.agent.responses?.serviceTier ? {
-          service_tier: recipe.agent.responses.serviceTier,
-        } : {}),
-        ...(recipe.agent.responses?.compactThreshold ? {
-          context_management: [{
-            type: 'compaction',
-            compact_threshold: recipe.agent.responses.compactThreshold,
-          }],
+        ...(recipe.agent.provider === 'openai-responses' ? {
+          ...(recipe.agent.responses?.serviceTier ? {
+            service_tier: recipe.agent.responses.serviceTier,
+          } : {}),
+          ...(recipe.agent.responses?.compactThreshold ? {
+            context_management: [{
+              type: 'compaction',
+              compact_threshold: recipe.agent.responses.compactThreshold,
+            }],
+          } : {}),
         } : {}),
       },
     }),

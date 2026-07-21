@@ -14,6 +14,7 @@
  *   /clear         — Clear conversation display
  *   /mcp list|add|remove|env — Manage MCPL server config
  *   /budget [N]    — Show/set stream token budget (e.g. /budget 1m)
+ *   /fast [on|off|status] — Toggle Codex subscription Fast mode
  *   /session       — Session management (list, new, switch, rename, delete)
  *   /recipe        — Show current recipe info
  *   /newtopic      — Reset head window (auto-summarize or with user context)
@@ -37,6 +38,10 @@ interface AppContext {
   sessionManager: import('./session-manager.js').SessionManager;
   recipe: Recipe;
   branchState: BranchState;
+  codexAdapter?: {
+    isFastMode(): boolean;
+    setFastMode(enabled: boolean): void;
+  };
   switchSession(id: string): Promise<void>;
 }
 
@@ -152,6 +157,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /mcp remove <id>       Remove a server', style: 'system' },
           { text: '  /mcp env <id> K=V ...  Set env vars on server', style: 'system' },
           { text: '  /budget [tokens]       Show/set stream token budget', style: 'system' },
+          { text: '  /fast [on|off|status]  Toggle Codex subscription Fast mode', style: 'system' },
           { text: '  /session               Show current session', style: 'system' },
           { text: '  /session list          List all sessions', style: 'system' },
           { text: '  /session new [name]    Create new session', style: 'system' },
@@ -211,6 +217,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
     case 'budget':
       return handleBudget(framework, args[0]);
 
+    case 'fast':
+      return handleFast(app, args[0]);
+
     case 'session':
       return handleSession(app, args);
 
@@ -231,6 +240,42 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
         lines: [{ text: `Unknown command: /${cmd}. Type /help.`, style: 'system' }],
       };
   }
+}
+
+function handleFast(app: AppContext, mode?: string): CommandResult {
+  const adapter = app.codexAdapter;
+  if (!adapter) {
+    return {
+      lines: [{
+        text: '/fast is available only when agent.provider is "openai-codex".',
+        style: 'system',
+      }],
+    };
+  }
+
+  const normalized = mode?.toLowerCase();
+  if (normalized === undefined || normalized === 'status') {
+    return {
+      lines: [{
+        text: `Codex Fast mode request is ${adapter.isFastMode() ? 'ON' : 'OFF'}.`,
+        style: 'system',
+      }],
+    };
+  }
+  if (normalized !== 'on' && normalized !== 'off') {
+    return { lines: [{ text: 'Usage: /fast [on|off|status]', style: 'system' }] };
+  }
+
+  const enabled = normalized === 'on';
+  adapter.setFastMode(enabled);
+  return {
+    lines: [{
+      text: enabled
+        ? 'Codex Fast mode requested (higher subscription credit consumption when applied).'
+        : 'Codex Fast mode request disabled.',
+      style: 'system',
+    }],
+  };
 }
 
 // ---------------------------------------------------------------------------

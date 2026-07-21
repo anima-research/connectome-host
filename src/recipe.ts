@@ -89,7 +89,15 @@ export interface RecipeAgent {
   /** IANA zone used when rendering wall-clock times to the agent. */
   timezone?: string;
   /** Provider transport. Omitted preserves the historical Anthropic default. */
-  provider?: 'anthropic' | 'openai-responses';
+  provider?: 'anthropic' | 'openai-responses' | 'openai-codex' | 'openrouter' | 'bedrock';
+  /** Message formatter. 'native' (default) = structured user/assistant turns.
+   * 'anthropic-xml' = classic prefill format ("participant: text" runs, XML
+   * tools) — for migrating prefill-era bots (chapterx borgs) with their exact
+   * prompting structure intact. */
+  formatter?: 'native' | 'anthropic-xml';
+  /** Prefill scaffold user message appended after the conversation (e.g.
+   * chapterx CLI-sim's "<cmd>cat untitled.txt</cmd>"). Prefill formatter only. */
+  prefillUserMessage?: string;
   systemPrompt: string;
   maxTokens?: number;
   /**
@@ -109,6 +117,13 @@ export interface RecipeAgent {
    * Omitted preserves the compatibility carry-forward in Agent Framework.
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  /**
+   * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
+   * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
+   * models where it is opt-in, like claude-sonnet-4-5). Merged with any
+   * transport-required betas (OAuth). Anthropic provider only.
+   */
+  anthropicBetas?: string[];
   strategy?: RecipeStrategy;
   /**
    * Native extended thinking. When `enabled: true`, the agent's API requests
@@ -119,13 +134,20 @@ export interface RecipeAgent {
     enabled: boolean;
     budgetTokens?: number;
   };
-  /** Stateless OpenAI Responses settings. Only used with
-   * `provider: "openai-responses"`. */
+  /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
+   * compaction and serviceTier are API-key transport settings. */
   responses?: {
     reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningContext?: 'current_turn' | 'all_turns';
-    serviceTier?: string;
     compactThreshold?: number;
+    /** OpenAI Responses API processing tier. `priority` is the API-key
+     * equivalent of Codex fast mode. */
+    serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
+  };
+  /** ChatGPT-subscription Codex settings. Only used with
+   * `provider: "openai-codex"`. Runtime `/fast` overrides fastMode. */
+  codex?: {
+    fastMode?: boolean;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -752,8 +774,16 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe agent must have a "systemPrompt" string');
   }
 
-  if (agent.provider !== undefined && agent.provider !== 'anthropic' && agent.provider !== 'openai-responses') {
-    throw new Error(`Recipe agent.provider must be 'anthropic' or 'openai-responses', got ${JSON.stringify(agent.provider)}.`);
+  if (agent.provider !== undefined &&
+      agent.provider !== 'anthropic' &&
+      agent.provider !== 'openai-responses' &&
+      agent.provider !== 'openai-codex' &&
+      agent.provider !== 'openrouter' &&
+      agent.provider !== 'bedrock') {
+    throw new Error(
+      `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', or 'bedrock', ` +
+      `got ${JSON.stringify(agent.provider)}.`,
+    );
   }
 
   if (agent.timezone !== undefined) {
@@ -785,6 +815,20 @@ export function validateRecipe(raw: unknown): Recipe {
     if (responses.compactThreshold !== undefined &&
         (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
       throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
+    }
+    const serviceTiers = ['auto', 'default', 'flex', 'priority'];
+    if (responses.serviceTier !== undefined && !serviceTiers.includes(String(responses.serviceTier))) {
+      throw new Error(`Invalid agent.responses.serviceTier ${JSON.stringify(responses.serviceTier)}.`);
+    }
+  }
+
+  if (agent.codex !== undefined) {
+    if (!agent.codex || typeof agent.codex !== 'object' || Array.isArray(agent.codex)) {
+      throw new Error('Recipe agent.codex must be an object.');
+    }
+    const codex = agent.codex as Record<string, unknown>;
+    if (codex.fastMode !== undefined && typeof codex.fastMode !== 'boolean') {
+      throw new Error('Recipe agent.codex.fastMode must be a boolean.');
     }
   }
 

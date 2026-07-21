@@ -7,7 +7,7 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 ## Quick start
 
 ```bash
-# Prerequisites: Bun, Rust toolchain, Anthropic API key
+# Prerequisites: Bun, Rust toolchain, and provider credentials
 export ANTHROPIC_API_KEY=sk-ant-...
 
 bun install
@@ -96,6 +96,28 @@ Recipe servers merge with `mcpl-servers.json`. The file wins on conflict, so use
 
 See [`recipes/SETUP.md`](recipes/SETUP.md) for a detailed setup guide for the knowledge-miner recipe.
 
+### ChatGPT subscription provider
+
+Install the Codex CLI, sign in with `codex login`, then select the subscription
+transport in a recipe:
+
+```json
+{
+  "agent": {
+    "provider": "openai-codex",
+    "model": "gpt-5.4",
+    "codex": { "fastMode": false },
+    "systemPrompt": "You are a helpful assistant."
+  }
+}
+```
+
+Connectome asks the Codex app-server to refresh the ChatGPT login and starts a
+device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
+`/fast on` or `/fast off` at runtime. Connectome requests Codex's Fast tier and
+warns if the service reports that it fell back to Standard; Fast mode consumes
+subscription credits at a higher rate when applied.
+
 ## What it provides
 
 - **Web UI**: browser operator console (`modules.webui`) — live chat with full interiority (thinking, tool calls, streaming), agent/fleet tree, context makeup + compression coverage, call ledger with cache verdicts and billing-grade costs, health/ops alerts, Chronicle branch tree, lessons, MCPL config, workspace files; scoped read-only observer access via device keys
@@ -110,7 +132,7 @@ See [`recipes/SETUP.md`](recipes/SETUP.md) for a detailed setup guide for the kn
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+ and [Bun](https://bun.sh/) runtime
-- An Anthropic API key
+- An Anthropic API key, OpenAI API key, or the Codex CLI signed in with ChatGPT
 
 ### Install
 
@@ -123,7 +145,11 @@ npm install
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
-| `MODEL` | from recipe or `claude-opus-4-6` | Override model |
+| `OPENAI_API_KEY` | — | OpenAI Platform key for `openai-responses` recipes |
+| `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
+| `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
+| `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
+| `MODEL` | from recipe or provider default | Override model |
 | `DATA_DIR` | `./data` | Session and recipe storage |
 
 ## Running
@@ -176,6 +202,7 @@ locally running host.
 | `/mcp remove <id>` | Remove a server |
 | `/mcp env <id> KEY=VALUE [...]` | Set env vars on a server |
 | `/budget [tokens]` | Show/set stream token budget |
+| `/fast [on\|off\|status]` | Toggle Codex subscription Fast mode |
 | `/session list\|new\|switch\|rename\|delete` | Session management |
 | `/quit` | Exit |
 
