@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.10 — 2026-07-21
+
 ### Added
 
 - **Provider transports**: `provider: "bedrock"` for legacy Claude models
