@@ -19,7 +19,11 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 // ---------------------------------------------------------------------------
 
 export interface RecipeStrategy {
-  type: 'autobiographical' | 'passthrough' | 'frontdesk';
+  /** Built-in strategy name, or a custom type registered by a
+   *  `kind: "strategy"` extension (see `Recipe.extensions`). The
+   *  `string & {}` arm keeps literal autocompletion while admitting
+   *  extension-registered names. */
+  type: 'autobiographical' | 'passthrough' | 'frontdesk' | (string & {});
   // Core window/compression sizing
   headWindowTokens?: number;
   recentWindowTokens?: number;
@@ -503,6 +507,31 @@ export interface RecipeFleetChild {
   autoRestart?: boolean;
 }
 
+/**
+ * A deployment-specific code extension: a local TS/JS module that registers
+ * custom context strategies and/or framework modules at boot. See
+ * src/extensions.ts for the loader and the `register(api, config)` contract.
+ */
+export interface RecipeExtension {
+  /** Primary purpose. Gates validation (a non-built-in `agent.strategy.type`
+   *  requires at least one `kind: "strategy"` extension) and informs build
+   *  tooling; does not restrict what `register` may call. */
+  kind: 'strategy' | 'module';
+  /** Path to the extension entry module. Relative paths resolve against the
+   *  recipe file's directory at load time; URL-loaded recipes must use
+   *  absolute paths (the host never imports code over the network). */
+  path: string;
+  /** Opaque blob passed verbatim to the extension's `register` function and
+   *  to module factory contexts. */
+  config?: Record<string, unknown>;
+  /** Build-tooling acquisition metadata (git url/ref/install pattern) —
+   *  consumed by connectome-cook at build time, ignored at runtime. */
+  source?: Record<string, unknown>;
+  /** Build-only provenance: `source` demoted by build tooling into the
+   *  shipped recipe. Ignored at runtime. */
+  sourceMeta?: Record<string, unknown>;
+}
+
 export interface Recipe {
   name: string;
   description?: string;
@@ -510,6 +539,8 @@ export interface Recipe {
   agent: RecipeAgent;
   mcpServers?: Record<string, RecipeMcpServer>;
   modules?: RecipeModules;
+  /** Deployment-specific code extensions, keyed by a human-readable name. */
+  extensions?: Record<string, RecipeExtension>;
   sessionNaming?: { examples?: string[] };
 }
 
@@ -639,6 +670,7 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
+  resolveExtensionPaths(recipe, sourceBase);
   return resolveSystemPrompt(recipe);
 }
 
@@ -660,6 +692,25 @@ function resolveChildRecipePaths(recipe: Recipe, base: RecipeSourceBase): void {
   if (!fleet.children) return;
   for (const child of fleet.children) {
     child.recipe = resolveRecipeRelative(child.recipe, base);
+  }
+}
+
+/**
+ * Resolve relative `extensions[].path` values against the recipe file's
+ * directory. URL-loaded recipes cannot carry relative extension paths — the
+ * host never fetches code over the network, so there is nothing local to
+ * resolve them against.
+ */
+function resolveExtensionPaths(recipe: Recipe, base: RecipeSourceBase): void {
+  for (const [name, ext] of Object.entries(recipe.extensions ?? {})) {
+    if (isAbsolute(ext.path)) continue;
+    if (base.kind === 'url') {
+      throw new Error(
+        `extensions.${name}.path "${ext.path}" is relative, but the recipe was loaded from a URL. ` +
+        `Extension code is never fetched remotely — use an absolute path to a local install.`,
+      );
+    }
+    ext.path = resolve(base.dir, ext.path);
   }
 }
 
@@ -782,6 +833,37 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
+  // Validate the extensions block if present (before the strategy check,
+  // which consults it to admit custom strategy types).
+  let hasStrategyExtension = false;
+  if (obj.extensions !== undefined) {
+    if (!obj.extensions || typeof obj.extensions !== 'object' || Array.isArray(obj.extensions)) {
+      throw new Error('Recipe "extensions" must be an object mapping names to extension entries.');
+    }
+    for (const [name, entry] of Object.entries(obj.extensions as Record<string, unknown>)) {
+      if (!name) throw new Error('Recipe extensions keys must be non-empty names.');
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new Error(`extensions.${name} must be an object.`);
+      }
+      const ext = entry as Record<string, unknown>;
+      if (ext.kind !== 'strategy' && ext.kind !== 'module') {
+        throw new Error(`extensions.${name}.kind must be "strategy" or "module", got ${JSON.stringify(ext.kind)}.`);
+      }
+      if (typeof ext.path !== 'string' || !ext.path) {
+        throw new Error(`extensions.${name}.path must be a non-empty string.`);
+      }
+      if (ext.config !== undefined && (!ext.config || typeof ext.config !== 'object' || Array.isArray(ext.config))) {
+        throw new Error(`extensions.${name}.config must be an object.`);
+      }
+      for (const metaKey of ['source', 'sourceMeta'] as const) {
+        if (ext[metaKey] !== undefined && (!ext[metaKey] || typeof ext[metaKey] !== 'object' || Array.isArray(ext[metaKey]))) {
+          throw new Error(`extensions.${name}.${metaKey} must be an object.`);
+        }
+      }
+      if (ext.kind === 'strategy') hasStrategyExtension = true;
+    }
+  }
+
   // Validate strategy type if present
   if (agent.strategy) {
     const strategy = agent.strategy as Record<string, unknown>;
@@ -789,10 +871,13 @@ export function validateRecipe(raw: unknown): Recipe {
       strategy.type &&
       strategy.type !== 'autobiographical' &&
       strategy.type !== 'passthrough' &&
-      strategy.type !== 'frontdesk'
+      strategy.type !== 'frontdesk' &&
+      !hasStrategyExtension
     ) {
       throw new Error(
-        `Invalid strategy type "${strategy.type}". Must be "autobiographical", "passthrough", or "frontdesk".`,
+        `Invalid strategy type "${strategy.type}". Must be "autobiographical", "passthrough", ` +
+        `or "frontdesk" — or a custom type registered by a "kind": "strategy" entry in the ` +
+        `recipe's "extensions" block (none is declared).`,
       );
     }
     if (
