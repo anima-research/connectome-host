@@ -16,7 +16,8 @@
  * fan-out across many VMs are the reverse-proxy's job; an optional Basic-Auth
  * check is available as defense-in-depth.
  *
- * See WEBUI-PLAN.md and src/web/protocol.ts for the wire shape.
+ * See src/web/protocol.ts for the wire shape and docs/webui-deployment.md
+ * for the deployment story.
  */
 
 import { CURVE_PAGE_HTML } from './web-ui-curve-page.js';
@@ -57,6 +58,7 @@ import {
   type TokenUsage,
   type CallLedgerSnapshot,
   type McplListMessage,
+  type BranchesListMessage,
   type LessonsListMessage,
 } from '../web/protocol.js';
 import {
@@ -1547,6 +1549,9 @@ export class WebUiModule implements Module {
     if (client.auth !== 'observer') return false;
     if (type === 'ping') return true;
     if (type === 'request-history') return client.scopes?.has('messages') ?? false;
+    // Branch listing is conversation-shape metadata (names, fork points) —
+    // same sensitivity tier as the message window, so same scope.
+    if (type === 'request-branches') return client.scopes?.has('messages') ?? false;
     return false; // observers are read-only: no user-message/command/mcpl/fleet
   }
 
@@ -1695,6 +1700,11 @@ export class WebUiModule implements Module {
 
       case 'request-mcpl': {
         this.sendMcplList(client);
+        return;
+      }
+
+      case 'request-branches': {
+        this.sendBranchesList(client);
         return;
       }
 
@@ -1981,6 +1991,40 @@ export class WebUiModule implements Module {
       })),
     };
     this.send(client, out);
+  }
+
+  /** Build a BranchesListMessage from the agent's context manager. Lineage
+   *  (parentId + branchPoint) comes straight from Chronicle's branch records;
+   *  the SPA folds it into a tree. */
+  private sendBranchesList(client: ClientState): void {
+    if (!sharedServer?.app) return;
+    const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
+    if (!cm) {
+      this.send(client, { type: 'error', message: 'no agent context manager' });
+      return;
+    }
+    try {
+      const branches = cm.listBranches();
+      const current = cm.currentBranch();
+      const out: BranchesListMessage = {
+        type: 'branches-list',
+        branches: branches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          head: b.head,
+          ...(b.parentId !== undefined ? { parentId: b.parentId } : {}),
+          ...(b.branchPoint !== undefined ? { branchPoint: b.branchPoint } : {}),
+          created: b.created instanceof Date ? b.created.getTime() : Number(b.created),
+        })),
+        currentId: current.id,
+      };
+      this.send(client, out);
+    } catch (err) {
+      this.send(client, {
+        type: 'error',
+        message: `branch listing failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   /** Build a LessonsListMessage from the bound LessonsModule, if present. */

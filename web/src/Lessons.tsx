@@ -3,7 +3,8 @@
  *
  * Shows active lessons sorted by confidence; deprecated entries collapse to a
  * dim line with the reason. Manual refresh button — lessons mutate slowly
- * (knowledge-miner pipeline is the typical writer), so we don't auto-poll.
+ * (the agent's LessonsModule tools are the typical writer), so we don't
+ * auto-poll.
  */
 
 import { For, Show } from 'solid-js';

@@ -13,6 +13,8 @@ import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewe
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
+import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
+import { BranchPanel } from './Branches';
 import {
   WEB_PROTOCOL_VERSION,
   type WebUiServerMessage,
@@ -23,6 +25,7 @@ import {
   type TokenUsage,
   type PerAgentCost,
   type CallLedgerSnapshot,
+  type BranchRow,
 } from '@conhost/web/protocol';
 
 /** Client-side block: the wire MessageBlock plus live-stream bookkeeping. */
@@ -123,7 +126,7 @@ export function App() {
    *  `mode` decides whether the side panel shows live stream events or a
    *  static usage breakdown; clicking the row opens 'stream', clicking the
    *  token badge opens 'usage'. Both share the same panel slot. */
-  type PanelMode = 'stream' | 'usage';
+  type PanelMode = 'stream' | 'usage' | 'branches';
   const [focusedId, setFocusedId] = createSignal<string | null>(null);
   const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
   const [panelMode, setPanelMode] = createSignal<PanelMode | null>(null);
@@ -136,9 +139,140 @@ export function App() {
    *  was invoked. Non-null = the quit-confirm modal is open. */
   const [quitConfirm, setQuitConfirm] = createSignal<string[] | null>(null);
 
+  // ---------------------------------------------------------------------------
+  // Ops alerts + health — the operator-facing half of the ops:alert pipeline
+  // (failures.log / webhook already exist for machines; this is for the human
+  // actually looking at the page).
+  // ---------------------------------------------------------------------------
+
+  /** Active alerts keyed `${agent}:${kind}`. Live `ops:alert` traces upsert;
+   *  `<kind>-clear` traces and /healthz reconciliation remove. */
+  const [opsAlerts, setOpsAlerts] = createSignal<Map<string, OpsAlert>>(new Map());
+  const alertList = createMemo(() =>
+    [...opsAlerts().values()].sort((a, b) => b.at - a.at));
+
+  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true): void => {
+    const key = `${agent}:${kind}`;
+    setOpsAlerts((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(key);
+      next.set(key, {
+        key,
+        kind,
+        agent,
+        message,
+        at: Date.now(),
+        count: existing ? existing.count + (bump ? 1 : 0) : 1,
+      });
+      return next;
+    });
+  };
+  const removeOpsAlert = (key: string): void => {
+    setOpsAlerts((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  /** Fold an `ops:alert` trace into the strip. All-clear travels as a
+   *  distinct `<kind>-clear` alert (see the host's quarantine wiring), so a
+   *  `-clear` suffix removes its base alert instead of adding a row. */
+  const applyOpsAlertTrace = (e: { [k: string]: unknown }): void => {
+    const kind = typeof e.kind === 'string' ? e.kind : 'unknown';
+    const agent = typeof e.agentName === 'string' ? e.agentName : '?';
+    const message = typeof e.message === 'string' ? e.message : '';
+    if (kind.endsWith('-clear')) {
+      removeOpsAlert(`${agent}:${kind.slice(0, -'-clear'.length)}`);
+      return;
+    }
+    upsertOpsAlert(kind, agent, message);
+  };
+
+  /** /healthz snapshot — feeds the Health tab and reconciles durable-state
+   *  alerts (quarantine, hard-down) so a page opened mid-incident alarms
+   *  without waiting for the next klaxon re-fire. */
+  const [health, setHealth] = createSignal<HealthSnapshot | null>(null);
+  const [healthErr, setHealthErr] = createSignal<string | null>(null);
+  let healthDenied = false;
+
+  const reconcileHealthAlerts = (h: HealthSnapshot): void => {
+    const quarantine = h.compressionQuarantine ?? {};
+    for (const [agent, q] of Object.entries(quarantine)) {
+      const key = `${agent}:compression-quarantine`;
+      if ((q.count ?? 0) > 0) {
+        if (!opsAlerts().has(key)) {
+          upsertOpsAlert('compression-quarantine', agent,
+            `${q.count} chunk(s) in compression quarantine — spans stay raw and will eventually exhaust the context budget.`,
+            false);
+        }
+      } else {
+        removeOpsAlert(key);
+      }
+    }
+    for (const a of h.agents ?? []) {
+      const key = `${a.name}:inference-exhausted`;
+      const streak = a.consecutiveInferenceFailures ?? 0;
+      if (streak >= 3) {
+        const message = `${streak} consecutive inference failures — agent is down.`
+          + (a.lastInference?.lastError ? ` Last: ${a.lastInference.lastError}` : '');
+        // Only touch the entry when the condition actually changed —
+        // rewriting `at` every poll would show a perpetual "5s ago" and
+        // re-sort the strip on every cycle.
+        if (opsAlerts().get(key)?.message !== message) {
+          upsertOpsAlert('inference-exhausted', a.name, message, false);
+        }
+      } else {
+        removeOpsAlert(key);
+      }
+    }
+  };
+
+  /** `force` retries past a remembered 401/403 — the operator's grant may
+   *  have gained the 'health' scope since the poll gave up. */
+  const loadHealth = async (force = false): Promise<void> => {
+    if (healthDenied && !force) return;
+    if (force) healthDenied = false;
+    try {
+      const res = await fetch('/healthz', { credentials: 'same-origin' });
+      if (!res.ok) {
+        if (res.status === 403 || res.status === 401) {
+          healthDenied = true;
+          setHealthErr('403');
+          return;
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const h = (await res.json()) as HealthSnapshot;
+      setHealth(h);
+      setHealthErr(null);
+      reconcileHealthAlerts(h);
+    } catch (e) {
+      setHealthErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Branch panel — Chronicle lineage view, opened from the header branch chip.
+  // ---------------------------------------------------------------------------
+
+  const [branches, setBranches] = createSignal<BranchRow[]>([]);
+  const [branchesCurrentId, setBranchesCurrentId] = createSignal<string | null>(null);
+  const [branchesLoading, setBranchesLoading] = createSignal(false);
+
+  const refreshBranches = (): void => {
+    setBranchesLoading(true);
+    wire.send({ type: 'request-branches' });
+  };
+
+  const checkoutBranch = (name: string): void => {
+    wire.send({ type: 'command', command: `/checkout ${name}` });
+  };
+
   /** Right-sidebar tab selection. The Tree is the most-used surface so it's
    *  the default; lessons / mcp / files are operator-driven panels. */
-  type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context';
+  type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'health';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
   const [mainView, setMainView] = createSignal<'chat' | 'context'>('chat');
 
@@ -623,6 +757,23 @@ export function App() {
     streamTokenBuffer = '';
   };
 
+  /** Toggle the branch panel in the shared middle-panel slot. Requests a
+   *  fresh listing on every open — branch mutations happen through commands
+   *  and MCPL, so a cached list goes stale invisibly. */
+  const openBranches = (): void => {
+    if (panelMode() === 'branches') {
+      closePanel();
+      return;
+    }
+    teardownPeek();
+    setFocusedId(null);
+    setFocusedNode(null);
+    setPanelMode('branches');
+    setStreamLines([]);
+    streamTokenBuffer = '';
+    refreshBranches();
+  };
+
   const toggleExpand = (id: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -741,12 +892,32 @@ export function App() {
           setOpenFile(file);
           setFileLoading(false);
         },
+        onOpsAlert: applyOpsAlertTrace,
+        setBranchesList: (list, currentId) => {
+          setBranches(list);
+          setBranchesCurrentId(currentId);
+          setBranchesLoading(false);
+        },
+        onBranchChanged: (branch) => {
+          // Update the header chip immediately; the server's re-welcome
+          // follows with the new branch's messages. Refresh the lineage
+          // panel if the operator is looking at it.
+          setWelcome((w) => (w ? { ...w, branch } : w));
+          if (panelMode() === 'branches') refreshBranches();
+        },
       });
     });
     onCleanup(() => {
       detach();
       wire.close();
     });
+
+    // Health poll: durable-state alerts (quarantine, hard-down) must not
+    // depend on being connected when the klaxon fired. 15s keeps the strip
+    // honest without meaningful load (counts-only JSON).
+    void loadHealth();
+    const healthTimer = window.setInterval(() => void loadHealth(), 15_000);
+    onCleanup(() => window.clearInterval(healthTimer));
   });
 
   /** Route a server message into the stream pane *if* it matches the focused
@@ -838,8 +1009,15 @@ export function App() {
 
   return (
     <div class="flex flex-col h-screen">
-      <Header welcome={welcome()} usage={usage()} status={wire.status()} />
+      <Header
+        welcome={welcome()}
+        usage={usage()}
+        status={wire.status()}
+        branchPanelOpen={panelMode() === 'branches'}
+        onBranchClick={openBranches}
+      />
       <ReconnectBanner status={wire.status()} />
+      <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
           <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
@@ -975,6 +1153,17 @@ export function App() {
             />
           )}
         </Show>
+        <Show when={panelMode() === 'branches'}>
+          <BranchPanel
+            branches={branches()}
+            currentId={branchesCurrentId() ?? welcome()?.branch.id ?? null}
+            loading={branchesLoading()}
+            readOnly={wire.observerState() === 'observer'}
+            onCheckout={checkoutBranch}
+            onRefresh={refreshBranches}
+            onClose={closePanel}
+          />
+        </Show>
         <aside class="w-72 border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
           <SidebarTabs
             current={sidebarTab()}
@@ -1042,6 +1231,13 @@ export function App() {
             <Show when={sidebarTab() === 'context'}>
               <ContextPanel agent={panelScope() === 'local' ? undefined : panelScope()} />
             </Show>
+            <Show when={sidebarTab() === 'health'}>
+              <HealthPanel
+                health={health()}
+                error={healthErr()}
+                onRefresh={() => void loadHealth(true)}
+              />
+            </Show>
           </div>
           <RecipePane welcome={welcome()} scope={panelScope()} />
         </aside>
@@ -1092,6 +1288,12 @@ interface HandlerHooks {
   setMountTree: (mount: string, entries: FlatEntry[]) => void;
   /** Apply a workspace-file response. */
   setOpenFile: (file: FileViewer) => void;
+  /** Fold an ops:alert trace into the alert strip. */
+  onOpsAlert: (event: { [k: string]: unknown }) => void;
+  /** Apply a branches-list response. */
+  setBranchesList: (branches: BranchRow[], currentId: string) => void;
+  /** React to a server-side branch switch (undo/redo/checkout). */
+  onBranchChanged: (branch: { id: string; name: string }) => void;
 }
 
 function handleServerMessage(
@@ -1158,6 +1360,9 @@ function handleServerMessage(
           }
           return;
         }
+        case 'ops:alert':
+          hooks.onOpsAlert(e);
+          return;
         default:
           return;
       }
@@ -1173,7 +1378,13 @@ function handleServerMessage(
       return;
     }
     case 'branch-changed':
+      hooks.onBranchChanged(msg.branch);
       return;
+    case 'branches-list':
+      hooks.setBranchesList(msg.branches, msg.currentId);
+      return;
+    // The server follows a session switch with a full re-welcome (setApp
+    // re-flushes every client), which resets all session-scoped state.
     case 'session-changed':
       return;
     case 'inbound-trigger': {
@@ -1228,6 +1439,8 @@ function Header(props: {
   welcome: WelcomeMessage | null;
   usage: TokenUsage;
   status: string;
+  branchPanelOpen: boolean;
+  onBranchClick(): void;
 }) {
   const fmt = (n: number): string => {
     if (n < 1000) return String(n);
@@ -1255,10 +1468,19 @@ function Header(props: {
           · {props.welcome!.session.name}
         </div>
       </Show>
-      <Show when={props.welcome?.branch.name && props.welcome.branch.name !== 'main'}>
-        <div class="text-amber-400 text-xs font-mono px-1.5 py-0.5 bg-amber-950/30 rounded">
-          {props.welcome!.branch.name}
-        </div>
+      <Show when={props.welcome?.branch.name}>
+        <button
+          type="button"
+          class={`text-xs font-mono px-1.5 py-0.5 rounded ${
+            props.welcome!.branch.name !== 'main'
+              ? 'text-amber-400 bg-amber-950/30 hover:bg-amber-950/60'
+              : 'text-neutral-400 bg-neutral-900 hover:bg-neutral-800'
+          } ${props.branchPanelOpen ? 'ring-1 ring-cyan-800' : ''}`}
+          title="Chronicle branches — click to browse lineage"
+          onClick={() => props.onBranchClick()}
+        >
+          ⑂ {props.welcome!.branch.name}
+        </button>
       </Show>
       <div class="ml-auto text-xs font-mono text-neutral-500">
         {fmt(props.usage.input)} in
@@ -1720,16 +1942,19 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
   );
 }
 
+type SidebarTabId = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'health';
+
 function SidebarTabs(props: {
-  current: 'tree' | 'lessons' | 'mcp' | 'files' | 'context';
-  onSelect: (tab: 'tree' | 'lessons' | 'mcp' | 'files' | 'context') => void;
+  current: SidebarTabId;
+  onSelect: (tab: SidebarTabId) => void;
 }) {
-  const tabs: Array<{ id: 'tree' | 'lessons' | 'mcp' | 'files' | 'context'; label: string; title: string }> = [
+  const tabs: Array<{ id: SidebarTabId; label: string; title: string }> = [
     { id: 'tree', label: 'Tree', title: 'Agent + fleet tree' },
     { id: 'lessons', label: 'Lessons', title: 'Lesson library' },
     { id: 'mcp', label: 'MCP', title: 'MCPL servers' },
     { id: 'files', label: 'Files', title: 'Workspace mounts + files' },
     { id: 'context', label: 'Context', title: 'Compiled context makeup' },
+    { id: 'health', label: 'Health', title: 'Runtime settings, failures, quarantine' },
   ];
   return (
     <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px]">
@@ -1747,16 +1972,6 @@ function SidebarTabs(props: {
           {t.label}
         </button>
       )}</For>
-    </div>
-  );
-}
-
-/** Stub used while a tab's full content isn't shipped yet. Replaced as each
- *  panel lands. */
-function PlaceholderPanel(props: { label: string }) {
-  return (
-    <div class="px-3 py-3 text-xs text-neutral-600 italic">
-      {props.label} — coming soon.
     </div>
   );
 }
