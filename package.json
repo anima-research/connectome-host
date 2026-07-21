@@ -7,6 +7,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
+    "version": "bun scripts/release-changelog.ts && git add CHANGELOG.md",
     "build:web": "npm --prefix web install && npm --prefix web run build",
     "build:web:ci": "npm ci --prefix web && npm --prefix web run build",
     "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install",
