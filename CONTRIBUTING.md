@@ -102,11 +102,11 @@ that don't fail on unfixed code, or with claims the branch itself disproves.
   `## X.Y.Z — YYYY-MM-DD` (keeping a fresh `Unreleased` above it, and
   refusing to release when there are no entries), then npm commits and tags.
   `git push --follow-tags` triggers CI, which refuses a tag with no matching
-  changelog section, creates the GitHub release with that section as its
-  notes, and runs the npm publish job. The GitHub release is the primary
-  release artifact (the package is consumed by github-clone) and does not
-  depend on npm publish succeeding. Version bumps are a maintainer
-  release-time action, not part of feature PRs.
+  changelog section, publishes `@animalabs/connectome-host` to npm, and
+  creates the GitHub release with that section as its notes. The two release
+  jobs are independent: some consumers run github-clone checkouts, so
+  release notes must exist even when npm publish fails. Version bumps are a
+  maintainer release-time action, not part of feature PRs.
 
 ## Building and testing
 
@@ -116,6 +116,11 @@ bun test            # test suite
 bunx tsc --noEmit   # typecheck
 bun src/index.ts    # run (generic assistant)
 ```
+
+Push-time CI (`ci.yml`) builds and tests every push and PR on ubuntu and
+macos, installing the web app with a strict lockfile (`npm ci`) — if you
+touched `web/` dependencies, regenerate the lock with `npm run relock:web`
+so it carries both platforms' native binaries.
 
 See `docs/DEV-ENVIRONMENT.md` for the full dev setup and `docs/` generally
 for architecture and operations guides.

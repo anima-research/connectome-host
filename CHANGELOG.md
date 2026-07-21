@@ -13,8 +13,8 @@
 - Release mechanics automated: `npm version <level>` cuts `Unreleased` into
   `## X.Y.Z — date` via the `version` hook (`scripts/release-changelog.ts`),
   and on release tags CI creates the GitHub release with that section as
-  its notes — independent of the npm publish job, which stays dormant until
-  the package actually exists on npm.
+  its notes — independent of the npm publish job, so notes exist for
+  github-clone consumers even when a publish fails.
 - **Web UI observability catch-up**: `ops:alert` traces render as persistent
   banner rows in the SPA (compression quarantine, refusal streaks,
   inference-exhausted; `<kind>-clear` stands them down); a Health sidebar tab
@@ -39,6 +39,11 @@
 - Dead `PlaceholderPanel` removed from the SPA; stale doc pointers
   (`WEBUI-PLAN.md`, knowledge-miner references) corrected; README now
   documents the web UI, headless mode, and current TUI peek semantics.
+
+## 0.3.2 — 2026-07-14
+
+Retro-filed: 0.3.1–0.3.9 predate the changelog policy and were released
+without cutting this file; only the entry below was recorded at the time.
 
 ### Breaking (recipe authors only)
 
