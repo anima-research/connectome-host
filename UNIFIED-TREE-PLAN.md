@@ -1,5 +1,7 @@
 # Unified Tree Plan: Fleet Children as Subagents in the TUI
 
+**Status: shipped** — all phases landed; see "Implementation outcome" below. The per-phase headers preserve the plan as written.
+
 Goal: collapse the two-paradigm UI (`SubagentModule`'s in-process tree vs. `FleetModule`'s flat child list) into a single tree-rendering paradigm where fleet children appear and behave like subagents — same readouts (context tokens, phase, tool-call count), same unfold-children affordance, same row component.
 
 Companion to [HEADLESS-FLEET-PLAN.md](./HEADLESS-FLEET-PLAN.md), which defines the underlying IPC.
