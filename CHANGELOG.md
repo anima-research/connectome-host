@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Tool-bloat reduction**: subscription-gc's `set_channel_idle_limit` /
+  `list_channel_idle_limits` tools folded into `agent_settings` as the
+  `channel_idle_limits` field (per-entry merge; number / `"off"` /
+  `"default"`-or-null to clear), following the reasoning-controls
+  precedent. The old tool names remain routable (undeclared) — internal
+  callers like ChannelModeModule's pin, and agent muscle memory, keep
+  working; agents just no longer carry the two extra tool schemas.
+
 ## 0.3.10 — 2026-07-21
 
 ### Added

@@ -136,3 +136,54 @@ describe('SubscriptionGcModule', () => {
     await m2.stop();
   });
 });
+
+describe('agent_settings extension (channel_idle_limits)', () => {
+  test('declares no standalone tools but keeps the old names routable', async () => {
+    const mod = new SubscriptionGcModule();
+    await mod.start(mockCtx().ctx as unknown as ModuleContext);
+    expect(mod.getTools()).toEqual([]);
+    // Undeclared ≠ dead: ChannelModeModule pins limits via this name.
+    const result = await mod.handleToolCall({
+      id: 't1',
+      name: 'set_channel_idle_limit',
+      input: { channelId: 'C1', limit: 'off' },
+    });
+    expect(result.success).toBe(true);
+    const ext = mod.getAgentSettingsExtension();
+    expect(ext.get('agent')).toEqual({ channel_idle_limits: { C1: 'off' } });
+  });
+
+  test('update merges per entry: number, off, default/null', () => {
+    const mod = new SubscriptionGcModule();
+    void mod.start(mockCtx().ctx as unknown as ModuleContext);
+    const ext = mod.getAgentSettingsExtension();
+    ext.update('agent', { channel_idle_limits: { A: 5000, B: 'off', C: '12000' } });
+    expect(ext.get('agent')).toEqual({ channel_idle_limits: { A: 5000, B: 'off', C: 12000 } });
+    // merge: only mentioned entries change; default/null clear
+    ext.update('agent', { channel_idle_limits: { A: 'default', B: null } });
+    expect(ext.get('agent')).toEqual({ channel_idle_limits: { C: 12000 } });
+  });
+
+  test('update rejects junk values with a clear error', () => {
+    const mod = new SubscriptionGcModule();
+    void mod.start(mockCtx().ctx as unknown as ModuleContext);
+    const ext = mod.getAgentSettingsExtension();
+    expect(() => ext.update('agent', { channel_idle_limits: { A: -3 } })).toThrow(/positive/);
+    expect(() => ext.update('agent', { channel_idle_limits: 'off' })).toThrow(/object/);
+    expect(() => ext.update('agent', { channel_idle_limits: ['A'] })).toThrow(/object/);
+  });
+
+  test('reset clears all overrides', () => {
+    const mod = new SubscriptionGcModule();
+    void mod.start(mockCtx().ctx as unknown as ModuleContext);
+    const ext = mod.getAgentSettingsExtension();
+    ext.update('agent', { channel_idle_limits: { A: 5000, B: 'off' } });
+    expect(ext.reset('agent')).toEqual({ channel_idle_limits: {} });
+    // keyed reset also clears
+    ext.update('agent', { channel_idle_limits: { A: 5000 } });
+    expect(ext.reset('agent', ['channel_idle_limits'])).toEqual({ channel_idle_limits: {} });
+    // reset for other keys leaves ours alone
+    ext.update('agent', { channel_idle_limits: { A: 5000 } });
+    expect(ext.reset('agent', ['reasoning_enabled'])).toEqual({ channel_idle_limits: { A: 5000 } });
+  });
+});

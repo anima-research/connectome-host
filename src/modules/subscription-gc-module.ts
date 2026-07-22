@@ -112,37 +112,15 @@ export class SubscriptionGcModule implements Module {
     this.ctx = null;
   }
 
+  /** No agent-visible tools — idle limits live inside the framework's
+   *  `agent_settings` tool via getAgentSettingsExtension() below (same
+   *  consolidation as the reasoning controls). The two former tools remain
+   *  ROUTABLE though undeclared: module tool routing is prefix-based, and
+   *  ChannelModeModule pins limits by calling
+   *  `subscription-gc--set_channel_idle_limit` programmatically — that
+   *  internal path (and any agent muscle memory) keeps working. */
   getTools(): ToolDefinition[] {
-    return [
-      {
-        name: 'set_channel_idle_limit',
-        description:
-          'Set how many characters of ambient (non-mention, non-DM) traffic a ' +
-          'subscribed channel may emit between your activations before it is ' +
-          'auto-closed. `limit` is a number of characters, "default" to ' +
-          `use the global default (${this.defaultLimitChars}), or "off" to ` +
-          'never auto-close this channel.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            channelId: { type: 'string', description: 'Discord channel ID' },
-            limit: {
-              type: 'string',
-              description: 'A character count (e.g. "20000"), "default", or "off".',
-            },
-          },
-          required: ['channelId', 'limit'],
-        },
-      },
-      {
-        name: 'list_channel_idle_limits',
-        description:
-          'Show the auto-close configuration: the global default limit, ' +
-          'per-channel overrides, and the current since-last-activation ambient ' +
-          'character counts per channel.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-    ];
+    return [];
   }
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
@@ -192,8 +170,89 @@ export class SubscriptionGcModule implements Module {
           },
         };
       default:
-        return { success: false, error: `Unknown tool: ${call.name}`, isError: true };
+        return {
+          success: false,
+          error:
+            `Unknown tool: ${call.name}. Idle-limit controls live in agent_settings ` +
+            `(field channel_idle_limits).`,
+          isError: true,
+        };
     }
+  }
+
+  /**
+   * Declare idle limits as an agent_settings extension: the framework merges
+   * the field into the agent_settings tool and routes get/update/reset back
+   * here. Same pattern as SettingsModule's reasoning fields. Update semantics
+   * mirror the (undeclared but still routable) set_channel_idle_limit tool:
+   * per entry, a positive number sets an override, "off" pins the channel
+   * open (never auto-close), and "default"/null clears back to the global
+   * default. Entries not mentioned in a patch are left untouched.
+   */
+  getAgentSettingsExtension(): {
+    properties: Record<string, unknown>;
+    keys: string[];
+    get(agentName: string): Record<string, unknown>;
+    update(agentName: string, patch: Record<string, unknown>): Record<string, unknown>;
+    reset(agentName: string, keys?: string[]): Record<string, unknown>;
+  } {
+    return {
+      properties: {
+        channel_idle_limits: {
+          type: 'object',
+          description:
+            'Per-channel ambient auto-close budgets, as {"<channelId>": value}: ' +
+            'a positive number of characters, "off" (never auto-close this ' +
+            'channel), or "default"/null (clear the override). Channels not ' +
+            `listed use the global default (${this.defaultLimitChars} chars of ` +
+            'ambient traffic between your activations before auto-close). ' +
+            'Patches merge per entry; unmentioned channels are untouched.',
+        },
+      },
+      keys: ['channel_idle_limits'],
+      get: () => ({ channel_idle_limits: { ...this.state.overrides } }),
+      update: (_agentName, patch) => {
+        const raw = patch.channel_idle_limits;
+        if (raw === undefined) return { channel_idle_limits: { ...this.state.overrides } };
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new Error(
+            'channel_idle_limits must be an object mapping channel ids to a ' +
+            'positive number, "off", or "default"/null',
+          );
+        }
+        for (const [channelId, value] of Object.entries(raw as Record<string, unknown>)) {
+          if (channelId.length === 0) throw new Error('channel id must be non-empty');
+          const numeric =
+            typeof value === 'number'
+              ? value
+              : typeof value === 'string' && /^\d+$/.test(value.trim())
+                ? Number(value.trim())
+                : NaN;
+          if (value === 'default' || value === null) {
+            delete this.state.overrides[channelId];
+          } else if (value === 'off') {
+            this.state.overrides[channelId] = 'off';
+          } else if (Number.isFinite(numeric) && numeric > 0) {
+            this.state.overrides[channelId] = Math.round(numeric);
+          } else {
+            throw new Error(
+              `channel_idle_limits[${JSON.stringify(channelId)}] must be a positive ` +
+              'number, "off", or "default"/null',
+            );
+          }
+        }
+        this.persistNow();
+        return { channel_idle_limits: { ...this.state.overrides } };
+      },
+      reset: (_agentName, keys) => {
+        const all = !keys || keys.length === 0;
+        if (all || keys?.includes('channel_idle_limits')) {
+          this.state.overrides = {};
+          this.persistNow();
+        }
+        return { channel_idle_limits: { ...this.state.overrides } };
+      },
+    };
   }
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
