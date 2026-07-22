@@ -46,6 +46,7 @@ import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
 import { ObserversModule } from './modules/observers-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
+import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { loadMcplServers, applyAgentOverlay, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
@@ -355,6 +356,14 @@ async function createFramework(
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({ path: observersPath }));
+  }
+
+  // TTS relay tap — opt-in per recipe. Pure trace-bus consumer: mirrors the
+  // agent's streaming generation to a melodeus-tts-relay /bot endpoint and
+  // trims posted messages on voice interruptions. See modules.ttsRelay in
+  // recipe.ts for the config contract (url/token validated at recipe load).
+  if (modules.ttsRelay) {
+    moduleInstances.push(new TtsRelayModule(modules.ttsRelay));
   }
 
   // Extension-registered modules. Instantiated last so built-in modules keep

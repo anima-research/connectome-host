@@ -421,6 +421,18 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
+   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
+   * the host mirrors the agent's streaming generation — chunks, block
+   * boundaries, activation start/end, tagged with the turn's channel — to the
+   * relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak it.
+   * Also handles the relay's `interruption` events: the just-posted Discord
+   * message is edited down to the words actually voiced, and a note lands in
+   * the agent's context. Pure trace-bus tap — no effect on the agent loop.
+   * `token` should be `${VAR}`-substituted from .env, never literal.
+   */
+  ttsRelay?: RecipeTtsRelay;
+
+  /**
    * Auto-unsubscribe noisy ambient channels. On by default. Per subscribed
    * channel, the host counts ambient (non-mention, non-DM) characters since the
    * agent's last activation; when a channel crosses its limit before the next
@@ -469,6 +481,25 @@ export interface RecipeWebUi {
    * — only sensible when something else upstream is enforcing it.
    */
   allowedOrigins?: string[];
+}
+
+export interface RecipeTtsRelay {
+  /** Relay bot endpoint, e.g. "ws://localhost:8800/bot". */
+  url: string;
+  /** Shared secret for the relay's /bot auth (its BOT_TOKENS). */
+  token: string;
+  /** Relay-side bot identifier. Defaults to the agent's name. */
+  botId?: string;
+  /** Discord user id stamped on stream events (client voice-config key).
+   *  Defaults to botId. */
+  userId?: string;
+  /** Display name stamped on stream events. Defaults to the agent's name. */
+  username?: string;
+  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  editServerId?: string;
+  reconnectIntervalMs?: number;
+  /** Drop a context note when an interruption trims a posted message. Default true. */
+  notifyOnInterruption?: boolean;
 }
 
 export interface RecipeFleet {
@@ -1107,6 +1138,22 @@ export function validateRecipe(raw: unknown): Recipe {
         if (m.mode !== undefined && m.mode !== 'read-write' && m.mode !== 'read-only') {
           throw new Error(`workspace.mounts[${i}].mode must be "read-write" or "read-only"`);
         }
+      }
+    }
+
+    // Validate ttsRelay if present — url + token are load-bearing, and a
+    // recipe that names the module but can't reach a relay should fail at
+    // load, not silently stream nowhere.
+    if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {
+      if (typeof mods.ttsRelay !== 'object' || mods.ttsRelay === null) {
+        throw new Error('modules.ttsRelay must be an object ({ url, token, ... })');
+      }
+      const tr = mods.ttsRelay as Record<string, unknown>;
+      if (typeof tr.url !== 'string' || !/^wss?:\/\//.test(tr.url)) {
+        throw new Error('modules.ttsRelay.url must be a ws:// or wss:// URL');
+      }
+      if (typeof tr.token !== 'string' || !tr.token) {
+        throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
       }
     }
 
