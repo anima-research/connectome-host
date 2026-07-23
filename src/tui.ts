@@ -102,7 +102,13 @@ interface TuiState {
    * peek-proc  — peek into a child process's live event stream (new)
    */
   viewMode: 'chat' | 'fleet' | 'peek' | 'peek-proc';
+  /** Session-cumulative usage (usage:updated totals across all agents). */
   tokens: TokenUsage;
+  /** Root agent's CURRENT context size (per-round input from inference
+   *  usage events). Deliberately separate from tokens.input — conflating
+   *  them made the status line oscillate between two different quantities
+   *  under the same label. */
+  ctxTokens: number;
   peekTarget: string | null;
   /** Name of the child process being peeked at (peek-proc mode). */
   peekProcTarget: string | null;
@@ -193,6 +199,7 @@ export async function runTui(app: AppContext): Promise<void> {
     subagents: [],
     viewMode: 'chat',
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ctxTokens: 0,
     peekTarget: null,
     peekProcTarget: null,
     peekProcAgent: null,
@@ -318,7 +325,11 @@ export async function runTui(app: AppContext): Promise<void> {
   const INLINE_PASTE_THRESHOLD = 200;
   const pastedTexts: string[] = [];
   function formatPastePlaceholder(n: number, text: string): string {
-    const head = text.replace(/\s+/g, ' ').trim().slice(0, 30);
+    // Square brackets in the head would terminate the `[^\]]*` expansion
+    // regex early on submit, mangling the message (pasted JSON/code/links
+    // all contain `]`). Substitute them in the *display* head only — the
+    // stored paste text is untouched.
+    const head = text.replace(/\s+/g, ' ').trim().slice(0, 30).replace(/[[\]]/g, '·');
     const lines = text.split(/\r?\n/).length;
     const sizeHint = lines > 1 ? `${text.length}ch, ${lines}L` : `${text.length}ch`;
     return `[paste #${n}: "${head}…" ${sizeHint}]`;
@@ -445,7 +456,7 @@ export async function runTui(app: AppContext): Promise<void> {
     // An active ops alert repaints the whole left segment — a one-cell glyph
     // in default gray is exactly the kind of signal that gets scrolled past.
     statusLeft.fg = opsAlerts.size > 0 ? RED : GRAY;
-    statusRight.content = formatTokens(state.tokens, verboseChat) + formatMemStats(getRootCM());
+    statusRight.content = formatTokens(state.tokens, verboseChat, state.ctxTokens) + formatMemStats(getRootCM());
   }
 
   /** Best-effort handle to the root agent's ContextManager, for stats queries. */
@@ -1468,12 +1479,12 @@ export async function runTui(app: AppContext): Promise<void> {
           if (short !== agent) agentContextTokens.set(short, roundUsage.input);
           if (state.viewMode === 'fleet') updateFleetView();
         }
-        // Update root-agent token state for status-line display.
-        if (agent === rootAgentName && roundUsage) {
-          if (roundUsage.input !== undefined) state.tokens.input = roundUsage.input;
-          if (roundUsage.output !== undefined) state.tokens.output = (state.tokens.output ?? 0) + (roundUsage.output ?? 0);
-          if (roundUsage.cacheRead !== undefined) state.tokens.cacheRead = roundUsage.cacheRead;
-          if (roundUsage.cacheCreation !== undefined) state.tokens.cacheWrite = roundUsage.cacheCreation;
+        // Update the root agent's context-size readout. Only ctxTokens —
+        // per-round numbers must not overwrite the session totals that
+        // usage:updated owns (cache fields included: per-round cacheRead is
+        // this round's hit, not the cumulative the Σ segment displays).
+        if (agent === rootAgentName && roundUsage?.input !== undefined) {
+          state.ctxTokens = roundUsage.input;
           updateStatus();
         }
         break;
@@ -1486,6 +1497,7 @@ export async function runTui(app: AppContext): Promise<void> {
           agentContextTokens.set(agent, usage.input);
           const short = shortAgentName(agent);
           if (short !== agent) agentContextTokens.set(short, usage.input);
+          if (agent === rootAgentName) state.ctxTokens = usage.input;
         }
 
         if (agent === rootAgentName) {
@@ -2266,6 +2278,7 @@ export async function runTui(app: AppContext): Promise<void> {
           refreshFromStore();
           addLine(`Session: ${session?.name ?? 'unknown'}`, GRAY);
           state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          state.ctxTokens = 0;
           // Alerts describe the OLD session's strategy/agents; the new
           // session's own klaxons re-fire within their alarm interval if the
           // condition still holds there. A stale alert with no reachable
@@ -2384,7 +2397,12 @@ function formatStatusLeft(
       bar += ` ${tokStr} tok`;
     }
   }
-  if (state.tool) bar += ` | ${state.tool}`;
+  if (state.tool) {
+    // A parallel batch of long MCPL-prefixed names would otherwise push the
+    // right status segment (tokens/cost/mem) clean off the row.
+    const tool = state.tool.length > 40 ? state.tool.slice(0, 37) + '…' : state.tool;
+    bar += ` | ${tool}`;
+  }
   const running = state.subagents.filter(s => s.status === 'running').length;
   if (running > 0) {
     bar += ` | ${running} sub`;
@@ -2404,12 +2422,16 @@ function formatStatusLeft(
   return bar;
 }
 
-function formatTokens(tokens: TokenUsage, verbose: boolean): string {
+function formatTokens(tokens: TokenUsage, verbose: boolean, ctxTokens = 0): string {
   const parts: string[] = [];
+
+  // Current context size first, session totals (Σ) after — two different
+  // quantities, two labels.
+  if (ctxTokens > 0) parts.push(`ctx:${fmtTokens(ctxTokens)}`);
 
   const total = tokens.input + tokens.output;
   if (total > 0) {
-    let s = `${fmtTokens(tokens.input)}in ${fmtTokens(tokens.output)}out`;
+    let s = `Σ ${fmtTokens(tokens.input)}in ${fmtTokens(tokens.output)}out`;
     if (tokens.cacheRead > 0) s += ` ${fmtTokens(tokens.cacheRead)}hit`;
     if (tokens.cacheWrite > 0) s += ` ${fmtTokens(tokens.cacheWrite)}write`;
     if (tokens.cost && tokens.cost.total > 0) {
