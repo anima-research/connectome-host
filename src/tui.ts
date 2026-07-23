@@ -48,6 +48,24 @@ export function fmtTokens(n: number): string {
 }
 
 /**
+ * What a submission at the armed /quit prompt means. Pure so the semantics
+ * are pinned by tests: the default for arbitrary input is CANCEL — the
+ * pre-fix behavior ("anything else → kill everything") meant a user who
+ * forgot the prompt and typed a normal chat message killed the fleet.
+ * `cancel-keep-input` = the input looks like a real message; the caller
+ * must restore it rather than discard it.
+ */
+export type QuitConfirmAction = 'kill' | 'detach' | 'cancel' | 'cancel-keep-input';
+export function resolveQuitConfirm(raw: string): QuitConfirmAction {
+  const c = raw.trim().toLowerCase();
+  // Re-typing the quit command at the prompt is a confirmation, not a cancellation.
+  if (c === 'y' || c === 'yes' || c === 'q' || c === 'quit' || c === '/q' || c === '/quit') return 'kill';
+  if (c === 'd' || c === 'detach') return 'detach';
+  if (c === '' || c === 'n' || c === 'no' || c === 'cancel') return 'cancel';
+  return 'cancel-keep-input';
+}
+
+/**
  * Canonical short name for a subagent's full framework name. The single
  * source of truth for full↔short resolution — ad-hoc `.includes()` matching
  * here used to cross-wire agents whose names were substrings of each other
@@ -402,9 +420,15 @@ export async function runTui(app: AppContext): Promise<void> {
   const summaryCache = new Map<string, string>();
   const summarySnapshotLen = new Map<string, number>();
   const summaryPending = new Set<string>();
+  /** Earliest next attempt per agent after a FAILED summary call. Without
+   *  this, a failing provider (outage, 429 storm) meets the 500ms poll tick
+   *  and becomes a 2 Hz per-agent inference retry hose — summaryPending only
+   *  guards concurrency, not the gap between a fast failure and the next tick. */
+  const summaryBackoffUntil = new Map<string, number>();
 
   const SUMMARY_DELTA = 2000;
   const SUMMARY_WINDOW = 10_000;
+  const SUMMARY_FAILURE_BACKOFF_MS = 30_000;
 
   function appendTranscript(agent: string, text: string) {
     const next = (agentTranscripts.get(agent) ?? '') + text;
@@ -414,6 +438,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
   async function generateSummary(agentName: string) {
     if (summaryPending.has(agentName)) return;
+    if (Date.now() < (summaryBackoffUntil.get(agentName) ?? 0)) return;
     const transcript = agentTranscripts.get(agentName);
     if (!transcript || transcript.length < 50) return;
 
@@ -438,9 +463,11 @@ export async function runTui(app: AppContext): Promise<void> {
         .map(b => b.text).join('').trim();
       summaryCache.set(agentName, text.length > 60 ? text.slice(0, 57) + '...' : text);
       summarySnapshotLen.set(agentName, totalLen);
+      summaryBackoffUntil.delete(agentName);
       if (state.viewMode === 'fleet') updateFleetView();
     } catch {
-      // best-effort
+      // Best-effort display — but never an unthrottled retry loop.
+      summaryBackoffUntil.set(agentName, Date.now() + SUMMARY_FAILURE_BACKOFF_MS);
     } finally {
       summaryPending.delete(agentName);
     }
@@ -1952,6 +1979,7 @@ export async function runTui(app: AppContext): Promise<void> {
     summaryCache.clear();
     summarySnapshotLen.clear();
     summaryPending.clear();
+    summaryBackoffUntil.clear();
     subagentPhase.clear();
     state.subagents = [];
     seenFleetHeaders.clear();
@@ -2232,29 +2260,29 @@ export async function runTui(app: AppContext): Promise<void> {
     // armed to swallow the user's next real message.
     if (state.pendingQuitConfirm) {
       state.pendingQuitConfirm = false;
-      pastedTexts.length = 0;
-      const c = raw.toLowerCase();
-      if (c === 'y' || c === 'yes' || c === '/quit' || c === '/q' || c === 'quit' || c === 'q') {
-        // Re-typing the quit command at the prompt is a confirmation, not
-        // a cancellation — the user is saying "yes, really quit".
+      const action = resolveQuitConfirm(raw);
+      if (action === 'kill') {
         addLine('  (stopping children and exiting...)', GRAY);
         cleanup();
         return;
       }
-      if (c === 'd' || c === 'detach') {
+      if (action === 'detach') {
         fleetMod?.setDetachMode(true);
         addLine('  (detaching — children stay running; next parent will adopt them)', CYAN);
         cleanup();
         return;
       }
-      // Anything that isn't an explicit yes/detach cancels the quit. The
-      // previous behavior ("anything else → kill everything") meant a user
-      // who forgot the prompt and typed a normal message killed the fleet.
-      // Their input is NOT sent as a message either — say so explicitly.
-      if (c === 'n' || c === 'no' || c === 'cancel' || c === '') {
-        addLine('  (quit cancelled)', GRAY);
+      if (action === 'cancel-keep-input') {
+        // The user typed a real message at the prompt. Cancel the quit and
+        // put the message BACK — clearing it (with its paste referents)
+        // while advising "type it again" would destroy a paste the user
+        // cannot re-type. pastedTexts is deliberately left intact so the
+        // restored placeholders still expand on the next submit.
+        (input as any).insertText(raw);
+        addLine('  (quit cancelled — your message was restored to the input; press Enter to send)', GRAY);
       } else {
-        addLine('  (quit cancelled — your input was not sent; type it again to send)', GRAY);
+        pastedTexts.length = 0;
+        addLine('  (quit cancelled)', GRAY);
       }
       return;
     }

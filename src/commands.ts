@@ -790,10 +790,14 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   let target = point.branchName;
   let exact = false;
   if (point.messageId) {
-    const current = cm.currentBranch();
+    // A checkpoint is a POSITION, so position equality is the whole
+    // "already there" test. Comparing branch names too would kill the guard
+    // after the first restore (you'd be on restore-{name}-{ts}, never the
+    // original branch again) and every repeat /restore would mint another
+    // branch pointing at the same message.
     const { messages } = cm.queryMessages({});
-    const atCheckpoint = current.name === point.branchName
-      && messages.length > 0 && messages[messages.length - 1]!.id === point.messageId;
+    const atCheckpoint = messages.length > 0
+      && messages[messages.length - 1]!.id === point.messageId;
     if (atCheckpoint) {
       return { lines: [{ text: `Already at checkpoint "${name}".`, style: 'system' }] };
     }
@@ -801,6 +805,9 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
       // branchAt returns the new branch's NAME (the only thing switchBranch accepts).
       target = cm.branchAt(point.messageId, `restore-${name}-${Date.now()}`);
       exact = true;
+      // The record follows the position: keep the newest branch that holds
+      // the checkpoint message as the fallback for future restores.
+      app.branchState.checkpoints.set(name, { branchName: target, messageId: point.messageId });
     } catch {
       // branchAt resolves ids against the CURRENT branch's view of the log;
       // after e.g. /undo the checkpoint message may not be reachable from

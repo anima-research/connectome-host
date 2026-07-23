@@ -8,6 +8,10 @@ data/
 .zuliprc
 mcpl-servers.json
 my-recipe.json
+# Runtime queue artifacts produced by a running miner — never source code.
+# (A stray `git add -A` once published one to a public branch; this is the
+# regression test for that workflow bug.)
+knowledge-requests/
 output/
 review-output/
 tsconfig.tsbuildinfo
