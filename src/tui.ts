@@ -635,7 +635,8 @@ export async function runTui(app: AppContext): Promise<void> {
     // Index subagents by short name for tree building
     const byName = new Map<string, FleetNode>();
     for (const sa of state.subagents) {
-      const fullName = [...(subMod?.activeSubagents.keys() ?? [])].find(k => k.includes(sa.name)) ?? sa.name;
+      const fullName = [...(subMod?.activeSubagents.keys() ?? [])]
+        .find(k => k === sa.name || shortAgentName(k) === sa.name) ?? sa.name;
       const node: FleetNode = {
         name: sa.name,
         fullName,
@@ -651,8 +652,8 @@ export async function runTui(app: AppContext): Promise<void> {
       const parentFullName = agentParent.get(sa.name);
       if (parentFullName && parentFullName !== rootAgentName) {
         // Find the parent's short name
-        const parentShort = [...byName.keys()].find(k => parentFullName.includes(k));
-        if (parentShort && byName.has(parentShort)) {
+        const parentShort = byName.has(parentFullName) ? parentFullName : shortAgentName(parentFullName);
+        if (byName.has(parentShort)) {
           byName.get(parentShort)!.children.push(byName.get(sa.name)!);
           continue;
         }
@@ -985,7 +986,7 @@ export async function runTui(app: AppContext): Promise<void> {
     const fullName = node.kind === 'fleet-child' || node.kind === 'fleet-child-agent'
       ? null
       : node.kind === 'researcher' ? rootAgentName
-      : [...agentTranscripts.keys()].find(k => k.includes(node.name));
+      : [...agentTranscripts.keys()].find(k => k === node.name || shortAgentName(k) === node.name);
     if (fullName) {
       const summary = summaryCache.get(fullName);
       if (summary) {
@@ -1409,7 +1410,7 @@ export async function runTui(app: AppContext): Promise<void> {
             if (prev) {
               const delta = Math.ceil(content.length / 4);
               agentContextTokens.set(agent, prev + delta);
-              const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+              const short = shortAgentName(agent);
               if (short !== agent) agentContextTokens.set(short, prev + delta);
             }
           }
@@ -1424,7 +1425,7 @@ export async function runTui(app: AppContext): Promise<void> {
         } | undefined;
         if (agent && roundUsage?.input) {
           agentContextTokens.set(agent, roundUsage.input);
-          const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+          const short = shortAgentName(agent);
           if (short !== agent) agentContextTokens.set(short, roundUsage.input);
           if (state.viewMode === 'fleet') updateFleetView();
         }
@@ -1444,7 +1445,7 @@ export async function runTui(app: AppContext): Promise<void> {
         // Track context size per agent (store by both full and short name)
         if (usage && agent && usage.input) {
           agentContextTokens.set(agent, usage.input);
-          const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+          const short = shortAgentName(agent);
           if (short !== agent) agentContextTokens.set(short, usage.input);
         }
 
@@ -1498,7 +1499,7 @@ export async function runTui(app: AppContext): Promise<void> {
           updateStatus();
         } else {
           if (agent) {
-            const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+            const short = shortAgentName(agent);
             subagentPhase.set(short, 'failed');
           }
           addLine(`[${agent}] Error: ${event.error}`, DIM_GRAY);
@@ -1534,9 +1535,9 @@ export async function runTui(app: AppContext): Promise<void> {
           if (streaming) endStream();
           if (!backgrounded) addLine(`[tools] ${names}`, YELLOW);
         } else {
-          const short = (agent ?? '').replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '');
+          const short = shortAgentName(agent ?? '');
           addLine(`  [${short}] ${names}`, DIM_GRAY);
-          const sa = state.subagents.find(s => (agent ?? '').includes(s.name));
+          const sa = state.subagents.find(s => s.name === agent || s.name === short);
           if (sa) {
             sa.toolCallsCount += calls.length;
             sa.statusMessage = names.split('--').pop();
@@ -1578,7 +1579,7 @@ export async function runTui(app: AppContext): Promise<void> {
         // Show file operations in chat
         const toolInput = event.input as Record<string, unknown> | undefined;
         if (toolInput && (agent === rootAgentName || verboseChat)) {
-          const short = agent === rootAgentName ? '' : `[${(agent ?? '').replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '')}] `;
+          const short = agent === rootAgentName ? '' : `[${shortAgentName(agent ?? '')}] `;
           if (tool === 'files:write' && toolInput.filePath) {
             const fp = String(toolInput.filePath);
             addLine(`  ${short}write ${fp}`, DIM_GRAY);
@@ -1608,7 +1609,7 @@ export async function runTui(app: AppContext): Promise<void> {
         if (agent === rootAgentName) {
           addLine(`[tool error] ${tool}: ${error}`, RED);
         } else if (agent) {
-          const short = agent.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+          const short = shortAgentName(agent);
           addLine(`  [${short}] tool error: ${tool}: ${error}`, RED);
         }
         break;
