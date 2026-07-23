@@ -1003,13 +1003,33 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  /** Transient error notice shown inside the fleet view — the operator is
+   *  looking at THIS view when a kill/restart fails, not the chat scrollback. */
+  let fleetNotice: string | null = null;
+  let fleetNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  function showFleetNotice(text: string): void {
+    fleetNotice = text;
+    if (fleetNoticeTimer) clearTimeout(fleetNoticeTimer);
+    fleetNoticeTimer = setTimeout(() => {
+      fleetNotice = null;
+      fleetNoticeTimer = null;
+      if (state.viewMode === 'fleet') updateFleetView();
+    }, 6000);
+    // Also record it in scrollback so it survives after the notice fades.
+    addLine(`  ${text}`, RED);
+    if (state.viewMode === 'fleet') updateFleetView();
+  }
+
   function updateFleetView() {
     const tree = buildFleetTree();
     visibleNodeIds = [];
     visibleNodes.clear();
 
     const lines: FleetLine[] = [];
-    lines.push({ text: '─── Agent Fleet ─── ↑↓:nav  ⏎/→:fold  p:peek  Del:stop  r:restart ───', color: GRAY });
+    lines.push({ text: '─── Agent Fleet ─── ↑↓:nav  ⏎/→:fold  p:peek  Del:stop  r:restart  Esc:chat ───', color: GRAY });
+    if (fleetNotice) {
+      lines.push({ text: `  ⚠ ${fleetNotice}`, color: RED });
+    }
     lines.push({ text: '', color: GRAY });
 
     renderNode(tree, 0, lines);
@@ -1102,8 +1122,15 @@ export async function runTui(app: AppContext): Promise<void> {
     lines.push({ text: '', color: GRAY });
 
     const log = procPeekLogs.get(key);
+    // In-progress token line (not yet flushed to log) — appended after the
+    // tail below; fetched first so the tail budget accounts for its row.
+    const pending = procPeekTokenLine.get(key);
     if (log && log.length > 0) {
-      const maxLines = Math.max(10, renderer.terminalHeight - 10);
+      // Same viewport accounting as updatePeekView: header lines already in
+      // `lines`, the "N lines above" marker, and the pending token line all
+      // occupy rows of the terminalHeight - 3 the fleetBox actually has.
+      const available = renderer.terminalHeight - 3;
+      const maxLines = Math.max(5, available - lines.length - 1 - (pending ? 1 : 0));
       const tail = log.slice(-maxLines);
       if (log.length > maxLines) {
         lines.push({ text: `  ┈ (${log.length - maxLines} lines above)`, color: DIM_GRAY });
@@ -1117,8 +1144,6 @@ export async function runTui(app: AppContext): Promise<void> {
         : '  (no events yet — child may be idle)', color: DIM_GRAY });
     }
 
-    // In-progress token line (not yet flushed to log) — shows live streaming output.
-    const pending = procPeekTokenLine.get(key);
     if (pending) {
       lines.push({ text: `  ${pending}`, color: WHITE });
     }
@@ -1156,19 +1181,28 @@ export async function runTui(app: AppContext): Promise<void> {
     // doesn't have to wait for the next event to see history.
     if (!procPeekLogs.has(key)) procPeekLogs.set(key, []);
     const log = procPeekLogs.get(key)!;
+    const lastEvt = child.events[child.events.length - 1];
     if (log.length === 0) {
       for (const evt of child.events) {
         if (!matches(evt)) continue;
         const formatted = formatWireEvent(evt);
         if (formatted) log.push(formatted);
       }
+    } else if (lastEvt && procPeekLastEvent.get(key) !== lastEvt) {
+      // The subscription was torn down when the user left this peek; events
+      // the child emitted since then are absent from this log. Mark the gap
+      // instead of silently resuming from "now". (Object identity on the
+      // child's ring buffer is the tell — same process, same array.)
+      appendProcPeekLog(key, '┈ re-attached — events emitted while detached are not shown ┈', DIM_GRAY);
     }
+    if (lastEvt) procPeekLastEvent.set(key, lastEvt);
 
     // Subscribe for live updates.  Handle token events with line merging so
     // streaming output shows up as a natural-looking line buffer rather
     // than one log entry per token.
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
     procPeekUnsub = fleetMod.onChildEvent(name, (_childName, evt) => {
+      procPeekLastEvent.set(key, evt);
       if (!matches(evt)) return;
       const type = typeof evt.type === 'string' ? evt.type : '';
       const active = state.viewMode === 'peek-proc'
@@ -1318,9 +1352,14 @@ export async function runTui(app: AppContext): Promise<void> {
 
     lines.push({ text: '', color: GRAY });
 
-    // Accumulated event log — show last N lines
+    // Accumulated event log — show last N lines. Tail budget: fleetBox shows
+    // terminalHeight - 3 rows (status bar, input row, box paddingTop), and
+    // everything already in `lines` plus the "N lines above" marker must fit
+    // too — otherwise the NEWEST lines, the whole point of a tail-follow
+    // view, get clipped off the bottom of the box.
     if (log && log.length > 0) {
-      const maxLines = Math.max(10, renderer.terminalHeight - 8);
+      const available = renderer.terminalHeight - 3;
+      const maxLines = Math.max(5, available - lines.length - 1);
       const tail = log.slice(-maxLines);
       if (log.length > maxLines) {
         lines.push({ text: `  ┈ (${log.length - maxLines} lines above)`, color: DIM_GRAY });
@@ -1696,6 +1735,9 @@ export async function runTui(app: AppContext): Promise<void> {
   }
   // In-progress token line buffer per child (flushed to log on newline / next event).
   const procPeekTokenLine = new Map<string, string>();
+  /** Last event (by object identity) each peek key has processed — detects
+   *  "events arrived while detached" on re-entry so the gap can be marked. */
+  const procPeekLastEvent = new Map<string, WireEvent>();
   let procPeekUnsub: (() => void) | null = null;
 
   function appendProcPeekLog(name: string, text: string, color: string): void {
@@ -1862,6 +1904,7 @@ export async function runTui(app: AppContext): Promise<void> {
     peekTokenLine.clear();
     procPeekLogs.clear();
     procPeekTokenLine.clear();
+    procPeekLastEvent.clear();
     agentTranscripts.clear();
     transcriptTotalLen.clear();
     agentContextTokens.clear();
@@ -2064,9 +2107,14 @@ export async function runTui(app: AppContext): Promise<void> {
         if (node && node.kind !== 'researcher') {
           if (node.kind === 'fleet-child' && fleetMod) {
             const childName = node.fleetChildName!;
+            // handleToolCall resolves with {success:false, error} rather than
+            // throwing — a bare .catch() here used to swallow every failure.
             fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } })
-              .then(() => updateFleetView())
-              .catch(() => { /* error surfaces in status */ });
+              .then((res) => {
+                if (!res.success) showFleetNotice(`stop ${childName} failed: ${res.error ?? 'unknown'}`);
+                updateFleetView();
+              })
+              .catch((err: unknown) => showFleetNotice(`stop ${childName} failed: ${String(err)}`));
           } else if (node.kind === 'subagent') {
             const sa = state.subagents.find(s => s.name === nodeId);
             if (sa?.status === 'running' && subMod) {
@@ -2084,8 +2132,11 @@ export async function runTui(app: AppContext): Promise<void> {
         if (node?.kind === 'fleet-child' && fleetMod) {
           const childName = node.fleetChildName!;
           fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } })
-            .then(() => updateFleetView())
-            .catch(() => { /* error surfaces in status */ });
+            .then((res) => {
+              if (!res.success) showFleetNotice(`restart ${childName} failed: ${res.error ?? 'unknown'}`);
+              updateFleetView();
+            })
+            .catch((err: unknown) => showFleetNotice(`restart ${childName} failed: ${String(err)}`));
         }
       }
     }
@@ -2290,6 +2341,7 @@ export async function runTui(app: AppContext): Promise<void> {
   function cleanup() {
     cleanupPeek();
     cleanupPeekProc();
+    if (fleetNoticeTimer) clearTimeout(fleetNoticeTimer);
     fleetOpsUnsub?.();
     treeAggregator?.dispose();
     for (const unsub of subagentStreamUnsubs) unsub();
