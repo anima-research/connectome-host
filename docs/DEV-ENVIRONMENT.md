@@ -1,6 +1,6 @@
 # Connectome Dev Environment — Setup Guide
 
-**Status:** Working notes. Snapshot of the dev layout as of 2026-07-21 (originally 2026-05-30; all feature branches in the original table have since merged to `main`).
+**Status:** Working notes. Snapshot of the dev layout as of 2026-07-22 (originally 2026-05-30; all feature branches in the original table have since merged to `main`).
 **Goal:** Reproduce the current development state — every component as a local git
 checkout, wired together so the host runs against editable source.
 
