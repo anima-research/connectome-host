@@ -48,14 +48,23 @@ export function fmtTokens(n: number): string {
 }
 
 /**
- * Canonical short name for a subagent's full framework name: strips the
- * spawn-/fork- prefix and trailing -N / -retryN counters. The single source
- * of truth for full↔short resolution — ad-hoc `.includes()` matching here
- * used to cross-wire agents whose names were substrings of each other
+ * Canonical short name for a subagent's full framework name. The single
+ * source of truth for full↔short resolution — ad-hoc `.includes()` matching
+ * here used to cross-wire agents whose names were substrings of each other
  * (e.g. `web` / `websearch`).
+ *
+ * Naming schemes (see subagent-module.ts spawn/fork paths):
+ *   spawn: `spawn-{name}-{ts}`
+ *   fork:  `{name}-d{depth}-{ts}` / `{name}-d{depth}-retry{n}-{ts}` — no
+ *          fork- prefix at all; the -d{depth} suffix must be stripped too,
+ *          or every fork resolves to e.g. `web-d1` and matches nothing.
  */
-function shortAgentName(full: string): string {
-  return full.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+export function shortAgentName(full: string): string {
+  return full
+    .replace(/^(spawn|fork)-/, '')
+    .replace(/-d\d+(-retry\d+)?-\d+$/, '')
+    .replace(/-\d+$/, '')
+    .replace(/-retry\d+$/, '');
 }
 
 interface AppContext {
@@ -280,6 +289,16 @@ export async function runTui(app: AppContext): Promise<void> {
   });
   let fleetLineCounter = 0;
 
+  /** Detach AND destroy all fleetBox lines. These views rebuild on every
+   *  poll tick — remove() without destroy() leaked one native text buffer
+   *  per line per repaint. */
+  function clearFleetBox(): void {
+    for (const child of [...fleetBox.getChildren()]) {
+      fleetBox.remove(child.id);
+      child.destroy();
+    }
+  }
+
   const statusLeft = new TextRenderable(renderer, {
     id: 'status-left',
     content: formatStatusLeft(state),
@@ -438,7 +457,12 @@ export async function runTui(app: AppContext): Promise<void> {
     const children = scrollBox.getChildren();
     if (children.length <= SCROLLBACK_CAP) return;
     for (const child of children.slice(0, children.length - SCROLLBACK_CAP)) {
+      if (child === currentStreamText) continue; // never destroy the live stream element
+      // remove() only detaches; destroy() is what frees the native text
+      // buffer. Without it the "cap" bounds render cost but still leaks
+      // one native buffer per line.
       scrollBox.remove(child.id);
+      child.destroy();
     }
   }
 
@@ -581,17 +605,19 @@ export async function runTui(app: AppContext): Promise<void> {
    * Clears conversation, reloads messages, restores fleet tree from persisted subagent state.
    */
   function refreshFromStore() {
-    // Clear conversation display
-    const children = [...scrollBox.getChildren()];
-    for (const child of children) {
-      scrollBox.remove(child.id);
-    }
-    messageCounter = 0;
-
-    // Reset streaming state
+    // Reset streaming state BEFORE destroying renderables so nothing can
+    // touch a freed native buffer through currentStreamText.
     streaming = false;
     currentStreamText = null;
     currentStreamBuffer = '';
+
+    // Clear conversation display (destroy frees the native text buffers)
+    const children = [...scrollBox.getChildren()];
+    for (const child of children) {
+      scrollBox.remove(child.id);
+      child.destroy();
+    }
+    messageCounter = 0;
     state.status = 'idle';
     state.tool = null;
 
@@ -1054,9 +1080,7 @@ export async function runTui(app: AppContext): Promise<void> {
     lines.push({ text: '                                    Tab: chat', color: DIM_GRAY });
 
     // Rebuild fleetBox children: clear old, add new per-line renderables
-    for (const child of [...fleetBox.getChildren()]) {
-      fleetBox.remove(child.id);
-    }
+    clearFleetBox();
     for (const line of lines) {
       fleetBox.add(new TextRenderable(renderer, {
         id: `fleet-ln-${++fleetLineCounter}`,
@@ -1160,7 +1184,7 @@ export async function runTui(app: AppContext): Promise<void> {
       lines.push({ text: `  ${pending}`, color: WHITE });
     }
 
-    for (const boxChild of [...fleetBox.getChildren()]) fleetBox.remove(boxChild.id);
+    clearFleetBox();
     for (const line of lines) {
       fleetBox.add(new TextRenderable(renderer, {
         id: `fleet-ln-${++fleetLineCounter}`,
@@ -1345,7 +1369,10 @@ export async function runTui(app: AppContext): Promise<void> {
 
     const sa = state.subagents.find(s => s.name === name);
     if (sa) {
-      const elapsed = Math.floor((Date.now() - sa.startedAt) / 1000);
+      // Finished subagents (peekable since the enterPeek relaxation) show
+      // their final runtime, not a clock that keeps counting after done.
+      const endTime = sa.completedAt ?? Date.now();
+      const elapsed = Math.floor((endTime - sa.startedAt) / 1000);
       const min = Math.floor(elapsed / 60);
       const sec = elapsed % 60;
       const timeStr = min > 0 ? `${min}m${sec}s` : `${sec}s`;
@@ -1385,9 +1412,7 @@ export async function runTui(app: AppContext): Promise<void> {
     }
 
     // Rebuild fleetBox children
-    for (const child of [...fleetBox.getChildren()]) {
-      fleetBox.remove(child.id);
-    }
+    clearFleetBox();
     for (const line of lines) {
       fleetBox.add(new TextRenderable(renderer, {
         id: `fleet-ln-${++fleetLineCounter}`,
@@ -2201,19 +2226,17 @@ export async function runTui(app: AppContext): Promise<void> {
     const raw = ((input as any).plainText as string).trim();
     (input as any).clear();
 
-    if (!raw) { pastedTexts.length = 0; return; }
-
-    // Expand paste placeholders
-    const text = pastedTexts.length > 0
-      ? raw.replace(/\[paste #(\d+):[^\]]*\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
-      : raw;
-    pastedTexts.length = 0;
-
-    // Resolve a pending /quit confirmation prompt first.
+    // Resolve a pending /quit confirmation prompt first — BEFORE the
+    // empty-input early return, or plain Enter (the advertised [y/N/d]
+    // default: cancel) would silently do nothing and leave the prompt
+    // armed to swallow the user's next real message.
     if (state.pendingQuitConfirm) {
       state.pendingQuitConfirm = false;
-      const c = text.trim().toLowerCase();
-      if (c === 'y' || c === 'yes') {
+      pastedTexts.length = 0;
+      const c = raw.toLowerCase();
+      if (c === 'y' || c === 'yes' || c === '/quit' || c === '/q' || c === 'quit' || c === 'q') {
+        // Re-typing the quit command at the prompt is a confirmation, not
+        // a cancellation — the user is saying "yes, really quit".
         addLine('  (stopping children and exiting...)', GRAY);
         cleanup();
         return;
@@ -2236,6 +2259,14 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
 
+    if (!raw) { pastedTexts.length = 0; return; }
+
+    // Expand paste placeholders
+    const text = pastedTexts.length > 0
+      ? raw.replace(/\[paste #(\d+):[^\]]*\]/g, (m, n) => pastedTexts[parseInt(n, 10) - 1] ?? m)
+      : raw;
+    pastedTexts.length = 0;
+
     if (text.startsWith('/')) {
       const result = handleCommand(text, app);
       if (result.quit) {
@@ -2244,9 +2275,13 @@ export async function runTui(app: AppContext): Promise<void> {
         return;
       }
       if (text === '/clear' || text.startsWith('/clear ')) {
+        // End any live stream first — its renderable is about to be
+        // destroyed, and streamToken must not write to a freed buffer.
+        if (streaming) endStream();
         const children = [...scrollBox.getChildren()];
         for (const child of children) {
           scrollBox.remove(child.id);
+          child.destroy();
         }
       } else {
         for (const l of result.lines) {

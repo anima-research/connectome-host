@@ -788,6 +788,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   // include everything the user wanted to roll back. Checkpoints from before
   // the messageId field (or taken on an empty branch) fall back to the head.
   let target = point.branchName;
+  let exact = false;
   if (point.messageId) {
     const current = cm.currentBranch();
     const { messages } = cm.queryMessages({});
@@ -799,15 +800,25 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
     try {
       // branchAt returns the new branch's NAME (the only thing switchBranch accepts).
       target = cm.branchAt(point.messageId, `restore-${name}-${Date.now()}`);
-    } catch (err) {
-      return { lines: [{ text: `Restore failed (branchAt): ${err}`, style: 'system' }] };
+      exact = true;
+    } catch {
+      // branchAt resolves ids against the CURRENT branch's view of the log;
+      // after e.g. /undo the checkpoint message may not be reachable from
+      // here. Degrade to the checkpoint's branch head (the pre-messageId
+      // behavior) rather than failing the restore outright.
+      target = point.branchName;
     }
   }
 
   // switchBranch is async — strategy reinit needs to complete before next op.
   const asyncWork = Promise.resolve(cm.switchBranch(target))
     .then(() => ({
-      lines: [{ text: `Restored to checkpoint "${name}" (branch: ${target}).`, style: 'system' as const }],
+      lines: [
+        { text: `Restored to checkpoint "${name}" (branch: ${target}).`, style: 'system' as const },
+        ...(point.messageId && !exact
+          ? [{ text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }]
+          : []),
+      ],
       branchChanged: true,
     }))
     .catch(err => ({
