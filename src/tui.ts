@@ -1855,6 +1855,10 @@ export async function runTui(app: AppContext): Promise<void> {
       return;
     }
     if (key.ctrl && key.name === 'c') {
+      // Same semantics as /quit: children running → confirm first. A second
+      // Ctrl+C while the prompt is pending force-quits (kills children) —
+      // preserves "mash Ctrl+C to really exit" muscle memory.
+      if (!state.pendingQuitConfirm && promptQuitConfirmIfNeeded()) return;
       cleanup();
       return;
     }
@@ -2012,6 +2016,29 @@ export async function runTui(app: AppContext): Promise<void> {
 
   let resolveExit: (() => void) | null = null;
 
+  /**
+   * If fleet children are alive, print the quit-confirm prompt, arm
+   * pendingQuitConfirm, and return true (caller should NOT exit yet).
+   * Returns false when nothing is running — safe to exit immediately.
+   * Shared by /quit and Ctrl+C so both exit paths have the same semantics.
+   */
+  function promptQuitConfirmIfNeeded(): boolean {
+    const running = fleetMod
+      ? [...fleetMod.getChildren().values()].filter((c) => c.status === 'ready' || c.status === 'starting')
+      : [];
+    if (running.length === 0) return false;
+    if (state.viewMode !== 'chat') {
+      cleanupPeek();
+      cleanupPeekProc();
+      switchView('chat');
+    }
+    addLine(`  ${running.length} child${running.length > 1 ? 'ren' : ''} still running: ${running.map(c => c.name).join(', ')}`, YELLOW);
+    addLine('  Stop them before exit? [y/N/d]  — y=kill gracefully, d=detach and leave running, anything else cancels', YELLOW);
+    state.pendingQuitConfirm = true;
+    updateStatus();
+    return true;
+  }
+
   function handleSubmit() {
     const raw = ((input as any).plainText as string).trim();
     (input as any).clear();
@@ -2028,8 +2055,9 @@ export async function runTui(app: AppContext): Promise<void> {
     if (state.pendingQuitConfirm) {
       state.pendingQuitConfirm = false;
       const c = text.trim().toLowerCase();
-      if (c === 'n' || c === 'no' || c === 'cancel') {
-        addLine('  (quit cancelled)', GRAY);
+      if (c === 'y' || c === 'yes') {
+        addLine('  (stopping children and exiting...)', GRAY);
+        cleanup();
         return;
       }
       if (c === 'd' || c === 'detach') {
@@ -2038,24 +2066,22 @@ export async function runTui(app: AppContext): Promise<void> {
         cleanup();
         return;
       }
-      // default (y / empty / anything else) → graceful kill + exit
-      addLine('  (stopping children and exiting...)', GRAY);
-      cleanup();
+      // Anything that isn't an explicit yes/detach cancels the quit. The
+      // previous behavior ("anything else → kill everything") meant a user
+      // who forgot the prompt and typed a normal message killed the fleet.
+      // Their input is NOT sent as a message either — say so explicitly.
+      if (c === 'n' || c === 'no' || c === 'cancel' || c === '') {
+        addLine('  (quit cancelled)', GRAY);
+      } else {
+        addLine('  (quit cancelled — your input was not sent; type it again to send)', GRAY);
+      }
       return;
     }
 
     if (text.startsWith('/')) {
       const result = handleCommand(text, app);
       if (result.quit) {
-        const running = fleetMod
-          ? [...fleetMod.getChildren().values()].filter((c) => c.status === 'ready' || c.status === 'starting')
-          : [];
-        if (running.length > 0) {
-          addLine(`  ${running.length} child${running.length > 1 ? 'ren' : ''} still running: ${running.map(c => c.name).join(', ')}`, YELLOW);
-          addLine('  Stop them before exit? [Y/n/d]  — Y=kill gracefully, n=cancel quit, d=detach and leave running', YELLOW);
-          state.pendingQuitConfirm = true;
-          return;
-        }
+        if (promptQuitConfirmIfNeeded()) return;
         cleanup();
         return;
       }
