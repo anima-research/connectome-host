@@ -47,6 +47,17 @@ export function fmtTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * Canonical short name for a subagent's full framework name: strips the
+ * spawn-/fork- prefix and trailing -N / -retryN counters. The single source
+ * of truth for full↔short resolution — ad-hoc `.includes()` matching here
+ * used to cross-wire agents whose names were substrings of each other
+ * (e.g. `web` / `websearch`).
+ */
+function shortAgentName(full: string): string {
+  return full.replace(/^(spawn|fork)-/, '').replace(/-\d+$/, '').replace(/-retry\d+$/, '');
+}
+
 interface AppContext {
   framework: AgentFramework;
   membrane: Membrane;
@@ -343,8 +354,13 @@ export async function runTui(app: AppContext): Promise<void> {
 
   // ── Agent observability maps ──────────────────────────────────────
 
-  /** Accumulated transcript per agent (text output + tool calls). */
+  /** Accumulated transcript per agent (text output + tool calls). Retention
+   *  is capped; the synesthete summarizer only ever reads the last 10k. */
   const agentTranscripts = new Map<string, string>();
+  const TRANSCRIPT_CAP = 30_000;
+  /** Cumulative appended chars per agent — drives the "enough new text to
+   *  re-summarize" delta, which transcript.length can't once it hits the cap. */
+  const transcriptTotalLen = new Map<string, number>();
 
   /** Parent tracking: child short name → parent full agent name. */
   const agentParent = new Map<string, string>();
@@ -361,8 +377,9 @@ export async function runTui(app: AppContext): Promise<void> {
   const SUMMARY_WINDOW = 10_000;
 
   function appendTranscript(agent: string, text: string) {
-    const prev = agentTranscripts.get(agent) ?? '';
-    agentTranscripts.set(agent, prev + text);
+    const next = (agentTranscripts.get(agent) ?? '') + text;
+    agentTranscripts.set(agent, next.length > TRANSCRIPT_CAP ? next.slice(-TRANSCRIPT_CAP) : next);
+    transcriptTotalLen.set(agent, (transcriptTotalLen.get(agent) ?? 0) + text.length);
   }
 
   async function generateSummary(agentName: string) {
@@ -370,8 +387,9 @@ export async function runTui(app: AppContext): Promise<void> {
     const transcript = agentTranscripts.get(agentName);
     if (!transcript || transcript.length < 50) return;
 
+    const totalLen = transcriptTotalLen.get(agentName) ?? 0;
     const lastLen = summarySnapshotLen.get(agentName) ?? 0;
-    if (transcript.length - lastLen < SUMMARY_DELTA && summaryCache.has(agentName)) return;
+    if (totalLen - lastLen < SUMMARY_DELTA && summaryCache.has(agentName)) return;
 
     summaryPending.add(agentName);
     try {
@@ -389,7 +407,7 @@ export async function runTui(app: AppContext): Promise<void> {
         .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
         .map(b => b.text).join('').trim();
       summaryCache.set(agentName, text.length > 60 ? text.slice(0, 57) + '...' : text);
-      summarySnapshotLen.set(agentName, transcript.length);
+      summarySnapshotLen.set(agentName, totalLen);
       if (state.viewMode === 'fleet') updateFleetView();
     } catch {
       // best-effort
@@ -402,12 +420,24 @@ export async function runTui(app: AppContext): Promise<void> {
 
   let messageCounter = 0;
 
+  /** Scrollback retention: one TextRenderable per line accretes forever
+   *  otherwise (render cost degrades long before memory hurts). */
+  const SCROLLBACK_CAP = 2000;
+  function pruneScrollback() {
+    const children = scrollBox.getChildren();
+    if (children.length <= SCROLLBACK_CAP) return;
+    for (const child of children.slice(0, children.length - SCROLLBACK_CAP)) {
+      scrollBox.remove(child.id);
+    }
+  }
+
   function addLine(text: string, color: string = WHITE) {
     scrollBox.add(new TextRenderable(renderer, {
       id: `msg-${++messageCounter}`,
       content: text,
       fg: color,
     }));
+    pruneScrollback();
   }
 
   function updateStatus() {
@@ -440,6 +470,7 @@ export async function runTui(app: AppContext): Promise<void> {
       fg: WHITE,
     });
     scrollBox.add(currentStreamText);
+    pruneScrollback();
     streaming = true;
   }
 
@@ -479,6 +510,7 @@ export async function runTui(app: AppContext): Promise<void> {
       });
     }
     scrollBox.add(currentStreamText);
+    pruneScrollback();
   }
 
   function streamToken(text: string) {
@@ -1200,7 +1232,11 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function appendPeekLog(name: string, text: string, color: string) {
     if (!peekLogs.has(name)) peekLogs.set(name, []);
-    peekLogs.get(name)!.push({ text, color });
+    const log = peekLogs.get(name)!;
+    log.push({ text, color });
+    // Cap to match appendProcPeekLog — these accumulate for EVERY subagent
+    // via the global stream subscription, whether anyone ever peeks or not.
+    if (log.length > 500) log.splice(0, log.length - 500);
   }
 
   function cleanupPeek() {
@@ -1608,19 +1644,27 @@ export async function runTui(app: AppContext): Promise<void> {
   // one. Drives the unified subagent-tree rendering: fleet children appear as
   // first-class nodes alongside in-process subagents, with the same readouts
   // (phase, context tokens, tool calls). See UNIFIED-TREE-PLAN.md.
-  const treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
-  if (treeAggregator) {
-    // Register any fleet children that already exist (e.g. autoStart entries
-    // brought up before TUI init, or reattached survivors after parent restart).
-    for (const childName of fleetMod!.getChildren().keys()) {
-      treeAggregator.registerChild(childName);
+  // Rebuilt (not just re-scanned) on session switch: its IPC subscriptions
+  // live on the fleetMod it was constructed with, so an aggregator from the
+  // old session silently stops receiving events.
+  let treeAggregator: FleetTreeAggregator | null = null;
+  function initTreeAggregator(): void {
+    treeAggregator?.dispose();
+    treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
+    if (treeAggregator && fleetMod) {
+      // Register any fleet children that already exist (e.g. autoStart entries
+      // brought up before TUI init, or reattached survivors after parent restart).
+      for (const childName of fleetMod.getChildren().keys()) {
+        treeAggregator.registerChild(childName);
+      }
+      // Re-render fleet view when any tracked child's tree changes — gives live
+      // updates without polling.
+      treeAggregator.onTreeUpdate(() => {
+        if (state.viewMode === 'fleet') updateFleetView();
+      });
     }
-    // Re-render fleet view when any tracked child's tree changes — gives live
-    // updates without polling.
-    treeAggregator.onTreeUpdate(() => {
-      if (state.viewMode === 'fleet') updateFleetView();
-    });
   }
+  initTreeAggregator();
 
   // Fleet-child ops alerts: a quarantine klaxon or refusal streak inside a
   // child process must be as loud here as a local one — the operator is
@@ -1799,6 +1843,40 @@ export async function runTui(app: AppContext): Promise<void> {
     });
     subagentStreamUnsubs.push(unsub);
   }
+
+  /**
+   * Per-session observability reset. Everything here accumulates from trace
+   * and IPC subscriptions bound to the CURRENT framework; after a session
+   * switch the old subscriptions feed dead modules and the caches describe
+   * agents that no longer exist. Worse, a new session's subagent with a
+   * previously-seen name would never re-subscribe (subscribeSubagentStream
+   * early-returns on the subscribedSubagents guard).
+   */
+  function resetObservabilityState(): void {
+    for (const unsub of subagentStreamUnsubs) unsub();
+    subagentStreamUnsubs.length = 0;
+    subscribedSubagents.clear();
+    peekLogs.clear();
+    peekCurrentTool.clear();
+    peekTokenLine.clear();
+    procPeekLogs.clear();
+    procPeekTokenLine.clear();
+    agentTranscripts.clear();
+    transcriptTotalLen.clear();
+    agentContextTokens.clear();
+    agentParent.clear();
+    summaryCache.clear();
+    summarySnapshotLen.clear();
+    summaryPending.clear();
+    subagentPhase.clear();
+    state.subagents = [];
+    seenFleetHeaders.clear();
+    expandedNodes.clear();
+    expandedNodes.add(rootAgentName);
+    fleetCursor = 0;
+    initTreeAggregator();
+  }
+
   const pollTimer = setInterval(() => {
     // Animate spinner when researcher is active (not just on token events)
     if (state.status !== 'idle' && state.status !== 'error') {
@@ -2129,6 +2207,7 @@ export async function runTui(app: AppContext): Promise<void> {
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
           subscribeFleetOps();
+          resetObservabilityState();
           app.framework.onTrace(onTrace as (e: unknown) => void);
 
           const session = app.sessionManager.getActiveSession();
