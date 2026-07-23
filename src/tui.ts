@@ -931,8 +931,8 @@ export async function runTui(app: AppContext): Promise<void> {
     // Contextual key hints on the cursor line
     let hints = '';
     if (isCursor) {
-      if (node.kind === 'subagent' && node.agent?.status === 'running') {
-        hints = '  ⏎:fold p:peek Del:stop';
+      if (node.kind === 'subagent') {
+        hints = node.agent?.status === 'running' ? '  ⏎:fold p:peek Del:stop' : '  ⏎:fold p:peek';
       } else if (node.kind === 'fleet-child') {
         const fc = fleetMod?.getChildren().get(node.fleetChildName!);
         hints = fc?.status === 'ready' ? '  ⏎:fold p:peek Del:stop' : '  ⏎:fold';
@@ -1005,7 +1005,8 @@ export async function runTui(app: AppContext): Promise<void> {
       } else if (summaryPending.has(fullName)) {
         lines.push({ text: `  ${detail}┈ …`, color: DIM_GRAY });
       }
-      generateSummary(fullName);
+      // Summary GENERATION is triggered from the poll tick, not here —
+      // rendering must never originate an inference call.
     }
 
     // Recurse into children
@@ -1294,9 +1295,10 @@ export async function runTui(app: AppContext): Promise<void> {
   }
 
   function enterPeek(name: string) {
-    // Only peek at running subagents
+    // Peek any known subagent — finished ones included: their captured log
+    // is exactly what "what did that fork actually do?" needs post-hoc.
     const sa = state.subagents.find(s => s.name === name);
-    if (!sa || sa.status !== 'running') return;
+    if (!sa) return;
 
     state.viewMode = 'peek';
     state.peekTarget = name;
@@ -1881,11 +1883,12 @@ export async function runTui(app: AppContext): Promise<void> {
             agentContextTokens.set(name, event.lastInputTokens);
           }
 
-          // Verbose chat display
-          if (verboseChat) {
-            const chatTruncated = summary.length > 200 ? summary.slice(0, 197) + '...' : summary;
-            addLine(`  ◀ [${name}] ${chatTruncated}`, CYAN);
-          }
+          // Surface the result in chat — a fork that completes with no
+          // visible line looks like it never returned. Verbose shows more
+          // of the summary; terse shows a shorter, dimmer line.
+          const limit = verboseChat ? 200 : 100;
+          const chatTruncated = summary.length > limit ? summary.slice(0, limit - 3) + '...' : summary;
+          addLine(`  ◀ [${name}] ${chatTruncated}`, verboseChat ? CYAN : DIM_GRAY);
           break;
         }
       }
@@ -1960,6 +1963,16 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       if (state.viewMode === 'peek-proc') updatePeekProcView();
     }
+    // Synesthete summaries for the fleet view. Triggered here — NOT from the
+    // render path — so a repaint can never originate a Haiku call.
+    // generateSummary self-throttles (pending guard + 2k-char delta).
+    if (state.viewMode === 'fleet') {
+      generateSummary(rootAgentName);
+      for (const sa of state.subagents) {
+        const full = [...agentTranscripts.keys()].find(k => k === sa.name || shortAgentName(k) === sa.name);
+        if (full) generateSummary(full);
+      }
+    }
   }, 500);
 
   // ── Keyboard ───────────────────────────────────────────────────────
@@ -2004,7 +2017,7 @@ export async function runTui(app: AppContext): Promise<void> {
     // Ctrl+B: push to background — detach any blocking sync subagents and/or
     // background the researcher's current inference (stop displaying tokens,
     // re-enable input; result appears as message when done)
-    if (key.ctrl && key.name === 'b' && state.viewMode === 'chat') {
+    if (key.ctrl && key.name === 'b' && (state.viewMode === 'chat' || state.viewMode === 'fleet')) {
       let acted = false;
 
       // 1. Detach any blocking sync subagents
@@ -2077,7 +2090,10 @@ export async function runTui(app: AppContext): Promise<void> {
 
     // Fleet view navigation
     if (state.viewMode === 'fleet') {
-      if (key.name === 'up') {
+      if (key.name === 'escape') {
+        switchView('chat');
+        updateStatus();
+      } else if (key.name === 'up') {
         fleetCursor = Math.max(0, fleetCursor - 1);
         updateFleetView();
       } else if (key.name === 'down') {
@@ -2227,7 +2243,7 @@ export async function runTui(app: AppContext): Promise<void> {
         cleanup();
         return;
       }
-      if (text === '/clear') {
+      if (text === '/clear' || text.startsWith('/clear ')) {
         const children = [...scrollBox.getChildren()];
         for (const child of children) {
           scrollBox.remove(child.id);
