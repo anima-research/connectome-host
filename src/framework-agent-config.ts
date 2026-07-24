@@ -55,5 +55,8 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),
+    ...(recipe.agent.proseRouting !== undefined
+      ? { proseRouting: recipe.agent.proseRouting }
+      : {}),
   };
 }

@@ -118,6 +118,12 @@ export interface RecipeAgent {
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
   /**
+   * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
+   * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
+   * prose bounces to a clipboard instead of auto-routing. Default 'locus'.
+   */
+  proseRouting?: 'locus' | 'explicit';
+  /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
    * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
    * models where it is opt-in, like claude-sonnet-4-5). Merged with any
