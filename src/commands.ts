@@ -151,7 +151,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /restore <name>        Restore to checkpoint', style: 'system' },
           { text: '  /branches              List Chronicle branches', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
-          { text: '  /history               Show state transitions', style: 'system' },
+          { text: '  /history [n]           Show state transitions (last n)', style: 'system' },
+          { text: '  /find <text>           Search messages for text', style: 'system' },
+          { text: '  /branchto <msgId>      Branch from a specific message', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
           { text: '  /mcp add <id> <cmd>    Add/overwrite server', style: 'system' },
           { text: '  /mcp remove <id>       Remove a server', style: 'system' },
@@ -747,7 +749,13 @@ function handleCheckpoint(app: AppContext, name?: string): CommandResult {
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const branch = cm.currentBranch();
-  app.branchState.checkpoints.set(name, { branchName: branch.name });
+  // A checkpoint is a *position*, not just a branch: record the id of the
+  // last message so /restore can branch back to this exact point even after
+  // the branch head has moved on. branchName alone would restore to the
+  // branch HEAD — i.e. not roll anything back.
+  const { messages } = cm.queryMessages({});
+  const messageId = messages.length > 0 ? messages[messages.length - 1]!.id : undefined;
+  app.branchState.checkpoints.set(name, { branchName: branch.name, messageId });
 
   return { lines: [{ text: `Checkpoint "${name}" saved at branch ${branch.name} (head: ${branch.head}).`, style: 'system' }] };
 }
@@ -774,12 +782,50 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   const cm = getAgentCM(app.framework);
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
-  const target = point.branchName;
+  // Restore to the recorded *position*. If the checkpoint captured a message
+  // id, branch at that message (same machinery as /undo) — switching to the
+  // stored branch name alone would land on its head, which by now may
+  // include everything the user wanted to roll back. Checkpoints from before
+  // the messageId field (or taken on an empty branch) fall back to the head.
+  let target = point.branchName;
+  let exact = false;
+  if (point.messageId) {
+    // A checkpoint is a POSITION, so position equality is the whole
+    // "already there" test. Comparing branch names too would kill the guard
+    // after the first restore (you'd be on restore-{name}-{ts}, never the
+    // original branch again) and every repeat /restore would mint another
+    // branch pointing at the same message.
+    const { messages } = cm.queryMessages({});
+    const atCheckpoint = messages.length > 0
+      && messages[messages.length - 1]!.id === point.messageId;
+    if (atCheckpoint) {
+      return { lines: [{ text: `Already at checkpoint "${name}".`, style: 'system' }] };
+    }
+    try {
+      // branchAt returns the new branch's NAME (the only thing switchBranch accepts).
+      target = cm.branchAt(point.messageId, `restore-${name}-${Date.now()}`);
+      exact = true;
+      // The record follows the position: keep the newest branch that holds
+      // the checkpoint message as the fallback for future restores.
+      app.branchState.checkpoints.set(name, { branchName: target, messageId: point.messageId });
+    } catch {
+      // branchAt resolves ids against the CURRENT branch's view of the log;
+      // after e.g. /undo the checkpoint message may not be reachable from
+      // here. Degrade to the checkpoint's branch head (the pre-messageId
+      // behavior) rather than failing the restore outright.
+      target = point.branchName;
+    }
+  }
 
   // switchBranch is async — strategy reinit needs to complete before next op.
   const asyncWork = Promise.resolve(cm.switchBranch(target))
     .then(() => ({
-      lines: [{ text: `Restored to checkpoint "${name}" (branch: ${target}).`, style: 'system' as const }],
+      lines: [
+        { text: `Restored to checkpoint "${name}" (branch: ${target}).`, style: 'system' as const },
+        ...(point.messageId && !exact
+          ? [{ text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }]
+          : []),
+      ],
       branchChanged: true,
     }))
     .catch(err => ({
