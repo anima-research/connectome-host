@@ -41,6 +41,28 @@
   branch/version table refreshed (all feature branches merged),
   LOCUS-ROUTING and both root plan docs marked implemented.
 
+### Changed
+
+- **Tool-bloat reduction**: subscription-gc's `set_channel_idle_limit` /
+  `list_channel_idle_limits` tools folded into `agent_settings` as the
+  `channel_idle_limits` field (per-entry merge; number / `"off"` /
+  `"default"`-or-null to clear), following the reasoning-controls
+  precedent. The old tool names remain routable (undeclared), so agent
+  muscle memory keeps working; agents just no longer carry the two extra
+  tool schemas. `get` also reports read-only `channel_idle_default`,
+  `channel_idle_counters`, and `channel_idle_pinned`, preserving what
+  `list_channel_idle_limits` exposed. Updates are all-or-nothing: a patch
+  with any invalid entry applies none of its entries.
+- **GC pins split from agent overrides**: ChannelModeModule now holds
+  debounced channels open via an internal `pin_channel_idle_limit` verb
+  and a separate pins layer, instead of writing an `"off"` override.
+  Consequences: a blanket `agent_settings reset` clears only agent-set
+  limits — it can no longer silently re-enable auto-close on a channel in
+  debounced mode — and a pre-existing agent override now survives a
+  debounced→mentions round-trip rather than being reset to default.
+  (Pins persisted by earlier builds as `"off"` overrides stay agent-level
+  until the next mode change re-asserts them as pins.)
+
 ## 0.3.10 — 2026-07-21
 
 ### Added

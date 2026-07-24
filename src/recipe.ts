@@ -428,7 +428,7 @@ export interface RecipeModules {
    * tracking what's then missed). Counters reset on every activation — the
    * agent sees all subscribed channels in context, compressed if large — and
    * persist across restarts. The agent can override the per-channel limit at
-   * runtime via the `subscription-gc--set_channel_idle_limit` tool.
+   * runtime via `agent_settings` (field `channel_idle_limits`).
    *
    * `false` disables entirely. `defaultLimitChars` sets the global default
    * (20000 if omitted). `serverId`/`toolPrefix` target the MCPL surface that

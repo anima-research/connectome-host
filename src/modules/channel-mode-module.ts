@@ -200,11 +200,13 @@ export class ChannelModeModule implements Module {
     }
 
     // 3. Pin subscription-gc off so a chatty channel doesn't auto-close
-    //    itself back out of debounced mode.
+    //    itself back out of debounced mode. The pin layer sits above
+    //    agent-level overrides, so agent_settings reset/update can't undo it
+    //    and any pre-existing override survives the mode round-trip.
     steps.push(
-      await this.callToolStep('gc-off', `${this.gcModuleName}--set_channel_idle_limit`, {
+      await this.callToolStep('gc-pin', `${this.gcModuleName}--pin_channel_idle_limit`, {
         channelId,
-        limit: 'off',
+        pinned: true,
       }),
     );
 
@@ -225,11 +227,12 @@ export class ChannelModeModule implements Module {
     // 2. Close ambient traffic through the generic host lifecycle.
     steps.push(await this.callToolStep('close', 'channel_close', { channelId, serverId: this.serverId }));
 
-    // 3. Restore the default auto-close limit.
+    // 3. Release the pin; the channel's agent override (if any) or the
+    //    default limit applies again.
     steps.push(
-      await this.callToolStep('gc-default', `${this.gcModuleName}--set_channel_idle_limit`, {
+      await this.callToolStep('gc-unpin', `${this.gcModuleName}--pin_channel_idle_limit`, {
         channelId,
-        limit: 'default',
+        pinned: false,
       }),
     );
 
