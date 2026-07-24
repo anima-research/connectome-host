@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Fixed
+
+- **TUI bug sweep** (#64): operator-safety and observability fixes.
+  - `/quit` confirm no longer treats arbitrary input as consent — only an
+    explicit `y`/`yes` (or re-typed `/quit`) kills fleet children, `d`
+    detaches, anything else cancels; a typed-through message is restored to
+    the input (paste referents intact) instead of discarded. Ctrl+C now goes
+    through the same confirmation; a second Ctrl+C force-quits.
+  - `/checkpoint` records the message position and `/restore` branches back
+    to it (previously restored to the branch head — rolling back nothing);
+    repeat restores at the same position are a no-op, and an unreachable
+    position degrades to the branch head with an explicit note.
+  - Session switch fully resets TUI observability state (tree aggregator,
+    stream subscriptions, per-agent caches) — fleet subtrees no longer
+    freeze after `/session switch`.
+  - Memory: peek logs / transcripts / scrollback capped, and detached
+    renderables are `destroy()`ed so their native text buffers are actually
+    freed (the fleet view leaked one buffer per line per 500ms repaint).
+  - Agent-name resolution is exact (`shortAgentName`, fork `-d{depth}`
+    scheme included) instead of substring matching that cross-wired agents
+    with prefix-overlapping names; peek tails no longer clip the newest
+    lines; fleet-view kill/restart failures are surfaced; per-round context
+    size (`ctx:`) and session totals (`Σ`) are separate status segments;
+    synesthete summaries moved off the render path and back off 30s after
+    a failed call instead of retrying at 2 Hz.
+  - Smaller UX: peek works on finished subagents (final runtime shown),
+    fork `done` summaries always print a chat line, Esc/Ctrl+B work from
+    the fleet view, paste placeholders survive `]` in the pasted text,
+    `/help` documents `/find` and `/branchto`, `/clear` with arguments
+    clears.
+
+### Docs
+
+- Synced stale documentation with the current build: repos marked public
+  (AGENT-ONBOARDING), `forking-knowledge-miner` → `connectome-host`
+  naming, webui default port corrected to 7340, DEV-ENVIRONMENT
+  branch/version table refreshed (all feature branches merged),
+  LOCUS-ROUTING and both root plan docs marked implemented.
+
 ### Changed
 
 - **Tool-bloat reduction**: subscription-gc's `set_channel_idle_limit` /

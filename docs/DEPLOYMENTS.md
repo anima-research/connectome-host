@@ -9,9 +9,9 @@ end-to-end, see [`AGENT-ONBOARDING.md`](./AGENT-ONBOARDING.md).
 
 ## TL;DR
 
-An agent deployment is the Connectome stack (`forking-knowledge-miner` host +
+An agent deployment is the Connectome stack (`connectome-host` +
 `agent-framework` + MCPL servers) plus a per-agent install dir. Agents run
-**headless** (`bun forking-knowledge-miner/src/index.ts <recipe> --headless`),
+**headless** (`bun connectome-host/src/index.ts <recipe> --headless`),
 each as its own OS user, supervised by launchd (macOS) or systemd-user (Linux).
 
 > **Model integrity matters.** Each agent has a *correct* model and must stay on

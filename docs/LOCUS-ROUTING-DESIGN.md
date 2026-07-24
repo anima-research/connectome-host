@@ -1,7 +1,10 @@
 # Conversational Locus & Output Routing — Design Note
 
-**Status:** Agreed design, implementation deferred.
-**Date:** 2026-05-29
+**Status:** Implemented — the locus now lives in `agent-framework`
+(`src/mcpl/channel-registry.ts`; `routeSpeech` fires at turn completion in
+`framework.ts`) and has grown beyond this note (global-locus fallback for
+heartbeats, fork/home-channel semantics). Kept as design rationale.
+**Date:** 2026-05-29 (status updated 2026-07-21)
 **Context:** Surfaced while wiring periodic heartbeats for an agent instance
 running headless on a Linux VPS.
 
@@ -94,6 +97,9 @@ discord-mcpl patch.
   locus in the wrong layer).
 
 ## Bugs found in passing (separate fixes, worth upstreaming)
+
+*(Update 2026-07-21: #3 has been fixed upstream — `agent-framework`'s
+feature-set-manager now normalizes array→record on ingest.)*
 
 1. **discord-mcpl `connect()` race** — resolved on `login()` (before gateway
    READY), so `registerDiscordChannels` enumerated an empty `guilds.cache`.
