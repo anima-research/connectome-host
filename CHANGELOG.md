@@ -33,6 +33,14 @@
     `/help` documents `/find` and `/branchto`, `/clear` with arguments
     clears.
 
+### Docs
+
+- Synced stale documentation with the current build: repos marked public
+  (AGENT-ONBOARDING), `forking-knowledge-miner` → `connectome-host`
+  naming, webui default port corrected to 7340, DEV-ENVIRONMENT
+  branch/version table refreshed (all feature branches merged),
+  LOCUS-ROUTING and both root plan docs marked implemented.
+
 ## 0.3.10 — 2026-07-21
 
 ### Added

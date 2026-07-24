@@ -1,6 +1,6 @@
 # Headless Daemon Mode & Fleet Orchestration — Plan
 
-Status: draft • Authors: conversation between @tengro and Claude, 2026-04-21
+Status: implemented (all phases shipped — see [UNIFIED-TREE-PLAN.md](./UNIFIED-TREE-PLAN.md) "Implementation outcome") • Authors: conversation between @tengro and Claude, 2026-04-21
 
 ## Goal
 

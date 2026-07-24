@@ -1,6 +1,6 @@
 # Connectome Dev Environment — Setup Guide
 
-**Status:** Working notes, uncommitted. Snapshot of the dev layout as of 2026-05-30.
+**Status:** Working notes. Snapshot of the dev layout as of 2026-07-22 (originally 2026-05-30; all feature branches in the original table have since merged to `main`).
 **Goal:** Reproduce the current development state — every component as a local git
 checkout, wired together so the host runs against editable source.
 
@@ -24,17 +24,22 @@ that holds a recipe + `.env` + chronicle data and references the code by absolut
 
 All cloned as siblings under `~/connectome-local/`:
 
-| Dir | GitHub repo | Branch | Ver | Role |
+| Dir | GitHub repo | Branch | Ver (2026-07-22) | Role |
 |---|---|---|---|---|
-| `forking-knowledge-miner` | `anima-research/connectome-host` | `feat/tui-mem-stats-and-strategy-passthrough` | 0.3.0 | the host app (run via **bun**) |
-| `agent-framework` | `anima-research/agent-framework` | `fix/lazy-register-locus-and-send-failure-marker` | 0.5.0 | host runtime: gate, MCPL orchestration, locus routing, `think` |
-| `discord-mcpl` | `anima-research/discord-mcpl` | `main` | 0.1.0 | Discord surface (MCPL server) |
-| `heartbeat-mcpl` | `anima-research/heartbeat-mcpl` | `main` | 0.1.0 | periodic self-wake (MCPL server) |
-| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 1.0.1 | shell: session daemon (ws://localhost:3100) + per-agent MCP stdio frontend |
-| `membrane` | `antra-tess/membrane` ⚠️ | `fix/before-request-hook-on-stream-paths` | 0.5.47 | LLM client lib — **single shared instance required** |
-| `context-manager` | `anima-research/context-manager` | `feat/adaptive-resolution` | 0.4.0 | context compilation / autobiographical memory |
-| `chronicle` | `anima-research/chronicle` | `main` | 0.1.1 | record / chronicle store |
-| `mcpl-core-ts` | `anima-research/mcpl-core-ts` | `main` | 0.1.0 | MCPL protocol types (discord-mcpl path dep) |
+| `forking-knowledge-miner` | `anima-research/connectome-host` | `main` | 0.3.10 | the host app (run via **bun**) |
+| `agent-framework` | `anima-research/agent-framework` | `main` | 0.6.10 | host runtime: gate, MCPL orchestration, locus routing, `think` |
+| `discord-mcpl` | `anima-research/discord-mcpl` | `main` | 0.1.4 | Discord surface (MCPL server) |
+| `heartbeat-mcpl` | `anima-research/heartbeat-mcpl` | `main` | 0.1.3 | periodic self-wake (MCPL server) |
+| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 1.6.0 | shell: session daemon (ws://localhost:3100) + per-agent MCP stdio frontend |
+| `membrane` | `antra-tess/membrane` ⚠️ | `main` | 0.5.74 | LLM client lib — **single shared instance required** |
+| `context-manager` | `anima-research/context-manager` | `main` | 0.5.14 | context compilation / autobiographical memory |
+| `chronicle` | `anima-research/chronicle` | `main` | 0.2.7 | record / chronicle store |
+| `mcpl-core-ts` | `anima-research/mcpl-core-ts` | `main` | 0.2.1 | MCPL protocol types |
+
+> Versions drift; treat the column as a dated snapshot. The published npm
+> releases now track `main` closely (typically within a patch), so the
+> stock `bun install` path is sufficient for host-level work — use the
+> checkout layout below when editing the libraries themselves.
 
 > ⚠️ **Org note:** `terminal-sessions-mcp` and `membrane` still live under the
 > personal `antra-tess` org, not `anima-research`. Consider migrating them for
@@ -51,19 +56,15 @@ All cloned as siblings under `~/connectome-local/`:
 ```bash
 mkdir -p ~/connectome-local && cd ~/connectome-local
 
-git clone -b feat/tui-mem-stats-and-strategy-passthrough \
-  git@github.com:anima-research/connectome-host.git forking-knowledge-miner
-git clone -b fix/lazy-register-locus-and-send-failure-marker \
-  git@github.com:anima-research/agent-framework.git
-git clone -b main  git@github.com:anima-research/discord-mcpl.git
-git clone -b main  git@github.com:anima-research/heartbeat-mcpl.git
-git clone -b main  git@github.com:antra-tess/terminal-sessions-mcp.git
-git clone -b fix/before-request-hook-on-stream-paths \
-  git@github.com:antra-tess/membrane.git
-git clone -b feat/adaptive-resolution \
-  git@github.com:anima-research/context-manager.git
-git clone -b main  git@github.com:anima-research/chronicle.git
-git clone -b main  git@github.com:anima-research/mcpl-core-ts.git
+git clone git@github.com:anima-research/connectome-host.git forking-knowledge-miner
+git clone git@github.com:anima-research/agent-framework.git
+git clone git@github.com:anima-research/discord-mcpl.git
+git clone git@github.com:anima-research/heartbeat-mcpl.git
+git clone git@github.com:antra-tess/terminal-sessions-mcp.git
+git clone git@github.com:antra-tess/membrane.git
+git clone git@github.com:anima-research/context-manager.git
+git clone git@github.com:anima-research/chronicle.git
+git clone git@github.com:anima-research/mcpl-core-ts.git
 ```
 
 ---
@@ -82,8 +83,9 @@ terminal-sessions-mcp
 
 In each: `npm install && npm run build` (build script is `tsc`).
 
-> `discord-mcpl` depends on `@connectome/mcpl-core` via `file:../mcpl-core-ts`
-> (a path dep), so build `mcpl-core-ts` first.
+> `discord-mcpl` now depends on `@animalabs/mcpl-core` as a regular npm
+> dependency (the old `file:../mcpl-core-ts` path dep is gone). A sibling
+> `mcpl-core-ts` checkout is only needed when changing mcpl-core itself.
 
 ---
 

@@ -22,7 +22,7 @@ A connectome agent is:
 - an **`.env`** with secrets and per-deploy config;
 - a **chronicle** (`data/`) — the event-sourced memory store, optionally seeded by importing
   a prior conversation;
-- run by the **connectome-host** (`forking-knowledge-miner`, run via `bun src/index.ts <recipe> --headless`);
+- run by the **connectome-host** (`bun src/index.ts <recipe> --headless`);
 - under a **systemd --user** service, with a sibling **terminal-sessions** daemon for the shell tool.
 
 It reaches the model through **membrane** (Anthropic-format adapter; can target a gateway via
@@ -164,10 +164,10 @@ shell. First, the **hard prerequisites** (install / confirm before anything else
 or their box owner if unsure):
 - **git**, **Bun** (`curl -fsSL https://bun.sh/install | bash`), **node ≥ 20** (via `nvm`);
 - a **Rust toolchain** (`rustup`) — `chronicle` has a native (napi) component built from Rust;
-- **access to the private `anima-research` / `antra-tess` GitHub orgs.** The connectome
-  packages are **not public**. If `git clone` / `bun install` can't reach them, *stop* — the
-  user must be granted org access (or handed the code) first. There's no way around this; it's
-  the gate before all the mechanics.
+- the `anima-research` / `antra-tess` GitHub repos. These are **public** (as of 2026-07;
+  they previously required org access), and the `@animalabs/*` npm packages install without
+  auth. If a `git clone` / `bun install` fails on access, check whether the repo moved
+  rather than assuming a permissions gate.
 
 The repos (clone all as siblings under one dir, canonically `~/connectome-local/`):
 
@@ -203,7 +203,7 @@ errors and logs `[webui] listening`. Then continue with the per-agent install di
 
 **Pick non-colliding ports.** Every agent on the box needs a unique:
 - **shell-daemon port** (`SESSION_SERVER_PORT`, default 3100)
-- **webui port** (default 7342)
+- **webui port** (module default 7340; binds `0.0.0.0` and requires `basicAuth` unless set to loopback)
 
 Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
 
@@ -381,7 +381,7 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
 
 1. **`terminal-sessions.service`** — the shell daemon, `--host localhost --headless --token
    ${SESSION_SERVER_TOKEN}`, env `SESSION_SERVER_PORT`. `enable` + `start` it first.
-2. **`<agent>-agent.service`** — `bun .../forking-knowledge-miner/src/index.ts
+2. **`<agent>-agent.service`** — `bun .../connectome-host/src/index.ts
    .../recipes/<agent>.json --headless`, `EnvironmentFile=...env`, `Environment=PATH=<node bin>:<bun bin>:...`,
    `After=/Wants=terminal-sessions.service`, `Restart=always`.
 
@@ -472,7 +472,8 @@ robust fallback strategy.
 
 ## Appendix — quick reference
 
-- **Run host:** `bun forking-knowledge-miner/src/index.ts <recipe.json> --headless`
+- **Run host:** `bun connectome-host/src/index.ts <recipe.json> --headless` (legacy
+  checkouts may still name the directory `forking-knowledge-miner`)
 - **Reach loopback webui:** `ssh -L <port>:localhost:<port> <login-user>@<box>` → `http://localhost:<port>`
 - **Live makeup:** `GET /debug/context/makeup` (basic auth) — segments + exact total tokens
 - **Compiled context:** `GET /debug/context`
