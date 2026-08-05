@@ -23,6 +23,11 @@ interface StubServer {
   maskedCapabilities: string[];
   deniedCapabilities: string[];
   allowHostCommands: boolean;
+  manifestState?: {
+    lastValidatedRevision: string | null;
+    lastFetchedAt: number | null;
+    lastNegotiatedAt: number | null;
+  };
   command?: string;
   url?: string;
 }
@@ -46,6 +51,11 @@ function makeStubFramework() {
         maskedCapabilities: ['channels.streaming'],
         deniedCapabilities: ['contextHooks.beforeInference.inject.system'],
         allowHostCommands: false,
+        manifestState: {
+          lastValidatedRevision: 'sha256:validated',
+          lastFetchedAt: Date.parse('2026-08-05T01:02:03.000Z'),
+          lastNegotiatedAt: Date.parse('2026-08-05T01:02:04.000Z'),
+        },
         command: config.command,
         url: config.url,
       });
@@ -69,6 +79,11 @@ function makeStubFramework() {
         maskedCapabilities: ['channels.streaming'],
         deniedCapabilities: ['contextHooks.beforeInference.inject.system'],
         allowHostCommands: false,
+        manifestState: {
+          lastValidatedRevision: 'sha256:validated',
+          lastFetchedAt: Date.parse('2026-08-05T01:02:03.000Z'),
+          lastNegotiatedAt: Date.parse('2026-08-05T01:02:04.000Z'),
+        },
         command: config?.command ?? prev?.command,
       });
     },
@@ -230,7 +245,33 @@ describe('mcpl_list', () => {
     expect(text).toContain('masked=[channels.streaming]');
     expect(text).toContain('denied=[contextHooks.beforeInference.inject.system]');
     expect(text).toContain('hostCommands=deny');
+    expect(text).toContain(
+      'manifest={revision="sha256:validated",' +
+      'fetchedAt=2026-08-05T01:02:03.000Z,' +
+      'negotiatedAt=2026-08-05T01:02:04.000Z}',
+    );
     expect(text).toContain('source=agent-overlay');
     expect(text).toContain('gone: UNLOADED');
+  });
+
+  test('distinguishes older-framework unknown and bounds untrusted revisions', async () => {
+    const { stub, servers } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'discord', command: 'node' });
+    const mod = makeModule(stub);
+
+    const server = servers.get('discord')!;
+    delete server.manifestState;
+    expect(String((await call(mod, 'mcpl_list')).data)).toContain('manifest=unknown');
+
+    server.manifestState = {
+      lastValidatedRevision: `unsafe\n${'x'.repeat(100)}`,
+      lastFetchedAt: null,
+      lastNegotiatedAt: null,
+    };
+    const text = String((await call(mod, 'mcpl_list')).data);
+    expect(text).toContain('manifest={revision="unsafe\\n');
+    expect(text).not.toContain('unsafe\n');
+    expect(text).toContain('...",fetchedAt=none,negotiatedAt=none}');
   });
 });
