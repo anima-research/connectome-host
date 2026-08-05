@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Protective reaction-suppression baseline for Discord adapters.** Stdio
+  MCPL children now receive `DISCORD_SUPPRESSED_REACTIONS_BASELINE` — the
+  agent-framework's exported refusal-annotation set (`REFUSAL_REACTION_BASELINE`,
+  comma-joined) — so a never-configured Discord adapter defaults to
+  suppressing exactly the markers this host's framework stamps, instead of
+  defaulting to nothing. An operator-set value on the server entry
+  supersedes the house baseline, and the adapter's own precedence (filters-file
+  key including explicit `[]` → legacy operator env → baseline) governs
+  enforcement; lost configuration stays stale rather than re-defaulting.
+  Requires an agent-framework release carrying the `REFUSAL_REACTION_BASELINE`
+  export.
+
 - **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
 
 - **`BEDROCK_BASE_URL` env hook** for the bedrock provider — mirrors
