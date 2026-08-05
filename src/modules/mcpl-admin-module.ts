@@ -120,7 +120,8 @@ export class McplAdminModule implements Module {
         description:
           'List all MCPL servers: connection/retry state, whether policy was established, ' +
           'the effective grant, masked/denied capability paths, host-command authority, ' +
-          'tool count, target, and config source.',
+          'validated manifest revision/fetch/negotiation freshness, tool count, target, ' +
+          'and config source.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
@@ -246,6 +247,11 @@ export class McplAdminModule implements Module {
         maskedCapabilities?: string[];
         deniedCapabilities?: string[];
         allowHostCommands?: boolean;
+        manifestState?: {
+          lastValidatedRevision: string | null;
+          lastFetchedAt: number | null;
+          lastNegotiatedAt: number | null;
+        };
       }
     >;
     const overlay = readAgentOverlay(this.overlayPath);
@@ -269,7 +275,8 @@ export class McplAdminModule implements Module {
         `grant=${formatCapabilityList(s.effectiveGrant)}, ` +
         `masked=${formatCapabilityList(s.maskedCapabilities)}, ` +
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +
-        `hostCommands=${hostCommands}; ${s.toolCount} tools, ` +
+        `hostCommands=${hostCommands}, ` +
+        `manifest=${formatManifestState(s.manifestState)}; ${s.toolCount} tools, ` +
         `prefix=${s.toolPrefix}, source=${source}, ${target}`,
       );
     }
@@ -420,4 +427,30 @@ export class McplAdminModule implements Module {
 function formatCapabilityList(paths: string[] | undefined): string {
   if (paths === undefined) return 'unknown';
   return `[${paths.join(',')}]`;
+}
+
+function formatManifestState(state: {
+  lastValidatedRevision: string | null;
+  lastFetchedAt: number | null;
+  lastNegotiatedAt: number | null;
+} | undefined): string {
+  if (state === undefined) return 'unknown';
+  return `{revision=${formatManifestRevision(state.lastValidatedRevision)},` +
+    `fetchedAt=${formatManifestTimestamp(state.lastFetchedAt)},` +
+    `negotiatedAt=${formatManifestTimestamp(state.lastNegotiatedAt)}}`;
+}
+
+/** Bound and quote the server-authored, equality-only revision before putting
+ * it on a model-facing text surface. Conforming revisions fit well below the
+ * limit; malformed peers cannot inject control lines or unbounded text. */
+function formatManifestRevision(revision: string | null): string {
+  if (revision === null) return 'none';
+  const bounded = revision.length <= 64 ? revision : `${revision.slice(0, 61)}...`;
+  return JSON.stringify(bounded);
+}
+
+function formatManifestTimestamp(timestamp: number | null): string {
+  if (timestamp === null) return 'none';
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? 'invalid' : date.toISOString();
 }
