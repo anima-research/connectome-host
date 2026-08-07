@@ -501,6 +501,11 @@ agents: [agentConfig],
     timeZone,
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
+    // Durable residence default for the tool-result inline cap (AF #89).
+    // Omitted → AF's house default (5000).
+    ...(recipe.toolResultInlineMaxChars !== undefined
+      ? { toolResultInlineMaxChars: recipe.toolResultInlineMaxChars }
+      : {}),
   });
 
   // Wire post-creation hooks

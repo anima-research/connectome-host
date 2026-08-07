@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Recipe passthrough for the AF #89/#92 window knobs.** Top-level
+  `toolResultInlineMaxChars` (durable residence default for the tool-result
+  inline cap, validated `>= 1000` at recipe load — the deploy lever for
+  residences without a writable workspace, where AF's new 5000 default would
+  truncate instead of spilling) and per-agent `agent.physicalWindowTokens`
+  (the provider's hard context cap, enabling AF's mid-turn physical-window
+  projection restart instead of a wire 400). Both omitted → Agent Framework
+  behavior unchanged. Requires an AF release carrying af#94/af#98; against
+  older AF the keys are inert.
+
 ### Changed
 
 - **The public triumvirate recipes boot from a fresh clone.**

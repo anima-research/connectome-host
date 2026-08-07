@@ -132,6 +132,17 @@ export interface RecipeAgent {
   /** Per-agent context compile budget (input tokens). When unset, the
    *  ContextManager default (100k) applies. Raise for large-context models. */
   contextBudgetTokens?: number;
+  /**
+   * The model's PHYSICAL context window (provider hard cap, e.g. 200000).
+   * When set, the framework projects each continuation round's real size
+   * (cache-inclusive) and restarts the stream through a fresh compile
+   * instead of dispatching a request the provider will 400 (AF issue #92 —
+   * a legal compile can walk past the hard cap mid-turn). Unset → no
+   * projection; only the maxStreamTokens restart applies. Intended first
+   * users: residents whose budgets sit near a 200k cap (Rhys/Evander/
+   * Princess-shaped deployments).
+   */
+  physicalWindowTokens?: number;
   /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
    *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads.
    *  Not forwarded on bedrock — that transport only has the default 5m
@@ -726,6 +737,17 @@ export interface Recipe {
   sessionNaming?: { examples?: string[] };
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution?: RecipeCodeExecution;
+  /**
+   * Durable residence default for the tool-result inline cap (chars) — AF
+   * issue #89. Content over the cap spills to a workspace file with a
+   * bounded preview; the AF house default is 5000. Must be >= 1000. Set
+   * this higher for residences WITHOUT a writable workspace (where spill
+   * has no target and over-cap content is truncated, not retained) if the
+   * resident should keep receiving large results inline. A resident's own
+   * durable agent_settings value still takes precedence for that agent;
+   * every source is hard-clamped to the strategy's per-message bound.
+   */
+  toolResultInlineMaxChars?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,6 +1023,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  }
+
+  if (agent.physicalWindowTokens !== undefined && (typeof agent.physicalWindowTokens !== 'number' || agent.physicalWindowTokens <= 0)) {
+    throw new Error('Recipe agent.physicalWindowTokens must be a positive number.');
   }
 
   // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
@@ -1426,6 +1452,13 @@ export function validateRecipe(raw: unknown): Recipe {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
       }
     }
+  }
+
+  // Mirrors AF's own create() validation (>= 1000) so a bad value fails at
+  // recipe load with a recipe-shaped error instead of at framework create.
+  if (obj.toolResultInlineMaxChars !== undefined
+      && (typeof obj.toolResultInlineMaxChars !== 'number' || obj.toolResultInlineMaxChars < 1000)) {
+    throw new Error('Recipe toolResultInlineMaxChars must be a number >= 1000.');
   }
 
   return obj as unknown as Recipe;
