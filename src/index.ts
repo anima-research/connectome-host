@@ -50,7 +50,7 @@ import { ObserversModule } from './modules/observers-module.js';
 import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
-import { loadMcplServers, applyAgentOverlay, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, applyAgentOverlay, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
@@ -462,9 +462,11 @@ async function createFramework(
   const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
-      // Stdio MCPL children inherit a single agent-facing wall clock. Protocol
-      // timestamps remain UTC; only their rendered text uses this setting.
-      env: { ...(server.env ?? {}), AGENT_TIMEZONE: timeZone },
+      // Stdio MCPL children inherit a single agent-facing wall clock plus the
+      // framework's refusal-annotation suppression baseline (operator env
+      // supersedes the baseline; see composeMcplChildEnv). Protocol
+      // timestamps remain UTC; only their rendered text uses AGENT_TIMEZONE.
+      env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),
     };
     // `access` is a declarative name (recipe/file/overlay); the credential
     // provider it implies is attached HERE, at load time — fresh credential
