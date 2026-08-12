@@ -8,6 +8,9 @@ export type FrameworkAgentConfig = AgentConfig & {
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  /** Provider hard context cap (AF #92 mid-turn projection restart);
+   *  inert on AF releases before af#98. */
+  physicalWindowTokens?: number;
 };
 
 /**
@@ -71,6 +74,10 @@ export function buildFrameworkAgentConfig(
     maxTokens: recipe.agent.maxTokens ?? 16384,
     maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
     contextBudgetTokens: recipe.agent.contextBudgetTokens,
+    // Provider hard cap (AF #92): enables the mid-turn physical-window
+    // projection restart. Omitted → AF behavior unchanged.
+    ...(recipe.agent.physicalWindowTokens !== undefined
+      && { physicalWindowTokens: recipe.agent.physicalWindowTokens }),
     // cacheTtl is withheld at the HOST layer on bedrock: the transport
     // only has the default 5m cache, and older membrane releases forward
     // the ttl field Bedrock rejects. Note this is not the whole story —
