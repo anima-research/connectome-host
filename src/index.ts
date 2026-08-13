@@ -1038,9 +1038,13 @@ async function main() {
   // Provider-success dragnet → provider-cap park release (AF cairn-cap-park):
   // a workspace-cap park releases only on REAL provider success, and the
   // aux lanes (compression/summarizer/maintenance) are invisible to the
-  // framework's own stream driver. Report every successful call; the
-  // framework no-ops unless the agent is parked. Same shape and same
-  // session-switch/feature-detection discipline as onRefusal below.
+  // framework's own stream driver. complete()-only by contract: primary
+  // turns stream and must release through AF's inference:completed — the
+  // adapter sees a stream's response before the driver settles, so a
+  // stream-fired hook would race the primary release and queue a duplicate
+  // wake (Sol review blocker, 08-13). The framework no-ops unless the
+  // agent is parked. Same shape and same session-switch/feature-detection
+  // discipline as onRefusal below.
   if (adapter instanceof LoggingAnthropicAdapter) {
     adapter.onSuccess = () => {
       const fw = app.framework as unknown as {

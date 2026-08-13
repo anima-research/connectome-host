@@ -173,16 +173,21 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     inputTokens: number;
   }) => void;
 
-  /** Fired on every SUCCESSFUL provider call, both kinds. Purpose: real
+  /** Fired on successful `complete()` calls ONLY. Purpose: real
    *  provider-success evidence for lanes the framework cannot observe —
-   *  compression/summarizer/maintenance calls go host→membrane without
-   *  touching the stream driver, so the framework's provider-cap park (AF
-   *  cairn-cap-park) would otherwise stay parked after a usage cap lifts
-   *  until the next primary turn. Wired in index.ts to
-   *  framework.noteProviderSuccess (feature-detected), mirroring onRefusal.
-   *  Observers never affect provider traffic. */
+   *  compression/summarizer/maintenance calls go host→membrane via
+   *  complete() without touching the stream driver, so the framework's
+   *  provider-cap park (AF cairn-cap-park) would otherwise stay parked
+   *  after a usage cap lifts until the next primary turn. Deliberately
+   *  NEVER fired for `stream`: primary turns stream, and the adapter sees
+   *  the provider response BEFORE the stream driver settles and emits
+   *  `inference:completed` — a stream-fired hook would release the park as
+   *  aux-success and queue a duplicate catch-up wake ahead of the primary
+   *  release (Sol review blocker, 08-13). Same kind-split rationale as
+   *  onRefusal above. Wired in index.ts to framework.noteProviderSuccess
+   *  (feature-detected). Observers never affect provider traffic. */
   onSuccess?: (info: {
-    kind: 'complete' | 'stream';
+    kind: 'complete';
     model: string;
     messages: number;
   }) => void;
@@ -196,7 +201,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
-    if (response !== undefined && error === undefined && this.onSuccess) {
+    if (kind === 'complete' && response !== undefined && error === undefined && this.onSuccess) {
       try {
         this.onSuccess({ kind, model: request.model, messages: request.messages.length });
       } catch { /* observers never affect provider traffic */ }
