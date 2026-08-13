@@ -1035,6 +1035,20 @@ async function main() {
   // opsAlert pipeline (failures.log + ops:alert trace + throttled webhook).
   // Reads app.framework (not the closure) so session switches stay wired;
   // feature-detects notifyOpsAlert for older framework versions.
+  // Provider-success dragnet → provider-cap park release (AF cairn-cap-park):
+  // a workspace-cap park releases only on REAL provider success, and the
+  // aux lanes (compression/summarizer/maintenance) are invisible to the
+  // framework's own stream driver. Report every successful call; the
+  // framework no-ops unless the agent is parked. Same shape and same
+  // session-switch/feature-detection discipline as onRefusal below.
+  if (adapter instanceof LoggingAnthropicAdapter) {
+    adapter.onSuccess = () => {
+      const fw = app.framework as unknown as {
+        noteProviderSuccess?: (agent: string) => void;
+      };
+      fw.noteProviderSuccess?.(app.agentName);
+    };
+  }
   if (adapter instanceof LoggingAnthropicAdapter) {
     adapter.onRefusal = (info) => {
       const fw = app.framework as unknown as {

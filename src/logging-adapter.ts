@@ -173,6 +173,20 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     inputTokens: number;
   }) => void;
 
+  /** Fired on every SUCCESSFUL provider call, both kinds. Purpose: real
+   *  provider-success evidence for lanes the framework cannot observe —
+   *  compression/summarizer/maintenance calls go host→membrane without
+   *  touching the stream driver, so the framework's provider-cap park (AF
+   *  cairn-cap-park) would otherwise stay parked after a usage cap lifts
+   *  until the next primary turn. Wired in index.ts to
+   *  framework.noteProviderSuccess (feature-detected), mirroring onRefusal.
+   *  Observers never affect provider traffic. */
+  onSuccess?: (info: {
+    kind: 'complete' | 'stream';
+    model: string;
+    messages: number;
+  }) => void;
+
   private observeCall(
     kind: 'complete' | 'stream',
     timestamp: string,
@@ -182,6 +196,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
+    if (response !== undefined && error === undefined && this.onSuccess) {
+      try {
+        this.onSuccess({ kind, model: request.model, messages: request.messages.length });
+      } catch { /* observers never affect provider traffic */ }
+    }
     const raw0 = (response as { raw?: { stop_reason?: string; stop_details?: { category?: string } } } | undefined)?.raw;
     if (kind === 'complete' && raw0?.stop_reason === 'refusal' && this.onRefusal) {
       try {
