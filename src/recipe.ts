@@ -219,6 +219,15 @@ export interface RecipeAgent {
     maxRewinds?: number;
     announceHumanTurns?: boolean;
   };
+  /**
+   * Opt-in resident-controlled irreversible retirement. Confirmation happens
+   * in a separate agent inference turn and preserves Chronicle/history.
+   */
+  retirement?: {
+    enabled: boolean;
+    /** Fresh confirmation challenge lifetime (default 10 minutes). */
+    confirmationTtlMs?: number;
+  };
 }
 
 export interface RecipeMcpServer {
@@ -1203,6 +1212,33 @@ export function validateRecipe(raw: unknown): Recipe {
   const refusalHandling = agent.refusalHandling as Record<string, unknown> | undefined;
   if (refusalHandling && Object.hasOwn(refusalHandling, 'primarySummaryFallback')) {
     throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+  }
+
+  if (agent.retirement !== undefined) {
+    if (!agent.retirement || typeof agent.retirement !== 'object' || Array.isArray(agent.retirement)) {
+      throw new Error('Recipe agent.retirement must be an object.');
+    }
+    const retirement = agent.retirement as Record<string, unknown>;
+    const known = new Set(['enabled', 'confirmationTtlMs']);
+    for (const key of Object.keys(retirement)) {
+      if (!known.has(key)) throw new Error(`Recipe agent.retirement has unknown field ${JSON.stringify(key)}.`);
+    }
+    if (typeof retirement.enabled !== 'boolean') {
+      throw new Error('Recipe agent.retirement.enabled must be a boolean.');
+    }
+    if (
+      retirement.confirmationTtlMs !== undefined &&
+      (
+        typeof retirement.confirmationTtlMs !== 'number' ||
+        !Number.isSafeInteger(retirement.confirmationTtlMs) ||
+        retirement.confirmationTtlMs < 10_000 ||
+        retirement.confirmationTtlMs > 3_600_000
+      )
+    ) {
+      throw new Error(
+        'Recipe agent.retirement.confirmationTtlMs must be an integer between 10000 and 3600000.',
+      );
+    }
   }
 
   // Validate mcpServers entries if present

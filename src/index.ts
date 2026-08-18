@@ -65,7 +65,11 @@ import {
   parseRecipeArg,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
+import {
+  assertResidentRetirementSupport,
+  buildFrameworkAgentConfig,
+  membraneCachingOverride,
+} from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
 import { loadExtensions } from './extensions.js';
 
@@ -501,7 +505,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
-agents: [agentConfig],
+    agents: [agentConfig],
     modules: moduleInstances,
     mcplServers: finalServers,
     gate: gateOptions,
@@ -510,6 +514,13 @@ agents: [agentConfig],
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
   });
+
+  try {
+    assertResidentRetirementSupport(recipe, framework);
+  } catch (error) {
+    await framework.stop();
+    throw error;
+  }
 
   // Wire post-creation hooks
   // Compression-quarantine klaxon → the framework's ops-alert channel

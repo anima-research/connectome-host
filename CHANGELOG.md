@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Opt-in resident retirement recipe surface.**
+  `agent.retirement: { enabled: true, confirmationTtlMs? }` passes Agent
+  Framework's agent-only, two-inference irreversible retirement flow through
+  the reference host. The terminal state preserves Chronicle/workspace history
+  and remains distinct from end-turn, sleep, and session deletion. Requires an
+  Agent Framework release containing `AgentConfig.retirement`; unsupported
+  runtimes fail closed instead of silently ignoring an opted-in recipe.
+
 - **`provider: "mock"` — run the whole host with zero provider spend and no
   credentials.** Wires membrane's existing `MockAdapter` (previously
   unreachable from any recipe) as a first-class provider: echoes the last
