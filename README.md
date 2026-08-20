@@ -29,7 +29,8 @@ A recipe is a JSON file that configures everything domain-specific:
     "model": "claude-opus-4-6",
     "timezone": "America/Los_Angeles",
     "systemPrompt": "You are a ...",
-    "maxTokens": 16384
+    "maxTokens": 16384,
+    "retirement": { "enabled": true }
   },
   "mcpServers": {
     "my-server": {
@@ -51,6 +52,15 @@ A recipe is a JSON file that configures everything domain-specific:
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
 it, `AGENT_TIMEZONE` is used, then the process timezone.
+
+`agent.retirement.enabled` opts this configured resident into Agent
+Framework's irreversible, agent-controlled retirement flow. The resident must
+request a fresh challenge and confirm it in a separate inference turn; there is
+no human approval step. Confirmation prevents future inference while retaining
+Chronicle, messages, workspace files, and other history. It is separate from
+end-turn, sleep, and session deletion. Omit the block to leave the tool absent.
+The host refuses to start an opted-in recipe when the installed Agent Framework
+does not yet provide retirement enforcement.
 
 **Memory defaults**: `agent.strategy` may be omitted entirely. The default is
 the autobiographical memory strategy with adaptive resolution, **KV-stable

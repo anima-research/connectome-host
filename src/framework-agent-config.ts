@@ -8,7 +8,32 @@ export type FrameworkAgentConfig = AgentConfig & {
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  retirement?: Recipe['agent']['retirement'];
 };
+
+/**
+ * Keep the host fail-closed across a staged Agent Framework release. Older
+ * versions structurally accept unknown agent fields, so without this guard an
+ * opted-in recipe could appear valid while providing no retirement mechanism.
+ *
+ * The status reader is only a proxy for enforcement: Agent Framework ships
+ * getResidentLifecycleStatus and the retirement machinery atomically. The
+ * released dependency range and lockfile are therefore the load-bearing
+ * compatibility boundary; this runtime probe is belt-and-braces protection for
+ * stale or incorrectly linked installs, not proof of enforcement by itself.
+ */
+export function assertResidentRetirementSupport(
+  recipe: Recipe,
+  framework: unknown,
+): void {
+  if (!recipe.agent.retirement?.enabled) return;
+  const candidate = framework as { getResidentLifecycleStatus?: unknown };
+  if (typeof candidate.getResidentLifecycleStatus !== 'function') {
+    throw new Error(
+      'This recipe enables agent.retirement, but the installed Agent Framework does not support resident retirement.',
+    );
+  }
+}
 
 /**
  * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7
@@ -107,6 +132,7 @@ export function buildFrameworkAgentConfig(
     strategy,
     ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
+    ...(recipe.agent.retirement && { retirement: recipe.agent.retirement }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),
