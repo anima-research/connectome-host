@@ -15,6 +15,12 @@ export type FrameworkAgentConfig = AgentConfig & {
  * Keep the host fail-closed across a staged Agent Framework release. Older
  * versions structurally accept unknown agent fields, so without this guard an
  * opted-in recipe could appear valid while providing no retirement mechanism.
+ *
+ * The status reader is only a proxy for enforcement: Agent Framework ships
+ * getResidentLifecycleStatus and the retirement machinery atomically. The
+ * released dependency range and lockfile are therefore the load-bearing
+ * compatibility boundary; this runtime probe is belt-and-braces protection for
+ * stale or incorrectly linked installs, not proof of enforcement by itself.
  */
 export function assertResidentRetirementSupport(
   recipe: Recipe,

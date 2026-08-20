@@ -162,13 +162,19 @@ function resolveModel(recipe: Recipe): string {
     (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
 }
 
-async function createFramework(
+type CreateAgentFramework = (
+  frameworkConfig: Parameters<typeof AgentFramework.create>[0],
+) => Promise<AgentFramework>;
+
+export async function createFramework(
   membrane: Membrane,
   storePath: string,
   recipe: Recipe,
   agentName: string,
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
+  createAgentFramework: CreateAgentFramework = (frameworkConfig) =>
+    AgentFramework.create(frameworkConfig),
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -502,7 +508,7 @@ async function createFramework(
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
   // -- Create framework --
-  const framework = await AgentFramework.create({
+  const framework = await createAgentFramework({
     storePath,
     membrane,
     agents: [agentConfig],
@@ -518,7 +524,14 @@ async function createFramework(
   try {
     assertResidentRetirementSupport(recipe, framework);
   } catch (error) {
-    await framework.stop();
+    try {
+      await framework.stop();
+    } catch (stopError) {
+      console.error(
+        'Failed to stop an incompatible Agent Framework during startup cleanup:',
+        stopError,
+      );
+    }
     throw error;
   }
 
@@ -1105,7 +1118,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
