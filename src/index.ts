@@ -868,6 +868,11 @@ async function main() {
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
         xTitle: recipe.agent.name ?? recipe.name,
+        // OPENROUTER_BASE_URL routes openrouter calls through an inference
+        // gate (mirrors the ANTHROPIC_BASE_URL / BEDROCK_BASE_URL hooks).
+        // Point it at <gate>/openrouter/api/v1 — the adapter appends
+        // /chat/completions itself. Unset = direct to openrouter.ai.
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
       })
     : undefined;
   // Bedrock: an alternate Claude transport. (Historically for models that
