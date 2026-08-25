@@ -12,6 +12,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'maxSpeculativeL1s',
   'compressionRefusalCurveFallbacks',
   'compressionContextBudgetTokens',
+  'compressionSourceOnly',
   'positionedRecallPairs',
   'recallHeaderTemplate',
   'targetChunkTokens',
