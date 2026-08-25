@@ -17,6 +17,9 @@ describe('compressionSourceOnly recipe flag', () => {
       .agent.strategy?.compressionSourceOnly).toBe(false);
     // absent stays undefined — every other resident is unaffected
     expect(validateRecipe(recipe({})).agent.strategy?.compressionSourceOnly).toBeUndefined();
+    expect(validateRecipe(recipe({ compressionMergeSourceOnly: true })).agent.strategy?.compressionMergeSourceOnly).toBe(true);
+    expect(validateRecipe(recipe({ compressionMergeSourceOnly: false })).agent.strategy?.compressionMergeSourceOnly).toBe(false);
+    expect(validateRecipe(recipe({})).agent.strategy?.compressionMergeSourceOnly).toBeUndefined();
   });
 
   test('rejects a non-boolean value', () => {
@@ -24,15 +27,18 @@ describe('compressionSourceOnly recipe flag', () => {
       .toThrow(/compressionSourceOnly/);
     expect(() => validateRecipe(recipe({ compressionSourceOnly: 1 })))
       .toThrow(/compressionSourceOnly/);
+    expect(() => validateRecipe(recipe({ compressionMergeSourceOnly: 'yes' })))
+      .toThrow(/compressionMergeSourceOnly/);
   });
 
   test('plumbs through PASSTHROUGH_KEYS into the built strategy config', () => {
-    const parsed = validateRecipe(recipe({ compressionSourceOnly: true, summaryParticipant: 'mythos' }));
+    const parsed = validateRecipe(recipe({ compressionSourceOnly: true, compressionMergeSourceOnly: true, summaryParticipant: 'mythos' }));
     const built = buildFrameworkStrategy(parsed, 'claude-fable-5', 'UTC');
     // buildFrameworkStrategy copies PASSTHROUGH_KEYS onto the strategy options;
     // the flag must reach the AutobiographicalStrategy config.
     const cfg = (built as unknown as { config?: Record<string, unknown> }).config
       ?? (built as unknown as Record<string, unknown>);
     expect(cfg.compressionSourceOnly).toBe(true);
+    expect(cfg.compressionMergeSourceOnly).toBe(true);
   });
 });
