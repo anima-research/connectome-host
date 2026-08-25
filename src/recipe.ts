@@ -51,6 +51,11 @@ export interface RecipeStrategy {
   /** Complete provider-request admission ceiling for compression fallbacks,
    * including the output reserve. */
   compressionContextBudgetTokens?: number;
+  /** Residence-scoped direct source-only L1 compression: the summarizer sees
+   * only the compression marker + exact target chunk + directive (no head,
+   * recall, or non-target raw recent material). One call, not a refusal
+   * ladder. Source-preserving; L1 only. Default off. */
+  compressionSourceOnly?: boolean;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
@@ -1298,6 +1303,12 @@ export function validateRecipe(raw: unknown): Recipe {
       )
     ) {
       throw new Error('Recipe agent.strategy.compressionContextBudgetTokens must be a positive safe integer.');
+    }
+    if (
+      strategy.compressionSourceOnly !== undefined
+      && typeof strategy.compressionSourceOnly !== 'boolean'
+    ) {
+      throw new Error('Recipe agent.strategy.compressionSourceOnly must be a boolean.');
     }
   }
 
