@@ -184,6 +184,8 @@ export interface RecipeAgent {
    * Default 'locus'.
    */
   proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  /** Default-off containment of whole-response prose wrappers for known tools. */
+  toolWrapperProseGuard?: boolean;
   /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
    * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
@@ -1082,6 +1084,10 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== 'disabled'
   ) {
     throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
+  }
+
+  if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
+    throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
   }
 
   if (agent.timezone !== undefined) {
