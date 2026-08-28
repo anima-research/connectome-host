@@ -29,7 +29,11 @@ A recipe is a JSON file that configures everything domain-specific:
     "model": "claude-opus-4-6",
     "timezone": "America/Los_Angeles",
     "systemPrompt": "You are a ...",
-    "maxTokens": 16384
+    "maxTokens": 16384,
+    "retirement": {
+      "enabled": true,
+      "confirmationDelayMs": 60000
+    }
   },
   "mcpServers": {
     "my-server": {
@@ -51,6 +55,27 @@ A recipe is a JSON file that configures everything domain-specific:
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
 it, `AGENT_TIMEZONE` is used, then the process timezone.
+
+`agent.retirement.enabled` installs Connectome Host's protected
+`resident--lifecycle` tool for this configured resident. The Host owns the
+wording, fresh challenge, expiry, memory-health checks, and separate
+confirmation turn; Agent Framework owns only the neutral irreversible seal and
+enforcement primitive. The cooling-off floor is 60 seconds by default and
+there is no human approval step. Set
+`confirmationDelayMs` to another positive value below `confirmationTtlMs` when
+the residence needs a different policy. Confirmation prevents future inference
+while retaining Chronicle, messages, workspace files, and other history. It is
+separate from end-turn, sleep, and session deletion. Omit the block to leave the
+tool absent. The protected tool cannot be invoked by `puppetToolCall`, code
+execution, programmatic dispatch, ephemeral subagents, or conversation forks.
+For autobiographical residents, the host also defers challenge
+issuance and confirmation while compression quarantine is non-empty, so a known
+degraded context cannot bind the irreversible transition. The host refuses to
+start an opted-in recipe when the installed Agent Framework does not yet provide
+both retirement enforcement and the protected live-tool surface. Only a
+successful terminal seal is sent to the ops notification channel; a request is
+never turned into a human approval workflow. See
+[Resident retirement](docs/resident-retirement.md).
 
 **Memory defaults**: `agent.strategy` may be omitted entirely. The default is
 the autobiographical memory strategy with adaptive resolution, **KV-stable
