@@ -22,6 +22,8 @@ messages, workspace files, and the terminal record.
 The resident receives `resident--lifecycle` only on its real provider-issued
 stream. Conversation forks, ephemeral subagents, `code_execution`, public
 programmatic calls, and the operator `puppetToolCall` path cannot invoke it.
+The lifecycle tool name is reserved globally once exposed for the resident, so
+claiming another caller identity does not bypass that boundary.
 
 `request_retirement` first checks memory health, creates an in-memory random
 challenge, records its confirmation and expiry boundaries, ends the current
@@ -43,10 +45,17 @@ not notifications or approval opportunities.
 
 ## What stops
 
-The seal blocks conversational and maintenance inference, later message
-appends, operator nudges, direct retries, and new conversation forks from the
-retired template. It clears queued requests, provider cooldown state, gate
+The seal cancels the resident's active stream and blocks conversational and
+maintenance inference, public Agent inference/streaming methods, later message
+appends, operator nudges, direct retries, and resident-attributed programmatic
+or puppet tool calls. It clears queued requests, provider cooldown state, gate
 sleep, self-wakes, and resident-authored foreground/background code runners.
+
+Existing per-channel conversation forks derived from the resident are sealed,
+unbound, and removed from the live registry; their Chronicle namespaces remain
+available for audit. New forks from the retired template are refused. This is
+distinct from already-running ephemeral subagents, which have separate,
+short-lived identities.
 
 Already-running ephemeral subagents are separate short-lived identities and
 are not killed mid-call. They may finish their own computation, but cannot wake
@@ -57,7 +66,9 @@ resident-owned background activity remain denied.
 
 The authoritative ledger is
 `<session-store>/resident-retirements.jsonl`. Startup fails closed on a torn,
-malformed, invalid, or duplicate record.
+malformed, invalid, or duplicate record. On first creation, Agent Framework
+fsyncs both the seal file and its containing directory before reporting
+success.
 
 Keep Connectome stopped, make a byte-for-byte backup, and inspect the exact
 line reported at startup. Remove only a demonstrably incomplete or invalid

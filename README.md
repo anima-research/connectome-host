@@ -68,6 +68,10 @@ while retaining Chronicle, messages, workspace files, and other history. It is
 separate from end-turn, sleep, and session deletion. Omit the block to leave the
 tool absent. The protected tool cannot be invoked by `puppetToolCall`, code
 execution, programmatic dispatch, ephemeral subagents, or conversation forks.
+Its namespaced tool name is protected globally against forged caller
+identities. Once sealed, stale public Agent references cannot infer or stream,
+and existing per-channel conversation forks derived from the resident are
+terminated and unbound while their Chronicle history remains available.
 For autobiographical residents, the host also defers challenge
 issuance and confirmation while compression quarantine is non-empty, so a known
 degraded context cannot bind the irreversible transition. The host refuses to
