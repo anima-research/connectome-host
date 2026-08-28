@@ -1,14 +1,65 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
+import type { RetirementReadinessCheck } from './modules/resident-lifecycle-module.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
+
+type FrameworkRetirementConfig = { enabled: boolean };
 
 export type FrameworkAgentConfig = AgentConfig & {
   // Forward recipe fields that newer Agent Framework releases understand
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  retirement?: FrameworkRetirementConfig;
 };
+
+/**
+ * Keep the host fail-closed across a staged Agent Framework release. Older
+ * versions structurally accept unknown agent fields, so without this guard an
+ * opted-in recipe could appear valid while providing no retirement mechanism.
+ *
+ * The status reader is only a proxy for enforcement: Agent Framework ships
+ * getResidentLifecycleStatus and the retirement machinery atomically. The
+ * released dependency range and lockfile are therefore the load-bearing
+ * compatibility boundary; this runtime probe is belt-and-braces protection for
+ * stale or incorrectly linked installs, not proof of enforcement by itself.
+ */
+export function assertResidentRetirementSupport(
+  recipe: Recipe,
+  framework: unknown,
+): void {
+  if (!recipe.agent.retirement?.enabled) return;
+  const candidate = framework as {
+    getResidentLifecycleStatus?: unknown;
+    retireResident?: unknown;
+    previewActivation?: unknown;
+  };
+  if (
+    typeof candidate.getResidentLifecycleStatus !== 'function' ||
+    typeof candidate.retireResident !== 'function' ||
+    typeof candidate.previewActivation !== 'function'
+  ) {
+    throw new Error(
+      'This recipe enables agent.retirement, but the installed Agent Framework does not support resident retirement.',
+    );
+  }
+}
+
+/** Verify that the installed framework actually consumed Module.getLiveTools. */
+export async function assertResidentRetirementToolSurface(
+  recipe: Recipe,
+  framework: AgentFramework,
+  agentName: string,
+): Promise<void> {
+  if (!recipe.agent.retirement?.enabled) return;
+  const preview = await framework.previewActivation(agentName);
+  if (!preview.tools?.some((tool) => tool.name === 'resident--lifecycle')) {
+    throw new Error(
+      'This recipe enables agent.retirement, but the installed Agent Framework does not support the protected resident lifecycle tool surface.',
+    );
+  }
+}
 
 /**
  * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7
@@ -57,6 +108,55 @@ export function membraneCachingOverride(
   return promptCaching === undefined ? {} : { defaultPromptCaching: promptCaching };
 }
 
+/**
+ * Agent Framework receives authorization only. Confirmation policy remains a
+ * Connectome Host concern.
+ */
+export function buildFrameworkRetirementConfig(
+  recipe: Recipe,
+): FrameworkRetirementConfig | undefined {
+  const configured = recipe.agent.retirement;
+  if (!configured) return undefined;
+  return { enabled: configured.enabled };
+}
+
+/** Fail-closed memory-health gate owned by the Host confirmation ceremony. */
+export function buildRetirementReadinessCheck(
+  strategy: FrameworkAgentConfig['strategy'],
+): RetirementReadinessCheck {
+  return () => {
+    const candidate = strategy as unknown as {
+      name?: string;
+      getCompressionQuarantineStatus?: () => { count: number; keys: string[] };
+    } | undefined;
+    if (typeof candidate?.getCompressionQuarantineStatus !== 'function') {
+      if (candidate?.name === 'autobiographical') {
+        throw new Error(
+          'Autobiographical strategy does not expose compression quarantine status',
+        );
+      }
+      return { ready: true };
+    }
+    const status = candidate.getCompressionQuarantineStatus();
+    if (
+      !status ||
+      !Number.isSafeInteger(status.count) ||
+      status.count < 0 ||
+      !Array.isArray(status.keys)
+    ) {
+      throw new Error('Compression quarantine status is malformed');
+    }
+    if (status.count === 0) return { ready: true };
+    return {
+      ready: false,
+      code: 'compression_quarantine',
+      reason:
+        `Retirement is temporarily unavailable while ${status.count} context ` +
+        `span(s) are in compression quarantine.`,
+    };
+  };
+}
+
 export function buildFrameworkAgentConfig(
   recipe: Recipe,
   agentName: string,
@@ -64,6 +164,7 @@ export function buildFrameworkAgentConfig(
   strategy: FrameworkAgentConfig['strategy'],
 ): FrameworkAgentConfig {
   const promptCaching = resolvePromptCaching(recipe, model);
+  const retirement = buildFrameworkRetirementConfig(recipe);
   return {
     name: agentName,
     model,
@@ -107,6 +208,7 @@ export function buildFrameworkAgentConfig(
     strategy,
     ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
+    ...(retirement && { retirement }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),

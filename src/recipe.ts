@@ -250,6 +250,17 @@ export interface RecipeAgent {
     maxRewinds?: number;
     announceHumanTurns?: boolean;
   };
+  /**
+   * Opt-in Host-owned resident confirmation ceremony backed by Agent
+   * Framework's neutral irreversible seal. Preserves Chronicle/history.
+   */
+  retirement?: {
+    enabled: boolean;
+    /** Fresh confirmation challenge lifetime (default 10 minutes). */
+    confirmationTtlMs?: number;
+    /** Cooling-off floor before confirmation can bind (default 60 seconds). */
+    confirmationDelayMs?: number;
+  };
 }
 
 export interface RecipeMcpServer {
@@ -1401,6 +1412,56 @@ export function validateRecipe(raw: unknown): Recipe {
   const refusalHandling = agent.refusalHandling as Record<string, unknown> | undefined;
   if (refusalHandling && Object.hasOwn(refusalHandling, 'primarySummaryFallback')) {
     throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+  }
+
+  if (agent.retirement !== undefined) {
+    if (!agent.retirement || typeof agent.retirement !== 'object' || Array.isArray(agent.retirement)) {
+      throw new Error('Recipe agent.retirement must be an object.');
+    }
+    const retirement = agent.retirement as Record<string, unknown>;
+    const known = new Set(['enabled', 'confirmationTtlMs', 'confirmationDelayMs']);
+    for (const key of Object.keys(retirement)) {
+      if (!known.has(key)) throw new Error(`Recipe agent.retirement has unknown field ${JSON.stringify(key)}.`);
+    }
+    if (typeof retirement.enabled !== 'boolean') {
+      throw new Error('Recipe agent.retirement.enabled must be a boolean.');
+    }
+    if (
+      retirement.confirmationTtlMs !== undefined &&
+      (
+        typeof retirement.confirmationTtlMs !== 'number' ||
+        !Number.isSafeInteger(retirement.confirmationTtlMs) ||
+        retirement.confirmationTtlMs < 10_000 ||
+        retirement.confirmationTtlMs > 3_600_000
+      )
+    ) {
+      throw new Error(
+        'Recipe agent.retirement.confirmationTtlMs must be an integer between 10000 and 3600000.',
+      );
+    }
+    if (
+      retirement.confirmationDelayMs !== undefined &&
+      (
+        typeof retirement.confirmationDelayMs !== 'number' ||
+        !Number.isSafeInteger(retirement.confirmationDelayMs) ||
+        retirement.confirmationDelayMs < 1
+      )
+    ) {
+      throw new Error(
+        'Recipe agent.retirement.confirmationDelayMs must be a positive integer.',
+      );
+    }
+    const confirmationTtlMs = typeof retirement.confirmationTtlMs === 'number'
+      ? retirement.confirmationTtlMs
+      : 10 * 60_000;
+    const confirmationDelayMs = typeof retirement.confirmationDelayMs === 'number'
+      ? retirement.confirmationDelayMs
+      : 60_000;
+    if (confirmationDelayMs >= confirmationTtlMs) {
+      throw new Error(
+        'Recipe agent.retirement.confirmationDelayMs must be smaller than confirmationTtlMs.',
+      );
+    }
   }
 
   // Validate mcpServers entries if present

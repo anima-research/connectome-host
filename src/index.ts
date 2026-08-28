@@ -51,6 +51,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
+import { ResidentLifecycleModule } from './modules/resident-lifecycle-module.js';
 import { loadMcplServers, applyAgentOverlay, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
@@ -65,7 +66,13 @@ import {
   parseRecipeArg,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
+import {
+  assertResidentRetirementSupport,
+  assertResidentRetirementToolSurface,
+  buildFrameworkAgentConfig,
+  buildRetirementReadinessCheck,
+  membraneCachingOverride,
+} from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
@@ -172,13 +179,19 @@ function resolveModel(recipe: Recipe): string {
     (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
 }
 
-async function createFramework(
+type CreateAgentFramework = (
+  frameworkConfig: Parameters<typeof AgentFramework.create>[0],
+) => Promise<AgentFramework>;
+
+export async function createFramework(
   membrane: Membrane,
   storePath: string,
   recipe: Recipe,
   agentName: string,
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
+  createAgentFramework: CreateAgentFramework = (frameworkConfig) =>
+    AgentFramework.create(frameworkConfig),
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -486,6 +499,17 @@ async function createFramework(
 
   // -- Build strategy --
   const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
+  let residentLifecycleModule: ResidentLifecycleModule | null = null;
+  if (recipe.agent.retirement?.enabled) {
+    residentLifecycleModule = new ResidentLifecycleModule({
+      agentName,
+      enabled: true,
+      confirmationTtlMs: recipe.agent.retirement.confirmationTtlMs,
+      confirmationDelayMs: recipe.agent.retirement.confirmationDelayMs,
+      readinessCheck: buildRetirementReadinessCheck(strategy),
+    });
+    moduleInstances.push(residentLifecycleModule);
+  }
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   // Per-channel conversation routing: the recipe agent becomes the trunk
@@ -493,10 +517,13 @@ async function createFramework(
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
   // -- Create framework --
-  const framework = await AgentFramework.create({
+  const framework = await createAgentFramework({
     storePath,
-    membrane,
-agents: [agentConfig],
+    // Local unreleased AF links may resolve their own equivalent Membrane
+    // declaration (its class has private fields); the runtime interface is the
+    // same package contract used by the released dependency.
+    membrane: membrane as unknown as Parameters<typeof AgentFramework.create>[0]['membrane'],
+    agents: [agentConfig],
     modules: moduleInstances,
     mcplServers: finalServers,
     gate: gateOptions,
@@ -506,7 +533,24 @@ agents: [agentConfig],
     ...(conversations ? { conversations } : {}),
   });
 
+  try {
+    assertResidentRetirementSupport(recipe, framework);
+    await assertResidentRetirementToolSurface(recipe, framework, agentName);
+  } catch (error) {
+    try {
+      await framework.stop();
+    } catch (stopError) {
+      console.error(
+        'Failed to stop an incompatible Agent Framework during startup cleanup:',
+        stopError,
+      );
+    }
+    throw error;
+  }
+
   // Wire post-creation hooks
+  residentLifecycleModule?.setFramework(framework);
+
   // Compression-quarantine klaxon → the framework's ops-alert channel
   // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
   // re-fires this every alarm interval for as long as ANY chunk is
@@ -1107,7 +1151,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
