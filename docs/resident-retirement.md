@@ -67,8 +67,8 @@ resident-owned background activity remain denied.
 The authoritative ledger is
 `<session-store>/resident-retirements.jsonl`. Startup fails closed on a torn,
 malformed, invalid, or duplicate record. On first creation, Agent Framework
-fsyncs both the seal file and its containing directory before reporting
-success.
+fsyncs the seal file, its containing directory, and any newly created custom
+path entries before reporting success.
 
 Keep Connectome stopped, make a byte-for-byte backup, and inspect the exact
 line reported at startup. Remove only a demonstrably incomplete or invalid
