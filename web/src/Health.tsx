@@ -72,6 +72,36 @@ export interface HealthSnapshot {
     } | null;
   }>;
   compressionQuarantine?: Record<string, { count?: number; keys?: string[] }>;
+
+  /** cm's single-authority debt reduction (getCompressionDebt) — the QUEUE
+
+   * of closed-but-uncompressed chunks. Distinct from contextComposition:
+
+   * composition says what the last compile RENDERED (summaries L1 = 0 there
+
+   * means "no L1 tokens in the window", often healthy consolidation);
+
+   * this block says what the memory organ still OWES. Absent per-agent
+
+   * entry = the stack predates the reduction — render that as
+
+   * "not reported", never as zero (misread twice on 2026-08-29). */
+
+  compressionDebt?: Record<string, {
+
+    state?: 'healthy' | 'degraded' | 'critical';
+
+    pendingChunks?: number;
+
+    oldestPendingAgeMs?: number | null;
+
+    mergeQueueDepth?: number;
+
+    mergeQuarantineCount?: number;
+
+    compressionQuarantineCount?: number;
+
+  }>;
   runtimeSettings?: Record<string, {
     contextBudgetTokens?: number;
     tailTokens?: number;
@@ -301,6 +331,7 @@ export function HealthPanel(props: {
 }) {
   const agents = () => props.health?.agents ?? [];
   const quarantine = (name: string) => props.health?.compressionQuarantine?.[name];
+  const debt = (name: string) => props.health?.compressionDebt?.[name];
   const settings = (name: string) => props.health?.runtimeSettings?.[name];
   const composition = (name: string) => props.health?.contextComposition?.[name];
 
@@ -343,7 +374,10 @@ export function HealthPanel(props: {
             <span>up {fmtUptime(props.health!.uptimeSec!)}</span>
           </Show>
           <Show when={props.health!.pendingRequests !== undefined}>
-            <span>{props.health!.pendingRequests} queued</span>
+            {/* the INFERENCE queue (requests waiting to run) — not compression
+                debt; that lives per-agent below. A bare "queued" invited the
+                misread, hence the explicit label. */}
+            <span>{props.health!.pendingRequests} inference queued</span>
           </Show>
           <Show when={props.health!.activeStreams !== undefined}>
             <span>{props.health!.activeStreams!.length} streaming</span>
@@ -384,6 +418,32 @@ export function HealthPanel(props: {
                   <div class="text-rose-400/70 truncate" title={quarantine(a.name)!.keys!.join(', ')}>
                     {quarantine(a.name)!.keys!.join(', ')}
                   </div>
+                </Show>
+              </div>
+            </Show>
+
+            {/* Compression debt: the organ's QUEUE, not the render composition.
+                An old stack that reports nothing must say so — absence
+                rendered as zero invites misreads. */}
+            <Show when={debt(a.name)} fallback={
+              <div class="text-neutral-600">compression debt: not reported by this stack</div>
+            }>
+              <div class={
+                debt(a.name)!.state === 'critical' ? 'text-rose-300'
+                : debt(a.name)!.state === 'degraded' ? 'text-amber-300/90'
+                : 'text-neutral-500'
+              }>
+                compression debt: {debt(a.name)!.state ?? '?'}
+                {' · '}{debt(a.name)!.pendingChunks ?? 0} chunk(s) pending
+                <Show when={(debt(a.name)!.pendingChunks ?? 0) > 0}>
+                  <span>
+                    {debt(a.name)!.oldestPendingAgeMs != null
+                      ? ` · oldest ${Math.round(debt(a.name)!.oldestPendingAgeMs! / 60000)}m`
+                      : ' · age unknown'}
+                  </span>
+                </Show>
+                <Show when={(debt(a.name)!.mergeQueueDepth ?? 0) > 0}>
+                  <span> · merge queue {debt(a.name)!.mergeQueueDepth}</span>
                 </Show>
               </div>
             </Show>
