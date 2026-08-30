@@ -121,6 +121,35 @@ function getAgentCM(framework: AgentFramework, agentName?: string): ContextManag
   return all[0]?.getContextManager() ?? null;
 }
 
+/**
+ * Refuse head-moving commands while the main agent's turn is in flight.
+ *
+ * Moving the Chronicle head (undo/redo/checkout/restore/branchto/newtopic)
+ * is not atomic with respect to a streaming generation: the in-flight reply
+ * commits onto whatever branch is current WHEN IT COMPLETES, so a head move
+ * mid-stream detaches the reply from its request — it lands on the new
+ * branch attached to the wrong parent (orphaned node), including when the
+ * move is issued from a second client on the same session. The supported
+ * sequence is: stop the generation, then move the head.
+ *
+ * Returns null when the command may proceed. Agents without a state field
+ * (stubs, minimal harnesses) are treated as idle.
+ */
+function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
+  const framework = app.framework;
+  const agent = (app.agentName ? framework.getAgent(app.agentName) : undefined)
+    ?? framework.getAllAgents()[0];
+  const status = (agent as { state?: { status?: string } } | undefined)?.state?.status;
+  if (status === undefined || status === 'idle') return null;
+  return {
+    lines: [
+      { text: `/${cmd} refused: a turn is in flight (${(agent as { name?: string }).name ?? 'agent'}: ${status}).`, style: 'system' },
+      { text: '  Moving the head mid-generation would attach the streaming reply to the wrong', style: 'system' },
+      { text: '  branch/request. Stop the generation first, then retry.', style: 'system' },
+    ],
+  };
+}
+
 export function handleCommand(command: string, app: AppContext): CommandResult {
   const parts = command.slice(1).split(/\s+/);
   const cmd = parts[0]!;
@@ -147,16 +176,16 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '--- Commands ---', style: 'system' },
           { text: '  /quit, /q              Exit the app', style: 'system' },
           { text: '  /status                Show agent status', style: 'system' },
-          { text: '  /clear                 Clear conversation', style: 'system' },
+          { text: '  /clear                 Clear this client\'s display (history/context are kept)', style: 'system' },
           { text: '  /lessons               Show lesson library', style: 'system' },
           { text: '  /export                Export lessons to ./output/ (JSON + markdown)', style: 'system' },
           { text: '  /undo                  Revert last agent turn', style: 'system' },
           { text: '  /redo                  Re-apply undone action', style: 'system' },
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
           { text: '  /puppet <tool> [json]  Admin: execute a tool AS the agent, store the pair', style: 'system' },
-          { text: '  /checkpoint <name>     Save current state', style: 'system' },
-          { text: '  /restore <name>        Restore to checkpoint', style: 'system' },
-          { text: '  /branches              List Chronicle branches', style: 'system' },
+          { text: '  /checkpoint [name]     Save current state (no name: list checkpoints)', style: 'system' },
+          { text: '  /restore [name]        Restore to checkpoint (no name: list checkpoints)', style: 'system' },
+          { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
           { text: '  /history [n]           Show state transitions (last n)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
@@ -170,9 +199,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /session               Show current session', style: 'system' },
           { text: '  /session list          List all sessions', style: 'system' },
           { text: '  /session new [name]    Create new session', style: 'system' },
-          { text: '  /session switch <name> Switch to session', style: 'system' },
+          { text: '  /session switch <name or id> Switch to session', style: 'system' },
           { text: '  /session rename <name> Rename current session', style: 'system' },
-          { text: '  /session delete <name> Delete a session', style: 'system' },
+          { text: '  /session delete <name or id> --confirm  Delete a session (irreversible)', style: 'system' },
           { text: '  /recipe                Show current recipe info', style: 'system' },
           { text: '  /newtopic [context]    Reset head window (auto-summarize if empty)', style: 'system' },
           { text: '  /usage                 Show session token usage and costs', style: 'system' },
@@ -182,7 +211,12 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       };
 
     case 'clear':
-      return { lines: [{ text: '(cleared)', style: 'system' }] };
+      // Display-clearing is client-side: the TUI wipes its scrollback and
+      // the SPA wipes its transcript view before this handler is ever
+      // reached. This line is only seen by surfaces with no display to
+      // clear (headless), where it honestly reports that nothing else —
+      // Chronicle, context — was touched.
+      return { lines: [{ text: '(display cleared on clients; history and context are kept)', style: 'system' }] };
 
     case 'status':
       return handleStatus(framework);
@@ -194,7 +228,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return handleExport(app);
 
     case 'undo':
-      return handleUndo(app);
+      return inFlightGuard(app, cmd) ?? handleUndo(app);
 
     case 'nudge':
       return handleNudge(app, args[0]);
@@ -203,25 +237,29 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return handlePuppet(app, args);
 
     case 'redo':
-      return handleRedo(app);
+      return inFlightGuard(app, cmd) ?? handleRedo(app);
 
+    // Name-taking commands join the REST of the line, not just the first
+    // token: names may contain spaces (/checkpoint my test point), and
+    // /session rename already accepts multi-word names — parsing them
+    // differently made multi-word names silently truncate here.
     case 'checkpoint':
-      return handleCheckpoint(app, args[0]);
+      return handleCheckpoint(app, args.join(' ') || undefined);
 
     case 'restore':
-      return handleRestore(app, args[0]);
+      return inFlightGuard(app, cmd) ?? handleRestore(app, args.join(' ') || undefined);
 
     case 'branches':
-      return handleBranches(framework);
+      return handleBranches(app);
 
     case 'checkout':
-      return handleCheckout(framework, args[0]);
+      return inFlightGuard(app, cmd) ?? handleCheckout(framework, args.join(' ') || undefined);
 
     case 'history':
       return handleHistory(framework, args[0]);
 
     case 'branchto':
-      return handleBranchTo(app, args[0]);
+      return inFlightGuard(app, cmd) ?? handleBranchTo(app, args[0]);
 
     case 'find':
       return handleFind(framework, args.join(' '));
@@ -242,7 +280,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return handleRecipe(app);
 
     case 'newtopic':
-      return handleNewTopic(app, args);
+      return inFlightGuard(app, cmd) ?? handleNewTopic(app, args);
 
     case 'usage':
       return handleUsage(app);
@@ -310,12 +348,14 @@ function handleSession(app: AppContext, args: string[]): CommandResult {
       return handleSessionNew(app, args.slice(1).join(' ') || undefined);
     case 'switch':
     case 'sw':
-      return handleSessionSwitch(app, args[1]);
+      // Rest-of-line, matching rename: session names may contain spaces, and
+      // a session renamed to a multi-word name must stay reachable by name.
+      return handleSessionSwitch(app, args.slice(1).join(' ') || undefined);
     case 'rename':
       return handleSessionRename(app, args.slice(1).join(' ') || undefined);
     case 'delete':
     case 'rm':
-      return handleSessionDelete(app, args[1]);
+      return handleSessionDelete(app, args.slice(1));
     default:
       return { lines: [{ text: `Unknown /session subcommand: ${sub}. Try /session list.`, style: 'system' }] };
   }
@@ -411,14 +451,32 @@ function handleSessionRename(app: AppContext, name?: string): CommandResult {
   return { lines: [{ text: `Session renamed to "${name}".`, style: 'system' }] };
 }
 
-function handleSessionDelete(app: AppContext, nameOrId?: string): CommandResult {
+function handleSessionDelete(app: AppContext, args: string[]): CommandResult {
+  // Deletion is irreversible, so it takes an explicit second step: the bare
+  // command shows exactly what matched (name + id + message count) and asks
+  // for --confirm. This also defuses the truncated-name amplifier: a typo'd
+  // or partial name can match a DIFFERENT session, and without the echo the
+  // wrong one died silently.
+  const confirmed = args[args.length - 1] === '--confirm';
+  const nameOrId = (confirmed ? args.slice(0, -1) : args).join(' ') || undefined;
+
   if (!nameOrId) {
-    return { lines: [{ text: 'Usage: /session delete <name or id>', style: 'system' }] };
+    return { lines: [{ text: 'Usage: /session delete <name or id> [--confirm]', style: 'system' }] };
   }
 
   const session = app.sessionManager.findSession(nameOrId);
   if (!session) {
     return { lines: [{ text: `Session "${nameOrId}" not found.`, style: 'system' }] };
+  }
+
+  if (!confirmed) {
+    const msgs = session.messageCount !== undefined ? `, ${session.messageCount} msgs` : '';
+    return {
+      lines: [
+        { text: `Will delete session "${session.name}" [${session.id}]${msgs} — irreversible.`, style: 'system' },
+        { text: `To proceed: /session delete ${session.id} --confirm`, style: 'system' },
+      ],
+    };
   }
 
   try {
@@ -526,14 +584,16 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
   }
 
   if (!arg) {
-    // Show current budgets
+    // Show current budgets. fmtTokens is exact below 1000 — flooring to "0k"
+    // hid real small values and made the display contradict the validator
+    // (which rejects 0 but accepts 50).
     const lines: Line[] = [{ text: '--- Stream Token Budgets ---', style: 'system' }];
     for (const agent of agents) {
       const budget = agent.maxStreamTokens;
       const last = agent.lastStreamInputTokens;
       const pct = budget > 0 ? ((last / budget) * 100).toFixed(0) : '—';
       lines.push({
-        text: `  ${agent.name}: ${(budget / 1000).toFixed(0)}k (last: ${(last / 1000).toFixed(0)}k, ${pct}%)`,
+        text: `  ${agent.name}: ${fmtTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)`,
         style: 'system',
       });
     }
@@ -559,12 +619,8 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     agent.maxStreamTokens = tokens;
   }
 
-  const display = tokens >= 1_000_000
-    ? `${(tokens / 1_000_000).toFixed(1)}m`
-    : `${(tokens / 1_000).toFixed(0)}k`;
-
   return {
-    lines: [{ text: `Stream budget set to ${display} tokens for all agents.`, style: 'system' }],
+    lines: [{ text: `Stream budget set to ${fmtTokens(tokens)} tokens for all agents.`, style: 'system' }],
   };
 }
 
@@ -838,7 +894,17 @@ function handleRedo(app: AppContext): CommandResult {
 
 function handleCheckpoint(app: AppContext, name?: string): CommandResult {
   if (!name) {
-    return { lines: [{ text: 'Usage: /checkpoint <name>', style: 'system' }] };
+    // Bare /checkpoint lists what exists — same affordance as bare /restore —
+    // so the lifecycle is discoverable from either end.
+    const names = [...app.branchState.checkpoints.keys()];
+    return {
+      lines: [
+        { text: 'Usage: /checkpoint <name>', style: 'system' },
+        ...(names.length > 0
+          ? [{ text: `Saved checkpoints: ${names.join(', ')}`, style: 'system' as const }]
+          : []),
+      ],
+    };
   }
 
   const cm = getAgentCM(app.framework);
@@ -934,8 +1000,8 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   };
 }
 
-function handleBranches(framework: AgentFramework): CommandResult {
-  const cm = getAgentCM(framework);
+function handleBranches(app: AppContext): CommandResult {
+  const cm = getAgentCM(app.framework);
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const branches = cm.listBranches();
@@ -948,6 +1014,19 @@ function handleBranches(framework: AgentFramework): CommandResult {
       text: `  ${b.name} (head: ${b.head})${marker}`,
       style: 'system',
     });
+  }
+
+  // Checkpoints are positions (branch + message), not branches — but they're
+  // part of the same mental model, and being invisible here made the whole
+  // checkpoint lifecycle run blind: created → not listed anywhere → restored
+  // on faith. Session-scoped, in-memory (cleared on session switch/restart).
+  const cps = [...app.branchState.checkpoints.entries()];
+  if (cps.length > 0) {
+    lines.push({ text: `--- Checkpoints (${cps.length}, this session) ---`, style: 'system' });
+    for (const [name, point] of cps) {
+      const at = point.messageId ? ` @ [${point.messageId}]` : '';
+      lines.push({ text: `  ${name} → ${point.branchName}${at}`, style: 'system' });
+    }
   }
 
   return { lines };
@@ -1137,13 +1216,27 @@ function handleMcpAdd(args: string[]): CommandResult {
 
   const [id, command, ...cmdArgs] = args;
   const servers = readMcplServersFile(DEFAULT_CONFIG_PATH);
-  const isOverwrite = id! in servers;
-  servers[id!] = { command: command!, ...(cmdArgs.length > 0 ? { args: cmdArgs } : {}) };
+  const prev = servers[id!];
+  // Overwrite replaces the command line (command + args, which travel as one
+  // unit) but PRESERVES env and other settings: env is edited via /mcp env
+  // and the panel editor, whose contract is "cleared only by explicit empty
+  // save" — a command update silently dropping tokens/settings broke working
+  // servers in a way that only surfaced at next start.
+  servers[id!] = {
+    ...prev,
+    command: command!,
+    ...(cmdArgs.length > 0 ? { args: cmdArgs } : {}),
+  };
+  if (cmdArgs.length === 0) delete servers[id!]!.args;
   saveMcplServers(DEFAULT_CONFIG_PATH, servers);
 
+  const keptEnv = prev?.env ? Object.keys(prev.env) : [];
   return {
     lines: [
-      { text: `${isOverwrite ? 'Updated' : 'Added'} server "${id}". Restart to apply.`, style: 'system' },
+      { text: `${prev ? 'Updated' : 'Added'} server "${id}". Restart to apply.`, style: 'system' },
+      ...(keptEnv.length > 0
+        ? [{ text: `  (kept env: ${keptEnv.join(', ')})`, style: 'system' as const }]
+        : []),
     ],
   };
 }

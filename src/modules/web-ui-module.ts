@@ -902,6 +902,15 @@ export class WebUiModule implements Module {
 
   private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
     const url = new URL(req.url);
+
+    // Every HTTP route here is read-only — mutation happens over the WS.
+    // Wrong methods used to fall through to the same handlers (a POST
+    // /debug/context behaved exactly like the GET), which lies to API
+    // consumers probing the surface.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+    }
+
     const isRetrievalTraceRoute = url.pathname === '/debug/retrieval'
       || url.pathname === '/debug/retrieval/view';
 
@@ -1073,9 +1082,20 @@ export class WebUiModule implements Module {
       return this.serveWorkspaceFile(url.pathname.slice('/files/'.length));
     }
 
-    // Static SPA
+    // API namespace exhausted: anything still unmatched under /debug/ is a
+    // typo, wrong casing, or trailing slash — an honest 404 beats the SPA
+    // shell with a 200, which API consumers can't tell from data. (This was
+    // also the mechanism that swallowed real failures like the tokenizer
+    // 404 — the client saw 200/HTML instead of the error.)
+    if (url.pathname.startsWith('/debug/')) {
+      return Response.json({ error: `Unknown debug route: ${url.pathname}` }, { status: 404 });
+    }
+
+    // Static SPA. Bundle assets get real 404s: falling back to index.html
+    // for a missing /assets/*.js serves HTML where the browser expects JS —
+    // a blank page with a MIME error instead of a diagnosable miss.
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
-    return this.serveStatic(requested);
+    return this.serveStatic(requested, { spaFallback: !url.pathname.startsWith('/assets/') });
   }
 
   /** The minimal app slice the shared panel-data layer needs, or null before
@@ -1281,7 +1301,11 @@ export class WebUiModule implements Module {
     }
   }
 
-  private async serveStatic(requestedPath: string): Promise<Response> {
+  private async serveStatic(
+    requestedPath: string,
+    opts: { spaFallback?: boolean } = {},
+  ): Promise<Response> {
+    const spaFallback = opts.spaFallback ?? true;
     // Path containment: resolve and verify the result is still under staticRoot.
     // Plain startsWith without a separator is unsafe — both `<root>` and
     // `<root>-evil/...` pass `startsWith('<root>')`. The current callers
@@ -1297,11 +1321,15 @@ export class WebUiModule implements Module {
     try {
       const s = await stat(safePath);
       if (s.isDirectory()) {
-        return this.serveStatic(join(requestedPath, 'index.html'));
+        return this.serveStatic(join(requestedPath, 'index.html'), opts);
       }
       const data = await readFile(safePath);
       return new Response(data, { headers: { 'content-type': mimeFor(safePath) } });
     } catch {
+      // Missing bundle assets are honest misses, not SPA routes.
+      if (!spaFallback) {
+        return new Response('Not Found', { status: 404 });
+      }
       // Fall back to index.html so the SPA can handle client-side routing.
       try {
         const indexPath = join(sharedServer!.staticRoot, 'index.html');
