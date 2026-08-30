@@ -27,6 +27,7 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
+import { gateTelemetryHeaders } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
@@ -945,6 +946,8 @@ async function main() {
     }
   };
 
+  const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks);
+
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
@@ -982,11 +985,15 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+          // Double-gated (see src/gate-telemetry.ts): GATE_TELEMETRY=1 AND a
+          // configured base URL, so the stamp can only ever go to a
+          // gateway the operator has declared — never to the vendor's
+          // default endpoint (review finding on the first wiring).
           // Cast note: @animalabs/membrane on npm (0.5.80) predates the
           // dynamicHeaders field (antra-tess/membrane#65); drop the cast when
           // the release lands. Harmless either way — an older membrane
           // ignores unknown config keys.
-          ...({ dynamicHeaders: () => ({ 'x-gate-debt-chunks': pendingDebtChunks() }) } as object),
+          ...(gateTelemetryDynamicHeaders ? ({ dynamicHeaders: gateTelemetryDynamicHeaders } as object) : {}),
           // Hold this agent's cached prefix warm across idle gaps. Only fires
           // when the entry is actually near expiry, so a busy agent costs
           // nothing; only the 1h-TTL primary lane is eligible (the module
