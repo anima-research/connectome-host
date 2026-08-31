@@ -103,6 +103,10 @@ describe('framework FKM composition', () => {
         type: 'autobiographical',
         compressionRefusalCurveFallbacks: 2,
         compressionContextBudgetTokens: 19_000,
+        compressionSourceOnly: false,
+        compressionSourceOnlyFallback: true,
+        compressionMergeSourceOnly: false,
+        compressionMergeSourceOnlyFallback: true,
       },
     }));
 
@@ -118,11 +122,19 @@ describe('framework FKM composition', () => {
     });
     expect(reloaded!.agent.strategy?.compressionRefusalCurveFallbacks).toBe(2);
     expect(reloaded!.agent.strategy?.compressionContextBudgetTokens).toBe(19_000);
+    expect(reloaded!.agent.strategy?.compressionSourceOnly).toBe(false);
+    expect(reloaded!.agent.strategy?.compressionSourceOnlyFallback).toBe(true);
+    expect(reloaded!.agent.strategy?.compressionMergeSourceOnly).toBe(false);
+    expect(reloaded!.agent.strategy?.compressionMergeSourceOnlyFallback).toBe(true);
 
     const runtimeStrategy = buildFrameworkStrategy(reloaded!, 'model', 'America/Los_Angeles');
     const runtimeConfig = strategyConfigView(runtimeStrategy);
     expect(runtimeConfig.compressionRefusalCurveFallbacks).toBe(2);
     expect(runtimeConfig.compressionContextBudgetTokens).toBe(19_000);
+    expect(runtimeConfig.compressionSourceOnly).toBe(false);
+    expect(runtimeConfig.compressionSourceOnlyFallback).toBe(true);
+    expect(runtimeConfig.compressionMergeSourceOnly).toBe(false);
+    expect(runtimeConfig.compressionMergeSourceOnlyFallback).toBe(true);
 
     const agentConfig = buildFrameworkAgentConfig(reloaded!, 'agent', 'model', runtimeStrategy);
     expect(agentConfig.sameRoundThinkTextPolicy).toBe('private');
@@ -138,14 +150,26 @@ describe('framework FKM composition', () => {
         type: 'autobiographical',
         compressionRefusalCurveFallbacks: 0,
         compressionContextBudgetTokens: 50_000,
+        compressionSourceOnly: true,
+        compressionSourceOnlyFallback: false,
+        compressionMergeSourceOnly: true,
+        compressionMergeSourceOnlyFallback: false,
       },
     }));
     const otherStrategy = buildFrameworkStrategy(otherRecipe, 'other-model', 'America/Los_Angeles');
     const otherConfig = strategyConfigView(otherStrategy);
     expect(otherConfig.compressionRefusalCurveFallbacks).toBe(0);
     expect(otherConfig.compressionContextBudgetTokens).toBe(50_000);
+    expect(otherConfig.compressionSourceOnly).toBe(true);
+    expect(otherConfig.compressionSourceOnlyFallback).toBe(false);
+    expect(otherConfig.compressionMergeSourceOnly).toBe(true);
+    expect(otherConfig.compressionMergeSourceOnlyFallback).toBe(false);
     expect(otherConfig).not.toBe(runtimeConfig);
     expect(runtimeConfig.compressionRefusalCurveFallbacks).toBe(2);
     expect(runtimeConfig.compressionContextBudgetTokens).toBe(19_000);
+    expect(runtimeConfig.compressionSourceOnly).toBe(false);
+    expect(runtimeConfig.compressionSourceOnlyFallback).toBe(true);
+    expect(runtimeConfig.compressionMergeSourceOnly).toBe(false);
+    expect(runtimeConfig.compressionMergeSourceOnlyFallback).toBe(true);
   });
 });

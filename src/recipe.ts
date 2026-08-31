@@ -55,10 +55,14 @@ export interface RecipeStrategy {
    * recall, or non-target raw recent material). One call, not a refusal
    * ladder. Source-preserving; L1 only. Default off. */
   compressionSourceOnly?: boolean;
+  /** Preserve canonical + recall variants, then issue one source-only L1 request last. */
+  compressionSourceOnlyFallback?: boolean;
   /** Residence-scoped source-only L2+ merge requests: omit unrelated head,
    * recall frontier, and raw middle while preserving exact target expansion,
    * directive, signed target carriers, and live tools. Default off. */
   compressionMergeSourceOnly?: boolean;
+  /** Preserve ordinary merge retries, then use target-only on the final attempt. */
+  compressionMergeSourceOnlyFallback?: boolean;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
@@ -1132,17 +1136,15 @@ export function validateRecipe(raw: unknown): Recipe {
     ) {
       throw new Error('Recipe agent.strategy.compressionContextBudgetTokens must be a positive safe integer.');
     }
-    if (
-      strategy.compressionSourceOnly !== undefined
-      && typeof strategy.compressionSourceOnly !== 'boolean'
-    ) {
-      throw new Error('Recipe agent.strategy.compressionSourceOnly must be a boolean.');
-    }
-    if (
-      strategy.compressionMergeSourceOnly !== undefined
-      && typeof strategy.compressionMergeSourceOnly !== 'boolean'
-    ) {
-      throw new Error('Recipe agent.strategy.compressionMergeSourceOnly must be a boolean.');
+    for (const key of [
+      'compressionSourceOnly',
+      'compressionSourceOnlyFallback',
+      'compressionMergeSourceOnly',
+      'compressionMergeSourceOnlyFallback',
+    ] as const) {
+      if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
+        throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
+      }
     }
   }
 
