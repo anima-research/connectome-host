@@ -1,0 +1,1 @@
+Recipes can pass the Context Manager source-only compression controls through Host/FKM, including the new default-off L1 and merge final-fallback modes, with boolean validation and cross-agent isolation.

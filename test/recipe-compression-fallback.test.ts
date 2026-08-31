@@ -14,10 +14,18 @@ describe('compression recall-curve recipe settings', () => {
       compressionRefusalCurveFallbacks: 3,
       compressionContextBudgetTokens: 200_000,
       compressionRecallBudgetTokens: 40_000,
+      compressionSourceOnly: false,
+      compressionSourceOnlyFallback: true,
+      compressionMergeSourceOnly: false,
+      compressionMergeSourceOnlyFallback: true,
     }));
     expect(parsed.agent.strategy?.compressionRefusalCurveFallbacks).toBe(3);
     expect(parsed.agent.strategy?.compressionContextBudgetTokens).toBe(200_000);
     expect(parsed.agent.strategy?.compressionRecallBudgetTokens).toBe(40_000);
+    expect(parsed.agent.strategy?.compressionSourceOnly).toBe(false);
+    expect(parsed.agent.strategy?.compressionSourceOnlyFallback).toBe(true);
+    expect(parsed.agent.strategy?.compressionMergeSourceOnly).toBe(false);
+    expect(parsed.agent.strategy?.compressionMergeSourceOnlyFallback).toBe(true);
   });
 
   test('accepts zero as an explicit fallback disable', () => {
@@ -40,5 +48,8 @@ describe('compression recall-curve recipe settings', () => {
       .toThrow(/compressionRecallBudgetTokens/);
     expect(() => validateRecipe(recipe({ compressionRecallBudgetTokens: '40000' })))
       .toThrow(/compressionRecallBudgetTokens/);
+    for (const key of ['compressionSourceOnly', 'compressionSourceOnlyFallback', 'compressionMergeSourceOnly', 'compressionMergeSourceOnlyFallback']) {
+      expect(() => validateRecipe(recipe({ [key]: 'yes' }))).toThrow(new RegExp(key));
+    }
   });
 });
