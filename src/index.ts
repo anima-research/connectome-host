@@ -1012,6 +1012,10 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
+    // Recipe-level retry policy (agent.retry). Without it membrane's default
+    // gives generic retryable errors — e.g. a gateway 502 — zero retries; only
+    // 529/overloaded_error has a dedicated schedule.
+    ...(recipe.agent.retry ? { retry: recipe.agent.retry } : {}),
     formatter: provider === 'openai-responses' || provider === 'openai-codex'
       ? new OpenAIResponsesFormatter()
       : recipe.agent.formatter === 'anthropic-xml'

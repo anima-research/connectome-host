@@ -135,6 +135,17 @@ export interface RecipeAgent {
    * tools) — for migrating prefill-era bots (chapterx borgs) with their exact
    * prompting structure intact. */
   formatter?: 'native' | 'anthropic-xml';
+  /**
+   * Membrane retry policy for this agent's provider calls. Membrane's default
+   * retries generic retryable errors ZERO times — only `529`/`overloaded_error`
+   * gets its dedicated patient schedule — so a transient 5xx from a
+   * non-Anthropic gateway (a 502 "Service temporarily unavailable") kills the
+   * turn on first failure. `{ "maxRetries": 4 }` rides out such blips with
+   * exponential backoff (retryDelayMs 1000, x2, capped at maxRetryDelayMs
+   * 30000 by default). Passed to Membrane verbatim; see membrane's
+   * `RetryConfigInput` for every field.
+   */
+  retry?: import('@animalabs/membrane').MembraneConfig['retry'];
   /** Prefill scaffold user message appended after the conversation (e.g.
    * chapterx CLI-sim's "<cmd>cat untitled.txt</cmd>"). Prefill formatter only. */
   prefillUserMessage?: string;
@@ -263,6 +274,14 @@ export interface RecipeMcpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Per-request timeout for this server's outbound JSON-RPC (tools/call,
+   * tools/list, channels/*), in milliseconds. Passed through to the
+   * framework's `McplServerConfig.requestTimeoutMs`. Raise it for tools that
+   * legitimately outlive the 60s default (image-generation gateways, long
+   * searches); `0` disables the timeout.
+   */
+  requestTimeoutMs?: number;
   /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
   url?: string;
   transport?: 'stdio' | 'websocket';
@@ -1242,6 +1261,44 @@ export function validateRecipe(raw: unknown): Recipe {
   }
   agent.cacheTtl ??= '1h';
 
+  if (agent.retry !== undefined) {
+    const retry = agent.retry as Record<string, unknown> | null;
+    if (typeof retry !== 'object' || retry === null || Array.isArray(retry)) {
+      throw new Error(`Recipe agent.retry must be an object, got ${JSON.stringify(agent.retry)}.`);
+    }
+    const RETRY_KEYS = ['maxRetries', 'retryDelayMs', 'backoffMultiplier', 'maxRetryDelayMs'] as const;
+    // Reject unknown keys: `{ maxRetires: 4 }` would otherwise validate clean,
+    // Membrane would ignore it, and the agent would sit at zero retries —
+    // exactly the hard-down mode this knob exists to close, wearing a config
+    // that looks like it fixed it.
+    for (const key of Object.keys(retry)) {
+      if (!(RETRY_KEYS as readonly string[]).includes(key) && key !== 'overloaded') {
+        throw new Error(`Recipe agent.retry has unknown key ${JSON.stringify(key)} (known: ${RETRY_KEYS.join(', ')}, overloaded).`);
+      }
+    }
+    for (const key of ['maxRetries', 'retryDelayMs', 'backoffMultiplier', 'maxRetryDelayMs'] as const) {
+      const v = retry[key];
+      if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+        throw new Error(`Recipe agent.retry.${key} must be a non-negative number, got ${JSON.stringify(v)}.`);
+      }
+    }
+    if (retry.overloaded !== undefined) {
+      const overloaded = retry.overloaded as Record<string, unknown> | null;
+      if (typeof overloaded !== 'object' || overloaded === null || Array.isArray(overloaded)) {
+        throw new Error(`Recipe agent.retry.overloaded must be an object, got ${JSON.stringify(retry.overloaded)}.`);
+      }
+      for (const key of Object.keys(overloaded)) {
+        if (!(RETRY_KEYS as readonly string[]).includes(key)) {
+          throw new Error(`Recipe agent.retry.overloaded has unknown key ${JSON.stringify(key)} (known: ${RETRY_KEYS.join(', ')}).`);
+        }
+        const v = overloaded[key];
+        if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+          throw new Error(`Recipe agent.retry.overloaded.${key} must be a non-negative number, got ${JSON.stringify(v)}.`);
+        }
+      }
+    }
+  }
+
   // A keepalive that fires AFTER the entry has already expired is the worst of
   // both worlds: it pays a full 2x cache write on every poke, forever, and
   // reports success while doing it. Refuse the config rather than discover it
@@ -1427,6 +1484,10 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
+      }
+      if (server.requestTimeoutMs !== undefined
+          && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
+        throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
       }
       if (server.source !== undefined) {
         if (typeof server.source !== 'object' || server.source === null) {
