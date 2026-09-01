@@ -23,6 +23,7 @@ import {
   NativeFormatter,
   OpenAIResponsesAPIAdapter,
   OpenAIResponsesFormatter,
+  OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
@@ -84,6 +85,10 @@ const config = {
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
   openaiApiKey: process.env.OPENAI_API_KEY,
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
+  // Deliberately NO fallback to OPENAI_API_KEY: agent.baseUrl is
+  // recipe-controlled, so a fallback would silently send a real OpenAI
+  // credential as a Bearer token to whatever endpoint a recipe names.
+  openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
@@ -877,6 +882,16 @@ async function main() {
         fastMode: recipe.agent.codex?.fastMode ?? false,
       })
     : undefined;
+  // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
+  // Groq, NanoGPT, ...). The recipe carries the endpoint (agent.baseUrl,
+  // validated at load); the key is optional because local servers have none.
+  const openaiCompatibleAdapter = provider === 'openai-compatible'
+    ? new OpenAICompatibleAdapter({
+        baseURL: recipe.agent.baseUrl!,
+        apiKey: config.openaiCompatibleApiKey || undefined,
+        providerName: 'openai-compatible',
+      })
+    : undefined;
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
@@ -964,6 +979,7 @@ async function main() {
     : bedrockAdapter
       ?? (mockAdapter ? new LoggingProviderAdapter(mockAdapter, llmLogPath) : undefined)
       ?? (openrouterAdapter ? new LoggingProviderAdapter(openrouterAdapter, llmLogPath) : undefined)
+      ?? (openaiCompatibleAdapter ? new LoggingProviderAdapter(openaiCompatibleAdapter, llmLogPath) : undefined)
       ?? (codexAdapter ? new LoggingProviderAdapter(codexAdapter, llmLogPath) : undefined)
       ?? new LoggingAnthropicAdapter(
         {

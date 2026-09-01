@@ -129,7 +129,19 @@ export interface RecipeAgent {
   /** Provider transport. Omitted preserves the historical Anthropic default.
    * 'mock' wires membrane's MockAdapter — canned/echo responses, no API key,
    * no provider spend; for exercising the full host loop offline. */
-  provider?: 'anthropic' | 'openai-responses' | 'openai-codex' | 'openrouter' | 'bedrock' | 'mock';
+  provider?: 'anthropic' | 'openai-responses' | 'openai-codex' | 'openrouter' | 'bedrock' | 'openai-compatible' | 'mock';
+  /**
+   * Base URL of an OpenAI-compatible chat-completions endpoint, e.g.
+   * `http://localhost:11434/v1` (Ollama), a vLLM server, Together, Groq,
+   * NanoGPT... Required with `provider: 'openai-compatible'`, rejected with
+   * any other provider (those have their own `*_BASE_URL` env overrides).
+   * The API key comes from `OPENAI_COMPATIBLE_API_KEY` only — deliberately no
+   * `OPENAI_API_KEY` fallback, since `baseUrl` is recipe-controlled and a real
+   * OpenAI credential must never travel silently to an arbitrary endpoint.
+   * Local servers may need none. `agent.model` is required
+   * too — there is no sensible default model for an arbitrary endpoint.
+   */
+  baseUrl?: string;
   /** Message formatter. 'native' (default) = structured user/assistant turns.
    * 'anthropic-xml' = classic prefill format ("participant: text" runs, XML
    * tools) — for migrating prefill-era bots (chapterx borgs) with their exact
@@ -1154,9 +1166,10 @@ export function validateRecipe(raw: unknown): Recipe {
       agent.provider !== 'openai-codex' &&
       agent.provider !== 'openrouter' &&
       agent.provider !== 'bedrock' &&
+      agent.provider !== 'openai-compatible' &&
       agent.provider !== 'mock') {
     throw new Error(
-      `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', 'bedrock', or 'mock', ` +
+      `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', 'bedrock', 'openai-compatible', or 'mock', ` +
       `got ${JSON.stringify(agent.provider)}.`,
     );
   }
@@ -1241,6 +1254,32 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error(`Recipe agent.cacheTtl must be '5m' or '1h', got ${JSON.stringify(agent.cacheTtl)}.`);
   }
   agent.cacheTtl ??= '1h';
+
+  // openai-compatible: an endpoint the host knows nothing about, so the recipe
+  // must say where it is and which model to ask for. Fail at load time, not as
+  // a fetch to 'undefined/chat/completions' at first inference.
+  if (agent.provider === 'openai-compatible') {
+    if (typeof agent.baseUrl !== 'string' || !agent.baseUrl.trim()) {
+      throw new Error("Recipe agent.baseUrl is required when agent.provider is 'openai-compatible' (e.g. \"http://localhost:11434/v1\").");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(agent.baseUrl);
+    } catch {
+      throw new Error(`Recipe agent.baseUrl must be an absolute http(s) URL, got ${JSON.stringify(agent.baseUrl)}.`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Recipe agent.baseUrl must use http or https, got ${JSON.stringify(agent.baseUrl)}.`);
+    }
+    if (typeof agent.model !== 'string' || !agent.model.trim()) {
+      throw new Error("Recipe agent.model is required when agent.provider is 'openai-compatible' (no default model for an arbitrary endpoint).");
+    }
+  } else if (agent.baseUrl !== undefined) {
+    throw new Error(
+      `Recipe agent.baseUrl only applies to agent.provider 'openai-compatible' (got provider ${JSON.stringify(agent.provider ?? 'anthropic')}); ` +
+      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL.',
+    );
+  }
 
   // A keepalive that fires AFTER the entry has already expired is the worst of
   // both worlds: it pays a full 2x cache write on every poke, forever, and

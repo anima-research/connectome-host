@@ -118,6 +118,31 @@ device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
 warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied.
 
+### OpenAI-compatible endpoints (Ollama, vLLM, Together, Groq, NanoGPT, ...)
+
+Any server speaking the OpenAI chat-completions API works through the generic
+`openai-compatible` provider — the recipe names the endpoint and the model:
+
+```json
+{
+  "agent": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://localhost:11434/v1",
+    "model": "qwen3:32b",
+    "systemPrompt": "You are a helpful assistant."
+  }
+}
+```
+
+The API key is read from `OPENAI_COMPATIBLE_API_KEY` only — deliberately no
+`OPENAI_API_KEY` fallback: `baseUrl` is recipe-controlled, and a real OpenAI
+credential must never be sent silently to an arbitrary endpoint. Local
+servers usually need none. `agent.model` is required —
+there is no default model for an arbitrary endpoint. Tool calls use the
+standard `tool_calls` format, so the endpoint must support function calling
+for tool-using recipes. Provider-side prompt caching and cache accounting
+depend on what the endpoint reports.
+
 ## What it provides
 
 - **Web UI**: browser operator console (`modules.webui`) — live chat with full interiority (thinking, tool calls, streaming), agent/fleet tree, context makeup + compression coverage, call ledger with cache verdicts and billing-grade costs, health/ops alerts, Chronicle branch tree, lessons, MCPL config, workspace files; scoped read-only observer access via device keys
@@ -157,6 +182,7 @@ npm install
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
 | `OPENAI_API_KEY` | — | OpenAI Platform key for `openai-responses` recipes |
+| `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
