@@ -93,7 +93,10 @@ export interface RecipeStrategy {
   /** Adaptive-resolution fold planner. The host defaults this to 'kv-stable'
    *  (cache-stable compile plans; see buildFrameworkStrategy) — set explicitly
    *  only to opt into the legacy planners. */
-  foldingStrategy?: 'flat-profile' | 'oldest-first' | 'kv-stable';
+  foldingStrategy?: 'flat-profile' | 'oldest-first' | 'kv-stable' | 'kv-unified';
+  /** Complete fail-closed policy for the kv-unified solver. No live defaults
+   * are supplied: selecting kv-unified without every field is invalid. */
+  kvUnified?: RecipeKvUnifiedConfig;
   speculativeProduction?: boolean;
   /** L1 production holdback: keep the newest N closed chunks out of the
    *  speculative compression queue (default 1); demand still overrides. */
@@ -119,6 +122,32 @@ export interface RecipeStrategy {
    *  names the agent and directs attribution so pure-witness chunks don't
    *  flip the summarizer into another speaker's identity. */
   identityReminder?: string;
+}
+
+export interface RecipeKvUnifiedConfig {
+  policy: {
+    alpha: number;
+    budgetLowRatio: number;
+    budgetHighRatio: number;
+    budgetUnderLambda: number;
+    budgetOverLambda: number;
+    cacheLambda: number;
+    cacheScale: number;
+    cacheReadPrice: number;
+    cacheWritePrice: number;
+    continuityLambda: number;
+    continuityScale: number;
+    continuityRecencyHalfLifeTokens: number;
+    continuityRecencyFloor: number;
+    continuityStableHalfLife: number;
+    continuityStableFloor: number;
+  };
+  tokenBucketSize: number;
+  continuityBucketSize: number;
+  fidelityBucketSize: number;
+  labelCeiling: number;
+  adoptEpsilon: number;
+  treeifyNonContiguousSummaries: boolean;
 }
 
 export interface RecipeAgent {
@@ -1136,6 +1165,87 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
   return recipe;
 }
 
+function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
+  const selected = strategy.foldingStrategy === 'kv-unified';
+  const raw = strategy.kvUnified;
+  if (!selected) {
+    if (raw !== undefined) {
+      throw new Error('Recipe agent.strategy.kvUnified requires foldingStrategy "kv-unified".');
+    }
+    return;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      'Recipe foldingStrategy "kv-unified" requires a complete agent.strategy.kvUnified object; defaults are forbidden.',
+    );
+  }
+  const config = raw as Record<string, unknown>;
+  if (!config.policy || typeof config.policy !== 'object' || Array.isArray(config.policy)) {
+    throw new Error('Recipe agent.strategy.kvUnified.policy must be a complete object.');
+  }
+  const policy = config.policy as Record<string, unknown>;
+  const policyNumbers = [
+    'alpha', 'budgetLowRatio', 'budgetHighRatio', 'budgetUnderLambda',
+    'budgetOverLambda', 'cacheLambda', 'cacheScale', 'cacheReadPrice',
+    'cacheWritePrice', 'continuityLambda', 'continuityScale',
+    'continuityRecencyHalfLifeTokens', 'continuityRecencyFloor',
+    'continuityStableHalfLife', 'continuityStableFloor',
+  ] as const;
+  for (const key of policyNumbers) {
+    if (typeof policy[key] !== 'number' || !Number.isFinite(policy[key])) {
+      throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be a finite number.`);
+    }
+  }
+  const nonNegative = [
+    'alpha', 'budgetUnderLambda', 'budgetOverLambda', 'cacheLambda',
+    'cacheReadPrice', 'cacheWritePrice', 'continuityLambda',
+  ] as const;
+  for (const key of nonNegative) {
+    if ((policy[key] as number) < 0) {
+      throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be non-negative.`);
+    }
+  }
+  for (const key of [
+    'cacheScale', 'continuityScale', 'continuityRecencyHalfLifeTokens',
+    'continuityStableHalfLife',
+  ] as const) {
+    if ((policy[key] as number) <= 0) {
+      throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be positive.`);
+    }
+  }
+  const low = policy.budgetLowRatio as number;
+  const high = policy.budgetHighRatio as number;
+  if (low < 0 || high > 1 || low > high) {
+    throw new Error('Recipe kvUnified budget ratios must satisfy 0 <= low <= high <= 1.');
+  }
+  for (const key of ['continuityRecencyFloor', 'continuityStableFloor'] as const) {
+    const value = policy[key] as number;
+    if (value < 0 || value > 1) {
+      throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be in [0, 1].`);
+    }
+  }
+  for (const key of [
+    'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
+  ] as const) {
+    const value = config[key];
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Recipe agent.strategy.kvUnified.${key} must be a positive safe integer.`);
+    }
+  }
+  if (
+    typeof config.adoptEpsilon !== 'number' ||
+    !Number.isFinite(config.adoptEpsilon) ||
+    config.adoptEpsilon < 0
+  ) {
+    throw new Error('Recipe agent.strategy.kvUnified.adoptEpsilon must be a finite non-negative number.');
+  }
+  if (typeof config.treeifyNonContiguousSummaries !== 'boolean') {
+    throw new Error(
+      'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries must be an explicit boolean.',
+    );
+  }
+}
+
 /**
  * Validate raw JSON and fill defaults.
  */
@@ -1405,6 +1515,21 @@ export function validateRecipe(raw: unknown): Recipe {
         `recipe's "extensions" block (none is declared).`,
       );
     }
+    if (
+      strategy.foldingStrategy !== undefined &&
+      strategy.foldingStrategy !== 'flat-profile' &&
+      strategy.foldingStrategy !== 'oldest-first' &&
+      strategy.foldingStrategy !== 'kv-stable' &&
+      strategy.foldingStrategy !== 'kv-unified'
+    ) {
+      throw new Error(
+        `Recipe agent.strategy.foldingStrategy is invalid: ${JSON.stringify(strategy.foldingStrategy)}.`,
+      );
+    }
+    if (strategy.foldingStrategy === 'kv-unified' && strategy.type === 'passthrough') {
+      throw new Error('Recipe foldingStrategy "kv-unified" requires an autobiographical or frontdesk strategy.');
+    }
+    validateKvUnifiedConfig(strategy);
     if (
       strategy.compressionRefusalCurveFallbacks !== undefined
       && (

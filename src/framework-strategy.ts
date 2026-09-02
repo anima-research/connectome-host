@@ -35,6 +35,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSlackRatio',
   'overBudgetGraceRatio',
   'foldingStrategy',
+  'kvUnified',
   'speculativeProduction',
   'l1HoldbackChunks',
   'summaryParticipant',
