@@ -66,6 +66,8 @@ describe('gateTelemetryHeaders', () => {
     expect(originClass({ reason: 'mail:incoming', source: 'fenmail' })).toBe('mail');
     expect(originClass({ reason: 'mcpl:push-event', source: 'discord' })).toBe('event');
     expect(originClass({ reason: 'admin-nudge (someone)', source: 'framework' })).toBe('operator');
+    expect(originClass({ reason: 'external-message', source: 'headless' })).toBe('operator');
+    expect(originClass({ reason: 'external-message', source: 'tui' })).toBe('operator');
     expect(originClass({ reason: 'provider-acceleration-retry', source: 'framework' })).toBe('provider-acceleration-retry');
     expect(originClass({ reason: 'weird reason!!'.repeat(6), source: 'x' })).toHaveLength(40);
   });

@@ -61,7 +61,9 @@ export function originClass(trigger: TurnTrigger): string {
   if (r.includes('heartbeat') || s.includes('heartbeat')) return 'heartbeat';
   if (r.includes('mail') || s.includes('mail')) return 'mail';
   if (r === 'mcpl:channel-incoming' || r === 'mcpl:push-event' || r.startsWith('discord')) return 'event';
-  if (r.includes('admin') || r.includes('nudge') || r.includes('unstick') || r.includes('operator') || s === 'api' || s === 'tui') return 'operator';
+  // a person typing at the host itself: headless IPC, CLI, TUI, web UI, API
+  if (r === 'external-message' || ['headless', 'cli', 'tui', 'webui', 'api'].includes(s)) return 'operator';
+  if (r.includes('admin') || r.includes('nudge') || r.includes('unstick') || r.includes('operator')) return 'operator';
   return r.replace(/[^a-z0-9:_-]/g, '').slice(0, 40) || 'event';
 }
 
