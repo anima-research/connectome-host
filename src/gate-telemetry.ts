@@ -67,16 +67,23 @@ export function originClass(trigger: TurnTrigger): string {
   return r.replace(/[^a-z0-9:_-]/g, '').slice(0, 40) || 'event';
 }
 
-/** Header-safe attribute: printable characters only, clipped; empty → null (not sent). */
+/**
+ * Header-safe attribute. HTTP header values are ByteStrings: a single
+ * non-ASCII code point (an emoji in a channel name, say) makes Fetch throw
+ * and would turn telemetry into a failed model request. So the rule is
+ * fail-closed on the WHOLE value — visible ASCII (0x20..0x7e) only, clipped
+ * to 120 — never character-stripping, which would mint a different id and
+ * collide provenance. An unsendable id is simply not sent (null → dropped).
+ */
 function attr(v: string | undefined): string | null {
   if (typeof v !== 'string') return null;
-  let clean = '';
-  for (const ch of v) {
-    const code = ch.charCodeAt(0);
-    if (code >= 0x20 && code !== 0x7f) clean += ch;
+  const t = v.trim();
+  if (!t) return null;
+  for (let i = 0; i < t.length; i++) {
+    const code = t.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) return null;
   }
-  clean = clean.trim();
-  return clean ? clean.slice(0, 120) : null;
+  return t.slice(0, 120);
 }
 
 export function gateTelemetryHeaders(

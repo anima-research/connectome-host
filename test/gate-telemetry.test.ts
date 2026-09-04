@@ -72,10 +72,20 @@ describe('gateTelemetryHeaders', () => {
     expect(originClass({ reason: 'weird reason!!'.repeat(6), source: 'x' })).toHaveLength(40);
   });
 
-  it('attributes are header-safe: control characters stripped, clipped to 120', () => {
-    const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'mcpl:channel-incoming', source: 'discord', channelId: 'a\r\nb', counterparty: 'x'.repeat(200) }));
+  it('attributes are header-safe: a value with any non-ASCII or control character is withheld whole, never rewritten', () => {
+    const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'mcpl:channel-incoming', source: 'discord', channelId: 'discord:\u{1F600}', counterparty: 'discord:user:4\r\n2' }));
     const h = fn!({ lane: 'stream' });
-    expect(h['x-gate-channel']).toBe('ab');
-    expect((h['x-gate-counterparty'] as string).length).toBe(120);
+    expect(h['x-gate-channel']).toBeNull();
+    expect(h['x-gate-counterparty']).toBeNull();
+    // and what IS sent can always be put in real Headers (Fetch ByteString rule)
+    const ok = gateTelemetryHeaders(env, debt, () => wake)!({ lane: 'stream' });
+    const sendable = Object.fromEntries(Object.entries(ok).filter(([, v]) => v !== null).map(([k, v]) => [k, String(v)]));
+    expect(() => new Headers(sendable)).not.toThrow();
+    expect(new Headers(sendable).get('x-gate-counterparty')).toBe('discord:user:42');
+  });
+
+  it('attributes are clipped to 120 visible-ASCII characters', () => {
+    const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'mcpl:channel-incoming', source: 'discord', counterparty: 'x'.repeat(200) }));
+    expect((fn!({ lane: 'stream' })['x-gate-counterparty'] as string).length).toBe(120);
   });
 });
