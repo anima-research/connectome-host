@@ -1,1 +1,0 @@
-- Add complete fail-closed recipe validation and strategy passthrough for `foldingStrategy: "kv-unified"`; partial policies, invalid occupancy bands, unsafe approximation grids, and implicit treeification are rejected at load time.

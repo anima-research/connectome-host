@@ -1,1 +1,0 @@
-- Recipes accept the default-off `agent.strategy.compressionSourceOnly` flag and pass it through to Context Manager's residence-scoped L1 compression request builder (#103).

@@ -6,6 +6,8 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.8.0 — 2026-09-05
+
 ### Added
 
 - Recipes accept `agent.proseRouting: "disabled"` for tool-only external publication when paired with a supporting Agent Framework release.
@@ -25,17 +27,41 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   commands). Validation and the runtime share one mount builder
   (`src/workspace-mounts.ts`), so the two cannot drift.
 
-### Fixed
+- Recipes accept the default-off `agent.strategy.compressionSourceOnly` flag and pass it through to Context Manager's residence-scoped L1 compression request builder (#103).
 
-- **Prompt-cache keepalive events all go to stderr**, so every one of them lands
-  in `service-stderr.log` beside `[inference-refusal]` instead of being split by
-  severity across two sinks. Routine `refreshed` events previously went to
-  stdout — which the host unit leaves on the journal — so the log an operator
-  actually greps showed nothing. Observed on fable-cm 2026-08-23: the keepalive
-  refreshed a 523,102-token prefix three times, correctly and with zero cache
-  writes, while a monitor tailing `service-stderr.log` reported no activity for
-  three hours. A background spender that can't be found in the operator's log is
-  indistinguishable from one that never ran.
+- Gate telemetry stamps why the turn fired: `x-gate-origin` (heartbeat |
+  event | mail | operator | raw reason), `x-gate-channel` and
+  `x-gate-counterparty` (adapter-namespaced ids, never content or display
+  names) ride the stream lane under the same `GATE_TELEMETRY=1` + base-URL
+  gate as the debt stamp; background calls on the complete lane carry debt
+  only (#113).
+
+- Gate-bound Anthropic calls carry an `x-gate-debt-chunks` header with the
+  live compression-debt pending-chunk count (membrane `dynamicHeaders`,
+  antra-tess/membrane#65) — the gateway records it per ledger row and strips
+  it before the vendor. Double-gated on `GATE_TELEMETRY=1` AND a configured
+  `ANTHROPIC_BASE_URL`, so the stamp can never reach a vendor endpoint;
+  unreadable state sends no header rather than a guess (#109).
+
+- Health tab renders the per-agent compression-debt reduction (state, pending
+  chunks, oldest age, merge queue) and says "not reported by this stack" when
+  absent — the queue is now distinct from context composition, and the top
+  line reads "inference queued" (#110).
+
+- Add complete fail-closed recipe validation and strategy passthrough for `foldingStrategy: "kv-unified"`; partial policies, invalid occupancy bands, unsafe approximation grids, and implicit treeification are rejected at load time.
+
+- **`agent.provider: 'openai-compatible'`** — run an agent against any
+  OpenAI chat-completions endpoint (Ollama, vLLM, Together, Groq, NanoGPT,
+  ...) via membrane's existing `OpenAICompatibleAdapter`, which no host ever
+  wired. The recipe names the endpoint (`agent.baseUrl`, validated as an
+  absolute http(s) URL at load) and the model (required — no default for an
+  arbitrary endpoint); the key comes from `OPENAI_COMPATIBLE_API_KEY`
+  only (no `OPENAI_API_KEY` fallback — `baseUrl` is recipe-controlled, so a
+  fallback would silently send a real OpenAI credential to an arbitrary
+  endpoint) and may be absent for local servers.
+  `agent.baseUrl` with any other provider is rejected at load time.
+
+- Recipes can pass the Context Manager source-only compression controls through Host/FKM, including the new default-off L1 and merge final-fallback modes, with boolean validation and cross-agent isolation.
 
 ### Added
 
@@ -72,44 +98,6 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   decorator, so `llm-calls.*.jsonl` receipts work exactly as they do for
   real providers. `recipes/mock-test.json` is a ready-made offline smoke
   recipe (loopback webui, everything else off).
-
-### Changed
-
-- **Dependency floor: agent-framework `^0.10.0`, chronicle `^0.3.0`,
-  membrane `^0.5.78`.** af 0.10.0 brings `ConversationRouter` (the
-  per-channel conversation-fork machinery this release’s `conversations`
-  recipe surface targets, and includes the current `hybrid` prose router) and exports `nudgeAgent`, which `/nudge` has
-  called since it landed — on every published af before 0.9.0 that call
-  was a guaranteed `TypeError`, so the floor also makes `/nudge` actually
-  work. Chronicle `^0.3.0` aligns the whole tree on one chronicle copy
-  (previously context-manager `0.6.3` nested its own `0.3.0` next to the
-  host's `0.2.x`). Operators: run a clean `npm ci` — a stale
-  `node_modules` predating the lock is the known failure mode here.
-
-- **The public triumvirate recipes boot from a fresh clone.**
-  `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
-  an org-internal adapter that isn't publicly available — with `NOTION_*` env
-  vars unset the block failed recipe load, and with them set it died at spawn
-  on the dangling `../syncntn` path. The `scribe` block is dropped for the
-  same reason: it hard-required `GEMINI_API_KEY` and a `../scribe-mcp`
-  sibling checkout, neither mentioned anywhere in the setup guides — a
-  guide-following fresh install always got a crashed miner. Notion and
-  Scribe are now add-a-block opt-ins, documented in SETUP.md and
-  TRIUMVIRATE-SETUP.md (the miner prompt's tool-name contracts are
-  unchanged). `triumvirate.json` declares
-  webui Basic-Auth defaulting to `admin`/`admin` (override via
-  `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env`) instead of bare
-  `"webui": true`, which the non-loopback bind guard refuses to start.
-
-### Fixed
-
-- **`mcpServers.<id>.source` accepts cook's npm registry form.**
-  `validateRecipe` demanded `source.url`, but connectome-cook's source grammar
-  also has `{ "npm": "pkg@version" }` — which the shipped knowledge-miner
-  recipe uses for its gitlab server, so that recipe failed to load
-  (`mcpServers.gitlab.source.url must be a non-empty string`). Exactly one of
-  `url` / `npm` is now required; the field remains build-tooling metadata,
-  ignored at runtime.
 
 ### Added
 
@@ -152,6 +140,112 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
   moved off the first-party Anthropic API (classifier "bio" false-positive
   streak) onto Bedrock Sonnet 4.5 via gate apse1 — needs membrane ≥1dcd4e3
   for `global.` inference-profile id pass-through.
+
+### Changed
+
+- **Dependency floor: agent-framework `^0.10.0`, chronicle `^0.3.0`,
+  membrane `^0.5.78`.** af 0.10.0 brings `ConversationRouter` (the
+  per-channel conversation-fork machinery this release’s `conversations`
+  recipe surface targets, and includes the current `hybrid` prose router) and exports `nudgeAgent`, which `/nudge` has
+  called since it landed — on every published af before 0.9.0 that call
+  was a guaranteed `TypeError`, so the floor also makes `/nudge` actually
+  work. Chronicle `^0.3.0` aligns the whole tree on one chronicle copy
+  (previously context-manager `0.6.3` nested its own `0.3.0` next to the
+  host's `0.2.x`). Operators: run a clean `npm ci` — a stale
+  `node_modules` predating the lock is the known failure mode here.
+
+- **The public triumvirate recipes boot from a fresh clone.**
+  `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
+  an org-internal adapter that isn't publicly available — with `NOTION_*` env
+  vars unset the block failed recipe load, and with them set it died at spawn
+  on the dangling `../syncntn` path. The `scribe` block is dropped for the
+  same reason: it hard-required `GEMINI_API_KEY` and a `../scribe-mcp`
+  sibling checkout, neither mentioned anywhere in the setup guides — a
+  guide-following fresh install always got a crashed miner. Notion and
+  Scribe are now add-a-block opt-ins, documented in SETUP.md and
+  TRIUMVIRATE-SETUP.md (the miner prompt's tool-name contracts are
+  unchanged). `triumvirate.json` declares
+  webui Basic-Auth defaulting to `admin`/`admin` (override via
+  `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env`) instead of bare
+  `"webui": true`, which the non-loopback bind guard refuses to start.
+
+- **agent-framework `^0.11.0`** (was `^0.10.0`). Activates `proseRouting:
+  "disabled"` for recipes that set it (#100 accepted the key; the runtime now
+  implements it — generated prose is never published externally, only explicit
+  tools speak), plus AF 0.11's Windows workspace-mount fix and the
+  org-acceleration 429 cooldown. Clears the last two standing cross-package
+  `tsc` errors — the typecheck is fully clean at this lock.
+
+- Changelog entries now land as per-change fragment files in `changelog.d/`
+  (`<slug>.<breaking|added|changed|fixed>.md`), folded into the version
+  section at release time — concurrent PRs no longer conflict in
+  `CHANGELOG.md`. Editing `## Unreleased` directly still works and is merged
+  at the same point.
+
+- **membrane `^0.5.80`** (was `^0.5.78`, lockfile-resolved 0.5.79). Two
+  latent cache behaviors the host already configures become ACTIVE with this
+  relock: the prompt-cache keepalive (`agent.cacheKeepalive`, on by default —
+  previously passed to an adapter version with no such field and silently
+  ignored, so idle gaps over the 1h TTL repaid a full cache write on wake)
+  and the floating cache marker (incremental prompt caching inside the native
+  tool loop, membrane's default-on). Both reduce cost; neither changes
+  visible agent behavior. Also clears two of the four standing cross-package
+  `tsc` errors (the membrane-typing pair).
+
+- Depend on `@animalabs/agent-framework` ^0.12.0 and `@animalabs/membrane` ^0.5.82 —
+  the published versions that implement the active-turn trigger and the
+  lane-aware `dynamicHeaders` the wake-cause stamp (#113) relies on; the
+  compatibility cast and optional lookup are gone, and an adapter-level test
+  proves a stream call carries the origin trio while a complete call carries
+  debt only.
+
+### Fixed
+
+- **Prompt-cache keepalive events all go to stderr**, so every one of them lands
+  in `service-stderr.log` beside `[inference-refusal]` instead of being split by
+  severity across two sinks. Routine `refreshed` events previously went to
+  stdout — which the host unit leaves on the journal — so the log an operator
+  actually greps showed nothing. Observed on fable-cm 2026-08-23: the keepalive
+  refreshed a 523,102-token prefix three times, correctly and with zero cache
+  writes, while a monitor tailing `service-stderr.log` reported no activity for
+  three hours. A background spender that can't be found in the operator's log is
+  indistinguishable from one that never ran.
+
+- Plumb `agent.strategy.compressionRecallBudgetTokens` through recipe validation and Framework strategy construction, with positive-integer validation instead of silently accepting an inert key.
+
+- **Saved recipe snapshots no longer contain resolved secrets.** `loadRecipe`
+  substitutes every `${VAR}` — API tokens included — and the host then wrote
+  that fully resolved recipe to `$DATA_DIR/.recipe.json` at default file mode:
+  plaintext credentials in the exact directory deployments bind-mount and back
+  up (found by an external recipe review that verified live tokens in a backed
+  up `data/` directory on a production VM). The snapshot now keeps the
+  pre-substitution form — `${VAR}` references literal, a URL `systemPrompt`
+  kept as the URL — and a resumed session re-runs substitution, validation,
+  and the prompt fetch against the *current* environment, so secret rotation
+  and remote prompt updates take effect on restart without re-cooking. The
+  file is written 0600 and re-chmod'd 0600 on every save. Legacy resolved
+  snapshots (no `$unresolved` marker) still load verbatim, with no
+  substitution, so a literal `${...}` surviving in prose cannot fail them;
+  resuming an unresolved snapshot whose required env var has since disappeared
+  fails loudly naming the variable instead of silently starting the default
+  recipe.
+
+- **Ephemeral subagents inherit the caller's `proseRouting` mode.** They
+  previously always ran AF's `'locus'` default regardless of the recipe, so a
+  resident running `proseRouting: "disabled"` still spawned subagents whose
+  between-tool-calls prose published live into its open channel as parent
+  speech (field-confirmed on a deployed resident, 2026-08-26 — including
+  after the recipe adopted `"disabled"`, which reached only the resident).
+
+### Fixed
+
+- **`mcpServers.<id>.source` accepts cook's npm registry form.**
+  `validateRecipe` demanded `source.url`, but connectome-cook's source grammar
+  also has `{ "npm": "pkg@version" }` — which the shipped knowledge-miner
+  recipe uses for its gitlab server, so that recipe failed to load
+  (`mcpServers.gitlab.source.url must be a non-empty string`). Exactly one of
+  `url` / `npm` is now required; the field remains build-tooling metadata,
+  ignored at runtime.
 
 ## 0.7.4 — 2026-08-03
 
