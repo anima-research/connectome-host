@@ -1058,6 +1058,15 @@ export function App() {
     if (!text) return;
     setDraft('');
     if (text.startsWith('/')) {
+      // /clear is display-local (the TUI clears its scrollback the same
+      // way): wipe this client's transcript view without touching the
+      // Chronicle or other clients. Sending it to the host was a no-op
+      // that APPENDED a "(cleared)" line — the opposite of clearing.
+      if (text === '/clear' || text.startsWith('/clear ')) {
+        setMessages(produce((arr) => { arr.length = 0; }));
+        setStreamLines([]);
+        return;
+      }
       wire.send({ type: 'command', command: text });
       return;
     }

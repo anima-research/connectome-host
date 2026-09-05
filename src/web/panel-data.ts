@@ -829,6 +829,23 @@ export function buildContextCoverageSnapshot(
   };
 }
 
+/**
+ * Best-effort mapping from an agent's configured model string to a bare
+ * Anthropic API model id for /v1/messages/count_tokens. Handles membrane /
+ * OpenRouter provider prefixes ("anthropic/claude-…", "…/anthropic/claude-…")
+ * and Bedrock ids ("us.anthropic.claude-…-v1:0"). Returns null for
+ * non-Anthropic models — exact counting is unsupported there, and reporting
+ * that honestly beats 404ing against a wrong tokenizer.
+ */
+export function anthropicCountModel(agentModel: string | undefined): string | null {
+  if (!agentModel) return null;
+  let m = agentModel;
+  const slash = m.lastIndexOf('/');
+  if (slash >= 0) m = m.slice(slash + 1);
+  m = m.replace(/^(us|eu|apac)\./, '').replace(/^anthropic\./, '').replace(/-v\d+:\d+$/, '');
+  return m.startsWith('claude') ? m : null;
+}
+
 /** Summary-tree coverage and queued work, with no message or summary text. */
 export function buildContextCoverage(app: PanelAppRef, agentName: string): ContextCoverageSnapshot {
   const agent = requireAgent(app, agentName);
@@ -874,8 +891,15 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     : (typeof sysRaw === 'string' ? sysRaw : undefined);
 
   let exactTotalTokens: number | null = null;
-  const countModel = process.env.COUNT_TOKENS_MODEL || 'anthropic/claude-opus-4.5';
+  // Count against the model the agent actually runs, not a hardcoded id:
+  // a stale/foreign id 404s and exact counts silently degrade to null on
+  // every install. COUNT_TOKENS_MODEL stays as an explicit operator override.
+  const countModel = process.env.COUNT_TOKENS_MODEL
+    || anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
+  if (!countModel) {
+    return { agent: agentName, stats, exactTotalTokens, countModel, countSource: 'count_tokens_unsupported_model' };
+  }
   try {
     const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
     const res = await fetch(base + '/v1/messages/count_tokens', {

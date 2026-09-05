@@ -330,6 +330,47 @@ describe('WebUiModule HTTP', () => {
     const body = res.status < 500 ? await res.text() : '';
     expect(body).not.toContain('pwned');
   });
+
+  // Honest-error regression set: unknown API routes and missing bundle
+  // assets used to fall through to the SPA shell with a 200, and wrong
+  // methods executed the GET handlers.
+
+  test('unknown /debug/* route returns a JSON 404, not the SPA shell', async () => {
+    for (const path of ['/debug/context/', '/debug/CONTEXT', '/debug/nonexistent']) {
+      const res = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        headers: { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) },
+      });
+      expect(res.status).toBe(404);
+      expect(res.headers.get('content-type')).toContain('application/json');
+    }
+  });
+
+  test('missing /assets/* returns 404, not HTML', async () => {
+    const res = await fetch(`http://127.0.0.1:${handle.port}/assets/nonexistent.js`, {
+      headers: { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type') ?? '').not.toContain('text/html');
+  });
+
+  test('non-GET methods get 405 with Allow header', async () => {
+    for (const method of ['POST', 'DELETE', 'PUT']) {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/debug/context`, {
+        method,
+        headers: { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) },
+      });
+      expect(res.status).toBe(405);
+      expect(res.headers.get('allow')).toContain('GET');
+    }
+  });
+
+  test('SPA client-side routes still fall back to the shell', async () => {
+    const res = await fetch(`http://127.0.0.1:${handle.port}/totally/fake/route`, {
+      headers: { authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<!doctype html>');
+  });
 });
 
 describe('WebUiModule WebSocket', () => {
