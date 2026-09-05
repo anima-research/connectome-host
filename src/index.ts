@@ -963,17 +963,14 @@ async function main() {
 
   // Why the turn in progress fired (heartbeat / a channel message by whom /
   // operator), read from the framework's active-turn trigger. Same guards as
-  // the debt getter: no framework, several agents, or an older framework
-  // without the getter -> null -> the origin trio is simply not sent.
+  // the debt getter: no framework or several agents
+  // -> null -> the origin trio is simply not sent.
   const activeTurnTrigger = (): TurnTrigger | null => {
     try {
       const agents = appRefForDebt?.framework.getAllAgents() ?? [];
       if (agents.length !== 1) return null;
-      const fw = appRefForDebt?.framework as unknown as {
-        getActiveTurnTrigger?: (name: string) => TurnTrigger | undefined;
-      };
-      const t = fw?.getActiveTurnTrigger?.(agents[0]!.name);
-      return t && typeof t.reason === 'string' && typeof t.source === 'string' ? t : null;
+      const t = appRefForDebt?.framework.getActiveTurnTrigger(agents[0]!.name);
+      return t ? { reason: t.reason, source: t.source, channelId: t.channelId, counterparty: t.counterparty } : null;
     } catch {
       return null;
     }
@@ -1023,11 +1020,7 @@ async function main() {
           // configured base URL, so the stamp can only ever go to a
           // gateway the operator has declared — never to the vendor's
           // default endpoint (review finding on the first wiring).
-          // Cast note: @animalabs/membrane on npm (0.5.80) predates the
-          // dynamicHeaders field (antra-tess/membrane#65); drop the cast when
-          // the release lands. Harmless either way — an older membrane
-          // ignores unknown config keys.
-          ...(gateTelemetryDynamicHeaders ? ({ dynamicHeaders: gateTelemetryDynamicHeaders } as object) : {}),
+          ...(gateTelemetryDynamicHeaders ? { dynamicHeaders: gateTelemetryDynamicHeaders } : {}),
           // Hold this agent's cached prefix warm across idle gaps. Only fires
           // when the entry is actually near expiry, so a busy agent costs
           // nothing; only the 1h-TTL primary lane is eligible (the module
