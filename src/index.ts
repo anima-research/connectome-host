@@ -28,7 +28,7 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
-import { gateTelemetryHeaders } from './gate-telemetry.js';
+import { gateTelemetryHeaders, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
@@ -961,7 +961,25 @@ async function main() {
     }
   };
 
-  const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks);
+  // Why the turn in progress fired (heartbeat / a channel message by whom /
+  // operator), read from the framework's active-turn trigger. Same guards as
+  // the debt getter: no framework, several agents, or an older framework
+  // without the getter -> null -> the origin trio is simply not sent.
+  const activeTurnTrigger = (): TurnTrigger | null => {
+    try {
+      const agents = appRefForDebt?.framework.getAllAgents() ?? [];
+      if (agents.length !== 1) return null;
+      const fw = appRefForDebt?.framework as unknown as {
+        getActiveTurnTrigger?: (name: string) => TurnTrigger | undefined;
+      };
+      const t = fw?.getActiveTurnTrigger?.(agents[0]!.name);
+      return t && typeof t.reason === 'string' && typeof t.source === 'string' ? t : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
