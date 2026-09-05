@@ -61,6 +61,20 @@ describe('standard-recipe memory defaults', () => {
     expect(config.foldingStrategy).toBeUndefined();
   });
 
+  test('compressionSplitFallback / compressionSplitPlaceholder pass through and stay omitted when omitted', () => {
+    const on = buildFrameworkStrategy(
+      recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitFallback: true, compressionSplitPlaceholder: true } }),
+      'some-model',
+      'America/Los_Angeles',
+    );
+    expect(configView(on).compressionSplitFallback).toBe(true);
+    expect(configView(on).compressionSplitPlaceholder).toBe(true);
+    const omitted = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles');
+    expect(configView(omitted).compressionSplitFallback).toBeUndefined();
+    expect(configView(omitted).compressionSplitPlaceholder).toBeUndefined();
+    expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitFallback: 'yes' } })).toThrow();
+  });
+
   test('mergeMaxSourceSpanMessages is passed through exactly and omission stays omitted (princess 2026-09-05: silently dropped, span guard stuck at the CM default)', () => {
     const configured = buildFrameworkStrategy(
       recipe({

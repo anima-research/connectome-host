@@ -62,6 +62,10 @@ export interface RecipeStrategy {
   compressionMergeSourceOnly?: boolean;
   /** Preserve ordinary merge retries, then use target-only on the final attempt. */
   compressionMergeSourceOnlyFallback?: boolean;
+  /** Context Manager split-stitch L1 fallback rung (default off). */
+  compressionSplitFallback?: boolean;
+  /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
+  compressionSplitPlaceholder?: boolean;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -1556,6 +1560,8 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionSourceOnlyFallback',
       'compressionMergeSourceOnly',
       'compressionMergeSourceOnlyFallback',
+      'compressionSplitFallback',
+      'compressionSplitPlaceholder',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
