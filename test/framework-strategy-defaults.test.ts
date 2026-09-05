@@ -61,6 +61,21 @@ describe('standard-recipe memory defaults', () => {
     expect(config.foldingStrategy).toBeUndefined();
   });
 
+  test('mergeMaxSourceSpanMessages is passed through exactly and omission stays omitted (princess 2026-09-05: silently dropped, span guard stuck at the CM default)', () => {
+    const configured = buildFrameworkStrategy(
+      recipe({
+        name: 'Mira',
+        strategy: { type: 'autobiographical', mergeMaxSourceSpanMessages: 3000, mergeThreshold: 3 },
+      }),
+      'some-model',
+      'America/Los_Angeles',
+    );
+    expect(configView(configured).mergeMaxSourceSpanMessages).toBe(3000);
+    expect(configView(configured).mergeThreshold).toBe(3);
+    const omitted = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles');
+    expect(configView(omitted).mergeMaxSourceSpanMessages).toBeUndefined();
+  });
+
   test('productionBudgetTokens is passed through exactly and omission stays omitted', () => {
     const configured = buildFrameworkStrategy(
       recipe({

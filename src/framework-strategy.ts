@@ -22,6 +22,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'recallHeaderTemplate',
   'targetChunkTokens',
   'mergeThreshold',
+  'mergeMaxSourceSpanMessages',
   'summaryTargetTokens',
   'productionBudgetTokens',
   'l1BudgetTokens',

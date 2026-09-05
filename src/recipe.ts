@@ -69,6 +69,7 @@ export interface RecipeStrategy {
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
   mergeThreshold?: number;
+  mergeMaxSourceSpanMessages?: number;
   summaryTargetTokens?: number;
   /** Standing production target: keep the summary forest deep enough to fit
    *  this budget, enabling a later live-budget descent with no fold-storm and
