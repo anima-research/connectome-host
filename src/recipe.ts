@@ -62,6 +62,14 @@ export interface RecipeStrategy {
   compressionMergeSourceOnly?: boolean;
   /** Preserve ordinary merge retries, then use target-only on the final attempt. */
   compressionMergeSourceOnlyFallback?: boolean;
+  /** Context Manager split-stitch L1 fallback rung (default off). */
+  compressionSplitFallback?: boolean;
+  /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
+  compressionSplitPlaceholder?: boolean;
+  /** Split-stitch: max sub-calls per chunk (default 40). */
+  compressionSplitMaxCallsPerChunk?: number;
+  /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
+  compressionSplitMaxCallsPer10Min?: number;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -69,6 +77,7 @@ export interface RecipeStrategy {
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
   mergeThreshold?: number;
+  mergeMaxSourceSpanMessages?: number;
   summaryTargetTokens?: number;
   /** Standing production target: keep the summary forest deep enough to fit
    *  this budget, enabling a later live-budget descent with no fold-storm and
@@ -1555,9 +1564,17 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionSourceOnlyFallback',
       'compressionMergeSourceOnly',
       'compressionMergeSourceOnlyFallback',
+      'compressionSplitFallback',
+      'compressionSplitPlaceholder',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
+      }
+    }
+    for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
+      const value = strategy[key];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`Recipe agent.strategy.${key} must be a positive safe integer.`);
       }
     }
     if (
