@@ -75,6 +75,18 @@ describe('standard-recipe memory defaults', () => {
     expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitFallback: 'yes' } })).toThrow();
   });
 
+  test('split-stitch cap knobs pass through and are validated as positive integers', () => {
+    const on = buildFrameworkStrategy(
+      recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitFallback: true, compressionSplitMaxCallsPerChunk: 12, compressionSplitMaxCallsPer10Min: 30 } }),
+      'some-model',
+      'America/Los_Angeles',
+    );
+    expect(configView(on).compressionSplitMaxCallsPerChunk).toBe(12);
+    expect(configView(on).compressionSplitMaxCallsPer10Min).toBe(30);
+    expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitMaxCallsPerChunk: 0 } })).toThrow();
+    expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', compressionSplitMaxCallsPer10Min: 1.5 } })).toThrow();
+  });
+
   test('mergeMaxSourceSpanMessages is passed through exactly and omission stays omitted (princess 2026-09-05: silently dropped, span guard stuck at the CM default)', () => {
     const configured = buildFrameworkStrategy(
       recipe({
