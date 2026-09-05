@@ -5,10 +5,10 @@
     "": {
       "name": "@animalabs/connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.11.0",
+        "@animalabs/agent-framework": "^0.12.0",
         "@animalabs/chronicle": "^0.3.0",
         "@animalabs/context-manager": "^0.6.3",
-        "@animalabs/membrane": "^0.5.80",
+        "@animalabs/membrane": "^0.5.82",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -19,13 +19,13 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.11.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/context-manager": "^0.6.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-k3aZCTOYurNu4MyosU4nIiCJupXVnMHgHjWyfLeM84Z5hg9ICjuI5I5/1cuz8ZOvar1vyUnujBemAFbLzv2PjQ=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.12.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/context-manager": "^0.6.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-Yj0E4vA+kqMxp8LzVT1DBBppwBtPaaweOCloO47pAbJemLzLsJoCD1O9GOYjZ75LLfvGenzLgg1fWo0wXkMJ1w=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.3.0", "", {}, "sha512-6BBJ9pWb8AnuHTNJTU07Y6Wut3IvdgWFxsy05IdlWcEnR5W23dlaBlaeJq7gDc7TwX05HfsDC+QZFEc69G+s4Q=="],
 
     "@animalabs/context-manager": ["@animalabs/context-manager@0.6.3", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/membrane": "^0.5.69" } }, "sha512-zh60LgZxXzBbGrLpDHBAfGSPSL/H8mxz8nSWLOSh4pjiTOYbD0o0BjAM8CFz4LiaOIXnuSCbRoiv5UKsnrKwDw=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.80", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-D4xEij+J/3sJo2ZKFyjAeb0VuJl3QmygzEmi44J0nDNtmJSpUPYMJMaSid/ABj3dIs5EyXds/Ltr4qqyQ2DRTw=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.82", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-kCI3s/HXnXBPVcYCXIZfsdJBLRj77j5QyA9Hor1mC/nyD35D7e7N/VgR9awxqdGGWgIvgpjs6owXbGMk5t1pQA=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
@@ -274,6 +274,8 @@
     "yoga-layout": ["yoga-layout@3.2.1", "", {}, "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="],
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@animalabs/context-manager/@animalabs/membrane": ["@animalabs/membrane@0.5.80", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-D4xEij+J/3sJo2ZKFyjAeb0VuJl3QmygzEmi44J0nDNtmJSpUPYMJMaSid/ABj3dIs5EyXds/Ltr4qqyQ2DRTw=="],
 
     "@discordjs/rest/@discordjs/collection": ["@discordjs/collection@2.1.1", "", {}, "sha512-LiSusze9Tc7qF03sLCujF5iZp7K+vRNEDBZ86FT9aQAv3vxMLihUvKvpsCWiQ2DJq1tVckopKm1rxomgNUc9hg=="],
 
