@@ -60,7 +60,8 @@ export function originClass(trigger: TurnTrigger): string {
   const s = trigger.source.toLowerCase();
   if (r.includes('heartbeat') || s.includes('heartbeat')) return 'heartbeat';
   if (r.includes('mail') || s.includes('mail')) return 'mail';
-  if (r === 'mcpl:channel-incoming' || r === 'mcpl:push-event' || r.startsWith('discord')) return 'event';
+  // channel/push events, directly or batched through the framework's EventGate
+  if (r === 'mcpl:channel-incoming' || r === 'mcpl:push-event' || r.startsWith('discord') || r.startsWith('gate:') || s === 'gate') return 'event';
   // a person typing at the host itself: headless IPC, CLI, TUI, web UI, API
   if (r === 'external-message' || ['headless', 'cli', 'tui', 'webui', 'api'].includes(s)) return 'operator';
   if (r.includes('admin') || r.includes('nudge') || r.includes('unstick') || r.includes('operator')) return 'operator';

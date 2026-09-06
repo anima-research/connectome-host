@@ -65,6 +65,7 @@ describe('gateTelemetryHeaders', () => {
     expect(originClass({ reason: 'heartbeat', source: 'heartbeat' })).toBe('heartbeat');
     expect(originClass({ reason: 'mail:incoming', source: 'fenmail' })).toBe('mail');
     expect(originClass({ reason: 'mcpl:push-event', source: 'discord' })).toBe('event');
+    expect(originClass({ reason: 'gate:debounce', source: 'gate' })).toBe('event');   // first live stamps came back raw
     expect(originClass({ reason: 'admin-nudge (someone)', source: 'framework' })).toBe('operator');
     expect(originClass({ reason: 'external-message', source: 'headless' })).toBe('operator');
     expect(originClass({ reason: 'external-message', source: 'tui' })).toBe('operator');
