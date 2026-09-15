@@ -60,6 +60,47 @@ describe('Anthropic per-call pricing', () => {
     }))).toBeUndefined();
   });
 
+  test('prices Opus 5 at the Opus-tier rate rather than leaving it unpriced', () => {
+    // 'claude-opus-5' matches no 'claude-opus-4-*' prefix, so before this it
+    // fell through to undefined and every diver call showed no cost at all.
+    const cost = priceAnthropicCall('claude-opus-5', timestamp, usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    }));
+    expect(cost?.total).toBe(30);
+    expect(cost?.rates.inputPerMillion).toBe(5);
+    expect(cost?.rates.outputPerMillion).toBe(25);
+  });
+
+  test('Fable 5.1 reads from cache at 0.025x, a quarter of the Fable 5 rate', () => {
+    const fable51 = priceAnthropicCall('claude-fable-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    const fable5 = priceAnthropicCall('claude-fable-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(fable51?.cacheRead).toBeCloseTo(0.25, 9);
+    expect(fable5?.cacheRead).toBeCloseTo(1, 9);
+    expect(fable51?.rates.cacheReadPerMillion).toBeCloseTo(0.25, 9);
+  });
+
+  test('the Fable 5.1 discount applies to reads only, not to input or writes', () => {
+    const cost = priceAnthropicCall('claude-fable-5-1', timestamp, usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheWrite5mTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+    }));
+    expect(cost?.input).toBe(10);
+    expect(cost?.output).toBe(50);
+    expect(cost?.cacheWrite5m).toBeCloseTo(12.5, 9);
+    expect(cost?.cacheWrite1h).toBeCloseTo(20, 9);
+  });
+
+  test('the geo multiplier still applies on top of the Fable 5.1 read rate', () => {
+    const us = priceAnthropicCall('claude-fable-5-1', timestamp, usage({
+      cacheReadTokens: 1_000_000,
+      inferenceGeo: 'us',
+    }));
+    expect(us?.cacheRead).toBeCloseTo(0.275, 9);
+  });
+
   test('honors the published Sonnet 5 promotional cutoff', () => {
     const promo = priceAnthropicCall('claude-sonnet-5', '2026-08-31T23:59:59Z', usage({ inputTokens: 1_000_000 }));
     const standard = priceAnthropicCall('claude-sonnet-5', '2026-09-01T00:00:00Z', usage({ inputTokens: 1_000_000 }));
