@@ -2,6 +2,7 @@
  * Slash command handler for Chronicle-backed reversibility.
  *
  * Commands:
+ *   /release-wait [script_id] — Admin: release code wait; keep script and completion wake
  *   /undo          — Revert to state before last agent turn
  *   /redo          — Re-apply last undone action
  *   /nudge [agent] — Run inference on current context (no new events)
@@ -150,7 +151,11 @@ function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
   };
 }
 
-export function handleCommand(command: string, app: AppContext): CommandResult {
+/** Command authority is supplied by the trusted transport, never parsed from
+ * command text. Omitted by generic IPC / fleet commands: no admin privilege. */
+export function handleCommand(
+  command: string, app: AppContext, authority?: { admin: boolean },
+): CommandResult {
   const parts = command.slice(1).split(/\s+/);
   const cmd = parts[0]!;
   const args = parts.slice(1);
@@ -179,6 +184,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /clear                 Clear this client\'s display (history/context are kept)', style: 'system' },
           { text: '  /lessons               Show lesson library', style: 'system' },
           { text: '  /export                Export lessons to ./output/ (JSON + markdown)', style: 'system' },
+          { text: '  /release-wait [id]     Admin: end code wait; keep script and completion wake', style: 'system' },
           { text: '  /undo                  Revert last agent turn', style: 'system' },
           { text: '  /redo                  Re-apply undone action', style: 'system' },
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
@@ -226,6 +232,10 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
     case 'export':
       return handleExport(app);
+
+    case 'release-wait':
+      if (!authority?.admin) return { lines: [{ text: 'release-wait: admin-only command', style: 'system' }] };
+      return handleReleaseWait(app, args);
 
     case 'undo':
       return inFlightGuard(app, cmd) ?? handleUndo(app);
@@ -720,12 +730,33 @@ export function handleExport(app: AppContext): CommandResult {
   };
 }
 
-/**
- * /nudge [agent] — admin-level: queue an inference turn on the agent's
- * CURRENT context without adding any message or event (framework
- * `nudgeAgent`). The zero-pollution complement to /undo: rewind, then nudge,
- * and the agent takes another swing at exactly what it already sees.
- */
+/** Admin rescue of code observations; does not reset inference or cancel Python. */
+function handleReleaseWait(app: AppContext, args: string[]): CommandResult {
+  const ids = args.filter(Boolean);
+  if (ids.length > 1) return { lines: [{ text: 'Usage: /release-wait [script_id]', style: 'system' }] };
+  const agentName = app.agentName ?? app.framework.getAllAgents()[0]?.name;
+  if (!agentName) return { lines: [{ text: 'release-wait: no registered agent', style: 'system' }] };
+  // Companion framework releases provide this primitive. Fail explicitly on
+  // older installations; never emulate it with cancel/reset or a puppet call.
+  const framework = app.framework as typeof app.framework & {
+    releaseCodeExecutionWait?: (agentName: string, scriptId?: string) => { released: number };
+  };
+  if (!framework.releaseCodeExecutionWait) {
+    return { lines: [{ text: 'release-wait requires an agent-framework version with execution observation support.', style: 'system' }] };
+  }
+  try {
+    const { released } = framework.releaseCodeExecutionWait(agentName, ids[0]);
+    return { lines: [{
+      text: released > 0
+        ? `Released ${released} code wait(s) for ${agentName}. The turn will end at its tool boundary; scripts continue and completion wakes remain armed.`
+        : `No active code wait${ids[0] ? ` for ${ids[0]}` : ''} to release.`,
+      style: 'system',
+    }] };
+  } catch (err) {
+    return { lines: [{ text: `release-wait failed: ${err instanceof Error ? err.message : String(err)}`, style: 'system' }] };
+  }
+}
+
 /**
  * /puppet <toolName> [json-input] — admin: execute one tool AS the main
  * agent and store the tool_use + tool_result pair in its window, exactly as
@@ -787,6 +818,12 @@ function handlePuppet(app: AppContext, args: string[]): CommandResult {
   };
 }
 
+/**
+ * /nudge [agent] — admin-level: queue an inference turn on the agent's
+ * CURRENT context without adding any message or event (framework
+ * `nudgeAgent`). The zero-pollution complement to /undo: rewind, then nudge,
+ * and the agent takes another swing at exactly what it already sees.
+ */
 function handleNudge(app: AppContext, agentName?: string): CommandResult {
   const r = app.framework.nudgeAgent(agentName, 'host-console');
   if (!r.ok) {

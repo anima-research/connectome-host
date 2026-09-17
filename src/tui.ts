@@ -2550,7 +2550,7 @@ export async function runTui(app: AppContext): Promise<void> {
     pastedTexts.length = 0;
 
     if (text.startsWith('/')) {
-      const result = handleCommand(text, app);
+      const result = handleCommand(text, app, { admin: true });
       if (result.quit) {
         if (promptQuitConfirmIfNeeded()) return;
         cleanup();

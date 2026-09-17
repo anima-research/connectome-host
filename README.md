@@ -220,6 +220,13 @@ locally running host.
 
 ## Slash commands
 
+`/release-wait` requires agent-framework execution-observation support. It is
+admin-only through the local CLI/TUI or a full-access web session; generic
+headless/fleet IPC and read-only observers cannot invoke it. Omit the script ID
+to release all current code waits for the selected agent. This ends observation
+through the normal tool-result boundary, without cancelling Python. Other tools
+in the same batch can still hold the turn open.
+
 | Command | Effect |
 |---------|--------|
 | `/help` | List all commands |
@@ -228,6 +235,7 @@ locally running host.
 | `/lessons` | Show lesson library sorted by confidence |
 | `/newtopic [context]` | Reset context window for a new topic |
 | `/clear` | Clear conversation display |
+| `/release-wait [script_id]` | Admin: end active code waits, keep execution running and completion wake armed |
 | `/undo` | Revert to state before last agent turn |
 | `/redo` | Re-apply undone action |
 | `/checkpoint <name>` | Save current state |
