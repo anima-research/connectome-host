@@ -75,6 +75,20 @@ export interface RecipeStrategy {
   compressionRecallBudgetTokens?: number;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
+  /**
+   * Where a summary's signed reasoning carriers (the compressor's own
+   * thinking blocks, `responseContent`) are replayed (context-manager #81).
+   * `'full'` (default): unchanged — carriers ride both the live window and
+   * mint/merge recall pairs. `'live-strip'`: carriers are omitted from the
+   * LIVE window only (whole blocks dropped, never mutated — signatures only
+   * verify byte-identical) — the agent's own compiled context renders
+   * recall pairs text-only, while compression/merge requests still carry
+   * the full signed content unconditionally (measured load-bearing there:
+   * some providers refuse a compress request without it). Useful when a
+   * provider's classifier treats a replayed foreign-request signature
+   * inside the LIVE window as reasoning extraction.
+   */
+  carrierPolicy?: 'full' | 'live-strip';
   targetChunkTokens?: number;
   mergeThreshold?: number;
   mergeMaxSourceSpanMessages?: number;
