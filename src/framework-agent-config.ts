@@ -66,6 +66,7 @@ export function buildFrameworkAgentConfig(
   const promptCaching = resolvePromptCaching(recipe, model);
   return {
     name: agentName,
+    ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
     systemPrompt: recipe.agent.systemPrompt,
     maxTokens: recipe.agent.maxTokens ?? 16384,

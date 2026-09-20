@@ -160,6 +160,8 @@ export interface RecipeKvUnifiedConfig {
 }
 
 export interface RecipeAgent {
+  /** Opt-in presentation; absolute local JSON path and reserved generated workspace path. */
+  toolPresentation?: { path: string; cataloguePath: string; defaults?: { source: string; path: string }[] };
   name?: string;
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
@@ -2210,6 +2212,28 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
+  if (agent.toolPresentation !== undefined) {
+    const tp = agent.toolPresentation as Record<string, unknown>;
+    if (!tp || typeof tp !== 'object' || Array.isArray(tp)
+      || Object.keys(tp).some(k => !['path','cataloguePath','defaults'].includes(k))
+      || typeof tp.path !== 'string' || !isAbsolute(tp.path)
+      || typeof tp.cataloguePath !== 'string' || !/^[^/]+\/[^/]+(?:\/[^/]+)*$/.test(tp.cataloguePath)
+      || tp.cataloguePath.split('/').some(p => p === '.' || p === '..')) {
+      throw new Error('agent.toolPresentation requires absolute path and mount-prefixed cataloguePath');
+    }
+    if (tp.defaults !== undefined && (!Array.isArray(tp.defaults)
+      || tp.defaults.some((d: any) => !d || typeof d !== 'object' || Array.isArray(d)
+        || Object.keys(d).some(k => !['source','path'].includes(k))
+        || typeof d.source !== 'string' || !d.source.trim()
+        || typeof d.path !== 'string' || !isAbsolute(d.path))
+      || new Set(tp.defaults.map((d: any) => d.source)).size !== tp.defaults.length)) {
+      throw new Error('toolPresentation defaults require unique component sources and absolute paths');
+    }
+    const mounts = buildWorkspaceMounts((obj.modules as RecipeModules | undefined)?.workspace, '/unused');
+    if (!mounts?.some(m => m.name === (tp.cataloguePath as string).split('/')[0])) {
+      throw new Error('toolPresentation cataloguePath requires an existing workspace mount');
+    }
+  }
   return obj as unknown as Recipe;
 }
 
