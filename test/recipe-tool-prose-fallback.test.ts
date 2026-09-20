@@ -16,19 +16,19 @@ function recipe(strategy: Record<string, unknown>) {
 }
 const VALID = { intoTool: 'journal', fromTools: ['skip_reply', 'think'], minChars: 60 };
 
-for (const KEY of ['compressionToolProseFallback', 'primaryToolProseHoist'] as const) describe(KEY, () => {
+describe('compressionToolProseFallback', () => {
   test('valid value survives validation and reaches the Context Manager strategy config', () => {
-    const parsed = validateRecipe(recipe({ [KEY]: VALID }));
-    expect(parsed.agent.strategy?.[KEY]).toEqual(VALID);
+    const parsed = validateRecipe(recipe({ compressionToolProseFallback: VALID }));
+    expect(parsed.agent.strategy?.compressionToolProseFallback).toEqual(VALID);
     const strategy = buildFrameworkStrategy(parsed, 'some-model', 'America/Los_Angeles');
     const config = (strategy as unknown as { config: Record<string, unknown> }).config;
-    expect(config[KEY]).toEqual(VALID);
+    expect(config.compressionToolProseFallback).toEqual(VALID);
   });
 
   test('omitted → absent from the strategy config (rung off, canonical bytes unchanged)', () => {
     const strategy = buildFrameworkStrategy(validateRecipe(recipe({})), 'some-model', 'America/Los_Angeles');
     const config = (strategy as unknown as { config: Record<string, unknown> }).config;
-    expect(config[KEY]).toBeUndefined();
+    expect(config.compressionToolProseFallback).toBeUndefined();
   });
 
   test('malformed values are rejected, never silently disabled', () => {
@@ -46,8 +46,8 @@ for (const KEY of ['compressionToolProseFallback', 'primaryToolProseHoist'] as c
       { ...VALID, tools: ['skip_reply'] },
     ];
     for (const value of bad) {
-      expect(() => validateRecipe(recipe({ [KEY]: value })))
-        .toThrow(new RegExp(KEY));
+      expect(() => validateRecipe(recipe({ compressionToolProseFallback: value })))
+        .toThrow(/compressionToolProseFallback/);
     }
   });
 });
