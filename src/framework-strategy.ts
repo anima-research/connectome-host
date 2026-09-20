@@ -18,6 +18,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionMergeSourceOnly',
   'compressionMergeSourceOnlyFallback',
   'compressionToolProseFallback',
+  'primaryToolProseHoist',
   'compressionSplitFallback',
   'compressionSplitPlaceholder',
   'compressionSplitMaxCallsPerChunk',

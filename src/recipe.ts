@@ -76,6 +76,18 @@ export interface RecipeStrategy {
     result?: string;
     minChars?: number;
   };
+  /**
+   * Context Manager primary render hoist (default off): the same rewrite as
+   * `compressionToolProseFallback`, applied to every primary compile (recent
+   * turns included). A view only — the store is untouched.
+   */
+  primaryToolProseHoist?: {
+    intoTool: string;
+    fromTools: string[];
+    field?: string;
+    result?: string;
+    minChars?: number;
+  };
   /** Context Manager split-stitch L1 fallback rung (default off). */
   compressionSplitFallback?: boolean;
   /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
@@ -1687,11 +1699,12 @@ export function validateRecipe(raw: unknown): Recipe {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
       }
     }
-    if (strategy.compressionToolProseFallback !== undefined) {
-      // Fail loudly: CM silently treats a malformed value as "rung off", which
-      // on a resident whose compressions are refusing is an outage, not a default.
-      const hoist = strategy.compressionToolProseFallback as Record<string, unknown> | null;
-      const where = 'Recipe agent.strategy.compressionToolProseFallback';
+    for (const hoistKey of ['compressionToolProseFallback', 'primaryToolProseHoist'] as const) {
+      if (strategy[hoistKey] === undefined) continue;
+      // Fail loudly: CM silently treats a malformed value as "off", which on a
+      // resident whose requests are refusing is an outage, not a default.
+      const hoist = strategy[hoistKey] as Record<string, unknown> | null;
+      const where = `Recipe agent.strategy.${hoistKey}`;
       if (!hoist || typeof hoist !== 'object' || Array.isArray(hoist)) {
         throw new Error(`${where} must be an object { intoTool, fromTools, field?, result?, minChars? }.`);
       }
