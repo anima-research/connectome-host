@@ -835,21 +835,41 @@ export function App() {
     queueScroll();
   };
 
-  const requestOlder = (): void => {
+  /** Server page cap (web-ui-module HISTORY_PAGE_MAX); bulk loads chain pages. */
+  const HISTORY_PAGE_CAP = 500;
+  /** Messages still owed by an in-flight bulk load (0 = none). Bulk loads
+   *  chain one page per reply so a stop is honoured at a page boundary. */
+  const [bulkRemaining, setBulkRemaining] = createSignal(0);
+  const [bulkLoaded, setBulkLoaded] = createSignal(0);
+
+  const requestOlder = (limit = 200): void => {
     const info = historyInfo();
     if (!info || info.startIndex <= 0 || historyLoading() || protoMismatch() !== null) return;
     const corrId = `h${++historyCorrSeq}`;
     pendingHistoryCorr = corrId;
     setHistoryLoading(true);
-    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: 200 });
+    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: Math.min(limit, HISTORY_PAGE_CAP) });
     window.clearTimeout(pendingHistoryTimer);
     pendingHistoryTimer = window.setTimeout(() => {
       if (pendingHistoryCorr === corrId) {
         pendingHistoryCorr = null;
         setHistoryLoading(false);
+        setBulkRemaining(0);
       }
     }, 10_000);
   };
+
+  /** Load up to `n` older messages in server-sized pages; progress shows in
+   *  the header row and a stop lands at the next page boundary. */
+  const loadOlder = (n: number): void => {
+    const info = historyInfo();
+    if (!info || info.startIndex <= 0) return;
+    const want = Math.min(n, info.startIndex);
+    setBulkLoaded(0);
+    setBulkRemaining(want);
+    requestOlder(Math.min(want, HISTORY_PAGE_CAP));
+  };
+  const stopLoadOlder = (): void => setBulkRemaining(0);
 
   const applyHistoryPage = (msg: HistoryPageMessage): void => {
     if (msg.corrId !== pendingHistoryCorr) return;
@@ -870,6 +890,16 @@ export function App() {
     requestAnimationFrame(() => {
       if (scrollPane) scrollPane.scrollTop = scrollPane.scrollHeight - prevScrollHeight + prevScrollTop;
     });
+    // Bulk load: chain the next page until the quota is met, history is
+    // exhausted, the operator stopped it, or a page came back empty.
+    const remaining = Math.max(0, bulkRemaining() - msg.entries.length);
+    setBulkLoaded((v) => v + msg.entries.length);
+    setBulkRemaining(remaining);
+    if (remaining > 0 && msg.startIndex > 0 && msg.entries.length > 0) {
+      requestOlder(Math.min(remaining, HISTORY_PAGE_CAP));
+    } else if (remaining > 0) {
+      setBulkRemaining(0);
+    }
   };
 
   const onScrollPane = (): void => {
@@ -1366,16 +1396,49 @@ export function App() {
             </Show>
             <Show when={mainView() === 'context'} fallback={<Show when={mainView() === 'chat'}>
             <Show when={(historyInfo()?.startIndex ?? 0) > 0}>
-              <button
-                type="button"
-                class="w-full text-center text-xs font-mono text-neutral-500 hover:text-neutral-300 py-1.5 border border-dashed border-neutral-800 rounded"
-                onClick={requestOlder}
-                disabled={historyLoading()}
-              >
-                {historyLoading()
-                  ? 'loading…'
-                  : `▲ ${historyInfo()!.startIndex} older message${historyInfo()!.startIndex === 1 ? '' : 's'} — scroll or click to load`}
-              </button>
+              <div class="flex items-center gap-1 text-xs font-mono text-neutral-500 py-1 px-2 border border-dashed border-neutral-800 rounded">
+                <button
+                  type="button"
+                  class="flex-1 text-left hover:text-neutral-300 disabled:text-neutral-600"
+                  onClick={() => requestOlder(200)}
+                  disabled={historyLoading()}
+                  title="scroll to the top or click to load 200 older messages"
+                >
+                  {bulkRemaining() > 0
+                    ? `loading older… ${bulkLoaded().toLocaleString()} / ${(bulkLoaded() + bulkRemaining()).toLocaleString()}`
+                    : historyLoading()
+                      ? 'loading…'
+                      : `▲ ${historyInfo()!.startIndex.toLocaleString()} older message${historyInfo()!.startIndex === 1 ? '' : 's'} — scroll or click to load`}
+                </button>
+                <Show when={bulkRemaining() > 0} fallback={
+                  <>
+                    <span class="text-neutral-700">load</span>
+                    <For each={[200, 1000, 5000].filter((n) => n <= (historyInfo()?.startIndex ?? 0) || n === 200)}>{(n) => (
+                      <button
+                        type="button"
+                        class="px-1.5 py-0.5 rounded border border-neutral-800 hover:border-neutral-600 hover:text-neutral-200 disabled:text-neutral-700"
+                        disabled={historyLoading()}
+                        title={`load the ${Math.min(n, historyInfo()?.startIndex ?? 0).toLocaleString()} older messages just above (500 per request)`}
+                        onClick={() => loadOlder(n)}
+                      >{n >= 1000 ? `${n / 1000}k` : n}</button>
+                    )}</For>
+                    <button
+                      type="button"
+                      class="px-1.5 py-0.5 rounded border border-neutral-800 hover:border-amber-800 hover:text-amber-200 disabled:text-neutral-700"
+                      disabled={historyLoading()}
+                      title={`load ALL ${historyInfo()!.startIndex.toLocaleString()} older messages — heavy for large stores`}
+                      onClick={() => loadOlder(historyInfo()!.startIndex)}
+                    >all</button>
+                  </>
+                }>
+                  <button
+                    type="button"
+                    class="px-1.5 py-0.5 rounded border border-rose-900/60 text-rose-300 hover:bg-rose-950/40"
+                    onClick={stopLoadOlder}
+                    title="stop after the current page"
+                  >stop</button>
+                </Show>
+              </div>
             </Show>
             <Show when={messages.length === 0}>
               <div class="text-neutral-500 text-sm italic">
@@ -2191,13 +2254,41 @@ function ToolPayload(props: { raw: string; isError?: boolean }) {
  *  Module-scope signal: one timeline per page, and survival across <For>
  *  row recycling is exactly what we want. */
 const [expandedBlocks, setExpandedBlocks] = createSignal<Set<string>>(new Set());
-const toggleBlock = (key: string): void => {
-  setExpandedBlocks((prev) => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    return next;
-  });
+/**
+ * Second layer: whole KINDS expanded at once — `tool:<name>` ("expand all
+ * similar") or `thinking`. A block is open when it is pinned individually,
+ * or its kind is expanded and it was not individually collapsed afterwards.
+ * `blockKinds` remembers each toggled key's kind so collapsing a kind can
+ * also drop that kind's individual pins.
+ */
+const [expandedKinds, setExpandedKinds] = createSignal<Set<string>>(new Set());
+const [collapsedOverrides, setCollapsedOverrides] = createSignal<Set<string>>(new Set());
+const blockKinds = new Map<string, string>();
+const isBlockOpen = (key: string, kind: string): boolean =>
+  expandedBlocks().has(key) || (expandedKinds().has(kind) && !collapsedOverrides().has(key));
+const toggleBlock = (key: string, kind = ''): void => {
+  blockKinds.set(key, kind);
+  if (isBlockOpen(key, kind)) {
+    if (expandedBlocks().has(key)) {
+      setExpandedBlocks((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+    if (kind && expandedKinds().has(kind)) {
+      setCollapsedOverrides((prev) => new Set(prev).add(key));
+    }
+  } else {
+    setCollapsedOverrides((prev) => { if (!prev.has(key)) return prev; const next = new Set(prev); next.delete(key); return next; });
+    setExpandedBlocks((prev) => new Set(prev).add(key));
+  }
+};
+/** Expand or collapse every block of a kind across the loaded history. */
+const toggleKind = (kind: string): void => {
+  const opening = !expandedKinds().has(kind);
+  setExpandedKinds((prev) => { const next = new Set(prev); if (opening) next.add(kind); else next.delete(kind); return next; });
+  // Either way, per-block state for this kind resets to "follow the kind".
+  setCollapsedOverrides((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
+  if (!opening) {
+    setExpandedBlocks((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
+  }
 };
 
 function BlockView(props: {
@@ -2276,23 +2367,33 @@ function ThinkingBlockView(props: {
 }) {
   // Expanded while streaming (watch the mind move), collapsed once done —
   // unless the operator pinned it open.
-  const open = (): boolean => props.block.streaming === true || expandedBlocks().has(props.blockKey);
+  const KIND = 'thinking';
+  const open = (): boolean => props.block.streaming === true || isBlockOpen(props.blockKey, KIND);
+  const allOpen = (): boolean => expandedKinds().has(KIND);
   return (
     <div class="my-1.5 border-l-2 border-violet-800/60 pl-2">
-      <button
-        type="button"
-        class="text-[11px] font-mono text-violet-400/80 hover:text-violet-300 flex items-center gap-1.5"
-        onClick={() => toggleBlock(props.blockKey)}
-      >
-        <span>{open() ? '▾' : '▸'}</span>
-        <span>💭 thinking · {props.block.text.length.toLocaleString()} chars</span>
-        <Show when={props.block.streaming}>
-          <span class="animate-pulse text-violet-300">▍</span>
-        </Show>
-        <Show when={props.block.truncated}>
-          <span class="text-neutral-600 italic">truncated</span>
-        </Show>
-      </button>
+      <div class="group/hdr flex items-center gap-2">
+        <button
+          type="button"
+          class="text-[11px] font-mono text-violet-400/80 hover:text-violet-300 flex items-center gap-1.5"
+          onClick={() => toggleBlock(props.blockKey, KIND)}
+        >
+          <span>{open() ? '▾' : '▸'}</span>
+          <span>💭 thinking · {props.block.text.length.toLocaleString()} chars</span>
+          <Show when={props.block.streaming}>
+            <span class="animate-pulse text-violet-300">▍</span>
+          </Show>
+          <Show when={props.block.truncated}>
+            <span class="text-neutral-600 italic">truncated</span>
+          </Show>
+        </button>
+        <button
+          type="button"
+          class={`text-[10px] font-mono px-1 rounded border transition-opacity ${allOpen() ? 'border-violet-800 text-violet-300 opacity-100' : 'border-neutral-800 text-neutral-500 opacity-0 group-hover/hdr:opacity-100 hover:text-violet-300'}`}
+          title={allOpen() ? 'collapse every thinking block in the loaded history' : 'expand every thinking block in the loaded history'}
+          onClick={() => toggleKind(KIND)}
+        >{allOpen() ? '⤡ all thinking' : '⤢ all thinking'}</button>
+      </div>
       <Show when={open()}>
         <div class="mt-1 text-[13px] leading-relaxed text-violet-200/60 italic whitespace-pre-wrap">
           {props.block.text}
@@ -2307,7 +2408,9 @@ function ToolBlockView(props: {
   blockKey: string;
   result?: ToolResultInfo;
 }) {
-  const open = (): boolean => expandedBlocks().has(props.blockKey);
+  const kind = (): string => `tool:${props.block.name}`;
+  const open = (): boolean => isBlockOpen(props.blockKey, kind());
+  const allOpen = (): boolean => expandedKinds().has(kind());
   const dot = (): string => {
     if (props.block.status === 'running') return 'bg-amber-400 animate-pulse';
     if (props.block.status === 'failed' || props.result?.isError) return 'bg-rose-500';
@@ -2321,17 +2424,25 @@ function ToolBlockView(props: {
   };
   return (
     <div class="my-1">
-      <button
-        type="button"
-        class="font-mono text-xs text-amber-400 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 px-2 py-1 rounded flex items-center gap-2"
-        onClick={() => toggleBlock(props.blockKey)}
-      >
-        <span class={`w-1.5 h-1.5 rounded-full ${dot()}`} />
-        <span>{open() ? '▾' : '▸'} {props.block.name}{duration()}</span>
-        <Show when={props.result?.isError}>
-          <span class="text-rose-400">error</span>
-        </Show>
-      </button>
+      <div class="group/hdr flex items-center gap-2">
+        <button
+          type="button"
+          class="font-mono text-xs text-amber-400 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 px-2 py-1 rounded flex items-center gap-2"
+          onClick={() => toggleBlock(props.blockKey, kind())}
+        >
+          <span class={`w-1.5 h-1.5 rounded-full ${dot()}`} />
+          <span>{open() ? '▾' : '▸'} {props.block.name}{duration()}</span>
+          <Show when={props.result?.isError}>
+            <span class="text-rose-400">error</span>
+          </Show>
+        </button>
+        <button
+          type="button"
+          class={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-opacity ${allOpen() ? 'border-amber-800 text-amber-300 opacity-100' : 'border-neutral-800 text-neutral-500 opacity-0 group-hover/hdr:opacity-100 hover:text-amber-300'}`}
+          title={allOpen() ? `collapse every ${props.block.name} call in the loaded history` : `expand every ${props.block.name} call in the loaded history (input + result)`}
+          onClick={() => toggleKind(kind())}
+        >{allOpen() ? `⤡ all ${props.block.name}` : `⤢ all ${props.block.name}`}</button>
+      </div>
       <Show when={open()}>
         <div class="mt-1 ml-3 space-y-1">
           <div class="text-[10px] uppercase tracking-wider text-neutral-600">
