@@ -62,6 +62,20 @@ export interface RecipeStrategy {
   compressionMergeSourceOnly?: boolean;
   /** Preserve ordinary merge retries, then use target-only on the final attempt. */
   compressionMergeSourceOnlyFallback?: boolean;
+  /**
+   * Context Manager tool-prose hoist rung (default off). On an L1 refusal, retry
+   * with long `fromTools` string arguments (e.g. a diary kept in
+   * `skip_reply.reason`) moved into calls to `intoTool` — a note-taking tool the
+   * agent really has (agent-framework `journal`). Skipped when `intoTool` is not
+   * among the declared tools.
+   */
+  compressionToolProseFallback?: {
+    intoTool: string;
+    fromTools: string[];
+    field?: string;
+    result?: string;
+    minChars?: number;
+  };
   /** Context Manager split-stitch L1 fallback rung (default off). */
   compressionSplitFallback?: boolean;
   /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
@@ -1700,6 +1714,40 @@ export function validateRecipe(raw: unknown): Recipe {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
       }
+    }
+    if (strategy.compressionToolProseFallback !== undefined) {
+      // Fail loudly: CM silently treats a malformed value as "rung off", which
+      // on a resident whose compressions are refusing is an outage, not a default.
+      const hoist = strategy.compressionToolProseFallback as Record<string, unknown> | null;
+      const where = 'Recipe agent.strategy.compressionToolProseFallback';
+      if (!hoist || typeof hoist !== 'object' || Array.isArray(hoist)) {
+        throw new Error(`${where} must be an object { intoTool, fromTools, field?, result?, minChars? }.`);
+      }
+      if (typeof hoist.intoTool !== 'string' || !hoist.intoTool) {
+        throw new Error(`${where}.intoTool must be a non-empty string.`);
+      }
+      if (
+        !Array.isArray(hoist.fromTools) || hoist.fromTools.length === 0
+        || hoist.fromTools.some((name) => typeof name !== 'string' || !name)
+      ) {
+        throw new Error(`${where}.fromTools must be a non-empty array of tool names.`);
+      }
+      if ((hoist.fromTools as string[]).includes(hoist.intoTool)) {
+        throw new Error(`${where}.fromTools must not contain intoTool.`);
+      }
+      for (const key of ['field', 'result'] as const) {
+        if (hoist[key] !== undefined && (typeof hoist[key] !== 'string' || !hoist[key])) {
+          throw new Error(`${where}.${key} must be a non-empty string.`);
+        }
+      }
+      if (
+        hoist.minChars !== undefined
+        && (typeof hoist.minChars !== 'number' || !Number.isSafeInteger(hoist.minChars) || hoist.minChars < 0)
+      ) {
+        throw new Error(`${where}.minChars must be a non-negative safe integer.`);
+      }
+      const unknown = Object.keys(hoist).filter((key) => !['intoTool', 'fromTools', 'field', 'result', 'minChars'].includes(key));
+      if (unknown.length > 0) throw new Error(`${where} has unknown key(s): ${unknown.join(', ')}.`);
     }
     for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
       const value = strategy[key];
