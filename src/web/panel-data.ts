@@ -19,6 +19,8 @@
  */
 
 import type { AgentFramework } from '@animalabs/agent-framework';
+import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
+import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs/membrane';
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
@@ -952,6 +954,70 @@ export function buildContextCoverageSnapshot(
   };
 }
 
+/** What the exact count needs from a previewed activation: the same
+ *  normalized request membrane formats for inference. */
+export interface CountablePreview {
+  system?: string | ContentBlock[];
+  messages?: NormalizedMessage[];
+  tools?: ToolDefinition[];
+  config?: { thinking?: { enabled: boolean; budgetTokens?: number } };
+}
+
+/** Anthropic count_tokens payload (everything but `model`). */
+export interface CountTokensPayload {
+  system?: unknown;
+  messages: unknown[];
+  tools?: unknown[];
+}
+
+/** The formatter surface the count needs; both prefill formatters implement it. */
+export type CountFormatter = Pick<NativeFormatter, 'buildMessages'>;
+
+/**
+ * Build the count_tokens payload by running the previewed activation through
+ * the SAME formatter path inference uses (`buildMessages`, multiuser, the
+ * agent as assistant, native tools): participant prefixes land per text block
+ * exactly as on the wire, non-text-only messages get no name block, tool
+ * pairs are normalized and same-role runs merged by the formatter itself, and
+ * every block the provider will be sent — signed `thinking` /
+ * `redacted_thinking`, `tool_use`, `tool_result`, images — is counted.
+ *
+ * The previous version flattened each message to its text blocks and sent no
+ * tool definitions: on a keep-all model (Opus >= 4.5, Sonnet >= 4.6, Fable)
+ * the replayed hidden thinking is most of the prompt, so the "exact" number
+ * read up to ~10x below what the provider bills. A hand-rolled mirror of the
+ * formatter (one standalone "Name: " block per message) still differed in
+ * prefix bytes and block framing — hence the formatter itself.
+ *
+ * `promptCaching: false` keeps cache_control markers out of the payload; they
+ * do not change the count and this request never warms a cache.
+ */
+export function buildCountTokensPayload(
+  preview: CountablePreview,
+  agentName: string,
+  formatter: CountFormatter = new NativeFormatter(),
+  toolMode: 'native' | 'xml' = 'native',
+): CountTokensPayload {
+  const built = formatter.buildMessages(preview.messages ?? [], {
+    participantMode: 'multiuser',
+    assistantParticipant: agentName,
+    tools: preview.tools,
+    toolMode,
+    thinking: preview.config?.thinking,
+    systemPrompt: preview.system,
+    promptCaching: false,
+    cacheMarkers: 'membrane-system',
+  });
+  const tools = Array.isArray(built.nativeTools) ? built.nativeTools : undefined;
+  return {
+    ...(built.systemContent !== undefined && built.systemContent !== null && built.systemContent !== ''
+      ? { system: built.systemContent }
+      : {}),
+    messages: built.messages as unknown[],
+    ...(tools && tools.length > 0 ? { tools } : {}),
+  };
+}
+
 /**
  * Best-effort mapping from an agent's configured model string to a bare
  * Anthropic API model id for /v1/messages/count_tokens. Handles membrane /
@@ -989,29 +1055,20 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   const cm = (agent as unknown as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
   const stats = cm.getRenderStats();
 
-  // Build an Anthropic-faithful payload for an exact count_tokens: map
-  // participants to roles (the agent's own -> assistant, others -> user
-  // with a "Name:" prefix) and merge consecutive same-role runs, mirroring
-  // what the NativeFormatter sends.
-  const textOf = (c: unknown): string =>
-    Array.isArray(c)
-      ? c.map((b) => (b && typeof b === 'object' && (b as { type?: string }).type === 'text' ? (b as { text: string }).text : '')).join('')
-      : String(c ?? '');
-  const merged: Array<{ role: 'user' | 'assistant'; text: string }> = [];
-  for (const m of ((request as { messages?: Array<{ participant?: string; role?: string; content: unknown }> }).messages ?? [])) {
-    const who = m.participant ?? m.role ?? 'user';
-    const role: 'user' | 'assistant' = who === agentName ? 'assistant' : 'user';
-    let t = textOf(m.content);
-    if (role === 'user' && who && who !== 'user') t = `${who}: ${t}`;
-    const last = merged[merged.length - 1];
-    if (last && last.role === role) last.text += '\n' + t;
-    else merged.push({ role, text: t });
-  }
-  const anthMessages = merged.filter((m) => m.text.trim().length > 0).map((m) => ({ role: m.role, content: m.text }));
-  const sysRaw = (request as { system?: unknown }).system;
-  const systemStr = Array.isArray(sysRaw)
-    ? sysRaw.map((b) => (b && typeof b === 'object' ? (b as { text?: string }).text ?? '' : String(b))).join('\n')
-    : (typeof sysRaw === 'string' ? sysRaw : undefined);
+  // Count through the formatter the agent actually runs on (prefill agents
+  // render the XML scaffold; everyone else the native shape).
+  const xml = app.recipe.agent.formatter === 'anthropic-xml';
+  const payload = buildCountTokensPayload(
+    request as unknown as CountablePreview,
+    agentName,
+    xml ? new AnthropicXmlFormatter() : new NativeFormatter(),
+    xml ? 'xml' : 'native',
+  );
+  // What the provider actually billed for the last call (fresh + cache read +
+  // cache creation): exact, free, and independent of the count below — the
+  // two disagree only when the context changed since that call.
+  const lastBilledInputTokens =
+    (agent as { lastStreamRealInputTokens?: number }).lastStreamRealInputTokens || null;
 
   let exactTotalTokens: number | null = null;
   // Count against the model the agent actually runs, not a hardcoded id:
@@ -1021,7 +1078,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     || anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
   if (!countModel) {
-    return { agent: agentName, stats, exactTotalTokens, countModel, countSource: 'count_tokens_unsupported_model' };
+    return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
   try {
     const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -1040,7 +1097,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
         'content-type': 'application/json',
         'user-agent': 'conhost/1.0',
       },
-      body: JSON.stringify({ model: countModel, ...(systemStr ? { system: systemStr } : {}), messages: anthMessages }),
+      body: JSON.stringify({ model: countModel, ...payload }),
     });
     if (res.ok) {
       const j = (await res.json()) as { input_tokens?: number };
@@ -1052,7 +1109,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     countSource = 'count_tokens_error';
   }
 
-  return { agent: agentName, stats, exactTotalTokens, countModel, countSource };
+  return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
 }
 
 /**
