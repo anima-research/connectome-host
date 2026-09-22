@@ -1654,6 +1654,20 @@ export function validateRecipe(raw: unknown): Recipe {
     if (strategy.foldingStrategy === 'kv-unified' && strategy.type === 'passthrough') {
       throw new Error('Recipe foldingStrategy "kv-unified" requires an autobiographical or frontdesk strategy.');
     }
+    // Recipes are runtime JSON: the interface's union is not a check. Context
+    // Manager treats every value other than the exact string 'live-strip' as
+    // 'full', so a typo would silently keep replaying the reasoning carriers
+    // this key exists to strip. Fail at load, like foldingStrategy.
+    if (
+      strategy.carrierPolicy !== undefined &&
+      strategy.carrierPolicy !== 'full' &&
+      strategy.carrierPolicy !== 'live-strip'
+    ) {
+      throw new Error(
+        `Recipe agent.strategy.carrierPolicy is invalid: ${JSON.stringify(strategy.carrierPolicy)}. ` +
+        `Must be "full" or "live-strip".`,
+      );
+    }
     validateKvUnifiedConfig(strategy);
     if (
       strategy.compressionRefusalCurveFallbacks !== undefined
