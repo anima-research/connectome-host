@@ -75,6 +75,20 @@ export interface RecipeStrategy {
   compressionRecallBudgetTokens?: number;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
+  /**
+   * Where a summary's signed reasoning carriers (the compressor's own
+   * thinking blocks, `responseContent`) are replayed (context-manager #81).
+   * `'full'` (default): unchanged — carriers ride both the live window and
+   * mint/merge recall pairs. `'live-strip'`: carriers are omitted from the
+   * LIVE window only (whole blocks dropped, never mutated — signatures only
+   * verify byte-identical) — the agent's own compiled context renders
+   * recall pairs text-only, while compression/merge requests still carry
+   * the full signed content unconditionally (measured load-bearing there:
+   * some providers refuse a compress request without it). Useful when a
+   * provider's classifier treats a replayed foreign-request signature
+   * inside the LIVE window as reasoning extraction.
+   */
+  carrierPolicy?: 'full' | 'live-strip';
   targetChunkTokens?: number;
   mergeThreshold?: number;
   mergeMaxSourceSpanMessages?: number;
@@ -1639,6 +1653,20 @@ export function validateRecipe(raw: unknown): Recipe {
     }
     if (strategy.foldingStrategy === 'kv-unified' && strategy.type === 'passthrough') {
       throw new Error('Recipe foldingStrategy "kv-unified" requires an autobiographical or frontdesk strategy.');
+    }
+    // Recipes are runtime JSON: the interface's union is not a check. Context
+    // Manager treats every value other than the exact string 'live-strip' as
+    // 'full', so a typo would silently keep replaying the reasoning carriers
+    // this key exists to strip. Fail at load, like foldingStrategy.
+    if (
+      strategy.carrierPolicy !== undefined &&
+      strategy.carrierPolicy !== 'full' &&
+      strategy.carrierPolicy !== 'live-strip'
+    ) {
+      throw new Error(
+        `Recipe agent.strategy.carrierPolicy is invalid: ${JSON.stringify(strategy.carrierPolicy)}. ` +
+        `Must be "full" or "live-strip".`,
+      );
     }
     validateKvUnifiedConfig(strategy);
     if (

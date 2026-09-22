@@ -168,3 +168,27 @@ describe('standard-recipe memory defaults', () => {
     expect(modules).not.toHaveProperty('retrieval');
   });
 });
+
+describe('carrierPolicy passthrough', () => {
+  test("'live-strip' and 'full' reach the constructed strategy config; omission resolves to the library default", () => {
+    for (const value of ['live-strip', 'full'] as const) {
+      const strategy = buildFrameworkStrategy(
+        recipe({ name: 'Mira', strategy: { type: 'autobiographical', carrierPolicy: value } }),
+        'some-model',
+        'America/Los_Angeles',
+      );
+      expect(configView(strategy).carrierPolicy).toBe(value);
+    }
+    // Omission resolves to Context Manager's own default ('full'), not to a host guess.
+    const omitted = buildFrameworkStrategy(recipe({ name: 'Mira' }), 'some-model', 'America/Los_Angeles');
+    expect(configView(omitted).carrierPolicy).toBe('full');
+  });
+
+  test('malformed values fail at recipe load instead of silently meaning full', () => {
+    for (const bad of ['live_strp', 'strip', 'FULL', '', 1, true, null, {}] as unknown[]) {
+      expect(() => recipe({ name: 'Mira', strategy: { type: 'autobiographical', carrierPolicy: bad } }))
+        .toThrow(/carrierPolicy/);
+    }
+  });
+});
+
