@@ -32,9 +32,31 @@
  * never display names.
  */
 
-/** Truthy env-flag parse: unset/''/'0'/'false' (any case) are off. */
-function envFlag(value: string | undefined): boolean {
-  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+/**
+ * Fail-closed env-flag parse: ONLY an allowlisted affirmative — `1` or
+ * `true` (case-insensitive, trimmed) — enables the flag. Everything else is
+ * off, matching the documented contract (an explicit `GATE_TELEMETRY=1`
+ * declaration). The previous parser treated every non-empty string except
+ * '0'/'false' as ON, so `off`, `no` and ordinary typos ENABLED telemetry —
+ * exactly the values operators use to turn a flag off (#119). Unrecognized
+ * non-empty values warn once, naming the value and the accepted forms, so a
+ * typo explains itself instead of silently disabling (or enabling) anything.
+ */
+const ENV_FLAG_ON = new Set(['1', 'true']);
+const ENV_FLAG_OFF = new Set(['', '0', 'false', 'off', 'no']);
+const warnedEnvFlagValues = new Set<string>();
+function envFlag(value: string | undefined, name = 'GATE_TELEMETRY'): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (ENV_FLAG_ON.has(normalized)) return true;
+  if (!ENV_FLAG_OFF.has(normalized) && !warnedEnvFlagValues.has(value)) {
+    warnedEnvFlagValues.add(value);
+    console.error(
+      `[gate-telemetry] ${name}=${JSON.stringify(value)} is not a recognized value — ` +
+        `treating as DISABLED (fail-closed). Use ${name}=1 (or true) to enable.`,
+    );
+  }
+  return false;
 }
 
 /** What the framework knows about the turn in progress (agent-framework InferenceRequest). */

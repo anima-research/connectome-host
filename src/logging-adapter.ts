@@ -48,8 +48,20 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /** Truthy env-flag parse: unset/''/'0'/'false' (any case) are off. */
-function envFlag(value: string | undefined): boolean {
-  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
+  // Fail-closed allowlist, same posture as gate-telemetry's flag (#119):
+  // only an explicit 1/true (trimmed, case-insensitive) enables full
+  // payloads in the local ledger; 'off', 'no' and typos must not.
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true') return true;
+  if (!['', '0', 'false', 'off', 'no'].includes(normalized)) {
+    console.error(
+      `[llm-calls] ${name}=${JSON.stringify(value)} is not a recognized value — ` +
+        `treating as DISABLED (fail-closed). Use ${name}=1 (or true) to enable.`,
+    );
+  }
+  return false;
 }
 
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
