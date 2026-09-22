@@ -19,8 +19,8 @@
  */
 
 import type { AgentFramework } from '@animalabs/agent-framework';
-import { toAnthropicContent } from '@animalabs/membrane';
-import type { ContentBlock } from '@animalabs/membrane';
+import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
+import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs/membrane';
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
 import {
@@ -831,60 +831,67 @@ export function buildContextCoverageSnapshot(
   };
 }
 
-/** The slice of a previewed activation the exact count needs. */
+/** What the exact count needs from a previewed activation: the same
+ *  normalized request membrane formats for inference. */
 export interface CountablePreview {
-  system?: string;
-  messages?: Array<{ participant?: string; role?: string; content: unknown }>;
-  tools?: Array<{ name: string; description?: string; inputSchema?: unknown }>;
+  system?: string | ContentBlock[];
+  messages?: NormalizedMessage[];
+  tools?: ToolDefinition[];
+  config?: { thinking?: { enabled: boolean; budgetTokens?: number } };
 }
 
 /** Anthropic count_tokens payload (everything but `model`). */
 export interface CountTokensPayload {
-  system?: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }>;
-  tools?: Array<{ name: string; description?: string; input_schema: unknown }>;
+  system?: unknown;
+  messages: unknown[];
+  tools?: unknown[];
 }
 
+/** The formatter surface the count needs; both prefill formatters implement it. */
+export type CountFormatter = Pick<NativeFormatter, 'buildMessages'>;
+
 /**
- * Build the count_tokens payload from a previewed activation, keeping every
- * block the provider will actually be sent. Participants map to roles (the
- * agent's own -> assistant, everyone else -> user with a "Name: " prefix),
- * consecutive same-role runs merge, mirroring the NativeFormatter.
+ * Build the count_tokens payload by running the previewed activation through
+ * the SAME formatter path inference uses (`buildMessages`, multiuser, the
+ * agent as assistant, native tools): participant prefixes land per text block
+ * exactly as on the wire, non-text-only messages get no name block, tool
+ * pairs are normalized and same-role runs merged by the formatter itself, and
+ * every block the provider will be sent — signed `thinking` /
+ * `redacted_thinking`, `tool_use`, `tool_result`, images — is counted.
  *
- * Blocks are passed through membrane's own Anthropic conversion, so signed
- * `thinking` / `redacted_thinking`, `tool_use` and `tool_result` all count.
  * The previous version flattened each message to its text blocks and sent no
  * tool definitions: on a keep-all model (Opus >= 4.5, Sonnet >= 4.6, Fable)
  * the replayed hidden thinking is most of the prompt, so the "exact" number
- * read up to ~10x below what the provider bills — a wrong instrument in the
- * panel that operators used to judge context size.
+ * read up to ~10x below what the provider bills. A hand-rolled mirror of the
+ * formatter (one standalone "Name: " block per message) still differed in
+ * prefix bytes and block framing — hence the formatter itself.
+ *
+ * `promptCaching: false` keeps cache_control markers out of the payload; they
+ * do not change the count and this request never warms a cache.
  */
-export function buildCountTokensPayload(preview: CountablePreview, agentName: string): CountTokensPayload {
-  const merged: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = [];
-  for (const m of preview.messages ?? []) {
-    const who = m.participant ?? m.role ?? 'user';
-    const role: 'user' | 'assistant' = who === agentName || who === 'assistant' ? 'assistant' : 'user';
-    const raw: ContentBlock[] = Array.isArray(m.content)
-      ? (m.content as ContentBlock[])
-      : [{ type: 'text', text: String(m.content ?? '') }];
-    let blocks = toAnthropicContent(raw) as unknown[];
-    if (role === 'user' && who && who !== 'user' && who !== agentName) {
-      blocks = [{ type: 'text', text: `${who}: ` }, ...blocks];
-    }
-    if (blocks.length === 0) continue;
-    const last = merged[merged.length - 1];
-    if (last && last.role === role) last.content.push(...blocks);
-    else merged.push({ role, content: blocks });
-  }
-  const tools = (preview.tools ?? []).map((t) => ({
-    name: t.name,
-    ...(t.description ? { description: t.description } : {}),
-    input_schema: t.inputSchema ?? { type: 'object', properties: {} },
-  }));
+export function buildCountTokensPayload(
+  preview: CountablePreview,
+  agentName: string,
+  formatter: CountFormatter = new NativeFormatter(),
+  toolMode: 'native' | 'xml' = 'native',
+): CountTokensPayload {
+  const built = formatter.buildMessages(preview.messages ?? [], {
+    participantMode: 'multiuser',
+    assistantParticipant: agentName,
+    tools: preview.tools,
+    toolMode,
+    thinking: preview.config?.thinking,
+    systemPrompt: preview.system,
+    promptCaching: false,
+    cacheMarkers: 'membrane-system',
+  });
+  const tools = Array.isArray(built.nativeTools) ? built.nativeTools : undefined;
   return {
-    ...(preview.system ? { system: preview.system } : {}),
-    messages: merged,
-    ...(tools.length > 0 ? { tools } : {}),
+    ...(built.systemContent !== undefined && built.systemContent !== null && built.systemContent !== ''
+      ? { system: built.systemContent }
+      : {}),
+    messages: built.messages as unknown[],
+    ...(tools && tools.length > 0 ? { tools } : {}),
   };
 }
 
@@ -925,7 +932,15 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   const cm = (agent as unknown as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
   const stats = cm.getRenderStats();
 
-  const payload = buildCountTokensPayload(request as CountablePreview, agentName);
+  // Count through the formatter the agent actually runs on (prefill agents
+  // render the XML scaffold; everyone else the native shape).
+  const xml = app.recipe.agent.formatter === 'anthropic-xml';
+  const payload = buildCountTokensPayload(
+    request as unknown as CountablePreview,
+    agentName,
+    xml ? new AnthropicXmlFormatter() : new NativeFormatter(),
+    xml ? 'xml' : 'native',
+  );
   // What the provider actually billed for the last call (fresh + cache read +
   // cache creation): exact, free, and independent of the count below — the
   // two disagree only when the context changed since that call.
