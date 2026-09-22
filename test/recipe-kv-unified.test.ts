@@ -27,6 +27,7 @@ function config(): RecipeKvUnifiedConfig {
     labelCeiling: 100_000,
     adoptEpsilon: 2_000,
     treeifyNonContiguousSummaries: false,
+    preserveGapBearingSummaries: true,
   };
 }
 
@@ -83,5 +84,18 @@ describe('kv-unified recipe plumbing', () => {
     const raw = recipe() as ReturnType<typeof recipe>;
     raw.agent.strategy.foldingStrategy = 'kv-stable';
     expect(() => validateRecipe(raw)).toThrow(/requires foldingStrategy/);
+  });
+});
+
+describe('kvUnified gap policy and certificate flags', () => {
+  test('preserveGapBearingSummaries is required, exclusive with treeify, and hysteresisCertificate is an optional boolean', () => {
+    const missing = { ...config() } as Record<string, unknown>; delete missing.preserveGapBearingSummaries;
+    expect(() => validateRecipe(recipe(missing))).toThrow(/preserveGapBearingSummaries/);
+    expect(() => validateRecipe(recipe({ ...config(), treeifyNonContiguousSummaries: true, preserveGapBearingSummaries: true }))).toThrow(/mutually exclusive/);
+    expect(() => validateRecipe(recipe({ ...config(), hysteresisCertificate: 'yes' }))).toThrow(/hysteresisCertificate/);
+    const on = validateRecipe(recipe({ ...config(), hysteresisCertificate: true }));
+    expect(on.agent.strategy?.kvUnified?.hysteresisCertificate).toBe(true);
+    const strategy = buildFrameworkStrategy(on, 'some-model', 'America/Los_Angeles') as unknown as { config: { kvUnified?: { hysteresisCertificate?: boolean } } };
+    expect(strategy.config.kvUnified?.hysteresisCertificate).toBe(true);
   });
 });

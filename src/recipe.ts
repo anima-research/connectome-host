@@ -157,6 +157,11 @@ export interface RecipeKvUnifiedConfig {
   labelCeiling: number;
   adoptEpsilon: number;
   treeifyNonContiguousSummaries: boolean;
+  /** Required by Context Manager (mutually exclusive with treeify). */
+  preserveGapBearingSummaries: boolean;
+  /** Certified hysteresis exit: skip label propagation when the accepted
+   * presentation provably remains the selection. Exact. Default off. */
+  hysteresisCertificate?: boolean;
 }
 
 export interface RecipeAgent {
@@ -1312,6 +1317,19 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
     throw new Error(
       'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries must be an explicit boolean.',
     );
+  }
+  if (typeof config.preserveGapBearingSummaries !== 'boolean') {
+    throw new Error(
+      'Recipe agent.strategy.kvUnified.preserveGapBearingSummaries must be an explicit boolean.',
+    );
+  }
+  if (config.treeifyNonContiguousSummaries && config.preserveGapBearingSummaries) {
+    throw new Error(
+      'Recipe agent.strategy.kvUnified: treeifyNonContiguousSummaries and preserveGapBearingSummaries are mutually exclusive.',
+    );
+  }
+  if (config.hysteresisCertificate !== undefined && typeof config.hysteresisCertificate !== 'boolean') {
+    throw new Error('Recipe agent.strategy.kvUnified.hysteresisCertificate must be a boolean.');
   }
 }
 
