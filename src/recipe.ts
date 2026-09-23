@@ -687,8 +687,27 @@ export interface RecipeModules {
    * four tools accept a live or historical channel label/address, not just
    * the raw internal channel id, when MCPL is configured (resolved via the
    * framework's `ChannelRegistry`).
+   *
+   * Object form adds `history--semantic_search`: meaning-based search over the
+   * agent's raw messages (text + its own think/journal/skip_reply notes) and
+   * every compression summary, backed by a shared remote embed-service (one
+   * per fleet; the vector index lives server-side, keyed by `namespace`).
+   * The host keeps that index in sync in the background (default every 60 s)
+   * and catches up before each search. `token` goes through the recipe's
+   * `${ENV}` substitution like every other secret. `namespace` defaults to
+   * `<agent name>/<session id>` — unique per store across the fleet.
    */
-  history?: boolean;
+  history?: boolean | {
+    semantic?: {
+      url: string;
+      token?: string;
+      namespace?: string;
+      syncIntervalMs?: number;
+      maxSyncPerTick?: number;
+      maxSyncBeforeSearch?: number;
+      includePrivateTools?: boolean;
+    };
+  };
 
   /**
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
@@ -2055,6 +2074,37 @@ export function validateRecipe(raw: unknown): Recipe {
             `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
             `or make the mount read-only if the file is maintained outside the agent.`,
           );
+        }
+      }
+    }
+
+    // History: boolean, or { semantic: { url, ... } } for embedding search.
+    const history = mods.history;
+    if (history !== undefined && typeof history !== 'boolean') {
+      if (!history || typeof history !== 'object' || Array.isArray(history)) {
+        throw new Error('Recipe modules.history must be a boolean or object.');
+      }
+      const sem = (history as Record<string, unknown>).semantic;
+      if (sem !== undefined) {
+        if (!sem || typeof sem !== 'object' || Array.isArray(sem)) {
+          throw new Error('Recipe modules.history.semantic must be an object.');
+        }
+        const semCfg = sem as Record<string, unknown>;
+        if (typeof semCfg.url !== 'string' || !/^https?:\/\//.test(semCfg.url)) {
+          throw new Error('modules.history.semantic.url must be an http(s) URL of the embed-service.');
+        }
+        for (const k of ['token', 'namespace'] as const) {
+          if (semCfg[k] !== undefined && (typeof semCfg[k] !== 'string' || !(semCfg[k] as string).trim())) {
+            throw new Error(`modules.history.semantic.${k} must be a non-empty string when set.`);
+          }
+        }
+        for (const k of ['syncIntervalMs', 'maxSyncPerTick', 'maxSyncBeforeSearch'] as const) {
+          if (semCfg[k] !== undefined && (typeof semCfg[k] !== 'number' || !Number.isFinite(semCfg[k]) || (semCfg[k] as number) < 0)) {
+            throw new Error(`modules.history.semantic.${k} must be a non-negative number when set.`);
+          }
+        }
+        if (semCfg.includePrivateTools !== undefined && typeof semCfg.includePrivateTools !== 'boolean') {
+          throw new Error('modules.history.semantic.includePrivateTools must be a boolean when set.');
         }
       }
     }

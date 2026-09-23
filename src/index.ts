@@ -272,7 +272,10 @@ async function createFramework(
   // ChannelRegistry) happens post-creation, below, once `framework` exists.
   let historyModule: HistoryModule | null = null;
   if (modules.history) {
-    historyModule = new HistoryModule();
+    const semantic = typeof modules.history === 'object' ? modules.history.semantic : undefined;
+    historyModule = new HistoryModule(semantic
+      ? { semantic: { ...semantic, namespace: semantic.namespace ?? `${agentName}/${basename(storePath)}` } }
+      : {});
     moduleInstances.push(historyModule);
   }
 
