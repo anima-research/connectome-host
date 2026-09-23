@@ -471,3 +471,58 @@ describe('WebUiModule WebSocket', () => {
     ws.close();
   });
 });
+
+describe('WebUiModule liveness', () => {
+  test('welcome carries a liveness snapshot and trace changes broadcast a liveness frame', async () => {
+    let traceListener: ((e: Record<string, unknown>) => void) | undefined;
+    let connected = true;
+    const framework = {
+      getAllAgents: () => [{ name: 'main', getContextManager: () => undefined }],
+      getAllModules: () => [],
+      getSessionUsage: () => { throw new Error('no usage in harness'); },
+      onTrace: (fn: (e: Record<string, unknown>) => void) => { traceListener = fn; },
+      listMcplServers: () => [{ id: 'chat', connected, retrying: !connected, toolCount: 0 }],
+    };
+    webUiModule.setApp({
+      framework,
+      recipe: { name: 'test' },
+      sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+    } as never);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/ws`, {
+      headers: {
+        origin: `http://127.0.0.1:${handle.port}`,
+        authorization: basicAuthHeader(BASIC_USER, BASIC_PASS),
+      },
+    } as unknown as undefined);
+    const frames: Array<Record<string, any>> = [];
+    const waitFor = (type: string) => new Promise<Record<string, any>>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`no ${type} frame`)), 5000);
+      const check = () => {
+        const f = frames.find((x) => x.type === type);
+        if (f) { clearTimeout(t); resolve(f); } else setTimeout(check, 20);
+      };
+      check();
+    });
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+
+    try {
+      const welcome = await waitFor('welcome');
+      expect(welcome.liveness.servers).toEqual([{ id: 'chat', connected: true }]);
+      expect(welcome.liveness.agents).toEqual([{ name: 'main' }]);
+
+      connected = false;
+      traceListener!({ type: 'mcpl:server-connect-failed', serverId: 'chat', error: 'handshake timeout', attempt: 3, willRetry: true, timestamp: 1000 });
+      traceListener!({ type: 'inference:completed', agentName: 'main', durationMs: 1, timestamp: 900 });
+      const frame = await waitFor('liveness');
+      expect(frame.liveness.servers[0]).toMatchObject({
+        id: 'chat', connected: false, retrying: true,
+        lastError: { message: 'handshake timeout', attempt: 3, willRetry: true, at: 1000 },
+      });
+      expect(frame.liveness.agents).toEqual([{ name: 'main', lastCompletedAt: 900 }]);
+    } finally {
+      ws.close();
+      await webUiModule.stop();
+    }
+  });
+});

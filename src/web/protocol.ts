@@ -15,6 +15,7 @@
  */
 
 import type { Line } from '../commands.js';
+import type { LivenessSnapshot } from './liveness.js';
 
 export const WEB_PROTOCOL_VERSION = 1;
 
@@ -104,6 +105,8 @@ export interface WelcomeMessage {
   /** Recent provider calls with cache verdicts. Present when the host's
    *  provider adapter exposes the call ledger. */
   callLedger?: CallLedgerSnapshot;
+  /** MCPL link + agent activity snapshot (see LivenessMessage). */
+  liveness?: LivenessSnapshot;
 }
 
 /**
@@ -656,8 +659,17 @@ export interface OperatorLogMessage {
   path?: string;
 }
 
+/** MCPL connection state + last inbound / last agent activity times.
+ *  Broadcast (throttled) on change and every ~30s as a heartbeat, so a
+ *  snapshot whose `at` stops advancing means the host itself went quiet. */
+export interface LivenessMessage {
+  type: 'liveness';
+  liveness: LivenessSnapshot;
+}
+
 export type WebUiServerMessage =
   | WelcomeMessage
+  | LivenessMessage
   | TraceMessage
   | ChildEventMessage
   | CommandResultMessage

@@ -49,6 +49,7 @@ import type { QuotaMeter } from '../quota-meter.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
+import { LivenessTracker, type LivenessSnapshot } from '../web/liveness.js';
 import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
@@ -82,6 +83,7 @@ import {
   resolveAgent,
   buildMediaBlock,
   buildMcplSnapshot,
+  listLiveMcplServers,
   buildSettingsState,
   buildPinsSnapshot,
   buildHealthSnapshot,
@@ -208,6 +210,11 @@ interface ClientState {
    *  without the framework leaking listeners. */
   peeks: Map<string, () => void>;
 }
+
+/** Liveness frames: change-driven ones coalesce over this window; the
+ *  heartbeat re-sends regardless so the SPA can tell a stalled host. */
+const LIVENESS_THROTTLE_MS = 2_000;
+const LIVENESS_HEARTBEAT_MS = 30_000;
 
 /** Default port — picked to be memorable and unlikely to collide. */
 const DEFAULT_PORT = 7340;
@@ -386,6 +393,12 @@ interface SharedServerState {
    *  query responses (lessons / workspace) back to the requesting client.
    *  Entries are deleted on response or pruned by TTL. */
   pendingFleetRequests: Map<string, { clientId: number; kind: string; expiresAt: number }>;
+  /** MCPL link + agent activity, folded from traces (see web/liveness.ts). */
+  liveness: LivenessTracker;
+  /** Throttle for change-driven liveness broadcasts; null when none queued. */
+  livenessFlush: ReturnType<typeof setTimeout> | null;
+  /** Heartbeat re-broadcast, so a stalled host shows as stale in the SPA. */
+  livenessHeartbeat: ReturnType<typeof setInterval> | null;
 }
 
 let sharedServer: SharedServerState | null = null;
@@ -443,6 +456,9 @@ export class WebUiModule implements Module {
       latestCallLedger: this.config.callLedger?.snapshot(),
       callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
+      liveness: new LivenessTracker(),
+      livenessFlush: null,
+      livenessHeartbeat: null,
       childRecipeCache: new Map(),
       app: null,
       treeAggregator: null,
@@ -472,6 +488,8 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+    state.livenessHeartbeat = setInterval(() => this.broadcastLiveness(), LIVENESS_HEARTBEAT_MS);
+    (state.livenessHeartbeat as { unref?: () => void }).unref?.();
 
     // Provider calls include auxiliary compression requests that never emit a
     // framework usage trace, so subscribe at the adapter ledger itself. This
@@ -813,6 +831,10 @@ export class WebUiModule implements Module {
     if (event.type === 'message:added') {
       const e = event as unknown as { messageId: string; source: string };
       void this.maybeEmitTrigger(e.messageId, e.source);
+    }
+
+    if (sharedServer!.liveness.observe(event as unknown as { type: string })) {
+      this.scheduleLivenessBroadcast();
     }
 
     if (sharedServer!.clients.size === 0) return;
@@ -3087,6 +3109,7 @@ export class WebUiModule implements Module {
     const branch = cm?.currentBranch();
     const hostMode = this.hostModeSnapshot();
 
+    const liveness = this.livenessSnapshot();
     return {
       type: 'welcome',
       protocolVersion: WEB_PROTOCOL_VERSION,
@@ -3122,7 +3145,39 @@ export class WebUiModule implements Module {
       ...(sharedServer!.latestCallLedger
         ? { callLedger: sharedServer!.latestCallLedger }
         : {}),
+      ...(liveness ? { liveness } : {}),
     };
+  }
+
+  /** Current liveness snapshot, or null before setApp. */
+  private livenessSnapshot(): LivenessSnapshot | null {
+    const app = this.panelApp();
+    if (!app || !sharedServer) return null;
+    let agents: string[] = [];
+    try { agents = app.framework.getAllAgents().map((a) => a.name); } catch { /* best-effort */ }
+    return sharedServer.liveness.snapshot(listLiveMcplServers(app), agents);
+  }
+
+  /** Coalesce bursts (a busy channel, streaming turns) into one frame. */
+  private scheduleLivenessBroadcast(): void {
+    const ss = sharedServer;
+    if (!ss || ss.livenessFlush) return;
+    ss.livenessFlush = setTimeout(() => {
+      ss.livenessFlush = null;
+      this.broadcastLiveness();
+    }, LIVENESS_THROTTLE_MS);
+  }
+
+  private broadcastLiveness(): void {
+    const ss = sharedServer;
+    if (!ss || ss.clients.size === 0) return;
+    const liveness = this.livenessSnapshot();
+    if (!liveness) return;
+    const msg: WebUiServerMessage = { type: 'liveness', liveness };
+    for (const client of ss.clients.values()) {
+      if (!client.welcomed) continue;
+      if (client.scopes === null || client.scopes.has('health')) this.send(client, msg);
+    }
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
@@ -3639,6 +3694,8 @@ export function __getSharedServerPortForTests(): number | null {
 export async function __resetSharedServerForTests(): Promise<void> {
   if (!sharedServer) return;
   try { sharedServer.server.stop(true); } catch { /* ignore */ }
+  if (sharedServer.livenessHeartbeat) clearInterval(sharedServer.livenessHeartbeat);
+  if (sharedServer.livenessFlush) clearTimeout(sharedServer.livenessFlush);
   // Detach any fleet listener / aggregator so the next start runs clean.
   sharedServer.fleetEventDetacher?.();
   sharedServer.treeAggregator?.dispose();
