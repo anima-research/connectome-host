@@ -147,6 +147,7 @@ describe('resident retirement recipe', () => {
         'resident',
         new SettingsModule(),
         null,
+        null,
         async () => unsupportedFramework,
       );
     } catch (error) {
