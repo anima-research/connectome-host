@@ -60,6 +60,25 @@ describe('resident retirement recipe', () => {
       .toThrow(/unknown field/);
   });
 
+  test('defers retirement while a memory merge is quarantined, even with no chunk quarantine', () => {
+    let merges = 1;
+    const strategy = {
+      getCompressionQuarantineStatus: () => ({ count: 0, keys: [] }),
+      getMergeQuarantineStatus: () => ({ count: merges, records: [] }),
+    };
+    const check = buildRetirementReadinessCheck(
+      strategy as Parameters<typeof buildRetirementReadinessCheck>[0],
+    );
+    expect(check('request')).toEqual({
+      ready: false,
+      code: 'compression_quarantine',
+      reason: 'Retirement is temporarily unavailable while 1 memory merge(s) are in compression quarantine.',
+    });
+    expect(check('confirm').ready).toBe(false);
+    merges = 0;
+    expect(check('request')).toEqual({ ready: true });
+  });
+
   test('defers retirement while autobiographical compression quarantine is non-empty', () => {
     let count = 2;
     const strategy = {

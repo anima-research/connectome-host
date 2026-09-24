@@ -146,13 +146,22 @@ export function buildRetirementReadinessCheck(
     ) {
       throw new Error('Compression quarantine status is malformed');
     }
-    if (status.count === 0) return { ready: true };
+    // Merge quarantine is the same degraded-memory condition one level up:
+    // sources that repeatedly failed to merge stay unmerged and the context
+    // floor creeps. Duck-typed so older strategies without it still work.
+    const merges = (strategy as unknown as {
+      getMergeQuarantineStatus?: () => { count: number };
+    } | undefined)?.getMergeQuarantineStatus?.();
+    const mergeCount = merges && Number.isSafeInteger(merges.count) && merges.count > 0 ? merges.count : 0;
+    if (status.count === 0 && mergeCount === 0) return { ready: true };
+    const parts = [
+      ...(status.count > 0 ? [`${status.count} context span(s)`] : []),
+      ...(mergeCount > 0 ? [`${mergeCount} memory merge(s)`] : []),
+    ];
     return {
       ready: false,
       code: 'compression_quarantine',
-      reason:
-        `Retirement is temporarily unavailable while ${status.count} context ` +
-        `span(s) are in compression quarantine.`,
+      reason: `Retirement is temporarily unavailable while ${parts.join(' and ')} are in compression quarantine.`,
     };
   };
 }
