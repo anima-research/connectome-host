@@ -930,6 +930,22 @@ export interface RecipeCodeExecution {
  * reports to them in its own voice. Passed through verbatim; the framework
  * owns the defaults (name `Subconscious`, model = the resident's).
  */
+/**
+ * Durable retry of plain speech that could not be delivered (agent-framework
+ * FrameworkConfig.proseOutbox). Passed through; the framework owns the
+ * defaults (6 h expiry, 50 per agent, 200 total) and keeps the queue in
+ * `<storePath>/recovery/prose-outbox.json`.
+ */
+export interface RecipeProseOutbox {
+  enabled: boolean;
+  maxAgeMs?: number;
+  maxEntriesPerAgent?: number;
+  maxEntries?: number;
+  /** MCPL send tools (unprefixed, e.g. "send_message") held the same way
+   *  when their server can't be reached. Sends only, never deletes. */
+  tools?: string[];
+}
+
 export interface RecipeSubconscious {
   /** Master switch. Without it the `tune_out` tool is not offered. */
   enabled: boolean;
@@ -998,6 +1014,8 @@ export interface Recipe {
   conversations?: RecipeConversations;
   /** Tune-out's subconscious resident (agent-framework#77). */
   subconscious?: RecipeSubconscious;
+  /** Keep and retry undelivered speech (agent-framework prose outbox). */
+  proseOutbox?: RecipeProseOutbox;
 }
 
 // ---------------------------------------------------------------------------
@@ -2187,6 +2205,41 @@ export function validateRecipe(raw: unknown): Recipe {
       if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
       }
+    }
+  }
+
+  if (obj.proseOutbox !== undefined) {
+    const po = obj.proseOutbox as Record<string, unknown> | null;
+    if (!po || typeof po !== 'object' || Array.isArray(po)) {
+      throw new Error('Recipe proseOutbox must be an object.');
+    }
+    const allowed = new Set(['enabled', 'maxAgeMs', 'maxEntriesPerAgent', 'maxEntries', 'tools']);
+    for (const key of Object.keys(po)) {
+      if (!allowed.has(key)) {
+        throw new Error(
+          `Recipe proseOutbox has unknown field ${JSON.stringify(key)} (expected one of: ${[...allowed].join(', ')}).`,
+        );
+      }
+    }
+    if (typeof po.enabled !== 'boolean') {
+      throw new Error('Recipe proseOutbox.enabled must be a boolean.');
+    }
+    const WEEK = 7 * 24 * 3_600_000;
+    if (po.maxAgeMs !== undefined &&
+      (typeof po.maxAgeMs !== 'number' || !Number.isFinite(po.maxAgeMs) || po.maxAgeMs <= 0 || po.maxAgeMs > WEEK)) {
+      throw new Error('Recipe proseOutbox.maxAgeMs must be a number of milliseconds, above 0 and at most 7 days.');
+    }
+    for (const k of ['maxEntriesPerAgent', 'maxEntries'] as const) {
+      if (po[k] !== undefined && (!Number.isInteger(po[k]) || (po[k] as number) < 1 || (po[k] as number) > 10_000)) {
+        throw new Error(`Recipe proseOutbox.${k} must be an integer from 1 to 10000.`);
+      }
+    }
+    if (po.tools !== undefined && (
+      !Array.isArray(po.tools) || po.tools.length > 50 ||
+      // `--` is the MCPL prefix separator: a prefixed name would never match.
+      !po.tools.every((t) => typeof t === 'string' && /^[A-Za-z0-9_.-]+$/.test(t) && !t.includes('--'))
+    )) {
+      throw new Error('Recipe proseOutbox.tools must be a list of MCPL tool names without their prefix (e.g. ["send_message"]).');
     }
   }
 
