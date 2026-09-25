@@ -473,29 +473,34 @@ describe('WebUiModule WebSocket', () => {
 });
 
 describe('WebUiModule liveness', () => {
-  test('welcome carries a liveness snapshot and trace changes broadcast a liveness frame', async () => {
-    let traceListener: ((e: Record<string, unknown>) => void) | undefined;
-    let connected = true;
-    const framework = {
-      getAllAgents: () => [{ name: 'main', getContextManager: () => undefined }],
-      getAllModules: () => [],
-      getSessionUsage: () => { throw new Error('no usage in harness'); },
-      onTrace: (fn: (e: Record<string, unknown>) => void) => { traceListener = fn; },
-      listMcplServers: () => [{ id: 'chat', connected, retrying: !connected, toolCount: 0 }],
-    };
-    webUiModule.setApp({
-      framework,
-      recipe: { name: 'test' },
-      sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
-    } as never);
+  type Listener = (e: Record<string, unknown>) => void;
+  /** A ModuleContext whose onTrace captures the listener (AF delivers traces this way from start()). */
+  function traceCtx() {
+    const ctl: { listener?: Listener; detached: boolean } = { detached: false };
+    const ctx = { onTrace: (fn: Listener) => { ctl.listener = fn; return () => { ctl.detached = true; }; } } as unknown as ModuleContext;
+    return { ctx, ctl };
+  }
+  let connected = true;
+  const framework = {
+    getAllAgents: () => [{ name: 'main', getContextManager: () => undefined }],
+    getAllModules: () => [],
+    getSessionUsage: () => { throw new Error('no usage in harness'); },
+    listMcplServers: () => [{ id: 'chat', connected, retrying: !connected, toolCount: 0 }],
+    // setApp's general trace fan-out to clients; liveness no longer rides it.
+    onTrace: () => () => {},
+  };
+  const setApp = () => webUiModule.setApp({
+    framework,
+    recipe: { name: 'test', agent: { name: 'main' } },
+    sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+  } as never);
 
+  async function connect() {
     const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/ws`, {
-      headers: {
-        origin: `http://127.0.0.1:${handle.port}`,
-        authorization: basicAuthHeader(BASIC_USER, BASIC_PASS),
-      },
+      headers: { origin: `http://127.0.0.1:${handle.port}`, authorization: basicAuthHeader(BASIC_USER, BASIC_PASS) },
     } as unknown as undefined);
     const frames: Array<Record<string, any>> = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
     const waitFor = (type: string) => new Promise<Record<string, any>>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`no ${type} frame`)), 5000);
       const check = () => {
@@ -504,22 +509,48 @@ describe('WebUiModule liveness', () => {
       };
       check();
     });
-    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    return { ws, waitFor };
+  }
 
+  test('a boot-time connect failure (traced before setApp) is in the first snapshot', async () => {
+    const { ctx, ctl } = traceCtx();
+    await webUiModule.start(ctx);
+    connected = false;
+    // AF traces boot connect failures from inside initializeMcpl, before setApp.
+    ctl.listener!({ type: 'mcpl:server-connect-failed', serverId: 'chat', error: 'handshake timeout', attempt: 0, willRetry: false, timestamp: 1000 });
+    setApp();
+    const { ws, waitFor } = await connect();
     try {
       const welcome = await waitFor('welcome');
-      expect(welcome.liveness.servers).toEqual([{ id: 'chat', connected: true }]);
-      expect(welcome.liveness.agents).toEqual([{ name: 'main' }]);
-
-      connected = false;
-      traceListener!({ type: 'mcpl:server-connect-failed', serverId: 'chat', error: 'handshake timeout', attempt: 3, willRetry: true, timestamp: 1000 });
-      traceListener!({ type: 'inference:completed', agentName: 'main', durationMs: 1, timestamp: 900 });
-      const frame = await waitFor('liveness');
-      expect(frame.liveness.servers[0]).toMatchObject({
-        id: 'chat', connected: false, retrying: true,
-        lastError: { message: 'handshake timeout', attempt: 3, willRetry: true, at: 1000 },
+      expect(welcome.liveness.servers[0]).toMatchObject({
+        id: 'chat', connected: false,
+        lastError: { message: 'handshake timeout', attempt: 0, willRetry: false, at: 1000 },
       });
-      expect(frame.liveness.agents).toEqual([{ name: 'main', lastCompletedAt: 900 }]);
+      // A turn ending via skip_reply is a terminal, not "thinking" forever.
+      ctl.listener!({ type: 'inference:started', agentName: 'main', timestamp: 1100 });
+      ctl.listener!({ type: 'inference:turn_ended', agentName: 'main', timestamp: 1200 });
+      const frame = await waitFor('liveness');
+      expect(frame.liveness.agents[0]).toMatchObject({ name: 'main', lastStartedAt: 1100, lastEndedAt: 1200, lastOutcome: 'turn_ended' });
+    } finally {
+      ws.close();
+      await webUiModule.stop();
+      connected = true;
+    }
+    expect(ctl.detached).toBe(true);
+  });
+
+  test('a new framework lifetime starts a fresh tracker (no inherited errors)', async () => {
+    const first = traceCtx();
+    await webUiModule.start(first.ctx);
+    first.ctl.listener!({ type: 'mcpl:server-connect-failed', serverId: 'chat', error: 'old', attempt: 1, willRetry: true, timestamp: 5 });
+    await webUiModule.stop();
+    const second = traceCtx();
+    await webUiModule.start(second.ctx);
+    setApp();
+    const { ws, waitFor } = await connect();
+    try {
+      const welcome = await waitFor('welcome');
+      expect(welcome.liveness.servers[0].lastError).toBeUndefined();
     } finally {
       ws.close();
       await webUiModule.stop();

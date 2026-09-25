@@ -2,16 +2,16 @@
  * Liveness strip — one always-visible line under the header answering
  * "is the MCPL link up, and is the agent actually answering?".
  *
- *   ● discord up · in 3m ago   ● agent turn 2m ago
- *   ● discord DOWN · retry #4 12m ago: handshake timeout
- *   ⚠ agent: messages unanswered for 9m (last turn 41m ago)
+ *   ● discord up · last msg 3m ago   ● agent last turn 2m ago
+ *   ● discord DOWN · retry #4 failed 12m ago: handshake timeout
+ *   ⚠ agent: messages unanswered for 9m
  *
- * The server re-sends the snapshot every ~30s; if frames stop arriving while
- * the socket is still open, the host itself has gone quiet and we say so.
+ * The server re-sends the snapshot every heartbeat; if frames stop arriving
+ * while the socket is still open, the host itself has gone quiet and we say so.
  */
 
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
-import { unansweredSince, type LivenessSnapshot } from '@conhost/web/liveness';
+import { isBusy, LIVENESS_HEARTBEAT_MS, unansweredSince, type LivenessSnapshot } from '@conhost/web/liveness';
 
 export interface LivenessState {
   snap: LivenessSnapshot;
@@ -19,8 +19,8 @@ export interface LivenessState {
   receivedAt: number;
 }
 
-/** No heartbeat for this long (server sends every 30s) → host looks stuck. */
-const QUIET_MS = 90_000;
+/** Three missed heartbeats → the host looks stuck. */
+const QUIET_MS = 3 * LIVENESS_HEARTBEAT_MS;
 
 export function ago(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -49,35 +49,33 @@ export function LivenessStrip(props: { state: LivenessState | null; wireOpen: bo
     t ? ago(serverNow() - t) : `never (since ${ago(serverNow() - props.state!.snap.since)})`;
   const quiet = (): boolean => props.wireOpen && now() - props.state!.receivedAt > QUIET_MS;
 
-  const dot = (cls: string) => <span class={`inline-block w-2 h-2 rounded-full ${cls}`} />;
+  const dot = (cls: string) => <span class={`inline-block w-2 h-2 rounded-full shrink-0 ${cls}`} />;
 
   return (
     <Show when={props.state}>
       {(st) => (
         <div class="border-b border-neutral-800 bg-neutral-950 px-4 py-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[11px] font-mono text-neutral-400">
           <For each={st().snap.servers}>{(s) => (
-            <span class="flex items-center gap-1.5" title={s.lastError ? `last connect error: ${s.lastError.message}` : undefined}>
+            <span class="flex items-center gap-1.5 min-w-0" title={s.lastError ? `last connect error: ${s.lastError.message}` : undefined}>
               {dot(s.connected ? 'bg-emerald-500' : s.retrying || s.lastError?.willRetry ? 'bg-amber-500' : 'bg-rose-500')}
               <span class="text-neutral-200">{s.id}</span>
               <Show when={s.connected} fallback={
-                <span class="text-rose-300">
+                <span class="text-rose-300 truncate max-w-[32rem]">
                   DOWN
                   <Show when={s.lastError}>
                     {(e) => <> · {e().attempt > 0 ? `retry #${e().attempt}` : 'connect'} failed {ago(serverNow() - e().at)}: {e().message}</>}
                   </Show>
                 </span>
               }>
-                <span>up</span>
+                <span>up · last msg {age(s.lastInboundAt)}</span>
               </Show>
-              <span>· in {age(s.lastInboundAt)}</span>
             </span>
           )}</For>
           <For each={st().snap.agents}>{(a) => {
-            const unanswered = (): number | undefined => unansweredSince(st().snap, a, serverNow());
-            const busy = (): boolean =>
-              (a.lastStartedAt ?? 0) > Math.max(a.lastCompletedAt ?? 0, a.lastFailedAt ?? 0);
-            const failedLast = (): boolean =>
-              (a.lastFailedAt ?? 0) > (a.lastCompletedAt ?? 0) && !busy();
+            const unanswered = (): number | undefined => unansweredSince(a, serverNow());
+            const busy = (): boolean => isBusy(a);
+            const failedLast = (): boolean => !busy() && a.lastOutcome === 'failed';
+            const stoppedLast = (): boolean => !busy() && a.lastOutcome === 'aborted';
             return (
               <span
                 class={`flex items-center gap-1.5 ${unanswered() ? 'text-amber-300' : ''}`}
@@ -85,12 +83,11 @@ export function LivenessStrip(props: { state: LivenessState | null; wireOpen: bo
               >
                 {dot(unanswered() ? 'bg-amber-500' : failedLast() ? 'bg-rose-500' : busy() ? 'bg-cyan-500' : 'bg-neutral-500')}
                 <span class="text-neutral-200">{a.name}</span>
-                <Show when={busy()} fallback={<span>turn {age(a.lastCompletedAt)}</span>}>
+                <Show when={busy()} fallback={<span>last turn {age(a.lastEndedAt)}</span>}>
                   <span>thinking since {ago(serverNow() - a.lastStartedAt!)}</span>
                 </Show>
-                <Show when={failedLast()}>
-                  <span class="text-rose-300">· failed {ago(serverNow() - a.lastFailedAt!)}</span>
-                </Show>
+                <Show when={failedLast()}><span class="text-rose-300">· failed</span></Show>
+                <Show when={stoppedLast()}><span>· stopped</span></Show>
                 <Show when={unanswered()}>
                   {(w) => <span>⚠ messages unanswered for {ago(serverNow() - w()).replace(' ago', '')}</span>}
                 </Show>
