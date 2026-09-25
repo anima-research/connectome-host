@@ -190,6 +190,7 @@ describe('scope filters', () => {
       callLedger: {
         calls: [{ model: 'secret-model', error: 'raw provider error', costUsd: 0.42 }],
       },
+      liveness: { at: 1, since: 0, servers: [], agents: [{ name: 'main', lastFailure: 'liveness-secret' }] },
     } as unknown as WelcomeMessage;
 
     const w = scopeWelcome(welcome, new Set<ObserverScope>(['messages']));
@@ -200,6 +201,7 @@ describe('scope filters', () => {
     // No trace of the ledger anywhere in the serialized frame.
     expect(JSON.stringify(w)).not.toContain('secret-model');
     expect(JSON.stringify(w)).not.toContain('raw provider error');
+    expect(w.liveness).toBeUndefined();
 
     // Same masking on the no-messages branch (e.g. ops-only observer).
     const opsOnly = scopeWelcome(welcome, new Set<ObserverScope>(['ops']));
@@ -210,6 +212,7 @@ describe('scope filters', () => {
     // A health-scoped observer keeps the telemetry verbatim.
     const h = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
     expect(h.callLedger).toEqual(welcome.callLedger);
+    expect(h.liveness).toEqual(welcome.liveness);
     expect(h.perAgentCost).toEqual(welcome.perAgentCost);
     expect(h.usage).toEqual(welcome.usage);
 

@@ -19,6 +19,7 @@ import { ObserverGateScreen } from './ObserverGate';
 import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
 import { BranchPanel } from './Branches';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
+import { LivenessStrip, type LivenessState } from './Liveness';
 import {
   WEB_PROTOCOL_VERSION,
   type WebUiServerMessage,
@@ -142,6 +143,7 @@ export function App() {
   const quota = createQuotaPoll();
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
+  const [liveness, setLiveness] = createSignal<LivenessState | null>(null);
   const [draft, setDraft] = createSignal('');
   /** Currently-focused tree node + the panel mode rendered on its behalf.
    *  `mode` decides whether the side panel shows live stream events or a
@@ -1128,6 +1130,7 @@ export function App() {
         setUsage,
         setPerAgentCost,
         setCallLedger,
+        setLiveness,
         appendStreamToken,
         appendToolUseBlocks,
         updateToolStatus,
@@ -1339,6 +1342,7 @@ export function App() {
         )}
       </Show>
       <ReconnectBanner status={wire.status()} />
+      <LivenessStrip state={liveness()} wireOpen={wire.status() === 'open'} />
       <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
@@ -1686,6 +1690,7 @@ interface HandlerHooks {
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
   setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
+  setLiveness: (state: LivenessState | null) => void;
   appendStreamToken: (token: string, blockType?: string) => void;
   /** Attach yielded tool calls to the streaming assistant message. */
   appendToolUseBlocks: (calls: Array<{ id: string; name: string; input?: unknown }>) => void;
@@ -1751,6 +1756,7 @@ function handleServerMessage(
       hooks.setPerAgentCost(msg.perAgentCost ?? []);
       hooks.setCallLedger(msg.callLedger ?? null);
       hooks.setHostMode(msg.hostMode ?? null);
+      hooks.setLiveness(msg.liveness ? { snap: msg.liveness, receivedAt: Date.now() } : null);
       return;
     }
     case 'host-mode':
@@ -1774,6 +1780,9 @@ function handleServerMessage(
       return;
     case 'call-ledger':
       hooks.setCallLedger(msg.ledger);
+      return;
+    case 'liveness':
+      hooks.setLiveness({ snap: msg.liveness, receivedAt: Date.now() });
       return;
     case 'trace': {
       const e = msg.event;
