@@ -917,10 +917,20 @@ export interface RecipeCodeExecution {
   pythonPath?: string;
   /** Per-inner-tool-call timeout, ms (default 270_000). */
   toolCallTimeoutMs?: number;
+  /** Observation budget before returning a running script id, ms (default 10_000, max 60_000). */
+  foregroundWaitMs?: number;
   /** Whole-script deadline, ms (default 600_000). */
   scriptTimeoutMs?: number;
   /** Idle interpreter reclaim, ms (default 300_000; 0 disables). */
   idleReclaimMs?: number;
+  /** Concurrent independent interpreters per agent (default 3). */
+  maxBackgroundScripts?: number;
+  /** Background script lifetime, ms (default 86_400_000). */
+  backgroundMaxLifetimeMs?: number;
+  /** Minimum interval between explicit wake deliveries, ms (default 60_000). */
+  wakeMinIntervalMs?: number;
+  /** Maximum explicit wakes per background script (default 100). */
+  maxWakesPerScript?: number;
 }
 
 /**
@@ -2183,9 +2193,24 @@ export function validateRecipe(raw: unknown): Recipe {
     if (ce.pythonPath !== undefined && (typeof ce.pythonPath !== 'string' || !ce.pythonPath.trim())) {
       throw new Error('Recipe codeExecution.pythonPath must be a non-empty string.');
     }
-    for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs'] as const) {
-      if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
-        throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
+    const durationKeys = ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs',
+      'foregroundWaitMs', 'backgroundMaxLifetimeMs', 'wakeMinIntervalMs'] as const;
+    for (const k of durationKeys) {
+      const value = ce[k];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647)) {
+        throw new Error(`Recipe codeExecution.${k} must be an integer from 0 to 2147483647 milliseconds.`);
+      }
+    }
+    for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'backgroundMaxLifetimeMs'] as const) {
+      if (ce[k] === 0) throw new Error(`Recipe codeExecution.${k} must be positive.`);
+    }
+    if (typeof ce.foregroundWaitMs === 'number' && ce.foregroundWaitMs > 60_000) {
+      throw new Error('Recipe codeExecution.foregroundWaitMs must be at most 60000 milliseconds.');
+    }
+    for (const k of ['maxBackgroundScripts', 'maxWakesPerScript'] as const) {
+      const value = ce[k];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
+        throw new Error(`Recipe codeExecution.${k} must be a non-negative integer.`);
       }
     }
   }

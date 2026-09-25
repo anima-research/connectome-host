@@ -326,6 +326,18 @@ describe('WebUiModule observer flow (e2e)', () => {
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
 
+    ws.send(JSON.stringify({ type: 'command', command: '/release-wait' }));
+    const releaseErr = await new Promise<Record<string, unknown>>((resolvePromise, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout waiting for release refusal')), 5000);
+      const check = () => {
+        const f = frames.find(m => m.type === 'error' && String(m.message).includes('(command)'));
+        if (f) { clearTimeout(t); resolvePromise(f); }
+      };
+      check();
+      ws.addEventListener('message', check);
+    });
+    expect(String(releaseErr.message)).toContain('forbidden');
+
     // Branch listing rides the 'messages' scope, which this grant lacks.
     ws.send(JSON.stringify({ type: 'request-branches' }));
     const branchErr = await new Promise<Record<string, unknown>>((resolvePromise, reject) => {

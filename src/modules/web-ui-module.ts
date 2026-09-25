@@ -2707,7 +2707,7 @@ export class WebUiModule implements Module {
     if (!sharedServer?.app) return;
     let result;
     try {
-      result = handleCommand(command, sharedServer?.app);
+      result = handleCommand(command, sharedServer?.app, { admin: client.auth === 'full' });
     } catch (err) {
       this.send(client, {
         type: 'error',
