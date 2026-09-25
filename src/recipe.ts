@@ -189,6 +189,14 @@ export interface RecipeKvUnifiedConfig {
 
 export interface RecipeAgent {
   name?: string;
+  /**
+   * PRESENTATION ONLY: how people see this agent on the dashboard and in
+   * human-facing status. Defaults to `name`. Never used for Chronicle
+   * participants, strategy namespaces, paths, authorization, routing, tool
+   * identity, platform ids or memory integrity; diagnostics show both.
+   * Changing it is an ordinary preference, not a migration.
+   */
+  displayName?: string;
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
   timezone?: string;
@@ -2187,6 +2195,13 @@ export function validateRecipe(raw: unknown): Recipe {
       if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
       }
+    }
+  }
+
+  {
+    const dn = (obj.agent as Record<string, unknown> | undefined)?.displayName;
+    if (dn !== undefined && (typeof dn !== 'string' || !dn.trim() || dn.length > 80 || /[\n\r]/.test(dn))) {
+      throw new Error('Recipe agent.displayName must be a single-line string of 1-80 characters.');
     }
   }
 

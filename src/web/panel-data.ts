@@ -22,6 +22,7 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs/membrane';
 import type { Recipe } from '../recipe.js';
+import { agentDisplayName } from '../display-name.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import {
@@ -697,6 +698,18 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
+  // Diagnostics keep the technical name; the presentation name rides beside it.
+  try {
+    const agents = (snapshot as { agents?: Array<Record<string, unknown>> }).agents;
+    if (Array.isArray(agents)) {
+      for (const a of agents) {
+        const dn = typeof a.name === 'string' ? agentDisplayName(app.recipe, a.name) : undefined;
+        if (dn && dn !== a.name) a.displayName = dn;
+      }
+    }
+  } catch {
+    // Health reads never throw.
+  }
   // Compression quarantine is a guaranteed-eventual-outage state (raw
   // spans accumulate until the picker cannot fit the window). Surface it
   // here so the fleet hub and connectome-doctor can alarm on it — it

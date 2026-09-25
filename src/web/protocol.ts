@@ -35,7 +35,8 @@ export interface WelcomeMessage {
     description?: string;
     version?: string;
   };
-  agents: Array<{ name: string; model: string }>;
+  /** `name`: technical id. `displayName`: presentation only (absent = name). */
+  agents: Array<{ name: string; model: string; displayName?: string }>;
   session: {
     id: string;
     name: string;

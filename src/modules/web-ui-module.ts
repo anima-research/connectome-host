@@ -103,6 +103,7 @@ import {
   type McplLiveServer,
 } from '../web/panel-data.js';
 import { loadRecipe } from '../recipe.js';
+import { agentDisplayName } from '../display-name.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -3095,7 +3096,11 @@ export class WebUiModule implements Module {
         description: app.recipe.description,
         version: app.recipe.version,
       },
-      agents: agents.map(a => ({ name: a.name, model: a.model })),
+      // `name` stays the technical id; `displayName` is presentation only.
+      agents: agents.map(a => {
+        const displayName = agentDisplayName(app.recipe, a.name);
+        return { name: a.name, model: a.model, ...(displayName !== a.name ? { displayName } : {}) };
+      }),
       session: {
         id: session.id,
         name: session.name,

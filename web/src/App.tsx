@@ -345,7 +345,8 @@ export function App() {
   const [opLogLoading, setOpLogLoading] = createSignal(false);
 
   const previewOf = (m: Message): string => {
-    const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
+    const agent0 = welcome()?.agents[0];
+    const who = m.participant === 'assistant' ? (agent0?.displayName ?? agent0?.name ?? 'assistant') : m.participant;
     const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
   };
