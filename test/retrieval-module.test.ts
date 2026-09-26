@@ -23,6 +23,7 @@ function lesson(id: string, content: string): Lesson {
 
 function harness(responses: Array<string | Error>, lessons: Lesson[]) {
   const calls: NormalizedRequest[] = [];
+  const retrieved: string[][] = [];
   const membrane = {
     complete: async (request: NormalizedRequest) => {
       calls.push(structuredClone(request));
@@ -35,7 +36,9 @@ function harness(responses: Array<string | Error>, lessons: Lesson[]) {
 
   const installContext = (mod: RetrievalModule) => {
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => lessons } : null,
+      getModule: (name: string) => name === 'lessons'
+        ? { getLessons: () => lessons, recordRetrieval: (ids: string[]) => { retrieved.push(ids); } }
+        : null,
       queryMessages: () => ({
         messages: [{
           participant: 'user',
@@ -46,7 +49,7 @@ function harness(responses: Array<string | Error>, lessons: Lesson[]) {
     };
   };
 
-  return { calls, membrane, installContext };
+  return { calls, retrieved, membrane, installContext };
 }
 
 describe('RetrievalModule provider-specific reasoning', () => {
@@ -172,7 +175,7 @@ describe('RetrievalModule observability', () => {
   test('records a completed error trace and rethrows when queryMessages throws', async () => {
     const mod = new RetrievalModule({ membrane: {} as Membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')] }),
+      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} }),
       queryMessages: () => { throw new Error('queryMessages failed'); },
     };
 
@@ -349,7 +352,7 @@ describe('RetrievalModule observability', () => {
     } as Record<string, unknown>;
     Object.defineProperty(message, 'id', { get: () => { throw new Error('trace-only id getter'); } });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({ messages: [message], totalCount: 1 }),
     };
 
@@ -401,7 +404,7 @@ describe('RetrievalModule observability', () => {
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -628,7 +631,7 @@ describe('RetrievalModule observability', () => {
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')] }),
+      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} }),
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -652,7 +655,7 @@ describe('RetrievalModule observability', () => {
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -817,5 +820,38 @@ describe('RetrievalModule observability', () => {
 
     expect(store.list({ limit: 100, includeInputs: true }).map(trace => trace.id)).toEqual([2]);
     expect(store.retainedBytes).toBeLessThanOrEqual(byteBudget);
+  });
+});
+
+describe('RetrievalModule usage feedback', () => {
+  test('reports fresh injections to the lessons module, but not cache hits', async () => {
+    const h = harness(['["memory"]'], [lesson('l1', 'memory alpha'), lesson('l2', 'memory beta')]);
+    const mod = new RetrievalModule({ membrane: h.membrane, retrievalModel: TEST_RETRIEVAL_MODEL });
+    h.installContext(mod);
+
+    await mod.gatherContext(TEST_AGENT);
+    await mod.gatherContext(TEST_AGENT);
+
+    expect(h.retrieved).toEqual([['l1', 'l2']]);
+  });
+
+  test('ranks equally confident candidates by recent use', async () => {
+    const now = Date.now();
+    const stale = { ...lesson('stale', 'memory stale'), created: now - 365 * 86_400_000 };
+    const used = {
+      ...lesson('used', 'memory used'),
+      created: now - 365 * 86_400_000,
+      lastRetrieved: now,
+      retrievalCount: 4,
+    };
+    const h = harness(['["memory"]'], [stale, used]);
+    const mod = new RetrievalModule({ membrane: h.membrane, retrievalModel: TEST_RETRIEVAL_MODEL });
+    h.installContext(mod);
+
+    const [injection] = await mod.gatherContext(TEST_AGENT);
+    const text = (injection.content[0] as { type: 'text'; text: string }).text;
+
+    expect(text.indexOf('memory used')).toBeLessThan(text.indexOf('memory stale'));
+    expect(h.retrieved).toEqual([['used', 'stale']]);
   });
 });

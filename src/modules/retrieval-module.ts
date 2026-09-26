@@ -7,6 +7,10 @@
  *   2. Mechanical query: keyword-match against LessonsModule
  *   3. Validate relevance: filter to actually relevant lessons
  *
+ * Candidates are ranked by rankScore (confidence discounted for disuse), and
+ * every fresh injection is reported to LessonsModule.recordRetrieval so that
+ * usage feeds back into that ranking. Cache hits are not counted again.
+ *
  * Steps 1 and 3 use the configured retrieval model and optional reasoning.
  * Results are cached to avoid redundant calls on unchanged context.
  */
@@ -23,7 +27,7 @@ import type {
 } from '@animalabs/agent-framework';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { ContextInjection } from '@animalabs/context-manager';
-import type { LessonsModule, Lesson } from './lessons-module.js';
+import { rankScore, type LessonsModule, type Lesson } from './lessons-module.js';
 import {
   RetrievalTraceStore,
   type RetrievalTraceListOptions,
@@ -150,6 +154,7 @@ export class RetrievalModule implements Module {
       return [];
     }
 
+    let lessonsModule: LessonsModule | null;
     let lessons: Lesson[];
     let recentMessages: string;
     let contextHash: string;
@@ -157,7 +162,7 @@ export class RetrievalModule implements Module {
       // These lookups, eligibility checks, context rendering, and hashing are
       // pre-existing throwing paths. Record their failure, then preserve the
       // upstream rejection rather than applying the provider-stage fail-open.
-      const lessonsModule = this.ctx.getModule<LessonsModule>('lessons');
+      lessonsModule = this.ctx.getModule<LessonsModule>('lessons');
       if (!lessonsModule) {
         trace?.finish('no-lessons-module');
         return [];
@@ -259,6 +264,7 @@ export class RetrievalModule implements Module {
       this.cachedLessons = this.safeLessonSnapshots(injected);
       this.cachedLessonIds = this.safeLessonIds(this.cachedLessons);
       this.cachedSourceTraceId = trace?.id;
+      lessonsModule.recordRetrieval(injected.map(l => l.id));
       trace?.recordInjection(injected, injections);
       trace?.finish('injected');
       return injections;
@@ -374,8 +380,8 @@ export class RetrievalModule implements Module {
       }
     }
 
-    // Sort by confidence
-    candidates.sort((a, b) => b.confidence - a.confidence);
+    const now = Date.now();
+    candidates.sort((a, b) => rankScore(b, now) - rankScore(a, now));
     return candidates.slice(0, 20); // Cap at 20 candidates for validation
   }
 
