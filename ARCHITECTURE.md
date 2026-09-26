@@ -185,34 +185,46 @@ interface Lesson {
   updated: number;
   deprecated: boolean;
   deprecationReason?: string;
+  previousContents?: { content: string; replacedAt: number }[];  // kept by `update`
+  supersededBy?: string;    // set by create's `supersedes`
+  retrievalCount?: number;  // usage, recorded by RetrievalModule
+  lastRetrieved?: number;
+  stability?: number;       // days until retrievability falls to 0.9
 }
 ```
 
-**Tools**: `create`, `update`, `deprecate`, `query` (text + tags + confidence filter), `list`, `boost`, `demote`.
+**Nothing is lost; salience changes.** `update` preserves prior wording, superseding deprecates rather than deletes, and `query` with `includeDeprecated` searches the archive. Usage only changes what retrieval ranks first.
 
-**Confidence dynamics**: `boost` applies diminishing-returns growth (`+0.1 * (1 - c)`); `demote` applies diminishing-returns decay (`-0.1 * c`). Lessons below 0.3 confidence are excluded from context injection.
+**Tools**: `create` (with `supersedes` / `force`), `update`, `deprecate`, `query` (text + tags + confidence filter, optionally the deprecated archive), `list` (sort by confidence / created / updated / strength), `boost`, `demote`.
 
-**Context injection**: `gatherContext()` injects the top 10 active lessons (by confidence) as a `## Knowledge Library` block in the system position.
+**Near-duplicate gate**: `create` refuses content whose content-word Jaccard similarity to a live lesson is ≥ 0.5, listing the matches; the agent then supersedes, updates, or forces. Lexical only — paraphrases with disjoint wording pass through.
+
+**Confidence dynamics**: `boost` applies diminishing-returns growth (`+0.1 * (1 - c)`); `demote` applies diminishing-returns decay (`-0.1 * c`). Lessons below 0.3 confidence are excluded from context injection. Confidence means "is it true"; usage strength (below) is tracked separately.
+
+**Usage strength**: each injection is a retrieval. Retrievability follows the FSRS power-law curve `R = (1 + t / 9S)^-1` (t = days since last retrieval or creation); a retrieval multiplies stability S by `1 + 10(1 − R)`, so massed retrievals within a session barely strengthen a lesson while spaced ones do. Retrieval ranks candidates by `confidence × (0.5 + 0.5R)` — disuse can at most halve a lesson's rank, and never hides it.
+
+**Context injection**: handled by the Retrieval Module, not here.
 
 ### Retrieval Module (`retrieval-module.ts`)
 
 Semantic memory lookup using a three-step LLM-as-retriever pipeline. Runs in `gatherContext()` before each main-agent inference.
 
 ```
- Step 1: Flag concepts        Step 2: Keyword query      Step 3: Validate
- ┌──────────────────┐         ┌──────────────────┐       ┌──────────────────┐
- │ Recent messages   │──Haiku──│ Concept keywords │──DB──│ Candidate lessons │──Haiku──│ Relevant only │
- │ → "What concepts  │         │ ["RFC", "auth"]  │      │ (top 20 by conf.) │        │ (filtered IDs)│
- │   need background │         └──────────────────┘      └──────────────────┘        └───────────────┘
- │   knowledge?"     │
- └──────────────────┘
+ Step 1: Flag concepts        Step 2: Select candidates          Step 3: Validate
+ ┌──────────────────┐         ┌──────────────────────────┐       ┌──────────────────┐
+ │ Recent messages   │──model──│ ≤ maxCandidates eligible │──────│ Candidate lessons │──model──│ Relevant, in │
+ │ → "What concepts  │         │   → whole library        │      │ (≤ maxCandidates) │        │ salience     │
+ │   need background │         │ else BM25 shortlist on   │      └──────────────────┘        │ order        │
+ │   knowledge?"     │         │   the flagged concepts   │                                   └──────────────┘
+ └──────────────────┘         └──────────────────────────┘
 ```
 
-- Steps 1 and 3 use Haiku (~$0.001 each)
-- Step 2 is mechanical keyword matching (no LLM call)
+- Steps 1 and 3 use the retrieval model (default Haiku). An empty concept list ends the run with no second call.
+- Step 2 makes no model call. Up to `maxCandidates` (default 100) eligible lessons, the relevance model sees the whole library, so relevance is its semantic judgment rather than a keyword filter's. Larger libraries are shortlisted by BM25 (whole-word, stopword-free, IDF-weighted; no stemming, so `token` ≠ `tokens`).
+- Step 3 always runs. An unparseable judgment (after extracting a bracketed array from prose) injects nothing.
+- Relevant lessons are injected in `rankScore` order, up to `maxInjected`: the model decides what is relevant, salience decides what comes to mind first.
 - Results cached by context hash — skips entirely if conversation hasn't changed
 - Fails open: on error, returns empty (never blocks inference)
-- Short-circuits: if only 3 or fewer candidates, skips validation step
 
 ### Session Manager (`session-manager.ts`)
 

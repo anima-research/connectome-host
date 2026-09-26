@@ -21,8 +21,14 @@ function lesson(id: string, content: string): Lesson {
   };
 }
 
+/** Concept stage flags "memory"; relevance stage selects l1. */
+function stageAnswer(request: NormalizedRequest): string {
+  return request.system?.startsWith('You are a relevance filter') ? '["l1"]' : '["memory"]';
+}
+
 function harness(responses: Array<string | Error>, lessons: Lesson[]) {
   const calls: NormalizedRequest[] = [];
+  const retrieved: string[][] = [];
   const membrane = {
     complete: async (request: NormalizedRequest) => {
       calls.push(structuredClone(request));
@@ -35,7 +41,9 @@ function harness(responses: Array<string | Error>, lessons: Lesson[]) {
 
   const installContext = (mod: RetrievalModule) => {
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => lessons } : null,
+      getModule: (name: string) => name === 'lessons'
+        ? { getLessons: () => lessons, recordRetrieval: (ids: string[]) => { retrieved.push(ids); } }
+        : null,
       queryMessages: () => ({
         messages: [{
           participant: 'user',
@@ -46,7 +54,7 @@ function harness(responses: Array<string | Error>, lessons: Lesson[]) {
     };
   };
 
-  return { calls, membrane, installContext };
+  return { calls, retrieved, membrane, installContext };
 }
 
 describe('RetrievalModule provider-specific reasoning', () => {
@@ -84,8 +92,8 @@ describe('RetrievalModule provider-specific reasoning', () => {
     expect(h.calls[0].providerParams).toBeUndefined();
   });
 
-  test('skips relevance validation for three or fewer candidates and caches non-empty results', async () => {
-    const h = harness(['["memory"]'], [lesson('l1', 'memory alpha'), lesson('l2', 'memory beta')]);
+  test('validates even small candidate sets, and caches non-empty results', async () => {
+    const h = harness(['["memory"]', '["l1", "l2"]'], [lesson('l1', 'memory alpha'), lesson('l2', 'memory beta')]);
     const mod = new RetrievalModule({
       membrane: h.membrane,
       retrievalModel: TEST_RETRIEVAL_MODEL,
@@ -98,8 +106,10 @@ describe('RetrievalModule provider-specific reasoning', () => {
 
     expect(first).toHaveLength(1);
     expect(second).toEqual(first);
-    expect(h.calls).toHaveLength(1);
-    expect(h.calls[0].providerParams).toEqual({ reasoning: { effort: 'xhigh' } });
+    expect(h.calls).toHaveLength(2);
+    for (const request of h.calls) {
+      expect(request.providerParams).toEqual({ reasoning: { effort: 'xhigh' } });
+    }
   });
 
   test('fails open when the concept extraction provider call fails', async () => {
@@ -172,7 +182,7 @@ describe('RetrievalModule observability', () => {
   test('records a completed error trace and rethrows when queryMessages throws', async () => {
     const mod = new RetrievalModule({ membrane: {} as Membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')] }),
+      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} }),
       queryMessages: () => { throw new Error('queryMessages failed'); },
     };
 
@@ -252,7 +262,7 @@ describe('RetrievalModule observability', () => {
       deprecationReason: 'retained optional field',
     };
     const expected = structuredClone(source);
-    const h = harness(['["memory"]'], [source]);
+    const h = harness(['["memory"]', '["complete-lesson"]'], [source]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     h.installContext(mod);
 
@@ -301,7 +311,7 @@ describe('RetrievalModule observability', () => {
       deprecationReason: 'optional metadata',
     };
     const expected = structuredClone(source);
-    const h = harness(['["memory"]'], [source]);
+    const h = harness(['["memory"]', '["l1"]'], [source]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     h.installContext(mod);
 
@@ -314,34 +324,40 @@ describe('RetrievalModule observability', () => {
     expect(cached.injected.lessons[0]).toEqual(expected);
   });
 
-  test('records skipped validation and relevance fallback without changing behavior', async () => {
-    const few = harness(['["memory"]'], [lesson('l1', 'memory one'), lesson('l2', 'memory two')]);
-    const fewMod = new RetrievalModule({ membrane: few.membrane });
-    few.installContext(fewMod);
-    await fewMod.gatherContext(TEST_AGENT);
-    expect(fewMod.getRetrievalTraces()[0].relevance).toMatchObject({
-      ran: false,
-      skippedReason: 'three-or-fewer-candidates',
-    });
-    expect(fewMod.getRetrievalTraces()[0].relevance?.parsedValues).toBeUndefined();
+  test('an unparseable relevance judgment injects nothing', async () => {
+    const lessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory ${n}`));
+    const h = harness(['["memory"]', 'not valid json'], lessons);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    h.installContext(mod);
 
-    const manyLessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory ${n}`));
-    const many = harness(['["memory"]', 'not valid json'], manyLessons);
-    const manyMod = new RetrievalModule({ membrane: many.membrane });
-    many.installContext(manyMod);
-    const injections = await manyMod.gatherContext(TEST_AGENT);
-    expect(injections).toHaveLength(1);
-    expect(manyMod.getRetrievalTraces()[0].relevance).toMatchObject({
+    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    const [trace] = mod.getRetrievalTraces();
+    expect(trace.outcome).toBe('no-relevant-lessons');
+    expect(trace.relevance).toMatchObject({
       ran: true,
       rawOutput: 'not valid json',
       parsedValues: [],
-      parseMode: 'fallback',
+      parseMode: 'invalid',
     });
-    expect(manyMod.getRetrievalTraces()[0].relevantLessonIds).toEqual(['l1', 'l2', 'l3', 'l4']);
+    expect(trace.relevantLessonIds).toEqual([]);
+  });
+
+  test('a prose-wrapped relevance judgment is extracted', async () => {
+    const lessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory ${n}`));
+    const h = harness(['["memory"]', 'Relevant:\n```json\n["l2"]\n```'], lessons);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    h.installContext(mod);
+
+    const [injection] = await mod.gatherContext(TEST_AGENT);
+    expect((injection.content[0] as { type: 'text'; text: string }).text).toContain('memory 2');
+    expect(mod.getRetrievalTraces()[0].relevance).toMatchObject({
+      parsedValues: ['l2'],
+      parseMode: 'array-extraction',
+    });
   });
 
   test('trace-only message IDs cannot make retrieval fail', async () => {
-    const h = harness(['["memory"]'], [lesson('l1', 'memory detail')]);
+    const h = harness(['["memory"]', '["l1"]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     const message = {
       participant: 'user',
@@ -349,7 +365,7 @@ describe('RetrievalModule observability', () => {
     } as Record<string, unknown>;
     Object.defineProperty(message, 'id', { get: () => { throw new Error('trace-only id getter'); } });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({ messages: [message], totalCount: 1 }),
     };
 
@@ -358,29 +374,32 @@ describe('RetrievalModule observability', () => {
     expect(mod.getRetrievalTraces({ includeInputs: true })[0].context?.messageIds).toEqual([]);
   });
 
-  test('malformed mixed wrapper retains historical fail-open behavior', async () => {
-    const h = harness(['prose ["memory", 3]'], [lesson('l1', 'memory detail')]);
+  test('malformed mixed wrapper keeps only the string concepts', async () => {
+    const h = harness(['prose ["memory", 3]', '["l1"]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     h.installContext(mod);
 
-    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(await mod.gatherContext(TEST_AGENT)).toHaveLength(1);
     const [trace] = mod.getRetrievalTraces();
-    expect(trace.outcome).toBe('error');
+    expect(trace.outcome).toBe('injected');
     expect(trace.conceptExtraction).toMatchObject({
       parseMode: 'array-extraction',
       parsedValues: ['memory'],
     });
   });
 
-  test('candidate provenance mirrors historical empty-keyword matching', async () => {
-    const h = harness(['["   "]'], [lesson('l1', 'unrelated detail')]);
+  test('candidate provenance records whole-word term hits only', async () => {
+    const h = harness(['["   ", "memory tools"]', '["l1"]'], [lesson('l1', 'unrelated memoryless memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     h.installContext(mod);
 
     expect(await mod.gatherContext(TEST_AGENT)).toHaveLength(1);
-    expect(mod.getRetrievalTraces()[0].candidates[0].matches).toContainEqual({
-      concept: '   ', keyword: '', field: 'content',
-    });
+    const [trace] = mod.getRetrievalTraces();
+    expect(trace.candidateSelection).toEqual({ mode: 'full-library', eligible: 1 });
+    expect(trace.candidates[0].matches).toEqual([
+      { concept: 'memory tools', keyword: 'memory', field: 'content' },
+      { concept: 'memory tools', keyword: 'memory', field: 'tag', tag: 'memory' },
+    ]);
   });
 
   test('provider blocks preserve JSON safety markers for unusual values', async () => {
@@ -395,13 +414,13 @@ describe('RetrievalModule observability', () => {
       get: () => { throw new Error('unreadable provider property'); },
     });
     const membrane = {
-      complete: async () => ({
-        content: [{ type: 'text', text: '["memory"]' }, opaque],
+      complete: async (request: NormalizedRequest) => ({
+        content: [{ type: 'text', text: stageAnswer(request) }, opaque],
       }),
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -622,13 +641,13 @@ describe('RetrievalModule observability', () => {
       items: Array.from({ length: 10_000 }, () => 'x'.repeat(4_000)),
     };
     const membrane = {
-      complete: async () => ({
-        content: [{ type: 'text', text: '["memory"]' }, opaque],
+      complete: async (request: NormalizedRequest) => ({
+        content: [{ type: 'text', text: stageAnswer(request) }, opaque],
       }),
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')] }),
+      getModule: () => ({ getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} }),
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -652,7 +671,7 @@ describe('RetrievalModule observability', () => {
     } as unknown as Membrane;
     const mod = new RetrievalModule({ membrane });
     (mod as unknown as { ctx: unknown }).ctx = {
-      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')], recordRetrieval: () => {} } : null,
       queryMessages: () => ({
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'memory' }] }],
         totalCount: 1,
@@ -667,12 +686,14 @@ describe('RetrievalModule observability', () => {
     expect(running.conceptExtraction?.input).toContain('memory');
 
     release({ content: [{ type: 'text', text: '["memory"]' }] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    release({ content: [{ type: 'text', text: '["l1"]' }] });
     expect(await pending).toHaveLength(1);
     expect(mod.getRetrievalTraces()[0].outcome).toBe('injected');
   });
 
   test('cache links are marked evicted rather than left dangling', async () => {
-    const h = harness(['["memory"]'], [lesson('l1', 'memory detail')]);
+    const h = harness(['["memory"]', '["l1"]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     h.installContext(mod);
 
@@ -817,5 +838,75 @@ describe('RetrievalModule observability', () => {
 
     expect(store.list({ limit: 100, includeInputs: true }).map(trace => trace.id)).toEqual([2]);
     expect(store.retainedBytes).toBeLessThanOrEqual(byteBudget);
+  });
+});
+
+describe('RetrievalModule usage feedback', () => {
+  test('reports fresh injections to the lessons module, but not cache hits', async () => {
+    const h = harness(['["memory"]', '["l1", "l2"]'], [lesson('l1', 'memory alpha'), lesson('l2', 'memory beta')]);
+    const mod = new RetrievalModule({ membrane: h.membrane, retrievalModel: TEST_RETRIEVAL_MODEL });
+    h.installContext(mod);
+
+    await mod.gatherContext(TEST_AGENT);
+    await mod.gatherContext(TEST_AGENT);
+
+    expect(h.retrieved).toEqual([['l1', 'l2']]);
+  });
+
+  test('ranks equally confident candidates by recent use', async () => {
+    const now = Date.now();
+    const stale = { ...lesson('stale', 'memory stale'), created: now - 365 * 86_400_000 };
+    const used = {
+      ...lesson('used', 'memory used'),
+      created: now - 365 * 86_400_000,
+      lastRetrieved: now,
+      retrievalCount: 4,
+    };
+    const h = harness(['["memory"]', '["stale", "used"]'], [stale, used]);
+    const mod = new RetrievalModule({ membrane: h.membrane, retrievalModel: TEST_RETRIEVAL_MODEL });
+    h.installContext(mod);
+
+    const [injection] = await mod.gatherContext(TEST_AGENT);
+    const text = (injection.content[0] as { type: 'text'; text: string }).text;
+
+    expect(text.indexOf('memory used')).toBeLessThan(text.indexOf('memory stale'));
+    expect(h.retrieved).toEqual([['used', 'stale']]);
+  });
+});
+
+describe('RetrievalModule candidate selection', () => {
+  test('shows the relevance model the whole library, including lessons sharing no words with the concepts', async () => {
+    const lessons = [
+      lesson('l1', 'Alice owns the billing pipeline'),
+      lesson('l2', 'Deploys are frozen on Fridays'),
+    ];
+    const h = harness(['["who is responsible for invoices"]', '["l1"]'], lessons);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    h.installContext(mod);
+
+    const [injection] = await mod.gatherContext(TEST_AGENT);
+
+    expect(h.calls[1].messages[0].content[0]).toMatchObject({ text: expect.stringContaining('[l2]') });
+    expect((injection.content[0] as { type: 'text'; text: string }).text).toContain('billing pipeline');
+    expect(mod.getRetrievalTraces()[0].candidateSelection).toEqual({ mode: 'full-library', eligible: 2 });
+  });
+
+  test('shortlists a library larger than maxCandidates by BM25', async () => {
+    const lessons = [
+      lesson('auth', 'OAuth tokens expire after one hour'),
+      lesson('deploy', 'Deploys are frozen on Fridays'),
+      lesson('billing', 'Alice owns the billing pipeline'),
+      lesson('auth2', 'Refresh OAuth tokens before batch jobs'),
+    ];
+    const h = harness(['["oauth token expiry"]', '["auth"]'], lessons);
+    const mod = new RetrievalModule({ membrane: h.membrane, maxCandidates: 2 });
+    h.installContext(mod);
+
+    await mod.gatherContext(TEST_AGENT);
+
+    const [trace] = mod.getRetrievalTraces();
+    expect(trace.candidateSelection).toEqual({ mode: 'bm25', eligible: 4 });
+    expect(trace.candidates.map(c => c.id).sort()).toEqual(['auth', 'auth2']);
+    expect(trace.config.maxCandidates).toBe(2);
   });
 });
