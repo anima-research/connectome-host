@@ -103,9 +103,11 @@ function lessonCard(lesson, selected) {
   return card;
 }
 
-function matchText(match) {
-  const location = match.field === 'tag' ? 'tag ' + (match.tag || '') : 'content';
-  return match.concept + ' -> ' + location + ' matched "' + match.keyword + '"';
+function rankText(candidate) {
+  return 'rerank ' + (Number.isFinite(candidate.rerankScore) ? candidate.rerankScore.toFixed(3) : '?') +
+    ' | BM25 rank ' + (candidate.lexicalRank || '-') +
+    ' | dense rank ' + (candidate.denseRank || '-') +
+    ' | fused ' + (Number.isFinite(candidate.fusedScore) ? candidate.fusedScore.toFixed(4) : '?');
 }
 
 function candidateCard(candidate, selectedIds) {
@@ -116,21 +118,15 @@ function candidateCard(candidate, selectedIds) {
   summary.append(element('code', 'lesson-id', candidate.id));
   if (selected) summary.append(element('span', 'badge selected', 'SELECTED'));
   summary.append(element('span', 'candidate-preview', candidate.content || '(no content)'));
-  summary.append(element('span', 'confidence', percentage(candidate.confidence)));
+  summary.append(element('span', 'confidence', 'rerank ' + (Number.isFinite(candidate.rerankScore) ? candidate.rerankScore.toFixed(2) : '?')));
 
   const body = element('div', 'candidate-body');
   body.append(element('p', 'lesson-content', candidate.content || '(no lesson content recorded)'));
   appendChips(body, candidate.tags);
   const matches = element('div', 'matches');
-  const seen = new Set();
-  for (const match of candidate.matches || []) {
-    const text = matchText(match);
-    if (!seen.has(text)) {
-      seen.add(text);
-      matches.append(element('div', 'match', text));
-    }
-  }
-  if (matches.childElementCount) body.append(matches);
+  matches.append(element('div', 'match', rankText(candidate)));
+  matches.append(element('div', 'match', percentage(candidate.confidence) + ' confidence'));
+  body.append(matches);
   details.append(summary, body);
   return details;
 }
@@ -160,18 +156,14 @@ function renderCandidates(trace, body) {
   const candidates = Array.isArray(trace.candidates) ? trace.candidates : [];
   const selectedIds = new Set(trace.injected && Array.isArray(trace.injected.lessonIds) ? trace.injected.lessonIds : []);
   const heading = element('div', 'section-heading');
-  const selection = trace.candidateSelection;
-  const countText = !selection ? candidates.length + ' mechanically matched'
-    : selection.mode === 'full-library' ? candidates.length + ' (whole eligible library)'
-    : candidates.length + ' BM25-shortlisted of ' + selection.eligible + ' eligible';
-  heading.append(element('h2', '', 'Candidate lessons'), element('span', 'count', countText));
+  heading.append(element('h2', '', 'Candidate lessons'), element('span', 'count', candidates.length + ' reranked'));
   section.append(heading);
   if (candidates.length) {
     const list = element('div', 'candidate-list');
     for (const candidate of candidates) list.append(candidateCard(candidate, selectedIds));
     section.append(list);
   } else {
-    section.append(element('div', 'empty', 'No candidate lessons matched this run.'));
+    section.append(element('div', 'empty', 'No candidates were reranked in this run.'));
   }
   body.append(section);
 }
@@ -179,12 +171,16 @@ function renderCandidates(trace, body) {
 function renderDecision(trace, body) {
   const decision = element('section', 'decision');
   decision.append(element('h2', '', 'Decision details'));
-  const concepts = trace.conceptExtraction && Array.isArray(trace.conceptExtraction.parsedValues)
-    ? trace.conceptExtraction.parsedValues : [];
+  const queries = Array.isArray(trace.queries) ? trace.queries : null;
   const relevant = Array.isArray(trace.relevantLessonIds) ? trace.relevantLessonIds : [];
-  const conceptLine = element('div');
-  conceptLine.append(element('strong', '', 'Concepts: '));
-  conceptLine.append(document.createTextNode(concepts.length ? concepts.join(', ') : 'none'));
+  const queryLine = element('div');
+  queryLine.append(element('strong', '', 'Search queries: '));
+  queryLine.append(document.createTextNode(queries
+    ? queries.length + ' (' + queries.map(function(q) { return JSON.stringify(q.slice(0, 80)); }).join(', ') + ')'
+    : 'hidden (enable inputs)'));
+  const thresholdLine = element('div');
+  thresholdLine.append(element('strong', '', 'Relevance threshold: '));
+  thresholdLine.append(document.createTextNode(trace.config ? String(trace.config.relevanceThreshold) : 'unknown'));
   const relevanceLine = element('div');
   relevanceLine.append(element('strong', '', 'Relevant IDs: '));
   relevanceLine.append(document.createTextNode(relevant.length ? relevant.join(', ') : 'none'));
@@ -193,7 +189,7 @@ function renderDecision(trace, body) {
   const namespace = trace.injected && trace.injected.namespace ? trace.injected.namespace : 'none';
   const position = trace.injected && trace.injected.position ? trace.injected.position : 'none';
   injectionLine.append(document.createTextNode(namespace + ' / ' + position));
-  decision.append(conceptLine, relevanceLine, injectionLine);
+  decision.append(queryLine, thresholdLine, relevanceLine, injectionLine);
   body.append(decision);
 }
 
@@ -210,11 +206,10 @@ function renderTrace(trace, index) {
   details.append(element('summary', '', traceSummary(trace)));
   const body = element('div', 'trace-body');
   const meta = element('div', 'trace-meta');
-  const reasoning = trace.config && trace.config.requestedReasoning;
   meta.append(
     element('span', '', 'agent: ' + (trace.agentName || 'unknown')),
-    element('span', '', 'model: ' + ((trace.config && trace.config.model) || 'unknown')),
-    element('span', '', 'reasoning effort: ' + (reasoning ? reasoning.effort : 'default')),
+    element('span', '', 'embedding: ' + ((trace.config && trace.config.embeddingModel) || 'unknown')),
+    element('span', '', 'reranker: ' + ((trace.config && trace.config.rerankerModel) || 'unknown')),
     element('span', '', 'cache: ' + (trace.cache && trace.cache.hit ? 'hit' : 'miss')),
     element('span', '', 'duration: ' + (Number.isFinite(trace.durationMs) ? trace.durationMs + ' ms' : 'running'))
   );

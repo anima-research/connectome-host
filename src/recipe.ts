@@ -591,20 +591,16 @@ export interface RecipeModules {
   /**
    * Lesson retrieval-injection (requires `lessons`). OPT-IN — defaults to off
    * and is deliberately not part of the standard recipe: it injects
-   * context-dependent content into every compile and spends up to two
-   * configured retrieval-model calls. Enable only for agents that actually
-   * curate a lesson library.
+   * context-dependent content into every compile, and runs local embedding
+   * and reranking models (~1.3 GB, downloaded on first use) before each
+   * inference. Enable only for agents that actually curate a lesson library.
    */
   retrieval?: boolean | {
-    model?: string;
     maxInjected?: number;
-    /** Most lessons the relevance model sees per run (default 100); larger libraries are BM25-shortlisted. */
+    /** Search results passed to the reranker per run (default 16); rerank latency is linear in this. */
     maxCandidates?: number;
-    /**
-     * Optional OpenAI Responses/Codex reasoning effort for both retrieval calls.
-     * Requires an explicit retrieval model.
-     */
-    reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    /** Reranker score in [0, 1] at or above which a lesson is injected. */
+    relevanceThreshold?: number;
   };
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
@@ -2061,40 +2057,29 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
-    // Validate retrieval provider reasoning when configured.
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {
       if (!retrieval || typeof retrieval !== 'object' || Array.isArray(retrieval)) {
         throw new Error('Recipe modules.retrieval must be a boolean or object.');
       }
       const retrievalConfig = retrieval as Record<string, unknown>;
-      if (retrievalConfig.reasoningContext !== undefined) {
-        throw new Error(
-          'modules.retrieval.reasoningContext is not supported: retrieval model calls ' +
-          'are independent one-shot requests with no earlier reasoning items.',
-        );
+      for (const removed of ['model', 'reasoningEffort', 'reasoningContext']) {
+        if (retrievalConfig[removed] !== undefined) {
+          throw new Error(
+            `modules.retrieval.${removed} was removed: retrieval now runs local embedding and ` +
+            'reranking models instead of LLM calls. Delete the key; see relevanceThreshold and maxCandidates.',
+          );
+        }
       }
-      const efforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-      if (retrievalConfig.reasoningEffort !== undefined &&
-          (typeof retrievalConfig.reasoningEffort !== 'string'
-            || !efforts.includes(retrievalConfig.reasoningEffort))) {
-        throw new Error(`Invalid modules.retrieval.reasoningEffort ${JSON.stringify(retrievalConfig.reasoningEffort)}.`);
+      for (const key of ['maxInjected', 'maxCandidates'] as const) {
+        const value = retrievalConfig[key];
+        if (value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value < 1)) {
+          throw new Error(`modules.retrieval.${key} must be a positive integer, got ${JSON.stringify(value)}.`);
+        }
       }
-      if (retrievalConfig.reasoningEffort !== undefined
-          && agent.provider !== 'openai-responses'
-          && agent.provider !== 'openai-codex') {
-        throw new Error(
-          'modules.retrieval.reasoningEffort requires agent.provider ' +
-          '"openai-responses" or "openai-codex".',
-        );
-      }
-      if (retrievalConfig.reasoningEffort !== undefined
-          && (typeof retrievalConfig.model !== 'string'
-            || !retrievalConfig.model.trim())) {
-        throw new Error(
-          'modules.retrieval.model must be a non-empty string when ' +
-          'modules.retrieval.reasoningEffort is configured.',
-        );
+      const threshold = retrievalConfig.relevanceThreshold;
+      if (threshold !== undefined && (typeof threshold !== 'number' || !(threshold >= 0 && threshold <= 1))) {
+        throw new Error(`modules.retrieval.relevanceThreshold must be a number in [0, 1], got ${JSON.stringify(threshold)}.`);
       }
     }
 

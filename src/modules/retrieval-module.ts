@@ -1,21 +1,20 @@
 /**
- * RetrievalModule — LLM-as-retriever for semantic memory.
+ * RetrievalModule — local-model retrieval of lessons into context.
  *
- * Three-step retrieval pipeline running in gatherContext():
- *   1. Flag concepts: identify concepts being discussed that might benefit
- *      from background knowledge (an empty list ends the run early)
- *   2. Select candidates: the whole eligible library when it fits within
- *      maxCandidates; otherwise a BM25 shortlist against the concepts
- *   3. Validate relevance: the retrieval model judges which candidates matter
+ * Runs in gatherContext() before each inference, with no API calls:
+ *   1. Search: several short queries from the recent conversation (latest
+ *      incoming message, latest own message, chunks of the recent window),
+ *      each run against the lesson library by BM25 and by dense embedding
+ *      similarity; all lists merged by reciprocal rank fusion.
+ *   2. Rerank: a cross-encoder scores the top candidates against the tail of
+ *      the conversation; lessons at or above relevanceThreshold are relevant.
+ *   3. Inject: relevant lessons in rankScore order (confidence discounted for
+ *      disuse), up to maxInjectedLessons.
  *
- * The model's judgment decides what is relevant; salience decides what comes
- * to mind first. Relevant lessons are injected in rankScore order (confidence
- * discounted for disuse), and every fresh injection is reported to
- * LessonsModule.recordRetrieval so usage feeds back into that ranking. Cache
- * hits are not counted again.
- *
- * Steps 1 and 3 use the configured retrieval model and optional reasoning.
- * Results are cached to avoid redundant calls on unchanged context.
+ * The reranker decides what is relevant; salience decides what comes to mind
+ * first. Each fresh injection is reported to LessonsModule.recordRetrieval so
+ * usage feeds back into salience. Results are cached per context hash, and
+ * cache hits are not counted as retrievals.
  */
 
 import type {
@@ -28,12 +27,13 @@ import type {
   ToolCall,
   ToolResult,
 } from '@animalabs/agent-framework';
-import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { ContextInjection } from '@animalabs/context-manager';
 import { rankScore, type LessonsModule, type Lesson } from './lessons-module.js';
 import { bm25Scores } from './lesson-search.js';
+import { dot, type RetrievalModels } from './retrieval-models.js';
 import {
   RetrievalTraceStore,
+  type RetrievalCandidateScores,
   type RetrievalTraceListOptions,
   type RetrievalTraceRun,
 } from './retrieval-trace.js';
@@ -42,55 +42,89 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-export type RetrievalReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-
-export interface RetrievalReasoningConfig {
-  effort: RetrievalReasoningEffort;
-}
-
-interface RecentRetrievalContext {
-  text: string;
-  messageCount: number;
-  messageIds: string[];
-}
-
 export interface RetrievalModuleConfig {
-  /** Membrane instance for retrieval calls */
-  membrane: Membrane;
-  /** Model to use for retrieval calls (default: claude-haiku-4-5-20251001) */
-  retrievalModel?: string;
-  /** Optional OpenAI reasoning effort, applied to both retrieval LLM stages. */
-  retrievalReasoning?: RetrievalReasoningConfig;
+  models: RetrievalModels;
   /** Max lessons to inject (default: 5) */
   maxInjectedLessons?: number;
-  /** Minimum lesson confidence for injection (default: 0.3) */
+  /** Minimum lesson confidence for eligibility (default: 0.3) */
   minConfidence?: number;
-  /**
-   * Most lessons the relevance model sees per run (default: 100). A library
-   * at or under this size is shown whole; a larger one is shortlisted by BM25.
-   */
+  /** Candidates passed from search to the reranker (default: 16). Rerank cost is linear in this. */
   maxCandidates?: number;
+  /** Reranker score at or above which a candidate is relevant (default: DEFAULT_RELEVANCE_THRESHOLD). */
+  relevanceThreshold?: number;
 }
 
-export type CandidateSelectionMode = 'full-library' | 'bm25';
+const DEFAULT_MAX_CANDIDATES = 16;
+/**
+ * Qwen3-Reranker scores are strongly bimodal. On the synthetic set in
+ * scripts/retrieval-calibration (2026-09-26), F1 was flat at ~0.83 for
+ * thresholds 0.25–0.40 and fell to 0.79 at 0.5; 0.3 sits mid-plateau.
+ * Re-run that script against real labelled turns before trusting it further.
+ */
+export const DEFAULT_RELEVANCE_THRESHOLD = 0.3;
+
+/** Messages of recent context considered. */
+const RECENT_MESSAGES = 10;
+/** Characters per search query (~500 tokens), so no single query averages many topics. */
+const QUERY_CHARS = 2000;
+/** Window chunks searched, newest first. */
+const MAX_WINDOW_CHUNKS = 4;
+/** Characters of conversation tail given to the reranker (~300 tokens); rerank cost scales with it per candidate. */
+const RERANK_QUERY_CHARS = 1200;
+/** Characters of a lesson embedded or reranked (~1500 tokens), within the models' 2048-token contexts. */
+const DOCUMENT_CHARS = 6000;
+/** Standard reciprocal-rank-fusion damping constant. */
+const RRF_K = 60;
 
 // ---------------------------------------------------------------------------
-// Prompts
+// Query construction and fusion (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-const CONCEPT_FLAG_PROMPT = `You are a knowledge retrieval assistant. Given the recent conversation below, identify concepts, entities, topics, or themes that might benefit from background knowledge or lessons learned from previous research.
+export interface RecentMessage {
+  participant: string;
+  text: string;
+}
 
-Return ONLY a JSON array of keyword strings, nothing else. Example: ["RFC process", "authentication", "team lead"]
+function tail(text: string, chars: number): string {
+  return text.length <= chars ? text : text.slice(text.length - chars);
+}
 
-If nothing would benefit from background knowledge, return an empty array: []`;
+function render(messages: RecentMessage[]): string {
+  return messages.map(m => `${m.participant}: ${m.text}`).join('\n\n');
+}
 
-const RELEVANCE_VALIDATION_PROMPT = `You are a relevance filter. Given the current conversation context and a set of candidate knowledge lessons, determine which lessons are actually relevant to the current discussion.
+/** Short search queries: latest incoming message, latest own message, then window chunks newest-first. */
+export function searchQueries(messages: RecentMessage[], agentName: string): string[] {
+  const latestIncoming = [...messages].reverse().find(m => m.participant !== agentName && m.text.trim());
+  const latestOwn = [...messages].reverse().find(m => m.participant === agentName && m.text.trim());
+  const queries = [latestIncoming, latestOwn].flatMap(m => (m ? [tail(m.text, QUERY_CHARS)] : []));
 
-Return ONLY a JSON array of lesson IDs that are relevant, nothing else. Example: ["a1b2c3d4", "e5f6g7h8"]
+  let window = render(messages);
+  for (let i = 0; i < MAX_WINDOW_CHUNKS && window.trim(); i++) {
+    queries.push(tail(window, QUERY_CHARS));
+    window = window.slice(0, Math.max(0, window.length - QUERY_CHARS));
+  }
+  return [...new Set(queries)];
+}
 
-If none are relevant, return an empty array: []`;
+/** The conversation tail the reranker judges lessons against. */
+export function rerankQuery(messages: RecentMessage[]): string {
+  return tail(render(messages), RERANK_QUERY_CHARS);
+}
 
-const DEFAULT_MAX_CANDIDATES = 100;
+export function lessonDocument(lesson: Lesson): string {
+  const text = lesson.tags.length > 0 ? `${lesson.content}\nTags: ${lesson.tags.join(', ')}` : lesson.content;
+  return text.slice(0, DOCUMENT_CHARS);
+}
+
+/** Reciprocal rank fusion of ranked ID lists; returns IDs by fused score, highest first. */
+export function fuse(lists: string[][]): Array<{ id: string; score: number }> {
+  const scores = new Map<string, number>();
+  for (const list of lists) {
+    list.forEach((id, index) => scores.set(id, (scores.get(id) ?? 0) + 1 / (RRF_K + index + 1)));
+  }
+  return [...scores].map(([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score);
+}
 
 // ---------------------------------------------------------------------------
 // Module
@@ -106,6 +140,8 @@ export class RetrievalModule implements Module {
   private cachedLessonIds: string[] = [];
   private cachedLessons: Lesson[] = [];
   private cachedSourceTraceId: number | undefined;
+  /** Document embeddings keyed by lessonDocument() text, pruned to the live library each run. */
+  private readonly documentVectors = new Map<string, Float32Array>();
   private readonly traceStore = new RetrievalTraceStore();
 
   constructor(config: RetrievalModuleConfig) {
@@ -118,6 +154,7 @@ export class RetrievalModule implements Module {
 
   async stop(): Promise<void> {
     this.ctx = null;
+    await this.config.models.dispose();
   }
 
   getTools(): ToolDefinition[] {
@@ -140,26 +177,20 @@ export class RetrievalModule implements Module {
 
   private beginTrace(agentName: string): RetrievalTraceRun | undefined {
     try {
-      const providerParams = this.retrievalProviderParams();
       return this.traceStore.begin({
         agentName,
-        model: this.config.retrievalModel ?? 'claude-haiku-4-5-20251001',
-        ...(this.config.retrievalReasoning
-          ? { requestedReasoning: this.config.retrievalReasoning }
-          : {}),
-        ...(providerParams ? { providerParams } : {}),
+        embeddingModel: this.config.models.embeddingModel,
+        rerankerModel: this.config.models.rerankerModel,
         minConfidence: this.config.minConfidence ?? 0.3,
         maxCandidates: this.config.maxCandidates ?? DEFAULT_MAX_CANDIDATES,
         maxInjectedLessons: this.config.maxInjectedLessons ?? 5,
+        relevanceThreshold: this.config.relevanceThreshold ?? DEFAULT_RELEVANCE_THRESHOLD,
       });
     } catch {
       return undefined;
     }
   }
 
-  /**
-   * Run the 3-step retrieval pipeline before each inference.
-   */
   async gatherContext(agentName: string): Promise<ContextInjection[]> {
     const trace = this.beginTrace(agentName);
     if (!this.ctx) {
@@ -169,12 +200,12 @@ export class RetrievalModule implements Module {
 
     let lessonsModule: LessonsModule | null;
     let lessons: Lesson[];
-    let recentMessages: string;
+    let messages: RecentMessage[];
     let contextHash: string;
     try {
       // These lookups, eligibility checks, context rendering, and hashing are
       // pre-existing throwing paths. Record their failure, then preserve the
-      // upstream rejection rather than applying the provider-stage fail-open.
+      // upstream rejection rather than applying the model-stage fail-open.
       lessonsModule = this.ctx.getModule<LessonsModule>('lessons');
       if (!lessonsModule) {
         trace?.finish('no-lessons-module');
@@ -194,11 +225,12 @@ export class RetrievalModule implements Module {
         trace?.finish('no-recent-context');
         return [];
       }
-      recentMessages = recent.text;
+      messages = recent.messages;
 
       // Check cache: if context hasn't changed, reuse cached results.
-      contextHash = this.hashContext(recentMessages);
-      trace?.setContext(contextHash, recentMessages, recent.messageCount, recent.messageIds);
+      const rendered = render(messages);
+      contextHash = this.hashContext(rendered);
+      trace?.setContext(contextHash, rendered, recent.messages.length, recent.messageIds);
       if (contextHash === this.lastContextHash && this.cachedInjections.length > 0) {
         trace?.recordCacheHit(
           this.cachedSourceTraceId,
@@ -215,36 +247,23 @@ export class RetrievalModule implements Module {
     }
 
     try {
-      // Step 1: Flag concepts
-      const concepts = await this.flagConcepts(recentMessages, trace);
-      if (concepts.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
-        trace?.finish('no-concepts');
-        return [];
-      }
+      // Step 1: Search
+      const queries = searchQueries(messages, agentName);
+      const judgedAgainst = rerankQuery(messages);
+      trace?.recordQueries(queries, judgedAgainst);
+      const candidates = await this.search(queries, lessons);
 
-      // Step 2: Select candidates
-      const { mode, candidates } = this.selectCandidates(concepts, lessons);
-      trace?.recordCandidates(concepts, candidates, { mode, eligible: lessons.length });
-      if (candidates.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
-        trace?.finish('no-candidates');
-        return [];
+      // Step 2: Rerank
+      const scores = await this.config.models.rerank(judgedAgainst, candidates.map(c => lessonDocument(c.lesson)));
+      if (scores.length !== candidates.length) {
+        throw new Error(`reranker returned ${scores.length} scores for ${candidates.length} candidates`);
       }
-
-      // Step 3: Validate relevance
-      const relevant = await this.validateRelevance(recentMessages, candidates, trace);
+      trace?.recordCandidates(candidates.map((c, i) => ({ ...c, rerankScore: scores[i] })));
+      const threshold = this.config.relevanceThreshold ?? DEFAULT_RELEVANCE_THRESHOLD;
+      const relevant = candidates.filter((_, i) => scores[i] >= threshold).map(c => c.lesson);
       trace?.recordRelevant(relevant);
 
-      // Build injection: what comes to mind first among the relevant
+      // Step 3: Inject — what comes to mind first among the relevant
       const maxLessons = this.config.maxInjectedLessons ?? 5;
       const now = Date.now();
       const injected = [...relevant]
@@ -252,11 +271,7 @@ export class RetrievalModule implements Module {
         .slice(0, maxLessons);
 
       if (injected.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
+        this.cacheEmpty(contextHash);
         trace?.finish('no-relevant-lessons');
         return [];
       }
@@ -293,190 +308,76 @@ export class RetrievalModule implements Module {
   }
 
   // =========================================================================
-  // Pipeline Steps
+  // Pipeline
   // =========================================================================
 
-  /** Build OpenAI request parameters for configured retrieval reasoning effort. */
-  private retrievalProviderParams(): Record<string, unknown> | undefined {
-    const reasoning = this.config.retrievalReasoning;
-    if (!reasoning) return undefined;
-    return { reasoning: { effort: reasoning.effort } };
-  }
+  /** BM25 and dense lists per query, fused; the top maxCandidates go to the reranker. */
+  private async search(queries: string[], lessons: Lesson[]): Promise<RetrievalCandidateScores[]> {
+    const byId = new Map(lessons.map(l => [l.id, l]));
+    const documents = lessons.map(lessonDocument);
 
-  /**
-   * Step 1: Use the configured retrieval model to identify concepts that might benefit from background knowledge.
-   */
-  private async flagConcepts(
-    recentContext: string,
-    trace?: RetrievalTraceRun,
-  ): Promise<string[]> {
-    const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
-    const providerParams = this.retrievalProviderParams();
-    const input = `Recent conversation:\n${recentContext}`;
+    const missing = [...new Set(documents.filter(d => !this.documentVectors.has(d)))];
+    const fresh = await this.config.models.embed(missing, 'document');
+    missing.forEach((d, i) => this.documentVectors.set(d, fresh[i]));
+    const live = new Set(documents);
+    for (const key of this.documentVectors.keys()) if (!live.has(key)) this.documentVectors.delete(key);
 
-    const request: NormalizedRequest = {
-      messages: [
-        {
-          participant: 'user',
-          content: [{ type: 'text', text: input }],
-        },
-      ],
-      system: CONCEPT_FLAG_PROMPT,
-      config: { model, maxTokens: 500, temperature: 0 },
-      ...(providerParams ? { providerParams } : {}),
+    const queryVectors = await this.config.models.embed(queries, 'query');
+    const lexicalLists: string[][] = [];
+    const denseLists: string[][] = [];
+    queries.forEach((query, q) => {
+      const bm25 = bm25Scores(query, lessons);
+      lexicalLists.push(lessons
+        .map((l, i) => ({ id: l.id, score: bm25[i] }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(x => x.id));
+      denseLists.push(lessons
+        .map((l, i) => ({ id: l.id, score: dot(queryVectors[q], this.documentVectors.get(documents[i])!) }))
+        .sort((a, b) => b.score - a.score)
+        .map(x => x.id));
+    });
+
+    const bestRank = (lists: string[][], id: string): number | undefined => {
+      const ranks = lists.map(list => list.indexOf(id)).filter(r => r >= 0);
+      return ranks.length > 0 ? Math.min(...ranks) + 1 : undefined;
     };
-
-    trace?.startConceptExtraction(CONCEPT_FLAG_PROMPT, input);
-    let response;
-    try {
-      response = await this.config.membrane.complete(request);
-    } catch (error) {
-      trace?.recordStageError('conceptExtraction', error);
-      throw error;
-    }
-    const text = response.content
-      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-      .map(b => b.text)
-      .join('');
-
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) {
-        const concepts = parsed.filter((value): value is string => typeof value === 'string');
-        trace?.finishConceptExtraction(text, concepts, 'json', response.content);
-        return concepts;
-      }
-      trace?.finishConceptExtraction(text, [], 'invalid', response.content);
-    } catch {
-      // Try to extract an array from a prose/markdown wrapper.
-      const match = text.match(/\[([^\]]*)\]/);
-      if (match) {
-        try {
-          const parsed = JSON.parse(`[${match[1]}]`);
-          if (Array.isArray(parsed)) {
-            const concepts = parsed.filter((value): value is string => typeof value === 'string');
-            trace?.finishConceptExtraction(text, concepts, 'array-extraction', response.content);
-            return concepts;
-          }
-        } catch { /* fall through */ }
-      }
-      trace?.finishConceptExtraction(text, [], 'invalid', response.content);
-    }
-    return [];
-  }
-
-  /**
-   * Step 2: The whole eligible library if it fits; otherwise the top BM25
-   * matches for the flagged concepts, ties broken by salience.
-   */
-  private selectCandidates(
-    concepts: string[],
-    lessons: Lesson[],
-  ): { mode: CandidateSelectionMode; candidates: Lesson[] } {
-    const max = this.config.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
-    const now = Date.now();
-    if (lessons.length <= max) {
-      const candidates = [...lessons].sort((a, b) => rankScore(b, now) - rankScore(a, now));
-      return { mode: 'full-library', candidates };
-    }
-    const scores = bm25Scores(concepts.join(' '), lessons);
-    const candidates = lessons
-      .map((lesson, i) => ({ lesson, score: scores[i] }))
-      .filter(c => c.score > 0)
-      .sort((a, b) => b.score - a.score || rankScore(b.lesson, now) - rankScore(a.lesson, now))
-      .slice(0, max)
-      .map(c => c.lesson);
-    return { mode: 'bm25', candidates };
-  }
-
-  /**
-   * Step 3: Use the configured retrieval model to validate which candidates are actually relevant.
-   */
-  private async validateRelevance(
-    recentContext: string,
-    candidates: Lesson[],
-    trace?: RetrievalTraceRun,
-  ): Promise<Lesson[]> {
-    const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
-    const providerParams = this.retrievalProviderParams();
-
-    const candidateList = candidates.map(l =>
-      `[${l.id}] (${l.confidence.toFixed(2)}) ${l.content}`
-    ).join('\n');
-    const input = `Current conversation:\n${recentContext}\n\nCandidate lessons:\n${candidateList}`;
-
-    const request: NormalizedRequest = {
-      messages: [
-        {
-          participant: 'user',
-          content: [{ type: 'text', text: input }],
-        },
-      ],
-      system: RELEVANCE_VALIDATION_PROMPT,
-      config: { model, maxTokens: 500, temperature: 0 },
-      ...(providerParams ? { providerParams } : {}),
-    };
-
-    trace?.startRelevance(RELEVANCE_VALIDATION_PROMPT, input);
-    let response;
-    try {
-      response = await this.config.membrane.complete(request);
-    } catch (error) {
-      trace?.recordStageError('relevance', error);
-      throw error;
-    }
-    const text = response.content
-      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-      .map(b => b.text)
-      .join('');
-
-    const judged = (value: unknown, mode: 'json' | 'array-extraction'): Lesson[] | null => {
-      if (!Array.isArray(value)) return null;
-      const parsedIds = value.filter((id): id is string => typeof id === 'string');
-      trace?.finishRelevance(text, parsedIds, mode, response.content);
-      const relevantIds = new Set(parsedIds);
-      return candidates.filter(l => relevantIds.has(l.id));
-    };
-    try {
-      const result = judged(JSON.parse(text), 'json');
-      if (result) return result;
-    } catch {
-      const match = text.match(/\[([^\]]*)\]/);
-      if (match) {
-        try {
-          const result = judged(JSON.parse(`[${match[1]}]`), 'array-extraction');
-          if (result) return result;
-        } catch { /* fall through */ }
-      }
-    }
-    // Unparseable judgment: inject nothing rather than unjudged lessons.
-
-    trace?.finishRelevance(text, [], 'invalid', response.content);
-    return [];
+    return fuse([...lexicalLists, ...denseLists])
+      .slice(0, this.config.maxCandidates ?? DEFAULT_MAX_CANDIDATES)
+      .map(({ id, score }) => ({
+        lesson: byId.get(id)!,
+        fusedScore: score,
+        lexicalRank: bestRank(lexicalLists, id),
+        denseRank: bestRank(denseLists, id),
+      }));
   }
 
   // =========================================================================
   // Helpers
   // =========================================================================
 
-  private getRecentContext(): RecentRetrievalContext | null {
+  private cacheEmpty(contextHash: string): void {
+    this.lastContextHash = contextHash;
+    this.cachedInjections = [];
+    this.cachedLessonIds = [];
+    this.cachedLessons = [];
+    this.cachedSourceTraceId = undefined;
+  }
+
+  private getRecentContext(): { messages: RecentMessage[]; messageIds: string[] } | null {
     if (!this.ctx) return null;
 
-    // Get the last few messages from the conversation.
     const { messages } = this.ctx.queryMessages({});
     if (messages.length === 0) return null;
 
-    // Take the last 10 messages for context.
-    const recent = messages.slice(-10);
-    const text = recent
-      .map(m => {
-        const messageText = m.content
-          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-          .map(b => b.text)
-          .join('\n');
-        return `${m.participant}: ${messageText}`;
-      })
-      .join('\n\n');
+    const recent = messages.slice(-RECENT_MESSAGES);
+    const rendered = recent.map(m => ({
+      participant: m.participant,
+      text: m.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+        .map(b => b.text)
+        .join('\n'),
+    }));
     const messageIds = recent.flatMap(message => {
       try {
         const candidate = (message as unknown as { id?: unknown }).id;
@@ -489,7 +390,7 @@ export class RetrievalModule implements Module {
       }
     });
 
-    return { text, messageCount: recent.length, messageIds };
+    return { messages: rendered, messageIds };
   }
 
   private safeLessonIds(lessons: Lesson[]): string[] {

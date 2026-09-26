@@ -1,10 +1,10 @@
 # Retrieval Traces
 
 The retrieval module can record a bounded, per-run explanation of automatic
-lesson selection. The trace shows which concepts the selector returned, which
-lessons became candidates (the whole library, or a BM25 shortlist of it), which
-candidates survived relevance filtering,
-and the exact lesson block injected into the next compile.
+lesson selection. The trace shows the search queries derived from the
+conversation, which lessons the fused BM25 + embedding search passed to the
+reranker (and at what rank in each), every rerank score against the relevance
+threshold, and the exact lesson block injected into the next compile.
 
 Tracing is diagnostic. It does not change selection, trigger an extra model
 call, or claim access to hidden chain-of-thought.
@@ -18,9 +18,9 @@ Enable lessons, retrieval, and the Web UI in the recipe:
   "modules": {
     "lessons": true,
     "retrieval": {
-      "model": "gpt-5.4-mini",
       "maxInjected": 5,
-      "reasoningEffort": "high"
+      "maxCandidates": 16,
+      "relevanceThreshold": 0.3
     },
     "webui": {
       "host": "127.0.0.1",
@@ -34,16 +34,9 @@ Enable lessons, retrieval, and the Web UI in the recipe:
 }
 ```
 
-`reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-or `max`. It is optional, applies to both retrieval calls, and does not inherit
-the primary agent's reasoning setting. This field is supported only when
-`agent.provider` is `openai-responses` or `openai-codex`; Anthropic/Claude uses
-separate native thinking controls and is rejected here rather than receiving an
-invalid OpenAI-shaped request.
-
-Retrieval remains opt-in and requires the lessons module. Depending on the
-candidate count, one turn can use one selector call plus an optional relevance
-call.
+Retrieval remains opt-in and requires the lessons module. It makes no API
+calls: each run embeds a few short queries and reranks `maxCandidates` lessons
+with local models (see the README).
 
 ## Operator viewer
 
@@ -53,8 +46,8 @@ Open:
 http://127.0.0.1:7340/debug/retrieval/view
 ```
 
-The viewer highlights selected lessons, lists all candidates with how they were
-selected and their whole-word match provenance, summarizes the relevance decision, and
+The viewer highlights selected lessons, lists every reranked candidate with its
+rerank score and its BM25 / dense / fused ranks, summarizes the decision, and
 keeps the retained trace JSON behind a diagnostic disclosure. Each run is
 labeled with the invoking agent name. Separate Host processes retain separate
 trace stores and viewers; the endpoint does not aggregate fleet children.
@@ -68,13 +61,13 @@ GET /debug/retrieval[?limit=20][&includeInputs=1]
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `limit` | `20` | Newest traces to return, clamped to `1..100`. |
-| `includeInputs` | off | Exact recent conversation and model-stage inputs are included only when the value is the literal `1`. |
+| `includeInputs` | off | Exact recent conversation, search queries, and rerank query are included only when the value is the literal `1`. |
 
 Example envelope:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "enabled": true,
   "includeInputs": false,
   "traces": []
@@ -83,21 +76,19 @@ Example envelope:
 
 Each trace can include:
 
-- configured model and request-level reasoning parameters;
+- embedding and reranker model IDs, `maxCandidates`, `maxInjectedLessons`,
+  `minConfidence`, and `relevanceThreshold`;
 - recent-context hash, message count, and available message IDs;
-- selector prompt, raw returned text, normalized provider blocks, parsed
-  concepts, and parse mode;
-- `candidateSelection` (`full-library` or `bm25`, plus the eligible count),
-  every candidate, lesson snapshot, and whole-word content/tag match terms
-  (informational: in `full-library` mode a candidate need not match anything);
-- relevance-call output or the reason validation was skipped;
+- the search queries and the conversation tail the reranker judged against
+  (input-gated);
+- every reranked candidate: lesson snapshot, `rerankScore`, `fusedScore`, and
+  its best rank in any BM25 list (`lexicalRank`, absent if no query shared a
+  word with it) and any dense list (`denseRank`);
 - final relevant and injected lesson IDs, exact lesson snapshots, injection
   namespace/position, and rendered `## Retrieved Knowledge` block;
 - cache-hit provenance, outcome, duration, and errors.
 
-Opaque or redacted reasoning blocks are retained only as provider-returned
-content blocks. The trace does not decrypt them or present them as hidden
-chain-of-thought. Each lesson snapshot is a point-in-time copy of every
+Each lesson snapshot is a point-in-time copy of every
 `Lesson` field: `id`, `content`, `confidence`, `tags`, `evidence`, `created`,
 `updated`, `deprecated`, and optional `deprecationReason`.
 
@@ -113,9 +104,9 @@ loopback-only Web UI without configured credentials returns `401` for these two
 routes, while other Web UI routes retain their historical loopback behavior.
 Read-only observer cookies are rejected even when they carry the `debug` scope.
 
-Exact recent conversation and stage inputs are omitted by default because they
-can contain private text. Use `includeInputs=1` deliberately; values such as
-`true` or `yes` do not enable disclosure. Lesson contents, selector output,
+Exact recent conversation, search queries, and the rerank query are omitted by
+default because they can contain private text. Use `includeInputs=1` deliberately; values such as
+`true` or `yes` do not enable disclosure. Lesson contents, rerank scores,
 candidate provenance, and the final injected block remain visible in the
 default trace because they are the subject of the diagnostic.
 
@@ -140,17 +131,10 @@ size make clear that the detailed payload is unavailable. Tombstones are never
 presented as exact traces. Payloads that fit remain complete.
 
 Trace recording is fail-open: metadata collection and serialization failures
-must not block retrieval or the primary inference. Arbitrary provider blocks
-and request-level provider parameters are converted to JSON-safe snapshots
-before they are exposed. Their retained representations bound recursion depth,
-total nodes, array items, object keys,
-individual strings, and aggregate string bytes. When a bound applies, the
-stage's `responseContentTruncation` records the explicit reason and active
-limits. Cycles, BigInts, nonfinite numbers, and unreadable properties remain
-safe to serialize using explicit unavailable-value records.
+must not block retrieval or the primary inference.
 
 Viewing an existing trace is read-only. Retrieval itself still performs its
-normal model calls and lesson lookup when the agent gathers context.
+normal local-model inference and lesson lookup when the agent gathers context.
 
 ## Response codes
 
@@ -167,12 +151,20 @@ normal model calls and lesson lookup when the agent gathers context.
   restart with the updated recipe.
 - Empty `traces`: no retrieval run has completed or started since this Host
   process began.
-- Many candidates but few selected lessons: expected — in `full-library` mode
-  the relevance stage sees every eligible lesson. `maxInjected` is a ceiling,
+- Many candidates but few selected lessons: expected — every run reranks
+  `maxCandidates` lessons and most score near 0. `maxInjected` is a ceiling,
   not a quota.
-- A relevant lesson never appears as a candidate: the library exceeds
-  `maxCandidates` and BM25 found no shared whole word with the flagged
-  concepts. Raise `maxCandidates`, or add a tag using the missing vocabulary.
+- A relevant lesson never appears as a candidate: neither BM25 nor the
+  embedding search ranked it into the top `maxCandidates`. Raise
+  `maxCandidates` (latency grows linearly), or add tags in the conversation's
+  vocabulary.
+- A relevant candidate scored just under the threshold: rerank scores are
+  mostly near 0 or 1, so borderline scores are rare; lower
+  `relevanceThreshold`, and recalibrate with `scripts/retrieval-calibration/`
+  on your own labelled turns.
+- Every run is `error` with a model-loading message: the GGUF download or load
+  failed (network, disk, or unsupported GPU backend). The Host logs the cause
+  once at startup.
 - `sourceTraceEvicted: true`: a cache hit refers to a run older than the
   in-memory retention window; the exact selected lesson snapshots remain on the
   cache-hit trace.

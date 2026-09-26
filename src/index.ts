@@ -41,6 +41,7 @@ import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { buildRetrievalModuleConfig } from './retrieval-config.js';
+import { LlamaRetrievalModels } from './modules/retrieval-models.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -258,13 +259,15 @@ async function createFramework(
   }
 
   // Retrieval (requires lessons). OPT-IN — not part of the standard recipe:
-  // it injects context-dependent content into every compile (plus up to two
-  // configured retrieval-model calls), which adds per-turn context churn.
-  // Enable explicitly only when an agent actually curates a lesson library.
+  // it injects context-dependent content into every compile and runs local
+  // embedding + reranking models before each inference. Enable explicitly
+  // only when an agent actually curates a lesson library.
   if (modules.retrieval && lessonsModule) {
-    moduleInstances.push(new RetrievalModule(
-      buildRetrievalModuleConfig(membrane, modules.retrieval, recipe.agent.provider),
-    ));
+    const retrievalModels = new LlamaRetrievalModels();
+    // Download/load in the background so the first turn isn't the one that
+    // waits; a failure here resurfaces as an error trace on every retrieval.
+    retrievalModels.prepare().catch(err => console.error('Retrieval models failed to load:', err));
+    moduleInstances.push(new RetrievalModule(buildRetrievalModuleConfig(retrievalModels, modules.retrieval)));
   }
 
   // History browsing (native chronicle indexes + summary-backed overview).

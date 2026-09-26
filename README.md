@@ -187,26 +187,20 @@ depend on what the endpoint reports.
 - **Web UI**: browser operator console (`modules.webui`) — live chat with full interiority (thinking, tool calls, streaming), agent/fleet tree, context makeup + compression coverage, call ledger with cache verdicts and billing-grade costs, health/ops alerts, Chronicle branch tree, lessons, MCPL config, workspace files; scoped read-only observer access via device keys
 - **TUI + readline modes**: OpenTUI interactive terminal or `--no-tui` for pipes/CI
 - **Subagent forking** (opt-in, `modules.subagents`): Spawn/fork parallel agents with fleet tree view (Tab to toggle)
-- **Persistent lessons** (opt-in, `modules.lessons`): Knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
+- **Persistent lessons** (opt-in, `modules.lessons`): Knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and runs local embedding/reranking models (~0.7 s per turn on Apple Silicon), so enable it only for agents that actually curate a lesson library
 - **Time-travel**: Chronicle-backed undo/redo, named checkpoints, branch exploration
 - **Session management**: Isolated sessions with auto-naming
 - **MCPL support**: Connect any MCP/MCPL server; wake subscriptions for selective event triggering
 - **File products**: Write reports and documents, materialize to disk
 - **Shared instructions** (opt-in, `modules.instructions`): a living instructions document (CLAUDE.md analogue) kept in a workspace mount and injected into every agent's context on every turn — the resident agent and all ephemeral subagents. Edits take effect on the next turn; nothing is persisted to history. Defaults: path `instructions/AGENTS.md`, `position: "system"`, 32 KiB cap (reads are bounded to the cap); a missing file is fail-open (no injection, warn once), while a path naming a nonexistent mount fails at recipe load — including on the implicit default workspace (`input` + `products`), whose mount set can never satisfy the default path, so declare an `instructions` mount explicitly. **Who edits, and how it propagates**: the module reads *disk*; agent `workspace--write`/`edit` land in Chronicle and reach disk only on an `autoMaterialize: true` mount — validation therefore requires it on a read-write instructions mount. On a read-only mount the flow reverses: human/deploy edits to disk reach the injection, but not `workspace--read` (which serves Chronicle) — prefer routing human feedback through conversation and letting the agent make the edit. Symlinks that lead outside the mount are rejected (realpath containment), never injected. **Cache note**: at `position: "system"` the block lives in every agent's prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next turn — curate in batches, or use `afterUser` for cache-cheap, lower-salience injection. Compared to **lessons** (`modules.lessons`): lessons are a structured, confidence-scored store with model-driven retrieval; instructions are one free-form curated document, always present verbatim
 
-An object-valued `modules.retrieval` can also set `maxCandidates` (default
-100): libraries up to that size are shown whole to the relevance model; larger
-ones are BM25-shortlisted to that many before it judges.
-
-For `openai-responses` and `openai-codex`, an object-valued
-`modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, or `max`) independently of the primary agent.
-Retrieval calls are independent one-shot requests, so there is no separate
-retrieval reasoning-context setting. When `reasoningEffort` is configured,
-`model` must also be set explicitly: the historical retrieval default is a
-Claude model and cannot be sent through an OpenAI adapter. Anthropic/Claude
-uses different native thinking controls and does not accept this OpenAI-shaped
-option.
+Retrieval runs local models (Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B via
+`node-llama-cpp`), downloaded on first use (~1.3 GB) to `CONNECTOME_MODELS_DIR`
+(default `~/.cache/connectome-host/models`). An object-valued
+`modules.retrieval` can set `maxInjected`, `maxCandidates` (search results
+reranked per turn, default 16 — latency is linear in it), and
+`relevanceThreshold` (reranker score in [0, 1], default 0.3). The former
+`model` / `reasoningEffort` keys are rejected at recipe load.
 
 ## Prerequisites
 

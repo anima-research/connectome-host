@@ -1,0 +1,136 @@
+{
+  "description": "Synthetic calibration set for lesson retrieval: a research/engineering team's agent. Written and labelled by Claude Opus 5.5 (2026-09-26); same author for both, so results are optimistic. `relevant` = lessons that would materially help the agent's next reply. Hard negatives share vocabulary with a turn without helping it.",
+  "agentName": "researcher",
+  "lessons": [
+    { "id": "billing-owner", "content": "Alice Chen owns the billing pipeline; route invoice and payment-reconciliation questions to her, not to the platform team.", "tags": ["people", "billing"] },
+    { "id": "deploy-freeze", "content": "Production deploys are frozen from Thursday 18:00 to Monday 09:00 Pacific; hotfixes need sign-off from the on-call lead.", "tags": ["process", "deploy"] },
+    { "id": "oauth-expiry", "content": "Service OAuth tokens for the data warehouse expire after 60 minutes; long batch jobs must refresh them or they fail midway with 401s.", "tags": ["technical", "auth"] },
+    { "id": "author-field", "content": "The 'author' field in the papers database is free text and often lists first-name-last-name and last-name-comma variants of the same person.", "tags": ["data", "papers"] },
+    { "id": "gpu-queue", "content": "The shared GPU cluster queue prioritizes jobs under 4 hours; split long training runs into checkpointed segments to avoid waiting days.", "tags": ["technical", "compute"] },
+    { "id": "rfc-process", "content": "Architecture changes need an RFC in the #design stream with at least two approvals from different teams before implementation starts.", "tags": ["process", "decision"] },
+    { "id": "bob-timezone", "content": "Bob Okafor works from Lagos (UTC+1) and prefers async written questions over meetings.", "tags": ["people"] },
+    { "id": "eval-seed", "content": "Eval results are only comparable across runs if the sampling seed and the prompt template version are both pinned in the run config.", "tags": ["technical", "evals"] },
+    { "id": "zulip-archive", "content": "The Zulip export drops messages edited after export time; for disputed history, check the raw database snapshot instead.", "tags": ["data", "zulip"] },
+    { "id": "grant-deadline", "content": "The foundation grant report is due on the 15th of each quarter's first month and must include compute spend broken down by project.", "tags": ["admin", "deadline"] },
+    { "id": "priya-ml", "content": "Priya Raman is the go-to person for tokenizer and embedding questions; she wrote the internal tokenizer library.", "tags": ["people", "ml"] },
+    { "id": "staging-db", "content": "The staging database is refreshed from a sanitized production snapshot every Sunday night, so staging data is up to a week stale.", "tags": ["technical", "data"] },
+    { "id": "citation-style", "content": "Internal reports use author-year citations and link arXiv IDs rather than DOIs.", "tags": ["writing"] },
+    { "id": "flaky-ci", "content": "The integration test 'test_ingest_large' is flaky under CI memory limits; a rerun usually passes, and a proper fix is tracked in issue 412.", "tags": ["technical", "ci"] },
+    { "id": "budget-approval", "content": "Cloud spend over $2,000 per month on any single project needs pre-approval from the finance lead, Dana.", "tags": ["process", "budget", "people"] },
+    { "id": "interview-loop", "content": "Research engineer interviews use a take-home replaced in 2025 by a paired debugging session; do not send candidates the old take-home.", "tags": ["hiring", "process"] },
+    { "id": "logging-pii", "content": "Never log raw user prompts in production services; hash them or log only token counts, per the data-retention policy.", "tags": ["policy", "privacy"] },
+    { "id": "vector-dim", "content": "The retrieval index was built with 1024-dimensional embeddings; mixing in vectors from a different model silently corrupts nearest-neighbour results.", "tags": ["technical", "ml"] },
+    { "id": "standup-time", "content": "Team standup moved to 10:30 Pacific on Tuesdays and Thursdays only; other days are async updates in #standup.", "tags": ["process", "meetings"] },
+    { "id": "carol-reviews", "content": "Carol Diaz reviews all changes to the evaluation harness and tends to ask for ablations before approving.", "tags": ["people", "evals"] },
+    { "id": "backup-restore", "content": "Nightly backups exist for the papers database, but restores take about six hours; test on a copy before touching production.", "tags": ["technical", "data"] },
+    { "id": "license-check", "content": "Model weights under non-commercial licenses (e.g. CC BY-NC) cannot be used in anything shipped to the partner organization.", "tags": ["policy", "legal"] },
+    { "id": "paper-venue", "content": "The team targets workshop submissions first and only extends to main-conference papers when results replicate on a second dataset.", "tags": ["research", "decision"] },
+    { "id": "rate-limit", "content": "The external annotation API allows 60 requests per minute per key; bulk labelling jobs must be throttled or they get banned for 24 hours.", "tags": ["technical", "api"] },
+    { "id": "office-wifi", "content": "Guest Wi-Fi at the office blocks outbound SSH; use the VPN or the lab network for cluster access.", "tags": ["it"] },
+    { "id": "onboarding-doc", "content": "New hires should start from the onboarding doc in the wiki's 'Start here' page, which is kept current; older READMEs are stale.", "tags": ["process", "onboarding"] },
+    { "id": "sam-leave", "content": "Sam Weber is on parental leave until mid-November; the ingestion service is covered by Priya in the meantime.", "tags": ["people", "availability"] },
+    { "id": "metrics-dashboard", "content": "The eval metrics dashboard averages over seeds by default; toggle 'per-seed' to see variance before claiming an improvement.", "tags": ["evals", "tooling"] },
+    { "id": "prompt-versioning", "content": "Prompt templates live in the prompts/ directory with semantic version numbers; bump the minor version for any wording change.", "tags": ["evals", "process"] },
+    { "id": "security-contact", "content": "Suspected credential leaks go to security@ immediately and the key is rotated before any investigation.", "tags": ["policy", "security"] },
+    { "id": "invoice-format", "content": "Vendor invoices must be PDFs named <vendor>-<YYYY-MM>.pdf and uploaded to the finance drive; emailed invoices get lost.", "tags": ["admin", "billing"] },
+    { "id": "tokenizer-bug", "content": "The internal tokenizer mis-splits URLs containing underscores; strip or pre-split URLs before counting tokens for budget estimates.", "tags": ["technical", "ml"] },
+    { "id": "holiday-coverage", "content": "During the December holiday week only one on-call engineer covers all services; non-urgent requests wait until January.", "tags": ["process", "availability"] },
+    { "id": "dataset-consent", "content": "The forum dataset may only be used for aggregate analysis; quoting individual posts in publications requires author consent.", "tags": ["policy", "research", "data"] },
+    { "id": "kubernetes-quota", "content": "Each team namespace in the Kubernetes cluster has a 64-CPU quota; request increases through the platform team's form, not Slack.", "tags": ["technical", "compute", "process"] },
+    { "id": "meeting-notes", "content": "Decisions from the weekly research sync are recorded in the 'Decisions' wiki page; chat summaries are not authoritative.", "tags": ["process", "decision"] },
+    { "id": "latency-slo", "content": "The public inference API has a p95 latency SLO of 800 ms; changes that add model calls on the request path need a load test first.", "tags": ["technical", "slo"] },
+    { "id": "dana-finance", "content": "Dana Kim leads finance and prefers budget questions batched into a single weekly email.", "tags": ["people", "budget"] },
+    { "id": "repro-checklist", "content": "Before reporting a result, run the reproducibility checklist: pinned commit, pinned data version, seeds, and the exact command line.", "tags": ["research", "evals", "process"] },
+    { "id": "coffee-machine", "content": "The third-floor coffee machine is broken most Mondays; the second-floor one is reliable.", "tags": ["office"] }
+  ],
+  "turns": [
+    { "id": "t01", "relevant": ["billing-owner"], "messages": [
+      { "participant": "user", "text": "One of our partner invoices from August doesn't reconcile with what we were charged. Who should I talk to?" } ] },
+    { "id": "t02", "relevant": ["deploy-freeze"], "messages": [
+      { "participant": "user", "text": "It's Thursday evening and I've got a small config change ready. Can I push it to prod tonight?" } ] },
+    { "id": "t03", "relevant": ["oauth-expiry"], "messages": [
+      { "participant": "user", "text": "My overnight warehouse export job keeps dying about an hour in with authentication errors. The first chunks succeed." } ] },
+    { "id": "t04", "relevant": ["author-field"], "messages": [
+      { "participant": "user", "text": "I'm counting papers per researcher from the papers DB and the numbers look off, like some people are split into two entries." } ] },
+    { "id": "t05", "relevant": ["gpu-queue"], "messages": [
+      { "participant": "user", "text": "I submitted a 30-hour fine-tuning job to the cluster two days ago and it still hasn't started. Other people's jobs are running." } ] },
+    { "id": "t06", "relevant": ["rfc-process"], "messages": [
+      { "participant": "user", "text": "I want to replace our message queue with a different broker across all services. Can I just start on it next sprint?" } ] },
+    { "id": "t07", "relevant": ["bob-timezone"], "messages": [
+      { "participant": "user", "text": "I need Bob's input on the ingestion schema. Should I set up a call with him tomorrow at 4pm Pacific?" } ] },
+    { "id": "t08", "relevant": ["eval-seed", "metrics-dashboard"], "messages": [
+      { "participant": "user", "text": "The new prompt gets 2 points higher on our benchmark than last week's run. Is that a real improvement?" } ] },
+    { "id": "t09", "relevant": ["zulip-archive"], "messages": [
+      { "participant": "user", "text": "Someone claims they posted the decision in the Zulip thread back in March, but I can't find it in our export. Did they misremember?" } ] },
+    { "id": "t10", "relevant": ["grant-deadline"], "messages": [
+      { "participant": "user", "text": "What do I need to prepare for the foundation's quarterly report, and when is it due?" } ] },
+    { "id": "t11", "relevant": ["priya-ml", "tokenizer-bug"], "messages": [
+      { "participant": "user", "text": "Our token-count estimates for the crawl are way higher than the actual API usage, especially for pages full of links. Any idea why?" } ] },
+    { "id": "t12", "relevant": ["staging-db"], "messages": [
+      { "participant": "user", "text": "I created test records in prod on Wednesday but they're not in staging. Is the sync broken?" } ] },
+    { "id": "t13", "relevant": ["flaky-ci"], "messages": [
+      { "participant": "user", "text": "CI failed on test_ingest_large for my PR that only touches docs. What should I do?" } ] },
+    { "id": "t14", "relevant": ["budget-approval", "dana-finance"], "messages": [
+      { "participant": "user", "text": "We want to rent eight more GPUs for the ablation study, roughly $3,500 a month. Can I just go ahead?" } ] },
+    { "id": "t15", "relevant": ["interview-loop"], "messages": [
+      { "participant": "user", "text": "I'm scheduling a research engineer candidate. Should I send them the take-home assignment from the hiring folder?" } ] },
+    { "id": "t16", "relevant": ["logging-pii"], "messages": [
+      { "participant": "user", "text": "To debug the chat service I'd like to log every incoming prompt in full for a week. Any concerns?" } ] },
+    { "id": "t17", "relevant": ["vector-dim"], "messages": [
+      { "participant": "user", "text": "I added some new documents to the search index using a smaller, faster embedding model, and now search results are garbage for everything." } ] },
+    { "id": "t18", "relevant": ["license-check"], "messages": [
+      { "participant": "user", "text": "The Jina v5 embedding model scores best on our benchmark. Can we use it in the tool we're delivering to the partner org?" } ] },
+    { "id": "t19", "relevant": ["rate-limit"], "messages": [
+      { "participant": "user", "text": "I'm about to send 20,000 items to the annotation service in one go with a parallel script. Anything to watch out for?" } ] },
+    { "id": "t20", "relevant": ["sam-leave"], "messages": [
+      { "participant": "user", "text": "The ingestion service is throwing errors. Should I page Sam?" } ] },
+    { "id": "t21", "relevant": ["security-contact"], "messages": [
+      { "participant": "user", "text": "Oops, I think I pasted our warehouse API key into a public GitHub gist an hour ago. I deleted it already." } ] },
+    { "id": "t22", "relevant": ["dataset-consent"], "messages": [
+      { "participant": "user", "text": "For the paper I'd like to quote three really striking posts from the forum dataset as examples." } ] },
+    { "id": "t23", "relevant": ["kubernetes-quota"], "messages": [
+      { "participant": "user", "text": "Our pods are stuck Pending with 'exceeded quota' in our namespace. How do I get more CPU?" } ] },
+    { "id": "t24", "relevant": ["latency-slo"], "messages": [
+      { "participant": "user", "text": "I'd like to add a moderation model call before every response in the public inference API. Quick change, right?" } ] },
+    { "id": "t25", "relevant": ["repro-checklist", "carol-reviews"], "messages": [
+      { "participant": "user", "text": "I changed the evaluation harness scoring and I'm about to report the new numbers to the team." } ] },
+    { "id": "t26", "relevant": ["backup-restore"], "messages": [
+      { "participant": "user", "text": "I accidentally deleted a table in the papers database. Can we restore it from backup right now on prod?" } ] },
+    { "id": "t27", "relevant": ["billing-owner", "invoice-format"], "messages": [
+      { "participant": "user", "text": "A vendor emailed me their September invoice. What do I do with it?" } ] },
+    { "id": "t28", "relevant": ["deploy-freeze", "holiday-coverage"], "messages": [
+      { "participant": "user", "text": "Can I get the new dashboard feature reviewed and deployed during the December holiday week? It's not urgent but I'd like it out." } ] },
+    { "id": "t29", "relevant": ["prompt-versioning"], "messages": [
+      { "participant": "user", "text": "I tweaked two sentences in the grading prompt. Do I need to do anything else before running evals?" } ] },
+    { "id": "t30", "relevant": ["paper-venue"], "messages": [
+      { "participant": "user", "text": "Our result looks strong on one dataset. Should we aim for the main conference deadline next month?" } ] },
+    { "id": "n01", "relevant": [], "messages": [
+      { "participant": "user", "text": "Can you help me rephrase this sentence so it sounds less formal: 'We hereby request your attendance.'" } ] },
+    { "id": "n02", "relevant": [], "messages": [
+      { "participant": "user", "text": "What's the difference between precision and recall, briefly?" } ] },
+    { "id": "n03", "relevant": [], "messages": [
+      { "participant": "user", "text": "Write a haiku about autumn leaves." } ] },
+    { "id": "n04", "relevant": [], "messages": [
+      { "participant": "user", "text": "Thanks, that answer was great!" } ] },
+    { "id": "n05", "relevant": [], "messages": [
+      { "participant": "user", "text": "How do I reverse a list in Python?" } ] },
+    { "id": "n06", "relevant": [], "messages": [
+      { "participant": "user", "text": "Summarize the plot of Hamlet in three sentences." } ] },
+    { "id": "h01", "relevant": [], "messages": [
+      { "participant": "user", "text": "I'm writing a blog post about the history of billing systems in telecom. Any good sources?" } ] },
+    { "id": "h02", "relevant": [], "messages": [
+      { "participant": "user", "text": "Explain how OAuth 2.0 authorization code flow works for a single-page app, in general terms." } ] },
+    { "id": "h03", "relevant": [], "messages": [
+      { "participant": "user", "text": "What are good practices for running a productive team standup in general? I'm writing a management guide." } ] },
+    { "id": "h04", "relevant": [], "messages": [
+      { "participant": "user", "text": "Which is better for coffee at home, a French press or pour-over?" } ] },
+    { "id": "m01", "relevant": ["oauth-expiry"], "messages": [
+      { "participant": "user", "text": "I'm setting up a new nightly job that pulls from the data warehouse." },
+      { "participant": "researcher", "text": "Sounds good. How long do you expect each run to take, and how will it authenticate?" },
+      { "participant": "user", "text": "About three hours, using the standard service OAuth token we get at the start." } ] },
+    { "id": "m02", "relevant": ["carol-reviews", "repro-checklist"], "messages": [
+      { "participant": "user", "text": "I refactored how the harness aggregates per-task scores." },
+      { "participant": "researcher", "text": "Did the headline numbers change?" },
+      { "participant": "user", "text": "Slightly up. I'm opening the PR now and want it merged today." } ] }
+  ]
+}

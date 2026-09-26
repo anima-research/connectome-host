@@ -1,21 +1,12 @@
 import type { ContextInjection } from '@animalabs/context-manager';
 import type { Lesson } from './lessons-module.js';
-import { tokenize } from './lesson-search.js';
-import type { RetrievalReasoningConfig } from './retrieval-module.js';
 
-export const RETRIEVAL_TRACE_SCHEMA_VERSION = 1;
+export const RETRIEVAL_TRACE_SCHEMA_VERSION = 2;
 export const DEFAULT_RETRIEVAL_TRACE_CAPACITY = 100;
 export const DEFAULT_RETRIEVAL_TRACE_BYTE_BUDGET = 8 * 1024 * 1024;
 
 const MIN_RETRIEVAL_TRACE_BYTE_BUDGET = 1024;
-const PROVIDER_SERIALIZATION_LIMITS = {
-  maxDepth: 8,
-  maxNodes: 512,
-  maxArrayItems: 64,
-  maxObjectKeys: 64,
-  maxStringBytes: 16 * 1024,
-  maxTotalStringBytes: 128 * 1024,
-} as const;
+const MAX_ERROR_BYTES = 16 * 1024;
 
 export type RetrievalTraceOutcome =
   | 'not-started'
@@ -23,8 +14,6 @@ export type RetrievalTraceOutcome =
   | 'no-eligible-lessons'
   | 'no-recent-context'
   | 'cache-hit'
-  | 'no-concepts'
-  | 'no-candidates'
   | 'no-relevant-lessons'
   | 'injected'
   | 'error';
@@ -41,63 +30,39 @@ export interface RetrievalLessonTrace {
   deprecationReason?: string;
 }
 
-export interface RetrievalCandidateMatch {
-  concept: string;
-  keyword: string;
-  field: 'content' | 'tag';
-  tag?: string;
+/** A search result as the pipeline sees it, before tracing. */
+export interface RetrievalCandidateScores {
+  lesson: Lesson;
+  /** Reciprocal-rank-fusion score over all lexical and dense lists. */
+  fusedScore: number;
+  /** Best 1-based rank in any BM25 list; absent if no query shared a word with it. */
+  lexicalRank?: number;
+  /** Best 1-based rank in any dense list. */
+  denseRank?: number;
 }
 
 export interface RetrievalCandidateTrace extends RetrievalLessonTrace {
-  matches: RetrievalCandidateMatch[];
-}
-
-export interface RetrievalStageTrace {
-  systemPrompt: string;
-  /** Exact user input. Omitted from default HTTP views. */
-  input?: string;
-  rawOutput?: string;
-  /** Provider-returned content blocks, including any opaque/redacted reasoning blocks. */
-  responseContent?: unknown[];
-  responseContentTruncation?: RetrievalProviderTruncation;
-  parsedValues?: string[];
-  parseMode?: 'json' | 'array-extraction' | 'fallback' | 'invalid';
-  error?: string;
-}
-
-export type RetrievalProviderTruncationReason =
-  | 'max-depth'
-  | 'max-nodes'
-  | 'max-array-items'
-  | 'max-object-keys'
-  | 'max-string-bytes'
-  | 'max-total-string-bytes'
-  | 'non-json-value'
-  | 'serialization-error';
-
-export interface RetrievalProviderTruncation {
-  truncated: true;
-  reasons: RetrievalProviderTruncationReason[];
-  retainedNodes: number;
-  retainedStringBytes: number;
-  limits: typeof PROVIDER_SERIALIZATION_LIMITS;
+  fusedScore: number;
+  lexicalRank?: number;
+  denseRank?: number;
+  /** Reranker relevance in [0, 1], compared against config.relevanceThreshold. */
+  rerankScore: number;
 }
 
 export interface RetrievalTrace {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: number;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
   agentName: string;
   config: {
-    model: string;
-    requestedReasoning?: RetrievalReasoningConfig;
-    providerParams?: Record<string, unknown>;
-    providerParamsTruncation?: RetrievalProviderTruncation;
+    embeddingModel: string;
+    rerankerModel: string;
     minConfidence: number;
     maxCandidates: number;
     maxInjectedLessons: number;
+    relevanceThreshold: number;
   };
   context?: {
     hash: string;
@@ -112,14 +77,12 @@ export interface RetrievalTrace {
     sourceTraceEvicted?: boolean;
     sourceTraceTruncated?: boolean;
   };
-  conceptExtraction?: RetrievalStageTrace;
-  /** How candidates were chosen: the whole eligible library, or a BM25 shortlist of it. */
-  candidateSelection?: { mode: 'full-library' | 'bm25'; eligible: number };
+  /** Search queries derived from recent context. Omitted from default HTTP views. */
+  queries?: string[];
+  /** Conversation tail the reranker judged against. Omitted from default HTTP views. */
+  rerankQuery?: string;
+  /** Reranked candidates, in fused-search order. */
   candidates: RetrievalCandidateTrace[];
-  relevance?: RetrievalStageTrace & {
-    ran: boolean;
-    skippedReason?: string;
-  };
   relevantLessonIds: string[];
   injected: {
     lessonIds: string[];
@@ -151,12 +114,12 @@ export interface RetrievalTraceSource {
 
 export interface RetrievalTraceBeginOptions {
   agentName: string;
-  model: string;
-  requestedReasoning?: RetrievalReasoningConfig;
-  providerParams?: Record<string, unknown>;
+  embeddingModel: string;
+  rerankerModel: string;
   minConfidence: number;
   maxCandidates: number;
   maxInjectedLessons: number;
+  relevanceThreshold: number;
 }
 
 export interface RetrievalTraceStoreOptions {
@@ -169,37 +132,14 @@ function errorMessage(error: unknown): string {
     const value = error instanceof Error ? error.message : error;
     return truncateUtf8(
       typeof value === 'string' ? value : String(value),
-      PROVIDER_SERIALIZATION_LIMITS.maxStringBytes,
+      MAX_ERROR_BYTES,
     );
   } catch {
     return 'unavailable error';
   }
 }
 
-interface ProviderSerializationState {
-  nodes: number;
-  stringBytes: number;
-  reasons: Set<RetrievalProviderTruncationReason>;
-}
-
 const textEncoder = new TextEncoder();
-const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
-  'byteLength',
-)?.get;
-const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype) as object,
-  'byteLength',
-)?.get;
-const dataViewByteLengthGetter = Object.getOwnPropertyDescriptor(
-  DataView.prototype,
-  'byteLength',
-)?.get;
-const mapSizeGetter = Object.getOwnPropertyDescriptor(Map.prototype, 'size')?.get;
-const setSizeGetter = Object.getOwnPropertyDescriptor(Set.prototype, 'size')?.get;
-const bigIntToString = BigInt.prototype.toString;
-const dateToISOString = Date.prototype.toISOString;
-
 function utf8Bytes(value: string): number {
   return textEncoder.encode(value).byteLength;
 }
@@ -226,236 +166,6 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return value.slice(0, low) + suffix;
 }
 
-function boundedProviderString(value: string, state: ProviderSerializationState): string {
-  const valueBytes = utf8Bytes(value);
-  const remainingTotal = Math.max(
-    0,
-    PROVIDER_SERIALIZATION_LIMITS.maxTotalStringBytes - state.stringBytes,
-  );
-  if (valueBytes > PROVIDER_SERIALIZATION_LIMITS.maxStringBytes) {
-    state.reasons.add('max-string-bytes');
-  }
-  if (valueBytes > remainingTotal) state.reasons.add('max-total-string-bytes');
-  const retained = truncateUtf8(
-    value,
-    Math.min(PROVIDER_SERIALIZATION_LIMITS.maxStringBytes, remainingTotal),
-  );
-  state.stringBytes += utf8Bytes(retained);
-  return retained;
-}
-
-function intrinsicNonnegativeInteger(
-  value: object,
-  getter: (() => unknown) | undefined,
-): number | undefined {
-  if (!getter) return undefined;
-  try {
-    const metadata = Reflect.apply(getter, value, []);
-    return typeof metadata === 'number'
-      && Number.isSafeInteger(metadata)
-      && metadata >= 0
-      ? metadata
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function jsonSafeValue(
-  value: unknown,
-  state: ProviderSerializationState,
-  ancestors = new WeakSet<object>(),
-  depth = 0,
-): unknown {
-  if (state.nodes >= PROVIDER_SERIALIZATION_LIMITS.maxNodes) {
-    state.reasons.add('max-nodes');
-    return { type: 'truncated', reason: 'max-nodes', unavailable: true };
-  }
-  state.nodes++;
-
-  if (value === null || typeof value === 'boolean') return value;
-  if (typeof value === 'string') return boundedProviderString(value, state);
-  if (typeof value === 'number') {
-    return Number.isFinite(value)
-      ? value
-      : { type: 'number', value: String(value), unavailable: true };
-  }
-  if (typeof value === 'bigint') {
-    return {
-      type: 'bigint',
-      value: boundedProviderString(Reflect.apply(bigIntToString, value, []), state),
-      unavailable: true,
-    };
-  }
-  if (typeof value === 'undefined' || typeof value === 'symbol' || typeof value === 'function') {
-    return { type: typeof value, unavailable: true };
-  }
-  if (depth >= PROVIDER_SERIALIZATION_LIMITS.maxDepth) {
-    state.reasons.add('max-depth');
-    return { type: 'max-depth', unavailable: true };
-  }
-
-  const object = value as object;
-  if (value instanceof ArrayBuffer) {
-    state.reasons.add('non-json-value');
-    const byteLength = intrinsicNonnegativeInteger(value, arrayBufferByteLengthGetter);
-    return {
-      type: 'array-buffer',
-      ...(byteLength !== undefined ? { byteLength } : {}),
-      unavailable: true,
-    };
-  }
-  if (ArrayBuffer.isView(value)) {
-    state.reasons.add('non-json-value');
-    const getter = value instanceof DataView
-      ? dataViewByteLengthGetter
-      : typedArrayByteLengthGetter;
-    const byteLength = intrinsicNonnegativeInteger(value, getter);
-    return {
-      type: 'array-buffer-view',
-      ...(byteLength !== undefined ? { byteLength } : {}),
-      unavailable: true,
-    };
-  }
-  if (value instanceof Map) {
-    state.reasons.add('non-json-value');
-    const size = intrinsicNonnegativeInteger(value, mapSizeGetter);
-    return { type: 'map', ...(size !== undefined ? { size } : {}), unavailable: true };
-  }
-  if (value instanceof Set) {
-    state.reasons.add('non-json-value');
-    const size = intrinsicNonnegativeInteger(value, setSizeGetter);
-    return { type: 'set', ...(size !== undefined ? { size } : {}), unavailable: true };
-  }
-  if (ancestors.has(object)) return { type: 'circular', unavailable: true };
-  ancestors.add(object);
-  try {
-    if (Array.isArray(value)) {
-      const result: unknown[] = [];
-      const retainedLength = Math.min(value.length, PROVIDER_SERIALIZATION_LIMITS.maxArrayItems);
-      if (value.length > retainedLength) state.reasons.add('max-array-items');
-      for (let i = 0; i < retainedLength; i++) {
-        if (state.nodes >= PROVIDER_SERIALIZATION_LIMITS.maxNodes) {
-          state.reasons.add('max-nodes');
-          result.push({ type: 'truncated', reason: 'max-nodes', unavailable: true });
-          break;
-        }
-        result.push(jsonSafeValue(value[i], state, ancestors, depth + 1));
-      }
-      if (value.length > retainedLength) {
-        result.push({
-          type: 'truncated',
-          reason: 'max-array-items',
-          omittedItems: value.length - retainedLength,
-          unavailable: true,
-        });
-      }
-      return result;
-    }
-    if (value instanceof Date) {
-      try {
-        return boundedProviderString(Reflect.apply(dateToISOString, value, []), state);
-      } catch {
-        return { type: 'date', unavailable: true };
-      }
-    }
-
-    const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    const retainedKeys: string[] = [];
-    let omittedKeys = false;
-    try {
-      for (const key in object as Record<string, unknown>) {
-        if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
-        if (retainedKeys.length >= PROVIDER_SERIALIZATION_LIMITS.maxObjectKeys) {
-          omittedKeys = true;
-          break;
-        }
-        retainedKeys.push(key);
-      }
-    } catch {
-      return { type: 'unreadable', unavailable: true };
-    }
-    if (omittedKeys) state.reasons.add('max-object-keys');
-    for (const originalKey of retainedKeys) {
-      if (state.nodes >= PROVIDER_SERIALIZATION_LIMITS.maxNodes) {
-        state.reasons.add('max-nodes');
-        result.__truncated__ = { type: 'truncated', reason: 'max-nodes', unavailable: true };
-        break;
-      }
-      let key = boundedProviderString(originalKey, state);
-      for (let suffix = 2; Object.prototype.hasOwnProperty.call(result, key); suffix++) {
-        key = `${truncateUtf8(key, 256)}#${suffix}`;
-      }
-      try {
-        result[key] = jsonSafeValue(
-          (object as Record<string, unknown>)[originalKey],
-          state,
-          ancestors,
-          depth + 1,
-        );
-      } catch {
-        result[key] = { type: 'unreadable', unavailable: true };
-      }
-    }
-    if (omittedKeys) {
-      result.__truncated__ = {
-        type: 'truncated',
-        reason: 'max-object-keys',
-        omittedKeysAtLeast: 1,
-        unavailable: true,
-      };
-    }
-    return result;
-  } finally {
-    ancestors.delete(object);
-  }
-}
-
-function snapshotProviderValue(value: unknown): {
-  value: unknown;
-  truncation?: RetrievalProviderTruncation;
-} {
-  const state: ProviderSerializationState = { nodes: 0, stringBytes: 0, reasons: new Set() };
-  try {
-    const snapshot = jsonSafeValue(value, state);
-    const reasons = [...state.reasons];
-    return {
-      value: snapshot,
-      ...(reasons.length > 0 ? {
-        truncation: {
-          truncated: true,
-          reasons,
-          retainedNodes: state.nodes,
-          retainedStringBytes: state.stringBytes,
-          limits: PROVIDER_SERIALIZATION_LIMITS,
-        },
-      } : {}),
-    };
-  } catch {
-    return {
-      value: { type: 'unreadable', unavailable: true },
-      truncation: {
-        truncated: true,
-        reasons: ['serialization-error'],
-        retainedNodes: state.nodes,
-        retainedStringBytes: state.stringBytes,
-        limits: PROVIDER_SERIALIZATION_LIMITS,
-      },
-    };
-  }
-}
-
-function snapshotResponseContent(content: readonly unknown[]): {
-  content: unknown[];
-  truncation?: RetrievalProviderTruncation;
-} {
-  const snapshot = snapshotProviderValue(content);
-  return {
-    content: Array.isArray(snapshot.value) ? snapshot.value : [snapshot.value],
-    ...(snapshot.truncation ? { truncation: snapshot.truncation } : {}),
-  };
-}
-
 function lessonSnapshot(lesson: Lesson): RetrievalLessonTrace {
   return {
     id: lesson.id,
@@ -470,27 +180,6 @@ function lessonSnapshot(lesson: Lesson): RetrievalLessonTrace {
       ? { deprecationReason: lesson.deprecationReason }
       : {}),
   };
-}
-
-function candidateMatches(concepts: string[], lesson: Lesson): RetrievalCandidateMatch[] {
-  const matches: RetrievalCandidateMatch[] = [];
-  const content = new Set(tokenize(lesson.content));
-  const tags = lesson.tags.map(tag => ({ original: tag, terms: new Set(tokenize(tag)) }));
-
-  for (const concept of concepts) {
-    for (const keyword of new Set(tokenize(concept))) {
-      if (content.has(keyword)) {
-        matches.push({ concept, keyword, field: 'content' });
-      }
-      for (const tag of tags) {
-        if (tag.terms.has(keyword)) {
-          matches.push({ concept, keyword, field: 'tag', tag: tag.original });
-        }
-      }
-    }
-  }
-
-  return matches;
 }
 
 /**
@@ -547,75 +236,22 @@ export class RetrievalTraceRun {
     });
   }
 
-  startConceptExtraction(systemPrompt: string, input: string): void {
+  recordQueries(queries: string[], rerankQuery: string): void {
     this.update(trace => {
-      trace.conceptExtraction = { systemPrompt, input };
+      trace.queries = [...queries];
+      trace.rerankQuery = rerankQuery;
     });
   }
 
-  finishConceptExtraction(
-    rawOutput: string,
-    parsedValues: string[],
-    parseMode: RetrievalStageTrace['parseMode'],
-    responseContent: readonly unknown[] = [],
-  ): void {
+  recordCandidates(candidates: Array<RetrievalCandidateScores & { rerankScore: number }>): void {
     this.update(trace => {
-      const snapshot = snapshotResponseContent(responseContent);
-      if (!trace.conceptExtraction) trace.conceptExtraction = { systemPrompt: '' };
-      trace.conceptExtraction.rawOutput = rawOutput;
-      trace.conceptExtraction.responseContent = snapshot.content;
-      if (snapshot.truncation) {
-        trace.conceptExtraction.responseContentTruncation = snapshot.truncation;
-      }
-      trace.conceptExtraction.parsedValues = [...parsedValues];
-      trace.conceptExtraction.parseMode = parseMode;
-    });
-  }
-
-  recordCandidates(
-    concepts: string[],
-    lessons: Lesson[],
-    selection: { mode: 'full-library' | 'bm25'; eligible: number },
-  ): void {
-    this.update(trace => {
-      trace.candidateSelection = { ...selection };
-      trace.candidates = lessons.map(lesson => ({
-        ...lessonSnapshot(lesson),
-        matches: candidateMatches(concepts, lesson),
+      trace.candidates = candidates.map(c => ({
+        ...lessonSnapshot(c.lesson),
+        fusedScore: c.fusedScore,
+        ...(c.lexicalRank !== undefined ? { lexicalRank: c.lexicalRank } : {}),
+        ...(c.denseRank !== undefined ? { denseRank: c.denseRank } : {}),
+        rerankScore: c.rerankScore,
       }));
-    });
-  }
-
-  recordRelevanceSkipped(reason: string): void {
-    this.update(trace => {
-      trace.relevance = {
-        ran: false,
-        skippedReason: reason,
-        systemPrompt: '',
-      };
-    });
-  }
-
-  startRelevance(systemPrompt: string, input: string): void {
-    this.update(trace => {
-      trace.relevance = { ran: true, systemPrompt, input };
-    });
-  }
-
-  finishRelevance(
-    rawOutput: string,
-    parsedIds: string[],
-    parseMode: RetrievalStageTrace['parseMode'],
-    responseContent: readonly unknown[] = [],
-  ): void {
-    this.update(trace => {
-      const snapshot = snapshotResponseContent(responseContent);
-      if (!trace.relevance) trace.relevance = { ran: true, systemPrompt: '' };
-      trace.relevance.rawOutput = rawOutput;
-      trace.relevance.responseContent = snapshot.content;
-      if (snapshot.truncation) trace.relevance.responseContentTruncation = snapshot.truncation;
-      trace.relevance.parsedValues = [...parsedIds];
-      trace.relevance.parseMode = parseMode;
     });
   }
 
@@ -632,26 +268,6 @@ export class RetrievalTraceRun {
         lessons: lessons.map(lessonSnapshot),
       };
       recordInjectionShape(trace, injections);
-    });
-  }
-
-  recordStageError(stage: 'conceptExtraction' | 'relevance', error: unknown): void {
-    this.update(trace => {
-      const existing = trace[stage];
-      if (stage === 'relevance') {
-        trace.relevance = {
-          ran: true,
-          systemPrompt: existing?.systemPrompt ?? '',
-          ...(existing?.input ? { input: existing.input } : {}),
-          error: errorMessage(error),
-        };
-      } else {
-        trace.conceptExtraction = {
-          systemPrompt: existing?.systemPrompt ?? '',
-          ...(existing?.input ? { input: existing.input } : {}),
-          error: errorMessage(error),
-        };
-      }
     });
   }
 
@@ -691,28 +307,18 @@ export class RetrievalTraceStore {
   }
 
   begin(options: RetrievalTraceBeginOptions): RetrievalTraceRun {
-    const providerParams = options.providerParams
-      ? snapshotProviderValue(options.providerParams)
-      : undefined;
     const trace: RetrievalTrace = {
       schemaVersion: RETRIEVAL_TRACE_SCHEMA_VERSION,
       id: this.nextId++,
       startedAt: new Date().toISOString(),
       agentName: options.agentName,
       config: {
-        model: options.model,
-        ...(options.requestedReasoning
-          ? { requestedReasoning: { ...options.requestedReasoning } }
-          : {}),
-        ...(providerParams ? {
-          providerParams: providerParams.value as Record<string, unknown>,
-          ...(providerParams.truncation
-            ? { providerParamsTruncation: providerParams.truncation }
-            : {}),
-        } : {}),
+        embeddingModel: options.embeddingModel,
+        rerankerModel: options.rerankerModel,
         minConfidence: options.minConfidence,
         maxCandidates: options.maxCandidates,
         maxInjectedLessons: options.maxInjectedLessons,
+        relevanceThreshold: options.relevanceThreshold,
       },
       cache: { hit: false },
       candidates: [],
@@ -809,10 +415,12 @@ export class RetrievalTraceStore {
       ...(trace.durationMs !== undefined ? { durationMs: trace.durationMs } : {}),
       agentName: truncateUtf8(trace.agentName, 128),
       config: {
-        model: truncateUtf8(trace.config.model, 128),
+        embeddingModel: truncateUtf8(trace.config.embeddingModel, 256),
+        rerankerModel: truncateUtf8(trace.config.rerankerModel, 256),
         minConfidence: trace.config.minConfidence,
         maxCandidates: trace.config.maxCandidates,
         maxInjectedLessons: trace.config.maxInjectedLessons,
+        relevanceThreshold: trace.config.relevanceThreshold,
       },
       cache: { hit: trace.cache.hit },
       candidates: [],
@@ -879,8 +487,8 @@ export class RetrievalTraceStore {
 
     for (const trace of selected) {
       if (trace.context) delete trace.context.input;
-      if (trace.conceptExtraction) delete trace.conceptExtraction.input;
-      if (trace.relevance) delete trace.relevance.input;
+      delete trace.queries;
+      delete trace.rerankQuery;
     }
     return selected;
   }

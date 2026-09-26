@@ -34,7 +34,7 @@ A general-purpose agent TUI host with recipe-based configuration. Point it at an
                     │  │   Modules       │  │  (recipe-toggleable)
                     │  │  - subagent     │──┼── spawn/fork ephemeral agents
                     │  │  - lessons      │──┼── CRUD knowledge store (Chronicle)
-                    │  │  - retrieval    │──┼── LLM-as-retriever (Haiku)
+                    │  │  - retrieval    │──┼── local embed + rerank
                     │  │  - workspace    │──┼── mount-based filesystem (Chronicle-backed)
                     │  │  - tui          │  │  (always-on)
                     │  └────────┬────────┘  │
@@ -207,22 +207,24 @@ interface Lesson {
 
 ### Retrieval Module (`retrieval-module.ts`)
 
-Semantic memory lookup using a three-step LLM-as-retriever pipeline. Runs in `gatherContext()` before each main-agent inference.
+Lesson retrieval with local models — no API calls. Runs in `gatherContext()` before each main-agent inference.
 
 ```
- Step 1: Flag concepts        Step 2: Select candidates          Step 3: Validate
- ┌──────────────────┐         ┌──────────────────────────┐       ┌──────────────────┐
- │ Recent messages   │──model──│ ≤ maxCandidates eligible │──────│ Candidate lessons │──model──│ Relevant, in │
- │ → "What concepts  │         │   → whole library        │      │ (≤ maxCandidates) │        │ salience     │
- │   need background │         │ else BM25 shortlist on   │      └──────────────────┘        │ order        │
- │   knowledge?"     │         │   the flagged concepts   │                                   └──────────────┘
- └──────────────────┘         └──────────────────────────┘
+ Step 1: Search                               Step 2: Rerank                   Step 3: Inject
+ ┌──────────────────────────────────┐         ┌──────────────────────────┐     ┌──────────────────┐
+ │ queries: latest incoming msg,    │  RRF    │ Qwen3-Reranker-0.6B      │     │ relevant lessons │
+ │ latest own msg, ≤4 window chunks │──top──▶ │ P(yes) per candidate vs  │──▶  │ in rankScore     │
+ │ × (BM25 + Qwen3-Embedding-0.6B)  │ maxCand │ conversation tail;       │     │ (salience) order │
+ └──────────────────────────────────┘         │ ≥ relevanceThreshold     │     │ ≤ maxInjected    │
+                                              └──────────────────────────┘     └──────────────────┘
 ```
 
-- Steps 1 and 3 use the retrieval model (default Haiku). An empty concept list ends the run with no second call.
-- Step 2 makes no model call. Up to `maxCandidates` (default 100) eligible lessons, the relevance model sees the whole library, so relevance is its semantic judgment rather than a keyword filter's. Larger libraries are shortlisted by BM25 (whole-word, stopword-free, IDF-weighted; no stemming, so `token` ≠ `tokens`).
-- Step 3 always runs. An unparseable judgment (after extracting a bracketed array from prose) injects nothing.
-- Relevant lessons are injected in `rankScore` order, up to `maxInjected`: the model decides what is relevant, salience decides what comes to mind first.
+- Models run in-process through `node-llama-cpp` (Metal / CUDA / Vulkan / CPU, auto-selected), GGUF Q8_0, ~1.3 GB downloaded on first use to `CONNECTOME_MODELS_DIR` (default `~/.cache/connectome-host/models`). Loading starts at host startup so the first turn doesn't wait on it; a load failure resurfaces as an `error` trace on every retrieval.
+- No concept-extraction step: several short queries replace it, so no single embedding averages a long multi-topic window. BM25 and dense lists from every query are merged by reciprocal rank fusion; the top `maxCandidates` (default 16) go to the reranker.
+- Lesson embeddings are cached by document text, recomputed on edit, and pruned when a lesson leaves the eligible set.
+- The reranker judges each candidate against the last ~1200 characters of conversation with a task-specific instruction. Its scores are bimodal; the default `relevanceThreshold` of 0.3 comes from `scripts/retrieval-calibration/` (synthetic set, see the script).
+- Relevant lessons are injected in `rankScore` order, up to `maxInjected`: the reranker decides what is relevant, salience decides what comes to mind first.
+- Measured on an M5 Mac (Metal): median ~650 ms per turn with 16 candidates; rerank cost is linear in `maxCandidates` and in the conversation-tail length.
 - Results cached by context hash — skips entirely if conversation hasn't changed
 - Fails open: on error, returns empty (never blocks inference)
 
