@@ -2,7 +2,8 @@
 
 The retrieval module can record a bounded, per-run explanation of automatic
 lesson selection. The trace shows which concepts the selector returned, which
-lessons matched mechanically, which candidates survived relevance filtering,
+lessons became candidates (the whole library, or a BM25 shortlist of it), which
+candidates survived relevance filtering,
 and the exact lesson block injected into the next compile.
 
 Tracing is diagnostic. It does not change selection, trigger an extra model
@@ -52,8 +53,8 @@ Open:
 http://127.0.0.1:7340/debug/retrieval/view
 ```
 
-The viewer highlights selected lessons, lists all mechanically matched
-candidates and their match provenance, summarizes the relevance decision, and
+The viewer highlights selected lessons, lists all candidates with how they were
+selected and their whole-word match provenance, summarizes the relevance decision, and
 keeps the retained trace JSON behind a diagnostic disclosure. Each run is
 labeled with the invoking agent name. Separate Host processes retain separate
 trace stores and viewers; the endpoint does not aggregate fleet children.
@@ -86,7 +87,9 @@ Each trace can include:
 - recent-context hash, message count, and available message IDs;
 - selector prompt, raw returned text, normalized provider blocks, parsed
   concepts, and parse mode;
-- every mechanical candidate, lesson snapshot, and content/tag match reason;
+- `candidateSelection` (`full-library` or `bm25`, plus the eligible count),
+  every candidate, lesson snapshot, and whole-word content/tag match terms
+  (informational: in `full-library` mode a candidate need not match anything);
 - relevance-call output or the reason validation was skipped;
 - final relevant and injected lesson IDs, exact lesson snapshots, injection
   namespace/position, and rendered `## Retrieved Knowledge` block;
@@ -164,8 +167,12 @@ normal model calls and lesson lookup when the agent gathers context.
   restart with the updated recipe.
 - Empty `traces`: no retrieval run has completed or started since this Host
   process began.
-- Many candidates but few selected lessons: the relevance stage is filtering
-  mechanical keyword matches. `maxInjected` is a ceiling, not a quota.
+- Many candidates but few selected lessons: expected — in `full-library` mode
+  the relevance stage sees every eligible lesson. `maxInjected` is a ceiling,
+  not a quota.
+- A relevant lesson never appears as a candidate: the library exceeds
+  `maxCandidates` and BM25 found no shared whole word with the flagged
+  concepts. Raise `maxCandidates`, or add a tag using the missing vocabulary.
 - `sourceTraceEvicted: true`: a cache hit refers to a run older than the
   in-memory retention window; the exact selected lesson snapshots remain on the
   cache-hit trace.

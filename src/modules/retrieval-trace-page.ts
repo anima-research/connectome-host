@@ -160,7 +160,11 @@ function renderCandidates(trace, body) {
   const candidates = Array.isArray(trace.candidates) ? trace.candidates : [];
   const selectedIds = new Set(trace.injected && Array.isArray(trace.injected.lessonIds) ? trace.injected.lessonIds : []);
   const heading = element('div', 'section-heading');
-  heading.append(element('h2', '', 'Candidate lessons'), element('span', 'count', candidates.length + ' mechanically matched'));
+  const selection = trace.candidateSelection;
+  const countText = !selection ? candidates.length + ' mechanically matched'
+    : selection.mode === 'full-library' ? candidates.length + ' (whole eligible library)'
+    : candidates.length + ' BM25-shortlisted of ' + selection.eligible + ' eligible';
+  heading.append(element('h2', '', 'Candidate lessons'), element('span', 'count', countText));
   section.append(heading);
   if (candidates.length) {
     const list = element('div', 'candidate-list');

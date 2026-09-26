@@ -3,11 +3,11 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   INITIAL_STABILITY_DAYS,
   LessonsModule,
-  lexicalSimilarity,
   rankScore,
   retrievability,
   type Lesson,
 } from '../src/modules/lessons-module.js';
+import { bm25Scores, lexicalSimilarity } from '../src/modules/lesson-search.js';
 
 const DAY = 86_400_000;
 
@@ -191,5 +191,33 @@ describe('nothing is lost', () => {
     expect((live.data as { count: number }).count).toBe(0);
     expect((archive.data as { lessons: Array<{ id: string; supersededBy?: string }> }).lessons)
       .toMatchObject([{ id: oldId, supersededBy: expect.any(String) }]);
+  });
+});
+
+describe('bm25Scores', () => {
+  const docs = [
+    lesson({ id: 'a', content: 'OAuth tokens expire after one hour' }),
+    lesson({ id: 'b', content: 'Deploys are frozen on Fridays' }),
+    lesson({ id: 'c', content: 'tokens tokens everywhere, and the OAuth docs are thin', tags: ['docs'] }),
+  ];
+
+  test('matches whole words only and scores non-matching lessons zero', () => {
+    const [a, b] = bm25Scores('expire', docs);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBe(0);
+    expect(bm25Scores('pire', docs)).toEqual([0, 0, 0]);
+  });
+
+  test('rare terms outweigh common ones', () => {
+    const [a, , c] = bm25Scores('oauth expire', docs);
+    expect(a).toBeGreaterThan(c);
+  });
+
+  test('stopword-only queries match nothing', () => {
+    expect(bm25Scores('the and of', docs)).toEqual([0, 0, 0]);
+  });
+
+  test('tags are searchable', () => {
+    expect(bm25Scores('docs', docs)[2]).toBeGreaterThan(0);
   });
 });

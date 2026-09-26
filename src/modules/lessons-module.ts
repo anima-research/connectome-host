@@ -34,6 +34,7 @@ import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { lexicalSimilarity } from './lesson-search.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -152,30 +153,6 @@ export function rankScore(lesson: Lesson, now: number): number {
 
 /** Jaccard similarity at or above which a live lesson counts as a near-duplicate. */
 export const DUPLICATE_THRESHOLD = 0.5;
-
-const STOPWORDS = new Set([
-  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can', 'had',
-  'her', 'was', 'one', 'our', 'out', 'has', 'his', 'how', 'its', 'may', 'new',
-  'now', 'see', 'two', 'way', 'who', 'did', 'get', 'let', 'say', 'she', 'too',
-  'use', 'that', 'with', 'have', 'this', 'will', 'your', 'from', 'they', 'been',
-  'were', 'when', 'what', 'which', 'their', 'there', 'than', 'then', 'them',
-  'these', 'those', 'into', 'also', 'should', 'would', 'could', 'about',
-]);
-
-function contentWords(text: string): Set<string> {
-  return new Set(
-    text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3 && !STOPWORDS.has(w)),
-  );
-}
-
-export function lexicalSimilarity(a: string, b: string): number {
-  const wa = contentWords(a);
-  const wb = contentWords(b);
-  if (wa.size === 0 || wb.size === 0) return 0;
-  let shared = 0;
-  for (const w of wa) if (wb.has(w)) shared++;
-  return shared / (wa.size + wb.size - shared);
-}
 
 // ---------------------------------------------------------------------------
 // Module

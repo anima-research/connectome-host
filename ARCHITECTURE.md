@@ -210,20 +210,21 @@ interface Lesson {
 Semantic memory lookup using a three-step LLM-as-retriever pipeline. Runs in `gatherContext()` before each main-agent inference.
 
 ```
- Step 1: Flag concepts        Step 2: Keyword query      Step 3: Validate
- ┌──────────────────┐         ┌──────────────────┐       ┌──────────────────┐
- │ Recent messages   │──Haiku──│ Concept keywords │──DB──│ Candidate lessons │──Haiku──│ Relevant only │
- │ → "What concepts  │         │ ["RFC", "auth"]  │      │ (top 20 by rank)  │        │ (filtered IDs)│
- │   need background │         └──────────────────┘      └──────────────────┘        └───────────────┘
- │   knowledge?"     │
- └──────────────────┘
+ Step 1: Flag concepts        Step 2: Select candidates          Step 3: Validate
+ ┌──────────────────┐         ┌──────────────────────────┐       ┌──────────────────┐
+ │ Recent messages   │──model──│ ≤ maxCandidates eligible │──────│ Candidate lessons │──model──│ Relevant, in │
+ │ → "What concepts  │         │   → whole library        │      │ (≤ maxCandidates) │        │ salience     │
+ │   need background │         │ else BM25 shortlist on   │      └──────────────────┘        │ order        │
+ │   knowledge?"     │         │   the flagged concepts   │                                   └──────────────┘
+ └──────────────────┘         └──────────────────────────┘
 ```
 
-- Steps 1 and 3 use Haiku (~$0.001 each)
-- Step 2 is mechanical keyword matching (no LLM call)
+- Steps 1 and 3 use the retrieval model (default Haiku). An empty concept list ends the run with no second call.
+- Step 2 makes no model call. Up to `maxCandidates` (default 100) eligible lessons, the relevance model sees the whole library, so relevance is its semantic judgment rather than a keyword filter's. Larger libraries are shortlisted by BM25 (whole-word, stopword-free, IDF-weighted; no stemming, so `token` ≠ `tokens`).
+- Step 3 always runs. An unparseable judgment (after extracting a bracketed array from prose) injects nothing.
+- Relevant lessons are injected in `rankScore` order, up to `maxInjected`: the model decides what is relevant, salience decides what comes to mind first.
 - Results cached by context hash — skips entirely if conversation hasn't changed
 - Fails open: on error, returns empty (never blocks inference)
-- Short-circuits: if only 3 or fewer candidates, skips validation step
 
 ### Session Manager (`session-manager.ts`)
 

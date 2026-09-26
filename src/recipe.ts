@@ -598,6 +598,8 @@ export interface RecipeModules {
   retrieval?: boolean | {
     model?: string;
     maxInjected?: number;
+    /** Most lessons the relevance model sees per run (default 100); larger libraries are BM25-shortlisted. */
+    maxCandidates?: number;
     /**
      * Optional OpenAI Responses/Codex reasoning effort for both retrieval calls.
      * Requires an explicit retrieval model.

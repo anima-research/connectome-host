@@ -1,5 +1,6 @@
 import type { ContextInjection } from '@animalabs/context-manager';
 import type { Lesson } from './lessons-module.js';
+import { tokenize } from './lesson-search.js';
 import type { RetrievalReasoningConfig } from './retrieval-module.js';
 
 export const RETRIEVAL_TRACE_SCHEMA_VERSION = 1;
@@ -112,6 +113,8 @@ export interface RetrievalTrace {
     sourceTraceTruncated?: boolean;
   };
   conceptExtraction?: RetrievalStageTrace;
+  /** How candidates were chosen: the whole eligible library, or a BM25 shortlist of it. */
+  candidateSelection?: { mode: 'full-library' | 'bm25'; eligible: number };
   candidates: RetrievalCandidateTrace[];
   relevance?: RetrievalStageTrace & {
     ran: boolean;
@@ -471,16 +474,16 @@ function lessonSnapshot(lesson: Lesson): RetrievalLessonTrace {
 
 function candidateMatches(concepts: string[], lesson: Lesson): RetrievalCandidateMatch[] {
   const matches: RetrievalCandidateMatch[] = [];
-  const content = lesson.content.toLowerCase();
-  const tags = lesson.tags.map(tag => ({ original: tag, lower: tag.toLowerCase() }));
+  const content = new Set(tokenize(lesson.content));
+  const tags = lesson.tags.map(tag => ({ original: tag, terms: new Set(tokenize(tag)) }));
 
   for (const concept of concepts) {
-    for (const keyword of concept.toLowerCase().split(/\s+/)) {
-      if (content.includes(keyword)) {
+    for (const keyword of new Set(tokenize(concept))) {
+      if (content.has(keyword)) {
         matches.push({ concept, keyword, field: 'content' });
       }
       for (const tag of tags) {
-        if (tag.lower.includes(keyword)) {
+        if (tag.terms.has(keyword)) {
           matches.push({ concept, keyword, field: 'tag', tag: tag.original });
         }
       }
@@ -569,8 +572,13 @@ export class RetrievalTraceRun {
     });
   }
 
-  recordCandidates(concepts: string[], lessons: Lesson[]): void {
+  recordCandidates(
+    concepts: string[],
+    lessons: Lesson[],
+    selection: { mode: 'full-library' | 'bm25'; eligible: number },
+  ): void {
     this.update(trace => {
+      trace.candidateSelection = { ...selection };
       trace.candidates = lessons.map(lesson => ({
         ...lessonSnapshot(lesson),
         matches: candidateMatches(concepts, lesson),

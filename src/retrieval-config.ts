@@ -35,5 +35,6 @@ export function buildRetrievalModuleConfig(
     retrievalModel: config.model,
     retrievalReasoning,
     maxInjectedLessons: config.maxInjected,
+    maxCandidates: config.maxCandidates,
   };
 }
