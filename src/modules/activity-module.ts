@@ -212,9 +212,11 @@ export class ActivityModule implements Module {
       this.jam.until = until;
       return;
     }
-    // A different jam kind starts a new episode; channels told about the old
-    // one are told again only when they are active again.
-    this.jam = { kind, message, since: this.now(), until, notified: new Map(), markerWritten: false };
+    // A different jam kind continues the episode for the channels already
+    // told: they are not told twice, and they still get the "back" line when
+    // the new jam clears. Their wait did not restart because the reason changed.
+    const notified = this.jam?.notified ?? new Map<string, number>();
+    this.jam = { kind, message, since: this.jam?.since ?? this.now(), until, notified, markerWritten: false };
   }
 
   /** Incoming traffic on a subscribed channel while jammed: say so, once. */
@@ -224,8 +226,12 @@ export class ActivityModule implements Module {
     const last = jam.notified.get(channelId);
     const now = this.now();
     if (last !== undefined) {
-      const pastEnd = jam.until === undefined || jam.until <= now;
-      if (!pastEnd || now - last < RENOTIFY_MS) return;
+      // One notice per episode. The only reason to speak again is that the
+      // announced end has passed and the jam is still on — the notice was
+      // wrong about "expected back after". No announced end ⇒ nothing to
+      // correct ⇒ silence until the clear.
+      const announcedEndPassed = jam.until !== undefined && jam.until <= now;
+      if (!announcedEndPassed || now - last < RENOTIFY_MS) return;
     }
     jam.notified.set(channelId, now);
     const who = this.config.agentName ?? 'the agent';

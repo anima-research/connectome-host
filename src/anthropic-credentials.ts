@@ -27,7 +27,7 @@
  * silent rotation (the operator asked for click-to-act first).
  */
 
-import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
+import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync } from 'node:fs';
 import type { CredentialResolver, CredentialContext } from '@animalabs/membrane';
 import type { CredentialSource } from './credential-state.js';
 
@@ -80,6 +80,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private refreshing: Promise<void> | null = null;
+  private lastPersistError: string | undefined;
 
   constructor(config: AnthropicCredentialsConfig) {
     this.tokenEndpoint = config.tokenEndpoint ?? ANTHROPIC_OAUTH_TOKEN_URL;
@@ -133,6 +134,13 @@ export class AnthropicOAuthCredentials implements CredentialSource {
 
   canRefresh(): boolean {
     return typeof this.refreshToken === 'string' && this.refreshToken.length > 0;
+  }
+
+  /** Set when the last rotation took effect in memory but the credentials
+   *  file could not be rewritten: inference runs on the new token, a restart
+   *  would reload the old one (and a rotated refresh token may be gone). */
+  persistWarning(): string | undefined {
+    return this.lastPersistError;
   }
 
   expiresAt(): number | undefined {
@@ -239,8 +247,24 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     };
   }
 
+  /**
+   * Write the live credential to the file. The in-memory credential is the
+   * source of truth and is already updated when this runs: after a refresh
+   * the OLD pair may be dead (rotated refresh tokens), so a failed write must
+   * not roll memory back. The failure is recorded for the action outcome.
+   */
   private persist(): void {
     if (!this.file) return;
+    try {
+      this.writeFile(this.file);
+      this.lastPersistError = undefined;
+    } catch (err) {
+      this.lastPersistError = `credential rotated in memory but not written to ${this.file}: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[anthropic-credentials] ${this.lastPersistError}`);
+    }
+  }
+
+  private writeFile(file: string): void {
     const stored: StoredCredential = {
       accessToken: this.accessToken,
       ...(this.refreshToken ? { refreshToken: this.refreshToken } : {}),
@@ -250,7 +274,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     // but never the stale token triple.
     let existing: Record<string, unknown> = {};
     try {
-      existing = JSON.parse(readFileSync(this.file, 'utf8')) as Record<string, unknown>;
+      existing = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
       if (!existing || typeof existing !== 'object') existing = {};
     } catch {
       existing = {};
@@ -258,10 +282,21 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     const next = this.fileShape === 'nested'
       ? { ...existing, claudeAiOauth: { ...(existing.claudeAiOauth as object ?? {}), ...stored, ...(stored.refreshToken ? {} : { refreshToken: undefined }), ...(stored.expiresAt !== undefined ? {} : { expiresAt: undefined }) } }
       : { ...existing, ...stored, ...(stored.refreshToken ? {} : { refreshToken: undefined }), ...(stored.expiresAt !== undefined ? {} : { expiresAt: undefined }) };
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
-    try { chmodSync(tmp, 0o600); } catch { /* best effort */ }
-    renameSync(tmp, this.file);
+    // Exclusive create: a pre-planted symlink or file at the temp path makes
+    // the open fail instead of the token following it somewhere else.
+    const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
+    const fd = openSync(tmp, 'wx', 0o600);
+    try {
+      writeSync(fd, JSON.stringify(next, null, 2) + '\n');
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      renameSync(tmp, file);
+    } catch (err) {
+      try { unlinkSync(tmp); } catch { /* best effort */ }
+      throw err;
+    }
   }
 }
 

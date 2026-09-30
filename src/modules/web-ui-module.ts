@@ -1034,6 +1034,7 @@ export class WebUiModule implements Module {
       && url.pathname !== '/curve'
       && url.pathname !== '/healthz'
       && url.pathname !== '/quota'
+      && url.pathname !== '/credential'
       && !url.pathname.startsWith('/files/')
       && !url.pathname.startsWith('/media/');
     if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
@@ -1044,7 +1045,7 @@ export class WebUiModule implements Module {
     if ((url.pathname.startsWith('/debug/') || url.pathname === '/curve') && !httpAllowed('debug')) {
       return this.unauthorized(isRetrievalTraceRoute);
     }
-    if ((url.pathname === '/healthz' || url.pathname === '/quota') && !httpAllowed('health')) {
+    if ((url.pathname === '/healthz' || url.pathname === '/quota' || url.pathname === '/credential') && !httpAllowed('health')) {
       return this.unauthorized();
     }
     if (url.pathname.startsWith('/files/') && !basicOk) {
@@ -1142,6 +1143,13 @@ export class WebUiModule implements Module {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
       return Response.json(await buildQuotaSnapshot(app));
+    }
+
+    // Credential state (health-scoped, like /healthz); no token ever rides here.
+    if (url.pathname === '/credential') {
+      const app = this.panelApp();
+      if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+      return Response.json(buildCredentialSnapshot(app));
     }
 
     // Workspace file passthrough: /files/<mount>/<path...>
@@ -1480,6 +1488,9 @@ export class WebUiModule implements Module {
     if (type === 'request-branches') return client.scopes?.has('messages') ?? false;
     // Host serving state is liveness telemetry; the operator log is ops.
     if (type === 'request-host-mode') return client.scopes?.has('health') ?? false;
+    // Credential state is health-tier telemetry (it can carry a pending
+    // device-code login); the ACTIONS stay operator-only (fall through).
+    if (type === 'request-credential') return client.scopes?.has('health') ?? false;
     if (type === 'request-operator-log') return client.scopes?.has('ops') ?? false;
     return false; // observers are read-only: no user-message/command/mcpl/fleet/surgery
   }
@@ -2114,14 +2125,14 @@ export class WebUiModule implements Module {
         const params = { action: parsed.action, ...(parsed.token !== undefined ? { token: parsed.token } : {}) };
         if (isChildScope(parsed.scope)) {
           void this.requestChildPanel(client, parsed.scope!, 'credential-action', params).then((data) => {
-            if (data !== null) this.broadcastToWelcomed({ type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+            if (data !== null) this.broadcastCredentialState({ type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
           });
           return;
         }
         const app = this.panelApp();
         if (!app) return;
         void applyCredentialAction(app, params)
-          .then((data) => this.broadcastToWelcomed({ type: 'credential-state', scope: 'local', ...data } as WebUiServerMessage))
+          .then((data) => this.broadcastCredentialState({ type: 'credential-state', scope: 'local', ...data } as WebUiServerMessage))
           .catch((err) => this.send(client, {
             type: 'error',
             message: `credential-action failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -2941,6 +2952,15 @@ export class WebUiModule implements Module {
     const msg = buildSettingsState(app, agentName);
     if (!msg) return;
     this.broadcastToWelcomed({ type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+  }
+
+  /** Credential state goes to operators and to observers holding the
+   *  'health' scope — the same gate as /healthz and the usage frame. */
+  private broadcastCredentialState(msg: WebUiServerMessage): void {
+    if (!sharedServer) return;
+    for (const c of sharedServer.clients.values()) {
+      if (c.welcomed && (c.scopes === null || c.scopes.has('health'))) this.send(c, msg);
+    }
   }
 
   private broadcastToWelcomed(msg: WebUiServerMessage): void {

@@ -252,12 +252,90 @@ describe('CredentialMonitor — actions', () => {
     expect(s.kind).toBe('auth-rejected');
   });
 
-  test('concurrent actions coalesce onto the running one', async () => {
-    let calls = 0;
-    const { monitor } = harness({ source: { canRefresh: () => true, refresh: async () => { calls++; await new Promise((r) => setTimeout(r, 5)); } } });
-    const [a, b] = await Promise.all([monitor.runAction('refresh'), monitor.runAction('refresh')]);
-    expect(calls).toBe(1);
-    expect(a.lastAction?.at).toBe(b.lastAction?.at);
+  test('actions serialize: a paste queued behind a slow refresh still runs with its own token', async () => {
+    const order: string[] = [];
+    const { monitor } = harness({
+      source: {
+        canRefresh: () => true,
+        refresh: async () => { order.push('refresh:start'); await new Promise((r) => setTimeout(r, 10)); order.push('refresh:end'); },
+        setToken: (t) => { order.push(`set:${t}`); },
+      },
+    });
+    const [a, b] = await Promise.all([monitor.runAction('refresh'), monitor.runAction('set-token', { token: 'pasted' })]);
+    expect(order).toEqual(['refresh:start', 'refresh:end', 'set:pasted']);
+    expect(a.lastAction?.id).toBe('refresh');
+    expect(b.lastAction?.id).toBe('set-token');
+  });
+
+  test('recheck without a probe leaves a pending login standing (Codex)', async () => {
+    const { monitor } = harness({ source: { provider: 'openai-codex', canRefresh: () => true, refresh: async () => {}, login: async () => {} } });
+    monitor.loginRequired({ verificationUrl: 'https://auth.example/device', userCode: 'ABCD-1234' });
+    const s = await monitor.runAction('recheck');
+    expect(s.kind).toBe('auth-login-required');
+    expect(s.login?.userCode).toBe('ABCD-1234');
+    expect(s.lastAction?.message).toMatch(/state unchanged/);
+    const done = await monitor.runAction('login');
+    expect(done.kind).toBe('ok');
+  });
+
+  test('a persist warning from the source rides on the action outcome', async () => {
+    const { monitor } = harness({
+      source: { canRefresh: () => true, refresh: async () => {}, probe: async () => {}, persistWarning: () => 'credential rotated in memory but not written to /x: EACCES' },
+    });
+    monitor.observeError(authErr());
+    const s = await monitor.runAction('refresh');
+    expect(s.kind).toBe('ok');
+    expect(s.lastAction?.ok).toBe(true);
+    expect(s.lastAction?.message).toContain('WARNING: credential rotated in memory but not written to /x');
+  });
+
+  test('recheck does not clear quota-unreadable while the meter still cannot read', async () => {
+    const meter = fakeMeter([new Error('x'), new Error('x'), new Error('x'), new Error('x'), []], () => 0);
+    const { monitor } = harness({ meter, now: () => 0, source: { probe: async () => {} } });
+    await meter.refresh(); await meter.refresh(); await meter.refresh();
+    expect(monitor.snapshot().kind).toBe('quota-unreadable');
+    const s = await monitor.runAction('recheck'); // 4th read still fails
+    expect(s.kind).toBe('quota-unreadable');
+    const s2 = await monitor.runAction('recheck'); // 5th read succeeds
+    expect(s2.kind).toBe('ok');
+    meter.dispose();
+  });
+});
+
+describe('CredentialMonitor — precedence', () => {
+  test('an auth verdict outranks a spent quota, and the quota verdict returns when auth clears', async () => {
+    const meter = fakeMeter([[{ key: 'seven_day', label: 'weekly', utilization: 100, resetsAt: 2 * HOUR }]], () => 0);
+    const { monitor, alerts } = harness({ meter, now: () => 0, source: { setToken: () => {} } });
+    await meter.refresh();
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    monitor.observeError(authErr());
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    await meter.refresh(); // a later poll with the same spent window must not hide the auth alarm
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    monitor.observeSuccess();
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    expect(alerts.map((a) => a.kind)).toEqual([
+      'quota-spent', 'quota-spent-clear', 'auth-rejected', 'auth-rejected-clear', 'quota-spent',
+    ]);
+    meter.dispose();
+  });
+
+  test('a passed expiry on an idle host becomes auth-expired without waiting for a 401', () => {
+    let t = 0;
+    const { monitor, alerts } = harness({ now: () => t, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => 5 * 60_000 } });
+    (monitor as unknown as { checkExpiry(): void }).checkExpiry();
+    expect(monitor.snapshot().kind).toBe('auth-expiring');
+    t = 6 * 60_000;
+    (monitor as unknown as { checkExpiry(): void }).checkExpiry();
+    expect(monitor.snapshot().kind).toBe('auth-expired');
+    expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear', 'auth-expired']);
+    monitor.dispose();
+  });
+
+  test('bearer() exposes the live token to in-process callers but never a snapshot', () => {
+    const { monitor } = harness({ source: { currentToken: () => 'sk-live' } });
+    expect(monitor.bearer()).toBe('sk-live');
+    expect(JSON.stringify(monitor.snapshot())).not.toContain('sk-live');
   });
 });
 

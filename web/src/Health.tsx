@@ -32,6 +32,9 @@ export interface OpsAlert {
   /** Operator actions the host offers for this alert (credential alerts
    *  carry them in the trace's `data.actions`). Rendered as buttons. */
   actions?: CredentialAction[];
+  /** Process the alert (and its actions) belong to. The strip is a
+   *  host-level surface, so this is 'local' for everything it shows. */
+  scope?: string;
 }
 
 export interface CredentialAction {

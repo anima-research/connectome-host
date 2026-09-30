@@ -1125,11 +1125,12 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     const res = await fetch(base + '/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
-        // Mirror the main adapter's auth: OAuth Bearer (subscription) when
-        // ANTHROPIC_AUTH_TOKEN is set, x-api-key otherwise.
-        ...(process.env.ANTHROPIC_AUTH_TOKEN
+        // Mirror the main adapter's auth: the LIVE subscription bearer when
+        // the host runs on one (it rotates; the env string does not), else
+        // ANTHROPIC_AUTH_TOKEN, else x-api-key.
+        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
           ? {
-              authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
               'anthropic-beta': 'oauth-2025-04-20',
             }
           : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),

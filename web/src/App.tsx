@@ -195,6 +195,9 @@ export function App() {
         message,
         at: Date.now(),
         count: existing ? existing.count + (bump ? 1 : 0) : 1,
+        // The strip is a host-level (local) surface: its actions always
+        // target the local process, whatever the sidebar is inspecting.
+        scope: 'local',
         ...(actions ? { actions } : existing?.actions ? { actions: existing.actions } : {}),
       });
       return next;
@@ -244,11 +247,19 @@ export function App() {
   // inside /healthz; both reconcile the alert strip so a page opened
   // mid-incident alarms with its buttons.
   // ---------------------------------------------------------------------------
-  const [credentialState, setCredentialState] = createSignal<CredentialInfo | null>(null);
+  /** Last credential-state frame, tagged with the process it describes; the
+   *  Health tab uses it only while inspecting that same scope. */
+  const [credentialState, setCredentialState] = createSignal<{ scope: string; info: CredentialInfo } | null>(null);
+  const credentialForScope = (): CredentialInfo | null => {
+    const c = credentialState();
+    return c && c.scope === panelScope() ? c.info : null;
+  };
 
-  const applyCredentialState = (c: CredentialInfo | undefined): void => {
+  const applyCredentialState = (c: CredentialInfo | undefined, scope: string): void => {
     if (!c || c.subscription === false) return;
-    setCredentialState(c);
+    setCredentialState({ scope, info: c });
+    // The alert strip is local-only; a child's state must not key into it.
+    if (scope !== 'local') return;
     const agent = c.agent ?? '?';
     const kind = c.kind ?? 'ok';
     for (const k of CREDENTIAL_ALERT_KINDS) {
@@ -263,17 +274,20 @@ export function App() {
     }
   };
 
-  /** A button on an alert row / the Health tab. `set-token` asks for the
-   *  paste here; the token goes to the host once and is never echoed. */
-  const runCredentialAction = (actionId: string): void => {
+  /** A button on an alert row / the Health tab. `scope` is the process the
+   *  button belongs to (the alert's, or the Health tab's), never inferred.
+   *  `set-token` asks for the paste here; the token goes to the host once
+   *  and is never echoed. */
+  const runCredentialAction = (actionId: string, scope: string): void => {
     if (actionId === 'set-token') {
-      const token = window.prompt('Paste the replacement token for this host (kept in memory; written to the credentials file only when the host loaded one):');
+      const who = scope === 'local' ? 'this host' : `fleet child "${scope}"`;
+      const token = window.prompt(`Paste the replacement token for ${who} (kept in memory; written to the credentials file only when that process loaded one):`);
       if (!token || !token.trim()) return;
-      wire.send({ type: 'credential-action', scope: panelScope(), action: 'set-token', token: token.trim() });
+      wire.send({ type: 'credential-action', scope, action: 'set-token', token: token.trim() });
       return;
     }
     if (actionId !== 'refresh' && actionId !== 'login' && actionId !== 'recheck') return;
-    wire.send({ type: 'credential-action', scope: panelScope(), action: actionId });
+    wire.send({ type: 'credential-action', scope, action: actionId });
   };
 
   /** /healthz snapshot — feeds the Health tab and reconciles durable-state
@@ -284,7 +298,7 @@ export function App() {
   let healthDenied = false;
 
   const reconcileHealthAlerts = (h: HealthSnapshot): void => {
-    applyCredentialState(h.credential);
+    applyCredentialState(h.credential, 'local');
     const quarantine = h.compressionQuarantine ?? {};
     for (const [agent, q] of Object.entries(quarantine)) {
       const key = `${agent}:compression-quarantine`;
@@ -1230,7 +1244,7 @@ export function App() {
           setFileLoading(false);
         },
         onOpsAlert: applyOpsAlertTrace,
-        onCredentialState: applyCredentialState,
+        onCredentialState: (state, scope) => applyCredentialState(state, scope),
         setBranchesList: (list, currentId) => {
           setBranches(list);
           setBranchesCurrentId(currentId);
@@ -1401,7 +1415,7 @@ export function App() {
       <OpsAlertStrip
         alerts={alertList()}
         onDismiss={removeOpsAlert}
-        onAction={(_alert, id) => runCredentialAction(id)}
+        onAction={(alert, id) => runCredentialAction(id, alert.scope ?? 'local')}
       />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
@@ -1718,8 +1732,8 @@ export function App() {
                 error={healthErr()}
                 ledger={callLedger()?.rows}
                 onRefresh={() => void loadHealth(true)}
-                credential={credentialState()}
-                onCredentialAction={runCredentialAction}
+                credential={credentialForScope()}
+                onCredentialAction={(id) => runCredentialAction(id, panelScope())}
               />
             </Show>
           </div>
@@ -1773,7 +1787,7 @@ interface HandlerHooks {
   /** Apply a settings-state broadcast. */
   setSettings: (state: SettingsState) => void;
   /** Apply a credential-state frame (answer to request-credential / an action). */
-  onCredentialState: (state: CredentialInfo) => void;
+  onCredentialState: (state: CredentialInfo, scope: string) => void;
   /** Apply a pins-list broadcast. */
   setPins: (state: PinsState) => void;
   /** Apply a workspace-mounts response. */
@@ -1949,8 +1963,10 @@ function handleServerMessage(
       hooks.setSettings(msg as unknown as SettingsState);
       return;
     case 'credential-state':
-      if (staleScope(msg.scope, hooks.currentScope())) return;
-      hooks.onCredentialState(msg as unknown as CredentialInfo);
+      // Not scope-filtered here: a local frame must reconcile the (local)
+      // alert strip even while the sidebar inspects a child. The hook keys
+      // the Health tab's copy by scope itself.
+      hooks.onCredentialState(msg as unknown as CredentialInfo, msg.scope ?? 'local');
       return;
     case 'pins-list':
       if (staleScope(msg.scope, hooks.currentScope())) return;

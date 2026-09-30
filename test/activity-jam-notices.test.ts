@@ -94,7 +94,7 @@ describe('jam notices', () => {
     expect(h.posts.length).toBe(2);
   });
 
-  test('re-notifies only after the announced end has passed and the renotify window elapsed', async () => {
+  test('re-notifies only after an ANNOUNCED end has passed and the renotify window elapsed', async () => {
     let t = 0;
     const h = harness({ now: () => t });
     await h.module.start(h.ctx);
@@ -107,6 +107,35 @@ describe('jam notices', () => {
     t = 45 * 60_000; // past the end, inside the window
     await h.incoming('zulip:ops');
     expect(h.posts.length).toBe(2);
+  });
+
+  test('a jam with no announced end posts once per channel, however long it lasts', async () => {
+    let t = 0;
+    const h = harness({ now: () => t });
+    await h.module.start(h.ctx);
+    h.module.setFramework(h.framework as never);
+    h.emit({ type: 'ops:alert', kind: 'auth-rejected', agentName: 'clerk', message: 'rejected' });
+    await h.incoming('zulip:ops');
+    t = 3 * 60 * 60_000;
+    await h.incoming('zulip:ops');
+    expect(h.posts.length).toBe(1);
+  });
+
+  test('a superseding jam kind keeps the notified channels, so they still get the "back" line', async () => {
+    const h = harness();
+    await h.module.start(h.ctx);
+    h.module.setFramework(h.framework as never);
+    h.emit({ type: 'ops:alert', kind: 'quota-spent', agentName: 'clerk', message: 'spent' });
+    await h.incoming('zulip:ops');
+    expect(h.posts.length).toBe(1);
+    h.emit({ type: 'ops:alert', kind: 'quota-spent-clear', agentName: 'clerk', message: 'superseded by auth-rejected' });
+    h.emit({ type: 'ops:alert', kind: 'auth-rejected', agentName: 'clerk', message: 'rejected' });
+    expect(h.module.jamState()).toMatchObject({ kind: 'auth-rejected', notified: [] });
+    await h.incoming('zulip:ops');
+    expect(h.posts.length).toBe(2); // the channel is told once about the new reason
+    h.emit({ type: 'ops:alert', kind: 'auth-rejected-clear', agentName: 'clerk', message: 'anthropic credential ok' });
+    expect(h.posts.length).toBe(3);
+    expect(h.posts[2]!.text).toBe(jamClearText('clerk'));
   });
 
   test('alerts for other agents and the disabled config post nothing', async () => {

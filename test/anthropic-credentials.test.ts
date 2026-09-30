@@ -3,8 +3,10 @@
  * refresh exchange at the token endpoint, persistence back to the file, the
  * operator-driven (not automatic) rotation default, and the usage probe.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, spyOn } from 'bun:test';
+import * as fs from 'node:fs';
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+const realOpenSync = fs.openSync;
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AnthropicOAuthCredentials, ProbeError, CLAUDE_CODE_OAUTH_CLIENT_ID } from '../src/anthropic-credentials.js';
@@ -84,6 +86,37 @@ describe('credentials file', () => {
     await expect(creds.refresh()).rejects.toThrow(/HTTP 400 \(invalid_grant\)/);
     expect(creds.currentToken()).toBe('a');
     expect(creds.canRefresh()).toBe(true);
+  });
+
+  test('a planted temp path cannot capture the write: the rotation stays in memory and is reported', async () => {
+    const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
+    const { fetchImpl } = fakeFetch(() => Response.json({ access_token: 'b', refresh_token: 'r2', expires_in: 60 }));
+    // Make the credentials file's directory unwritable for new entries by
+    // pointing the file inside a directory that does not exist for the temp.
+    const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl });
+    (creds as unknown as { file: string }).file = join(path, 'nope', 'creds.json'); // path is a file ⇒ ENOTDIR on open
+    await creds.refresh();
+    expect(creds.currentToken()).toBe('b');
+    expect(creds.canRefresh()).toBe(true);
+    expect(creds.persistWarning()).toMatch(/rotated in memory but not written/);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ accessToken: 'a', refreshToken: 'r' });
+  });
+
+  test('the temp file is created exclusively (no following a pre-planted path)', async () => {
+    const path = tmpFile({ accessToken: 'a' });
+    const creds = new AnthropicOAuthCredentials({ credentialsFile: path });
+    const opened: string[] = [];
+    const spy = spyOn(fs, 'openSync').mockImplementation((p, flags, mode) => {
+      opened.push(`${String(flags)}:${typeof mode === 'number' ? mode.toString(8) : '-'}`);
+      return realOpenSync(p, flags, mode);
+    });
+    try {
+      creds.setToken('z');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(opened).toEqual(['wx:600']);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ accessToken: 'z' });
   });
 
   test('a file without an accessToken is refused at load', () => {

@@ -93,6 +93,13 @@ export interface CredentialSource {
    * inconclusive (the KR-class inference-only token answers 429 here).
    */
   probe?(): Promise<void>;
+  /** The live bearer, for in-process callers that must send the same
+   *  credential as inference (count_tokens). Never put in a snapshot. */
+  currentToken?(): string | undefined;
+  /** A rotation that took effect in memory but could not be persisted —
+   *  reported with the action outcome so the operator knows a restart
+   *  would reload the old credential. */
+  persistWarning?(): string | undefined;
 }
 
 export interface CredentialMonitorOptions {
@@ -146,9 +153,12 @@ export class CredentialMonitor {
   private readonly unreadableAfter: number;
   private state: CredentialState;
   private meterErrors = 0;
+  /** The meter's standing verdict (quota-spent / quota-unreadable), kept
+   *  aside while an auth state has precedence and re-applied when it lifts. */
+  private meterVerdict: PendingState | null = null;
   private unsubMeter: (() => void) | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
-  private actionInFlight: Promise<CredentialState> | null = null;
+  private actionChain: Promise<void> = Promise.resolve();
   private disposed = false;
 
   constructor(options: CredentialMonitorOptions) {
@@ -174,6 +184,28 @@ export class CredentialMonitor {
 
   snapshot(): CredentialState {
     return { ...this.state, actions: [...this.state.actions] };
+  }
+
+  /** The live bearer for in-process callers (count_tokens must authenticate
+   *  exactly as inference does). Not part of any snapshot or alert. */
+  bearer(): string | undefined {
+    try {
+      return this.source.currentToken?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Auth states outrank meter states: an expired token is actionable, a
+   *  spent window is a wait. `auth-expiring` is a warning and yields. */
+  private authHasPrecedence(): boolean {
+    return this.state.kind.startsWith('auth-') && this.state.kind !== 'auth-expiring';
+  }
+
+  /** Show the meter's verdict, or ok, unless an auth state outranks it. */
+  private applyMeterVerdict(): void {
+    if (this.authHasPrecedence()) return;
+    this.transition(this.meterVerdict ?? this.okState());
   }
 
   dispose(): void {
@@ -209,11 +241,13 @@ export class CredentialMonitor {
     });
   }
 
-  /** A provider call succeeded: whatever auth state we held is over. */
+  /** A provider call succeeded: whatever auth state we held is over; the
+   *  meter's standing verdict (if any) shows again. */
   observeSuccess(): void {
     if (this.disposed) return;
-    if (this.state.kind.startsWith('auth-') && this.state.kind !== 'auth-expiring') {
+    if (this.authHasPrecedence()) {
       this.transition(this.okState());
+      this.applyMeterVerdict();
     }
   }
 
@@ -239,7 +273,7 @@ export class CredentialMonitor {
     const until = this.meter.blockedUntil(model);
     if (spent.length > 0 && (until !== undefined || this.meter.spentWithUnknownReset(model))) {
       const labels = spent.map((w) => w.label);
-      this.transition({
+      this.meterVerdict = {
         kind: 'quota-spent',
         message: `${this.source.provider} subscription quota spent (${labels.join(', ')}) — ` +
           (until !== undefined ? `resets ${new Date(until).toISOString()}` : 'reset time not reported'),
@@ -250,26 +284,31 @@ export class CredentialMonitor {
           { id: 'recheck', label: 'Re-read quota' },
           ...(this.source.setToken ? [{ id: 'set-token' as const, label: 'Use another token', hint: 'Paste a token from a different subscription.' }] : []),
         ],
-      });
+      };
+      this.applyMeterVerdict();
       return;
     }
     if (snapshot.error && snapshot.fetchedAt === 0) {
       this.meterErrors++;
-      if (this.meterErrors >= this.unreadableAfter && this.state.kind === 'ok') {
-        this.transition({
+      if (this.meterErrors >= this.unreadableAfter) {
+        this.meterVerdict = {
           kind: 'quota-unreadable',
           message: `${this.source.provider} quota cannot be read (${trim(snapshot.error)}) — ` +
             'no spent-quota hold is possible for this credential; a 429 will be retried as a throttle',
           rotatable: this.source.canRefresh(),
           actions: [{ id: 'recheck', label: 'Re-read quota' }],
-        });
+        };
+        this.applyMeterVerdict();
       }
       return;
     }
-    if (!snapshot.error) this.meterErrors = 0;
-    if (this.state.kind === 'quota-spent' || (this.state.kind === 'quota-unreadable' && !snapshot.error)) {
-      this.transition(this.okState());
+    if (!snapshot.error) {
+      this.meterErrors = 0;
+      this.meterVerdict = null;
+      this.applyMeterVerdict();
     }
+    // A failed read on a snapshot that HAS windows keeps the previous verdict
+    // (stale windows are still the best information; the meter says so).
   }
 
   private checkExpiry(): void {
@@ -278,7 +317,20 @@ export class CredentialMonitor {
     this.armExpiryTimer();
     if (expiresAt === undefined) return;
     const remaining = expiresAt - this.now();
-    if (remaining > this.expiryWarningMs || remaining <= 0) return;
+    if (remaining > this.expiryWarningMs) return;
+    if (remaining <= 0) {
+      // The credential's own expiry passed on an idle host: say so now
+      // instead of repeating "expires in ~1 min" until a 401 proves it.
+      if (this.state.kind !== 'ok' && this.state.kind !== 'auth-expiring') return;
+      this.transition({
+        kind: 'auth-expired',
+        message: `${this.source.provider} credential expired ${new Date(expiresAt).toISOString()} — the next call will be rejected`,
+        rotatable: this.source.canRefresh(),
+        expiresAt,
+        actions: this.authActions(),
+      });
+      return;
+    }
     if (this.state.kind !== 'ok' && this.state.kind !== 'auth-expiring') return;
     const minutes = Math.max(1, Math.round(remaining / 60_000));
     this.transition({
@@ -311,16 +363,16 @@ export class CredentialMonitor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Run one operator action. Serialized: a second request while one runs
-   * waits for it and returns the same outcome. Never throws — the outcome
-   * lands in `lastAction` and the state moves accordingly.
+   * Run one operator action. Serialized, not coalesced: a request that
+   * arrives while another runs queues behind it and runs with its own
+   * parameters (a pasted token must never be swallowed by a slow refresh).
+   * Never throws — the outcome lands in `lastAction` and the state moves
+   * accordingly.
    */
   runAction(id: CredentialActionId, params: { token?: string } = {}): Promise<CredentialState> {
-    if (this.actionInFlight) return this.actionInFlight;
-    this.actionInFlight = this.performAction(id, params).finally(() => {
-      this.actionInFlight = null;
-    });
-    return this.actionInFlight;
+    const run = this.actionChain.then(() => this.performAction(id, params));
+    this.actionChain = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private async performAction(id: CredentialActionId, params: { token?: string }): Promise<CredentialState> {
@@ -336,23 +388,24 @@ export class CredentialMonitor {
             return done(false, `${this.source.provider} credential cannot be refreshed by the host — paste a new token instead`);
           }
           await this.source.refresh();
-          return done(...(await this.settle('refreshed')));
+          return done(...(await this.settle('refreshed', id)));
         }
         case 'login': {
           if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
           await this.source.login();
-          return done(...(await this.settle('login completed')));
+          return done(...(await this.settle('login completed', id)));
         }
         case 'set-token': {
           if (!this.source.setToken) return done(false, `${this.source.provider} credential cannot be replaced at runtime`);
           const token = typeof params.token === 'string' ? params.token.trim() : '';
           if (!token) return done(false, 'set-token needs a non-empty token');
           await this.source.setToken(token);
-          return done(...(await this.settle('token replaced')));
+          return done(...(await this.settle('token replaced', id)));
         }
         case 'recheck': {
-          void this.meter?.refresh();
-          return done(...(await this.settle('re-checked')));
+          // Awaited: the meter's fresh verdict is part of the answer.
+          await this.meter?.refresh();
+          return done(...(await this.settle('re-checked', id)));
         }
         default:
           return done(false, `unknown credential action: ${String(id)}`);
@@ -369,17 +422,34 @@ export class CredentialMonitor {
    * After an action: probe when the source can, and move the state on the
    * verdict. A probe that cannot judge (429, network) leaves auth alarms
    * standing but reports the action as done; the next real call decides.
+   * Without a probe, only an action that changed the credential (refresh,
+   * login, set-token) clears an auth state — a bare re-check has nothing to
+   * go on and must not dismiss a pending login.
    */
-  private async settle(what: string): Promise<[boolean, string]> {
+  private async settle(what: string, id: CredentialActionId): Promise<[boolean, string]> {
     this.armExpiryTimer();
+    const persistWarning = this.source.persistWarning?.();
+    const warn = persistWarning ? `; WARNING: ${persistWarning}` : '';
     if (!this.source.probe) {
-      if (this.state.kind.startsWith('auth-')) this.transition(this.okState());
-      return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell`];
+      if (id === 'recheck') {
+        return [true, `${what}; nothing to verify for ${this.source.provider} (no probe) — state unchanged`];
+      }
+      if (this.state.kind.startsWith('auth-')) {
+        this.transition(this.okState());
+        this.applyMeterVerdict();
+      }
+      return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell${warn}`];
     }
     try {
       await this.source.probe();
-      if (this.state.kind.startsWith('auth-') || this.state.kind === 'quota-unreadable') this.transition(this.okState());
-      return [true, `${what}; credential verified`];
+      if (this.state.kind.startsWith('auth-')) {
+        this.transition(this.okState());
+        this.applyMeterVerdict();
+      }
+      // quota-unreadable lifts only on the meter's own good read (a gateway
+      // can answer the probe 200 with a body the meter cannot parse); the
+      // awaited recheck refresh has already updated the verdict by now.
+      return [true, `${what}; credential verified${warn}`];
     } catch (err) {
       if (isAuthFailure(err)) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -392,7 +462,7 @@ export class CredentialMonitor {
         return [false, `${what}, but the provider still rejects the credential`];
       }
       const reason = err instanceof Error ? err.message : String(err);
-      return [true, `${what}; verification inconclusive (${trim(reason)})`];
+      return [true, `${what}; verification inconclusive (${trim(reason)})${warn}`];
     }
   }
 
@@ -434,7 +504,7 @@ export class CredentialMonitor {
     }
   }
 
-  private transition(next: Omit<CredentialState, 'provider' | 'since'> & { provider?: string; since?: number }): void {
+  private transition(next: PendingState): void {
     const prev = this.state;
     const state: CredentialState = {
       ...next,
@@ -466,6 +536,8 @@ export class CredentialMonitor {
     return { ...rest };
   }
 }
+
+type PendingState = Omit<CredentialState, 'provider' | 'since'> & { provider?: string; since?: number };
 
 function trim(text: string, max = 200): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
