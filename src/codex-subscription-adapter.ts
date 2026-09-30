@@ -327,6 +327,26 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 }
 
+/**
+ * `CODEX_GATE_TOKEN`: the ChatGPT logins live in an inference gate (the
+ * gate's `/codex` leg holds, refreshes and picks them), so this host runs no
+ * Codex CLI and holds no login — it authenticates to the gate with a static
+ * gate token. `CODEX_BASE_URL` must name that gate: a gate token must never
+ * travel to the ChatGPT backend. The account id is the gate's to choose.
+ * Returns undefined when no gate token is configured.
+ */
+export function codexGateAuth(env: NodeJS.ProcessEnv = process.env): CodexAuthProvider | undefined {
+  const token = env.CODEX_GATE_TOKEN?.trim();
+  if (!token) return undefined;
+  if (!env.CODEX_BASE_URL?.trim()) {
+    throw new Error(
+      'CODEX_GATE_TOKEN is set but CODEX_BASE_URL is not: refusing to send a gate token to the ChatGPT backend. ' +
+      'Point CODEX_BASE_URL at the gate\'s codex leg (e.g. https://gate.animalabs.ai/codex).',
+    );
+  }
+  return { getAccessToken: async () => token };
+}
+
 export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig {
   authProvider?: CodexAuthProvider;
   baseURL?: string;

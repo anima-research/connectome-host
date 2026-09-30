@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
-import { CodexSubscriptionAdapter } from '../src/codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth } from '../src/codex-subscription-adapter.js';
 
 const originalFetch = globalThis.fetch;
 const originalBaseURL = process.env.CODEX_BASE_URL;
@@ -57,6 +57,27 @@ describe('Codex host integration', () => {
     expect(calls[1]?.body.service_tier).toBeUndefined();
     adapter.dispose();
     expect(disposed).toBe(true);
+  });
+
+  test('a gate token authenticates to the gate, with no login and no account id', async () => {
+    expect(codexGateAuth({})).toBeUndefined();
+    expect(codexGateAuth({ CODEX_GATE_TOKEN: '  ' })).toBeUndefined();
+    expect(() => codexGateAuth({ CODEX_GATE_TOKEN: 'gt_x' })).toThrow(/CODEX_BASE_URL/);
+    process.env.CODEX_BASE_URL = 'https://gate.test/codex';
+    const auth = codexGateAuth({ CODEX_GATE_TOKEN: 'gt_devops', CODEX_BASE_URL: process.env.CODEX_BASE_URL })!;
+    const seen: Array<{ url: string; headers: Headers }> = [];
+    globalThis.fetch = async (url, init) => {
+      seen.push({ url: String(url), headers: new Headers(init?.headers) });
+      // the gate refreshed the login behind a 401; the single retry meets it
+      return seen.length === 1 ? new Response('expired', { status: 401 }) : completed();
+    };
+    const adapter = new CodexSubscriptionAdapter({ codexBinary: '/nonexistent/codex', authProvider: auth });
+    await adapter.complete(request);
+    expect(seen.map((c) => c.url)).toEqual(['https://gate.test/codex/responses', 'https://gate.test/codex/responses']);
+    expect(seen.every((c) => c.headers.get('authorization') === 'Bearer gt_devops')).toBe(true);
+    expect(seen[0]!.headers.get('chatgpt-account-id')).toBeNull();
+    expect(await adapter.readRateLimits()).toBeNull();
+    adapter.dispose();
   });
 
   test('passes explicit endpoint configuration through the host wrapper', async () => {
