@@ -11,6 +11,13 @@
  *
  * Environment variables:
  *   ANTHROPIC_API_KEY   - Required (not needed for recipe provider "mock")
+ *   ANTHROPIC_AUTH_TOKEN - Subscription (OAuth) bearer instead of the API key
+ *   ANTHROPIC_OAUTH_CREDENTIALS_FILE - JSON credentials file (accessToken +
+ *                         refreshToken + expiresAt, Claude Code's shape or flat);
+ *                         a refresh token makes the credential host-rotatable.
+ *                         Point it at a COPY, never at ~/.claude/.credentials.json.
+ *   ANTHROPIC_OAUTH_AUTO_REFRESH - 1/true: rotate on a 401 without asking
+ *                         (default: alert + operator action)
  *   MODEL               - Override model (default: from recipe or claude-opus-4-6)
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
@@ -27,6 +34,8 @@ import {
   OpenRouterAdapter,
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CredentialMonitor } from './credential-state.js';
+import { AnthropicOAuthCredentials } from './anthropic-credentials.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
@@ -84,6 +93,9 @@ const config = {
   // OAuth/Bearer token (e.g. a Claude subscription token). When set, it takes
   // precedence over the API key so requests never carry both auth schemes.
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  // Refreshable OAuth credential file (see header). Wins over the bare token.
+  anthropicCredentialsFile: process.env.ANTHROPIC_OAUTH_CREDENTIALS_FILE,
+  anthropicAutoRefresh: ['1', 'true'].includes((process.env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()),
   openaiApiKey: process.env.OPENAI_API_KEY,
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
   // Deliberately NO fallback to OPENAI_API_KEY: agent.baseUrl is
@@ -121,6 +133,9 @@ interface AppContext {
   /** Subscription quota windows; null on metered (pay-per-token) providers.
    *  Its presence is what flips usage readouts from dollars to percent. */
   quotaMeter: QuotaMeter | null;
+  /** Credential state + operator actions (subscription providers). Null on
+   *  API-key hosts, where nothing here is actionable. */
+  credentials: CredentialMonitor | null;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -190,6 +205,7 @@ async function createFramework(
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
   quotaMeter: QuotaMeter | null,
+  credentials: CredentialMonitor | null,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -323,7 +339,11 @@ async function createFramework(
   let activityModule: ActivityModule | null = null;
   if (modules.activity !== undefined && modules.activity !== false) {
     const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
-    activityModule = new ActivityModule({ initialChannels: activityConfig.channels });
+    activityModule = new ActivityModule({
+      initialChannels: activityConfig.channels,
+      jamNotices: activityConfig.jamNotices === true,
+      agentName,
+    });
     moduleInstances.push(activityModule);
   }
 
@@ -400,6 +420,7 @@ async function createFramework(
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
+      ...(credentials ? { credentials } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -883,8 +904,8 @@ async function main() {
     console.error('Missing AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY for recipe provider "bedrock".');
     process.exit(1);
   }
-  if (provider === 'anthropic' && !config.apiKey && !config.authToken) {
-    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
+  if (provider === 'anthropic' && !config.apiKey && !config.authToken && !config.anthropicCredentialsFile) {
+    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN / ANTHROPIC_OAUTH_CREDENTIALS_FILE). Set one in .env or environment.');
     process.exit(1);
   }
 
@@ -907,19 +928,40 @@ async function main() {
         defaultTtl: recipe.agent.cacheTtl ?? '5m',
       })
     : null;
+  // Credential monitor, bound below once the adapters exist; the Codex
+  // login prompt needs to reach it, and the adapter is built first.
+  let credentialsRef: CredentialMonitor | null = null;
   // The Codex subscription adapter owns ChatGPT login/refresh independently
   // of the API-key transports below.
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
+        // stderr for headless logs, the monitor for TUI/WebUI/fleet alerts.
+        onLoginRequired: ({ verificationUrl, userCode }) => {
+          console.error('\nOpenAI Codex subscription login required.');
+          console.error(`Open ${verificationUrl} and enter code: ${userCode}\n`);
+          credentialsRef?.loginRequired({ verificationUrl, userCode });
+        },
       })
     : undefined;
+  // Anthropic subscription credential: a bare token or a refreshable file.
+  // Loaded once here; the adapter and the quota meter read it per request so
+  // an operator rotation (/auth, WebUI) takes effect without a restart.
+  const anthropicCredentials = provider === 'anthropic' && (config.anthropicCredentialsFile || config.authToken)
+    ? new AnthropicOAuthCredentials({
+        ...(config.anthropicCredentialsFile
+          ? { credentialsFile: config.anthropicCredentialsFile }
+          : { token: config.authToken }),
+        autoRefresh: config.anthropicAutoRefresh,
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      })
+    : null;
   // Subscription credentials draw down utilization windows instead of being
   // billed per token; the meter reads them out-of-band (no inference spend).
-  const quotaMeter = provider === 'anthropic' && config.authToken
+  const quotaMeter = anthropicCredentials
     ? new QuotaMeter(new AnthropicOAuthQuotaSource({
-        authToken: config.authToken,
+        authToken: () => anthropicCredentials.currentToken(),
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       }))
     : codexAdapter
@@ -1069,9 +1111,9 @@ async function main() {
           // Subscription tokens additionally require this beta header.
           // Recipe-declared betas (agent.anthropicBetas, e.g. context-1m)
           // are merged into the same anthropic-beta header either way.
-          ...(config.authToken
+          ...(anthropicCredentials
             ? {
-                authToken: config.authToken,
+                authToken: anthropicCredentials.tokenResolver(),
                 defaultHeaders: {
                   'anthropic-beta': ['oauth-2025-04-20', ...(recipe.agent.anthropicBetas ?? [])].join(','),
                 },
@@ -1167,7 +1209,43 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
+  // Credential monitor: one named state for the provider credential (spent
+  // quota, expiring/expired/rejected token, pending device-code login) and
+  // the operator actions that fit it, announced through the ops-alert
+  // pipeline. Alerts raised before the framework exists are queued and
+  // flushed once the app is bound; the sink reads app.framework lazily so
+  // session switches stay wired.
+  let appForAlerts: AppContext | null = null;
+  const queuedAlerts: Array<[string, string, Record<string, unknown>]> = [];
+  const credentialSource = anthropicCredentials ?? codexAdapter?.credentialSource() ?? null;
+  const credentials = credentialSource
+    ? new CredentialMonitor({
+        source: credentialSource,
+        quotaMeter,
+        modelFor: () => resolveModel(recipe),
+        alert: (kind, message, data) => {
+          if (!appForAlerts) {
+            queuedAlerts.push([kind, message, data]);
+            return;
+          }
+          const fw = appForAlerts.framework as unknown as {
+            notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
+          };
+          if (typeof fw.notifyOpsAlert !== 'function') {
+            console.error(`[credential] ${kind}: ${message}`);
+            return;
+          }
+          fw.notifyOpsAlert(kind, appForAlerts.agentName, message, data);
+        },
+      })
+    : null;
+  credentialsRef = credentials;
+  if (credentials && (adapter instanceof LoggingAnthropicAdapter || adapter instanceof LoggingProviderAdapter)) {
+    adapter.onProviderError = (error) => credentials.observeError(error);
+    adapter.onProviderSuccess = () => credentials.observeSuccess();
+  }
+
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials);
 
   // Build app context
   const app: AppContext = {
@@ -1181,6 +1259,7 @@ async function main() {
     codexAdapter,
     callLedger,
     quotaMeter,
+    credentials,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1191,7 +1270,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
@@ -1202,6 +1281,7 @@ async function main() {
   };
 
   appRefForDebt = app;
+  appForAlerts = app;
 
   // Off-path refusal dragnet → ops alerts (observability M3): refusals on
   // non-streamed calls (compression/summarizer drains, maintenance) never
@@ -1229,6 +1309,10 @@ async function main() {
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);
+  for (const [kind, message, data] of queuedAlerts.splice(0)) {
+    (framework as unknown as { notifyOpsAlert?: (k: string, a: string, m: string, d?: Record<string, unknown>) => void })
+      .notifyOpsAlert?.(kind, agentName, message, data);
+  }
 
   try {
     if (headless) {
@@ -1241,6 +1325,7 @@ async function main() {
       await runTui(app);
     }
   } finally {
+    credentials?.dispose();
     codexAdapter?.dispose();
   }
 }

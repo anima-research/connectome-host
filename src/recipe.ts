@@ -665,8 +665,14 @@ export interface RecipeModules {
    * use the MCPL format (e.g. `zulip:tracker-miner-f`). The agent can also
    * adjust the set at runtime via the `activity:show_in` / `activity:hide_in`
    * tools.
+   *
+   * `jamNotices: true` additionally posts one host-attributed "cannot respond
+   * right now" line into a subscribed channel that receives a message while
+   * the host is jammed (spent quota, expired credential, pending login,
+   * hard-down), and one "back" line when the jam clears. Off by default:
+   * writing into a channel is a bigger act than showing a typing indicator.
    */
-  activity?: boolean | { channels?: string[] };
+  activity?: boolean | { channels?: string[]; jamNotices?: boolean };
   /**
    * MCPL self-administration. Off by default. When enabled, the agent gets
    * `mcpl_list` / `mcpl_deploy` / `mcpl_restart` / `mcpl_unload` tools to

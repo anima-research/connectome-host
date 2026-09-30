@@ -46,6 +46,7 @@ import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -86,6 +87,8 @@ import {
   buildPinsSnapshot,
   buildHealthSnapshot,
   buildQuotaSnapshot,
+  buildCredentialSnapshot,
+  applyCredentialAction,
   buildContextCoverage,
   buildContextMakeup,
   buildContextCurve,
@@ -172,6 +175,8 @@ export interface WebUiModuleConfig {
   callLedger?: CallLedger;
   /** Subscription quota windows (hosts on a subscription credential only). */
   quotaMeter?: QuotaMeter;
+  /** Credential state + operator actions (subscription hosts only). */
+  credentials?: CredentialMonitor;
 }
 
 /** Data stashed on the Bun WS upgrade. */
@@ -224,6 +229,7 @@ const HTTP_PANEL_OPS: Record<string, string> = {
   '/debug/context': 'debug-context',
   '/healthz': 'health',
   '/quota': 'quota',
+  '/credential': 'credential',
 };
 
 /** True when a wire `scope` field names a fleet child (vs the local process). */
@@ -1172,6 +1178,7 @@ export class WebUiModule implements Module {
       recipe: app.recipe,
       callLedger: this.config.callLedger ?? null,
       quotaMeter: this.config.quotaMeter ?? null,
+      credentials: this.config.credentials ?? null,
     };
   }
 
@@ -2085,6 +2092,40 @@ export class WebUiModule implements Module {
         }
         if (parsed.notify === true) notifyAgentOfSettingsChange(app, agentName, 'update');
         this.broadcastSettingsState(agentName);
+        return;
+      }
+
+      case 'request-credential': {
+        if (isChildScope(parsed.scope)) {
+          void this.requestChildPanel(client, parsed.scope!, 'credential', {}).then((data) => {
+            if (data !== null) this.send(client, { type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+          });
+          return;
+        }
+        const app = this.panelApp();
+        if (!app) return;
+        this.send(client, { type: 'credential-state', scope: 'local', ...buildCredentialSnapshot(app) } as WebUiServerMessage);
+        return;
+      }
+
+      // Credential actions change process state (a rotated token serves every
+      // agent), so the outcome BROADCASTS like settings mutations do.
+      case 'credential-action': {
+        const params = { action: parsed.action, ...(parsed.token !== undefined ? { token: parsed.token } : {}) };
+        if (isChildScope(parsed.scope)) {
+          void this.requestChildPanel(client, parsed.scope!, 'credential-action', params).then((data) => {
+            if (data !== null) this.broadcastToWelcomed({ type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+          });
+          return;
+        }
+        const app = this.panelApp();
+        if (!app) return;
+        void applyCredentialAction(app, params)
+          .then((data) => this.broadcastToWelcomed({ type: 'credential-state', scope: 'local', ...data } as WebUiServerMessage))
+          .catch((err) => this.send(client, {
+            type: 'error',
+            message: `credential-action failed: ${err instanceof Error ? err.message : String(err)}`,
+          }));
         return;
       }
 

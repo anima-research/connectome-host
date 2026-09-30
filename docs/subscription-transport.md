@@ -34,12 +34,72 @@ pin never reached a host release.
 Anthropic's rotating-credential seam for issue #69. This OpenAI host migration
 does not require it and does not change Anthropic credential acquisition.
 
+## Credential state, alerts and operator actions
+
+The host keeps ONE named state for its subscription credential
+(`src/credential-state.ts`) and moves every transition through the ops-alert
+pipeline (failures.log, `ops:alert` trace, `CONNECTOME_OPS_WEBHOOK`), so the
+TUI status bar, the WebUI alert strip and a fleet parent all learn about it on
+the wire they already watch. Kinds and what feeds them:
+
+| kind | fed by | lifts when |
+|---|---|---|
+| `quota-spent` | quota meter: a non-advisory window at 100% for this agent's model | the meter reads the window below 100% / past its reset |
+| `quota-unreadable` | quota meter: three consecutive failed reads and never a good one (inference-only tokens answer 429 on the usage path) | the first good read |
+| `auth-expiring` | credential file `expiresAt` within 30 min | a rotation, or supersession by a 401 |
+| `auth-expired` / `auth-rejected` | a 401 (membrane `type: 'auth'`) seen by the logging adapters; `expired` when the file's expiry has passed | the next successful call, or a passing probe after an action |
+| `auth-login-required` | the Codex app-server's device-code prompt (URL + code ride in the alert) | the login completes |
+
+Each alert's `data.actions` lists what the host can run for that state:
+`refresh` (rotate with a refresh token / the app-server), `login` (Codex
+device-code flow; `account/logout` first when supported), `set-token` (an
+operator paste, kept in memory and written to the credentials file when one
+was loaded), `recheck` (usage probe + meter read). The WebUI renders them as
+buttons on the alert row and in the Health tab's credential section (WS
+`credential-action`, broadcast answer `credential-state`; `request-credential`
+and `GET /credential` read the state; both scope to fleet children over the
+panel IPC). The TUI names the matching command in the alert line:
+`/auth [status|refresh|login|recheck|token <tok>]`.
+
+Nothing rotates on its own. Membrane retries a 401 once with `forceRefresh`;
+the Anthropic source answers that with the SAME token unless
+`ANTHROPIC_OAUTH_AUTO_REFRESH=1`, so an expired credential becomes an alert
+with a "Refresh token" button rather than a silent rotation. The Codex adapter
+keeps its existing automatic app-server refresh on that retry.
+
+### Anthropic credential sources
+
+- `ANTHROPIC_AUTH_TOKEN` — a bare bearer (typically `claude setup-token`):
+  no refresh token, no known expiry, not host-rotatable. The only action is
+  `set-token`.
+- `ANTHROPIC_OAUTH_CREDENTIALS_FILE` — a JSON file in Claude Code's shape
+  (`{ "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" } }`) or
+  the same three keys flat. With a refresh token the host rotates at
+  `https://platform.claude.com/v1/oauth/token` (JSON grant, Claude Code's
+  public client id) and writes the new pair back to the same file, mode 0600.
+  Point it at a COPY of `~/.claude/.credentials.json`, never at that file:
+  refresh tokens may be single-use, and two processes refreshing from one file
+  invalidate each other. The refresh exchange follows the CLI's own request
+  shape; it has not yet been exercised against the live endpoint from this
+  host — the first operator "Refresh token" click is that verification.
+
+### Channel-side notices
+
+A jammed host is silent on the channel side: a quota hold parks the request
+before inference starts, so not even the typing indicator appears. With
+`modules.activity.jamNotices: true`, a subscribed channel that receives a
+message during a jam gets one host-attributed line per episode ("cannot
+respond right now: its subscription quota is spent. Expected back after …")
+and one "can respond again" line on the clear; see `ActivityModule`. The
+publish path carries no topic, so on Zulip the notice lands in the stream's
+default topic.
+
 ## Remaining authentication integration
 
-- Anthropic host integration remains tracked alongside Membrane issue #69: the
-  host must supply a live credential source instead of its startup environment
-  string. That source must define storage, refresh serialization and login UI;
-  merely re-reading the environment does not rotate expired credentials.
+- The framework's provider hold is still stderr-only and its release is
+  private (agent-framework): a quota hold is announced here from the host's
+  meter reading, not from the hold itself, and a rotated credential waits for
+  the next hold slice (≤10 min) before the parked agent is retried.
 - Codex acquisition currently shares one app-server login across callers.
   Aborting inference stops waiting and prevents HTTP, but does not stop that
   shared login ceremony. Cancellation must be coordinated across all callers

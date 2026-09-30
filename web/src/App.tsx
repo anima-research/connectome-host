@@ -16,7 +16,10 @@ import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewe
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
-import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
+import {
+  OpsAlertStrip, HealthPanel, CREDENTIAL_ALERT_KINDS,
+  type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
+} from './Health';
 import { BranchPanel } from './Branches';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
@@ -180,7 +183,7 @@ export function App() {
   const alertList = createMemo(() =>
     [...opsAlerts().values()].sort((a, b) => b.at - a.at));
 
-  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true): void => {
+  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true, actions?: CredentialAction[]): void => {
     const key = `${agent}:${kind}`;
     setOpsAlerts((prev) => {
       const next = new Map(prev);
@@ -192,6 +195,7 @@ export function App() {
         message,
         at: Date.now(),
         count: existing ? existing.count + (bump ? 1 : 0) : 1,
+        ...(actions ? { actions } : existing?.actions ? { actions: existing.actions } : {}),
       });
       return next;
     });
@@ -216,7 +220,60 @@ export function App() {
       removeOpsAlert(`${agent}:${kind.slice(0, -'-clear'.length)}`);
       return;
     }
-    upsertOpsAlert(kind, agent, message);
+    upsertOpsAlert(kind, agent, message, true, readActions((e.data as { actions?: unknown } | undefined)?.actions));
+  };
+
+  /** `data.actions` on a credential alert, defensively typed. */
+  const readActions = (raw: unknown): CredentialAction[] | undefined => {
+    if (!Array.isArray(raw)) return undefined;
+    const out: CredentialAction[] = [];
+    for (const a of raw) {
+      const id = (a as { id?: unknown })?.id;
+      const label = (a as { label?: unknown })?.label;
+      if (typeof id !== 'string' || typeof label !== 'string') continue;
+      const hint = (a as { hint?: unknown })?.hint;
+      out.push({ id, label, ...(typeof hint === 'string' ? { hint } : {}) });
+    }
+    return out.length > 0 ? out : undefined;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Credential state — the host's one named verdict on its provider
+  // credential (spent quota, expired token, pending login) and the actions
+  // it can run. Arrives as `credential-state` frames (after an action) and
+  // inside /healthz; both reconcile the alert strip so a page opened
+  // mid-incident alarms with its buttons.
+  // ---------------------------------------------------------------------------
+  const [credentialState, setCredentialState] = createSignal<CredentialInfo | null>(null);
+
+  const applyCredentialState = (c: CredentialInfo | undefined): void => {
+    if (!c || c.subscription === false) return;
+    setCredentialState(c);
+    const agent = c.agent ?? '?';
+    const kind = c.kind ?? 'ok';
+    for (const k of CREDENTIAL_ALERT_KINDS) {
+      const key = `${agent}:${k}`;
+      if (k === kind) {
+        if (opsAlerts().get(key)?.message !== c.message) {
+          upsertOpsAlert(kind, agent, c.message ?? kind, false, c.actions);
+        }
+      } else {
+        removeOpsAlert(key);
+      }
+    }
+  };
+
+  /** A button on an alert row / the Health tab. `set-token` asks for the
+   *  paste here; the token goes to the host once and is never echoed. */
+  const runCredentialAction = (actionId: string): void => {
+    if (actionId === 'set-token') {
+      const token = window.prompt('Paste the replacement token for this host (kept in memory; written to the credentials file only when the host loaded one):');
+      if (!token || !token.trim()) return;
+      wire.send({ type: 'credential-action', scope: panelScope(), action: 'set-token', token: token.trim() });
+      return;
+    }
+    if (actionId !== 'refresh' && actionId !== 'login' && actionId !== 'recheck') return;
+    wire.send({ type: 'credential-action', scope: panelScope(), action: actionId });
   };
 
   /** /healthz snapshot — feeds the Health tab and reconciles durable-state
@@ -227,6 +284,7 @@ export function App() {
   let healthDenied = false;
 
   const reconcileHealthAlerts = (h: HealthSnapshot): void => {
+    applyCredentialState(h.credential);
     const quarantine = h.compressionQuarantine ?? {};
     for (const [agent, q] of Object.entries(quarantine)) {
       const key = `${agent}:compression-quarantine`;
@@ -1172,6 +1230,7 @@ export function App() {
           setFileLoading(false);
         },
         onOpsAlert: applyOpsAlertTrace,
+        onCredentialState: applyCredentialState,
         setBranchesList: (list, currentId) => {
           setBranches(list);
           setBranchesCurrentId(currentId);
@@ -1339,7 +1398,11 @@ export function App() {
         )}
       </Show>
       <ReconnectBanner status={wire.status()} />
-      <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
+      <OpsAlertStrip
+        alerts={alertList()}
+        onDismiss={removeOpsAlert}
+        onAction={(_alert, id) => runCredentialAction(id)}
+      />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
           <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
@@ -1655,6 +1718,8 @@ export function App() {
                 error={healthErr()}
                 ledger={callLedger()?.rows}
                 onRefresh={() => void loadHealth(true)}
+                credential={credentialState()}
+                onCredentialAction={runCredentialAction}
               />
             </Show>
           </div>
@@ -1707,6 +1772,8 @@ interface HandlerHooks {
   setMcpl: (configPath: string, servers: McplServerRow[], live: McplLiveRow[]) => void;
   /** Apply a settings-state broadcast. */
   setSettings: (state: SettingsState) => void;
+  /** Apply a credential-state frame (answer to request-credential / an action). */
+  onCredentialState: (state: CredentialInfo) => void;
   /** Apply a pins-list broadcast. */
   setPins: (state: PinsState) => void;
   /** Apply a workspace-mounts response. */
@@ -1881,6 +1948,10 @@ function handleServerMessage(
       if (staleScope(msg.scope, hooks.currentScope())) return;
       hooks.setSettings(msg as unknown as SettingsState);
       return;
+    case 'credential-state':
+      if (staleScope(msg.scope, hooks.currentScope())) return;
+      hooks.onCredentialState(msg as unknown as CredentialInfo);
+      return;
     case 'pins-list':
       if (staleScope(msg.scope, hooks.currentScope())) return;
       hooks.setPins(msg as unknown as PinsState);
@@ -1984,6 +2055,13 @@ function Header(props: {
         <Show when={props.quota?.subscription && props.quota.windows.length > 0}>
           <span class={`ml-3 ${quotaTone(props.quota!)}`} title={quotaTitle(props.quota!)}>
             {quotaReadout(props.quota!)}
+          </span>
+        </Show>
+        {/* A subscription meter that has never read (inference-only token,
+            gateway without the usage path) must say so, not render nothing. */}
+        <Show when={props.quota?.subscription && props.quota.windows.length === 0 && props.quota.error}>
+          <span class="ml-3 text-amber-400" title={`Subscription quota unreadable: ${props.quota!.error}`}>
+            quota: unreadable
           </span>
         </Show>
         <Show when={!props.quota?.subscription && props.usage.cost && props.usage.cost.total > 0}>

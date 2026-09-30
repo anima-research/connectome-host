@@ -179,6 +179,13 @@ device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
 warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied.
 
+On any subscription credential (Anthropic OAuth or Codex) the host names what
+is wrong with it — spent quota, unreadable quota, expiring/expired/rejected
+token, pending login — as an ops alert with the actions it can run, shown on
+the TUI status bar / `/auth`, the WebUI alert strip and Health tab, and the
+fleet parent. Nothing rotates without an operator action. See
+[docs/subscription-transport.md](docs/subscription-transport.md).
+
 ### OpenAI-compatible endpoints (Ollama, vLLM, Together, Groq, NanoGPT, ...)
 
 Any server speaking the OpenAI chat-completions API works through the generic
@@ -303,6 +310,7 @@ locally running host.
 | `/mcp env <id> KEY=VALUE [...]` | Set env vars on a server |
 | `/budget [tokens]` | Show/set stream token budget |
 | `/fast [on\|off\|status]` | Toggle Codex subscription Fast mode |
+| `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session list\|new\|switch\|rename\|delete` | Session management |
 | `/quit` | Exit |
 

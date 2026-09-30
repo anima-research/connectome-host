@@ -24,6 +24,7 @@ import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
 import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
@@ -38,6 +39,8 @@ export interface PanelAppRef {
   callLedger?: CallLedger | null;
   /** Subscription quota windows, when the host runs on a subscription. */
   quotaMeter?: QuotaMeter | null;
+  /** Credential state + operator actions, when the host runs on a subscription. */
+  credentials?: CredentialMonitor | null;
 }
 
 /** Panel operations servable by any conhost process. Kept as a const list so
@@ -60,6 +63,8 @@ export const PANEL_OPS = [
   'debug-context',
   'media',
   'quota',
+  'credential',
+  'credential-action',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -135,6 +140,10 @@ export async function runPanelOp(
         return { ok: true, data: buildHealthSnapshot(app) };
       case 'quota':
         return { ok: true, data: await buildQuotaSnapshot(app) };
+      case 'credential':
+        return { ok: true, data: buildCredentialSnapshot(app) };
+      case 'credential-action':
+        return { ok: true, data: await applyCredentialAction(app, params) };
       case 'context-makeup':
         return { ok: true, data: await buildContextMakeup(app, resolveAgent(app, params.agent)) };
       case 'context-coverage':
@@ -691,12 +700,43 @@ export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<strin
   };
 }
 
+/** `credential` panel op / health `credential` block: the monitor's state,
+ *  or `{ subscription: false }` on an API-key host. Never carries a token. */
+export function buildCredentialSnapshot(app: PanelAppRef): Record<string, unknown> {
+  if (!app.credentials) return { subscription: false };
+  // `agent` = the name the host's alerts carry, so a UI can key the two the same.
+  return { subscription: true, agent: resolveAgent(app), ...app.credentials.snapshot() };
+}
+
+const CREDENTIAL_ACTIONS: ReadonlySet<string> = new Set(['refresh', 'login', 'set-token', 'recheck']);
+
+/** `credential-action`: run one operator action and answer with the state. */
+export async function applyCredentialAction(app: PanelAppRef, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!app.credentials) throw new PanelError('this host runs on an API key; no credential actions', 404);
+  const action = typeof params.action === 'string' ? params.action : '';
+  if (!CREDENTIAL_ACTIONS.has(action)) throw new PanelError(`unknown credential action: ${action || '(none)'}`, 400);
+  const token = typeof params.token === 'string' ? params.token : undefined;
+  if (action === 'set-token' && !token?.trim()) throw new PanelError('set-token needs a token', 400);
+  const state = await app.credentials.runAction(action as CredentialActionId, token !== undefined ? { token } : {});
+  return { subscription: true, agent: resolveAgent(app), ...state };
+}
+
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
   if (typeof fw.healthSnapshot !== 'function') {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
+  // Credential state rides along so a WebUI opened mid-incident (or the
+  // fleet hub / doctor) sees an expired token or spent quota without waiting
+  // for the next alert transition. Health reads never throw.
+  try {
+    if (app.credentials) {
+      (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
+    }
+  } catch {
+    // Health reads never throw.
+  }
   // Compression quarantine is a guaranteed-eventual-outage state (raw
   // spans accumulate until the picker cannot fit the window). Surface it
   // here so the fleet hub and connectome-doctor can alarm on it — it
