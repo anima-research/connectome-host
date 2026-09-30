@@ -30,7 +30,7 @@ import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -908,11 +908,14 @@ async function main() {
       })
     : null;
   // The Codex subscription adapter owns ChatGPT login/refresh independently
-  // of the API-key transports below.
+  // of the API-key transports below — unless an inference gate holds the
+  // logins (CODEX_GATE_TOKEN + CODEX_BASE_URL), in which case no Codex CLI runs.
+  const codexGate = provider === 'openai-codex' ? codexGateAuth(process.env) : undefined;
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
+        ...(codexGate ? { authProvider: codexGate } : {}),
       })
     : undefined;
   // Subscription credentials draw down utilization windows instead of being
@@ -922,7 +925,9 @@ async function main() {
         authToken: config.authToken,
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       }))
-    : codexAdapter
+    // through a gate there is no Codex login to read windows from; the gate
+    // tracks them per login (its /gate/status)
+    : codexAdapter && !codexGate
       ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
       : null;
   // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
