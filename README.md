@@ -157,6 +157,13 @@ the agent until the window resets instead of retrying; without a reading
 (e.g. the first 429 in a headless run with no viewer, or an unreadable usage
 endpoint) it follows the normal retry path.
 
+A `claude setup-token` credential cannot be rotated by the host: when it
+expires or is rejected, the host raises an `auth-rejected` alert whose only
+action is pasting a new token. A credentials file with a refresh token
+(`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) makes "Refresh token" available and warns
+30 minutes before expiry. See the credential-alerts note under the ChatGPT
+provider and [docs/subscription-transport.md](docs/subscription-transport.md).
+
 ### ChatGPT subscription provider
 
 Install the Codex CLI, sign in with `codex login`, then select the subscription
@@ -250,6 +257,8 @@ npm install
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required unless `ANTHROPIC_AUTH_TOKEN` is set) | Anthropic API key |
 | `ANTHROPIC_AUTH_TOKEN` | — | Claude subscription OAuth token (`claude setup-token`); takes precedence over `ANTHROPIC_API_KEY` |
+| `ANTHROPIC_OAUTH_CREDENTIALS_FILE` | — | JSON credentials file (`accessToken` + `refreshToken` + `expiresAt`, Claude Code's shape or flat); a refresh token makes the credential host-rotatable. Use a COPY, never `~/.claude/.credentials.json` itself |
+| `ANTHROPIC_OAUTH_AUTO_REFRESH` | off | `1`/`true`: rotate on a 401 without an operator action |
 | `OPENAI_API_KEY` | — | OpenAI Platform key for `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
