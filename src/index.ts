@@ -34,6 +34,7 @@ import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
+import { assertProseOutboxSupport } from './prose-outbox-support.js';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
@@ -514,6 +515,7 @@ async function createFramework(
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
   // -- Create framework --
+  assertProseOutboxSupport(recipe);
   const framework = await AgentFramework.create({
     storePath,
     membrane,
@@ -531,6 +533,8 @@ agents: [agentConfig],
     // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
     // passed through verbatim; the framework owns the defaults.
     ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // Keep and retry undelivered speech — recipe opt-in, passed through.
+    ...(recipe.proseOutbox ? { proseOutbox: recipe.proseOutbox } : {}),
   });
 
   // Wire post-creation hooks
