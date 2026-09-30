@@ -955,6 +955,29 @@ export interface RecipeSubconscious {
 }
 
 /**
+ * Focus mode (agent-framework FrameworkConfig.focus): the resident narrows
+ * attention to one channel for a bounded time; everything else is held and
+ * delivered at unfocus, addressed messages elsewhere get an automatic
+ * reply. Passed through verbatim; the framework owns the defaults.
+ */
+export interface RecipeFocus {
+  /** Master switch. Without it the `focus` tool is not offered. */
+  enabled: boolean;
+  /** Duration when the tool call names none (default 1800 s). */
+  defaultDurationSeconds?: number;
+  /** Ceiling on one focus epoch (default 14400 s). */
+  maxDurationSeconds?: number;
+  /** Newest raw messages delivered per held channel at unfocus (default 20). */
+  defaultBacklogCap?: number;
+  /** Ceiling on backlogCap (default 200). */
+  maxBacklogCap?: number;
+  /** Post the automatic reply to addressed messages while focused (default true). */
+  autoReply?: boolean;
+  /** Reply text; placeholders {name} {until} {remaining} {channel}. */
+  autoReplyTemplate?: string;
+}
+
+/**
  * Per-channel conversation routing (agent-framework ConversationRouter):
  * the recipe's agent becomes a dormant "trunk" template, and qualifying
  * incoming channel messages spawn per-channel fork agents seeded from the
@@ -1005,6 +1028,8 @@ export interface Recipe {
   conversations?: RecipeConversations;
   /** Tune-out's subconscious resident (agent-framework#77). */
   subconscious?: RecipeSubconscious;
+  /** Focus mode: single-channel attention for a bounded time. */
+  focus?: RecipeFocus;
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,6 +2259,41 @@ export function validateRecipe(raw: unknown): Recipe {
       if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
         throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
       }
+    }
+  }
+
+  if (obj.focus !== undefined) {
+    if (!obj.focus || typeof obj.focus !== 'object' || Array.isArray(obj.focus)) {
+      throw new Error('Recipe focus must be an object.');
+    }
+    const focus = obj.focus as Record<string, unknown>;
+    const allowedFocusKeys = new Set([
+      'enabled', 'defaultDurationSeconds', 'maxDurationSeconds', 'defaultBacklogCap',
+      'maxBacklogCap', 'autoReply', 'autoReplyTemplate',
+    ]);
+    for (const key of Object.keys(focus)) {
+      if (!allowedFocusKeys.has(key)) {
+        throw new Error(
+          `Recipe focus has unknown field ${JSON.stringify(key)} ` +
+          `(expected one of: ${[...allowedFocusKeys].join(', ')}).`,
+        );
+      }
+    }
+    if (typeof focus.enabled !== 'boolean') {
+      throw new Error('Recipe focus.enabled must be a boolean.');
+    }
+    for (const k of ['defaultDurationSeconds', 'maxDurationSeconds', 'defaultBacklogCap', 'maxBacklogCap'] as const) {
+      const v = focus[k];
+      if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
+        throw new Error(`Recipe focus.${k} must be a non-negative number.`);
+      }
+    }
+    if (focus.autoReply !== undefined && typeof focus.autoReply !== 'boolean') {
+      throw new Error('Recipe focus.autoReply must be a boolean.');
+    }
+    if (focus.autoReplyTemplate !== undefined &&
+        (typeof focus.autoReplyTemplate !== 'string' || !focus.autoReplyTemplate.trim())) {
+      throw new Error('Recipe focus.autoReplyTemplate must be a non-empty string.');
     }
   }
 

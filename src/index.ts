@@ -531,6 +531,8 @@ agents: [agentConfig],
     // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
     // passed through verbatim; the framework owns the defaults.
     ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // Focus mode — recipe opt-in, passed through verbatim.
+    ...(recipe.focus ? { focus: recipe.focus } : {}),
   });
 
   // Wire post-creation hooks
