@@ -1,0 +1,1 @@
+- `agent.strategy.mergeHoldSummaryIds` is passed through to the context manager (operator merge holds; context-manager #117). A malformed value (not an array of non-empty ids) now fails at recipe load instead of being silently dropped.
