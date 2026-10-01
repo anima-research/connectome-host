@@ -1427,6 +1427,8 @@ export class FleetModule implements Module {
   private async connectChildSocket(child: FleetChild): Promise<void> {
     return new Promise((resolveConn, rejectConn) => {
       const sock = netConnect(child.socketPath);
+      // Socket decoding retains incomplete UTF-8 characters across chunks.
+      sock.setEncoding('utf8');
       const timer = setTimeout(() => {
         sock.destroy();
         rejectConn(new Error('socket connect timeout'));
@@ -1435,7 +1437,10 @@ export class FleetModule implements Module {
       sock.once('connect', () => {
         clearTimeout(timer);
         child.socket = sock;
-        sock.on('data', (chunk: Buffer) => this.handleChildData(child, chunk));
+        child.buffer = '';
+        sock.on('data', (chunk: string) => {
+          if (child.socket === sock) this.handleChildData(child, chunk);
+        });
         sock.on('end', () => {
           if (child.socket === sock) child.socket = null;
         });
@@ -1464,8 +1469,8 @@ export class FleetModule implements Module {
     throw new Error(`child did not report ready within ${timeout}ms`);
   }
 
-  private handleChildData(child: FleetChild, chunk: Buffer): void {
-    child.buffer += chunk.toString('utf-8');
+  private handleChildData(child: FleetChild, chunk: string): void {
+    child.buffer += chunk;
     let nl: number;
     while ((nl = child.buffer.indexOf('\n')) >= 0) {
       const line = child.buffer.slice(0, nl).trim();
