@@ -98,6 +98,34 @@ cd ../connectome-host
 
 The recipe expects the entry-point script at `../duckduckgo-mcp-server/.venv/bin/duckduckgo-mcp-server`. No API key needed. Don't want public-web access? Remove the `ddg` block from the recipe.
 
+### You.com web search (optional — second public-web source, not included by default)
+
+You.com also exposes an MCP server, and its free profile has the same zero-setup property that makes the DuckDuckGo server convenient: no API key, no signup. It is a remote server, so there is no sibling checkout to maintain — the block below bridges it over stdio with [`mcp-remote`](https://github.com/geelen/mcp-remote), spawned via `npx` on demand (the same pattern the `gitlab` entry uses for `@zereight/mcp-gitlab`).
+
+The shipped recipe keeps the miner DDG-by-default, so this block is deliberately not included. To enable it, add it under `mcpServers` in your recipe copy:
+
+```jsonc
+"youcom": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://api.you.com/mcp?profile=free"],
+  "source": { "npm": "mcp-remote" }
+}
+```
+
+No env vars required. The free profile exposes a `you-search` tool; results carry URLs and snippets, so web citations keep the same `[WEB: <url>]` shape. Run it alongside `ddg`, or remove the `ddg` block to make You.com the only public-web source — the miner adapts to whatever servers are connected (`/mcp list` shows them). One caveat: the miner's prompt names the `ddg` tools in its §4 section, so the agent discovers the `youcom` tools on its own but will not prefer them; if you want them used and cited consistently, point that §4 wording at the `youcom` tools in your recipe copy.
+
+For the authenticated endpoint (full search, page-content extraction, research), use `https://api.you.com/mcp` instead of the free-profile URL and pass an API key from [you.com/platform/api-keys](https://you.com/platform/api-keys) as a header:
+
+```jsonc
+"youcom": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://api.you.com/mcp", "--header", "Authorization: Bearer ${YDC_API_KEY}"],
+  "source": { "npm": "mcp-remote" }
+}
+```
+
+with `YDC_API_KEY` set in `.env` — recipes substitute `${VAR}` at load time, so the key stays out of the file.
+
 ### Scribe — audio/video transcription (optional, not included by default)
 
 The miner's prompt also knows how to drive [`dariakroshka/scribe-mcp`](https://github.com/dariakroshka/scribe-mcp) for transcribing recordings. It needs a Gemini API key (media is uploaded to Google's Gemini API) and a sibling checkout, so the shipped recipe omits it. To enable: clone scribe-mcp as a sibling of `connectome-host/`, run `bun install` in it, add a `scribe` block under `mcpServers` (see the [Triumvirate guide's Scribe section](./TRIUMVIRATE-SETUP.md#scribe--audiovideo-transcription-optional-off-by-default) for the exact JSON), and set `GEMINI_API_KEY` in `.env`.
