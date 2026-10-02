@@ -6,6 +6,11 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- The WebUI and fleet WebUI smoke-test recipes bind to `127.0.0.1`, so their unauthenticated local servers pass the existing bind-safety check. The fleet parent uses port 8788 and its child uses 8787 to avoid competing for one listener.
+- The clerk recipe's channel-management procedures use `wake_add_rule` and `wake_remove_rule` for live, persisted gate changes, while retaining Zulip subscriptions and protected default policies. They no longer direct the clerk to edit a Chronicle workspace copy or promise a timed reload.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added
