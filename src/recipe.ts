@@ -362,6 +362,10 @@ export interface RecipeMcpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Opt in to the full host environment for stdio servers, including those
+   * defined in mcpl-servers.json. Prefer declaring needed variables in env.
+   * Requires an agent-framework version with inheritEnv support. */
+  inheritEnv?: boolean;
   /**
    * Per-request timeout for this server's outbound JSON-RPC (tools/call,
    * tools/list, channels/*), in milliseconds. Passed through to the
@@ -1835,6 +1839,9 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
+      }
+      if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
+        throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
       }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {

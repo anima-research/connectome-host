@@ -20,6 +20,9 @@ export interface ServerFileEntry {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Opt in to the full host environment for stdio servers. Requires an
+   * agent-framework version with inheritEnv support; prefer explicit env. */
+  inheritEnv?: boolean;
   toolPrefix?: string;
   reconnect?: boolean;
   reconnectIntervalMs?: number;
@@ -78,6 +81,9 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       command: entry.command,
       args,
       env: entry.env,
+      ...(entry.inheritEnv !== undefined
+        ? { inheritEnv: checkedInheritEnv(entry.inheritEnv, `mcpl-servers.json: mcplServers.${id}`) }
+        : {}),
       toolPrefix: entry.toolPrefix,
       reconnect: entry.reconnect,
       reconnectIntervalMs: entry.reconnectIntervalMs,
@@ -94,6 +100,11 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
   return servers;
 }
 
+function checkedInheritEnv(value: unknown, where: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${where}.inheritEnv must be a boolean`);
+  return value;
+}
+
 function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
   validateToolLifecycle(value, `mcpl-servers.json: mcplServers.${id}.toolLifecycle`);
   return value as RecipeToolLifecycle;
@@ -107,6 +118,7 @@ function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
 export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   'channelSubscription', 'toolPrefix', 'enabledFeatureSets', 'disabledFeatureSets',
   'enabledTools', 'disabledTools', 'reconnect', 'reconnectIntervalMs', 'reconnectMaxIntervalMs',
+  'inheritEnv',
   // A recipe may adopt WebSocket transport for a file-defined server.
   'url', 'transport', 'token', 'access',
   // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
@@ -270,6 +282,9 @@ export function resolveOverlayEntry(
 ): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
   if (entry.disabled) return null;
   if (!entry.command && !entry.url) return null;
+  if (entry.inheritEnv !== undefined) {
+    checkedInheritEnv(entry.inheritEnv, `mcpl-servers.agent.json: mcplServers.${id}`);
+  }
   const overlayDir = dirname(resolve(overlayPath));
   const { disabled: _d, ...fields } = entry;
   const rec = fields as Record<string, unknown>;
