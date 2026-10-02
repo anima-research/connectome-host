@@ -27,6 +27,7 @@ function config(): RecipeKvUnifiedConfig {
     labelCeiling: 100_000,
     adoptEpsilon: 2_000,
     treeifyNonContiguousSummaries: false,
+    preserveGapBearingSummaries: false,
   };
 }
 
@@ -78,6 +79,43 @@ describe('kv-unified recipe plumbing', () => {
     delete missingTreeification.treeifyNonContiguousSummaries;
     expect(() => validateRecipe(recipe(missingTreeification))).toThrow(/explicit boolean/);
   });
+
+  test('requires an explicit preserveGapBearingSummaries boolean', () => {
+    const missing = config() as unknown as Record<string, unknown>;
+    delete missing.preserveGapBearingSummaries;
+    expect(() => validateRecipe(recipe(missing))).toThrow(/preserveGapBearingSummaries.*explicit boolean/);
+
+    for (const value of [null, 0, 1, 'true', 'false', {}, []]) {
+      expect(() => validateRecipe(recipe({ ...config(), preserveGapBearingSummaries: value })))
+        .toThrow(/preserveGapBearingSummaries.*explicit boolean/);
+    }
+  });
+
+  test('rejects simultaneous treeification and gap preservation', () => {
+    expect(() => validateRecipe(recipe({
+      ...config(),
+      treeifyNonContiguousSummaries: true,
+      preserveGapBearingSummaries: true,
+    }))).toThrow(/treeifyNonContiguousSummaries.*preserveGapBearingSummaries.*mutually exclusive/);
+  });
+
+  for (const type of ['autobiographical', 'frontdesk']) {
+    test(`${type} preserves all valid explicit topology policies`, () => {
+      for (const [treeify, preserve] of [[false, false], [true, false], [false, true]]) {
+        const kvUnified = {
+          ...config(),
+          treeifyNonContiguousSummaries: treeify,
+          preserveGapBearingSummaries: preserve,
+        };
+        const raw = recipe(kvUnified);
+        raw.agent.strategy.type = type;
+        const built = buildFrameworkStrategy(validateRecipe(raw), 'model', 'UTC') as unknown as {
+          config: { kvUnified: RecipeKvUnifiedConfig };
+        };
+        expect(built.config.kvUnified).toEqual(kvUnified);
+      }
+    });
+  }
 
   test('rejects a kvUnified object when another solver is selected', () => {
     const raw = recipe() as ReturnType<typeof recipe>;

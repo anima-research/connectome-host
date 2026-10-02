@@ -6,6 +6,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- **Recipe authors using `kv-unified`:** `agent.strategy.kvUnified.preserveGapBearingSummaries` must now be an explicit boolean, and cannot be `true` together with `treeifyNonContiguousSummaries`. Add the flag to older recipes. Both requirements already apply in context-manager; invalid configurations now fail at recipe load instead of the first solve. Valid explicit policies and other folding strategies are unchanged.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added
