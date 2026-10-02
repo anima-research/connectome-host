@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
+import { emptyExtensionRegistry } from '../src/extensions.js';
 
 const limits = {
   maxLiveImages: 3,
@@ -39,6 +40,44 @@ describe('live-image recipe limits', () => {
       for (const key of Object.keys(limits)) expect(built[key]).toBe(0);
     });
   }
+
+  test('custom strategies receive their own image conventions unchanged', () => {
+    const custom = {
+      type: 'custom-images',
+      maxLiveImages: -1,
+      imageStripDepthTokens: 'all',
+      maxLiveImageBytes: null,
+    };
+    const parsed = validateRecipe({
+      name: 'custom-image-policy',
+      agent: { systemPrompt: 'sys', strategy: custom },
+      extensions: { images: { kind: 'strategy', path: './images.ts' } },
+    });
+    const registry = emptyExtensionRegistry();
+    const received: Record<string, unknown>[] = [];
+    const sentinel = buildFrameworkStrategy(recipe({ type: 'passthrough' }), 'some-model', 'UTC');
+    registry.strategies.set('custom-images', ({ config }) => {
+      received.push(config);
+      return sentinel;
+    });
+    expect(buildFrameworkStrategy(parsed, 'some-model', 'UTC', registry)).toBe(sentinel);
+    expect(received).toEqual([custom]);
+  });
+
+  test('passthrough does not impose limits it never consumes', () => {
+    expect(() => recipe({
+      type: 'passthrough', maxLiveImages: -1, imageStripDepthTokens: 'all', maxLiveImageBytes: null,
+    })).not.toThrow();
+  });
+
+  test('omitted strategy type validates and forwards autobiographical limits', () => {
+    expect(config({ type: undefined, ...limits }).maxLiveImages).toBe(limits.maxLiveImages);
+    for (const key of Object.keys(limits)) {
+      expect(() => recipe({ type: undefined, [key]: -1 })).toThrow(
+        `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
+      );
+    }
+  });
 
   test('omitted limits stay absent from the recipe and use the library defaults', () => {
     const parsed = recipe();

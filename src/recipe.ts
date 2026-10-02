@@ -1735,11 +1735,16 @@ export function validateRecipe(raw: unknown): Recipe {
       );
     }
     validateKvUnifiedConfig(strategy);
-    // Context Manager uses zero to disable each image limit independently.
-    for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
-      const value = strategy[key];
-      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
-        throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);
+    // These controls belong to the built-in memory strategies. Extensions
+    // receive their own config verbatim and may use different conventions.
+    const strategyType = strategy.type ?? 'autobiographical';
+    if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
+      // Context Manager uses zero to disable each image limit independently.
+      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
+        const value = strategy[key];
+        if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
+          throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);
+        }
       }
     }
     if (
