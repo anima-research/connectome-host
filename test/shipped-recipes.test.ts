@@ -39,6 +39,9 @@ test('fleet parent and its shipped child have distinct fixed WebUI ports', () =>
 test('clerk channel instructions use live wake tools and a valid persistent rule', () => {
   const clerk = readRecipe('clerk.json');
   const prompt = validateRecipe(clerk).agent.systemPrompt;
+  // The host assembles wake tools only when modules.wake enables its gate.
+  // A standalone EventGate probe must not hide a disabled shipped module.
+  expect(clerk.modules.wake).toHaveProperty('policies');
   const channelInstructions = prompt.slice(prompt.indexOf('## Channel Management'), prompt.indexOf('## Subagents'));
   expect(channelInstructions).toContain('wake_add_rule');
   expect(channelInstructions).toContain('wake_remove_rule');
@@ -49,6 +52,9 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
   expect(channelInstructions).toContain('explicit user confirmation');
   expect(channelInstructions).toContain('user-input');
   expect(channelInstructions).toContain('subagent-completions');
+  expect(channelInstructions).toContain('Recipe-shipped rules');
+  expect(channelInstructions).toContain('restored at the next startup');
+  expect(channelInstructions).toContain('Runtime-only rules');
 
   const tools = (AgentFramework as unknown as { WAKE_RULE_TOOLS: Array<{ name: string }> }).WAKE_RULE_TOOLS;
   expect(tools.map(tool => tool.name)).toContain('wake_add_rule');
@@ -63,9 +69,11 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
   try {
     const configPath = join(dir, 'gate.json');
     writeFileSync(configPath, JSON.stringify(clerk.modules.wake));
-    const gate = new EventGate({
-      configPath, emitTrace: () => {}, addMessage: () => '', requestInference: () => {}, getAgentNames: () => ['clerk'],
+    const createGate = () => new EventGate({
+      configPath, initialConfig: clerk.modules.wake,
+      emitTrace: () => {}, addMessage: () => '', requestInference: () => {}, getAgentNames: () => ['clerk'],
     });
+    const gate = createGate();
     const event = { content: 'offline example', eventType: 'mcpl:channel-incoming', serverId: 'zulip', channelId: 'zulip:foo' };
     expect(gate.evaluate(event).trigger).toBe(false);
     // This is the validator/mutator used by the installed wake_add_rule tool.
@@ -75,6 +83,14 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
     expect(gate.removePolicy(rule.name)).toBe(true);
     expect(gate.evaluate(event).trigger).toBe(false);
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual(clerk.modules.wake);
+
+    // Boot reconciliation restores shipped names, but not runtime-only rules.
+    expect(gate.removePolicy('tracker-channel')).toBe(true);
+    expect(JSON.parse(readFileSync(configPath, 'utf8')).policies.some((p: { name: string }) => p.name === 'tracker-channel')).toBe(false);
+    const restarted = createGate();
+    expect(restarted.listPolicyNames()).toContain('tracker-channel');
+    expect(restarted.listPolicyNames()).not.toContain(rule.name);
+    expect(restarted.evaluate(event).trigger).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
