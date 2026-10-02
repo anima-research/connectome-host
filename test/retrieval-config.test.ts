@@ -1,74 +1,50 @@
 import { describe, expect, test } from 'bun:test';
-import type { Membrane } from '@animalabs/membrane';
 import { validateRecipe } from '../src/recipe.js';
 import { buildRetrievalModuleConfig } from '../src/retrieval-config.js';
+import type { RetrievalModels } from '../src/modules/retrieval-models.js';
 
-const membrane = {} as Membrane;
+const models = {} as RetrievalModels;
 
-function recipe(retrieval: unknown, provider: string = 'openai-codex') {
+function recipe(retrieval: unknown) {
   return {
     name: 'retrieval-config-test',
-    agent: { systemPrompt: 'sys', provider },
+    agent: { systemPrompt: 'sys' },
     modules: { retrieval },
   };
 }
 
 describe('retrieval recipe config', () => {
-  test('accepts and maps provider reasoning settings', () => {
-    const parsed = validateRecipe(recipe({
-      model: 'test-model',
-      maxInjected: 7,
-      reasoningEffort: 'minimal',
-    }));
+  test('accepts and maps the local-retrieval settings', () => {
+    const parsed = validateRecipe(recipe({ maxInjected: 7, maxCandidates: 24, relevanceThreshold: 0.4 }));
 
-    expect(parsed.modules?.retrieval).toEqual({
-      model: 'test-model',
-      maxInjected: 7,
-      reasoningEffort: 'minimal',
-    });
-    expect(buildRetrievalModuleConfig(membrane, parsed.modules!.retrieval!, 'openai-codex')).toEqual({
-      membrane,
-      retrievalModel: 'test-model',
+    expect(buildRetrievalModuleConfig(models, parsed.modules!.retrieval!)).toEqual({
+      models,
       maxInjectedLessons: 7,
-      retrievalReasoning: { effort: 'minimal' },
+      maxCandidates: 24,
+      relevanceThreshold: 0.4,
     });
   });
 
-  test('preserves boolean shorthand and omits unconfigured reasoning', () => {
+  test('boolean shorthand leaves every knob at its default', () => {
     expect(validateRecipe(recipe(true)).modules?.retrieval).toBe(true);
     expect(validateRecipe(recipe(false)).modules?.retrieval).toBe(false);
-    expect(buildRetrievalModuleConfig(membrane, { model: 'test-model' }, 'anthropic')).toEqual({
-      membrane,
-      retrievalModel: 'test-model',
-    });
+    expect(buildRetrievalModuleConfig(models, true)).toEqual({ models });
   });
 
-  test('rejects malformed retrieval reasoning settings', () => {
+  test('rejects the removed LLM-retrieval keys with a migration message', () => {
+    for (const key of ['model', 'reasoningEffort', 'reasoningContext']) {
+      expect(() => validateRecipe(recipe({ [key]: 'x' }))).toThrow(
+        new RegExp(`modules\\.retrieval\\.${key} was removed: retrieval now runs local`),
+      );
+    }
+  });
+
+  test('rejects malformed values', () => {
     expect(() => validateRecipe(recipe(null))).toThrow(/modules\.retrieval must be a boolean or object/);
     expect(() => validateRecipe(recipe([]))).toThrow(/modules\.retrieval must be a boolean or object/);
-    expect(() => validateRecipe(recipe({ reasoningEffort: 'ultra' }))).toThrow(/reasoningEffort/);
-    expect(() => validateRecipe(recipe({ reasoningEffort: ['high'] }))).toThrow(/reasoningEffort/);
-    expect(() => validateRecipe(recipe({ reasoningContext: 'current_turn' }))).toThrow(
-      /independent one-shot requests/,
-    );
-    expect(() => validateRecipe(recipe({ reasoningEffort: 'high' }, 'anthropic'))).toThrow(
-      /requires agent\.provider/,
-    );
-    expect(() => buildRetrievalModuleConfig(
-      membrane,
-      { reasoningEffort: 'high' },
-      'anthropic',
-    )).toThrow(/requires agent\.provider/);
-    expect(() => validateRecipe(recipe({ reasoningEffort: 'high' }))).toThrow(
-      /model must be a non-empty string/,
-    );
-    expect(() => validateRecipe(recipe({ model: '  ', reasoningEffort: 'high' }))).toThrow(
-      /model must be a non-empty string/,
-    );
-    expect(() => buildRetrievalModuleConfig(
-      membrane,
-      { reasoningEffort: 'high' },
-      'openai-codex',
-    )).toThrow(/model must be a non-empty string/);
+    expect(() => validateRecipe(recipe({ maxCandidates: 0 }))).toThrow(/maxCandidates must be a positive integer/);
+    expect(() => validateRecipe(recipe({ maxInjected: 2.5 }))).toThrow(/maxInjected must be a positive integer/);
+    expect(() => validateRecipe(recipe({ relevanceThreshold: 1.5 }))).toThrow(/relevanceThreshold must be a number in \[0, 1\]/);
+    expect(() => validateRecipe(recipe({ relevanceThreshold: '0.5' }))).toThrow(/relevanceThreshold/);
   });
 });

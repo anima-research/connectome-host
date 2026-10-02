@@ -22,7 +22,7 @@
 
 import { CURVE_PAGE_HTML } from './web-ui-curve-page.js';
 import { RETRIEVAL_TRACE_PAGE_HTML } from './retrieval-trace-page.js';
-import type { RetrievalTraceSource } from './retrieval-trace.js';
+import { RETRIEVAL_TRACE_SCHEMA_VERSION, type RetrievalTraceSource } from './retrieval-trace.js';
 import type {
   AgentFramework,
   Module,
@@ -1301,7 +1301,7 @@ export class WebUiModule implements Module {
         | undefined;
       if (!module || typeof module.getRetrievalTraces !== 'function') {
         return this.retrievalJson(
-          { schemaVersion: 1, enabled: false, includeInputs: false, traces: [] },
+          { schemaVersion: RETRIEVAL_TRACE_SCHEMA_VERSION, enabled: false, includeInputs: false, traces: [] },
         );
       }
 
@@ -1309,7 +1309,7 @@ export class WebUiModule implements Module {
       const limit = Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 20;
       const includeInputs = url.searchParams.get('includeInputs') === '1';
       const traces = module.getRetrievalTraces({ limit, includeInputs });
-      return this.retrievalJson({ schemaVersion: 1, enabled: true, includeInputs, traces });
+      return this.retrievalJson({ schemaVersion: RETRIEVAL_TRACE_SCHEMA_VERSION, enabled: true, includeInputs, traces });
     } catch (error) {
       let message = 'unavailable error';
       try {

@@ -34,7 +34,7 @@ A general-purpose agent TUI host with recipe-based configuration. Point it at an
                     │  │   Modules       │  │  (recipe-toggleable)
                     │  │  - subagent     │──┼── spawn/fork ephemeral agents
                     │  │  - lessons      │──┼── CRUD knowledge store (Chronicle)
-                    │  │  - retrieval    │──┼── LLM-as-retriever (Haiku)
+                    │  │  - retrieval    │──┼── local embed + rerank
                     │  │  - workspace    │──┼── mount-based filesystem (Chronicle-backed)
                     │  │  - tui          │  │  (always-on)
                     │  └────────┬────────┘  │
@@ -185,34 +185,48 @@ interface Lesson {
   updated: number;
   deprecated: boolean;
   deprecationReason?: string;
+  previousContents?: { content: string; replacedAt: number }[];  // kept by `update`
+  supersededBy?: string;    // set by create's `supersedes`
+  retrievalCount?: number;  // usage, recorded by RetrievalModule
+  lastRetrieved?: number;
+  stability?: number;       // days until retrievability falls to 0.9
 }
 ```
 
-**Tools**: `create`, `update`, `deprecate`, `query` (text + tags + confidence filter), `list`, `boost`, `demote`.
+**Nothing is lost; salience changes.** `update` preserves prior wording, superseding deprecates rather than deletes, and `query` with `includeDeprecated` searches the archive. Usage only changes what retrieval ranks first.
 
-**Confidence dynamics**: `boost` applies diminishing-returns growth (`+0.1 * (1 - c)`); `demote` applies diminishing-returns decay (`-0.1 * c`). Lessons below 0.3 confidence are excluded from context injection.
+**Tools**: `create` (with `supersedes` / `force`), `update`, `deprecate`, `query` (text + tags + confidence filter, optionally the deprecated archive), `list` (sort by confidence / created / updated / strength), `boost`, `demote`.
 
-**Context injection**: `gatherContext()` injects the top 10 active lessons (by confidence) as a `## Knowledge Library` block in the system position.
+**Near-duplicate gate**: `create` refuses content whose content-word Jaccard similarity to a live lesson is ≥ 0.5, listing the matches; the agent then supersedes, updates, or forces. Lexical only — paraphrases with disjoint wording pass through.
+
+**Confidence dynamics**: `boost` applies diminishing-returns growth (`+0.1 * (1 - c)`); `demote` applies diminishing-returns decay (`-0.1 * c`). Lessons below 0.3 confidence are excluded from context injection. Confidence means "is it true"; usage strength (below) is tracked separately.
+
+**Usage strength**: each injection is a retrieval. Retrievability follows the FSRS power-law curve `R = (1 + t / 9S)^-1` (t = days since last retrieval or creation); a retrieval multiplies stability S by `1 + 10(1 − R)`, so massed retrievals within a session barely strengthen a lesson while spaced ones do. Retrieval ranks candidates by `confidence × (0.5 + 0.5R)` — disuse can at most halve a lesson's rank, and never hides it.
+
+**Context injection**: handled by the Retrieval Module, not here.
 
 ### Retrieval Module (`retrieval-module.ts`)
 
-Semantic memory lookup using a three-step LLM-as-retriever pipeline. Runs in `gatherContext()` before each main-agent inference.
+Lesson retrieval with local models — no API calls. Runs in `gatherContext()` before each main-agent inference.
 
 ```
- Step 1: Flag concepts        Step 2: Keyword query      Step 3: Validate
- ┌──────────────────┐         ┌──────────────────┐       ┌──────────────────┐
- │ Recent messages   │──Haiku──│ Concept keywords │──DB──│ Candidate lessons │──Haiku──│ Relevant only │
- │ → "What concepts  │         │ ["RFC", "auth"]  │      │ (top 20 by conf.) │        │ (filtered IDs)│
- │   need background │         └──────────────────┘      └──────────────────┘        └───────────────┘
- │   knowledge?"     │
- └──────────────────┘
+ Step 1: Search                               Step 2: Rerank                   Step 3: Inject
+ ┌──────────────────────────────────┐         ┌──────────────────────────┐     ┌──────────────────┐
+ │ queries: latest incoming msg,    │  RRF    │ Qwen3-Reranker-0.6B      │     │ relevant lessons │
+ │ latest own msg, ≤4 window chunks │──top──▶ │ P(yes) per candidate vs  │──▶  │ in rankScore     │
+ │ × (BM25 + Qwen3-Embedding-0.6B)  │ maxCand │ conversation tail;       │     │ (salience) order │
+ └──────────────────────────────────┘         │ ≥ relevanceThreshold     │     │ ≤ maxInjected    │
+                                              └──────────────────────────┘     └──────────────────┘
 ```
 
-- Steps 1 and 3 use Haiku (~$0.001 each)
-- Step 2 is mechanical keyword matching (no LLM call)
+- Models run in-process through `node-llama-cpp` (Metal / CUDA / Vulkan / CPU, auto-selected), GGUF Q8_0, ~1.3 GB downloaded on first use to `CONNECTOME_MODELS_DIR` (default `~/.cache/connectome-host/models`). Loading starts at host startup so the first turn doesn't wait on it; a load failure resurfaces as an `error` trace on every retrieval.
+- No concept-extraction step: several short queries replace it, so no single embedding averages a long multi-topic window. BM25 and dense lists from every query are merged by reciprocal rank fusion; the top `maxCandidates` (default 16) go to the reranker.
+- Lesson embeddings are cached by document text, recomputed on edit, and pruned when a lesson leaves the eligible set.
+- The reranker judges each candidate against the last ~1200 characters of conversation with a task-specific instruction. Its scores are bimodal; the default `relevanceThreshold` of 0.3 comes from `scripts/retrieval-calibration/` (synthetic set, see the script).
+- Relevant lessons are injected in `rankScore` order, up to `maxInjected`: the reranker decides what is relevant, salience decides what comes to mind first.
+- Measured on an M5 Mac (Metal): median ~650 ms per turn with 16 candidates; rerank cost is linear in `maxCandidates` and in the conversation-tail length.
 - Results cached by context hash — skips entirely if conversation hasn't changed
 - Fails open: on error, returns empty (never blocks inference)
-- Short-circuits: if only 3 or fewer candidates, skips validation step
 
 ### Session Manager (`session-manager.ts`)
 

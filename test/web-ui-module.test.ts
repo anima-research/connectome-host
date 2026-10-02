@@ -148,8 +148,7 @@ describe('WebUiModule HTTP', () => {
     expect(viewerHtml).toContain('Candidate lessons');
     expect(viewerHtml).toContain('Raw JSON (diagnostic)');
     expect(viewerHtml).toContain("'agent: ' + (trace.agentName || 'unknown')");
-    expect(viewerHtml).toContain("reasoning ? reasoning.effort : 'default'");
-    expect(viewerHtml).not.toContain('reasoning.context');
+    expect(viewerHtml).toContain("'reranker: ' + ((trace.config && trace.config.rerankerModel) || 'unknown')");
     expect(viewerHtml).toContain('node.textContent = String(text)');
     expect(viewerHtml).not.toContain('.innerHTML');
     expect(viewerHtml).not.toContain('\\u201C');
@@ -184,7 +183,7 @@ describe('WebUiModule HTTP', () => {
       getRetrievalTraces: (options: { limit?: number; includeInputs?: boolean } = {}) => {
         observedOptions = options;
         return [{
-          schemaVersion: 1,
+          schemaVersion: 2,
           id: 1,
           startedAt: '2026-07-31T00:00:00.000Z',
           agentName: 'test-agent',
@@ -281,7 +280,7 @@ describe('WebUiModule HTTP', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('cache-control')).toBe('no-store');
       expect(await res.json()).toEqual({
-        schemaVersion: 1, enabled: false, includeInputs: false, traces: [],
+        schemaVersion: 2, enabled: false, includeInputs: false, traces: [],
       });
     } finally {
       await webUiModule.stop();
