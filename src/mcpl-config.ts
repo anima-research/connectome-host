@@ -266,6 +266,9 @@ const OVERLAY_LIST_FIELDS = [
  *    silently eventless eidoverse, 2026-08-04). An agent that truly wants
  *    deny-all says `disabledTools: ["*"]` / `disabledFeatureSets: ["*"]`.
  *
+ *  - `inheritEnv` is dropped: full host-environment inheritance is granted
+ *    only by operator-owned recipe/file configuration, never an overlay.
+ *
  *  - `enabledCapabilities` is dropped: the agent's file can narrow, never
  *    widen — a hand-written entry here could re-grant §13.4 deny-by-default
  *    paths.
@@ -282,9 +285,6 @@ export function resolveOverlayEntry(
 ): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
   if (entry.disabled) return null;
   if (!entry.command && !entry.url) return null;
-  if (entry.inheritEnv !== undefined) {
-    checkedInheritEnv(entry.inheritEnv, `mcpl-servers.agent.json: mcplServers.${id}`);
-  }
   const overlayDir = dirname(resolve(overlayPath));
   const { disabled: _d, ...fields } = entry;
   const rec = fields as Record<string, unknown>;
@@ -296,6 +296,9 @@ export function resolveOverlayEntry(
   // block IS the grant, so the agent's own file never carries one (the deny
   // above already masks the paths; this keeps the overlay honest too).
   delete rec.toolLifecycle;
+  // Full host environment access is an operator grant, not an agent-owned
+  // overlay setting. Operators declare it in the recipe or mcpl-servers.json.
+  delete rec.inheritEnv;
   // A network server the agent deployed should come back when it bounces.
   // reconnect defaulted to false, so an entry that never said `reconnect:
   // true` was severed PERMANENTLY by any server restart — with no signal to

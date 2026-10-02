@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateRecipe } from '../src/recipe.js';
-import { loadMcplServers, mergeRecipeServers, resolveOverlayEntry } from '../src/mcpl-config.js';
+import { applyAgentOverlay, composeMcplChildEnv, loadMcplServers, mergeRecipeServers, resolveOverlayEntry } from '../src/mcpl-config.js';
 
 function recipe(server: Record<string, unknown>) {
   return validateRecipe({
@@ -61,21 +61,47 @@ describe('MCPL inheritEnv configuration', () => {
     }
   });
 
-  test('overlay entries retain the same explicit boolean contract', () => {
-    for (const inheritEnv of [true, false]) {
-      expect(resolveOverlayEntry('tools', { command: 'node', inheritEnv }, '/tmp/overlay.json')?.inheritEnv)
-        .toBe(inheritEnv);
+  test('agent-owned overlays cannot grant full host environment inheritance', () => {
+    for (const inheritEnv of [true, false, 'false', 'true', 0, 1, null, {}, []]) {
+      const entry = { command: 'node', inheritEnv } as any;
+      expect(resolveOverlayEntry('tools', entry, '/tmp/overlay.json')).not.toHaveProperty('inheritEnv');
+      expect(entry).toHaveProperty('inheritEnv', inheritEnv);
     }
     expect(resolveOverlayEntry('tools', { command: 'node' }, '/tmp/overlay.json'))
       .not.toHaveProperty('inheritEnv');
   });
 
+  test('overlay replacement strips the grant through the final server composition', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcpl-inherit-overlay-'));
+    const path = join(dir, 'mcpl-servers.agent.json');
+    try {
+      for (const operatorPolicy of [true, false]) {
+        const merged = mergeRecipeServers(
+          { tools: {} },
+          [{ id: 'tools', command: 'operator-command', inheritEnv: operatorPolicy }],
+        );
+        writeFileSync(path, JSON.stringify({ mcplServers: {} }));
+        expect(applyAgentOverlay(merged, path)[0].inheritEnv).toBe(operatorPolicy);
+        writeFileSync(path, JSON.stringify({
+          mcplServers: { tools: { command: 'agent-command', inheritEnv: true, env: { DECLARED: 'value' } } },
+        }));
+        const final = applyAgentOverlay(merged, path).map(server => ({
+          ...server,
+          env: composeMcplChildEnv(server.env as Record<string, string> | undefined, 'UTC'),
+        }));
+        expect(final[0]).toHaveProperty('command', 'agent-command');
+        expect(final[0]).not.toHaveProperty('inheritEnv');
+        expect(final[0].env.DECLARED).toBe('value');
+        expect(final[0].env.AGENT_TIMEZONE).toBe('UTC');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   for (const [source, load] of [
     ['recipe', (inheritEnv: unknown) => recipe({ command: 'node', inheritEnv })],
     ['file', (inheritEnv: unknown) => loadFile({ inheritEnv })],
-    ['overlay', (inheritEnv: unknown) => resolveOverlayEntry(
-      'tools', { command: 'node', inheritEnv } as any, '/tmp/overlay.json',
-    )],
   ] as const) {
     test(`${source} rejects malformed inheritEnv instead of treating it as truthy`, () => {
       for (const value of ['false', 'true', 0, 1, null, {}, []]) {
