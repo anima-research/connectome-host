@@ -24,7 +24,7 @@
  *   --out <path>            Output recipe path (default: data/evacuated-recipe.json)
  *   --data-dir <dir>        conhost data dir (default: ./data)
  *   --model <id>            Override model detection
- *   --agent <name>          Explicit participant name for recipe and warmup (default: session sidecar)
+ *   --agent <name>          Override participant name (default: chosen warmup sidecar, then Claude)
  *   --prompt-source <url|path>  Override the prompt-source lookup
  *   --addendum <path>       Transplant addendum (default: recipes/prompts/transplant-addendum.md)
  *   --no-warmup             Skip the warmup chain
@@ -38,6 +38,8 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 import { createLineReader, type LineReader } from './lib/line-reader.js';
+import { SessionManager, type SessionMeta } from '../src/session-manager.js';
+import { resolveAgentName } from '../src/agent-name.js';
 
 // ---------------------------------------------------------------------------
 // Known leaked-prompt URLs keyed by model ID. New models: add an entry.
@@ -667,9 +669,9 @@ export function composeRecipe(opts: {
   parts.push(opts.addendum.trim());
   const composed = parts.join('\n\n');
   const agent: Record<string, unknown> = {
-    // No session is selected yet. Leave the default to its import-source
-    // sidecar, as warmup does, rather than overriding it with a native name.
-    ...(opts.agentName !== undefined ? { name: opts.agentName } : {}),
+    // Pin the revival identity before host/Membrane construction. The host
+    // deliberately retains this name across later /session switches.
+    name: opts.agentName ?? 'Claude',
     model: opts.model,
     maxTokens: 16384,
     systemPrompt: composed,
@@ -921,9 +923,37 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   }
   const addendum = readFileSync(opts.addendumPath, 'utf-8').replace(/<!--[\s\S]*?-->/g, '').trim();
 
+  // Select optional warmup before composition so its imported participant can
+  // anchor both the generated recipe and Membrane when the host starts.
+  let warmupSession: SessionMeta | undefined;
+  let sidecarName: string | undefined;
+  if (!opts.noWarmup) {
+    console.log('');
+    if (await askYesNo(reader, 'Start a warmup pass now?', false)) {
+      const sessionRef = await askText(reader, '  Session name or id to warm up (leave blank to skip): ');
+      if (sessionRef) {
+        const sessions = new SessionManager(opts.dataDir);
+        warmupSession = sessions.findSession(sessionRef) ?? undefined;
+        if (!warmupSession) throw new Error(`No session matching "${sessionRef}" in ${opts.dataDir}`);
+        sidecarName = sessions.getImportSource(warmupSession.id)?.agentName;
+      }
+    }
+  }
+  const participant = resolveAgentName({
+    explicit: opts.agentName,
+    sidecar: sidecarName,
+    default: 'Claude',
+  });
+  if (participant.mismatch) {
+    console.warn(
+      `WARNING: --agent "${participant.mismatch.explicit}" overrides the selected session's ` +
+      `imported participant "${participant.mismatch.sidecar}". Use a matching name to retain its existing summaries.`,
+    );
+  }
+
   const recipe = composeRecipe({
     model,
-    agentName: opts.agentName,
+    agentName: participant.name,
     systemPrompt: state.finalSystemPrompt!,
     memoriesBlock: state.finalMemoriesBlock || null,
     addendum,
@@ -940,28 +970,20 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   console.log(`    - memories block:     ${state.finalMemoriesBlock?.length ?? 0} bytes`);
   console.log(`    - transplant addendum: ${addendum.length} bytes`);
 
-  // -- Optional warmup chain --
-  if (!opts.noWarmup) {
-    console.log('');
-    const warmup = await askYesNo(reader, 'Start a warmup pass now?', false);
-    if (warmup) {
-      const sessionRef = await askText(reader, '  Session name or id to warm up (leave blank to skip): ');
-      if (sessionRef) {
-        console.log(`  Spawning warmup-session.ts for "${sessionRef}"...\n`);
-        const scriptPath = resolve(import.meta.dir, 'warmup-session.ts');
-        const result = spawnSync('bun', [
-          scriptPath, sessionRef, '--data-dir', opts.dataDir, '--model', model,
-          ...(opts.agentName !== undefined ? ['--agent', opts.agentName] : []),
-        ], {
-          stdio: 'inherit',
-        });
-        process.exit(result.status ?? 0);
-      }
-    }
+  // -- Optional warmup chain: same pinned identity, canonical session id --
+  if (warmupSession) {
+    console.log(`  Spawning warmup-session.ts for "${warmupSession.name}"...\n`);
+    const scriptPath = resolve(import.meta.dir, 'warmup-session.ts');
+    const result = spawnSync('bun', [
+      scriptPath, warmupSession.id, '--data-dir', opts.dataDir, '--model', model,
+      '--agent', participant.name,
+    ], { stdio: 'inherit' });
+    process.exit(result.status ?? 0);
   }
 
-  console.log('\nDone. Open the session with:');
-  console.log(`  bun src/index.ts ${opts.out} --session "<name-or-id>"`);
+  console.log('\nDone. Open the host with:');
+  console.log(`  bun src/index.ts ${opts.out}`);
+  console.log('  Then use /session list and /session switch <name-or-id>.');
 }
 
 if (import.meta.main) {

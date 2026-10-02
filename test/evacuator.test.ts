@@ -180,7 +180,7 @@ describe('composeRecipe', () => {
     expect(recipe).toHaveProperty('modules');
     expect(recipe).toHaveProperty('mcplServers');
     const agent = recipe.agent as Record<string, unknown>;
-    expect(agent).not.toHaveProperty('name');
+    expect(agent.name).toBe('Claude');
     expect(agent.model).toBe('claude-opus-4-7');
     expect(agent.strategy).toEqual({ type: 'autobiographical', compressionModel: 'claude-opus-4-7' });
   });
