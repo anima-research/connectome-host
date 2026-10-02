@@ -200,7 +200,7 @@ interface FleetChild {
   autoRestart: boolean;
   /** True between kill request and process exit — suppresses autoRestart for intentional shutdowns. */
   killRequested: boolean;
-  /** Timestamps of recent autoRestart attempts, for flap protection. */
+  /** Host-local flap history; not persisted, so reconstructed children start with a fresh retry budget. */
   restartAttempts: number[];
   /** Pending replacement of this generation, cancelled by manual control. */
   restartTimer?: ReturnType<typeof setTimeout>;
