@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import { OpenAIResponsesAPIAdapter, type CredentialResolver } from '@animalabs/membrane';
+import type { CredentialSource } from './credential-state.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -42,6 +43,10 @@ export interface CodexAuthProvider {
   getAccessToken(forceRefresh?: boolean): Promise<string>;
   getAccountId?(): string | undefined;
   readRateLimits?(): Promise<unknown>;
+  /** Drop the stored login so the next getAccessToken() runs a fresh
+   *  device-code flow. Optional: providers without it re-login only when
+   *  the app-server reports no account. */
+  logout?(): Promise<void>;
   dispose?(): void;
 }
 
@@ -107,6 +112,13 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   async readRateLimits(): Promise<JsonObject> {
     await this.ensureStarted();
     return this.request('account/rateLimits/read', {});
+  }
+
+  /** `account/logout`: forget the stored ChatGPT login so the next token
+   *  request starts a device-code flow (operator "log in again"). */
+  async logout(): Promise<void> {
+    await this.ensureStarted();
+    await this.request('account/logout', {});
   }
 
   dispose(): void {
@@ -362,6 +374,35 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
    *  such surface (tests inject bare token providers). */
   async readRateLimits(): Promise<unknown> {
     return this.auth.readRateLimits ? this.auth.readRateLimits() : null;
+  }
+
+  /** Operator action: rotate the access token through the app-server now. */
+  async refreshCredentials(): Promise<void> {
+    await this.auth.getAccessToken(true);
+  }
+
+  /** Operator action: forget the login (when the provider can) and run a
+   *  fresh device-code flow. The URL + code reach `onLoginRequired`. */
+  async login(): Promise<void> {
+    if (this.auth.logout) {
+      try {
+        await this.auth.logout();
+      } catch (err) {
+        console.error('[openai-codex] logout before re-login failed; continuing:', err instanceof Error ? err.message : err);
+      }
+    }
+    await this.auth.getAccessToken(true);
+  }
+
+  /** The host's credential-monitor view of this adapter. No probe: the
+   *  app-server owns validity, and its own reads succeed on a stale token. */
+  credentialSource(): CredentialSource {
+    return {
+      provider: this.name,
+      canRefresh: () => true,
+      refresh: () => this.refreshCredentials(),
+      login: () => this.login(),
+    };
   }
 
   dispose(): void {

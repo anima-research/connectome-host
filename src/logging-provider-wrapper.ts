@@ -84,6 +84,10 @@ function summarizeResponse(response: ProviderResponse, convention: ProviderAdapt
 export class LoggingProviderAdapter implements ProviderAdapter {
   readonly name: string;
 
+  /** Credential-monitor taps (see LoggingAnthropicAdapter). */
+  onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
+  onProviderSuccess?: (kind: 'complete' | 'stream') => void;
+
   constructor(
     private readonly inner: ProviderAdapter,
     private readonly logPath: string,
@@ -123,6 +127,10 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
+    try {
+      if (error !== undefined) this.onProviderError?.(error, kind);
+      else this.onProviderSuccess?.(kind);
+    } catch { /* observers never affect provider traffic */ }
     this.log({
       type: error === undefined ? 'call' : 'error',
       provider: this.name,
