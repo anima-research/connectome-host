@@ -975,6 +975,22 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
     recipeName: `Continued from claude.ai (${model})`,
   });
 
+  if (existsSync(opts.out)) {
+    let previousName: unknown;
+    try {
+      const previous = JSON.parse(readFileSync(opts.out, 'utf-8'));
+      previousName = previous?.agent?.name;
+    } catch {
+      console.warn('WARNING: Could not read the existing output recipe participant; replacing it without a prior-name comparison.');
+    }
+    if (typeof previousName === 'string' && previousName && previousName !== participant.name) {
+      console.warn(
+        `WARNING: Changing revival participant from ${JSON.stringify(previousName)} to ${JSON.stringify(participant.name)} in ${opts.out}. ` +
+        'Existing warmup summaries remain in their original participant namespace. ' +
+        'To retain that identity, rerun with --agent matching the prior name or select its warmup session.',
+      );
+    }
+  }
   mkdirSync(dirname(opts.out), { recursive: true });
   writeFileSync(opts.out, JSON.stringify(recipe, null, 2) + '\n');
 

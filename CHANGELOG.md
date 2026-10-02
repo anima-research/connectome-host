@@ -8,7 +8,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ### Fixed
 
-- Evacuator-generated recipes pin the imported participant before host construction, keeping the live framework and Membrane role anchor aligned through `/session switch`. Name resolution uses `--agent`, then the chosen warmup session's sidecar, then `Claude`; the same name is passed explicitly to warmup. For custom imports without a selected warmup session or sidecar, supply `--agent`. Existing generated recipes need their hardcoded `agent` name corrected. Warmup selection rejects duplicate titles and ambiguous ID prefixes with candidate IDs; the guide and CLI explicitly require selecting the intended imported store before chatting under the revival identity.
+- Evacuator-generated recipes pin the imported participant before host construction, keeping the live framework and Membrane role anchor aligned through `/session switch`. Name resolution uses `--agent`, then the chosen warmup session's sidecar, then `Claude`; the same name is passed explicitly to warmup. For custom imports without a selected warmup session or sidecar, supply `--agent`. Existing generated recipes need their hardcoded `agent` name corrected. Warmup selection rejects duplicate titles and ambiguous ID prefixes with candidate IDs; the guide and CLI explicitly require selecting the intended imported store before chatting under the revival identity. Replacing an output recipe with a different participant emits a warning, including when a resumed run falls back from a custom name to `Claude`.
 
 ## 0.9.0 — 2026-09-21
 

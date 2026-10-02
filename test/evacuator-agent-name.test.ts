@@ -13,6 +13,7 @@ async function runEvacuator(args: string[], options: {
   warmup?: boolean;
   importedName?: string | null;
   duplicateTitle?: string;
+  existingOutput?: string;
   ref?: string | ((sessions: SessionMeta[]) => string);
 } = {}) {
   const { warmup = false, importedName = 'Claude', duplicateTitle, ref = 'chosen-session' } = options;
@@ -34,6 +35,7 @@ async function runEvacuator(args: string[], options: {
     if (importedName !== null) {
       writeFileSync(join(dir, 'sessions', selected.id + '.import-source.json'), JSON.stringify({ agentName: importedName }));
     }
+    if (options.existingOutput !== undefined) writeFileSync(out, options.existingOutput);
     writeFileSync(addendum, 'fixture addendum');
     writeFileSync(join(dir, 'evacuator-state.json'), JSON.stringify({
       model: 'claude-sonnet-4-6', promptSource: 'fixture',
@@ -166,6 +168,31 @@ describe('evacuator participant naming', () => {
     expect(result.recipe?.agent.name).toBe('Claude');
     expect(result.stdout).toContain('/session switch');
     expect(result.stdout).not.toContain('--session');
+  });
+
+  test('resume warns when no warmup selection would replace a custom output participant', async () => {
+    const result = await runEvacuator([], { existingOutput: JSON.stringify({ agent: { name: 'Custom Import' } }) });
+    expect(result.exitCode).toBe(0);
+    expect(result.recipe?.agent.name).toBe('Claude');
+    expect(result.stderr).toContain('Changing revival participant from "Custom Import" to "Claude"');
+    expect(result.stderr).toContain('Existing warmup summaries remain in their original participant namespace');
+    expect(result.stderr).toContain('--agent');
+  });
+
+  test('retaining the output participant is quiet; explicit changes still warn', async () => {
+    const existingOutput = JSON.stringify({ agent: { name: 'Custom Import' } });
+    const same = await runEvacuator(['--agent', 'Custom Import'], { existingOutput });
+    expect(same.exitCode).toBe(0);
+    expect(same.stderr).not.toContain('Changing revival participant');
+    const changed = await runEvacuator(['--agent', 'Other'], { existingOutput });
+    expect(changed.exitCode).toBe(0);
+    expect(changed.stderr).toContain('Changing revival participant from "Custom Import" to "Other"');
+  });
+
+  test('an unreadable prior recipe is reported before replacement', async () => {
+    const result = await runEvacuator([], { existingOutput: '{broken' });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('Could not read the existing output recipe participant');
   });
 
   test('explicit name reaches both recipe and canonical warmup command', async () => {
