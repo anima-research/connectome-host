@@ -178,7 +178,7 @@ This revival recipe selects the imported participant for the whole host process.
 bun src/index.ts data/evacuated-recipe.json
 ```
 
-This launches the TUI. The active session is whatever was active before you started importing (preserved by the importer) — **not** automatically the just-imported one. To land on a specific imported conversation:
+This launches the TUI. The active session is whatever was active before you started importing (preserved by the importer) — **not** automatically the just-imported one. If titles repeat, use the full session ID from `/session list` in the switch command. The host's name lookup otherwise selects its first match. To land on a specific imported conversation:
 
 ```
 /session list
