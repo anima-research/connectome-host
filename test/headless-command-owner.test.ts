@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { connect, type Socket } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,8 +66,14 @@ for (const mode of ['same-client', 'replacement', 'disconnect-and-reconnect'] as
       active.send({ type: 'command', command: '/after-result-barrier' });
       await until(() => active.hasReply('/after-result-barrier'), 'ordered reply after result');
       expect(active.hasReply('ORIGINAL-CALLER-RESULT')).toBe(mode === 'same-client');
+      const log = () => readFileSync(join(dir, 'headless.log'), 'utf8');
+      const droppedReply = 'reply dropped: command-output, requester superseded/closed';
       if (mode !== 'same-client') {
         expect(active.events.some(event => event.type === 'command-output' && String(event.text).includes('puppet fixture: delayed'))).toBe(false);
+        await until(() => log().includes(droppedReply), 'dropped-reply diagnostic');
+        expect(log()).not.toContain('ORIGINAL-CALLER-RESULT');
+      } else {
+        expect(log()).not.toContain(droppedReply);
       }
     } finally {
       for (const socket of sockets) socket.destroy();

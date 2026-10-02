@@ -176,7 +176,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // outlive that connection; a replacement client must not inherit its reply.
     // Framework telemetry still uses emit() directly and follows currentClient.
     const reply = (event: Record<string, unknown>): void => {
-      if (currentClient !== requester || requester.destroyed || requester.writableEnded) return;
+      if (currentClient !== requester || requester.destroyed || requester.writableEnded) {
+        log(`reply dropped: ${String(event.type)}, requester superseded/closed`);
+        return;
+      }
       emit(event);
     };
     switch (cmd.type) {
