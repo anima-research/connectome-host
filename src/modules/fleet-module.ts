@@ -154,8 +154,8 @@ type ChildStatus = 'starting' | 'ready' | 'exited' | 'crashed';
 
 /**
  * Subset of FleetChild that is serializable to Chronicle.  Live handles
- * (process, socket) and ephemeral state (event buffer, line buffer) are
- * excluded.  Stored under the module's state namespace and re-hydrated
+ * (process, socket), ephemeral state (event buffer, line buffer), and resolved
+ * environment overrides (which may contain secrets) are excluded.  Stored under the module's state namespace and re-hydrated
  * on module start() for adopt-on-restart.
  */
 interface PersistedChild {
@@ -172,7 +172,6 @@ interface PersistedChild {
   exitReason: string | null;
   subscription: string[];
   autoRestart: boolean;
-  env: Record<string, string> | null;
 }
 
 interface PersistedFleetState {
@@ -202,7 +201,7 @@ interface FleetChild {
   killRequested: boolean;
   /** Timestamps of recent autoRestart attempts, for flap protection. */
   restartAttempts: number[];
-  /** Env and optional envOverride persisted so autoRestart can respawn with the same config. */
+  /** Runtime-only env overrides for restart. Recovered from current config on adoption. */
   env?: Record<string, string>;
   /**
    * Most recent speech from a non-tool-ending inference round, as reported
@@ -365,7 +364,6 @@ export class FleetModule implements Module {
         exitReason: c.exitReason,
         subscription: [...c.subscription],
         autoRestart: c.autoRestart,
-        env: c.env ?? null,
       };
     }
     this.ctx.setState<PersistedFleetState>({ children: persisted });
@@ -459,7 +457,19 @@ export class FleetModule implements Module {
       restartAttempts: [],
       lastCompletedSpeech: '',  // not persisted; rebuilt on next inference:speech
     };
-    if (p.env) child.env = p.env;
+    // Resolved env values may contain secrets. Chronicle stores historical
+    // snapshots, so env is runtime-only and legacy persisted env is ignored.
+    // Re-read the current configuration for the same child, including entries
+    // with autoStart:false. Name alone must not transfer secrets to a different
+    // recipe or data directory that happens to reuse the name.
+    const recipeIdentity = (recipe: string): string =>
+      /^https?:\/\//.test(recipe) ? recipe : resolve(recipe);
+    const configured = this.autoStartChildren.find((c) =>
+      c.name === p.name &&
+      recipeIdentity(c.recipe) === recipeIdentity(p.recipePath) &&
+      resolve(c.dataDir ?? join('data', c.name)) === resolve(p.dataDir),
+    );
+    if (configured?.env !== undefined) child.env = { ...configured.env };
     return child;
   }
 
