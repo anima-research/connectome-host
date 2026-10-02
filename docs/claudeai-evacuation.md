@@ -114,7 +114,7 @@ The five steps, each checkpointed to `data/evacuator-state.json` so you can `--r
 
 The recipe is then composed as `<edited system prompt> + <persistent_memories> + <transplant addendum>` (see `recipes/prompts/transplant-addendum.md` for the addendum text — it explains the `<recovered_thinking>` wrappers, inert web-tool calls, and autobiographical summaries to the model in its own voice). Default output path: `data/evacuated-recipe.json`.
 
-Before writing the recipe, the evacuator asks whether to warm up a session. It resolves the participant as `--agent` first, then the chosen warmup session's import-source sidecar, then the importer's default `Claude`. It pins that name in `agent.name` and passes the same name and canonical session ID to warmup. This pin is needed before host construction: the host keeps its agent name and Membrane role anchor when you later use `/session switch`. If you skip warmup or choose no session, pass `--agent <name>` for a custom-name import. Legacy imports without a sidecar also default to `Claude`; supply `--agent` if their assistant participant differs. Existing generated recipes with `agent.name: "agent"` need that field set to the imported participant's name before revival.
+Before writing the recipe, the evacuator asks whether to warm up a session. Enter a full session ID, an unambiguous case-insensitive name, or a unique ID prefix. Duplicate titles and ambiguous prefixes are rejected with the matching IDs rather than choosing a store silently. It resolves the participant as `--agent` first, then the chosen warmup session's import-source sidecar, then the importer's default `Claude`. It pins that name in `agent.name` and passes the same name and canonical session ID to warmup. This pin is needed before host construction: the host keeps its agent name and Membrane role anchor when you later use `/session switch`. If you skip warmup or choose no session, pass `--agent <name>` for a custom-name import. Legacy imports without a sidecar also default to `Claude`; supply `--agent` if their assistant participant differs. Existing generated recipes with `agent.name: "agent"` need that field set to the imported participant's name before revival.
 
 Retired-model handling: if you name a model that's no longer on the Anthropic API (Claude 3.x families, Claude 2, Instant), the evacuator surfaces a memorial dialog instead of silently swapping. You can explicitly substitute a living relative, type any other model ID, or `abort` to exit with a small acknowledgment. The fact that the original cognitive state is unreachable deserves to be faced.
 
@@ -171,6 +171,8 @@ Use `--max-spend` if you want a hard ceiling — the script will halt cleanly an
 For short conversations (under ~50 messages) you can skip warmup entirely; autobio will compress lazily at first compile.
 
 ### Stage 4 — Open the session in conhost
+
+This revival recipe selects the imported participant for the whole host process. The host may initially display the native session that was active before import. **Select the intended import with `/session switch` before sending a message.** To continue a native conversation, reopen it with its matching recipe: its summaries remain under their original `agents/<name>` namespace, outside this revival identity. A native turn under the revival recipe would use the imported participant and Membrane role anchor.
 
 ```
 bun src/index.ts data/evacuated-recipe.json

@@ -691,6 +691,21 @@ export function composeRecipe(opts: {
   };
 }
 
+/** Match the existing lookup precedence, but refuse ambiguous identity choices. */
+export function selectWarmupSession(sessions: readonly SessionMeta[], ref: string): SessionMeta | undefined {
+  const exactId = sessions.find(session => session.id === ref);
+  if (exactId) return exactId;
+  const named = sessions.filter(session => session.name.toLowerCase() === ref.toLowerCase());
+  const matches = named.length ? named : sessions.filter(session => session.id.startsWith(ref));
+  if (matches.length > 1) {
+    throw new Error(
+      `Ambiguous warmup session "${ref}". Use a full session ID: ` +
+      matches.map(session => `${session.id} (${JSON.stringify(session.name)})`).join(', '),
+    );
+  }
+  return matches[0];
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -933,7 +948,7 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       const sessionRef = await askText(reader, '  Session name or id to warm up (leave blank to skip): ');
       if (sessionRef) {
         const sessions = new SessionManager(opts.dataDir);
-        warmupSession = sessions.findSession(sessionRef) ?? undefined;
+        warmupSession = selectWarmupSession(sessions.listSessions(), sessionRef);
         if (!warmupSession) throw new Error(`No session matching "${sessionRef}" in ${opts.dataDir}`);
         sidecarName = sessions.getImportSource(warmupSession.id)?.agentName;
       }
@@ -969,6 +984,8 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   console.log(`    - base/edited prompt: ${state.finalSystemPrompt!.length} bytes`);
   console.log(`    - memories block:     ${state.finalMemoriesBlock?.length ?? 0} bytes`);
   console.log(`    - transplant addendum: ${addendum.length} bytes`);
+
+  console.log(`  Revival participant: ${JSON.stringify(participant.name)}. Select the intended import with /session switch before sending a message.`);
 
   // -- Optional warmup chain: same pinned identity, canonical session id --
   if (warmupSession) {

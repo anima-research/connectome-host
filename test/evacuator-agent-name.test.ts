@@ -2,14 +2,20 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { SessionManager } from '../src/session-manager.js';
+import { SessionManager, type SessionMeta } from '../src/session-manager.js';
 import { validateRecipe, type Recipe } from '../src/recipe.js';
 import { FleetModule } from '../src/modules/fleet-module.js';
 
 const script = new URL('../scripts/evacuator.ts', import.meta.url).pathname;
 const root = resolve(dirname(script), '..');
 
-async function runEvacuator(args: string[], warmup = false, importedName: string | null = 'Claude', warmupRef = 'chosen-session') {
+async function runEvacuator(args: string[], options: {
+  warmup?: boolean;
+  importedName?: string | null;
+  duplicateTitle?: string;
+  ref?: string | ((sessions: SessionMeta[]) => string);
+} = {}) {
+  const { warmup = false, importedName = 'Claude', duplicateTitle, ref = 'chosen-session' } = options;
   const dir = mkdtempSync(join(tmpdir(), 'evacuator-name-'));
   const out = join(dir, 'recipe.json');
   const capture = join(dir, 'warmup-args.json');
@@ -19,6 +25,12 @@ async function runEvacuator(args: string[], warmup = false, importedName: string
   try {
     const sessions = new SessionManager(dir);
     const selected = sessions.createSession('chosen-session');
+    const duplicate = duplicateTitle ? sessions.createSession(duplicateTitle) : undefined;
+    if (duplicate) {
+      writeFileSync(join(dir, 'sessions', duplicate.id + '.import-source.json'), JSON.stringify({ agentName: 'Other Import' }));
+    }
+    const choices = [selected, ...(duplicate ? [duplicate] : [])];
+    const warmupRef = typeof ref === 'function' ? ref(choices) : ref;
     if (importedName !== null) {
       writeFileSync(join(dir, 'sessions', selected.id + '.import-source.json'), JSON.stringify({ agentName: importedName }));
     }
@@ -49,7 +61,7 @@ async function runEvacuator(args: string[], warmup = false, importedName: string
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
     return {
-      exitCode, stdout, stderr, dataDir: dir, sessionId: selected.id,
+      exitCode, stdout, stderr, dataDir: dir, sessionId: selected.id, duplicateId: duplicate?.id,
       recipe: existsSync(out) ? validateRecipe(JSON.parse(readFileSync(out, 'utf8'))) : undefined,
       warmupArgs: existsSync(capture) ? JSON.parse(readFileSync(capture, 'utf8')) as string[] : undefined,
     };
@@ -157,7 +169,7 @@ describe('evacuator participant naming', () => {
   });
 
   test('explicit name reaches both recipe and canonical warmup command', async () => {
-    const result = await runEvacuator(['--agent', 'Override'], true, 'Imported Name');
+    const result = await runEvacuator(['--agent', 'Override'], { warmup: true, importedName: 'Imported Name' });
     expect(result.exitCode).toBe(0);
     expect(result.recipe?.agent.name).toBe('Override');
     expect(result.stderr).toContain('overrides the selected session');
@@ -168,25 +180,45 @@ describe('evacuator participant naming', () => {
   });
 
   test('a chosen custom-name sidecar supplies the pinned recipe and warmup name', async () => {
-    const result = await runEvacuator([], true, 'Custom Import');
+    const result = await runEvacuator([], { warmup: true, importedName: 'Custom Import' });
     expect(result.exitCode).toBe(0);
     expect(result.recipe?.agent.name).toBe('Custom Import');
     expect(result.warmupArgs?.slice(-2)).toEqual(['--agent', 'Custom Import']);
   });
 
   test('legacy chosen sessions without a sidecar pin the same Claude fallback for both consumers', async () => {
-    const result = await runEvacuator([], true, null);
+    const result = await runEvacuator([], { warmup: true, importedName: null });
     expect(result.exitCode).toBe(0);
     expect(result.recipe?.agent.name).toBe('Claude');
     expect(result.warmupArgs?.slice(-2)).toEqual(['--agent', 'Claude']);
   });
 
   test('an unknown warmup session fails before writing a misleading recipe', async () => {
-    const result = await runEvacuator([], true, 'Claude', 'missing-session');
+    const result = await runEvacuator([], { warmup: true, ref: 'missing-session' });
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('No session matching "missing-session"');
     expect(result.recipe).toBeUndefined();
     expect(result.warmupArgs).toBeUndefined();
+  });
+
+  test('duplicate titles require a full ID before identity is pinned or warmup starts', async () => {
+    const result = await runEvacuator([], { warmup: true, duplicateTitle: 'CHOSEN-SESSION' });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('Ambiguous warmup session');
+    expect(result.stderr).toContain(result.sessionId);
+    expect(result.stderr).toContain(result.duplicateId!);
+    expect(result.recipe).toBeUndefined();
+    expect(result.warmupArgs).toBeUndefined();
+  });
+
+  test('a full ID selects the intended duplicate title and its own participant', async () => {
+    const result = await runEvacuator([], {
+      warmup: true, duplicateTitle: 'chosen-session', ref: choices => choices[1]!.id,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.recipe?.agent.name).toBe('Other Import');
+    expect(result.warmupArgs?.[1]).toBe(result.duplicateId);
+    expect(result.warmupArgs?.slice(-2)).toEqual(['--agent', 'Other Import']);
   });
 
   test('missing or empty explicit names fail clearly before composition', async () => {
@@ -200,7 +232,7 @@ describe('evacuator participant naming', () => {
 
   for (const importedName of ['Claude', 'Custom Import']) {
     test(`native startup then imported-session switch keeps ${importedName} and its Membrane role anchor`, async () => {
-      const result = await runEvacuator([], importedName !== 'Claude', importedName);
+      const result = await runEvacuator([], { warmup: importedName !== 'Claude', importedName });
       expect(result.exitCode).toBe(0);
       await observeHostSwitch(result.recipe!, importedName);
     }, 15000);
