@@ -16,7 +16,7 @@
  * One client at a time.  Client disconnect does NOT exit the process —
  * children stay up across parent restarts and accept the next connection.
  *
- * See HEADLESS-FLEET-PLAN.md (root) for the full protocol spec.
+ * See docs/fleet-protocol.md for the protocol reference.
  */
 
 import { createServer, type Socket, type Server } from 'node:net';
@@ -154,7 +154,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // -- Long-lived agent-tree reducer --
   // Subscribed to framework traces from process startup; accumulates state for
   // the lifetime of the child. Drives the 'describe' response. Same reducer
-  // shape runs in the parent for fleet children — see UNIFIED-TREE-PLAN.md §2.
+  // shape runs in the parent for fleet children — see docs/history/UNIFIED-TREE-PLAN.md §2.
   const treeReducer = new AgentTreeReducer();
   try {
     treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
@@ -230,7 +230,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
       case 'describe': {
         // Recovery verb: parent requests a full state snapshot at sync points
-        // (cold start, reconnect, after restart). See UNIFIED-TREE-PLAN.md §1.
+        // (cold start, reconnect, after restart). See docs/history/UNIFIED-TREE-PLAN.md §1.
         const snap = treeReducer.getSnapshot();
         emit({
           type: 'snapshot',

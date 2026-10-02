@@ -1,10 +1,14 @@
 # Subscription transport ownership
 
-`CodexSubscriptionAdapter` is a host lifecycle wrapper around Membrane's
-`OpenAIResponsesAPIAdapter` in subscription mode. `CodexAppServerAuth` retains
+`CodexSubscriptionAdapter` is a host subclass of Membrane's
+`OpenAIResponsesAPIAdapter`, constructed in subscription mode, that adds login
+lifecycle on top. `CodexAppServerAuth` retains
 Codex CLI startup, device login, credential-file reading, refresh-token rotation
-via app-server, and disposal. The wrapper passes a fresh token/account snapshot
-to Membrane and forwards Fast mode fallback warnings to the host console.
+via app-server, and disposal. The subclass hands Membrane a credential resolver
+that returns a fresh token/account snapshot, and forwards Fast mode fallback
+warnings to the host console. It also exposes `readRateLimits()` (app-server
+`account/rateLimits/read`, no inference), which feeds the host's quota meter —
+the WebUI's `/quota` windows.
 
 Recipes continue to select `openai-codex`; Fast controls and `CODEX_BASE_URL`
 retain their existing behavior. The host adapter retains the `openai-codex`
@@ -24,7 +28,7 @@ without forcing a token refresh.
 
 The shared transport ships in `@animalabs/membrane` 0.5.85
 ([Membrane #74](https://github.com/antra-tess/membrane/pull/74), released
-2026-09-14). This host depends on `^0.5.85`; agent-framework and
+2026-09-14). This host now depends on `^0.5.86`; agent-framework and
 context-manager resolve the same copy through their own caret ranges, so no
 override is needed and both lockfiles carry the registry package. During review
 the branch temporarily pinned the PR-branch commit as a git dependency; that

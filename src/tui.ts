@@ -1993,7 +1993,7 @@ export async function runTui(app: AppContext): Promise<void> {
   // FleetTreeAggregator owns one AgentTreeReducer per fleet child plus a local
   // one. Drives the unified subagent-tree rendering: fleet children appear as
   // first-class nodes alongside in-process subagents, with the same readouts
-  // (phase, context tokens, tool calls). See UNIFIED-TREE-PLAN.md.
+  // (phase, context tokens, tool calls). See docs/history/UNIFIED-TREE-PLAN.md.
   // Rebuilt (not just re-scanned) on session switch: its IPC subscriptions
   // live on the fleetMod it was constructed with, so an aggregator from the
   // old session silently stops receiving events.
