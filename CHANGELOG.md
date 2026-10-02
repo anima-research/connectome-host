@@ -6,6 +6,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- Evacuator-generated recipes leave `agent.name` unset by default so the chosen imported session's sidecar controls both live and warmup namespaces. `--agent <name>` provides an explicit override to both the recipe and optional warmup command. For legacy imports without a sidecar, supply the matching name explicitly; existing generated recipes need their hardcoded `agent` name removed or corrected.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added

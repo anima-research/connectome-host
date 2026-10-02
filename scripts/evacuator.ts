@@ -24,6 +24,7 @@
  *   --out <path>            Output recipe path (default: data/evacuated-recipe.json)
  *   --data-dir <dir>        conhost data dir (default: ./data)
  *   --model <id>            Override model detection
+ *   --agent <name>          Explicit participant name for recipe and warmup (default: session sidecar)
  *   --prompt-source <url|path>  Override the prompt-source lookup
  *   --addendum <path>       Transplant addendum (default: recipes/prompts/transplant-addendum.md)
  *   --no-warmup             Skip the warmup chain
@@ -163,6 +164,7 @@ interface Opts {
   out: string;
   dataDir: string;
   modelOverride: string | null;
+  agentName?: string;
   promptSourceOverride: string | null;
   addendumPath: string;
   noWarmup: boolean;
@@ -174,7 +176,7 @@ function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/evacuator.ts <export-dir> [--out <path>] [--data-dir <dir>] [--model <id>] [--prompt-source <url|path>] [--addendum <path>] [--no-warmup] [--resume] [--reset]',
+      'Usage: bun scripts/evacuator.ts <export-dir> [--out <path>] [--data-dir <dir>] [--model <id>] [--agent <name>] [--prompt-source <url|path>] [--addendum <path>] [--no-warmup] [--resume] [--reset]',
     );
     process.exit(1);
   }
@@ -194,7 +196,14 @@ function parseArgs(argv: string[]): Opts {
     if (a === '--out') opts.out = resolve(args[++i]!);
     else if (a === '--data-dir') opts.dataDir = resolve(args[++i]!);
     else if (a === '--model') opts.modelOverride = args[++i]!;
-    else if (a === '--prompt-source') opts.promptSourceOverride = args[++i]!;
+    else if (a === '--agent') {
+      const name = args[++i];
+      if (!name?.trim() || name.startsWith('--')) {
+        console.error('--agent requires a non-empty name');
+        process.exit(1);
+      }
+      opts.agentName = name;
+    } else if (a === '--prompt-source') opts.promptSourceOverride = args[++i]!;
     else if (a === '--addendum') opts.addendumPath = resolve(args[++i]!);
     else if (a === '--no-warmup') opts.noWarmup = true;
     else if (a === '--resume') opts.resume = true;
@@ -645,6 +654,7 @@ export function loadMemoriesBlock(exportDir: string): string | null {
 
 export function composeRecipe(opts: {
   model: string;
+  agentName?: string;
   systemPrompt: string;
   memoriesBlock: string | null;
   addendum: string;
@@ -657,7 +667,9 @@ export function composeRecipe(opts: {
   parts.push(opts.addendum.trim());
   const composed = parts.join('\n\n');
   const agent: Record<string, unknown> = {
-    name: 'agent',
+    // No session is selected yet. Leave the default to its import-source
+    // sidecar, as warmup does, rather than overriding it with a native name.
+    ...(opts.agentName !== undefined ? { name: opts.agentName } : {}),
     model: opts.model,
     maxTokens: 16384,
     systemPrompt: composed,
@@ -911,6 +923,7 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
 
   const recipe = composeRecipe({
     model,
+    agentName: opts.agentName,
     systemPrompt: state.finalSystemPrompt!,
     memoriesBlock: state.finalMemoriesBlock || null,
     addendum,
@@ -936,7 +949,10 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       if (sessionRef) {
         console.log(`  Spawning warmup-session.ts for "${sessionRef}"...\n`);
         const scriptPath = resolve(import.meta.dir, 'warmup-session.ts');
-        const result = spawnSync('bun', [scriptPath, sessionRef, '--data-dir', opts.dataDir, '--model', model], {
+        const result = spawnSync('bun', [
+          scriptPath, sessionRef, '--data-dir', opts.dataDir, '--model', model,
+          ...(opts.agentName !== undefined ? ['--agent', opts.agentName] : []),
+        ], {
           stdio: 'inherit',
         });
         process.exit(result.status ?? 0);
