@@ -164,7 +164,12 @@ describe('FleetModule lifecycle', () => {
 
   test('manual restart of an adopted child confirms its death and starts a replacement', async () => {
     const first = fixture();
-    const second = fixture();
+    const second = fixture({}, {
+      autoStart: [{
+        name: first.input.name, recipe: first.input.recipe, dataDir: first.input.dataDir,
+        autoStart: false, autoRestart: true, env: { FLEET_TEST_SENTINEL: 'adopted' },
+      }],
+    });
     let state: unknown = null;
     const context = {
       getState: () => state,
