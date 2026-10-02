@@ -8,7 +8,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ### Fixed
 
-- Headless command replies bypass event subscriptions like other protocol responses. Fleet commands and direct socket clients receive `command-output` even with narrow or empty subscriptions; unrelated telemetry remains filtered.
+- Headless command replies bypass event subscriptions like other protocol responses. Fleet commands and direct socket clients receive `command-output` even with narrow or empty subscriptions; unrelated telemetry remains filtered. Protocol replies stay with the requesting connection and are discarded if that connection closes or is replaced while work is pending.
 
 ## 0.9.0 — 2026-09-21
 
