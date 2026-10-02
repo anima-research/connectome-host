@@ -3,13 +3,14 @@
  * only fixture options; no framework or provider is started.
  */
 import { createServer, type Socket } from 'node:net';
-import { readFileSync, writeFileSync, unlinkSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   ready?: boolean;
   crashBeforeSocket?: boolean;
   noSocket?: boolean;
+  crashOnFile?: string;
 };
 const dataDir = process.env.DATA_DIR!;
 const socketPath = join(dataDir, 'ipc.sock');
@@ -52,6 +53,9 @@ const server = createServer((socket) => {
   }
 });
 server.listen(socketPath);
+if (options.crashOnFile) setInterval(() => {
+  if (existsSync(options.crashOnFile!)) process.exit(1);
+}, 5);
 process.on('SIGTERM', () => {
   client?.destroy();
   process.exit(0);

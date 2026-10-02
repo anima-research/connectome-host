@@ -10,6 +10,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 - Fleet manual restarts preserve environment overrides, autoRestart, and subscriptions. Failed socket setup, subscription, or readiness now terminates the owned child before returning failure; unconfirmed termination stays blocked and is reported explicitly.
 - Fleet automatic replacements retain crash history, advance the existing backoff, and stop after three retries within 60 seconds. Manual restart resets that retry budget, and kill, restart, or shutdown cancels pending automatic replacements.
+- Fleet restarts also work for adopted children after confirmed shutdown. Startup tolerates transient stale-socket refusals while the replacement binds, and a natural nonzero exit racing failed-launch cleanup retains its automatic retry.
 
 ## 0.9.0 — 2026-09-21
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -16,6 +16,8 @@ type Internal = {
   tryAutoRestart: (child: Child) => void;
   connectChildSocket: (child: Child) => Promise<void>;
   waitForExit: (proc: ChildProcess, timeoutMs: number) => Promise<boolean>;
+  waitForReady: (child: Child) => Promise<void>;
+  waitForExitByPid: (pid: number, timeoutMs: number) => Promise<boolean>;
   sendToChild: (child: Child, command: { type: string }) => void;
 };
 const internal = (fleet: FleetModule): Internal => fleet as unknown as Internal;
@@ -143,6 +145,121 @@ describe('FleetModule lifecycle', () => {
     });
   }
 
+  test('PID-only exit confirmation distinguishes permission errors from absence', async () => {
+    const fleet = new FleetModule();
+    for (const code of ['EPERM', 'EACCES', 'ESRCH']) {
+      const kill = process.kill;
+      let result: Promise<boolean>;
+      // The first probe runs synchronously inside the promise constructor.
+      // Restore process.kill before awaiting so unrelated work keeps real I/O.
+      process.kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+        if (pid === process.pid && signal === 0) throw Object.assign(new Error(code), { code });
+        return kill(pid, signal);
+      }) as typeof process.kill;
+      try { result = internal(fleet).waitForExitByPid(process.pid, 10); }
+      finally { process.kill = kill; }
+      expect(await result!).toBe(code === 'ESRCH');
+    }
+  });
+
+  test('manual restart of an adopted child confirms its death and starts a replacement', async () => {
+    const first = fixture();
+    const second = fixture();
+    let state: unknown = null;
+    const context = {
+      getState: () => state,
+      setState: (next: unknown) => { state = structuredClone(next); },
+    } as unknown as Parameters<FleetModule['start']>[0];
+    await first.fleet.start(context);
+    expect((await internal(first.fleet).handleLaunch({
+      ...first.input, autoRestart: true, env: { FLEET_TEST_SENTINEL: 'adopted' },
+    }, { viaAutoStart: true })).success).toBe(true);
+    const original = first.fleet.getChildren().get('leaf')!;
+    first.fleet.setDetachMode(true);
+    await first.fleet.stop();
+    try {
+      await second.fleet.start(context);
+      const adopted = second.fleet.getChildren().get('leaf')!;
+      expect(adopted.process).toBeNull();
+      expect(adopted.pid).toBe(original.pid);
+      const result = await second.fleet.handleToolCall({ id: 'restart', name: 'restart', input: { name: 'leaf' } });
+      expect(result.success).toBe(true);
+      expect(adopted.status).toBe('exited');
+      expect(adopted.exitedAt).not.toBeNull();
+      expect(isAlive(original.pid!)).toBe(false);
+      const replacement = second.fleet.getChildren().get('leaf')!;
+      expect(replacement.pid).not.toBe(original.pid);
+      expect(replacement.autoRestart).toBe(true);
+      expect(launches(first.input).map(row => row.sentinel)).toEqual(['adopted', 'adopted']);
+    } finally {
+      first.fleet.setDetachMode(false);
+    }
+  });
+
+  for (const failure of ['ready', 'subscribe'] as const) {
+    test('real headless relaunch survives the stale socket left after ' + failure + ' failure', async () => {
+      const { fleet, input } = fixture({}, {
+        childIndexPath: new URL('../src/index.ts', import.meta.url).pathname,
+        socketWaitTimeoutMs: 10_000,
+      });
+      writeFileSync(input.recipe, JSON.stringify({
+        name: 'stale-socket-regression',
+        agent: { name: 'leaf', systemPrompt: 'Offline only; never asked to infer.' },
+        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const trusted = { ...input, env: { ANTHROPIC_API_KEY: 'sk-offline-stale-socket-test' } };
+      const api = internal(fleet);
+      const ready = api.waitForReady.bind(fleet);
+      const send = api.sendToChild.bind(fleet);
+      if (failure === 'ready') api.waitForReady = async () => { throw new Error('injected readiness failure'); };
+      else api.sendToChild = (child, command) => {
+        if (command.type === 'subscribe') throw new Error('injected subscription failure');
+        send(child, command);
+      };
+      const failed = await api.handleLaunch(trusted, { viaAutoStart: true });
+      expect(failed.success).toBe(false);
+      const original = fleet.getChildren().get('leaf')!;
+      expect(isAlive(original.pid!)).toBe(false);
+      expect(existsSync(original.socketPath)).toBe(true);
+      api.waitForReady = ready;
+      api.sendToChild = send;
+      const relaunched = await api.handleLaunch(trusted, { viaAutoStart: true });
+      expect(relaunched.success).toBe(true);
+      expect(fleet.getChildren().get('leaf')!.pid).not.toBe(original.pid);
+    }, 20_000);
+  }
+
+  test('a natural nonzero exit reported during launch cleanup keeps its automatic retry', async () => {
+    const { fleet, dir, input } = fixture();
+    const release = join(dir, 'crash-now');
+    writeFileSync(input.recipe, JSON.stringify({ crashOnFile: release }));
+    const clock = controlRestarts(fleet);
+    const api = internal(fleet);
+    const connect = api.connectChildSocket.bind(fleet);
+    let proc: ChildProcess | null = null;
+    let kill: ChildProcess['kill'] | null = null;
+    api.connectChildSocket = async child => {
+      await connect(child);
+      proc = child.process!;
+      kill = proc.kill.bind(proc);
+      // Model SIGKILL losing the race to a natural exit. The exit notification
+      // still arrives from a real subprocess, after the failure handler starts.
+      proc.kill = () => false;
+      writeFileSync(release, 'crash');
+      throw new Error('socket failure with natural exit notification pending');
+    };
+    try {
+      const result = await api.handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true });
+      expect(result.success).toBe(false);
+      const child = fleet.getChildren().get('leaf')!;
+      expect(child.process!.exitCode).toBe(1);
+      expect(clock.pending).toHaveLength(1);
+      expect(child.restartAttempts).toHaveLength(1);
+    } finally {
+      if (proc && kill) (proc as ChildProcess).kill = kill;
+    }
+  });
+
   test('ready timeout returns only after the owned child and connection are stopped', async () => {
     const { fleet, input } = fixture({ ready: false }, { readyTimeoutMs: 100 });
     const result = await internal(fleet).handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true });
@@ -152,7 +269,7 @@ describe('FleetModule lifecycle', () => {
     expect(isAlive(child.pid!)).toBe(false);
     expect(child.socket).toBeNull();
     expect(child.status).toBe('crashed');
-    expect(child.killRequested).toBe(true);
+    expect(child.killRequested).toBe(false);
     expect(child.restartAttempts).toEqual([]);
     expect(await internal(fleet).waitForExit(child.process!, 10)).toBe(true);
   });
@@ -165,7 +282,7 @@ describe('FleetModule lifecycle', () => {
     const child = fleet.getChildren().get('leaf')!;
     expect(isAlive(child.pid!)).toBe(false);
     expect(child.status).toBe('crashed');
-    expect(child.killRequested).toBe(true);
+    expect(child.killRequested).toBe(false);
   });
 
   test('subscribe-send failure terminates a child even if ready already arrived', async () => {
@@ -187,7 +304,7 @@ describe('FleetModule lifecycle', () => {
     const child = fleet.getChildren().get('leaf')!;
     expect(isAlive(child.pid!)).toBe(false);
     expect(child.socket).toBeNull();
-    expect(child.killRequested).toBe(true);
+    expect(child.killRequested).toBe(false);
   });
 
   test('unconfirmed termination keeps the child blocked and reports the cleanup failure', async () => {
@@ -208,7 +325,7 @@ describe('FleetModule lifecycle', () => {
       expect(result.error).toContain('child termination unconfirmed');
       const child = fleet.getChildren().get('leaf')!;
       expect(child.status).toBe('starting');
-      expect(child.killRequested).toBe(true);
+      expect(child.killRequested).toBe(false);
       expect(child.socket).toBeNull();
       expect(isAlive(child.pid!)).toBe(true);
       const retry = await api.handleLaunch(input, { viaAutoStart: true });

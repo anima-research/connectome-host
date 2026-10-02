@@ -1081,8 +1081,7 @@ export class FleetModule implements Module {
 
     let failureStage = 'launch failed';
     try {
-      await this.waitForSocket(child);
-      await this.connectChildSocket(child);
+      await this.connectStartingChild(child);
       failureStage = 'subscribe failed';
       this.sendToChild(child, { type: 'subscribe', events: subscription });
       failureStage = 'child did not become ready';
@@ -1423,17 +1422,39 @@ export class FleetModule implements Module {
   // Subprocess + socket plumbing
   // =========================================================================
 
-  private async waitForSocket(child: FleetChild): Promise<void> {
+  private async waitForSocket(
+    child: FleetChild,
+    deadline = Date.now() + this.config.socketWaitTimeoutMs,
+  ): Promise<void> {
     const timeout = this.config.socketWaitTimeoutMs;
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      if (child.process && child.process.exitCode !== null) {
-        throw new Error(`child exited (code=${child.process.exitCode}) before socket appeared`);
+    while (Date.now() < deadline) {
+      if (child.process && (child.process.exitCode !== null || child.process.signalCode !== null)) {
+        throw new Error(`child exited (code=${child.process.exitCode}, signal=${child.process.signalCode}) before socket appeared`);
       }
       if (existsSync(child.socketPath)) return;
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error(`socket did not appear at ${child.socketPath} within ${timeout}ms`);
+  }
+
+  /** A killed child can leave its pathname behind. Wait for the replacement
+   * runtime to bind, without deleting files whose ownership may have changed. */
+  private async connectStartingChild(child: FleetChild): Promise<void> {
+    const deadline = Date.now() + this.config.socketWaitTimeoutMs;
+    let lastRefusal: unknown;
+    do {
+      await this.waitForSocket(child, deadline);
+      try {
+        await this.connectChildSocket(child);
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ECONNREFUSED') throw err;
+        lastRefusal = err;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    throw lastRefusal;
   }
 
   private async connectChildSocket(child: FleetChild): Promise<void> {
@@ -1693,12 +1714,13 @@ export class FleetModule implements Module {
   }
 
   /** Abort only the subprocess owned by this launch, never an adopted child.
-   * An already-observed natural crash keeps its automatic-retry decision. */
+   * Natural nonzero exits keep their retry even when notification races cleanup. */
   private async failLaunch(child: FleetChild, reason: string): Promise<ToolResult> {
     const proc = child.process;
     if (proc && proc.exitCode === null && proc.signalCode === null) {
-      child.killRequested = true;
-      this.cancelAutoRestart(child);
+      // SIGKILL exits are already excluded from autoRestart. Leave the manual
+      // cancellation flag alone: a natural nonzero exit may be pending even
+      // while ChildProcess still exposes null exit fields.
       try { child.socket?.destroy(); } catch { /* noop */ }
       child.socket = null;
       try { proc.kill('SIGKILL'); } catch { /* exit confirmation below is authoritative */ }
@@ -1721,6 +1743,9 @@ export class FleetModule implements Module {
     const pid = child.pid;
     // Nothing to kill: never spawned and no adopted pid recorded.
     if (!proc && pid === null) return;
+    if (!proc && (!Number.isSafeInteger(pid) || pid! <= 0)) {
+      throw new Error(`Child '${child.name}' has no valid adopted PID; retry fleet status/restart.`);
+    }
 
     // Mark intent so the exit handler doesn't trigger autoRestart.
     child.killRequested = true;
@@ -1738,11 +1763,26 @@ export class FleetModule implements Module {
       else if (pid !== null) { try { process.kill(pid, sig); } catch { /* noop */ } }
     };
 
-    if (await waitExit(this.config.gracefulShutdownMs)) return;
-    sendSignal('SIGTERM');
-    if (await waitExit(this.config.sigtermEscalationMs)) return;
-    sendSignal('SIGKILL');
-    await waitExit(2_000);
+    let confirmed = await waitExit(this.config.gracefulShutdownMs);
+    if (!confirmed) {
+      sendSignal('SIGTERM');
+      confirmed = await waitExit(this.config.sigtermEscalationMs);
+    }
+    if (!confirmed) {
+      sendSignal('SIGKILL');
+      confirmed = await waitExit(2_000);
+    }
+    if (!confirmed) throw new Error(`Child '${child.name}' death unconfirmed (pid=${pid}); retry fleet status/restart.`);
+    if (!proc) {
+      // Adopted children have no process exit handler to update their record.
+      child.status = 'exited';
+      child.exitedAt = Date.now();
+      child.exitCode = null;
+      child.exitReason = 'shutdown requested; death confirmed (ESRCH)';
+      child.socket?.destroy();
+      child.socket = null;
+      this.persistState();
+    }
   }
 
   private waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -1763,6 +1803,7 @@ export class FleetModule implements Module {
   /** Poll-based liveness for adopted children (no ChildProcess handle).
    *  `kill(pid, 0)` throws ESRCH once the process is gone. */
   private waitForExitByPid(pid: number, timeoutMs: number): Promise<boolean> {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return Promise.resolve(false);
     const deadline = Date.now() + timeoutMs;
     return new Promise((res) => {
       const tick = (): void => {
@@ -1770,8 +1811,8 @@ export class FleetModule implements Module {
           process.kill(pid, 0);
           if (Date.now() >= deadline) return res(false);
           setTimeout(tick, 100);
-        } catch {
-          res(true);  // ESRCH (or EPERM rarely) — assume gone
+        } catch (err) {
+          res((err as NodeJS.ErrnoException).code === 'ESRCH');
         }
       };
       tick();
