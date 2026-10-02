@@ -6,6 +6,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Changed
+
+- Reaction-suppression defaults are now supplied by AgentFramework at child-connection time, including configured and retained awareness markers. The host preserves explicit server env (including empty baselines) and the recipe timezone. Requires the AgentFramework release containing the fix for agent-framework#95; this companion stays draft until its dependency floor is updated to that published version.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added

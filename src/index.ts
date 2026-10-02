@@ -458,10 +458,10 @@ async function createFramework(
   const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
-      // Stdio MCPL children inherit a single agent-facing wall clock plus the
-      // framework's refusal-annotation suppression baseline (operator env
-      // supersedes the baseline; see composeMcplChildEnv). Protocol
-      // timestamps remain UTC; only their rendered text uses AGENT_TIMEZONE.
+      // Stdio MCPL children share the recipe's agent-facing wall clock.
+      // The framework derives reaction-suppression defaults at connection
+      // time; explicit server env stays authoritative. Protocol timestamps
+      // remain UTC; only their rendered text uses AGENT_TIMEZONE.
       env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),
     };
     // `access` is a declarative name (recipe/file/overlay); the credential
