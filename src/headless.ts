@@ -138,6 +138,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     'workspace-file-snapshot',
     'cancel-subagent-result',
     'panel-response',
+    'command-output',
   ]);
 
   function emit(event: Record<string, unknown>): void {
