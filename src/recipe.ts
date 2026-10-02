@@ -35,6 +35,14 @@ export interface RecipeStrategy {
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
   maxMessageTokens?: number;
+  /** Maximum live image count, newest-first (default 6). Zero disables the count limit. */
+  maxLiveImages?: number;
+  /** Token depth from the tail beyond which images become placeholders (default 30000).
+   * Zero disables depth-based stripping; surrounding text stays verbatim. */
+  imageStripDepthTokens?: number;
+  /** Cumulative base64 byte budget for live images (default 20 MiB).
+   * Zero disables the byte limit. Count and depth limits still apply. */
+  maxLiveImageBytes?: number;
   overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying
   // autobiographical strategy (and frontdesk, which extends it).
@@ -1727,6 +1735,13 @@ export function validateRecipe(raw: unknown): Recipe {
       );
     }
     validateKvUnifiedConfig(strategy);
+    // Context Manager uses zero to disable each image limit independently.
+    for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
+      const value = strategy[key];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
+        throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);
+      }
+    }
     if (
       strategy.compressionRefusalCurveFallbacks !== undefined
       && (
