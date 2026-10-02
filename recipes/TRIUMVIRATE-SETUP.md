@@ -222,6 +222,24 @@ Web hits get tagged `[WEB: <url>]` in mined reports — internal `[SRC]` always 
 
 To disable: remove the `ddg` block from `recipes/knowledge-miner.json`. The agent will skip the public web.
 
+### You.com web search (optional, off by default)
+
+A second keyless public-web option: You.com's remote MCP server. Its free profile (`https://api.you.com/mcp?profile=free`) needs no API key and nothing to clone — the `npx`-spawned [`mcp-remote`](https://github.com/geelen/mcp-remote) bridges it over stdio, the same pattern the `gitlab` entry uses for `@zereight/mcp-gitlab`. The recipe ships without the block so the miner stays DDG-by-default.
+
+To enable: add this block to `recipes/knowledge-miner.json` under `mcpServers`:
+
+```jsonc
+"youcom": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://api.you.com/mcp?profile=free"],
+  "source": { "npm": "mcp-remote" }
+}
+```
+
+No env vars required. Its `you-search` tool returns URLs and snippets, so web citations keep the `[WEB: <url>]` shape. Run it alongside `ddg` or remove the `ddg` block to make it the only public-web source. The miner's prompt names the `ddg` tools in its §4 section, so if you want the `youcom` tools used and cited consistently, point that wording at them in your recipe copy.
+
+For the authenticated endpoint (full search, page-content extraction, research), use `https://api.you.com/mcp` with an API key from [you.com/platform/api-keys](https://you.com/platform/api-keys) as a header — `"args": ["-y", "mcp-remote", "https://api.you.com/mcp", "--header", "Authorization: Bearer ${YDC_API_KEY}"]` — and set `YDC_API_KEY` in `.env`.
+
 ### Scribe — audio/video transcription (optional, off by default)
 
 The miner's prompt knows how to use [`dariakroshka/scribe-mcp`](https://github.com/dariakroshka/scribe-mcp) to transcribe recordings (via Google's Gemini API — media leaves your machine). The recipe ships without the block: it requires a Gemini API key and a sibling checkout, neither of which a demo should demand.
@@ -266,6 +284,7 @@ and set `GEMINI_API_KEY=...` in `.env`.
 | GitLab | Yes (default) — remove if not using | `GITLAB_TOKEN`, `GITLAB_API_URL` |
 | Notion | **No** — add a `syncntn` block if using | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
 | DuckDuckGo | Yes (default) — remove if not using | none (no API key) |
+| You.com | **No** — add a `youcom` block if using | none (keyless free profile; `YDC_API_KEY` only for the authenticated endpoint) |
 | Scribe | **No** — add a `scribe` block if using | `GEMINI_API_KEY` (+ optional `NOTION_API_KEY`, `SCRIBE_GLOSSARY_URL`) |
 
 ### Tweaks you can still make to the recipe files
