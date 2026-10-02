@@ -8,7 +8,7 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ### Fixed
 
-- Fleet state snapshots no longer persist resolved child environment overrides. Adopted children recover restart overrides from the current matching recipe configuration, including `autoStart: false` entries; legacy persisted env is ignored. A child with no matching configured name, recipe, and data directory gets no overrides. Existing Chronicle history and backups may still contain previously saved secrets; operators should rotate affected credentials and handle historical copies according to their retention policy. Running child processes keep their existing environment until restarted.
+- Fleet state snapshots no longer persist resolved child environment overrides. Adopted children recover restart overrides from the current matching recipe configuration, including `autoStart: false` entries; legacy persisted env is ignored. A child with no matching configured name, recipe, and data directory gets no overrides. A same-name recipe or data-directory mismatch logs the mismatched fields and withheld restart overrides without logging their values. Existing Chronicle history and backups may still contain previously saved secrets; operators should rotate affected credentials and handle historical copies according to their retention policy. Running child processes keep their existing environment until restarted.
 
 ## 0.9.0 — 2026-09-21
 

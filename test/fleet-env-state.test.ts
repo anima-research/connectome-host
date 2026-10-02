@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -66,6 +66,37 @@ describe('Fleet child environment stays outside Chronicle state', () => {
     expect(await restoredEnv([{ ...configured, name: 'other' }])).toBeUndefined();
     expect(await restoredEnv([{ ...configured, recipe: 'test/other-recipe.json' }])).toBeUndefined();
     expect(await restoredEnv([{ ...configured, dataDir: 'data/other' }])).toBeUndefined();
+  });
+
+  test('identity mismatch warns about withheld restart overrides without logging values', () => {
+    const configured = {
+      name: 'leaf', recipe: 'test/mock-recipe.json',
+      env: { TOKEN: 'current-secret' }, autoStart: false,
+    };
+    const warnings: string[] = [];
+    const log = spyOn(console, 'error').mockImplementation((line) => { warnings.push(String(line)); });
+    try {
+      for (const [changes, fields] of [
+        [{ recipe: 'test/private-recipe.json' }, 'recipe'],
+        [{ dataDir: 'data/private-dir' }, 'dataDir'],
+        [{ recipe: 'test/private-recipe.json', dataDir: 'data/private-dir' }, 'recipe, dataDir'],
+      ] as const) {
+        const fleet = new FleetModule({ autoStart: [{ ...configured, ...changes }] });
+        const restored = (fleet as any).reconstructOrphan(legacyChild());
+        expect(restored.env).toBeUndefined();
+        expect(warnings.pop()).toBe(
+          `[fleet] child "leaf": configured identity mismatch (${fields}); environment overrides withheld for restarts. Check child configuration and host working directory.`,
+        );
+      }
+      // Matching and absent declarations are not identity mismatches.
+      for (const autoStart of [[configured], []]) {
+        const fleet = new FleetModule({ autoStart });
+        (fleet as any).reconstructOrphan(legacyChild());
+      }
+      expect(warnings).toEqual([]);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   test('URL recipes compare unchanged and explicit relative data directories normalize', async () => {

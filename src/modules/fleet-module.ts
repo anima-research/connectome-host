@@ -470,6 +470,16 @@ export class FleetModule implements Module {
       resolve(c.dataDir ?? join('data', c.name)) === resolve(p.dataDir),
     );
     if (configured?.env !== undefined) child.env = { ...configured.env };
+    if (!configured) {
+      const sameName = this.autoStartChildren.find((c) => c.name === p.name);
+      if (sameName) {
+        const mismatches = [
+          recipeIdentity(sameName.recipe) !== recipeIdentity(p.recipePath) ? 'recipe' : null,
+          resolve(sameName.dataDir ?? join('data', sameName.name)) !== resolve(p.dataDir) ? 'dataDir' : null,
+        ].filter(Boolean);
+        console.error(`[fleet] child ${JSON.stringify(p.name)}: configured identity mismatch (${mismatches.join(', ')}); environment overrides withheld for restarts. Check child configuration and host working directory.`);
+      }
+    }
     return child;
   }
 
