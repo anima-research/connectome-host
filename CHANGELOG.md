@@ -6,6 +6,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- Anthropic cache-keepalive sends now appear in `llm-calls` logs and the live/reloaded spend ledger as `keepalive` calls, including ineffective cache writes and errors. Rows preserve terminal vendor usage, split cache-write buckets, and pricing metadata. Existing keepalive callbacks remain composed and isolated; replay payloads are unchanged. Requires a membrane release containing antra-tess/membrane#87. One row represents one logical keepalive send, including any SDK-internal retries, rather than one row per HTTP attempt.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added
