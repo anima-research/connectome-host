@@ -1383,6 +1383,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.adoptEpsilon must be a finite non-negative number.');
   }
+  // Mirror context-manager 0.11.0: src/adaptive/strategies/kv-unified.ts validateExplicitOptions.
   for (const key of ['treeifyNonContiguousSummaries', 'preserveGapBearingSummaries'] as const) {
     if (typeof config[key] !== 'boolean') {
       throw new Error(`Recipe agent.strategy.kvUnified.${key} must be an explicit boolean.`);
