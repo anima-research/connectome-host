@@ -38,6 +38,7 @@ import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { SubagentModule } from './modules/subagent-module.js';
+import { historyModuleOptions, assertSemanticSearchRegistered } from './history-semantic.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { buildRetrievalModuleConfig } from './retrieval-config.js';
@@ -273,7 +274,10 @@ async function createFramework(
   // ChannelRegistry) happens post-creation, below, once `framework` exists.
   let historyModule: HistoryModule | null = null;
   if (modules.history) {
-    historyModule = new HistoryModule();
+    // storePath is sessionManager.getStorePath(id) → basename = session id.
+    const historyOpts = historyModuleOptions(modules.history, agentName, basename(storePath));
+    historyModule = new HistoryModule(historyOpts);
+    assertSemanticSearchRegistered(historyModule, historyOpts.semantic !== undefined);
     moduleInstances.push(historyModule);
   }
 
