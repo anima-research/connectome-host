@@ -984,6 +984,34 @@ export interface RecipeSubconscious {
 }
 
 /**
+ * Focus mode (agent-framework FrameworkConfig.focus): the resident narrows
+ * attention to one channel for a bounded time. Other channel and DM traffic
+ * is held (events without a channel identity, e.g. heartbeats, pass) and the
+ * newest `backlogCap` messages per held channel are delivered at unfocus,
+ * the rest left to the history tools; addressed messages in channels the
+ * resident is open in get an automatic reply. Passed through verbatim; the
+ * framework owns the defaults. Not combinable with `conversations`
+ * (per-channel routing): the framework refuses every `enter` under a
+ * router, so the recipe refuses the pair at load.
+ */
+export interface RecipeFocus {
+  /** Master switch. Without it the `focus` tool is not offered. */
+  enabled: boolean;
+  /** Duration when the tool call names none (default 1800 s). */
+  defaultDurationSeconds?: number;
+  /** Ceiling on one focus epoch (default 14400 s). */
+  maxDurationSeconds?: number;
+  /** Newest raw messages delivered per held channel at unfocus (default 20). */
+  defaultBacklogCap?: number;
+  /** Ceiling on backlogCap (default 200). */
+  maxBacklogCap?: number;
+  /** Post the automatic reply to addressed messages while focused (default true). */
+  autoReply?: boolean;
+  /** Reply text; placeholders {name} {until} {remaining} {channel}. */
+  autoReplyTemplate?: string;
+}
+
+/**
  * Per-channel conversation routing (agent-framework ConversationRouter):
  * the recipe's agent becomes a dormant "trunk" template, and qualifying
  * incoming channel messages spawn per-channel fork agents seeded from the
@@ -1034,6 +1062,8 @@ export interface Recipe {
   conversations?: RecipeConversations;
   /** Tune-out's subconscious resident (agent-framework#77). */
   subconscious?: RecipeSubconscious;
+  /** Focus mode: single-channel attention for a bounded time. */
+  focus?: RecipeFocus;
   /**
    * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
    * highest-precedence source of a tool's class, and the way to class
@@ -2283,6 +2313,68 @@ export function validateRecipe(raw: unknown): Recipe {
       if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
         throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
       }
+    }
+  }
+
+  if (obj.focus !== undefined) {
+    if (!obj.focus || typeof obj.focus !== 'object' || Array.isArray(obj.focus)) {
+      throw new Error('Recipe focus must be an object.');
+    }
+    const focus = obj.focus as Record<string, unknown>;
+    const allowedFocusKeys = new Set([
+      'enabled', 'defaultDurationSeconds', 'maxDurationSeconds', 'defaultBacklogCap',
+      'maxBacklogCap', 'autoReply', 'autoReplyTemplate',
+    ]);
+    for (const key of Object.keys(focus)) {
+      if (!allowedFocusKeys.has(key)) {
+        throw new Error(
+          `Recipe focus has unknown field ${JSON.stringify(key)} ` +
+          `(expected one of: ${[...allowedFocusKeys].join(', ')}).`,
+        );
+      }
+    }
+    if (typeof focus.enabled !== 'boolean') {
+      throw new Error('Recipe focus.enabled must be a boolean.');
+    }
+    // Integers only: the framework slices the backlog with the cap
+    // (`slice(-0.5)` returns everything) and arms a timer with the duration.
+    for (const k of ['defaultDurationSeconds', 'maxDurationSeconds', 'defaultBacklogCap', 'maxBacklogCap'] as const) {
+      const v = focus[k];
+      if (v !== undefined && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
+        throw new Error(`Recipe focus.${k} must be a non-negative integer.`);
+      }
+    }
+    // The framework's own floor is 60 s and its ceiling a week; a recipe
+    // maximum outside that range would describe epochs the tool says cannot
+    // exist. Defaults must fit under their maxima.
+    const maxDuration = focus.maxDurationSeconds as number | undefined;
+    if (maxDuration !== undefined && (maxDuration < 60 || maxDuration > 7 * 24 * 3600)) {
+      throw new Error('Recipe focus.maxDurationSeconds must be between 60 and 604800 (one week).');
+    }
+    const defaultDuration = focus.defaultDurationSeconds as number | undefined;
+    if (defaultDuration !== undefined && defaultDuration < 60) {
+      throw new Error('Recipe focus.defaultDurationSeconds must be at least 60.');
+    }
+    if (defaultDuration !== undefined && maxDuration !== undefined && defaultDuration > maxDuration) {
+      throw new Error('Recipe focus.defaultDurationSeconds must not exceed focus.maxDurationSeconds.');
+    }
+    const defaultCap = focus.defaultBacklogCap as number | undefined;
+    const maxCap = focus.maxBacklogCap as number | undefined;
+    if (defaultCap !== undefined && maxCap !== undefined && defaultCap > maxCap) {
+      throw new Error('Recipe focus.defaultBacklogCap must not exceed focus.maxBacklogCap.');
+    }
+    if (focus.enabled === true && obj.conversations !== undefined) {
+      throw new Error(
+        'Recipe focus.enabled cannot be combined with conversations (per-channel routing): ' +
+        'the framework refuses focus under a conversation router.',
+      );
+    }
+    if (focus.autoReply !== undefined && typeof focus.autoReply !== 'boolean') {
+      throw new Error('Recipe focus.autoReply must be a boolean.');
+    }
+    if (focus.autoReplyTemplate !== undefined &&
+        (typeof focus.autoReplyTemplate !== 'string' || !focus.autoReplyTemplate.trim())) {
+      throw new Error('Recipe focus.autoReplyTemplate must be a non-empty string.');
     }
   }
 
