@@ -674,14 +674,6 @@ export class FleetModule implements Module {
     // Mark shutdown so the process 'exit' handlers don't trigger autoRestart.
     this.stopping = true;
 
-    // Uninstall the 'exit' safety net first so we don't pin this instance in
-    // memory after a clean shutdown, and so MaxListenersExceededWarning doesn't
-    // accumulate across many start/stop cycles in the same process.
-    if (this.exitHandler) {
-      process.off('exit', this.exitHandler);
-      this.exitHandler = null;
-    }
-
     if (this.detachMode) {
       // Detach: close socket references only; leave child processes alive so
       // a later parent can adopt them.  Children's own headless runtimes
@@ -690,15 +682,23 @@ export class FleetModule implements Module {
         try { c.socket?.destroy(); } catch { /* noop */ }
         c.socket = null;
       }
-      this.ctx = null;
-      return;
+    } else {
+      // Keep the exit safety net and original context while cleanup is pending
+      // or failed. The framework's deadline can expire before our escalation;
+      // its parent error exit must still terminate detached children we own.
+      // Unvalidated restored records confer no authority to signal their PIDs.
+      const owned = [...this.children.values()].filter(child => child.process || child.adopted);
+      const results = await Promise.allSettled(owned.map(child => this.killChild(child)));
+      const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, 'Fleet child shutdown failed');
     }
 
-    const tasks: Array<Promise<void>> = [];
-    for (const child of this.children.values()) {
-      tasks.push(this.killChild(child).catch(() => { /* swallow per-child errors */ }));
+    // Release the listener only after successful cleanup or intentional detach.
+    if (this.exitHandler) {
+      process.off('exit', this.exitHandler);
+      this.exitHandler = null;
     }
-    await Promise.all(tasks);
     this.ctx = null;
   }
 

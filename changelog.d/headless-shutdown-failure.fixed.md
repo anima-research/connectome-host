@@ -1,1 +1,3 @@
 - Headless shutdown now exits with status 1 when framework shutdown rejects, while retaining its diagnostic log and socket/PID cleanup.
+- Fleet retains parent-exit child cleanup and its context during pending or failed shutdown, reports child cleanup failures, and still preserves children on intentional detach.
+- Accept immediate shutdown after IPC ready, including before the listen callback resumes.

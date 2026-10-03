@@ -5,7 +5,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const mode of ['healthy', 'failure', 'delayed-failure']) {
+for (const mode of ['healthy', 'failure', 'delayed-failure', 'ready-window']) {
   test(`headless shutdown ${mode} reports exit status and cleans IPC artifacts`, async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-stop-')));
     const child = spawn(process.execPath, [join(import.meta.dir, 'mock-headless-shutdown-child.ts'), mode], {
@@ -44,11 +44,11 @@ for (const mode of ['healthy', 'failure', 'delayed-failure']) {
       const result = await closed;
       clearTimeout(timer);
       expect(result.signal).toBeNull();
-      expect(result.code).toBe(mode === 'healthy' ? 0 : 1);
+      expect(result.code).toBe(mode === 'healthy' || mode === 'ready-window' ? 0 : 1);
       expect(JSON.parse(readFileSync(join(dir, 'stop-calls.json'), 'utf8'))).toEqual({ stopCalls: 1 });
       expect(existsSync(socketPath)).toBe(false);
       expect(existsSync(join(dir, 'headless.pid'))).toBe(false);
-      if (mode !== 'healthy') expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('injected framework stop failure');
+      if (mode === 'failure' || mode === 'delayed-failure') expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('injected framework stop failure');
     } finally {
       clearTimeout(timer);
       socket?.destroy();

@@ -121,6 +121,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     log(`pid file write failed: ${String(err)}`);
   }
 
+  // Initialize shutdown state before listen can expose ready to a client.
+  let shuttingDown = false;
+
   // -- Connection state --
   let currentClient: Socket | null = null;
   // Default subscription: receive everything.  Smoke-test friendly; parents
@@ -456,7 +459,6 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   });
 
   // -- Shutdown --
-  let shuttingDown = false;
   async function gracefulShutdown(reason: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
