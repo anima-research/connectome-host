@@ -1452,13 +1452,21 @@ export class SubagentModule implements Module {
       };
     }
 
+    // Resolve permissions before accepting work; the caller may exit while queued.
+    let allowedTools: 'all' | string[];
+    try {
+      allowedTools = this.filterToolNames(input.tools, callerDepth, callerAgentName);
+    } catch (error) {
+      return { success: false, isError: true, error: error instanceof Error ? error.message : String(error) };
+    }
+
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
 
     // Sync mode: block until completion, but detachable mid-flight.
     // Default timeout applies (600s) — auto-detaches to background.
     if (input.sync) {
       const timeoutMs = input.timeoutMs ?? this.maxExecutionMs;
-      const promise = this.runSpawn(input, callerAgentName, callerDepth, timeoutMs);
+      const promise = this.runSpawn(input, allowedTools, callerAgentName, callerDepth, timeoutMs);
       const result = await this.runDetachable(input.name, 'spawn', promise, parentAgentName, input.timeoutMs);
       return result;
     }
@@ -1466,7 +1474,7 @@ export class SubagentModule implements Module {
     // Async mode (default): fire-and-forget, deliver result as message.
     // No default timeout — async agents run until they finish unless
     // the caller explicitly sets timeoutMs.
-    const promise = this.runSpawn(input, callerAgentName, callerDepth, input.timeoutMs);
+    const promise = this.runSpawn(input, allowedTools, callerAgentName, callerDepth, input.timeoutMs);
     this.asyncHandles.set(input.name, { name: input.name, type: 'spawn', promise, parentAgentName });
 
     promise
@@ -1486,13 +1494,21 @@ export class SubagentModule implements Module {
       };
     }
 
+    // Resolve permissions before accepting work; the caller may exit while queued.
+    let allowedTools: 'all' | string[];
+    try {
+      allowedTools = this.filterToolNames(undefined, callerDepth, callerAgentName);
+    } catch (error) {
+      return { success: false, isError: true, error: error instanceof Error ? error.message : String(error) };
+    }
+
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
 
     // Sync mode: block until completion, but detachable mid-flight.
     // Default timeout applies (600s) — auto-detaches to background.
     if (input.sync) {
       const timeoutMs = input.timeoutMs ?? this.maxExecutionMs;
-      const promise = this.runFork(input, callerAgentName, callerDepth, timeoutMs, callToolUseId);
+      const promise = this.runFork(input, allowedTools, callerAgentName, callerDepth, timeoutMs, callToolUseId);
       const result = await this.runDetachable(input.name, 'fork', promise, parentAgentName, input.timeoutMs);
       return result;
     }
@@ -1500,7 +1516,7 @@ export class SubagentModule implements Module {
     // Async mode (default): fire-and-forget, deliver result as message.
     // No default timeout — async agents run until they finish unless
     // the caller explicitly sets timeoutMs.
-    const promise = this.runFork(input, callerAgentName, callerDepth, input.timeoutMs, callToolUseId);
+    const promise = this.runFork(input, allowedTools, callerAgentName, callerDepth, input.timeoutMs, callToolUseId);
     this.asyncHandles.set(input.name, { name: input.name, type: 'fork', promise, parentAgentName });
 
     promise
@@ -1688,7 +1704,7 @@ export class SubagentModule implements Module {
   // Subagent Execution
   // =========================================================================
 
-  private async runSpawn(input: SpawnInput, _callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number): Promise<SubagentResult> {
+  private async runSpawn(input: SpawnInput, allowedTools: 'all' | string[], _callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
@@ -1726,7 +1742,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(input.tools, callerDepth, _callerAgentName),
+          allowedTools: allowedTools === 'all' ? 'all' : [...allowedTools],
         });
 
         // Track depth for recursive fork/spawn calls from this agent
@@ -1828,7 +1844,7 @@ export class SubagentModule implements Module {
     }
   }
 
-  private async runFork(input: ForkInput, callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number, callToolUseId?: string): Promise<SubagentResult> {
+  private async runFork(input: ForkInput, allowedTools: 'all' | string[], callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number, callToolUseId?: string): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
@@ -1881,7 +1897,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(undefined, callerDepth, callerAgentName),
+          allowedTools: allowedTools === 'all' ? 'all' : [...allowedTools],
         });
 
         // Track depth for recursive fork/spawn calls from this agent

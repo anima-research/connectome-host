@@ -9,9 +9,9 @@ import { SubagentModule } from '../src/modules/subagent-module.js';
 
 const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
 
-async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3) {
+async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0) {
   const dir = mkdtempSync(join(tmpdir(), 'sub-tools-'));
-  const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries: 0, maxDepth });
+  const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth });
   const probe = {
     name: 'probe', start: async () => {}, stop: async () => {},
     getTools: () => ['allowed', 'denied'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
@@ -107,6 +107,109 @@ describe('subagent allowed-tools inheritance', () => {
       }
     } finally { await h.cleanup(); }
   });
+
+  for (const kind of ['spawn', 'fork'] as const) {
+    for (const sync of [true, false]) {
+      test(`${kind} unknown explicit caller fails before admission (sync=${sync})`, async () => {
+        const h = await harness('all');
+        try {
+          const result = await h.subagent.handleToolCall({ id: 'unknown', name: kind, callerAgentName: 'missing', input: {
+            name: 'unknown-worker', task: 'inspect', systemPrompt: 'inert', sync,
+          } } as ToolCall);
+          expect(result.success).toBe(false);
+          expect(result.error).toContain('Cannot resolve subagent caller');
+          expect(h.captured).toHaveLength(0);
+          expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
+          const state = h.subagent as unknown as { asyncHandles: Map<string, unknown>; activeSubagents: Map<string, unknown>; parentMap: Map<string, unknown> };
+          expect(state.asyncHandles.size).toBe(0);
+          expect(state.activeSubagents.size).toBe(0);
+          expect(state.parentMap.size).toBe(0);
+        } finally { await h.cleanup(); }
+      });
+    }
+
+    test(`${kind} queued acceptance survives ephemeral caller exit and permission mutation`, async () => {
+      const h = await harness('all');
+      let unblock!: () => void;
+      let markStarted!: () => void;
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      const blocked = new Promise<void>(resolve => { unblock = resolve; });
+      let blocker!: Promise<unknown>;
+      try {
+        await h.framework.start();
+        h.subagent.setConcurrency(1);
+        h.framework.runEphemeralToCompletion = async agent => {
+          h.captured.push(agent);
+          if (h.captured.length === 1) { markStarted(); await blocked; }
+          return { speech: 'done', toolCallsCount: 0 };
+        };
+        blocker = h.call('spawn');
+        await started;
+        expect(h.captured).toHaveLength(1);
+        const caller = await h.framework.createEphemeralAgent({ name: `queue-caller-${kind}`, model: 'mock', systemPrompt: 'inert', allowedTools: [...restricted], maxTokens: 256 });
+        const running = h.realRun(caller.agent, caller.contextManager);
+        const tools = ['probe--allowed'];
+        try {
+          expect(h.framework.getAgent(caller.agent.name)).toBe(caller.agent);
+          const accepted = await h.subagent.handleToolCall({ id: 'queued', name: kind, callerAgentName: caller.agent.name, input: {
+            name: 'queued-worker', task: 'inspect', systemPrompt: 'inert', tools,
+          } } as ToolCall);
+          expect(accepted.success).toBe(true);
+          expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 1 });
+          const pending = (h.subagent as unknown as { asyncHandles: Map<string, { promise: Promise<unknown> }> }).asyncHandles.get('queued-worker')!.promise;
+          // Observe rejection immediately so the red run has no unhandled promise.
+          const settled = pending.then(() => null, error => error);
+          if (caller.agent.allowedTools !== 'all') caller.agent.allowedTools.push('probe--denied');
+          caller.agent.allowedTools = 'all';
+          tools.push('probe--denied');
+          await running;
+          caller.cleanup();
+          expect(h.framework.getAgent(caller.agent.name)).toBeNull();
+          unblock();
+          await blocker;
+          expect(await settled).toBeNull();
+          expect(h.captured).toHaveLength(2);
+          expect(h.captured[1].canUseTool('probe--allowed')).toBe(true);
+          expect(h.captured[1].canUseTool('probe--denied')).toBe(false);
+          expect(h.captured[1].canUseTool('subagent--return')).toBe(true);
+        } finally { await running; caller.cleanup(); }
+      } finally { unblock(); await blocker?.catch(() => {}); await h.cleanup(); }
+    });
+
+    test(`${kind} retry reuses admission tools after ephemeral caller exit`, async () => {
+      const h = await harness('all', 3, 1);
+      try {
+        await h.framework.start();
+        const caller = await h.framework.createEphemeralAgent({ name: `retry-caller-${kind}`, model: 'mock', systemPrompt: 'inert', allowedTools: [...restricted], maxTokens: 256 });
+        const running = h.realRun(caller.agent, caller.contextManager);
+        const tools = ['probe--allowed'];
+        h.framework.runEphemeralToCompletion = async agent => {
+          h.captured.push(agent);
+          if (h.captured.length === 1) {
+            expect(agent.canUseTool('probe--denied')).toBe(false);
+            // An attempt must not own the accepted array used by later attempts.
+            if (agent.allowedTools !== 'all') agent.allowedTools.push('probe--denied');
+            if (caller.agent.allowedTools !== 'all') caller.agent.allowedTools.push('probe--denied');
+            caller.agent.allowedTools = 'all';
+            tools.push('probe--denied');
+            await running;
+            caller.cleanup();
+            throw new Error('ECONNRESET');
+          }
+          return { speech: 'done', toolCallsCount: 0 };
+        };
+        try {
+          expect((await h.subagent.handleToolCall({ id: 'retry', name: kind, callerAgentName: caller.agent.name, input: {
+            name: 'retry-worker', task: 'inspect', systemPrompt: 'inert', tools, sync: true,
+          } } as ToolCall)).success).toBe(true);
+          expect(h.framework.getAgent(caller.agent.name)).toBeNull();
+          expect(h.captured).toHaveLength(2);
+          expect(h.captured[1].canUseTool('probe--allowed')).toBe(true);
+          expect(h.captured[1].canUseTool('probe--denied')).toBe(false);
+        } finally { await running; caller.cleanup(); }
+      } finally { await h.cleanup(); }
+    }, 15_000);
+  }
 
   test('unrestricted caller preserves all and explicit narrowing', async () => {
     const h = await harness('all');
