@@ -41,7 +41,6 @@ for (const lane of ['complete', 'stream'] as const) {
         const wrapped = new LoggingProviderAdapter(inner, log);
         const capability = (inner as GeminiAdapter & { toolResultImageMediaTypes?: ReadonlySet<string> })
           .toolResultImageMediaTypes;
-        expect(wrapped.toolResultImageMediaTypes).toBe(capability);
         if (requireCapability) expect(capability?.has(mediaType)).toBe(true);
 
         const data = imageData(brand);
@@ -69,6 +68,7 @@ for (const lane of ['complete', 'stream'] as const) {
         }
         expect(bodies).toHaveLength(2);
         expect(bodies[1]).toBe(bodies[0]);
+        expect(wrapped.toolResultImageMediaTypes).toBe(capability);
         expect(request).toEqual(original);
         expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(1);
 
