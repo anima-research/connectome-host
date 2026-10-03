@@ -248,6 +248,9 @@ export interface RecipeAgent {
    * chapterx CLI-sim's "<cmd>cat untitled.txt</cmd>"). Prefill formatter only. */
   prefillUserMessage?: string;
   systemPrompt: string;
+  /** Agent Framework exact-name tool allowlist. Omitted preserves its 'all' default.
+   * This configures tool visibility; dispatch enforcement belongs to the framework. */
+  allowedTools?: 'all' | string[];
   maxTokens?: number;
   /**
    * Per-agent stream token budget — the accumulated-input ceiling at which the
@@ -1472,6 +1475,12 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.systemPrompt = '';
   } else if (typeof agent.systemPrompt !== 'string') {
     throw new Error('Recipe agent "systemPrompt" must be a string when present');
+  }
+
+  if (agent.allowedTools !== undefined && agent.allowedTools !== 'all' &&
+      (!Array.isArray(agent.allowedTools) ||
+       !Array.from(agent.allowedTools).every((tool) => typeof tool === 'string'))) {
+    throw new Error("Recipe agent.allowedTools must be 'all' or an array of tool-name strings.");
   }
 
   if (agent.provider !== undefined &&
