@@ -9,9 +9,9 @@ import { SubagentModule } from '../src/modules/subagent-module.js';
 
 const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
 
-async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0) {
+async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0, defaultMaxTokens?: number) {
   const dir = mkdtempSync(join(tmpdir(), 'sub-tools-'));
-  const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth });
+  const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth, defaultMaxTokens });
   const probe = {
     name: 'probe', start: async () => {}, stop: async () => {},
     getTools: () => ['allowed', 'denied'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
@@ -146,13 +146,14 @@ describe('subagent allowed-tools inheritance', () => {
         blocker = h.call('spawn');
         await started;
         expect(h.captured).toHaveLength(1);
-        const caller = await h.framework.createEphemeralAgent({ name: `queue-caller-${kind}`, model: 'mock', systemPrompt: 'inert', allowedTools: [...restricted], maxTokens: 256 });
+        const caller = await h.framework.createEphemeralAgent({ name: `queue-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
+        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique queued parent history' }]);
         try {
           expect(h.framework.getAgent(caller.agent.name)).toBe(caller.agent);
           const accepted = await h.subagent.handleToolCall({ id: 'queued', name: kind, callerAgentName: caller.agent.name, input: {
-            name: 'queued-worker', task: 'inspect', systemPrompt: 'inert', tools,
+            name: 'queued-worker', task: 'inspect', ...(kind === 'spawn' ? { systemPrompt: 'inert' } : {}), tools,
           } } as ToolCall);
           expect(accepted.success).toBe(true);
           expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 1 });
@@ -165,6 +166,10 @@ describe('subagent allowed-tools inheritance', () => {
           await running;
           caller.cleanup();
           expect(h.framework.getAgent(caller.agent.name)).toBeNull();
+          expect(JSON.stringify((await caller.contextManager.compile()).messages)).toContain('unique queued parent history');
+          // Defaults are scalar snapshots, while history stays compiled at execution.
+          (caller.agent as unknown as { systemPrompt: string }).systemPrompt = 'changed after admission';
+          caller.contextManager.addMessage('user', [{ type: 'text', text: 'history added after admission' }]);
           unblock();
           await blocker;
           expect(await settled).toBeNull();
@@ -172,6 +177,12 @@ describe('subagent allowed-tools inheritance', () => {
           expect(h.captured[1].canUseTool('probe--allowed')).toBe(true);
           expect(h.captured[1].canUseTool('probe--denied')).toBe(false);
           expect(h.captured[1].canUseTool('subagent--return')).toBe(true);
+          const history = JSON.stringify((await h.captured[1].getContextManager().compile()).messages);
+          expect({ mode: h.captured[1].proseRouting, maxTokens: h.captured[1].maxTokens, prompt: h.captured[1].systemPrompt, history }).toMatchObject({
+            mode: 'disabled', maxTokens: 731, prompt: kind === 'fork' ? 'original caller prompt' : 'inert',
+            ...(kind === 'fork' ? { history: expect.stringContaining('unique queued parent history') } : {}),
+          });
+          if (kind === 'fork') expect(history).toContain('history added after admission');
         } finally { await running; caller.cleanup(); }
       } finally { unblock(); await blocker?.catch(() => {}); await h.cleanup(); }
     });
@@ -180,11 +191,14 @@ describe('subagent allowed-tools inheritance', () => {
       const h = await harness('all', 3, 1);
       try {
         await h.framework.start();
-        const caller = await h.framework.createEphemeralAgent({ name: `retry-caller-${kind}`, model: 'mock', systemPrompt: 'inert', allowedTools: [...restricted], maxTokens: 256 });
+        const caller = await h.framework.createEphemeralAgent({ name: `retry-caller-${kind}`, model: 'mock', systemPrompt: 'original caller prompt', proseRouting: 'disabled', allowedTools: [...restricted], maxTokens: 731 });
         const running = h.realRun(caller.agent, caller.contextManager);
         const tools = ['probe--allowed'];
+        caller.contextManager.addMessage('user', [{ type: 'text', text: 'unique retry parent history' }]);
+        const histories: string[] = [];
         h.framework.runEphemeralToCompletion = async agent => {
           h.captured.push(agent);
+          histories.push(JSON.stringify((await agent.getContextManager().compile()).messages));
           if (h.captured.length === 1) {
             expect(agent.canUseTool('probe--denied')).toBe(false);
             // An attempt must not own the accepted array used by later attempts.
@@ -194,22 +208,81 @@ describe('subagent allowed-tools inheritance', () => {
             tools.push('probe--denied');
             await running;
             caller.cleanup();
+            (caller.agent as unknown as { systemPrompt: string }).systemPrompt = 'changed on retry';
             throw new Error('ECONNRESET');
           }
           return { speech: 'done', toolCallsCount: 0 };
         };
         try {
           expect((await h.subagent.handleToolCall({ id: 'retry', name: kind, callerAgentName: caller.agent.name, input: {
-            name: 'retry-worker', task: 'inspect', systemPrompt: 'inert', tools, sync: true,
+            name: 'retry-worker', task: 'inspect', ...(kind === 'spawn' ? { systemPrompt: 'inert' } : {}), tools, sync: true,
           } } as ToolCall)).success).toBe(true);
           expect(h.framework.getAgent(caller.agent.name)).toBeNull();
           expect(h.captured).toHaveLength(2);
           expect(h.captured[1].canUseTool('probe--allowed')).toBe(true);
           expect(h.captured[1].canUseTool('probe--denied')).toBe(false);
+          for (const [index, agent] of h.captured.entries()) {
+            expect({ mode: agent.proseRouting, maxTokens: agent.maxTokens, prompt: agent.systemPrompt, history: histories[index] }).toMatchObject({
+              mode: 'disabled', maxTokens: 731, prompt: kind === 'fork' ? 'original caller prompt' : 'inert',
+              ...(kind === 'fork' ? { history: expect.stringContaining('unique retry parent history') } : {}),
+            });
+          }
         } finally { await running; caller.cleanup(); }
       } finally { await h.cleanup(); }
     }, 15_000);
   }
+
+  test('queued explicit prompt and maxTokens precedence survive caller disposal', async () => {
+    for (const kind of ['spawn', 'fork'] as const) {
+      for (const scenario of [
+        { request: 911, module: 823, expected: 911 },
+        { request: undefined, module: 823, expected: 823 },
+      ]) {
+        const h = await harness('all', 3, 0, scenario.module);
+        let unblock!: () => void;
+        let markStarted!: () => void;
+        const started = new Promise<void>(resolve => { markStarted = resolve; });
+        const blocked = new Promise<void>(resolve => { unblock = resolve; });
+        let blocker: Promise<unknown> | undefined;
+        try {
+          await h.framework.start();
+          h.subagent.setConcurrency(1);
+          h.framework.runEphemeralToCompletion = async agent => {
+            h.captured.push(agent);
+            if (h.captured.length === 1) { markStarted(); await blocked; }
+            return { speech: 'done', toolCallsCount: 0 };
+          };
+          blocker = h.call('spawn');
+          await started;
+          const caller = await h.framework.createEphemeralAgent({ name: 'precedence-caller', model: 'mock', systemPrompt: 'caller default', proseRouting: 'disabled', maxTokens: 731 });
+          const running = h.realRun(caller.agent, caller.contextManager);
+          try {
+            const pending = h.subagent.handleToolCall({ id: 'precedence', name: kind, callerAgentName: caller.agent.name, input: {
+              name: 'precedence-worker', task: 'inspect', systemPrompt: 'explicit override', maxTokens: scenario.request, sync: true,
+            } } as ToolCall);
+            expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
+            await running;
+            caller.cleanup();
+            expect(h.framework.getAgent(caller.agent.name)).toBeNull();
+            unblock();
+            expect((await pending).success).toBe(true);
+            expect(h.captured[1]).toMatchObject({ systemPrompt: 'explicit override', maxTokens: scenario.expected, proseRouting: 'disabled' });
+          } finally { await running; caller.cleanup(); }
+        } finally { unblock(); await blocker?.catch(() => {}); await h.cleanup(); }
+      }
+    }
+  });
+
+  test('configured parent default and no-parent maxTokens fallback remain unchanged', async () => {
+    const h = await harness();
+    try {
+      expect((await h.subagent.handleToolCall({ id: 'configured', name: 'fork', input: { name: 'configured-worker', task: 'inspect', sync: true } } as ToolCall)).success).toBe(true);
+      expect(h.captured[0]).toMatchObject({ systemPrompt: 'parent', maxTokens: 256 });
+      const resolver = h.subagent as unknown as { resolveMaxTokens: (value: number | undefined, parent?: string) => number };
+      expect(resolver.resolveMaxTokens(undefined, 'missing')).toBe(4096);
+      expect(resolver.resolveMaxTokens(917, 'missing')).toBe(917);
+    } finally { await h.cleanup(); }
+  });
 
   test('unrestricted caller preserves all and explicit narrowing', async () => {
     const h = await harness('all');
