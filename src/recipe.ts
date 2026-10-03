@@ -985,9 +985,14 @@ export interface RecipeSubconscious {
 
 /**
  * Focus mode (agent-framework FrameworkConfig.focus): the resident narrows
- * attention to one channel for a bounded time; everything else is held and
- * delivered at unfocus, addressed messages elsewhere get an automatic
- * reply. Passed through verbatim; the framework owns the defaults.
+ * attention to one channel for a bounded time. Other channel and DM traffic
+ * is held (events without a channel identity, e.g. heartbeats, pass) and the
+ * newest `backlogCap` messages per held channel are delivered at unfocus,
+ * the rest left to the history tools; addressed messages in channels the
+ * resident is open in get an automatic reply. Passed through verbatim; the
+ * framework owns the defaults. Not combinable with `conversations`
+ * (per-channel routing): the framework refuses every `enter` under a
+ * router, so the recipe refuses the pair at load.
  */
 export interface RecipeFocus {
   /** Master switch. Without it the `focus` tool is not offered. */
@@ -2331,11 +2336,38 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof focus.enabled !== 'boolean') {
       throw new Error('Recipe focus.enabled must be a boolean.');
     }
+    // Integers only: the framework slices the backlog with the cap
+    // (`slice(-0.5)` returns everything) and arms a timer with the duration.
     for (const k of ['defaultDurationSeconds', 'maxDurationSeconds', 'defaultBacklogCap', 'maxBacklogCap'] as const) {
       const v = focus[k];
-      if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
-        throw new Error(`Recipe focus.${k} must be a non-negative number.`);
+      if (v !== undefined && (typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
+        throw new Error(`Recipe focus.${k} must be a non-negative integer.`);
       }
+    }
+    // The framework's own floor is 60 s and its ceiling a week; a recipe
+    // maximum outside that range would describe epochs the tool says cannot
+    // exist. Defaults must fit under their maxima.
+    const maxDuration = focus.maxDurationSeconds as number | undefined;
+    if (maxDuration !== undefined && (maxDuration < 60 || maxDuration > 7 * 24 * 3600)) {
+      throw new Error('Recipe focus.maxDurationSeconds must be between 60 and 604800 (one week).');
+    }
+    const defaultDuration = focus.defaultDurationSeconds as number | undefined;
+    if (defaultDuration !== undefined && defaultDuration < 60) {
+      throw new Error('Recipe focus.defaultDurationSeconds must be at least 60.');
+    }
+    if (defaultDuration !== undefined && maxDuration !== undefined && defaultDuration > maxDuration) {
+      throw new Error('Recipe focus.defaultDurationSeconds must not exceed focus.maxDurationSeconds.');
+    }
+    const defaultCap = focus.defaultBacklogCap as number | undefined;
+    const maxCap = focus.maxBacklogCap as number | undefined;
+    if (defaultCap !== undefined && maxCap !== undefined && defaultCap > maxCap) {
+      throw new Error('Recipe focus.defaultBacklogCap must not exceed focus.maxBacklogCap.');
+    }
+    if (focus.enabled === true && obj.conversations !== undefined) {
+      throw new Error(
+        'Recipe focus.enabled cannot be combined with conversations (per-channel routing): ' +
+        'the framework refuses focus under a conversation router.',
+      );
     }
     if (focus.autoReply !== undefined && typeof focus.autoReply !== 'boolean') {
       throw new Error('Recipe focus.autoReply must be a boolean.');

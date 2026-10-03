@@ -51,11 +51,38 @@ describe('validateRecipe — focus schema', () => {
       .toThrow(/focus has unknown field "durationSeconds"/);
   });
 
-  test('numeric fields must be non-negative finite numbers', () => {
+  test('numeric fields must be non-negative integers', () => {
     expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, maxDurationSeconds: -1 } })))
-      .toThrow(/focus\.maxDurationSeconds must be a non-negative number/);
+      .toThrow(/focus\.maxDurationSeconds must be a non-negative integer/);
     expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, defaultBacklogCap: '20' } })))
-      .toThrow(/focus\.defaultBacklogCap must be a non-negative number/);
+      .toThrow(/focus\.defaultBacklogCap must be a non-negative integer/);
+    // slice(-0.5) would deliver the whole backlog.
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, maxBacklogCap: 0.5 } })))
+      .toThrow(/focus\.maxBacklogCap must be a non-negative integer/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, maxDurationSeconds: 1e308 } })))
+      .toThrow(/must be a non-negative integer|between 60 and 604800/);
+  });
+
+  test('maxima stay inside the framework\'s own range; defaults fit under maxima', () => {
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, maxDurationSeconds: 10 } })))
+      .toThrow(/focus\.maxDurationSeconds must be between 60 and 604800/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, maxDurationSeconds: 604801 } })))
+      .toThrow(/between 60 and 604800/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, defaultDurationSeconds: 30 } })))
+      .toThrow(/focus\.defaultDurationSeconds must be at least 60/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, defaultDurationSeconds: 7200, maxDurationSeconds: 3600 } })))
+      .toThrow(/defaultDurationSeconds must not exceed focus\.maxDurationSeconds/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, defaultBacklogCap: 50, maxBacklogCap: 10 } })))
+      .toThrow(/defaultBacklogCap must not exceed focus\.maxBacklogCap/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true, defaultDurationSeconds: 3600, maxDurationSeconds: 3600, defaultBacklogCap: 10, maxBacklogCap: 10 } })))
+      .not.toThrow();
+  });
+
+  test('focus.enabled is refused alongside conversations (the framework refuses every enter under a router)', () => {
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: true }, conversations: {} })))
+      .toThrow(/focus\.enabled cannot be combined with conversations/);
+    expect(() => validateRecipe(baseRecipe({ focus: { enabled: false }, conversations: {} })))
+      .not.toThrow();
   });
 
   test('autoReply is a boolean; autoReplyTemplate a non-empty string', () => {
