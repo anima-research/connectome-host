@@ -18,6 +18,7 @@ type Internal = {
   waitForExit: (proc: ChildProcess, timeoutMs: number) => Promise<boolean>;
   waitForReady: (child: Child) => Promise<void>;
   waitForExitByPid: (pid: number, timeoutMs: number) => Promise<boolean>;
+  cleanupStaleChildFiles: (child: Child) => Promise<void>;
   sendToChild: (child: Child, command: { type: string }) => void;
 };
 const internal = (fleet: FleetModule): Internal => fleet as unknown as Internal;
@@ -413,6 +414,39 @@ describe('FleetModule lifecycle', () => {
     expect(fleet.getChildren().get('leaf')).toBe(child);
     expect(launches(input)).toHaveLength(1);
   });
+
+  for (const action of ['kill', 'stop'] as const) {
+    test(action + ' during asynchronous ownership reconciliation cancels automatic replacement', async () => {
+      const { fleet, input } = fixture();
+      const api = internal(fleet);
+      const clock = controlRestarts(fleet);
+      expect((await api.handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true })).success).toBe(true);
+      const child = fleet.getChildren().get('leaf')!;
+      await crash(fleet, child);
+      let entered = false;
+      let release!: () => void;
+      const reconciliation = new Promise<void>(resolve => { release = resolve; });
+      const cleanup = api.cleanupStaleChildFiles.bind(fleet);
+      api.cleanupStaleChildFiles = async existing => {
+        entered = true;
+        await reconciliation;
+        await cleanup(existing);
+      };
+      try {
+        clock.release(0);
+        await until(() => entered, 'ownership reconciliation started');
+        if (action === 'stop') await fleet.stop();
+        else expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
+      } finally {
+        release();
+      }
+      await until(() => clock.completed.length === 2, 'cancelled reconciliation settled');
+      expect(clock.completed[1]!.result.success).toBe(false);
+      expect(clock.completed[1]!.result.error).toContain('changed during reconciliation');
+      expect(fleet.getChildren().get('leaf')).toBe(child);
+      expect(launches(input)).toHaveLength(1);
+    });
+  }
 
   for (const action of ['kill', 'restart', 'stop', 'replace'] as const) {
     test(action + ' during backoff cancels stale automatic replacement', async () => {
