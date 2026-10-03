@@ -138,6 +138,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     'workspace-file-snapshot',
     'cancel-subagent-result',
     'panel-response',
+    'command-output',
   ]);
 
   function emit(event: Record<string, unknown>): void {
@@ -170,7 +171,17 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   });
 
   // -- Command dispatch --
-  async function dispatchCommand(cmd: IncomingCommand): Promise<void> {
+  async function dispatchCommand(cmd: IncomingCommand, requester: Socket): Promise<void> {
+    // Responses belong to the connection that requested them. Async work can
+    // outlive that connection; a replacement client must not inherit its reply.
+    // Framework telemetry still uses emit() directly and follows currentClient.
+    const reply = (event: Record<string, unknown>): void => {
+      if (currentClient !== requester || requester.destroyed || requester.writableEnded) {
+        log(`reply dropped: ${String(event.type)}, requester superseded/closed`);
+        return;
+      }
+      emit(event);
+    };
     switch (cmd.type) {
       case 'subscribe': {
         if (!Array.isArray(cmd.events)) {
@@ -203,7 +214,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         const { handleCommand } = await import('./commands.js');
         const result = handleCommand(cmd.command, app);
         for (const line of result.lines) {
-          emit({ type: 'command-output', text: line.text, style: line.style ?? null });
+          reply({ type: 'command-output', text: line.text, style: line.style ?? null });
         }
         // Commands with async follow-up (fleet kill/restart, puppet) put
         // their real outcome in asyncWork; without this await the IPC
@@ -212,12 +223,12 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         if (result.asyncWork) {
           const followUp = await result.asyncWork;
           for (const line of followUp.lines) {
-            emit({ type: 'command-output', text: line.text, style: line.style ?? null });
+            reply({ type: 'command-output', text: line.text, style: line.style ?? null });
           }
         }
         if (result.switchToSessionId) {
           await app.switchSession(result.switchToSessionId);
-          emit({ type: 'command-output', text: 'Session switched.', style: 'system' });
+          reply({ type: 'command-output', text: 'Session switched.', style: 'system' });
         }
         if (result.quit) {
           await gracefulShutdown('command:/quit');
@@ -232,7 +243,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         // Recovery verb: parent requests a full state snapshot at sync points
         // (cold start, reconnect, after restart). See UNIFIED-TREE-PLAN.md §1.
         const snap = treeReducer.getSnapshot();
-        emit({
+        reply({
           type: 'snapshot',
           corrId: cmd.corrId,
           asOfTs: snap.asOfTs,
@@ -254,7 +265,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           | { getLessons(): Array<{ id: string; content: string; confidence: number; tags: string[]; deprecated: boolean; deprecationReason?: string; created?: number; updated?: number }> }
           | undefined;
         if (!mod) {
-          emit({ type: 'lessons-snapshot', corrId: cmd.corrId, loaded: false, lessons: [] });
+          reply({ type: 'lessons-snapshot', corrId: cmd.corrId, loaded: false, lessons: [] });
           return;
         }
         const lessons = mod.getLessons().map(l => ({
@@ -267,7 +278,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           ...(typeof l.created === 'number' ? { created: l.created } : {}),
           ...(typeof l.updated === 'number' ? { updated: l.updated } : {}),
         }));
-        emit({ type: 'lessons-snapshot', corrId: cmd.corrId, loaded: true, lessons });
+        reply({ type: 'lessons-snapshot', corrId: cmd.corrId, loaded: true, lessons });
         return;
       }
       case 'request-workspace-mounts': {
@@ -275,15 +286,15 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
           | undefined;
         if (!mod) {
-          emit({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: false, mounts: [] });
+          reply({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: false, mounts: [] });
           return;
         }
         try {
           const result = await mod.handleToolCall({ name: 'ls', input: {}, id: `headless-ls-${Date.now()}` });
           const data = (result.data ?? {}) as { mounts?: Array<{ name: string; path: string; mode: string }> };
-          emit({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: true, mounts: data.mounts ?? [] });
+          reply({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: true, mounts: data.mounts ?? [] });
         } catch {
-          emit({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: true, mounts: [] });
+          reply({ type: 'workspace-mounts-snapshot', corrId: cmd.corrId, loaded: true, mounts: [] });
         }
         return;
       }
@@ -292,7 +303,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
           | undefined;
         if (!mod) {
-          emit({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: [] });
+          reply({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: [] });
           return;
         }
         try {
@@ -300,9 +311,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
             name: 'ls', input: { path: cmd.mount, recursive: true }, id: `headless-tree-${Date.now()}`,
           });
           const data = (result.data ?? {}) as { entries?: Array<{ path: string; size: number }> };
-          emit({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: data.entries ?? [] });
+          reply({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: data.entries ?? [] });
         } catch {
-          emit({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: [] });
+          reply({ type: 'workspace-tree-snapshot', corrId: cmd.corrId, mount: cmd.mount, entries: [] });
         }
         return;
       }
@@ -311,7 +322,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
           | undefined;
         if (!mod) {
-          emit({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'workspace module not loaded' });
+          reply({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'workspace module not loaded' });
           return;
         }
         const LIMIT = 5000;
@@ -320,13 +331,13 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
             name: 'read', input: { path: cmd.path, limit: LIMIT }, id: `headless-read-${Date.now()}`,
           });
           if (!result.success) {
-            emit({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: result.error ?? 'read failed' });
+            reply({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: result.error ?? 'read failed' });
             return;
           }
           const data = (result.data ?? {}) as { path?: string; totalLines?: number; fromLine?: number; toLine?: number; content?: string };
           const totalLines = data.totalLines ?? 0;
           const toLine = data.toLine ?? totalLines;
-          emit({
+          reply({
             type: 'workspace-file-snapshot',
             corrId: cmd.corrId,
             path: data.path ?? cmd.path,
@@ -337,7 +348,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
             truncated: toLine < totalLines,
           });
         } catch (err) {
-          emit({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: err instanceof Error ? err.message : String(err) });
+          reply({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
@@ -350,7 +361,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         const op = typeof cmd.op === 'string' ? cmd.op : '';
         const { runPanelOp } = await import('./web/panel-data.js');
         const result = await runPanelOp(app, op, cmd.params ?? {});
-        emit({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
+        reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }
       case 'cancel-subagent': {
@@ -358,7 +369,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           | { cancelSubagent(name: string): boolean }
           | undefined;
         if (!mod) {
-          emit({
+          reply({
             type: 'cancel-subagent-result',
             corrId: cmd.corrId,
             name: cmd.name,
@@ -368,7 +379,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           return;
         }
         const ok = mod.cancelSubagent(cmd.name);
-        emit({
+        reply({
           type: 'cancel-subagent-result',
           corrId: cmd.corrId,
           name: cmd.name,
@@ -413,7 +424,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           continue;
         }
         // Fire-and-forget; errors logged inside dispatchCommand.
-        dispatchCommand(parsed).catch((err: unknown) => {
+        dispatchCommand(parsed, socket).catch((err: unknown) => {
           log(`dispatchCommand threw: ${String(err)}`);
         });
       }
