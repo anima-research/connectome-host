@@ -99,7 +99,7 @@ async function writePrefix(socket: Socket, peer: Socket, prefix: Buffer) {
 test('Fleet preserves Unicode JSONL at every byte boundary', async () => {
   const f = await connectionFixture();
   const { received, writeAndWait, off } = observeEvents(f.fleet);
-  const event = { type: 'workspace-file-snapshot', content: 'é Я ─ 😀 漢字', corrId: 'unicode' };
+  const event = { type: 'workspace-file-snapshot', content: 'é Я 漢 𐐷 漢字', corrId: 'unicode' };
   const frame = Buffer.from(JSON.stringify(event) + '\n');
   try {
     for (let cut = 1; cut < frame.length; cut++) {
@@ -119,18 +119,34 @@ test('Fleet preserves Unicode JSONL at every byte boundary', async () => {
 test('Fleet reconnect starts a fresh line and Unicode stream', async () => {
   const f = await connectionFixture();
   const { received, writeAndWait, off } = observeEvents(f.fleet);
-  const event = { type: 'workspace-file-snapshot', content: '😀 fresh', corrId: 'new-stream' };
+  const event = { type: 'workspace-file-snapshot', content: '𐐷 fresh', corrId: 'new-stream' };
   const frame = Buffer.from(JSON.stringify(event) + '\n');
-  const cut = frame.indexOf(Buffer.from('😀')) + 1;
+  const cut = frame.indexOf(Buffer.from('𐐷')) + 1;
   try {
     const old = f.child.socket!;
     await writePrefix(old, f.peer, frame.subarray(0, cut));
     expect(received).toHaveLength(0);
     old.destroy();
     const peer = await f.connect();
-    old.emit('data', JSON.stringify({ ...event, corrId: 'old-stream' }) + '\n');
-    expect(received).toHaveLength(0);
     await writeAndWait(1, () => peer.write(frame));
+    expect(received).toEqual([event]);
+  } finally { off(); await f.close(); }
+}, 10000);
+
+// Start with an empty old buffer so stale callbacks cannot be hidden by an
+// invalid concatenated frame from the separate reconnect-reset regression.
+test('Fleet ignores data from a superseded socket', async () => {
+  const f = await connectionFixture();
+  const { received, writeAndWait, off } = observeEvents(f.fleet);
+  const event = { type: 'workspace-file-snapshot', content: '𐐷 fresh', corrId: 'active-stream' };
+  try {
+    const old = f.child.socket!;
+    expect(f.child.buffer).toBe('');
+    old.destroy();
+    const peer = await f.connect();
+    old.emit('data', JSON.stringify({ ...event, corrId: 'stale-stream' }) + '\n');
+    expect(received).toHaveLength(0);
+    await writeAndWait(1, () => peer.write(JSON.stringify(event) + '\n'));
     expect(received).toEqual([event]);
   } finally { off(); await f.close(); }
 }, 10000);

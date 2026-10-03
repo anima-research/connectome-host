@@ -397,9 +397,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // don't carry across parents.
     subscription = new Set<string>(['*']);
 
+    socket.setEncoding('utf8');
     let buffer = '';
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf-8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
       let nlIdx: number;
       while ((nlIdx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, nlIdx).trim();

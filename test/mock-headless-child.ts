@@ -50,9 +50,10 @@ const server = createServer((sock) => {
   }
   currentClient = sock;
 
+  sock.setEncoding('utf8');
   let buf = '';
-  sock.on('data', (chunk) => {
-    buf += chunk.toString('utf-8');
+  sock.on('data', (chunk: string) => {
+    buf += chunk;
     let i: number;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim();
