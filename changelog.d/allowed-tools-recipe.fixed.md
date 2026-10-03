@@ -1,0 +1,1 @@
+- Recipes now validate and forward `agent.allowedTools` (`"all"` or an array of exact tool names), preserving omitted-field defaults and explicit empty lists. This configures Agent Framework tool visibility; dispatch enforcement remains the framework's responsibility.
