@@ -19,7 +19,7 @@
 //
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
-//   { type: 'call'|'error', kind: 'complete'|'stream', timestamp, durationMs,
+//   { type: 'call'|'error', kind: 'complete'|'stream'|'keepalive', timestamp, durationMs,
 //     requestSummary, rawRequest?, rawResponse, error? }
 
 import { AnthropicAdapter } from '@animalabs/membrane';
@@ -28,9 +28,10 @@ import type {
   ProviderResponse,
   ProviderRequestOptions,
   StreamCallbacks,
+  KeepaliveCall,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
-import { summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
+import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 
 /** Live read of the current reasoning setting. The host wires this to
  *  `SettingsModule.getReasoning()` so toggles via the `agent_settings` tool's
@@ -103,7 +104,24 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     getReasoning?: ReasoningGetter,
     onCall?: ProviderCallObserver,
   ) {
-    super(config);
+    // The background replay bypasses complete/stream by design. Observe its
+    // terminal receipt instead of rebuilding or re-sending the cached payload.
+    let observeKeepalive: ((call: KeepaliveCall) => void) | undefined;
+    const callerOnCall = config?.cacheKeepalive?.onCall;
+    super({
+      ...config,
+      cacheKeepalive: {
+        ...config?.cacheKeepalive,
+        onCall(call) {
+          // Log before calling the caller's observer, which owns its copy and
+          // may mutate it. Failure in either observer must not suppress the other.
+          try { observeKeepalive?.(call); } catch { /* observability is isolated */ }
+          // Membrane isolates sync errors and returned promise rejections.
+          return callerOnCall?.(call);
+        },
+      },
+    });
+    observeKeepalive = (call) => this.logKeepaliveCall(call);
     this.logPath = logPath;
     this.getReasoning = getReasoning;
     this.onCall = onCall;
@@ -202,6 +220,46 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       appendFileSync(this.logPath, JSON.stringify(record) + '\n');
     } catch {
       // never throw from logging
+    }
+  }
+
+  /** One row per timer-driven send, including SDK retries, with terminal usage. */
+  private logKeepaliveCall(call: KeepaliveCall): void {
+    const raw = call.request;
+    const cache = summarizeCacheControls(raw);
+    const response = call.outcome === 'success' ? call.response : undefined;
+    const error = call.outcome === 'error' ? call.error : undefined;
+    const effort = (raw.output_config as { effort?: unknown } | undefined)?.effort;
+    const record: Record<string, unknown> = {
+      type: call.outcome === 'success' ? 'call' : 'error',
+      kind: 'keepalive',
+      timestamp: new Date(call.startedAt + call.durationMs).toISOString(),
+      durationMs: call.durationMs,
+      keepalive: { key: call.key, lane: call.lane, startedAt: call.startedAt },
+      requestSummary: {
+        model: raw.model,
+        maxTokens: raw.max_tokens,
+        messages: Array.isArray(raw.messages) ? raw.messages.length : 0,
+        tools: Array.isArray(raw.tools) ? raw.tools.length : 0,
+        ...(typeof effort === 'string' ? { effort } : {}),
+        cacheBreakpoints: cache.count,
+        cacheTtls: cache.ttls,
+      },
+      rawRequest: this.fullPayloads || call.outcome === 'error' || response?.stop_reason === 'refusal'
+        ? raw : undefined,
+      ...(response ? { rawResponse: response } : {}),
+      ...(call.outcome === 'error' ? {
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : String(error),
+      } : {}),
+    };
+    this.log(record);
+    // Share the log decoder so live and rehydrated spend use identical vendor
+    // fields (including cache-write buckets, geography, and service tier).
+    const observed = parseLoggedCall(record);
+    if (observed) {
+      try { this.onCall?.(observed); } catch { /* observability is isolated */ }
     }
   }
 

@@ -18,6 +18,7 @@
 
 import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
+import { callOriginLabel } from './call-origin';
 
 /** One active operator alert, keyed `${agent}:${kind}`. `count` increments on
  *  every re-fire of the same key so a repeating klaxon reads as one row. */
@@ -220,7 +221,7 @@ function CallStats(props: { rows: LedgerRow[] }) {
                   }`}>
                     <td class="pr-2 text-neutral-500">{clock(r.timestamp)}</td>
                     <td class={`pr-2 ${main ? 'text-cyan-400' : 'text-orange-400'}`}>
-                      {main ? 'turn' : 'compr'}
+                      {callOriginLabel(r.originEstimate)}
                     </td>
                     <td class="pr-2 text-right text-neutral-400">{r.messages}</td>
                     <td class="pr-2 text-right text-neutral-100">{n0(r.tokens.input)}</td>
