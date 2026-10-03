@@ -148,8 +148,8 @@ describe('resolveOverlayEntry', () => {
     expect(r?.enabledTools).toEqual(['*']);
   });
 
-  test('self-deployed servers never get consequential capabilities: baseline mask covers context hooks, server-initiated inference, lifecycle', () => {
-    expect(BASELINE).toEqual(['contextHooks', 'inferenceLifecycle', 'inferenceRequest']);
+  test('self-deployed servers never get consequential capabilities: baseline mask covers context hooks, server-initiated inference, lifecycle, tool lifecycle', () => {
+    expect(BASELINE).toEqual(['contextHooks', 'inferenceLifecycle', 'inferenceRequest', 'toolLifecycle']);
   });
 
   // A network server the agent deployed should come back when it bounces:

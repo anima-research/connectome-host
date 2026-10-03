@@ -55,6 +55,44 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
   });
 });
 
+describe('LoggingAnthropicAdapter.withEffort', () => {
+  type WithEffort = { withEffort(r: ProviderRequest): ProviderRequest };
+  const fable: ProviderRequest = { ...baseRequest, model: 'claude-fable-5-1' };
+  const withEffort = (effort: string | undefined, req: ProviderRequest = fable) => {
+    const getter = () => ({ enabled: false, budgetTokens: 0, effort }) as ReturnType<
+      NonNullable<ConstructorParameters<typeof LoggingAnthropicAdapter>[2]>
+    >;
+    const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', getter);
+    return (adapter as unknown as WithEffort).withEffort(req);
+  };
+
+  test('sends output_config.effort even with reasoning_enabled false', () => {
+    const out = withEffort('low');
+    expect((out.extra as { output_config?: unknown }).output_config).toEqual({ effort: 'low' });
+    expect((fable as { extra?: unknown }).extra).toBeUndefined();
+  });
+
+  test("no-op (same reference) for 'default' and for unset", () => {
+    expect(withEffort('default')).toBe(fable);
+    expect(withEffort(undefined)).toBe(fable);
+  });
+
+  test('merges into an existing output_config instead of replacing it', () => {
+    const req = { ...fable, extra: { output_config: { format: { type: 'json_schema' } }, keep: 1 } } as ProviderRequest;
+    const extra = withEffort('max', req).extra as Record<string, unknown>;
+    expect(extra.output_config).toEqual({ format: { type: 'json_schema' }, effort: 'max' });
+    expect(extra.keep).toBe(1);
+  });
+
+  test('drops levels the model rejects rather than bricking its turns', () => {
+    expect(withEffort('high', { ...baseRequest, model: 'claude-haiku-4-5' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+    expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-5' }).extra).toBeUndefined();
+    expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeDefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-5-5' }).extra).toBeDefined();
+  });
+});
+
 describe('LoggingAnthropicAdapter request logging', () => {
   const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
   const internals = adapter as unknown as {
