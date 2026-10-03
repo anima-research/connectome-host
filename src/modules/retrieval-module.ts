@@ -1,4 +1,9 @@
 /**
+ * @deprecated modules.retrieval is deprecated. Not recommended for new recipes: it delivers content
+ * through context injection, which is deprecated (agent-framework#171) —
+ * injected blocks are per-compile overlays, re-anchored on every compile,
+ * that break prompt-cache prefixes across activations. Prefer the lesson tools (modules.lessons).
+ *
  * RetrievalModule — LLM-as-retriever for semantic memory.
  *
  * Three-step retrieval pipeline running in gatherContext():

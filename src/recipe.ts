@@ -617,6 +617,12 @@ export interface RecipeModules {
   /**
    * Subagent forking (spawn/fork parallel agents). OPT-IN — defaults to off
    * and is not part of the standard recipe.
+   *
+   * @deprecated Not recommended for new recipes. Its fleet-status HUD reaches
+   * the model through context injection, which is deprecated
+   * (agent-framework#171): per-compile overlays break prompt-cache prefixes
+   * across activations. Still works; the host logs a `[deprecated]` line at
+   * startup when it is enabled.
    */
   subagents?: boolean | { defaultModel?: string; defaultMaxTokens?: number };
   /**
@@ -630,6 +636,13 @@ export interface RecipeModules {
    * context-dependent content into every compile and spends up to two
    * configured retrieval-model calls. Enable only for agents that actually
    * curate a lesson library.
+   *
+   * @deprecated Not recommended. Retrieved lessons are delivered through
+   * context injection, which is deprecated (agent-framework#171): the
+   * injected block changes from compile to compile and is never stored, so
+   * it breaks prompt-cache prefixes. Prefer the lesson tools
+   * (`modules.lessons`) so the agent pulls lessons into the conversation
+   * itself. Still works; the host logs a `[deprecated]` line at startup.
    */
   retrieval?: boolean | {
     model?: string;
@@ -669,6 +682,13 @@ export interface RecipeModules {
    * fleet-wide cache cold start on the next turn (steady state between
    * edits caches normally). Curate in batches rather than per-message;
    * 'afterUser' is the cache-cheap, lower-salience alternative.
+   *
+   * @deprecated Not recommended. The document is delivered through context
+   * injection, which is deprecated (agent-framework#171): `beforeUser` /
+   * `afterUser` blocks are re-anchored on every compile and break
+   * prompt-cache prefixes across activations. Put stable operating
+   * instructions in `agent.systemPrompt`. Still works; the host logs a
+   * `[deprecated]` line at startup.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1385,6 +1405,35 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
       'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries must be an explicit boolean.',
     );
   }
+}
+
+/**
+ * Deprecated modules a recipe enables, one human-readable notice each (empty
+ * when none). All three deliver content through context injection, which is
+ * deprecated (agent-framework#171): injected blocks are per-compile overlays
+ * that are never stored and are re-anchored on every activation, which
+ * breaks prompt-cache prefixes. Pure — the host prints these at startup.
+ */
+export function deprecatedModuleNotices(modules: RecipeModules | undefined): string[] {
+  if (!modules) return [];
+  const notices: string[] = [];
+  const why = 'context injection is deprecated (agent-framework#171) — injected blocks are re-anchored on every compile and break prompt caching';
+  if (modules.subagents) {
+    notices.push(
+      `modules.subagents is deprecated and not recommended for new recipes: its fleet-status HUD reaches the model through injection, and ${why}.`,
+    );
+  }
+  if (modules.retrieval) {
+    notices.push(
+      `modules.retrieval is deprecated and not recommended: retrieved lessons are injected into every compile, and ${why}. Prefer the lesson tools (modules.lessons).`,
+    );
+  }
+  if (modules.instructions) {
+    notices.push(
+      `modules.instructions is deprecated and not recommended: the document is injected on every turn, and ${why}. Put stable operating instructions in agent.systemPrompt.`,
+    );
+  }
+  return notices;
 }
 
 /**

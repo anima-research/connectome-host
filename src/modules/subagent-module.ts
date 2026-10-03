@@ -1,4 +1,9 @@
 /**
+ * @deprecated modules.subagents is deprecated. Not recommended for new recipes: it delivers content
+ * through context injection, which is deprecated (agent-framework#171) —
+ * injected blocks are per-compile overlays, re-anchored on every compile,
+ * that break prompt-cache prefixes across activations. Its fleet-status HUD is the injecting part.
+ *
  * SubagentModule — spawn and fork ephemeral subagents.
  *
  * Tools:

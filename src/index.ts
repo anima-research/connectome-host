@@ -66,6 +66,7 @@ import {
   loadSavedRecipe,
   clearSavedRecipe,
   parseRecipeArg,
+  deprecatedModuleNotices,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
@@ -195,6 +196,7 @@ async function createFramework(
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
   const timeZone = resolveTimeZone(recipe.agent.timezone);
+  for (const notice of deprecatedModuleNotices(modules)) console.warn(`[deprecated] ${notice}`);
 
   // Load recipe extensions first — custom strategies must be registered
   // before buildFrameworkStrategy runs, and custom modules join the module
