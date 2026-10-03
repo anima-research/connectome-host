@@ -121,6 +121,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     log(`pid file write failed: ${String(err)}`);
   }
 
+  // Initialize shutdown state before listen can expose ready to a client.
+  let shuttingDown = false;
+
   // -- Connection state --
   let currentClient: Socket | null = null;
   // Default subscription: receive everything.  Smoke-test friendly; parents
@@ -408,9 +411,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // don't carry across parents.
     subscription = new Set<string>(['*']);
 
+    socket.setEncoding('utf8');
     let buffer = '';
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf-8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
       let nlIdx: number;
       while ((nlIdx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, nlIdx).trim();
@@ -466,7 +470,6 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   });
 
   // -- Shutdown --
-  let shuttingDown = false;
   async function gracefulShutdown(reason: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -476,14 +479,18 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Give the exiting event a tick to flush onto the socket.
     await new Promise((r) => setTimeout(r, 50));
 
-    try { await app.framework.stop(); } catch (err) { log(`framework.stop() failed: ${String(err)}`); }
+    let exitCode = 0;
+    try { await app.framework.stop(); } catch (err) {
+      exitCode = 1;
+      log(`framework.stop() failed: ${String(err)}`);
+    }
     try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
     try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
     try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
     try { logStream.end(); } catch { /* noop */ }
 
     // Small delay so logStream.end() can flush before we exit.
-    setTimeout(() => process.exit(0), 50);
+    setTimeout(() => process.exit(exitCode), 50);
   }
 
   process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });

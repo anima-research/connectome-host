@@ -44,9 +44,10 @@ const MINIMAL_RECIPE = {
 
 function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; stop: () => void } {
   const events: Array<Record<string, unknown>> = [];
+  socket.setEncoding('utf8');
   let buf = '';
-  const handler = (chunk: Buffer): void => {
-    buf += chunk.toString('utf-8');
+  const handler = (chunk: string): void => {
+    buf += chunk;
     let i: number;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim();
