@@ -2,6 +2,10 @@ import { describe, test, expect } from 'bun:test';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
+import type { ModuleContext } from '@animalabs/agent-framework';
+import { SettingsModule } from '../src/modules/settings-module.js';
+import { validateRecipe } from '../src/recipe.js';
+import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 
 // Regression guard for the reasoning passthrough. `withReasoning` injects
 // adaptive `thinking` into `request.extra`, which the Anthropic adapter
@@ -90,6 +94,41 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-5' }).extra).toBeUndefined();
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeDefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-5-5' }).extra).toBeDefined();
+  });
+});
+
+describe('LoggingAnthropicAdapter initial recipe effort', () => {
+  test('first stream builds medium effort on the wire without a settings update', async () => {
+    const recipe = validateRecipe({
+      name: 'initial-effort-test',
+      agent: { systemPrompt: 'sys', thinking: { enabled: false, effort: 'medium' } },
+    });
+    const settings = new SettingsModule(recipe.agent.thinking?.effort);
+    await settings.start({ getState: () => undefined } as unknown as ModuleContext);
+    const config = buildFrameworkAgentConfig(recipe, 'agent', baseRequest.model, undefined);
+    let wire: unknown;
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        requests += 1;
+        wire = await request.json();
+        return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+      },
+    });
+    try {
+      const adapter = new LoggingAnthropicAdapter(
+        { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } },
+        '/dev/null', () => settings.getReasoning(),
+      );
+      await expect(adapter.stream(baseRequest, {})).rejects.toThrow(/local request fixture/);
+      expect(requests).toBe(1);
+      expect(wire).toMatchObject({ output_config: { effort: 'medium' }, stream: true });
+      expect(config.thinking).toEqual({ enabled: false });
+      expect((wire as { thinking?: unknown }).thinking).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 });
 
