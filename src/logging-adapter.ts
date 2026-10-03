@@ -42,14 +42,18 @@ export type ReasoningGetter = () => {
   effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
-type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /** Whether `model` accepts `output_config.effort` at `level`. An unsupported
  *  effort is a 400 on every turn — and the agent would have no turn left to
  *  undo the setting with — so anything not known to accept it is dropped.
  *  Opus 4.5 takes low/medium/high only; the 4.6 pair adds max; xhigh arrived
- *  with Opus 4.7. Sonnet 4.5, Haiku 4.5 and older reject the parameter. */
+ *  with Opus 4.7. Sonnet 4.5, Haiku 4.5 and older reject the parameter. A
+ *  level outside the known set (a corrupt or outdated saved setting) is never
+ *  sent, whatever the model. */
 export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
+  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return false;
   if (/claude-opus-4-5/.test(model)) return level === 'low' || level === 'medium' || level === 'high';
   if (/claude-(opus|sonnet)-4-6/.test(model)) return level !== 'xhigh';
   return /claude-(fable|mythos)-|claude-opus-(4-[7-9]|[5-9])|claude-sonnet-[5-9]/.test(model);
