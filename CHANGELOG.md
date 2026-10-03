@@ -6,6 +6,10 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- The generic provider logging wrapper forwards an adapter's optional `toolResultImageMediaTypes` capability, preserving its native tool-image policy. Older adapters keep their existing behavior; Gemini HEIC/HEIF history preservation requires a membrane version containing antra-tess/membrane#92.
+
 ## 0.9.0 — 2026-09-21
 
 ### Added
