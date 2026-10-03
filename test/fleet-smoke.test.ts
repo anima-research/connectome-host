@@ -16,7 +16,7 @@ import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FleetModule } from '../src/modules/fleet-module.js';
+import { FleetModule, type AutoStartChild } from '../src/modules/fleet-module.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -46,10 +46,11 @@ describe('FleetModule — unresolved launch artifacts', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15_000);
 
-  function makeFleet(defaultSubscription?: string[]) {
+  function makeFleet(defaultSubscription?: string[], declaredChild?: AutoStartChild) {
     const fleet = new FleetModule({
       childIndexPath: join(TEST_DIR, 'mock-headless-child.ts'),
       defaultSubscription,
+      ...(declaredChild ? { autoStart: [declaredChild] } : {}),
       socketWaitTimeoutMs: 5_000, readyTimeoutMs: 5_000,
       gracefulShutdownMs: 1_000, sigtermEscalationMs: 500,
     });
@@ -220,6 +221,12 @@ describe('FleetModule — unresolved launch artifacts', () => {
         : retry === 'launch omitted' ? configuredDefault : retry === 'launch empty' ? [] : saved;
       const owner = await startOwner(dataDir, false, ctx, saved);
       const old = owner.getChildren().get('guard')!;
+      // Restart overrides come from the current recipe, not Chronicle state.
+      const currentEnv = { ...old.env, GUARD_GENERATION: 'current' };
+      const declaredChild: AutoStartChild = {
+        name: old.name, recipe: old.recipePath, dataDir: old.dataDir,
+        autoStart: false, env: currentEnv,
+      };
       let restored: FleetModule | undefined;
       let writes: ReturnType<typeof spyOn<Socket, 'write'>> | undefined;
       owner.setDetachMode(true);
@@ -228,7 +235,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
         const socket = lstatSync(old.socketPath, { bigint: true });
         const pidFile = readFileSync(join(dataDir, 'headless.pid'));
         const log = readFileSync(join(dataDir, 'startup.log'));
-        restored = makeFleet(configuredDefault);
+        restored = makeFleet(configuredDefault, declaredChild);
         const connectFailure = spyOn(restored as any, 'connectChildSocket').mockRejectedValueOnce(new Error('temporary connection failure'));
         try { await restored.start(ctx); } finally { connectFailure.mockRestore(); }
         expect(restored.getChildren().get('guard')?.socket).toBeNull();
@@ -272,7 +279,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
         if (retry === 'boot') {
           state.children.guard.status = 'crashed';
           await restored.stop();
-          restored = makeFleet(configuredDefault);
+          restored = makeFleet(configuredDefault, declaredChild);
           await restored.start(ctx);
         } else {
           const subscriptionInput = retry === 'launch requested' ? { subscription: requested }
@@ -289,7 +296,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
         expect(adopted.recipePath).toBe(old.recipePath);
         expect(adopted.dataDir).toBe(old.dataDir);
         expect(adopted.socketPath).toBe(old.socketPath);
-        expect(adopted.env).toEqual(old.env);
+        expect(adopted.env).toEqual(currentEnv);
         expect(adopted.subscription).toEqual(expected);
         expect(state.children.guard.subscription).toEqual(expected);
         const status = await restored.handleToolCall({ id: 'retry-status', name: 'status', input: { name: 'guard' } });
