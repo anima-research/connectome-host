@@ -695,7 +695,7 @@ export class SubagentModule implements Module {
             tools: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Tool names the subagent can use (default: all). Note: subagent--return is always included automatically.',
+              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. Note: subagent--return is always included automatically.',
             },
             sync: { type: 'boolean', description: 'If true, block until subagent completes (default: false)' },
             timeoutMs: { type: 'number', description: 'Execution timeout in milliseconds. Sync tasks default to 600s (auto-detaches to background). Async tasks have no default timeout — only set this if you need a hard deadline.' },
@@ -1726,7 +1726,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(input.tools, callerDepth),
+          allowedTools: this.filterToolNames(input.tools, callerDepth, _callerAgentName),
         });
 
         // Track depth for recursive fork/spawn calls from this agent
@@ -1881,7 +1881,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(undefined, callerDepth),
+          allowedTools: this.filterToolNames(undefined, callerDepth, callerAgentName),
         });
 
         // Track depth for recursive fork/spawn calls from this agent
@@ -2064,10 +2064,21 @@ export class SubagentModule implements Module {
 
   /**
    * Build the allowedTools list for a subagent.
-   * Removes subagent tools if at depth limit.
+   * Inherits or narrows the caller's tools, then removes subagent tools at depth limit.
    *
    */
-  private filterToolNames(allowedTools?: string[], callerDepth = 0): 'all' | string[] {
+  private filterToolNames(requestedTools?: string[], callerDepth = 0, callerAgentName?: string): 'all' | string[] {
+    const parentName = callerAgentName ?? this.config.parentAgentName;
+    const parent = parentName === undefined ? null : this.getFramework().getAgent(parentName);
+    if (callerAgentName !== undefined && !parent) {
+      throw new Error(`Cannot resolve subagent caller: ${callerAgentName}`);
+    }
+    const inheritedTools = parent?.allowedTools ?? 'all';
+    const allowedTools = inheritedTools === 'all'
+      ? requestedTools?.slice()
+      : (requestedTools === undefined
+        ? [...inheritedTools]
+        : requestedTools.filter(name => inheritedTools.includes(name)));
     // Always include subagent--return — subagents need it to deliver results
     const ensureReturn = (list: string[]) => {
       if (!list.includes('subagent--return')) list.push('subagent--return');
