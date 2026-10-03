@@ -27,7 +27,7 @@ import type {
   TraceEvent,
   ContextManager,
 } from '@animalabs/agent-framework';
-import type { AgentFramework } from '@animalabs/agent-framework';
+import type { Agent, AgentFramework } from '@animalabs/agent-framework';
 import { KnowledgeStrategy } from '@animalabs/agent-framework';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
@@ -83,6 +83,15 @@ interface ForkInput {
   maxTokens?: number;
   sync?: boolean;
   timeoutMs?: number;
+}
+
+/** In-memory acceptance snapshot, valid while the framework's shared store is open. */
+interface SubagentAdmission {
+  parentAgent: Agent | null;
+  allowedTools: 'all' | string[];
+  proseRouting: Agent['proseRouting'] | undefined;
+  maxTokens: number;
+  forkSystemPrompt: string;
 }
 
 /** Handle for an async (fire-and-forget) subagent. */
@@ -695,7 +704,7 @@ export class SubagentModule implements Module {
             tools: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Tool names the subagent can use (default: all). Note: subagent--return is always included automatically.',
+              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. Note: subagent--return is always included automatically.',
             },
             sync: { type: 'boolean', description: 'If true, block until subagent completes (default: false)' },
             timeoutMs: { type: 'number', description: 'Execution timeout in milliseconds. Sync tasks default to 600s (auto-detaches to background). Async tasks have no default timeout — only set this if you need a hard deadline.' },
@@ -1376,18 +1385,6 @@ export class SubagentModule implements Module {
    *   3. parent agent's `maxTokens` (by default, subagents inherit their caller's budget)
    *   4. last-resort framework fallback (4096) — only reached if there's no parent at all
    */
-  /** Ephemeral agents inherit the caller's prose-routing mode. AF's Agent
-   *  defaults to 'locus' (ambient locus capture publishes plain prose to the
-   *  open channel), so a resident running proseRouting 'disabled' would still
-   *  spawn divers whose between-tool-calls prose leaks into its live channel
-   *  as parent speech — field-confirmed 2026-08-26. Falls back to the
-   *  configured parent agent, then to AF's own default. */
-  private resolveProseRouting(callerAgentName?: string): 'locus' | 'explicit' | 'hybrid' | 'disabled' | undefined {
-    const parentName = callerAgentName ?? this.config.parentAgentName;
-    if (!parentName) return undefined;
-    return this.framework?.getAgent(parentName)?.proseRouting;
-  }
-
   private resolveMaxTokens(callMaxTokens: number | undefined, parentAgentName?: string): number {
     if (callMaxTokens !== undefined) return callMaxTokens;
     if (this.config.defaultMaxTokens !== undefined) return this.config.defaultMaxTokens;
@@ -1442,6 +1439,26 @@ export class SubagentModule implements Module {
   // Tool Handlers
   // =========================================================================
 
+  private resolveAdmission(
+    requestedTools: string[] | undefined,
+    maxTokens: number | undefined,
+    callerDepth: number,
+    callerAgentName?: string,
+  ): SubagentAdmission {
+    const parentName = callerAgentName ?? this.config.parentAgentName;
+    const parentAgent = parentName === undefined ? null : this.getFramework().getAgent(parentName);
+    if (callerAgentName !== undefined && !parentAgent) {
+      throw new Error(`Cannot resolve subagent caller: ${callerAgentName}`);
+    }
+    return {
+      parentAgent,
+      allowedTools: this.filterToolNames(requestedTools, callerDepth, parentAgent),
+      proseRouting: parentAgent?.proseRouting,
+      maxTokens: this.resolveMaxTokens(maxTokens, callerAgentName),
+      forkSystemPrompt: parentAgent?.systemPrompt ?? 'You are a research assistant.',
+    };
+  }
+
   private async handleSpawn(input: SpawnInput, callerAgentName?: string): Promise<ToolResult> {
     const callerDepth = callerAgentName ? (this.agentDepths.get(callerAgentName) ?? 0) : 0;
     if (callerDepth >= this.maxDepth) {
@@ -1452,13 +1469,21 @@ export class SubagentModule implements Module {
       };
     }
 
+    // Retain caller settings and context access before queueing or retries.
+    let admission: SubagentAdmission;
+    try {
+      admission = this.resolveAdmission(input.tools, input.maxTokens, callerDepth, callerAgentName);
+    } catch (error) {
+      return { success: false, isError: true, error: error instanceof Error ? error.message : String(error) };
+    }
+
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
 
     // Sync mode: block until completion, but detachable mid-flight.
     // Default timeout applies (600s) — auto-detaches to background.
     if (input.sync) {
       const timeoutMs = input.timeoutMs ?? this.maxExecutionMs;
-      const promise = this.runSpawn(input, callerAgentName, callerDepth, timeoutMs);
+      const promise = this.runSpawn(input, admission, callerAgentName, callerDepth, timeoutMs);
       const result = await this.runDetachable(input.name, 'spawn', promise, parentAgentName, input.timeoutMs);
       return result;
     }
@@ -1466,7 +1491,7 @@ export class SubagentModule implements Module {
     // Async mode (default): fire-and-forget, deliver result as message.
     // No default timeout — async agents run until they finish unless
     // the caller explicitly sets timeoutMs.
-    const promise = this.runSpawn(input, callerAgentName, callerDepth, input.timeoutMs);
+    const promise = this.runSpawn(input, admission, callerAgentName, callerDepth, input.timeoutMs);
     this.asyncHandles.set(input.name, { name: input.name, type: 'spawn', promise, parentAgentName });
 
     promise
@@ -1486,13 +1511,21 @@ export class SubagentModule implements Module {
       };
     }
 
+    // Retain caller settings and context access before queueing or retries.
+    let admission: SubagentAdmission;
+    try {
+      admission = this.resolveAdmission(undefined, input.maxTokens, callerDepth, callerAgentName);
+    } catch (error) {
+      return { success: false, isError: true, error: error instanceof Error ? error.message : String(error) };
+    }
+
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
 
     // Sync mode: block until completion, but detachable mid-flight.
     // Default timeout applies (600s) — auto-detaches to background.
     if (input.sync) {
       const timeoutMs = input.timeoutMs ?? this.maxExecutionMs;
-      const promise = this.runFork(input, callerAgentName, callerDepth, timeoutMs, callToolUseId);
+      const promise = this.runFork(input, admission, callerAgentName, callerDepth, timeoutMs, callToolUseId);
       const result = await this.runDetachable(input.name, 'fork', promise, parentAgentName, input.timeoutMs);
       return result;
     }
@@ -1500,7 +1533,7 @@ export class SubagentModule implements Module {
     // Async mode (default): fire-and-forget, deliver result as message.
     // No default timeout — async agents run until they finish unless
     // the caller explicitly sets timeoutMs.
-    const promise = this.runFork(input, callerAgentName, callerDepth, input.timeoutMs, callToolUseId);
+    const promise = this.runFork(input, admission, callerAgentName, callerDepth, input.timeoutMs, callToolUseId);
     this.asyncHandles.set(input.name, { name: input.name, type: 'fork', promise, parentAgentName });
 
     promise
@@ -1688,7 +1721,7 @@ export class SubagentModule implements Module {
   // Subagent Execution
   // =========================================================================
 
-  private async runSpawn(input: SpawnInput, _callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number): Promise<SubagentResult> {
+  private async runSpawn(input: SpawnInput, admission: SubagentAdmission, _callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
@@ -1714,9 +1747,9 @@ export class SubagentModule implements Module {
           name: agentName,
           model,
           systemPrompt: input.systemPrompt,
-          maxTokens: this.resolveMaxTokens(input.maxTokens, _callerAgentName),
-          ...(this.resolveProseRouting(_callerAgentName) !== undefined
-            ? { proseRouting: this.resolveProseRouting(_callerAgentName) }
+          maxTokens: admission.maxTokens,
+          ...(admission.proseRouting !== undefined
+            ? { proseRouting: admission.proseRouting }
             : {}),
           maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
@@ -1726,7 +1759,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(input.tools, callerDepth),
+          allowedTools: admission.allowedTools === 'all' ? 'all' : [...admission.allowedTools],
         });
 
         // Track depth for recursive fork/spawn calls from this agent
@@ -1828,7 +1861,7 @@ export class SubagentModule implements Module {
     }
   }
 
-  private async runFork(input: ForkInput, callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number, callToolUseId?: string): Promise<SubagentResult> {
+  private async runFork(input: ForkInput, admission: SubagentAdmission, callerAgentName?: string, callerDepth = 0, executionTimeoutMs?: number, callToolUseId?: string): Promise<SubagentResult> {
     const { waitedMs } = await this.acquireSlot();
     const childDepth = callerDepth + 1;
 
@@ -1845,14 +1878,8 @@ export class SubagentModule implements Module {
     try {
       const framework = this.getFramework();
 
-      // Dynamic parent resolution: prefer the caller agent (enables recursive forks),
-      // fall back to the configured parent agent for backward compat.
-      const parentAgent = callerAgentName
-        ? framework.getAgent(callerAgentName)
-        : (this.config.parentAgentName ? framework.getAgent(this.config.parentAgentName) : null);
-
-      const systemPrompt = input.systemPrompt
-        ?? (parentAgent ? parentAgent.systemPrompt : 'You are a research assistant.');
+      const parentAgent = admission.parentAgent;
+      const systemPrompt = input.systemPrompt ?? admission.forkSystemPrompt;
 
       const model = input.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001';
       let lastError: Error | null = null;
@@ -1869,9 +1896,9 @@ export class SubagentModule implements Module {
           name: agentName,
           model,
           systemPrompt,
-          maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
-          ...(this.resolveProseRouting(callerAgentName) !== undefined
-            ? { proseRouting: this.resolveProseRouting(callerAgentName) }
+          maxTokens: admission.maxTokens,
+          ...(admission.proseRouting !== undefined
+            ? { proseRouting: admission.proseRouting }
             : {}),
           maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
@@ -1881,7 +1908,7 @@ export class SubagentModule implements Module {
             autoTickOnNewMessage: true,
             maxMessageTokens: 10_000,
           }),
-          allowedTools: this.filterToolNames(undefined, callerDepth),
+          allowedTools: admission.allowedTools === 'all' ? 'all' : [...admission.allowedTools],
         });
 
         // Track depth for recursive fork/spawn calls from this agent
@@ -2064,10 +2091,16 @@ export class SubagentModule implements Module {
 
   /**
    * Build the allowedTools list for a subagent.
-   * Removes subagent tools if at depth limit.
+   * Inherits or narrows the caller's tools, then removes subagent tools at depth limit.
    *
    */
-  private filterToolNames(allowedTools?: string[], callerDepth = 0): 'all' | string[] {
+  private filterToolNames(requestedTools: string[] | undefined, callerDepth: number, parent: Agent | null): 'all' | string[] {
+    const inheritedTools = parent?.allowedTools ?? 'all';
+    const allowedTools = inheritedTools === 'all'
+      ? requestedTools?.slice()
+      : (requestedTools === undefined
+        ? [...inheritedTools]
+        : requestedTools.filter(name => inheritedTools.includes(name)));
     // Always include subagent--return — subagents need it to deliver results
     const ensureReturn = (list: string[]) => {
       if (!list.includes('subagent--return')) list.push('subagent--return');

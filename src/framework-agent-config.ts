@@ -68,6 +68,9 @@ export function buildFrameworkAgentConfig(
     name: agentName,
     model,
     systemPrompt: recipe.agent.systemPrompt,
+    ...(recipe.agent.allowedTools !== undefined
+      ? { allowedTools: recipe.agent.allowedTools }
+      : {}),
     maxTokens: recipe.agent.maxTokens ?? 16384,
     maxStreamTokens: recipe.agent.maxStreamTokens ?? 150000,
     contextBudgetTokens: recipe.agent.contextBudgetTokens,
