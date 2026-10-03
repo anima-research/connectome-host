@@ -67,15 +67,29 @@ export class SettingsModule implements Module {
   private ctx: ModuleContext | null = null;
   private state: SettingsState = clone(DEFAULTS);
 
+  constructor(private readonly initialEffort: ReasoningEffort = 'default') {
+    this.state.reasoning.effort = initialEffort;
+  }
+
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
-    const saved = ctx.getState<Partial<SettingsState>>();
+    const saved = ctx.getState<{ reasoning?: Partial<ReasoningSettings> }>();
     if (saved) {
       // Shallow-merge each domain so future-added fields fall back to defaults
       // for state persisted by older versions.
+      const effort = saved.reasoning?.effort;
       this.state = {
-        reasoning: { ...DEFAULTS.reasoning, ...(saved.reasoning ?? {}) },
+        reasoning: {
+          ...DEFAULTS.reasoning,
+          ...(saved.reasoning ?? {}),
+          effort: effort && REASONING_EFFORTS.includes(effort)
+            ? effort
+            : this.initialEffort,
+        },
       };
+    } else {
+      this.state = clone(DEFAULTS);
+      this.state.reasoning.effort = this.initialEffort;
     }
   }
 
