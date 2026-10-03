@@ -1,4 +1,9 @@
 /**
+ * @deprecated modules.instructions is deprecated. Not recommended for new recipes: it delivers content
+ * through context injection, which is deprecated (agent-framework#171) —
+ * injected blocks are per-compile overlays, re-anchored on every compile,
+ * that break prompt-cache prefixes across activations. Put stable instructions in agent.systemPrompt.
+ *
  * InstructionsModule — injects a shared, living instructions document into
  * every agent's context on every turn.
  *

@@ -1,5 +1,7 @@
 # Retrieval Traces
 
+> **Deprecated module.** `modules.retrieval` is deprecated and not recommended: it delivers lessons through context injection, which is deprecated ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)). Prefer the lesson tools (`modules.lessons`).
+
 The retrieval module can record a bounded, per-run explanation of automatic
 lesson selection. The trace shows which concepts the selector returned, which
 lessons matched mechanically, which candidates survived relevance filtering,
