@@ -85,7 +85,7 @@ Useful flags:
 | Flag | Purpose |
 |---|---|
 | `--out <dir>` | Conhost data dir (default `./data`) |
-| `--agent <name>` | Participant name for assistant turns (default `Claude`). The chosen value is recorded in the import-source sidecar; warmup and the bundled `claude-export-revive.json` recipe pick it up automatically. Override only if you have a reason to depart from `Claude`. |
+| `--agent <name>` | Participant name for assistant turns (default `Claude`). The import-source sidecar carries it to warmup. The evacuator reads a selected warmup session's sidecar before pinning its recipe name; otherwise use its `--agent` flag for custom names. The bundled `claude-export-revive.json` recipe pins `Claude`. |
 | `--filter <regex>` | Case-insensitive name regex; combines with the interactive picker |
 | `--dry-run` | Parse + report, don't write |
 | `--no-interactive` | Skip the picker; import everything (after `--filter`) |
@@ -114,6 +114,10 @@ The five steps, each checkpointed to `data/evacuator-state.json` so you can `--r
 
 The recipe is then composed as `<edited system prompt> + <persistent_memories> + <transplant addendum>` (see `recipes/prompts/transplant-addendum.md` for the addendum text — it explains the `<recovered_thinking>` wrappers, inert web-tool calls, and autobiographical summaries to the model in its own voice). Default output path: `data/evacuated-recipe.json`.
 
+Before writing the recipe, the evacuator asks whether to warm up a session. Enter a full session ID, an unambiguous case-insensitive name, or a unique ID prefix. Duplicate titles and ambiguous prefixes are rejected with the matching IDs rather than choosing a store silently. It resolves the participant as `--agent` first, then the chosen warmup session's import-source sidecar, then the importer's default `Claude`. It pins that name in `agent.name` and passes the same name and canonical session ID to warmup. This pin is needed before host construction: the host keeps its agent name and Membrane role anchor when you later use `/session switch`. If you skip warmup or choose no session, pass `--agent <name>` for a custom-name import. Legacy imports without a sidecar also default to `Claude`; supply `--agent` if their assistant participant differs. Existing generated recipes with `agent.name: "agent"` need that field set to the imported participant's name before revival.
+
+Participant selection runs again on `--resume`; the checkpoint does not pin it. If the recipe already at `--out` names a different participant, the evacuator warns before replacing it and explains that previous warmup summaries remain in their original namespace. To retain a custom identity when skipping warmup on a resumed run, pass `--agent <prior-name>` or select that session again. The output recipe is compared for a warning, not used as a hidden source of identity.
+
 Retired-model handling: if you name a model that's no longer on the Anthropic API (Claude 3.x families, Claude 2, Instant), the evacuator surfaces a memorial dialog instead of silently swapping. You can explicitly substitute a living relative, type any other model ID, or `abort` to exit with a small acknowledgment. The fact that the original cognitive state is unreachable deserves to be faced.
 
 Useful evacuator flags:
@@ -122,6 +126,7 @@ Useful evacuator flags:
 |---|---|
 | `--out <path>` | Output recipe path (default `data/evacuated-recipe.json`) |
 | `--model <id>` | Skip detection; use this model |
+| `--agent <name>` | Explicit participant name for recipe and warmup. Otherwise use the chosen warmup session's sidecar, then `Claude`. Required for custom-name imports when no warmup session is selected. |
 | `--prompt-source <url\|path>` | Skip the leaked-prompt lookup |
 | `--addendum <path>` | Override transplant addendum (default `recipes/prompts/transplant-addendum.md`) |
 | `--no-warmup` | Don't chain into warmup at the end |
@@ -169,18 +174,20 @@ For short conversations (under ~50 messages) you can skip warmup entirely; autob
 
 ### Stage 4 — Open the session in conhost
 
+This revival recipe selects the imported participant for the whole host process. The host may initially display the native session that was active before import. **Select the intended import with `/session switch` before sending a message.** To continue a native conversation, reopen it with its matching recipe: its summaries remain under their original `agents/<name>` namespace, outside this revival identity. A native turn under the revival recipe would use the imported participant and Membrane role anchor.
+
 ```
 bun src/index.ts data/evacuated-recipe.json
 ```
 
-This launches the TUI. The active session is whatever was active before you started importing (preserved by the importer) — **not** automatically the just-imported one. To land on a specific imported conversation:
+This launches the TUI. The active session is whatever was active before you started importing (preserved by the importer) — **not** automatically the just-imported one. If titles repeat, use the full session ID from `/session list` in the switch command. The host's name lookup otherwise selects its first match. To land on a specific imported conversation:
 
 ```
 /session list
 /session switch <name-or-id>
 ```
 
-> The "Open with: `bun src/index.ts … --session <name>`" hint printed at the end of both scripts is forward-looking; `--session` isn't a real CLI flag right now. Use `/session switch` after launch.
+> The warmup script's "Open with: `bun src/index.ts … --session <name>`" hint is forward-looking; `--session` isn't a real host CLI flag right now. Use `/session switch` after launch.
 
 Once you're on the right session, type a turn. The agent should recognize the continuation — its `<recovered_thinking>` blocks, the persistent memories block in its prompt, and the transplant addendum all explain the unusual artifacts in its own context.
 
@@ -205,7 +212,7 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 - **Images without inline bytes are placeholder-only.** The export records `file_uuid` for images but doesn't include the bytes. Recovering them requires a separate cookie-authed fetch against claude.ai, which is not yet built.
 - **Thinking blocks are not native thinking blocks at replay.** They're wrapped text. The model can see and read its prior reasoning, but it's no longer thinking-flagged content for the API. New thinking happens normally in its own private channel.
 - **Tool calls to web-only tools are inert.** They stay visible as evidence of past activity but the tools themselves aren't registered. The transplant addendum tells the model this explicitly.
-- **The `--agent` name matters, but the sidecar carries it forward.** The importer records the agent name in `<id>.import-source.json`; warmup reads it back, and the bundled revival recipe pins `agent.name: "Claude"` to match the default. If you override at import time (`--agent SomeOther`), update your recipe's `agent.name` to match, or warmup and the live agent will end up writing summaries to different Chronicle namespaces and the agent will appear amnesiac on first open.
+- **The `--agent` name matters, but the sidecar carries it forward.** The importer records the agent name in `<id>.import-source.json`; warmup reads it back, and the evacuator pins it when that session is selected for warmup. Without a selected session, the evacuator and bundled revival recipe use `Claude` unless overridden. Make the recipe's pinned name match the imported participant, or warmup and the live agent will write summaries to different Chronicle namespaces and the agent will appear amnesiac on first open.
 - **`memories.json` is optional.** If the export was made before persistent memories existed, or the user never enabled them, the file is absent or empty and the evacuator simply skips step 5.
 - **The leaked-prompt map drifts.** `MODEL_PROMPT_SOURCES` in `evacuator.ts` points to third-party githubusercontent URLs that may move. If a fetch fails, the dialog falls back to letting you paste a URL or local path.
 
