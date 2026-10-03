@@ -466,14 +466,18 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Give the exiting event a tick to flush onto the socket.
     await new Promise((r) => setTimeout(r, 50));
 
-    try { await app.framework.stop(); } catch (err) { log(`framework.stop() failed: ${String(err)}`); }
+    let exitCode = 0;
+    try { await app.framework.stop(); } catch (err) {
+      exitCode = 1;
+      log(`framework.stop() failed: ${String(err)}`);
+    }
     try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
     try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
     try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
     try { logStream.end(); } catch { /* noop */ }
 
     // Small delay so logStream.end() can flush before we exit.
-    setTimeout(() => process.exit(0), 50);
+    setTimeout(() => process.exit(exitCode), 50);
   }
 
   process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });

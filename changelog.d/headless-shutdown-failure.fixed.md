@@ -1,0 +1,1 @@
+- Headless shutdown now exits with status 1 when framework shutdown rejects, while retaining its diagnostic log and socket/PID cleanup.
