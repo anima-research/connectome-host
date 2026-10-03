@@ -173,12 +173,7 @@ impressionistic with age and depth (L1 → L2 → L3).
 - Search-based **retrieval of raw old turns may not be enabled** (`modules.
   retrieval`). If it's off, treat aged detail as "remembered," not
   "look-up-able," unless you wrote it down.
-- **Images age out faster than text.** Only the most recent images stay live
-  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
-  tail (default 30000); older ones become a `[image dropped from live context]`
-  placeholder *even while the surrounding words remain verbatim*. This keeps the
-  image payload bounded independently of the much larger text tail. If an image
-  matters beyond the moment, describe it in text or save it to your workspace.
+- **Images age out faster than text.** Only the most recent images stay live (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the tail (default 30000). Inline images also share a cumulative base64 byte budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond these limits become an `[image dropped from live context]` placeholder *even while the surrounding words remain verbatim*. Your recipe may change all three limits under `agent.strategy` for autobiographical and frontdesk strategies. Each accepts a non-negative safe integer; zero disables that limit, while the others still apply. Larger limits can exceed the provider's request-size cap. If an image matters beyond the moment, describe it in text or save it to your workspace.
 
 ## Finding your own settings
 
@@ -196,6 +191,7 @@ KV-continuity work described above.
 | `compressionModel` | — | your own model family | the voice that forms your memories |
 | `maxLiveImages` | 6 | 6 | most images kept live at once |
 | `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
+| `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
 
 The headline number is the tail. A small tail (the fallback) means you fold
 often and lose verbatim resolution quickly; a large tail (e.g. ~450k) means most
