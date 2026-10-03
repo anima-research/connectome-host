@@ -26,6 +26,29 @@ describe('SettingsModule reasoning_effort', () => {
     expect(mod.getReasoning().effort).toBe('high');
   });
 
+  test('reused module resets all reasoning settings for a fresh destination session', async () => {
+    const previousSettings = {
+      reasoning: { enabled: true, budgetTokens: 4096, display: 'omitted', effort: 'high' },
+    };
+    const { mod, ext, persisted } = await started(previousSettings, 'medium');
+    expect(mod.getReasoning()).toEqual(previousSettings.reasoning);
+    await mod.stop();
+
+    let destinationSettings: unknown;
+    await mod.start({
+      getState: () => destinationSettings,
+      setState: (s: unknown) => { destinationSettings = JSON.parse(JSON.stringify(s)); },
+    } as unknown as ModuleContext);
+    expect(mod.getReasoning()).toEqual({
+      enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'medium',
+    });
+    ext.update('a', { reasoning_effort: 'low' });
+    expect(destinationSettings).toEqual({
+      reasoning: { enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'low' },
+    });
+    expect(persisted()).toEqual(previousSettings);
+  });
+
   test('legacy and invalid saved effort use configured effort and preserve other saved fields', async () => {
     for (const effort of [undefined, null, 'invalid', 2]) {
       const { mod } = await started({

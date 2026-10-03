@@ -87,6 +87,9 @@ export class SettingsModule implements Module {
             : this.initialEffort,
         },
       };
+    } else {
+      this.state = clone(DEFAULTS);
+      this.state.reasoning.effort = this.initialEffort;
     }
   }
 
