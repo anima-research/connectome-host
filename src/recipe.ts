@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSy
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
+import { isLoopbackOrTailnetHost } from './history-semantic.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -201,6 +202,9 @@ export interface RecipeKvUnifiedConfig {
   labelCeiling: number;
   adoptEpsilon: number;
   treeifyNonContiguousSummaries: boolean;
+  /** Preserve summaries spanning gaps instead of treeifying them. Mutually exclusive
+   * with treeifyNonContiguousSummaries; both flags must be explicit. */
+  preserveGapBearingSummaries: boolean;
 }
 
 export interface RecipeAgent {
@@ -370,6 +374,10 @@ export interface RecipeMcpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Opt in to the full host environment for stdio servers, including those
+   * defined in mcpl-servers.json. Prefer declaring needed variables in env.
+   * Requires an agent-framework version with inheritEnv support. */
+  inheritEnv?: boolean;
   /**
    * Per-request timeout for this server's outbound JSON-RPC (tools/call,
    * tools/list, channels/*), in milliseconds. Passed through to the
@@ -731,8 +739,49 @@ export interface RecipeModules {
    * four tools accept a live or historical channel label/address, not just
    * the raw internal channel id, when MCPL is configured (resolved via the
    * framework's `ChannelRegistry`).
+   *
+   * Object form adds `history--semantic_search`: meaning-based search over the
+   * agent's raw messages (text + its own think/journal/skip_reply notes) and
+   * every compression summary, backed by a shared remote embed-service (one
+   * per fleet; the vector index lives server-side, keyed by `namespace`).
+   * The host keeps that index in sync in the background (default every 60 s)
+   * and catches up before each search. `token` goes through the recipe's
+   * `${ENV}` substitution like every other secret.
+   *
+   * Namespace: always `<prefix>/<session id>`, where `namespace` (default: the
+   * agent name) is only the PREFIX — message ids are sequential per store, so
+   * two stores in one namespace would overwrite each other's entries. A
+   * COPIED data dir (staging restore, a local run off a prod snapshot) keeps
+   * the session id: give the copy a different `namespace` prefix, or no
+   * token, or it will write into the original's index.
+   *
+   * Requires @animalabs/agent-framework >= 0.20.0; startup fails if the
+   * installed HistoryModule does not offer semantic_search.
+   *
+   * Transport: sync ships raw message text and the token. `url` must be https,
+   * or plain http to loopback / the tailnet (100.64.0.0/10, *.ts.net), where
+   * WireGuard is the encryption; any other http needs `allowInsecureHttp: true`.
+   *
+   * What the remote index holds: with `includePrivateTools` at the
+   * framework default (true), the agent's think/journal/skip_reply prose is
+   * indexed too. Search hits are checked against the CURRENT branch, so
+   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * copy stays; `/session delete` removes only the local store, not the
+   * remote namespace (the client has no namespace delete).
    */
-  history?: boolean;
+  history?: boolean | {
+    semantic?: {
+      url: string;
+      token?: string;
+      namespace?: string;
+      syncIntervalMs?: number;
+      maxSyncPerTick?: number;
+      maxSyncBeforeSearch?: number;
+      includePrivateTools?: boolean;
+      /** Allow plaintext http to a host outside loopback/tailnet. Host-side only. */
+      allowInsecureHttp?: boolean;
+    };
+  };
 
   /**
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
@@ -1388,9 +1437,15 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.adoptEpsilon must be a finite non-negative number.');
   }
-  if (typeof config.treeifyNonContiguousSummaries !== 'boolean') {
+  // Mirror context-manager 0.11.0: src/adaptive/strategies/kv-unified.ts validateExplicitOptions.
+  for (const key of ['treeifyNonContiguousSummaries', 'preserveGapBearingSummaries'] as const) {
+    if (typeof config[key] !== 'boolean') {
+      throw new Error(`Recipe agent.strategy.kvUnified.${key} must be an explicit boolean.`);
+    }
+  }
+  if (config.treeifyNonContiguousSummaries && config.preserveGapBearingSummaries) {
     throw new Error(
-      'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries must be an explicit boolean.',
+      'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries and preserveGapBearingSummaries are mutually exclusive.',
     );
   }
 }
@@ -1856,6 +1911,9 @@ export function validateRecipe(raw: unknown): Recipe {
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
       }
+      if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
+        throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
+      }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
         throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
@@ -2127,6 +2185,80 @@ export function validateRecipe(raw: unknown): Recipe {
             `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
             `or make the mount read-only if the file is maintained outside the agent.`,
           );
+        }
+      }
+    }
+
+    // History: boolean, or { semantic: { url, ... } } for embedding search.
+    // Unknown keys are rejected at both levels: `{ sematic: … }` or
+    // `syncIntervalMS` would otherwise validate clean and silently do nothing.
+    const history = mods.history;
+    if (history !== undefined && typeof history !== 'boolean') {
+      if (!history || typeof history !== 'object' || Array.isArray(history)) {
+        throw new Error('Recipe modules.history must be a boolean or object.');
+      }
+      const HISTORY_KEYS = ['semantic'];
+      for (const key of Object.keys(history)) {
+        if (!HISTORY_KEYS.includes(key)) {
+          throw new Error(`Recipe modules.history has unknown key ${JSON.stringify(key)} (known: ${HISTORY_KEYS.join(', ')}).`);
+        }
+      }
+      const sem = (history as Record<string, unknown>).semantic;
+      if (sem !== undefined) {
+        if (!sem || typeof sem !== 'object' || Array.isArray(sem)) {
+          throw new Error('Recipe modules.history.semantic must be an object.');
+        }
+        const semCfg = sem as Record<string, unknown>;
+        const SEMANTIC_KEYS = ['url', 'token', 'namespace', 'syncIntervalMs', 'maxSyncPerTick', 'maxSyncBeforeSearch', 'includePrivateTools', 'allowInsecureHttp'];
+        for (const key of Object.keys(semCfg)) {
+          if (!SEMANTIC_KEYS.includes(key)) {
+            throw new Error(`Recipe modules.history.semantic has unknown key ${JSON.stringify(key)} (known: ${SEMANTIC_KEYS.join(', ')}).`);
+          }
+        }
+        if (semCfg.allowInsecureHttp !== undefined && typeof semCfg.allowInsecureHttp !== 'boolean') {
+          throw new Error('modules.history.semantic.allowInsecureHttp must be a boolean when set.');
+        }
+        // Parse, don't regex: `http://` has no host (the client would build
+        // `http:///v1/…`, which WHATWG reads as host `v1`), and a query or
+        // fragment in the base swallows the appended API path.
+        let parsed: URL | null = null;
+        if (typeof semCfg.url === 'string') { try { parsed = new URL(semCfg.url); } catch { parsed = null; } }
+        if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname
+            || typeof semCfg.url !== 'string' || /^https?:\/\/\//i.test(semCfg.url)) {
+          throw new Error('modules.history.semantic.url must be an http(s) URL with a host (the embed-service base URL).');
+        }
+        if (parsed.username || parsed.password || parsed.search || parsed.hash || semCfg.url.includes('?') || semCfg.url.includes('#')) {
+          throw new Error('modules.history.semantic.url must not carry credentials, a query or a fragment (use `token` for auth).');
+        }
+        // Sync ships raw messages (incl. private notes by default) and the
+        // bearer token. Plain http is fine where the network is the
+        // encryption (loopback, the tailnet's WireGuard); anywhere else it
+        // takes an explicit opt-in.
+        if (parsed.protocol === 'http:' && !isLoopbackOrTailnetHost(parsed.hostname) && semCfg.allowInsecureHttp !== true) {
+          throw new Error(
+            `modules.history.semantic.url ${JSON.stringify(semCfg.url)} is plaintext http to a host that is neither loopback nor tailnet ` +
+            '(100.64.0.0/10, *.ts.net): history and the token would cross the network unencrypted. ' +
+            'Use https, or set allowInsecureHttp: true if the path is otherwise private.',
+          );
+        }
+        for (const k of ['token', 'namespace'] as const) {
+          if (semCfg[k] !== undefined && (typeof semCfg[k] !== 'string' || !(semCfg[k] as string).trim())) {
+            throw new Error(`modules.history.semantic.${k} must be a non-empty string when set.`);
+          }
+        }
+        for (const k of ['maxSyncPerTick', 'maxSyncBeforeSearch'] as const) {
+          if (semCfg[k] !== undefined && (!Number.isInteger(semCfg[k]) || (semCfg[k] as number) < 1)) {
+            throw new Error(`modules.history.semantic.${k} must be an integer >= 1 when set.`);
+          }
+        }
+        // 0 = no background sync (search still catches up); otherwise a floor,
+        // so a typo can't become a 1 ms setInterval against a shared service.
+        const si = semCfg.syncIntervalMs;
+        if (si !== undefined && (!Number.isInteger(si) || ((si as number) !== 0 && (si as number) < 5000))) {
+          throw new Error('modules.history.semantic.syncIntervalMs must be 0 (no background sync) or an integer >= 5000 when set.');
+        }
+        if (semCfg.includePrivateTools !== undefined && typeof semCfg.includePrivateTools !== 'boolean') {
+          throw new Error('modules.history.semantic.includePrivateTools must be a boolean when set.');
         }
       }
     }
