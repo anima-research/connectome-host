@@ -145,6 +145,15 @@ describe('headless daemon — Phase 1', () => {
       'command-output lines from /help',
     );
 
+    // Generic IPC is also used by the agent's fleet tool. A payload cannot
+    // claim operator authority to release a wait.
+    sock1.write(JSON.stringify({ type: 'command', command: '/release-wait', admin: true }) + '\n');
+    await waitFor(
+      () => r1.events.some((e) => e.type === 'command-output' && String(e.text).includes('admin-only')),
+      5_000,
+      'admin-only refusal for release-wait over generic IPC',
+    );
+
     // -- Disconnect; verify child stays up --
     r1.stop();
     sock1.destroy();
