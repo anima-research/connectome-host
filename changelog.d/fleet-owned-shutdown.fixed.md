@@ -1,0 +1,1 @@
+Reconcile matching stale Fleet child PID and socket artifacts after confirmed owned shutdown, including already exited or crashed tracked children. Existing ownership and live/replaced-artifact checks remain unchanged.
