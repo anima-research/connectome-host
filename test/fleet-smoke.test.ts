@@ -730,7 +730,8 @@ describe('FleetModule — unresolved launch artifacts', () => {
 
   for (const terminal of ['crashed', 'exited'] as const) {
     test(`stop reconciles an already ${terminal} tracked generation`, async () => {
-      const dataDir = mkdtempSync(join(tmpDir, `terminal-stop-${terminal}-`));
+      // Keep Unix socket fixture paths within the native OS path bound.
+      const dataDir = mkdtempSync(join(tmpDir, `t${terminal[0]}-`));
       const owner = await startOwner(dataDir);
       const child = owner.getChildren().get('guard')!;
       if (terminal === 'crashed') {
