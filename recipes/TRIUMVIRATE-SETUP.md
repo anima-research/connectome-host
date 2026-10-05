@@ -10,10 +10,10 @@ One terminal, four AI agents cooperating:
 
 - **Conductor** (in the TUI, the one you talk to) — supervises the other three, reports status, intervenes only when asked.
 - **Miner** — reads your team's Zulip conversations, extracts structured knowledge, writes **Draft** documents to `library-mined/`.
-- **Reviewer** — critiques the miner's drafts for accuracy, flags unsupported claims, writes **Reviewed** versions to `library-reviewed/`.
-- **Clerk** — sits on a Zulip channel (`#${ZULIP_CHANNEL}` by default), answers questions by quoting the library, files knowledge-request tickets when the library is insufficient.
+- **Reviewer** — critiques the miner's drafts for accuracy, flags unsupported claims, writes **reviews** and SME checklists to `library-reviewed/`.
+- **Clerk** — sits on the Zulip channel you name in `ZULIP_CHANNEL` (`#${ZULIP_CHANNEL}` below), answers questions by quoting the library, files knowledge-request tickets when the library is insufficient.
 
-The three specialists coordinate with each other via a **shared filesystem** and **shared Zulip channels** — not through the conductor. Files flow: `library-mined/` → `library-reviewed/` (via reviewer) → cited in clerk's Zulip answers. Knowledge gaps flow: clerk → `knowledge-requests/` (future miner sessions dispatch on these).
+The three specialists coordinate with each other via a **shared filesystem** and **shared Zulip channels** — not through the conductor. Files flow: `library-mined/` → `library-reviewed/` (via reviewer) → cited in clerk's Zulip answers. Knowledge gaps flow: clerk → `knowledge-requests/` (the miner wakes on each new ticket and mines it).
 
 You watch it all from one terminal.
 
@@ -104,9 +104,9 @@ The triumvirate needs one dedicated channel plus whatever channels you want the 
 
 ### The clerk's channel (`#${ZULIP_CHANNEL}`)
 
-The clerk agent staffs one specific channel — by convention, `#${ZULIP_CHANNEL}`. It responds to questions posted there by quoting the library.
+The clerk agent staffs one specific channel — whichever one you name in `ZULIP_CHANNEL` (Step 5). It responds to questions posted there by quoting the library.
 
-1. In Zulip, create a new channel called **`${ZULIP_CHANNEL}`** (or edit the recipe in the next step if you want a different name).
+1. In Zulip, create a new channel for it (any name, e.g. `knowledge-desk`); you'll put that name in `.env` in Step 5.
 2. Subscribe your bot account to that channel.
 3. Optionally: tell your team this is where they ask library questions.
 
@@ -114,7 +114,7 @@ The clerk agent staffs one specific channel — by convention, `#${ZULIP_CHANNEL
 
 The miner reads other channels to extract knowledge. By default, the recipe has the miner starting with manual channel subscription — meaning the agent itself decides which channels to listen to based on the conversation with the user. You don't need to pre-subscribe it anywhere; you'll direct it in the TUI.
 
-If you want to narrow what it can see, edit `recipes/zulip-miner.json` → `"ZULIP_SUBSCRIBE"` and list the channels you want pre-subscribed, comma-separated.
+If you want some channels open from the start, edit `recipes/knowledge-miner.json` → `mcpServers.zulip.channelSubscription` and replace `"manual"` with an allow-list such as `["zulip:platform-design"]` (the same `zulip:<stream>` form `clerk.json` uses). The list only seeds a new session; after that the agent opens and closes channels itself (`channel_open` / `channel_close`).
 
 ## Step 5: Fill in secrets in `.env`
 
@@ -126,15 +126,16 @@ Copy the example and edit:
 cp .env.example .env
 ```
 
-Required for every run:
+Required for every run (`.env.example` has no `ZULIP_CHANNEL` line — add it yourself):
 
 ```ini
 ANTHROPIC_API_KEY=sk-ant-...
 
 # The Zulip channel the clerk staffs.  Set to the channel name
 # you created in Step 4 (e.g. `tracker-miner-f`, `knowledge-desk`,
-# `q-and-a` — whatever you picked).  All three recipes substitute
-# this at load time wherever they reference the channel.
+# `q-and-a` — whatever you picked).  clerk.json and the conductor's
+# prompt in triumvirate.json substitute this at load time; if it's
+# unset, neither recipe loads.
 ZULIP_CHANNEL=your-channel-name
 ```
 
@@ -146,12 +147,14 @@ GITLAB_TOKEN=glpat-...
 GITLAB_API_URL=https://gitlab.example.com/api/v4
 ```
 
-Optional — the conductor's web UI is protected by Basic-Auth that defaults to `admin` / `admin`. Fine for a laptop; **change it** the moment the machine is reachable by anyone else:
+Strongly recommended — the conductor's web UI is protected by Basic-Auth that defaults to `admin` / `admin`, and `triumvirate.json` binds it on **all interfaces** (`0.0.0.0:7340`). From the first launch, anyone who can reach this machine on port 7340 — including other devices on the same Wi-Fi — can log in with those defaults and see and steer every agent. Set your own credentials before launching:
 
 ```ini
 WEBUI_USERNAME=...
 WEBUI_PASSWORD=...
 ```
+
+If you only need the UI on this machine, also bind it to loopback: in `recipes/triumvirate.json`, add `"host": "127.0.0.1"` to the `webui` block. Loopback is the one bind the server will start on without `basicAuth`, but this recipe still configures it, and configured credentials are enforced on every bind — so you'll still get a login prompt. Remove the `basicAuth` block as well if you want a credential-free local UI.
 
 Bun auto-loads `.env`, so nothing else to wire. If a recipe references a `${VAR}` you haven't set, the child's startup will fail with a clear message telling you which variable is missing and which recipe referenced it.
 
@@ -174,7 +177,7 @@ GITLAB_TOKEN=glpat-...
 GITLAB_API_URL=https://gitlab.example.com/api/v4
 ```
 
-No separate install — the recipe runs `npx @zereight/mcp-gitlab` on demand.
+No separate install — the recipe runs `npx @zereight/mcp-gitlab` (pinned to `2.1.25`) on demand.
 
 To disable: remove the `gitlab` block from `recipes/knowledge-miner.json`. If you leave it in but don't set the env vars, the child will fail to start with a message like `Recipe "recipes/knowledge-miner.json" references environment variable ${GITLAB_TOKEN} which is not set.` — that's the system telling you to either fill in the env var or delete the block.
 
@@ -182,7 +185,7 @@ To disable: remove the `gitlab` block from `recipes/knowledge-miner.json`. If yo
 
 The recipe ships **without** a Notion server — the adapter it was developed against (`syncntn`) is not publicly available, so a default block would only produce a startup failure. The miner's system prompt still describes the `syncntn--*` tools; the agent simply won't have them until you wire a server in.
 
-To enable: install a Notion MCP server (any server whose tool names match what the prompt references — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server) for selection caveats), then add a block to `recipes/knowledge-miner.json` under `mcpServers`:
+To enable: install a Notion MCP server (any server whose tool names match what the prompt references — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server--not-included-by-default) for selection caveats), then add a block to `recipes/knowledge-miner.json` under `mcpServers`:
 
 ```jsonc
 "syncntn": {
@@ -270,11 +273,11 @@ and set `GEMINI_API_KEY=...` in `.env`.
 
 ### Tweaks you can still make to the recipe files
 
-You can also edit `recipes/triumvirate.json` if you want to:
+You can also edit the recipe files if you want to:
 
-- **Rename the clerk's channel** away from `${ZULIP_CHANNEL}` — edit `recipes/clerk.json`, change `ZULIP_SUBSCRIBE` and the `tracker-channel` wake policy's `channel` field.
-- **Swap the model** — change `"model": "claude-opus-4-6"` to `claude-sonnet-4-6` (faster, cheaper) or another Claude model.
-- **Adjust autoStart** — set `"autoStart": false` on any child if you want to leave them inactive until you (or the conductor) explicitly launch them.
+- **Rename the clerk's channel** — change `ZULIP_CHANNEL` in `.env`. `recipes/clerk.json` uses it everywhere the channel appears: `ZULIP_SUBSCRIBE`, the `channelSubscription` allow-list, the typing-indicator channel and the `tracker-channel` wake policy. An existing clerk session keeps the `tracker-channel` policy it was first seeded with (restarts only add policies that are missing by name), so ask the clerk (`@clerk …`) to update that policy with its `wake_add_rule` tool.
+- **Swap a model** — the conductor and clerk pin `"model": "claude-opus-4-6"`, the reviewer `claude-sonnet-4-6`; change the field in the relevant recipe. `recipes/knowledge-miner.json` has no `model` field, so the miner runs `claude-opus-4-6` until you add one. Setting `MODEL` in `.env` overrides the model of every agent — the children inherit the conductor's environment.
+- **Adjust autoStart** — in `recipes/triumvirate.json`, set `"autoStart": false` on any child if you want to leave them inactive until you (or the conductor) explicitly launch them.
 
 ## Step 7: First launch
 
@@ -286,21 +289,23 @@ What you'll see:
 
 1. The TUI comes up with the "Knowledge Mining Triumvirate" banner.
 2. Over the next 30–60 seconds, the three children spawn in the background. Each one starts its own connectome-host process, connects to the Anthropic API, and boots its Zulip / workspace machinery.
-3. Press **Tab** a couple of times to cycle through view modes. One of them is the **process fleet** view — it lists the three children and their status. All three should reach **ready** (green). If any show **crashed** (red), jump to Troubleshooting.
+3. Press **Tab** to switch to the **fleet** view — one tree with the conductor at the top and the three children under it, each with its status. All three should reach **ready** (or show what they're busy with). If any show **crashed** (red), jump to Troubleshooting.
 4. Ask the conductor `are all three ready?` — it'll run `fleet--list` and confirm. This also serves as a quick "am I set up correctly" smoke test.
 
 The conductor also serves a **web UI** on port 7340 (all interfaces, Basic-Auth). Credentials default to `admin` / `admin` unless you set `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env` — see Step 5. Open `http://localhost:7340` to watch the fleet from a browser.
 
 ### The four view modes
 
-Press **Tab** to cycle between views. Press **Ctrl+F** to jump straight to the process fleet view from anywhere.
+**Tab** (or **Ctrl+F**, or `/fleet view`) toggles between chat and the fleet view. The two peek views are reached from the fleet view (or with `/fleet peek`).
 
 | View | What it shows |
 |---|---|
 | **chat** | Your conversation with the conductor |
-| **subagents** | In-process subagents the conductor has forked (usually empty — conductor doesn't fork much) |
-| **processes** | The three triumvirate children and their live status |
-| **peek-proc** | Live event stream from one selected child (press `p` on a child in the processes view) |
+| **fleet** | One tree: the conductor (plus any in-process subagents it forks — none here, since `triumvirate.json` sets `"subagents": false`), then the three children, each of which unfolds into its own agents and subagents |
+| **peek-proc** | Live event stream from one child (press `p` on the child, or `/fleet peek <name>`); `p` on one of a child's agents narrows the stream to that agent |
+| **peek** | Live stream from a local in-process subagent (`p` on a subagent) — unused here, since the conductor has none |
+
+Fleet-view keys: **↑/↓** move, **Enter** or **→** fold/unfold, **←** collapse, **p** peek, **Del/Backspace** stop the selected child, **r** restart it, **Esc** back to chat. In a peek view, **Esc** or **p** returns to the fleet view.
 
 ## Using the Triumvirate
 
@@ -334,6 +339,7 @@ The conductor doesn't see these messages or their responses.
 | Command | What it does |
 |---|---|
 | `/fleet list` | One-line status for every child |
+| `/fleet view` | Open the fleet view (same as Tab) |
 | `/fleet status <name>` | Detailed status (pid, dataDir, recipe, last event, etc.) |
 | `/fleet peek <name>` | Open the live event stream for a child |
 | `/fleet stop <name>` | Kill a child gracefully |
@@ -347,14 +353,16 @@ When you type `/quit`, if any children are still running, the conductor asks:
 
 ```
 3 children still running: miner, reviewer, clerk
-Stop them before exit? [Y/n/d]  — Y=kill gracefully, n=cancel quit, d=detach and leave running
+Stop them before exit? [y/N/d]  — y=kill gracefully, d=detach and leave running, anything else cancels
 ```
 
-- **Y** (or just Enter) — stop everything cleanly and exit. All children shut down.
-- **n** — cancel the exit. The TUI stays up.
+- **y** (or `yes`, or `/quit` again) — stop everything cleanly and exit. All children shut down.
+- **n** (or just Enter) — cancel the exit. The TUI stays up. If you type an ordinary message at the prompt, the exit is cancelled and your text is put back in the input.
 - **d** — exit the TUI but leave the three children running in the background. They'll keep doing whatever they were doing. The next time you run `bun src/index.ts recipes/triumvirate.json`, the new conductor will **adopt** them — re-attach to the running children instead of respawning duplicates.
 
 This is the "leave the bots working overnight, come back tomorrow" workflow.
+
+**Ctrl+C** brings up the same prompt. Pressing Ctrl+C again while it's showing exits and stops the children.
 
 ## What the agents actually do
 
@@ -363,7 +371,7 @@ This is the "leave the bots working overnight, come back tomorrow" workflow.
 - Uses `recipes/knowledge-miner.json`. Reads whatever data sources you configured in Step 6 (Zulip always; optionally Notion, GitLab, and DuckDuckGo web search).
 - Wakes automatically when the clerk files a new ticket in `knowledge-requests/` — the miner's wake policy watches that directory.
 - Forks sub-agents to read across sources in parallel, extracts decisions / patterns / people / processes.
-- Writes Draft documents into `library-mined/` and creates structured "lessons" in its Chronicle store.
+- Writes Draft documents into `./output/` — one `<request_id>.md` per ticket — which the reviewer and clerk see as `library-mined/`, and creates structured "lessons" in its own data dir.
 - Tags every non-trivial claim with confidence markers — `[SRC: ...]` for internal sources, `[WEB: ...]` for public web hits, plus `[INF]`, `[GEN]`, and `❓`. These propagate all the way to the final library.
 
 ### Reviewer
@@ -374,7 +382,7 @@ This is the "leave the bots working overnight, come back tomorrow" workflow.
   - Unsupported claims
   - Missing confidence markers
   - Unmarked claims that look like invented general knowledge
-- Writes a reviewed version to `library-reviewed/` plus an SME checklist that a human domain expert can complete in 10–20 minutes without reading the full document.
+- Writes its findings (`review-<doc>.md`, carrying over the miner report's ticket provenance) to `library-reviewed/`, plus an SME checklist that a human domain expert can complete in 10–20 minutes without reading the full document.
 
 See [the Knowledge Reviewer section of SETUP.md](./SETUP.md#reviewing-knowledge-quality) for more detail on the confidence-marker system and SME checklist format.
 
@@ -382,17 +390,18 @@ See [the Knowledge Reviewer section of SETUP.md](./SETUP.md#reviewing-knowledge-
 
 - Sits on `#${ZULIP_CHANNEL}`.
 - When someone posts a question there, the clerk:
-  1. Searches both `library-mined/` and `library-reviewed/` for relevant material.
+  1. Searches `library-approved/`, `library-reviewed/` and `library-mined/` for relevant material.
   2. Posts a short, cited answer back in the channel.
   3. If the library didn't have the answer, writes a `knowledge-requests/YYYY-MM-DD-slug.md` ticket and tells the asker.
-- Knows to prefer reviewed material over mined-only material, and to flag disagreements between them.
+- Knows to prefer approved material, then reviewed over mined-only material, and to flag disagreements between them.
+- Wakes when a new review lands in `library-reviewed/`; if it answers one of its tickets, pings the asker on the original Zulip topic.
 
-Tickets in `knowledge-requests/` are the signal for future miner sessions: the open tickets say "here's what the organization wants to know."
+Tickets in `knowledge-requests/` are the signal for the miner: the open tickets say "here's what the organization wants to know."
 
 ### Conductor
 
 - Doesn't mine, review, or answer. Its job is process supervision plus being a conversational surface for you.
-- Default posture: quiet. It doesn't narrate what the children are doing — the process view already shows that.
+- Default posture: quiet. It doesn't narrate what the children are doing — the fleet view already shows that.
 - Speaks when you ask, or when it sees a child crash.
 
 ## Directory map
@@ -405,7 +414,7 @@ connectome-host/
   .zuliprc                          (you placed this — Zulip creds)
   recipes/
     triumvirate.json                (conductor recipe)
-    zulip-miner.json                (miner recipe)
+    knowledge-miner.json            (miner recipe)
     knowledge-reviewer.json         (reviewer recipe)
     clerk.json                      (clerk recipe)
     TRIUMVIRATE-SETUP.md            (this document)
@@ -423,6 +432,7 @@ connectome-host/
   output/                           (library-mined — miner writes here)
   review-output/                    (library-reviewed — reviewer writes here)
   knowledge-requests/               (clerk writes tickets here)
+  library-approved/                 (human-approved material — all three read it; you create and fill it)
   input/                            (read-only mount for external inputs)
   node_modules/
   ...
@@ -444,7 +454,7 @@ The triumvirate is designed to be long-running. Once the children are spawned, t
 
 In any order:
 
-- **TUI process view** (Tab or Ctrl+F) — are all three still green?
+- **TUI fleet view** (Tab or Ctrl+F) — are all three still up, none red / crashed?
 - **Conductor ask**: `status check` — plain-language summary.
 - **Peek a child**: `/fleet peek miner` — live trace of what that child is doing, including inference rounds and tool calls.
 - **Filesystem**: `ls -la output/`, `ls -la review-output/`, `ls -la knowledge-requests/` — the actual artifacts produced.
@@ -459,21 +469,21 @@ If a child goes red / crashed:
 4. Fix whatever caused it.
 5. `/fleet restart <name>` — bring it back.
 
-If the conductor itself becomes unresponsive, `Ctrl+C` and relaunch. Children stay alive through a parent crash (they're detached), and the next conductor adopts them — so you don't lose in-flight work.
+If the conductor itself becomes unresponsive, `Ctrl+C` brings up the exit prompt — answer `d` to keep the children running, then relaunch; the next conductor adopts them, so you don't lose in-flight work. An orderly exit that isn't a detach (`y`, or a second Ctrl+C) stops the children. They outlive the conductor otherwise only if its process dies without an orderly exit — e.g. you `kill -9` a TUI that no longer reacts to keys — and the next conductor adopts those too.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| "ANTHROPIC_API_KEY not set" | Make sure `.env` is in the connectome-host directory and contains a valid key. Bun auto-loads it. |
-| Child status stays "starting" forever | It timed out reaching ready. Check `data/<name>/headless.log` and `startup.log`. Most often: missing / invalid Zulip creds, or missing `../zulip-mcp/build/index.js`. |
+| `Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN)` | Make sure `.env` is in the connectome-host directory and contains a valid key. Bun auto-loads it. |
+| Child status stays "starting" forever | It timed out reaching ready. Check `data/<name>/headless.log` and `startup.log`. Most often: missing / invalid Zulip creds, or missing `../zulip_mcp/build/index.js`. |
 | A child is crashed with "API error 401" | Zulip credentials are wrong or expired. Regenerate the bot's API key, update `.zuliprc`, `/fleet restart <child>`. |
 | Clerk says "I don't see any messages in ${ZULIP_CHANNEL}" | Check that the bot is actually subscribed to `#${ZULIP_CHANNEL}` in Zulip. Subscription happens on clerk startup via `ZULIP_SUBSCRIBE` — if the stream doesn't exist, it silently fails. |
 | Miner or clerk launches keep crashing right away | Usually a missing `.zuliprc`, an unset env var, or an MCP server (Notion) that isn't running. Check `data/<child>/startup.log` first — it'll have a clear message like `references environment variable ${GITLAB_TOKEN} which is not set`. Either add the missing value to `.env` or delete the matching `mcpServers` block from the recipe. To isolate: run the recipe standalone with `bun src/index.ts recipes/knowledge-miner.json` (or `recipes/clerk.json`) in the same directory — the same errors come back in the interactive TUI. |
 | "Recipe references environment variable ${FOO} which is not set" | The recipe has `${FOO}` in one of its values but your `.env` doesn't define `FOO`. Either add `FOO=...` to `.env` (if you want the source that references it) or delete the `mcpServers` / module block that uses it (if you don't). |
-| Process view shows fewer children than expected | Check the conductor's own `data/tui-error.log` for errors during child spawn. One child failing shouldn't prevent the others from starting. |
-| Children reappear after I thought I quit | If you chose `d` (detach) instead of `Y` (kill) last time, they're still running. `/fleet list` on startup will show them as adopted. Use `Y` to actually stop. |
-| The bill is higher than expected | All four agents run concurrently and all except the reviewer (Sonnet) default to Opus. Switch the conductor or miner to Sonnet by editing the relevant recipe's `"model"` field. |
+| Fleet view shows fewer children than expected | Check the conductor's own `data/tui-error.log` for errors during child spawn. One child failing shouldn't prevent the others from starting. |
+| Children reappear after I thought I quit | If you chose `d` (detach) instead of `y` (kill) last time, they're still running. `/fleet list` on startup will show them as adopted. Use `y` to actually stop. |
+| The bill is higher than expected | All four agents run concurrently and all except the reviewer (Sonnet) run on Opus. Switch the conductor or clerk to Sonnet by editing its recipe's `"model"` field; for the miner, add a `"model"` field to `knowledge-miner.json` (it has none, so it falls back to `claude-opus-4-6`). |
 
 For issues specific to one agent in isolation (miner, reviewer), see [SETUP.md](./SETUP.md).
 
@@ -481,7 +491,7 @@ For issues specific to one agent in isolation (miner, reviewer), see [SETUP.md](
 
 ### Adding or removing data sources later
 
-Data sources for the miner (Zulip, Notion, GitLab) are configured in `recipes/knowledge-miner.json` under `mcpServers`. To add one you hadn't set up before or remove one you no longer want, edit that block following the instructions in [Step 6](#step-6-configure-the-miners-data-sources) and `/fleet restart miner` — the miner respawns with the new MCP server set.
+Data sources for the miner (Zulip, Notion, GitLab) are configured in `recipes/knowledge-miner.json` under `mcpServers`. To add one you hadn't set up before or remove one you no longer want, edit that block following the instructions in [Step 6](#step-6-decide-which-data-sources-you-want) and `/fleet restart miner` — the miner respawns with the new MCP server set.
 
 ### Running only part of the trio
 
@@ -502,12 +512,13 @@ Every agent that uses Zulip reads credentials from `.zuliprc`. Just swap the fil
 
 ### Changing where files go
 
-The paths `./output/`, `./review-output/`, `./knowledge-requests/`, and `./input/` are declared in each child's recipe under `modules.workspace.mounts`. They're resolved relative to the conductor's working directory. If you want them elsewhere, edit the mounts in each affected child recipe (miner + reviewer + clerk) — they all have to agree, since that's how the three siblings communicate.
+The paths `./output/`, `./review-output/`, `./knowledge-requests/`, `./library-approved/`, and `./input/` are declared in each child's recipe under `modules.workspace.mounts`. They're resolved relative to the conductor's working directory. If you want them elsewhere, edit the mounts in each affected child recipe (miner + reviewer + clerk) — they all have to agree, since that's how the three siblings communicate.
 
 ## Where to go next
 
 - **Single-agent workflows** (just the miner, or a mining + reviewing pass without the clerk): see [SETUP.md](./SETUP.md).
-- **Design rationale and protocol spec**: [HEADLESS-FLEET-PLAN.md](../HEADLESS-FLEET-PLAN.md) at the repo root.
+- **How the three hand work to each other through files** (mounts, wake policies, the ticket contract): [LIBRARY-PIPELINE.md](../docs/LIBRARY-PIPELINE.md).
+- **Headless mode and the fleet protocol**: [fleet-protocol.md](../docs/fleet-protocol.md). The original design rationale is kept in [history/HEADLESS-FLEET-PLAN.md](../docs/history/HEADLESS-FLEET-PLAN.md).
 - **Architecture overview for the host itself**: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## What this is *not*

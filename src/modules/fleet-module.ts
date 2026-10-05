@@ -4,7 +4,7 @@
  * Each child is spawned as a detached subprocess running `bun src/index.ts
  * <recipe> --headless`, with its own DATA_DIR and Chronicle store.  The
  * parent connects to the child's Unix socket at {dataDir}/ipc.sock and
- * exchanges JSONL envelopes (see `fleet-types.ts`, `HEADLESS-FLEET-PLAN.md`).
+ * exchanges JSONL envelopes (see `fleet-types.ts`, `docs/fleet-protocol.md`).
  *
  * Tools: launch / list / status / send / command / peek / kill / restart / relay / await.
  *
@@ -1002,7 +1002,7 @@ export class FleetModule implements Module {
     // No-subfleets invariant: a fleet child may not itself declare a fleet
     // module. Enforced before subprocess spawn so the failure mode is a clean
     // synchronous tool error rather than a child crashing mid-startup. See
-    // UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
+    // docs/history/UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
     // unified tree's cross-process visibility tractable).
     //
     // We only fail on a *confirmed* nested-fleet declaration. If the recipe
@@ -1022,7 +1022,7 @@ export class FleetModule implements Module {
           error:
             `fleet child recipe '${input.name}' (${recipePath}) declares its own 'fleet' module; ` +
             `nested fleets are not supported. Remove the 'fleet' entry from that recipe's modules ` +
-            `to launch it as a child. (See UNIFIED-TREE-PLAN.md §6.)`,
+            `to launch it as a child. (See docs/fleet-protocol.md §4.3.)`,
         };
       }
     } catch {
@@ -1683,7 +1683,7 @@ export class FleetModule implements Module {
    * Request a state snapshot from a fleet child. The child responds with a
    * single `snapshot` event over its event stream (received via onChildEvent).
    * Used as a recovery verb at sync points — TUI cold start, child reconnect,
-   * after restart. See UNIFIED-TREE-PLAN.md §3.
+   * after restart. See docs/history/UNIFIED-TREE-PLAN.md §3.
    *
    * Returns true if the request was sent, false if the child has no socket
    * (e.g. exited or not yet ready).

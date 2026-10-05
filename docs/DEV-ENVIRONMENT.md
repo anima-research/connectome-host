@@ -1,6 +1,6 @@
 # Connectome Dev Environment — Setup Guide
 
-**Status:** Working notes. Snapshot of the dev layout as of 2026-07-22 (originally 2026-05-30; all feature branches in the original table have since merged to `main`).
+**Status:** Working notes. Dev layout originally captured 2026-05-30 (all feature branches in the original table have since merged to `main`); versions refreshed 2026-09-30 for connectome-host 0.9.0, except the MCPL-side repos (marked †), which are still the 2026-07-22 snapshot.
 **Goal:** Reproduce the current development state — every component as a local git
 checkout, wired together so the host runs against editable source.
 
@@ -12,8 +12,13 @@ The whole stack is a **pseudo-monorepo of sibling git checkouts** under one pare
 directory (canonically `~/connectome-local/`). The `@animalabs/*` libraries are
 **symlinked into each other's `node_modules`** so there is exactly ONE instance of
 each at runtime (sharing a single `membrane` instance is mandatory — two copies
-break `instanceof` / module singletons). Every package's `package.json` `main`
-points at `dist/…`, so **each package must be `tsc`-built** before the host runs.
+break `instanceof` / module singletons). The host itself has no build step —
+bun runs its `src/` directly — and under bun it loads `membrane`,
+`context-manager` and `agent-framework` from their `src/index.ts` (each declares
+a `bun` export condition; `main`/`dist/` is for Node consumers). The MCPL servers
+run under node from `dist/`, so **they must be built**; `chronicle` is a native
+napi-rs package whose npm copy ships prebuilt binaries (a checkout needs a Rust
+build). See §2.
 
 Each agent lives in a separate **install dir** (`<agent>-cm`, e.g. `example-cm`)
 that holds a recipe + `.env` + chronicle data and references the code by absolute path.
@@ -24,19 +29,21 @@ that holds a recipe + `.env` + chronicle data and references the code by absolut
 
 All cloned as siblings under `~/connectome-local/`:
 
-| Dir | GitHub repo | Branch | Ver (2026-07-22) | Role |
+| Dir | GitHub repo | Branch | Ver | Role |
 |---|---|---|---|---|
-| `forking-knowledge-miner` | `anima-research/connectome-host` | `main` | 0.3.10 | the host app (run via **bun**) |
-| `agent-framework` | `anima-research/agent-framework` | `main` | 0.6.10 | host runtime: gate, MCPL orchestration, locus routing, `think` |
-| `discord-mcpl` | `anima-research/discord-mcpl` | `main` | 0.1.4 | Discord surface (MCPL server) |
-| `heartbeat-mcpl` | `anima-research/heartbeat-mcpl` | `main` | 0.1.3 | periodic self-wake (MCPL server) |
-| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 1.6.0 | shell: session daemon (ws://localhost:3100) + per-agent MCP stdio frontend |
-| `membrane` | `antra-tess/membrane` ⚠️ | `main` | 0.5.74 | LLM client lib — **single shared instance required** |
-| `context-manager` | `anima-research/context-manager` | `main` | 0.5.14 | context compilation / autobiographical memory |
-| `chronicle` | `anima-research/chronicle` | `main` | 0.2.7 | record / chronicle store |
-| `mcpl-core-ts` | `anima-research/mcpl-core-ts` | `main` | 0.2.1 | MCPL protocol types |
+| `forking-knowledge-miner` | `anima-research/connectome-host` | `main` | 0.9.0 | the host app (run via **bun**) |
+| `agent-framework` | `anima-research/agent-framework` | `main` | 0.21.0 | host runtime: gate, MCPL orchestration, locus routing, `think` |
+| `discord-mcpl` | `anima-research/discord-mcpl` | `main` | 0.1.4 † | Discord surface (MCPL server) |
+| `heartbeat-mcpl` | `anima-research/heartbeat-mcpl` | `main` | 0.1.3 † | periodic self-wake (MCPL server) |
+| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 1.6.0 † | shell: session daemon (ws://localhost:3100) + per-agent MCP stdio frontend |
+| `membrane` | `antra-tess/membrane` ⚠️ | `main` | 0.5.86 | LLM client lib — **single shared instance required** |
+| `context-manager` | `anima-research/context-manager` | `main` | 0.13.0 | context compilation / autobiographical memory |
+| `chronicle` | `anima-research/chronicle` | `main` | 0.4.0 | record / chronicle store (Rust, napi-rs bindings) |
+| `mcpl-core-ts` | `anima-research/mcpl-core-ts` | `main` | 0.2.1 † | MCPL protocol types |
 
-> Versions drift; treat the column as a dated snapshot. The published npm
+> Versions drift. The host and `@animalabs/*` library versions are what
+> connectome-host `main` (package version 0.9.0) installs; † marks versions last recorded 2026-07-22 —
+> check that repo's `package.json`. The published npm
 > releases now track `main` closely (typically within a patch), so the
 > stock `bun install` path is sufficient for host-level work — use the
 > checkout layout below when editing the libraries themselves.
@@ -46,8 +53,9 @@ All cloned as siblings under `~/connectome-local/`:
 > consistency (as was done for discord-mcpl / heartbeat-mcpl).
 
 > The host repo is `connectome-host` on GitHub but is historically checked out into
-> a directory named `forking-knowledge-miner`. Keep that dir name — recipes and the
-> `@animalabs/agent-framework` symlink target it.
+> a directory named `forking-knowledge-miner`. That name is legacy — nothing in
+> this repo depends on it. The clone and symlink commands below assume it; if you
+> clone into `connectome-host` instead, substitute that name throughout.
 
 ---
 
@@ -71,8 +79,7 @@ git clone git@github.com:anima-research/mcpl-core-ts.git
 
 ## 2. Install + build (bottom-up)
 
-Each package's `main` is `dist/…`, so all must be built with `tsc`. Build leaf
-libs first, then the framework, then the host:
+Install leaf libs first, then the framework, then the host:
 
 ```
 membrane → chronicle → context-manager → agent-framework → connectome-host
@@ -81,7 +88,22 @@ heartbeat-mcpl
 terminal-sessions-mcp
 ```
 
-In each: `npm install && npm run build` (build script is `tsc`).
+What "build" means differs by package:
+
+- **`membrane`, `context-manager`, `agent-framework`** — `npm install && npm run
+  build` (`tsc` → `dist/`). Under bun the host resolves their `bun` export
+  condition to `src/index.ts`, so edits to their `src/` take effect without a
+  rebuild; `dist/` is what Node consumers (their own tests, tooling) load.
+- **`chronicle`** — a Rust crate with napi-rs bindings: `main` is `index.js`,
+  which loads a platform `chronicle.*.node` binary, and `npm run build` is
+  `napi build` (needs a Rust toolchain). Only needed when you change chronicle;
+  the npm package ships prebuilt binaries (macOS arm64/x64, Linux arm64/x64
+  glibc, Windows x64).
+- **MCPL servers** (`discord-mcpl`, `heartbeat-mcpl`, `terminal-sessions-mcp`)
+  — `npm install && npm run build`; recipes run their `dist/` under node.
+- **`connectome-host`** — no `main` and no build step: bun runs `src/`
+  directly. `bun install` runs `postinstall`, which builds the WebUI SPA into
+  `dist/web` (`bun run build:web` to rebuild it).
 
 > `discord-mcpl` now depends on `@animalabs/mcpl-core` as a regular npm
 > dependency (the old `file:../mcpl-core-ts` path dep is gone). A sibling
@@ -92,9 +114,11 @@ In each: `npm install && npm run build` (build script is `tsc`).
 ## 3. Wire single-instance symlinks (the crucial part)
 
 The host imports `@animalabs/{agent-framework,membrane,context-manager,chronicle}`,
-and `agent-framework` *also* imports `@animalabs/{membrane,context-manager}`. These
-must resolve to the SAME physical copy, or you get two `membrane` instances and
-subtle breakage. Replace the npm-installed copies with symlinks to the siblings.
+`agent-framework` *also* imports `@animalabs/{membrane,context-manager,chronicle}`,
+and `context-manager` imports `@animalabs/{membrane,chronicle}` (membrane at
+runtime, e.g. its `NativeFormatter`). These must resolve to the SAME physical
+copy, or you get two `membrane` instances and subtle breakage. Replace the
+npm-installed copies with symlinks to the siblings.
 
 ```bash
 # Host resolves the framework + shared libs from the sibling checkouts:
@@ -110,9 +134,17 @@ for d in membrane context-manager chronicle; do
   rm -rf "$d"
   ln -sfn "../../../forking-knowledge-miner/node_modules/@animalabs/$d" "$d"
 done
+
+# context-manager's own install carries its own membrane / chronicle — relink those too:
+cd ~/connectome-local/context-manager/node_modules/@animalabs
+for d in membrane chronicle; do
+  rm -rf "$d"
+  ln -sfn "../../../forking-knowledge-miner/node_modules/@animalabs/$d" "$d"
+done
 ```
 
-Verify each symlink resolves and reports the expected version:
+Verify each symlink resolves and reports the expected version (run in each
+relinked `node_modules/@animalabs`):
 ```bash
 for d in membrane context-manager chronicle; do
   echo -n "$d -> "; readlink -f "$d"; grep '"version"' "$d/package.json" | head -1
@@ -120,8 +152,8 @@ done
 ```
 
 > This is the layout in use on a checkout-based box. On a fresh box, `npm
-> install` inside `agent-framework` will pull its own `@animalabs/*` copies
-> first — run it, THEN replace them with the symlinks above.
+> install` inside `agent-framework` (and `context-manager`) will pull its own
+> `@animalabs/*` copies first — run it, THEN replace them with the symlinks above.
 
 ---
 
@@ -167,6 +199,11 @@ SESSION_SERVER_TOKEN=<same token the shell daemon was started with>
 HEARTBEAT_CONFIG_FILE=<abs>/data/heartbeat-config.json
 ```
 
+The host reads `.env`, but stdio MCPL servers see only what their recipe entry
+maps in `env` (plus a small system allowlist), e.g.
+`"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`. A variable left only in `.env` is
+unset for the server.
+
 **Run the host (headless), supervised:**
 ```bash
 bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
@@ -183,6 +220,8 @@ bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
 
 - **bun** — runs the host (`bun src/index.ts …`).
 - **node ≥ 20** — runs the MCPL servers (node 22 also fine). nvm fine locally.
+- **Rust toolchain** — only to build `chronicle` from a checkout; the npm
+  package ships prebuilt binaries.
 
 ---
 
@@ -208,8 +247,9 @@ bun ~/connectome-local/forking-knowledge-miner/src/index.ts \
 
 ## Architecture cross-references
 
-- `docs/LOCUS-ROUTING-DESIGN.md` — host-owned output routing (why stickiness/
-  `think` live in the framework, not in a surface adapter).
+- [`history/LOCUS-ROUTING-DESIGN.md`](./history/LOCUS-ROUTING-DESIGN.md) — the
+  original design for host-owned output routing (why stickiness/`think` live in
+  the framework, not in a surface adapter); kept verbatim as history.
 - Output routing: `agent-framework/src/framework.ts` (turn completion →
   `ChannelRegistry.routeSpeech`), `src/mcpl/channel-registry.ts`.
 - Wake gate: `agent-framework/src/gate/event-gate.ts` (+ recipe `modules.wake`).

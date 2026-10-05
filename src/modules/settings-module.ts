@@ -71,10 +71,10 @@ export class SettingsModule implements Module {
     this.ctx = ctx;
     const saved = ctx.getState<Partial<SettingsState>>();
     if (saved) {
-      // Shallow-merge each domain so future-added fields fall back to defaults
-      // for state persisted by older versions.
+      // Per field, so fields added later fall back to defaults for state
+      // persisted by older versions, and invalid saved values do too.
       this.state = {
-        reasoning: { ...DEFAULTS.reasoning, ...(saved.reasoning ?? {}) },
+        reasoning: restoreReasoning(saved.reasoning),
       };
     }
   }
@@ -216,6 +216,39 @@ export class SettingsModule implements Module {
     return {};
   }
 
+}
+
+/**
+ * Restored reasoning settings, field by field. Saved state is not trusted: an
+ * older version or a hand edit can leave a value the API rejects, and since
+ * display and effort are sent on every turn, one bad value would fail every
+ * turn, leaving the agent no turn to fix the setting with. Such a value falls
+ * back to its default, and the host says so.
+ */
+function restoreReasoning(saved: unknown): ReasoningSettings {
+  const restored = clone(DEFAULTS.reasoning);
+  if (!saved || typeof saved !== 'object') return restored;
+  const s = saved as Record<string, unknown>;
+  const ignore = (field: string, value: unknown) => console.error(
+    `[settings] ignoring saved reasoning.${field}=${JSON.stringify(value)}: not a valid value; using the default`,
+  );
+  if (s.enabled !== undefined) {
+    if (typeof s.enabled === 'boolean') restored.enabled = s.enabled;
+    else ignore('enabled', s.enabled);
+  }
+  if (s.budgetTokens !== undefined) {
+    if (typeof s.budgetTokens === 'number' && Number.isFinite(s.budgetTokens)) restored.budgetTokens = s.budgetTokens;
+    else ignore('budgetTokens', s.budgetTokens);
+  }
+  if (s.display !== undefined) {
+    if (s.display === 'summarized' || s.display === 'omitted') restored.display = s.display;
+    else ignore('display', s.display);
+  }
+  if (s.effort !== undefined) {
+    if (REASONING_EFFORTS.includes(s.effort as ReasoningEffort)) restored.effort = s.effort as ReasoningEffort;
+    else ignore('effort', s.effort);
+  }
+  return restored;
 }
 
 function clone<T>(x: T): T {
