@@ -28,6 +28,29 @@ describe('recipe provider validation', () => {
     expect(() => validateRecipe(recipe({ mock: { defaultResponse: '' } }))).toThrow(/defaultResponse/);
   });
 
+  test('accepts mock timing knobs', () => {
+    expect(validateRecipe(recipe({
+      provider: 'mock',
+      mock: { echoMode: false, defaultResponse: 'x'.repeat(40), completeDelayMs: 10, streamChunkDelayMs: 1000, streamChunkSize: 10 },
+    })).agent.mock).toEqual({
+      echoMode: false, defaultResponse: 'x'.repeat(40), completeDelayMs: 10, streamChunkDelayMs: 1000, streamChunkSize: 10,
+    });
+    expect(validateRecipe(recipe({ mock: { streamChunkDelayMs: 0 } })).agent.mock)
+      .toEqual({ streamChunkDelayMs: 0 });
+  });
+
+  test('rejects malformed mock timing knobs', () => {
+    // A string here coerces through arithmetic today and breaks silently
+    // the day someone compares it — same class as the cacheTtl validator.
+    expect(() => validateRecipe(recipe({ mock: { streamChunkDelayMs: '1000' } }))).toThrow(/streamChunkDelayMs/);
+    // JSON can't carry NaN, but JS callers of validateRecipe can.
+    expect(() => validateRecipe(recipe({ mock: { completeDelayMs: NaN } }))).toThrow(/completeDelayMs/);
+    expect(() => validateRecipe(recipe({ mock: { completeDelayMs: -5 } }))).toThrow(/completeDelayMs/);
+    expect(() => validateRecipe(recipe({ mock: { streamChunkDelayMs: Infinity } }))).toThrow(/streamChunkDelayMs/);
+    expect(() => validateRecipe(recipe({ mock: { streamChunkSize: 0 } }))).toThrow(/streamChunkSize/);
+    expect(() => validateRecipe(recipe({ mock: { streamChunkSize: 2.5 } }))).toThrow(/streamChunkSize/);
+  });
+
   test('accepts Codex subscription settings', () => {
     expect(validateRecipe(recipe({
       provider: 'openai-codex',

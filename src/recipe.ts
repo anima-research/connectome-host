@@ -356,6 +356,19 @@ export interface RecipeAgent {
   mock?: {
     echoMode?: boolean;
     defaultResponse?: string;
+    /** Delay for non-streaming complete() calls, in ms (membrane default 10). */
+    completeDelayMs?: number;
+    /** Per-chunk delay on the streaming path, in ms (membrane default 5).
+     * The host drives streaming, so this is the knob that holds a turn
+     * open for a predictable time — set `echoMode: false` with a
+     * fixed-length `defaultResponse` for a deterministic hold (for a
+     * non-empty response, hold = (ceil(len / streamChunkSize) − 1) ×
+     * delay). Tests that need content to land mid-turn (e.g. RFC-006's
+     * unread coalescing branches) depend on it. */
+    streamChunkDelayMs?: number;
+    /** Characters per stream chunk (membrane default 10); pairs with
+     * streamChunkDelayMs. */
+    streamChunkSize?: number;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -1559,6 +1572,23 @@ export function validateRecipe(raw: unknown): Recipe {
     if (mock.defaultResponse !== undefined &&
         (typeof mock.defaultResponse !== 'string' || !mock.defaultResponse.trim())) {
       throw new Error('Recipe agent.mock.defaultResponse must be a non-empty string.');
+    }
+    // Timing knobs: reject strings and negatives rather than letting them
+    // through — once these pass to MockAdapter, '1000' > 0 and
+    // setTimeout('1000') both coerce, so a quoted value would work by
+    // accident and break the day someone compares it. Same typo-surfaces-
+    // later class the cacheTtl validator below exists to stop.
+    for (const key of ['completeDelayMs', 'streamChunkDelayMs'] as const) {
+      if (mock[key] !== undefined &&
+          (typeof mock[key] !== 'number' || !Number.isFinite(mock[key]) || (mock[key] as number) < 0)) {
+        throw new Error(`Recipe agent.mock.${key} must be a non-negative finite number.`);
+      }
+    }
+    // The ≥1 floor is load-bearing, not cosmetic: a chunk size of 0 makes
+    // MockAdapter's stream loop advance by 0 forever.
+    if (mock.streamChunkSize !== undefined &&
+        (typeof mock.streamChunkSize !== 'number' || !Number.isInteger(mock.streamChunkSize) || mock.streamChunkSize < 1)) {
+      throw new Error('Recipe agent.mock.streamChunkSize must be a positive integer.');
     }
   }
 

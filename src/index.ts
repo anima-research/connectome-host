@@ -966,6 +966,15 @@ async function main() {
         ...(recipe.agent.mock?.defaultResponse !== undefined
           ? { defaultResponse: recipe.agent.mock.defaultResponse }
           : {}),
+        ...(recipe.agent.mock?.completeDelayMs !== undefined
+          ? { completeDelayMs: recipe.agent.mock.completeDelayMs }
+          : {}),
+        ...(recipe.agent.mock?.streamChunkDelayMs !== undefined
+          ? { streamChunkDelayMs: recipe.agent.mock.streamChunkDelayMs }
+          : {}),
+        ...(recipe.agent.mock?.streamChunkSize !== undefined
+          ? { streamChunkSize: recipe.agent.mock.streamChunkSize }
+          : {}),
       })
     : undefined;
   // -- x-gate-debt-chunks stamp (membrane dynamicHeaders, antra-tess/membrane#65)
