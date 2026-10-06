@@ -17,6 +17,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSourceOnlyFallback',
   'compressionMergeSourceOnly',
   'compressionMergeSourceOnlyFallback',
+  'compressionToolProseFallback',
   'compressionSplitFallback',
   'compressionSplitPlaceholder',
   'compressionSplitMaxCallsPerChunk',
@@ -24,6 +25,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionRecallBudgetTokens',
   'positionedRecallPairs',
   'recallHeaderTemplate',
+  'carrierPolicy',
   'targetChunkTokens',
   'mergeThreshold',
   'mergeMaxSourceSpanMessages',
@@ -34,6 +36,9 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'l3BudgetTokens',
   'toolResultMaxLastN',
   'toolUseInputMaxTokens',
+  'maxLiveImages',
+  'imageStripDepthTokens',
+  'maxLiveImageBytes',
   'adaptiveResolution',
   'kvStableReachTokens',
   'kvStableQualityGapRatio',
@@ -50,6 +55,8 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'witnessedBeforeSequence',
   'witnessedInstruction',
   'identityReminder',
+  'witnessedIdentityReminder',
+  'identityReminderSilent',
 ];
 
 export function buildFrameworkStrategy(

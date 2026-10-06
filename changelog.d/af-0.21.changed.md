@@ -1,0 +1,1 @@
+- Depend on `@animalabs/agent-framework` ^0.21.0 and `@animalabs/context-manager` ^0.13.0. AF 0.21.0 lets stdio MCPL children inherit CA-bundle and proxy variables again (lost in 0.20.0's env allowlist); CM 0.13.0 adds optional compression-hold timeouts and render/diagnostic fixes.

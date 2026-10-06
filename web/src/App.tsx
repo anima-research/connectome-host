@@ -18,6 +18,7 @@ import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
 import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
 import { BranchPanel } from './Branches';
+import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
   WEB_PROTOCOL_VERSION,
   type WebUiServerMessage,
@@ -26,6 +27,7 @@ import {
   type HistoryPageMessage,
   type MessageBlock,
   type TokenUsage,
+  type QuotaSnapshotData,
   type PerAgentCost,
   type CallLedgerSnapshot,
   type BranchRow,
@@ -137,6 +139,7 @@ export function App() {
   let pendingHistoryCorr: string | null = null;
   let pendingHistoryTimer: number | undefined;
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const quota = createQuotaPoll();
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
@@ -147,6 +150,14 @@ export function App() {
   type PanelMode = 'stream' | 'usage' | 'branches';
   const [focusedId, setFocusedId] = createSignal<string | null>(null);
   const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
+  /** The usage panel follows the focused node, and a fleet child answers for
+   *  its own credential: a pay-per-token child under a subscription parent
+   *  keeps its dollars. (The header stays the parent's readout.) */
+  const usageQuotaScope = (): string | null => {
+    const src = focusedNode()?.streamSource;
+    return src && (src.kind === 'child-event-all' || src.kind === 'child-event-agent') ? src.childName : null;
+  };
+  const focusedQuota = createQuotaPoll(usageQuotaScope);
   const [panelMode, setPanelMode] = createSignal<PanelMode | null>(null);
   const [streamLines, setStreamLines] = createSignal<StreamLine[]>([]);
   /** Default-collapsed; the parent root and freshly-spawned fleet children
@@ -824,21 +835,41 @@ export function App() {
     queueScroll();
   };
 
-  const requestOlder = (): void => {
+  /** Server page cap (web-ui-module HISTORY_PAGE_MAX); bulk loads chain pages. */
+  const HISTORY_PAGE_CAP = 500;
+  /** Messages still owed by an in-flight bulk load (0 = none). Bulk loads
+   *  chain one page per reply so a stop is honoured at a page boundary. */
+  const [bulkRemaining, setBulkRemaining] = createSignal(0);
+  const [bulkLoaded, setBulkLoaded] = createSignal(0);
+
+  const requestOlder = (limit = 200): void => {
     const info = historyInfo();
     if (!info || info.startIndex <= 0 || historyLoading() || protoMismatch() !== null) return;
     const corrId = `h${++historyCorrSeq}`;
     pendingHistoryCorr = corrId;
     setHistoryLoading(true);
-    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: 200 });
+    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: Math.min(limit, HISTORY_PAGE_CAP) });
     window.clearTimeout(pendingHistoryTimer);
     pendingHistoryTimer = window.setTimeout(() => {
       if (pendingHistoryCorr === corrId) {
         pendingHistoryCorr = null;
         setHistoryLoading(false);
+        setBulkRemaining(0);
       }
     }, 10_000);
   };
+
+  /** Load up to `n` older messages in server-sized pages; progress shows in
+   *  the header row and a stop lands at the next page boundary. */
+  const loadOlder = (n: number): void => {
+    const info = historyInfo();
+    if (!info || info.startIndex <= 0) return;
+    const want = Math.min(n, info.startIndex);
+    setBulkLoaded(0);
+    setBulkRemaining(want);
+    requestOlder(Math.min(want, HISTORY_PAGE_CAP));
+  };
+  const stopLoadOlder = (): void => setBulkRemaining(0);
 
   const applyHistoryPage = (msg: HistoryPageMessage): void => {
     if (msg.corrId !== pendingHistoryCorr) return;
@@ -859,6 +890,16 @@ export function App() {
     requestAnimationFrame(() => {
       if (scrollPane) scrollPane.scrollTop = scrollPane.scrollHeight - prevScrollHeight + prevScrollTop;
     });
+    // Bulk load: chain the next page until the quota is met, history is
+    // exhausted, the operator stopped it, or a page came back empty.
+    const remaining = Math.max(0, bulkRemaining() - msg.entries.length);
+    setBulkLoaded((v) => v + msg.entries.length);
+    setBulkRemaining(remaining);
+    if (remaining > 0 && msg.startIndex > 0 && msg.entries.length > 0) {
+      requestOlder(Math.min(remaining, HISTORY_PAGE_CAP));
+    } else if (remaining > 0) {
+      setBulkRemaining(0);
+    }
   };
 
   const onScrollPane = (): void => {
@@ -1272,6 +1313,7 @@ export function App() {
       <Header
         welcome={welcome()}
         usage={usage()}
+        quota={quota()}
         status={wire.status()}
         branchPanelOpen={panelMode() === 'branches'}
         onBranchClick={openBranches}
@@ -1354,16 +1396,49 @@ export function App() {
             </Show>
             <Show when={mainView() === 'context'} fallback={<Show when={mainView() === 'chat'}>
             <Show when={(historyInfo()?.startIndex ?? 0) > 0}>
-              <button
-                type="button"
-                class="w-full text-center text-xs font-mono text-neutral-500 hover:text-neutral-300 py-1.5 border border-dashed border-neutral-800 rounded"
-                onClick={requestOlder}
-                disabled={historyLoading()}
-              >
-                {historyLoading()
-                  ? 'loading…'
-                  : `▲ ${historyInfo()!.startIndex} older message${historyInfo()!.startIndex === 1 ? '' : 's'} — scroll or click to load`}
-              </button>
+              <div class="flex items-center gap-1 text-xs font-mono text-neutral-500 py-1 px-2 border border-dashed border-neutral-800 rounded">
+                <button
+                  type="button"
+                  class="flex-1 text-left hover:text-neutral-300 disabled:text-neutral-600"
+                  onClick={() => requestOlder(200)}
+                  disabled={historyLoading()}
+                  title="scroll to the top or click to load 200 older messages"
+                >
+                  {bulkRemaining() > 0
+                    ? `loading older… ${bulkLoaded().toLocaleString()} / ${(bulkLoaded() + bulkRemaining()).toLocaleString()}`
+                    : historyLoading()
+                      ? 'loading…'
+                      : `▲ ${historyInfo()!.startIndex.toLocaleString()} older message${historyInfo()!.startIndex === 1 ? '' : 's'} — scroll or click to load`}
+                </button>
+                <Show when={bulkRemaining() > 0} fallback={
+                  <>
+                    <span class="text-neutral-700">load</span>
+                    <For each={[200, 1000, 5000].filter((n) => n <= (historyInfo()?.startIndex ?? 0) || n === 200)}>{(n) => (
+                      <button
+                        type="button"
+                        class="px-1.5 py-0.5 rounded border border-neutral-800 hover:border-neutral-600 hover:text-neutral-200 disabled:text-neutral-700"
+                        disabled={historyLoading()}
+                        title={`load the ${Math.min(n, historyInfo()?.startIndex ?? 0).toLocaleString()} older messages just above (500 per request)`}
+                        onClick={() => loadOlder(n)}
+                      >{n >= 1000 ? `${n / 1000}k` : n}</button>
+                    )}</For>
+                    <button
+                      type="button"
+                      class="px-1.5 py-0.5 rounded border border-neutral-800 hover:border-amber-800 hover:text-amber-200 disabled:text-neutral-700"
+                      disabled={historyLoading()}
+                      title={`load ALL ${historyInfo()!.startIndex.toLocaleString()} older messages — heavy for large stores`}
+                      onClick={() => loadOlder(historyInfo()!.startIndex)}
+                    >all</button>
+                  </>
+                }>
+                  <button
+                    type="button"
+                    class="px-1.5 py-0.5 rounded border border-rose-900/60 text-rose-300 hover:bg-rose-950/40"
+                    onClick={stopLoadOlder}
+                    title="stop after the current page"
+                  >stop</button>
+                </Show>
+              </div>
             </Show>
             <Show when={messages.length === 0}>
               <div class="text-neutral-500 text-sm italic">
@@ -1452,6 +1527,7 @@ export function App() {
               sessionUsage={usage()}
               perAgentCost={perAgentCost()}
               callLedger={callLedger()}
+              quota={usageQuotaScope() === null ? quota() : focusedQuota()}
               onClose={closePanel}
             />
           )}
@@ -1838,6 +1914,8 @@ function handleServerMessage(
 function Header(props: {
   welcome: WelcomeMessage | null;
   usage: TokenUsage;
+  /** Subscription quota windows; replaces the dollar figure when present. */
+  quota: QuotaSnapshotData | null;
   status: string;
   branchPanelOpen: boolean;
   onBranchClick(): void;
@@ -1903,7 +1981,12 @@ function Header(props: {
         <Show when={props.usage.cacheRead > 0}>
           <span class="ml-2">{fmt(props.usage.cacheRead)} cache</span>
         </Show>
-        <Show when={props.usage.cost && props.usage.cost.total > 0}>
+        <Show when={props.quota?.subscription && props.quota.windows.length > 0}>
+          <span class={`ml-3 ${quotaTone(props.quota!)}`} title={quotaTitle(props.quota!)}>
+            {quotaReadout(props.quota!)}
+          </span>
+        </Show>
+        <Show when={!props.quota?.subscription && props.usage.cost && props.usage.cost.total > 0}>
           <span
             class="ml-3 text-emerald-300"
             title={`Estimated cost (${props.usage.cost!.currency})`}
@@ -1934,25 +2017,28 @@ function MessageRow(props: {
   children: JSX.Element;
 }) {
   const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
+  // The toolbar lives INSIDE the row (top-right). An earlier version hung it
+  // off the row's left edge, where the scroll pane's overflow clipping made
+  // it all but invisible — hover affordances must be inside the clip box.
   return (
-    <div class={`group relative ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
       <Show when={actionable()}>
-        <div class={`absolute -left-1 top-0 -translate-x-full pr-1 flex flex-col gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
-          <Show when={props.canSuppress}>
-            <button
-              type="button"
-              class={`w-5 h-5 rounded border text-[10px] leading-none ${props.selected ? 'bg-rose-900/70 border-rose-700 text-rose-100' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-rose-700 hover:text-rose-200'}`}
-              title={props.selecting ? (props.selected ? 'deselect' : 'select for suppression') : 'suppress this message (select more, then confirm)'}
-              onClick={props.onSelect}
-            >{props.selected ? '✓' : '⊘'}</button>
-          </Show>
+        <div class={`absolute right-0 top-0 z-10 flex gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
           <Show when={props.canRollback && !props.selecting}>
             <button
               type="button"
-              class="w-5 h-5 rounded border bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] leading-none"
-              title="roll back: make this message the tail of the live branch"
+              class="px-1.5 py-0.5 rounded border bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] font-mono leading-tight shadow"
+              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it)"
               onClick={props.onRollback}
-            >⏪</button>
+            >⏪ roll back</button>
+          </Show>
+          <Show when={props.canSuppress}>
+            <button
+              type="button"
+              class={`px-1.5 py-0.5 rounded border text-[10px] font-mono leading-tight shadow ${props.selected ? 'bg-rose-900/70 border-rose-700 text-rose-100' : 'bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-rose-700 hover:text-rose-200'}`}
+              title={props.selecting ? (props.selected ? 'deselect' : 'select for suppression') : 'suppress: select this message (and more), then confirm in the bar below'}
+              onClick={props.onSelect}
+            >{props.selected ? '✓ selected' : props.selecting ? '⊘ select' : '⊘ suppress'}</button>
           </Show>
         </div>
       </Show>
@@ -2168,13 +2254,41 @@ function ToolPayload(props: { raw: string; isError?: boolean }) {
  *  Module-scope signal: one timeline per page, and survival across <For>
  *  row recycling is exactly what we want. */
 const [expandedBlocks, setExpandedBlocks] = createSignal<Set<string>>(new Set());
-const toggleBlock = (key: string): void => {
-  setExpandedBlocks((prev) => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    return next;
-  });
+/**
+ * Second layer: whole KINDS expanded at once — `tool:<name>` ("expand all
+ * similar") or `thinking`. A block is open when it is pinned individually,
+ * or its kind is expanded and it was not individually collapsed afterwards.
+ * `blockKinds` remembers each toggled key's kind so collapsing a kind can
+ * also drop that kind's individual pins.
+ */
+const [expandedKinds, setExpandedKinds] = createSignal<Set<string>>(new Set());
+const [collapsedOverrides, setCollapsedOverrides] = createSignal<Set<string>>(new Set());
+const blockKinds = new Map<string, string>();
+const isBlockOpen = (key: string, kind: string): boolean =>
+  expandedBlocks().has(key) || (expandedKinds().has(kind) && !collapsedOverrides().has(key));
+const toggleBlock = (key: string, kind = ''): void => {
+  blockKinds.set(key, kind);
+  if (isBlockOpen(key, kind)) {
+    if (expandedBlocks().has(key)) {
+      setExpandedBlocks((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+    if (kind && expandedKinds().has(kind)) {
+      setCollapsedOverrides((prev) => new Set(prev).add(key));
+    }
+  } else {
+    setCollapsedOverrides((prev) => { if (!prev.has(key)) return prev; const next = new Set(prev); next.delete(key); return next; });
+    setExpandedBlocks((prev) => new Set(prev).add(key));
+  }
+};
+/** Expand or collapse every block of a kind across the loaded history. */
+const toggleKind = (kind: string): void => {
+  const opening = !expandedKinds().has(kind);
+  setExpandedKinds((prev) => { const next = new Set(prev); if (opening) next.add(kind); else next.delete(kind); return next; });
+  // Either way, per-block state for this kind resets to "follow the kind".
+  setCollapsedOverrides((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
+  if (!opening) {
+    setExpandedBlocks((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
+  }
 };
 
 function BlockView(props: {
@@ -2253,23 +2367,33 @@ function ThinkingBlockView(props: {
 }) {
   // Expanded while streaming (watch the mind move), collapsed once done —
   // unless the operator pinned it open.
-  const open = (): boolean => props.block.streaming === true || expandedBlocks().has(props.blockKey);
+  const KIND = 'thinking';
+  const open = (): boolean => props.block.streaming === true || isBlockOpen(props.blockKey, KIND);
+  const allOpen = (): boolean => expandedKinds().has(KIND);
   return (
     <div class="my-1.5 border-l-2 border-violet-800/60 pl-2">
-      <button
-        type="button"
-        class="text-[11px] font-mono text-violet-400/80 hover:text-violet-300 flex items-center gap-1.5"
-        onClick={() => toggleBlock(props.blockKey)}
-      >
-        <span>{open() ? '▾' : '▸'}</span>
-        <span>💭 thinking · {props.block.text.length.toLocaleString()} chars</span>
-        <Show when={props.block.streaming}>
-          <span class="animate-pulse text-violet-300">▍</span>
-        </Show>
-        <Show when={props.block.truncated}>
-          <span class="text-neutral-600 italic">truncated</span>
-        </Show>
-      </button>
+      <div class="group/hdr flex items-center gap-2">
+        <button
+          type="button"
+          class="text-[11px] font-mono text-violet-400/80 hover:text-violet-300 flex items-center gap-1.5"
+          onClick={() => toggleBlock(props.blockKey, KIND)}
+        >
+          <span>{open() ? '▾' : '▸'}</span>
+          <span>💭 thinking · {props.block.text.length.toLocaleString()} chars</span>
+          <Show when={props.block.streaming}>
+            <span class="animate-pulse text-violet-300">▍</span>
+          </Show>
+          <Show when={props.block.truncated}>
+            <span class="text-neutral-600 italic">truncated</span>
+          </Show>
+        </button>
+        <button
+          type="button"
+          class={`text-[10px] font-mono px-1 rounded border transition-opacity ${allOpen() ? 'border-violet-800 text-violet-300 opacity-100' : 'border-neutral-800 text-neutral-500 opacity-0 group-hover/hdr:opacity-100 hover:text-violet-300'}`}
+          title={allOpen() ? 'collapse every thinking block in the loaded history' : 'expand every thinking block in the loaded history'}
+          onClick={() => toggleKind(KIND)}
+        >{allOpen() ? '⤡ all thinking' : '⤢ all thinking'}</button>
+      </div>
       <Show when={open()}>
         <div class="mt-1 text-[13px] leading-relaxed text-violet-200/60 italic whitespace-pre-wrap">
           {props.block.text}
@@ -2284,7 +2408,9 @@ function ToolBlockView(props: {
   blockKey: string;
   result?: ToolResultInfo;
 }) {
-  const open = (): boolean => expandedBlocks().has(props.blockKey);
+  const kind = (): string => `tool:${props.block.name}`;
+  const open = (): boolean => isBlockOpen(props.blockKey, kind());
+  const allOpen = (): boolean => expandedKinds().has(kind());
   const dot = (): string => {
     if (props.block.status === 'running') return 'bg-amber-400 animate-pulse';
     if (props.block.status === 'failed' || props.result?.isError) return 'bg-rose-500';
@@ -2298,17 +2424,25 @@ function ToolBlockView(props: {
   };
   return (
     <div class="my-1">
-      <button
-        type="button"
-        class="font-mono text-xs text-amber-400 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 px-2 py-1 rounded flex items-center gap-2"
-        onClick={() => toggleBlock(props.blockKey)}
-      >
-        <span class={`w-1.5 h-1.5 rounded-full ${dot()}`} />
-        <span>{open() ? '▾' : '▸'} {props.block.name}{duration()}</span>
-        <Show when={props.result?.isError}>
-          <span class="text-rose-400">error</span>
-        </Show>
-      </button>
+      <div class="group/hdr flex items-center gap-2">
+        <button
+          type="button"
+          class="font-mono text-xs text-amber-400 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 px-2 py-1 rounded flex items-center gap-2"
+          onClick={() => toggleBlock(props.blockKey, kind())}
+        >
+          <span class={`w-1.5 h-1.5 rounded-full ${dot()}`} />
+          <span>{open() ? '▾' : '▸'} {props.block.name}{duration()}</span>
+          <Show when={props.result?.isError}>
+            <span class="text-rose-400">error</span>
+          </Show>
+        </button>
+        <button
+          type="button"
+          class={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-opacity ${allOpen() ? 'border-amber-800 text-amber-300 opacity-100' : 'border-neutral-800 text-neutral-500 opacity-0 group-hover/hdr:opacity-100 hover:text-amber-300'}`}
+          title={allOpen() ? `collapse every ${props.block.name} call in the loaded history` : `expand every ${props.block.name} call in the loaded history (input + result)`}
+          onClick={() => toggleKind(kind())}
+        >{allOpen() ? `⤡ all ${props.block.name}` : `⤢ all ${props.block.name}`}</button>
+      </div>
       <Show when={open()}>
         <div class="mt-1 ml-3 space-y-1">
           <div class="text-[10px] uppercase tracking-wider text-neutral-600">

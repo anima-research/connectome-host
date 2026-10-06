@@ -6,6 +6,139 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+### Fixed
+
+- Evacuator-generated recipes pin the imported participant before host construction, keeping the live framework and Membrane role anchor aligned through `/session switch`. Name resolution uses `--agent`, then the chosen warmup session's sidecar, then `Claude`; the same name is passed explicitly to warmup. For custom imports without a selected warmup session or sidecar, supply `--agent`. Existing generated recipes need their hardcoded `agent` name corrected. Warmup selection rejects duplicate titles and ambiguous ID prefixes with candidate IDs; the guide and CLI explicitly require selecting the intended imported store before chatting under the revival identity. Replacing an output recipe with a different participant emits a warning, including when a resumed run falls back from a custom name to `Claude`.
+- Headless command replies bypass event subscriptions like other protocol responses. Fleet commands and direct socket clients receive `command-output` even with narrow or empty subscriptions; unrelated telemetry remains filtered. Protocol replies stay with the requesting connection and are discarded if that connection closes or is replaced while work is pending. The headless log reports the dropped response type and reason, without its payload.
+- The WebUI and fleet WebUI smoke-test recipes bind to `127.0.0.1`, so their unauthenticated local servers pass the existing bind-safety check. The fleet parent uses port 8788 and its child uses 8787 to avoid competing for one listener.
+- The clerk recipe's channel-management procedures use `wake_add_rule` and `wake_remove_rule` for live, persisted gate changes, while retaining Zulip subscriptions and protected default policies. They no longer direct the clerk to edit a Chronicle workspace copy or promise a timed reload. The prompt distinguishes recipe-shipped rules restored at startup from runtime-only rules whose removal survives restart.
+- The generic provider logging wrapper forwards an adapter's optional `toolResultImageMediaTypes` capability, preserving its native tool-image policy. Older adapters keep their existing behavior; Gemini HEIC/HEIF history preservation requires a membrane version containing antra-tess/membrane#92.
+### Added
+
+- Recipes can tune `agent.strategy.maxLiveImages`, `imageStripDepthTokens`, and `maxLiveImageBytes` for autobiographical and frontdesk strategies. Values must be non-negative safe integers; zero disables the corresponding limit. Omitted values keep context-manager's defaults.
+### Fixed
+
+- **Recipe authors using `kv-unified`:** `agent.strategy.kvUnified.preserveGapBearingSummaries` must now be an explicit boolean, and cannot be `true` together with `treeifyNonContiguousSummaries`. Add the flag to older recipes. Both requirements already apply in context-manager; invalid configurations now fail at recipe load instead of the first solve. Valid explicit policies and other folding strategies are unchanged.
+- MCPL server definitions in `mcpl-servers.json` now preserve `inheritEnv`, and recipes can override it (including explicit `false`) for file-defined servers. Recipes and server files reject non-boolean values. Agent-owned overlays strip `inheritEnv` entirely, including when replacing an operator-defined server; full host-environment access is an operator grant. Full environment inheritance requires an agent-framework version containing its PR #175; the host's locked 0.19.0 predates that control and remains unchanged.
+
+## 0.9.0 — 2026-09-21
+
+### Added
+
+- Recipes can set **`modules.history: true`** to attach agent-framework's
+  `HistoryModule` (agent-framework 0.16.0): `history--stats` / `history--extract`
+  / `history--search` / `history--overview` tools for querying an agent's own
+  uncompressed chronicle via native secondary indexes, and for browsing
+  already-compressed spans via existing compression summaries (no new LLM
+  calls). `bind()` is wired post-creation with the agent's live
+  `ContextManager` and the framework's `ChannelRegistry` (when MCPL is
+  configured), so channel-filter arguments on all four tools accept a live or
+  historical channel label/address, not just the raw internal channel id.
+  Bumps `@animalabs/agent-framework` to `^0.16.0` and
+  `@animalabs/context-manager` to `^0.10.0` (both required for `HistoryModule`
+  and its summary-overview support) and `@animalabs/chronicle` to `^0.4.0`
+  (native secondary-index support the history tools depend on).
+
+- Recipes can set **`agent.retry`** (Membrane's retry policy, passed through
+  verbatim) and **`mcpServers.<id>.requestTimeoutMs`** (the framework's
+  per-server JSON-RPC timeout). Both knobs existed underneath — Membrane's
+  `MembraneConfig.retry` and `McplServerConfig.requestTimeoutMs` — but the host
+  never surfaced them, so a gateway 502 killed a turn on first failure
+  (Membrane retries generic retryable errors zero times by default; only
+  `529`/`overloaded_error` has a dedicated schedule) and a tool slower than the
+  60s default (image generation) could only ever time out. Both validate at
+  recipe-load time.
+
+- Subscription hosts (Claude OAuth token via `ANTHROPIC_AUTH_TOKEN`, Codex
+  login via `openai-codex`) show quota windows instead of a dollar estimate:
+  the TUI status line and the WebUI header read `10% weekly | 99% 5h`, one
+  entry per window the provider reports (5-hour, weekly, per-model weekly),
+  and the WebUI usage panel lists each window with its reset time.
+  List-price dollars were fiction on a subscription. Pay-per-token hosts are
+  unchanged.
+  - The windows are polled out-of-band (no inference spend) by a new
+    `QuotaMeter`: the TUI polls while it runs, the WebUI only while its tab
+    is visible and focused (`GET /quota`, panel op `quota`, observer scope
+    `health`), floored at one provider read per 30s however many viewers.
+  - A 429 while a window is spent is now recognised as a quota, not a
+    throttle: the agent parks until the window resets instead of retrying
+    into it and recording a failed turn per attempt. Needs an
+    agent-framework with `providerHold`; on older frameworks the option is
+    inert and behaviour is as before.
+  - Both provider surfaces are private to the vendors' own CLIs and may
+    change; an unreadable answer shows no readout rather than a guess.
+
+- WebUI live surgery, quiesce toggle, inline images, operator log
+  (requires agent-framework with `rollbackToMessage`/`suppressMessages`;
+  quiesce needs agent-framework #122 — every affordance is feature-detected
+  from `welcome.features`, so the bundle is safe against older hosts):
+  - **Roll back to a message** (hover ⏪ in Chat, "roll back to here" on raw
+    boxes in the Context document): forks at that message and makes the fork
+    the live branch; confirm dialog names what leaves the context.
+  - **Suppress messages** (hover ⊘ enters multi-select, floating bar to
+    confirm): fork at head, redact on the fork, switch. Parent keeps them.
+  - **Quiesce/resume** header switch showing the host's serving state; a
+    busy-agent refusal offers "quiesce, then retry".
+  - **Images render** in Chat and Context views with a lightbox. Chat frames
+    carry a `ref` and the browser fetches bytes lazily from
+    `GET /media/<messageId>/<blockPath>` (observer scope `messages`,
+    `?scope=` proxies to fleet children) — base64 never rides the WebSocket.
+    Tool-result images (read_image, cameras) render too.
+  - **Operator log** in the branch panel: the host's durable
+    `operator-actions.jsonl`, live-refreshed on `operator:action` traces.
+  - New WS frames: `rollback`, `suppress`, `host-quiesce`, `host-resume`,
+    `request-host-mode`, `request-operator-log` → `surgery-result`,
+    `host-mode`, `operator-log`; `welcome.features` + `welcome.hostMode`.
+    Panel op `media`.
+
+### Changed
+
+- Depends on `@animalabs/agent-framework` ^0.17.0, `@animalabs/context-manager`
+  ^0.10.1 and `@animalabs/membrane` ^0.5.86. With AF 0.17 the quota meter's
+  `providerHold` is live: a subscription 429 on a spent quota window parks the
+  agent until the window resets instead of retrying into it (older AF ignored
+  the option). CM 0.10.1 carries the kv-unified stale-receipt fix (CM #97);
+  membrane 0.5.86 makes the ChatGPT-subscription prompt cache hit (stable
+  `session_id` header). `package-lock.json` had drifted to AF 0.13 / CM 0.8 /
+  chronicle 0.3 and is regenerated alongside `bun.lock`.
+
+- The `frontdesk` strategy no longer adds its provenance header to a message
+  whose server already rendered who, where, when and the id into the body
+  (metadata `attributed: true`, as zulip-mcp now stamps); its question and
+  mention salience scans the body with the server's `attributionHeader`
+  prefix removed. Unstamped MCPL messages keep the header. Without this, a
+  frontdesk agent on a current zulip-mcp reads two headers per message.
+
+- Route ChatGPT subscription inference through Membrane's shared Responses adapter, preserving Codex app-server login, token refresh, endpoint configuration, and Fast mode controls in the host. Provider usage now declares the cache-inclusive convention and is normalized by Membrane.
+- Preserve cache-usage and formatter capabilities through the logging decorator, fixing duplicate cached-input accounting for both subscription and API-key Responses calls. Keep participant names in auxiliary calls and mark logged usage with its convention while retaining the `openai-codex` provider label.
+- Serialize a forced Codex token refresh behind any in-flight non-refresh acquisition, coalescing concurrent refresh callers without reusing a stale token.
+
+- README documents `agent.proseRouting` (`locus` / `hybrid` / `explicit` /
+  `disabled`) and `agent.sameRoundThinkTextPolicy`, and recommends
+  `proseRouting: "disabled"` for tool-heavy agents woken from shared channels,
+  where stray same-round narration otherwise auto-publishes to the sticky
+  channel (#128).
+
+### Fixed
+
+- Subscription quota meter, review follow-up:
+  - the meter no longer stops polling after consecutive failed reads (a
+    timer tick suppressed by the error backoff left no timer armed — two
+    failures froze the TUI readout for the life of the process);
+  - the WebUI keeps asking after a transient `/quota` failure (401 before
+    the observer session exists, 503 while the host binds, 5xx); only a
+    definite answer ends the polling;
+  - "inference parked" is shown only when the framework reports a host
+    hold; a spent window otherwise reads "quota window spent — resets …";
+  - the usage panel of a fleet child reads that child's own quota
+    (`/quota?scope=`), so a pay-per-token child keeps its dollars;
+  - the hold uses the failing agent's own model when the framework supplies
+    it; a spent window with no reset time holds one slice on a fresh
+    reading; numeric `resets_at` and Codex `rateLimitsByLimitId.codex` are
+    parsed; per-agent dollars are hidden and call-ledger dollars labelled
+    as list-price equivalents on a subscription; a TUI session switch no
+    longer brings the dollar readout back.
+
 ## 0.8.1 — 2026-09-10
 
 ### Added

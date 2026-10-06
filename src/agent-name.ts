@@ -27,7 +27,7 @@ export interface ResolvedAgentName {
 }
 
 /**
- * Priority: `explicit` (CLI flag or non-default recipe field) > `sidecar`
+ * Priority: `explicit` (CLI flag or provided recipe field) > `sidecar`
  * (per-session record written by the importer) > `default` (caller's
  * context-specific fallback — `"Claude"` for the claudeai-revival
  * scripts, `"agent"` for native conhost sessions).

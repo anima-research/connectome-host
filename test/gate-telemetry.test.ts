@@ -122,3 +122,40 @@ describe('gateTelemetryHeaders', () => {
     });
   });
 });
+
+describe('GATE_TELEMETRY parses fail-closed (#119)', () => {
+  const gatewayEnv = (value: string) => ({ GATE_TELEMETRY: value, ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic' });
+
+  it('the values operators use to turn a flag OFF stay off', () => {
+    for (const value of ['off', 'no', 'OFF', 'No']) {
+      expect(gateTelemetryHeaders(gatewayEnv(value), debt)).toBeUndefined();
+    }
+  });
+
+  it('typos and unrecognized strings stay off (and warn, once per value)', () => {
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => { errs.push(a.join(' ')); };
+    try {
+      expect(gateTelemetryHeaders(gatewayEnv('flase'), debt)).toBeUndefined();
+      expect(gateTelemetryHeaders(gatewayEnv('flase'), debt)).toBeUndefined();
+      expect(gateTelemetryHeaders(gatewayEnv('yes'), debt)).toBeUndefined();
+    } finally {
+      console.error = orig;
+    }
+    const warned = errs.filter((e) => e.includes('not a recognized value'));
+    expect(warned.length).toBe(2); // once per distinct value, never per call
+    expect(warned[0]).toContain('"flase"');
+  });
+
+  it('whitespace variants: "False " stays off, " 1" (clear intent) enables', () => {
+    expect(gateTelemetryHeaders(gatewayEnv('False '), debt)).toBeUndefined();
+    expect(gateTelemetryHeaders(gatewayEnv(' 1'), debt)).toBeDefined();
+  });
+
+  it('the allowlist: exactly 1 and true (any case) enable', () => {
+    expect(gateTelemetryHeaders(gatewayEnv('1'), debt)).toBeDefined();
+    expect(gateTelemetryHeaders(gatewayEnv('true'), debt)).toBeDefined();
+    expect(gateTelemetryHeaders(gatewayEnv('TRUE'), debt)).toBeDefined();
+  });
+});

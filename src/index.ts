@@ -38,6 +38,7 @@ import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { SubagentModule } from './modules/subagent-module.js';
+import { historyModuleOptions, assertSemanticSearchRegistered } from './history-semantic.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { buildRetrievalModuleConfig } from './retrieval-config.js';
@@ -53,7 +54,8 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { toolClassConfig } from './tool-lifecycle-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
@@ -72,6 +74,7 @@ import { buildFrameworkStrategy, buildConversationsConfig } from './framework-st
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions } from './extensions.js';
+import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
 
 export type { AppContext };
 
@@ -117,6 +120,9 @@ interface AppContext {
    *  layer (health snapshots) in BOTH runtimes — WebUI host and headless
    *  fleet child. Null when the provider adapter exposes no ledger. */
   callLedger: CallLedger | null;
+  /** Subscription quota windows; null on metered (pay-per-token) providers.
+   *  Its presence is what flips usage readouts from dollars to percent. */
+  quotaMeter: QuotaMeter | null;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -185,6 +191,7 @@ async function createFramework(
   agentName: string,
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
+  quotaMeter: QuotaMeter | null,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -267,7 +274,10 @@ async function createFramework(
   // ChannelRegistry) happens post-creation, below, once `framework` exists.
   let historyModule: HistoryModule | null = null;
   if (modules.history) {
-    historyModule = new HistoryModule();
+    // storePath is sessionManager.getStorePath(id) → basename = session id.
+    const historyOpts = historyModuleOptions(modules.history, agentName, basename(storePath));
+    historyModule = new HistoryModule(historyOpts);
+    assertSemanticSearchRegistered(historyModule, historyOpts.semantic !== undefined);
     moduleInstances.push(historyModule);
   }
 
@@ -394,6 +404,7 @@ async function createFramework(
       allowedOrigins: webuiConfig.allowedOrigins,
       observersPath,
       ...(callLedger ? { callLedger } : {}),
+      ...(quotaMeter ? { quotaMeter } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -434,38 +445,16 @@ async function createFramework(
   // from channels the agent never asked to listen to.
   const recipeServers = recipe.mcpServers ?? {};
   const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
-  const fileServersById = new Map(fileServers.map(s => [s.id, s]));
 
   // A server entry has EITHER a `command` (stdio) or a `url` (WebSocket); the
-  // framework's McplServerConfig now carries both as optional, so this local
-  // type must too. Previously the url-only branch forced `command: undefined!`,
-  // which then reached `spawn(undefined, …)` and crashed a network-MCPL recipe.
-  const allServers: Array<{ id: string; command?: string; url?: string; [k: string]: unknown }> = [];
-  for (const [id, recipeEntry] of Object.entries(recipeServers)) {
-    const fileEntry = fileServersById.get(id);
-    if (fileEntry) {
-      const merged: Record<string, unknown> = { ...fileEntry };
-      if (recipeEntry.channelSubscription !== undefined) merged.channelSubscription = recipeEntry.channelSubscription;
-      if (recipeEntry.toolPrefix !== undefined) merged.toolPrefix = recipeEntry.toolPrefix;
-      if (recipeEntry.enabledFeatureSets !== undefined) merged.enabledFeatureSets = recipeEntry.enabledFeatureSets;
-      if (recipeEntry.disabledFeatureSets !== undefined) merged.disabledFeatureSets = recipeEntry.disabledFeatureSets;
-      if (recipeEntry.enabledTools !== undefined) merged.enabledTools = recipeEntry.enabledTools;
-      if (recipeEntry.disabledTools !== undefined) merged.disabledTools = recipeEntry.disabledTools;
-      if (recipeEntry.reconnect !== undefined) merged.reconnect = recipeEntry.reconnect;
-      if (recipeEntry.reconnectIntervalMs !== undefined) merged.reconnectIntervalMs = recipeEntry.reconnectIntervalMs;
-      if (recipeEntry.reconnectMaxIntervalMs !== undefined) merged.reconnectMaxIntervalMs = recipeEntry.reconnectMaxIntervalMs;
-      // Let a recipe override/adopt WebSocket transport for a file-defined server.
-      if (recipeEntry.url !== undefined) merged.url = recipeEntry.url;
-      if (recipeEntry.transport !== undefined) merged.transport = recipeEntry.transport;
-      if (recipeEntry.token !== undefined) merged.token = recipeEntry.token;
-      if (recipeEntry.access !== undefined) merged.access = recipeEntry.access;
-      allServers.push(merged as { id: string; command?: string; url?: string; [k: string]: unknown });
-    } else if (recipeEntry.command || recipeEntry.url) {
-      // Recipe-defined server (not in the file config). Spread ALL recipe fields
-      // (command OR url/transport/token, plus policy) verbatim — no fake command.
-      allServers.push({ id, ...recipeEntry } as { id: string; command?: string; url?: string; [k: string]: unknown });
-    }
-  }
+  // framework's McplServerConfig carries both as optional. mergeRecipeServers
+  // applies the recipe's policy overrides (RECIPE_OVERRIDABLE_SERVER_FIELDS)
+  // to file servers it names, passes recipe-defined servers through verbatim,
+  // and rejects an id-only entry the file doesn't define.
+  const allServers = mergeRecipeServers(
+    recipeServers as unknown as Record<string, Record<string, unknown>>,
+    fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
+  );
 
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
@@ -516,12 +505,21 @@ agents: [agentConfig],
     mcplServers: finalServers,
     gate: gateOptions,
     timeZone,
+    // A 429 while a subscription window is spent is a quota, not a throttle:
+    // park until it resets instead of retrying into it.
+    ...(quotaMeter ? { providerHold: quotaProviderHold(quotaMeter, () => model) } : {}),
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
     // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
     // passed through verbatim; the framework owns the defaults.
     ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // MCPL RFC-008 tool classes: this host's module table, and the recipe's
+    // operator overrides. Spread as an untyped object so an agent-framework
+    // older than the tool-lifecycle release (which lacks both fields)
+    // typechecks and simply ignores them — no tool is then classed beyond
+    // the framework's own built-ins.
+    ...(toolClassConfig(recipe) as object),
   });
 
   // Wire post-creation hooks
@@ -906,6 +904,16 @@ async function main() {
         fastMode: recipe.agent.codex?.fastMode ?? false,
       })
     : undefined;
+  // Subscription credentials draw down utilization windows instead of being
+  // billed per token; the meter reads them out-of-band (no inference spend).
+  const quotaMeter = provider === 'anthropic' && config.authToken
+    ? new QuotaMeter(new AnthropicOAuthQuotaSource({
+        authToken: config.authToken,
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      }))
+    : codexAdapter
+      ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
+      : null;
   // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
   // Groq, NanoGPT, ...). The recipe carries the endpoint (agent.baseUrl,
   // validated at load); the key is optional because local servers have none.
@@ -1148,7 +1156,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
 
   // Build app context
   const app: AppContext = {
@@ -1161,6 +1169,7 @@ async function main() {
     userMessageCount: 0,
     codexAdapter,
     callLedger,
+    quotaMeter,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1171,7 +1180,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

@@ -5,10 +5,10 @@
     "": {
       "name": "@animalabs/connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.16.0",
+        "@animalabs/agent-framework": "^0.21.0",
         "@animalabs/chronicle": "^0.4.0",
-        "@animalabs/context-manager": "^0.10.0",
-        "@animalabs/membrane": "^0.5.85",
+        "@animalabs/context-manager": "^0.13.0",
+        "@animalabs/membrane": "^0.5.86",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -19,13 +19,13 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.16.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/context-manager": "^0.10.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-f4w+WqGjKxQpCMN1A3ywZ4xlY1eQ5E2J34clnwkmANgvF3FJAaLf6Om2q63UAHIMASP4HRQSJ1FlBiF7Xh/FMA=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.21.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/context-manager": "^0.13.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-pScHYRiNcRozUVgUTbVyCp840ntfaQFqB2dwWJtmm68uEBtgOFC4/Llixa5gSC+UI7svrHaTQ6BAMGrdgA1Tiw=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.4.0", "", {}, "sha512-Ka0jPHjo2fxWfketjea5q32qcwCTTf9dncAGAk9WfSHWAwCkDMbw6IQDHWrNmfzAt8+7z8llkfmPVy1taophMA=="],
 
-    "@animalabs/context-manager": ["@animalabs/context-manager@0.10.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/membrane": "^0.5.69" } }, "sha512-IY94FyckKidPDLcY/uLZrIhd7eycKY571uF/geyah+NHB3Lx/v0lWo824BMCfL9GN//yUgsqxL3lxyYCMN2F+A=="],
+    "@animalabs/context-manager": ["@animalabs/context-manager@0.13.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/membrane": "^0.5.69" } }, "sha512-mSloA3yYht/Hd/QVSEBt6dTjDiyELIAfcVnsDlgXWoqIHaytEjBIK9Gcgtxpp+wPTyPN1O/l3EMj2/Zm8pq7HA=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.85", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-Ll215f62CZTB88dGe7p+9mQceMeVByXPpUUCHMQ7KLS7ZBmCE418s3bA7DUWIzm8ZPlT+fAc4pnMCbB5M9nEpw=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.86", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-VdTzq8Ka9pGZXaQeo426hwzLb3NqqRrwhoNwwD/hrkwzFURhqrLVC6XC4/JfUSTt/kzJvtnwFEJ/04FcUp/Euw=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 

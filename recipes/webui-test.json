@@ -11,6 +11,6 @@
     "retrieval": false,
     "wake": false,
     "workspace": false,
-    "webui": true
+    "webui": { "host": "127.0.0.1", "port": 8787 }
   }
 }

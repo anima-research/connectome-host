@@ -14,6 +14,9 @@
 // request) and read `ProviderResponse.raw` for the response. Normalized
 // representations are kept under separate keys for occasional cross-reference.
 //
+// The summary also carries `effort` when the wire request set
+// `output_config.effort`, so a reasoning_effort change is checkable here.
+//
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
 //   { type: 'call'|'error', kind: 'complete'|'stream', timestamp, durationMs,
@@ -36,7 +39,25 @@ export type ReasoningGetter = () => {
   enabled: boolean;
   budgetTokens: number;
   display?: 'summarized' | 'omitted';
+  effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
+
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/** Whether `model` accepts `output_config.effort` at `level`. An unsupported
+ *  effort is a 400 on every turn — and the agent would have no turn left to
+ *  undo the setting with — so anything not known to accept it is dropped.
+ *  Opus 4.5 takes low/medium/high only; the 4.6 pair adds max; xhigh arrived
+ *  with Opus 4.7. Sonnet 4.5, Haiku 4.5 and older reject the parameter. A
+ *  level outside the known set (a corrupt or outdated saved setting) is never
+ *  sent, whatever the model. */
+export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
+  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return false;
+  if (/claude-opus-4-5/.test(model)) return level === 'low' || level === 'medium' || level === 'high';
+  if (/claude-(opus|sonnet)-4-6/.test(model)) return level !== 'xhigh';
+  return /claude-(fable|mythos)-|claude-opus-(4-[7-9]|[5-9])|claude-sonnet-[5-9]/.test(model);
+}
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
 /** Exact first-system-block identity Anthropic requires on subscription
@@ -48,8 +69,20 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /** Truthy env-flag parse: unset/''/'0'/'false' (any case) are off. */
-function envFlag(value: string | undefined): boolean {
-  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
+  // Fail-closed allowlist, same posture as gate-telemetry's flag (#119):
+  // only an explicit 1/true (trimmed, case-insensitive) enables full
+  // payloads in the local ledger; 'off', 'no' and typos must not.
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true') return true;
+  if (!['', '0', 'false', 'off', 'no'].includes(normalized)) {
+    console.error(
+      `[llm-calls] ${name}=${JSON.stringify(value)} is not a recognized value — ` +
+        `treating as DISABLED (fail-closed). Use ${name}=1 (or true) to enable.`,
+    );
+  }
+  return false;
 }
 
 export class LoggingAnthropicAdapter extends AnthropicAdapter {
@@ -136,6 +169,38 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     };
   }
 
+  /** Apply the agent's reasoning_effort setting as `output_config.effort`.
+   *  Called for stream() only: agent turns stream, while compression and
+   *  maintenance calls go through complete() — a resident turning effort down
+   *  for conversation must not silently thin the summaries its memory is made
+   *  of. 'default'/unset sends nothing. Merges into any `output_config`
+   *  already in `extra` (structured-output format) rather than replacing it. */
+  private withEffort(request: ProviderRequest): ProviderRequest {
+    const effort = this.getReasoning?.()?.effort;
+    if (!effort || effort === 'default') return request;
+    if (!modelAcceptsEffort(request.model, effort)) {
+      const key = `${request.model}:${effort}`;
+      if (!this.warnedEffort.has(key)) {
+        this.warnedEffort.add(key);
+        console.error(
+          `[reasoning-effort] ${request.model} does not accept effort=${effort} — not sent ` +
+            `(reasoning_effort stays set; the model default applies).`,
+        );
+      }
+      return request;
+    }
+    const existing = (request.extra as { output_config?: Record<string, unknown> } | undefined)?.output_config;
+    return {
+      ...request,
+      extra: {
+        ...request.extra,
+        output_config: { ...existing, effort },
+      },
+    };
+  }
+
+  private readonly warnedEffort = new Set<string>();
+
   private log(record: Record<string, unknown>): void {
     try {
       appendFileSync(this.logPath, JSON.stringify(record) + '\n');
@@ -146,11 +211,13 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
 
   private requestSummary(request: ProviderRequest, rawRequest?: unknown): Record<string, unknown> {
     const cache = rawRequest ? summarizeCacheControls(rawRequest) : undefined;
+    const effort = (rawRequest as { output_config?: { effort?: unknown } } | null | undefined)?.output_config?.effort;
     return {
       model: request.model,
       maxTokens: request.maxTokens,
       messages: request.messages.length,
       tools: request.tools?.length ?? 0,
+      ...(typeof effort === 'string' ? { effort } : {}),
       ...(cache ? { cacheBreakpoints: cache.count, cacheTtls: cache.ttls } : {}),
     };
   }
@@ -293,7 +360,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withOAuthIdentity(this.withReasoning(request));
+    const effective = this.withOAuthIdentity(this.withEffort(this.withReasoning(request)));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     try {

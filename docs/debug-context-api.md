@@ -2,7 +2,7 @@
 
 `GET /debug/context` returns the **membrane-normalized request that would be
 emitted if an agent were activated right now** — without activating it. It is a
-read-only window into exactly what the model would see on its next turn: the
+window into exactly what the model would see on its next turn: the
 compiled message history, the assembled system prompt, the generation config,
 and the filtered tool set.
 
@@ -19,11 +19,17 @@ it inherits that module's auth and bind configuration. If you haven't set up
 
 ## Prerequisites
 
-1. **`webui` is enabled** in your recipe (`"webui": true` or an object form).
+1. **`webui` is enabled** in your recipe — as an object with `basicAuth` (or a
+   loopback `host`); `"webui": true` alone binds `0.0.0.0` without credentials
+   and the host refuses to start.
 2. **Auth is configured.** The default bind is `0.0.0.0`, which *requires*
    `basicAuth` — the host refuses to start otherwise. Every request to
-   `/debug/context` must carry those Basic-Auth credentials. (A loopback-only
-   bind, `host: "127.0.0.1"`, skips the auth requirement for local dev.)
+   `/debug/context` must then carry those Basic-Auth credentials, the
+   full-access session cookie set by `/auth/basic`, or an observer session
+   whose grant includes the `debug` scope (see
+   [`webui-deployment.md`](./webui-deployment.md#authentication)). (A
+   loopback-only bind, `host: "127.0.0.1"`, skips the auth requirement for
+   local dev.)
 
 ```jsonc
 // recipe.json
@@ -37,8 +43,9 @@ it inherits that module's auth and bind configuration. If you haven't set up
 ```
 
 > **Treat the response as sensitive.** It contains the full system prompt and
-> the entire compiled conversation. It is gated by the same Basic-Auth as the
-> rest of the surface — don't expose it more widely than the web UI itself.
+> the entire compiled conversation. It is gated by the same auth as the rest of
+> the surface — don't expose it more widely than the web UI itself, and grant
+> observers the `debug` scope deliberately.
 
 ## The endpoint
 
@@ -49,27 +56,35 @@ GET /debug/context
 | Query param   | Default        | Meaning                                                              |
 |---------------|----------------|----------------------------------------------------------------------|
 | `agent`       | recipe's root agent | Which agent to preview. Use a subagent's name for a child.      |
-| `injections`  | *(off)*        | `1`/`true` to gather dynamic injections too. **Not transparent** — see below. |
-| `pretty`      | *(off)*        | `1` to pretty-print the JSON (2-space indent).                       |
+| `injections`  | *(off)*        | Any value other than `0`/`false` (e.g. `1`) gathers dynamic injections too. **Not transparent** — see below. |
+| `pretty`      | *(off)*        | Any value other than `0` (e.g. `1`) pretty-prints the JSON (2-space indent). |
+| `scope`       | *(local)*      | A fleet child's name: answer for that child instead (see [Sibling endpoints](#sibling-endpoints)). |
 
 ### Responses
 
 - **`200`** — JSON body (see [Response shape](#response-shape)).
 - **`404`** — `{ "error": "Agent not found: <name>" }` for an unknown `agent`.
-- **`401`** — missing/wrong Basic-Auth.
-- **`503`** — server up but no agent session bound yet (e.g. mid-restart).
+  Any unknown `/debug/*` path also gets a JSON `404`.
+- **`401`** — missing/wrong credentials.
+- **`405`** — any method other than `GET`/`HEAD`.
+- **`503`** — plain-text `Not ready`: server up but no agent session bound yet
+  (e.g. mid-restart).
 
 ## Transparent by default
 
-This is the important part. By default the endpoint is **side-effect-free**:
+This is the important part. By default the endpoint:
 
 - runs **no inference** (spends no tokens),
-- writes **nothing** to Chronicle,
+- writes **no messages** to Chronicle,
 - contacts **no** external MCPL server.
 
-It does only read-only work — compile the context, assemble the system prompt,
-filter tools — and leaves system state exactly as it found it. You can poll it
-as often as you like.
+It compiles the context, assembles the system prompt and filters tools. That
+compile is the one the agent's next turn would run, so it is not strictly
+read-only: it can persist the strategy's fold-resolution state, queue
+summaries its fold plan demands (the background compression then produces
+them, as it would after a real turn), and settle a pending context-budget
+transition — the same kinds of change the agent's own compile makes on every
+turn.
 
 The trade-off is fidelity: the default response **omits the dynamically
 gathered injections** (lessons, retrieval results, MCPL `beforeInference`
@@ -143,7 +158,7 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
 {
   "agent": "agent",          // the agent previewed
   "injections": false,       // whether dynamic injections were gathered
-  "transparent": true,       // true => this call had no side effects
+  "transparent": true,       // true => no injections gathered (no inference, no MCPL hooks)
   "request": {               // the membrane NormalizedRequest
     "messages": [
       {
@@ -193,16 +208,33 @@ gathering (module `gatherContext` + MCPL `beforeInference`), making it
 byte-faithful. The one thing it never does — by design — is run the inference
 itself, so there is no model output in the response.
 
+## Sibling endpoints
+
+Same server and auth; `agent` defaults to the recipe's root agent.
+
+| Endpoint | Returns |
+|---|---|
+| `/debug/context/makeup` | Segment breakdown of the compiled context (head, raw middle, summaries by level, verbatim tail) from the strategy's render stats, plus `exactTotalTokens` from Anthropic's `count_tokens` for the agent's own model (`COUNT_TOKENS_MODEL` overrides; non-Claude models get `countSource: "count_tokens_unsupported_model"` and a null total) and `lastBilledInputTokens`. Same compile as the default preview, plus one `count_tokens` call. |
+| `/debug/context/coverage` | Summary-tree coverage and queued compression work — counts only, no message or summary text. |
+| `/debug/context/curve` | One record per compiled entry: kind (raw / L1…Ln), rendered tokens, raw-history tokens covered, date span, text. `/curve` is its HTML visualization. |
+| `/debug/context/preview?budget=<tokens>[&tail=<tokens>][&render=1]` | The fold plan at a *hypothetical* budget (and tail window), without applying it — commits nothing. Each run is a full compile that briefly blocks the agent, so runs are serialized process-wide with a 3 s cooldown (`429`). `400` for a bad `budget`/`tail`; `501` when this framework/strategy can't dry-run. |
+| `/debug/context/maintenance` | Counts-only state and recent history of periodic context maintenance (no `agent`). |
+
+`?scope=<child>` on any of these (and on `/debug/context`) forwards the request
+to that fleet child over the fleet IPC and returns its JSON: `404` if no fleet
+module is loaded or the child is unknown, `502` if the child isn't running or
+the send fails, `504` if it doesn't answer within 30 s.
+
 ## Troubleshooting
 
 - **`401 Unauthorized`** — add `-u user:pass`. On the default `0.0.0.0` bind
-  the endpoint always requires Basic-Auth.
+  the endpoint always requires auth (an observer also needs the `debug` scope).
 - **`404 Agent not found`** — check the `agent` name. Omit the param to target
   the recipe's root agent; use the exact subagent name otherwise.
 - **`503 Not ready`** — the HTTP server is up but no session is bound yet
   (common during a restart/session switch). Retry shortly.
-- **`"transparent": false` when you didn't expect it** — you passed
-  `injections=1` (or `injections=true`). Drop it for a side-effect-free call.
+- **`"transparent": false` when you didn't expect it** — you passed an
+  `injections` value other than `0`/`false` (even an empty `injections=`).
+  Drop it for a transparent call.
 - **The response seems to be costing tokens** — only the `injections=1` path
   spends tokens. The default never does.
-```

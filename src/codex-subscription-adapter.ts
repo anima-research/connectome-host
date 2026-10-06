@@ -41,6 +41,7 @@ interface NotificationWaiter {
 export interface CodexAuthProvider {
   getAccessToken(forceRefresh?: boolean): Promise<string>;
   getAccountId?(): string | undefined;
+  readRateLimits?(): Promise<unknown>;
   dispose?(): void;
 }
 
@@ -99,6 +100,13 @@ export class CodexAppServerAuth implements CodexAuthProvider {
 
   getAccountId(): string | undefined {
     return this.accountId;
+  }
+
+  /** Raw `account/rateLimits/read` result — the subscription's utilization
+   *  windows. Costs no inference; parsed by the quota meter. */
+  async readRateLimits(): Promise<JsonObject> {
+    await this.ensureStarted();
+    return this.request('account/rateLimits/read', {});
   }
 
   dispose(): void {
@@ -348,6 +356,12 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       ),
     });
     this.auth = auth;
+  }
+
+  /** Subscription utilization windows, or null when the auth provider has no
+   *  such surface (tests inject bare token providers). */
+  async readRateLimits(): Promise<unknown> {
+    return this.auth.readRateLimits ? this.auth.readRateLimits() : null;
   }
 
   dispose(): void {

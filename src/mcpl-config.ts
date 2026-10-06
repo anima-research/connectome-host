@@ -7,6 +7,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { REFUSAL_REACTION_BASELINE } from '@animalabs/agent-framework';
+import type { RecipeToolLifecycle } from './recipe.js';
+import { validateToolLifecycle } from './tool-lifecycle-config.js';
 
 /** Default config file path, resolved from cwd. */
 export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
@@ -18,6 +20,9 @@ export interface ServerFileEntry {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Opt in to the full host environment for stdio servers. Requires an
+   * agent-framework version with inheritEnv support; prefer explicit env. */
+  inheritEnv?: boolean;
   toolPrefix?: string;
   reconnect?: boolean;
   reconnectIntervalMs?: number;
@@ -36,6 +41,8 @@ export interface ServerFileEntry {
    * credential — `access` is a name, not a secret.
    */
   access?: string;
+  /** MCPL tool lifecycle (RFC-007) policy — see RecipeMcpServer.toolLifecycle. */
+  toolLifecycle?: RecipeToolLifecycle;
 }
 
 export interface McplServersFile {
@@ -74,6 +81,9 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       command: entry.command,
       args,
       env: entry.env,
+      ...(entry.inheritEnv !== undefined
+        ? { inheritEnv: checkedInheritEnv(entry.inheritEnv, `mcpl-servers.json: mcplServers.${id}`) }
+        : {}),
       toolPrefix: entry.toolPrefix,
       reconnect: entry.reconnect,
       reconnectIntervalMs: entry.reconnectIntervalMs,
@@ -83,10 +93,84 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       enabledTools: entry.enabledTools,
       disabledTools: entry.disabledTools,
       channelSubscription: entry.channelSubscription,
+      ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
     });
   }
 
   return servers;
+}
+
+function checkedInheritEnv(value: unknown, where: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${where}.inheritEnv must be a boolean`);
+  return value;
+}
+
+function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
+  validateToolLifecycle(value, `mcpl-servers.json: mcplServers.${id}.toolLifecycle`);
+  return value as RecipeToolLifecycle;
+}
+
+/**
+ * Policy fields a recipe may set on a server it takes from mcpl-servers.json
+ * by id. The file supplies the spawn command and credentials; the recipe
+ * decides how the agent uses the server.
+ */
+export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
+  'channelSubscription', 'toolPrefix', 'enabledFeatureSets', 'disabledFeatureSets',
+  'enabledTools', 'disabledTools', 'reconnect', 'reconnectIntervalMs', 'reconnectMaxIntervalMs',
+  'inheritEnv',
+  // A recipe may adopt WebSocket transport for a file-defined server.
+  'url', 'transport', 'token', 'access',
+  // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
+  // policy, like tool toggles — not a property of where the server came from.
+  'toolLifecycle',
+] as const;
+
+/** A file-defined server with the recipe's policy overrides applied. */
+export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
+  fileEntry: T,
+  recipeEntry: Record<string, unknown>,
+): T & Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...fileEntry };
+  for (const field of RECIPE_OVERRIDABLE_SERVER_FIELDS) {
+    if (recipeEntry[field] !== undefined) merged[field] = recipeEntry[field];
+  }
+  return merged as T & Record<string, unknown>;
+}
+
+type MergedServer = { id: string; command?: string; url?: string; [k: string]: unknown };
+
+/**
+ * The recipe's servers, resolved against mcpl-servers.json. Recipes opt in:
+ * a file server loads only when the recipe names its id.
+ *
+ * - The recipe names a file server (with or without its own command/url):
+ *   the file's definition, with the recipe's policy overrides applied.
+ * - The recipe defines a server the file doesn't have, with `command` or
+ *   `url`: the recipe entry verbatim.
+ * - The recipe names an id with neither, and the file has no such server:
+ *   an error — a typo'd id must not silently load nothing.
+ */
+export function mergeRecipeServers(
+  recipeServers: Record<string, Record<string, unknown>>,
+  fileServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
+): MergedServer[] {
+  const fileById = new Map(fileServers.map((s) => [s.id, s]));
+  const out: MergedServer[] = [];
+  for (const [id, recipeEntry] of Object.entries(recipeServers)) {
+    const fileEntry = fileById.get(id);
+    if (fileEntry) {
+      out.push(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer);
+    } else if (recipeEntry.command || recipeEntry.url) {
+      out.push({ id, ...recipeEntry } as MergedServer);
+    } else {
+      throw new Error(
+        `Recipe mcpServers.${id} has no "command" or "url", and mcpl-servers.json defines no "${id}" ` +
+          `server for it to refer to`,
+      );
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +234,10 @@ export const AGENT_DEPLOY_DENIED_CAPABILITIES: readonly string[] = [
   'contextHooks',
   'inferenceRequest',
   'inferenceLifecycle',
+  // MCPL RFC-007: observing the agent's OTHER tool calls (and their
+  // arguments) is an operator grant. The bare parent masks both leaves, so a
+  // toolLifecycle block the agent writes cannot re-grant them either.
+  'toolLifecycle',
 ];
 
 /** The allow/deny list fields where an EMPTY array carries no intent (see
@@ -178,6 +266,9 @@ const OVERLAY_LIST_FIELDS = [
  *    silently eventless eidoverse, 2026-08-04). An agent that truly wants
  *    deny-all says `disabledTools: ["*"]` / `disabledFeatureSets: ["*"]`.
  *
+ *  - `inheritEnv` is dropped: full host-environment inheritance is granted
+ *    only by operator-owned recipe/file configuration, never an overlay.
+ *
  *  - `enabledCapabilities` is dropped: the agent's file can narrow, never
  *    widen — a hand-written entry here could re-grant §13.4 deny-by-default
  *    paths.
@@ -201,6 +292,13 @@ export function resolveOverlayEntry(
     if (Array.isArray(rec[k]) && (rec[k] as unknown[]).length === 0) delete rec[k];
   }
   delete rec.enabledCapabilities;
+  // Same boundary for MCPL tool lifecycle: in the framework a toolLifecycle
+  // block IS the grant, so the agent's own file never carries one (the deny
+  // above already masks the paths; this keeps the overlay honest too).
+  delete rec.toolLifecycle;
+  // Full host environment access is an operator grant, not an agent-owned
+  // overlay setting. Operators declare it in the recipe or mcpl-servers.json.
+  delete rec.inheritEnv;
   // A network server the agent deployed should come back when it bounces.
   // reconnect defaulted to false, so an entry that never said `reconnect:
   // true` was severed PERMANENTLY by any server restart — with no signal to

@@ -60,10 +60,79 @@ describe('Anthropic per-call pricing', () => {
     }))).toBeUndefined();
   });
 
-  test('honors the published Sonnet 5 promotional cutoff', () => {
-    const promo = priceAnthropicCall('claude-sonnet-5', '2026-08-31T23:59:59Z', usage({ inputTokens: 1_000_000 }));
-    const standard = priceAnthropicCall('claude-sonnet-5', '2026-09-01T00:00:00Z', usage({ inputTokens: 1_000_000 }));
-    expect(promo?.total).toBe(2);
-    expect(standard?.total).toBe(3);
+  test('prices Opus 5 at the Opus-tier rate rather than leaving it unpriced', () => {
+    // 'claude-opus-5' matches no 'claude-opus-4-*' prefix, so before this it
+    // fell through to undefined and every diver call showed no cost at all.
+    const cost = priceAnthropicCall('claude-opus-5', timestamp, usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    }));
+    expect(cost?.total).toBe(30);
+    expect(cost?.rates.inputPerMillion).toBe(5);
+    expect(cost?.rates.outputPerMillion).toBe(25);
+  });
+
+  test('Fable 5.1 reads from cache at 0.025x, a quarter of the Fable 5 rate', () => {
+    const fable51 = priceAnthropicCall('claude-fable-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    const fable5 = priceAnthropicCall('claude-fable-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(fable51?.cacheRead).toBeCloseTo(0.25, 9);
+    expect(fable5?.cacheRead).toBeCloseTo(1, 9);
+    expect(fable51?.rates.cacheReadPerMillion).toBeCloseTo(0.25, 9);
+  });
+
+  test('Mythos 5.1 reads from cache at 0.025x too, and Mythos 5 still at 0.1x', () => {
+    // the pricing page's footnote names both 5.1 models; the prefix order is
+    // pinned the same way the Fable pair is, so 'claude-mythos-5' cannot
+    // swallow 'claude-mythos-5-1' first
+    const mythos51 = priceAnthropicCall('claude-mythos-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    const mythos5 = priceAnthropicCall('claude-mythos-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(mythos51?.cacheRead).toBeCloseTo(0.25, 9);
+    expect(mythos51?.rates.cacheReadPerMillion).toBeCloseTo(0.25, 9);
+    expect(mythos5?.cacheRead).toBeCloseTo(1, 9);
+    expect(mythos51?.rates.inputPerMillion).toBe(10);
+    expect(mythos51?.rates.outputPerMillion).toBe(50);
+  });
+
+  test('the Fable 5.1 discount applies to reads only, not to input or writes', () => {
+    const cost = priceAnthropicCall('claude-fable-5-1', timestamp, usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheWrite5mTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+    }));
+    expect(cost?.input).toBe(10);
+    expect(cost?.output).toBe(50);
+    expect(cost?.cacheWrite5m).toBeCloseTo(12.5, 9);
+    expect(cost?.cacheWrite1h).toBeCloseTo(20, 9);
+  });
+
+  test('the geo multiplier still applies on top of the Fable 5.1 read rate', () => {
+    const us = priceAnthropicCall('claude-fable-5-1', timestamp, usage({
+      cacheReadTokens: 1_000_000,
+      inferenceGeo: 'us',
+    }));
+    expect(us?.cacheRead).toBeCloseTo(0.275, 9);
+  });
+
+  test('prices Sonnet 5 at $2/$10 after September 1, the withdrawn increase date', () => {
+    // the introductory rate became the standard one; the scheduled move to
+    // $3/$15 on 2026-09-01 never happened, so no call is priced at it
+    const all = usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      cacheWrite5mTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+    });
+    const after = priceAnthropicCall('claude-sonnet-5', '2026-09-19T12:00:00Z', all);
+    expect(after?.input).toBe(2);
+    expect(after?.output).toBe(10);
+    expect(after?.cacheRead).toBeCloseTo(0.2, 9);
+    expect(after?.cacheWrite5m).toBeCloseTo(2.5, 9);
+    expect(after?.cacheWrite1h).toBeCloseTo(4, 9);
+    expect(after?.total).toBeCloseTo(18.7, 9);
+
+    const before = priceAnthropicCall('claude-sonnet-5', '2026-08-31T23:59:59Z', all);
+    expect(before?.total).toBeCloseTo(18.7, 9);
   });
 });

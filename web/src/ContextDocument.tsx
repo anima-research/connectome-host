@@ -230,7 +230,7 @@ export function ContextDocument(props: {
                       <Show when={rollbackable}>
                         <button
                           type="button"
-                          class="opacity-0 group-hover:opacity-100 focus:opacity-100 px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 transition-opacity"
+                          class="opacity-40 group-hover:opacity-100 focus:opacity-100 px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 transition-opacity"
                           title="roll back: make this message the tail of the live branch"
                           onClick={() => props.onRollback?.(m.sourceMessageId!, `${who}: ${t.replace(/\s+/g, ' ').slice(0, 90)}`)}
                         >⏪ roll back to here</button>

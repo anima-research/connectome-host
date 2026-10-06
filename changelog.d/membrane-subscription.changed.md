@@ -1,3 +1,0 @@
-- Route ChatGPT subscription inference through Membrane's shared Responses adapter, preserving Codex app-server login, token refresh, endpoint configuration, and Fast mode controls in the host. Provider usage now declares the cache-inclusive convention and is normalized by Membrane.
-- Preserve cache-usage and formatter capabilities through the logging decorator, fixing duplicate cached-input accounting for both subscription and API-key Responses calls. Keep participant names in auxiliary calls and mark logged usage with its convention while retaining the `openai-codex` provider label.
-- Serialize a forced Codex token refresh behind any in-flight non-refresh acquisition, coalescing concurrent refresh callers without reusing a stale token.

@@ -5,7 +5,7 @@
  * (parent module) import from here so the JSONL envelope shapes stay
  * identical at both ends.
  *
- * See HEADLESS-FLEET-PLAN.md for the full protocol spec.
+ * See docs/fleet-protocol.md for the protocol reference.
  */
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ export type IncomingCommand =
   /** Request a state snapshot. The child responds with a single 'snapshot'
    *  event carrying the full agent tree, exempt from subscription filtering.
    *  Used as a recovery verb (TUI cold start, reconnect, after restart) — not
-   *  a query verb. See UNIFIED-TREE-PLAN.md §3 for the lockstep model. */
+   *  a query verb. See docs/history/UNIFIED-TREE-PLAN.md §3 for the lockstep model. */
   | { type: 'describe'; corrId?: string }
   /** Pull the child's lesson library. Response is `lessons-snapshot`. */
   | { type: 'request-lessons'; corrId?: string }
