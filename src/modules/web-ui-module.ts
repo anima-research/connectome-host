@@ -172,6 +172,8 @@ export interface WebUiModuleConfig {
   callLedger?: CallLedger;
   /** Subscription quota windows (hosts on a subscription credential only). */
   quotaMeter?: QuotaMeter;
+  /** A subscription credential with no local quota meter (see PanelAppRef). */
+  subscriptionUnmetered?: boolean;
 }
 
 /** Data stashed on the Bun WS upgrade. */
@@ -1172,6 +1174,7 @@ export class WebUiModule implements Module {
       recipe: app.recipe,
       callLedger: this.config.callLedger ?? null,
       quotaMeter: this.config.quotaMeter ?? null,
+      subscriptionUnmetered: this.config.subscriptionUnmetered === true,
     };
   }
 

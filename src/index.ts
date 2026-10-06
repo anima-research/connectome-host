@@ -123,6 +123,10 @@ interface AppContext {
   /** Subscription quota windows; null on metered (pay-per-token) providers.
    *  Its presence is what flips usage readouts from dollars to percent. */
   quotaMeter: QuotaMeter | null;
+  /** A subscription credential whose windows this host cannot read
+   *  (openai-codex through an inference gateway, which tracks them per
+   *  login): usage readouts still stay off dollars. */
+  subscriptionUnmetered: boolean;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -192,6 +196,7 @@ async function createFramework(
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
   quotaMeter: QuotaMeter | null,
+  subscriptionUnmetered = false,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -405,6 +410,7 @@ async function createFramework(
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
+      ...(subscriptionUnmetered ? { subscriptionUnmetered } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -1161,7 +1167,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, !!codexGate);
 
   // Build app context
   const app: AppContext = {
@@ -1175,6 +1181,7 @@ async function main() {
     codexAdapter,
     callLedger,
     quotaMeter,
+    subscriptionUnmetered: !!codexGate,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1185,7 +1192,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, !!codexGate);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

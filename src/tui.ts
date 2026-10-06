@@ -153,6 +153,8 @@ interface AppContext {
   branchState: import('./commands.js').BranchState;
   userMessageCount: number;
   quotaMeter?: import('./quota-meter.js').QuotaMeter | null;
+  /** Subscription without a local meter (openai-codex through a gateway). */
+  subscriptionUnmetered?: boolean;
   switchSession(id: string): Promise<void>;
 }
 
@@ -2264,6 +2266,10 @@ export async function runTui(app: AppContext): Promise<void> {
       updateStatus();
     });
     releaseQuotaWatch = meter.watch();
+  } else if (app.subscriptionUnmetered) {
+    // a subscription whose windows live in the gateway: nothing to read
+    // here, and the dollar estimate is not a bill either
+    state.tokens.quota = '';
   }
 
   const pollTimer = setInterval(() => {
