@@ -91,6 +91,11 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeDefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-5-5' }).extra).toBeDefined();
   });
+
+  test('never sends a level outside the known set, whatever the model', () => {
+    expect(withEffort('minimal')).toBe(fable);
+    expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+  });
 });
 
 describe('LoggingAnthropicAdapter request logging', () => {

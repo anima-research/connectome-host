@@ -16,7 +16,7 @@
  * One client at a time.  Client disconnect does NOT exit the process —
  * children stay up across parent restarts and accept the next connection.
  *
- * See HEADLESS-FLEET-PLAN.md (root) for the full protocol spec.
+ * See docs/fleet-protocol.md for the protocol reference.
  */
 
 import { createServer, type Socket, type Server } from 'node:net';
@@ -25,6 +25,7 @@ import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
+import { takeRecipeWarnings } from './recipe.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -100,6 +101,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   };
 
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
+  // The recipe was validated before this redirect: its warnings go into this log too.
+  for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
 
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.
@@ -155,7 +158,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // -- Long-lived agent-tree reducer --
   // Subscribed to framework traces from process startup; accumulates state for
   // the lifetime of the child. Drives the 'describe' response. Same reducer
-  // shape runs in the parent for fleet children — see UNIFIED-TREE-PLAN.md §2.
+  // shape runs in the parent for fleet children — see docs/history/UNIFIED-TREE-PLAN.md §2.
   const treeReducer = new AgentTreeReducer();
   try {
     treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
@@ -241,7 +244,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
       case 'describe': {
         // Recovery verb: parent requests a full state snapshot at sync points
-        // (cold start, reconnect, after restart). See UNIFIED-TREE-PLAN.md §1.
+        // (cold start, reconnect, after restart). See docs/history/UNIFIED-TREE-PLAN.md §1.
         const snap = treeReducer.getSnapshot();
         reply({
           type: 'snapshot',

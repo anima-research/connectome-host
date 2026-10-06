@@ -32,6 +32,20 @@ describe('SettingsModule reasoning_effort', () => {
     expect(mod.getReasoning().effort).toBe('default');
   });
 
+  test('an invalid saved value falls back to its default instead of failing every turn', async () => {
+    const { mod, ext } = await started({
+      reasoning: { enabled: true, budgetTokens: 'lots', display: 'full', effort: 'minimal' },
+    });
+    expect(mod.getReasoning()).toEqual({ enabled: true, budgetTokens: 8192, display: 'summarized', effort: 'default' });
+    expect(ext.get('a').reasoning_effort).toBe('default');
+  });
+
+  test('valid saved values are restored unchanged', async () => {
+    const saved = { enabled: true, budgetTokens: 2048, display: 'omitted', effort: 'xhigh' };
+    const { mod } = await started({ reasoning: saved });
+    expect(mod.getReasoning()).toEqual(saved);
+  });
+
   test('reset by key and reset-all both restore default', async () => {
     const { ext } = await started();
     ext.update('a', { reasoning_effort: 'low' });

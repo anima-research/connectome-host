@@ -1450,6 +1450,114 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Unknown keys (#167)
+// ---------------------------------------------------------------------------
+
+/**
+ * The keys each recipe level reads. The type check below keeps these lists in
+ * step with Recipe, RecipeAgent and RecipeModules: a key added to an interface
+ * and not here (or listed here and gone from the interface) fails to compile.
+ */
+const RECIPE_KEYS = [
+  'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
+  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'toolClassOverrides',
+] as const;
+const RECIPE_AGENT_KEYS = [
+  'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
+  'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
+  'toolWrapperProseGuard', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'refusalHandling',
+] as const;
+const RECIPE_MODULE_KEYS = [
+  'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity',
+  'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
+  'channelMode',
+] as const;
+type ListsExactly<K extends string, L extends readonly string[]> =
+  [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
+// "Type 'true' is not assignable to type 'false'" here means a key was added
+// to (or removed from) one of the interfaces without the list above following.
+const recipeKeyListsInStep: [
+  ListsExactly<keyof Recipe & string, typeof RECIPE_KEYS>,
+  ListsExactly<keyof RecipeAgent & string, typeof RECIPE_AGENT_KEYS>,
+  ListsExactly<keyof RecipeModules & string, typeof RECIPE_MODULE_KEYS>,
+] = [true, true, true];
+void recipeKeyListsInStep;
+
+/** Keys that were renamed or removed, with what replaced them. */
+const RETIRED_RECIPE_KEYS: Record<string, string> = {
+  'modules.files': 'modules.workspace',
+};
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const up = prev[j]!;
+      prev[j] = Math.min(up + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = up;
+    }
+  }
+  return prev[b.length]!;
+}
+
+/** The known key a typo most likely meant, when one is close enough to suggest. */
+function nearestRecipeKey(key: string, known: readonly string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of known) {
+    const d = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    if (d < bestDistance) { bestDistance = d; best = candidate; }
+  }
+  return best !== null && bestDistance <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
+}
+
+/**
+ * The keys a recipe carries that the host never reads — at the top level,
+ * under `agent` and under `modules` — each with what it was probably meant to
+ * be. A misspelled key doesn't fail, it just doesn't happen (#167); for now
+ * they are warned about, not rejected, so recipes carrying leftovers keep
+ * loading (the strict schema is #91's direction).
+ */
+export function unknownRecipeKeys(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const obj = raw as Record<string, unknown>;
+  const found: string[] = [];
+  const check = (prefix: string, value: unknown, known: readonly string[]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    for (const key of Object.keys(value)) {
+      if (known.includes(key)) continue;
+      const path = `${prefix}${key}`;
+      // Own properties only: `constructor` or `__proto__` must not find Object's.
+      const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, path) ? RETIRED_RECIPE_KEYS[path] : undefined;
+      const near = retired ? null : nearestRecipeKey(key, known);
+      found.push(retired ? `${path} (replaced by ${retired})` : near ? `${path} (did you mean ${prefix}${near}?)` : path);
+    }
+  };
+  check('', obj, RECIPE_KEYS);
+  check('agent.', obj.agent, RECIPE_AGENT_KEYS);
+  check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  return found;
+}
+
+/**
+ * Warnings from recipe validation, kept for the runtime that takes stderr over
+ * later (the TUI's tui-error.log, headless.log): the recipe is validated before
+ * either redirect, so the console line alone would never reach those logs.
+ * Bounded, for a long-running host that keeps loading recipes (fleet, WebUI).
+ */
+const pendingRecipeWarnings: string[] = [];
+const MAX_PENDING_RECIPE_WARNINGS = 50;
+
+/** The recipe warnings not yet taken, oldest first; taking them clears them. */
+export function takeRecipeWarnings(): string[] {
+  return pendingRecipeWarnings.splice(0);
+}
+
 /**
  * Validate raw JSON and fill defaults.
  */
@@ -1462,6 +1570,15 @@ export function validateRecipe(raw: unknown): Recipe {
   }
   if (!obj.agent || typeof obj.agent !== 'object') {
     throw new Error('Recipe must have an "agent" object');
+  }
+
+  // Nothing below reads an unknown key: say so, and what it was probably meant to be.
+  const unknownKeys = unknownRecipeKeys(obj);
+  if (unknownKeys.length > 0) {
+    const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
+    console.warn(warning);
+    pendingRecipeWarnings.push(warning);
+    if (pendingRecipeWarnings.length > MAX_PENDING_RECIPE_WARNINGS) pendingRecipeWarnings.shift();
   }
 
   const agent = obj.agent as Record<string, unknown>;

@@ -1,6 +1,6 @@
 {
   "name": "Multi-Source Knowledge Miner",
-  "description": "Extract structured knowledge from Zulip, Notion, GitLab, and audio/video recordings using forking agents",
+  "description": "Extract structured knowledge from Zulip, GitLab and the public web using forking agents",
   "version": "1.2.0",
   "agent": {
     "name": "researcher",

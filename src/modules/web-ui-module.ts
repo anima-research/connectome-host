@@ -587,7 +587,7 @@ export class WebUiModule implements Module {
     // Fleet integration: if FleetModule is mounted, spin up a private
     // FleetTreeAggregator and start forwarding child events to clients. The
     // aggregator's per-child reducers are populated via the `describe`/snapshot
-    // protocol, exactly as the TUI uses them — see UNIFIED-TREE-PLAN.md §3.
+    // protocol, exactly as the TUI uses them — see docs/history/UNIFIED-TREE-PLAN.md §3.
     const fleetMod = app.framework
       .getAllModules()
       .find((m) => m.name === 'fleet') as FleetModule | undefined;
