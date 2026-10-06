@@ -255,10 +255,36 @@ export function buildMediaBlock(
 export interface McplLiveServer {
   id: string;
   connected: boolean;
+  /** A background reconnect loop is running. */
+  retrying?: boolean;
   toolCount: number;
   toolPrefix?: string;
   /** command or url — whatever the transport targets. */
   target?: string;
+}
+
+/** The MCPL servers this process loaded, with live connection status.
+ *  Best-effort: an older framework without listMcplServers yields []. */
+export function listLiveMcplServers(app: PanelAppRef): McplLiveServer[] {
+  try {
+    const fw = app.framework as unknown as {
+      listMcplServers?: () => Array<{
+        id: string; connected?: boolean; retrying?: boolean; toolCount?: number; toolPrefix?: string;
+        command?: string; url?: string;
+      }>;
+    };
+    if (typeof fw.listMcplServers !== 'function') return [];
+    return fw.listMcplServers().map((s) => ({
+      id: s.id,
+      connected: s.connected === true,
+      ...(s.retrying ? { retrying: true } : {}),
+      toolCount: s.toolCount ?? 0,
+      ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
+      ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -273,24 +299,7 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
   try { servers = readMcplServersFile(DEFAULT_CONFIG_PATH); }
   catch { /* missing or malformed file → empty list */ }
 
-  let live: McplLiveServer[] = [];
-  try {
-    const fw = app.framework as unknown as {
-      listMcplServers?: () => Array<{
-        id: string; connected?: boolean; toolCount?: number; toolPrefix?: string;
-        command?: string; url?: string;
-      }>;
-    };
-    if (typeof fw.listMcplServers === 'function') {
-      live = fw.listMcplServers().map((s) => ({
-        id: s.id,
-        connected: s.connected === true,
-        toolCount: s.toolCount ?? 0,
-        ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
-        ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
-      }));
-    }
-  } catch { /* live view is best-effort; the file registry still renders */ }
+  const live = listLiveMcplServers(app);
 
   return {
     configPath: DEFAULT_CONFIG_PATH,
