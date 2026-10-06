@@ -1406,6 +1406,11 @@ export async function buildDebugContext(
   requireAgent(app, agentName);
   const injections = params.injections === true;
   const request = await app.framework.previewActivation(agentName, { injections });
+  // Ordinary previews must still work against the currently published framework.
+  // Enabling presentation itself requires the companion release (see recipe docs).
+  const getPresentation = (app.framework as {
+    getRequestToolPresentation?: (request: object) => unknown;
+  }).getRequestToolPresentation;
   return { agent: agentName, injections, transparent: !injections, request,
-    toolPresentation: app.framework.getRequestToolPresentation(request) };
+    toolPresentation: getPresentation?.call(app.framework, request) ?? null };
 }
