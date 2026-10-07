@@ -849,6 +849,19 @@ export interface RecipeModules {
   };
 
   /**
+   * The resident's fold record, `folds.jsonl` (CONN-20's per-resident file):
+   * a labelled as-of projection of the selected branch's fold receipts,
+   * rewritten after each new receipt, at startup and at shutdown, and checked
+   * for branch changes at roughly one-second intervals. ON by default at
+   * `<dataDir>/memory/folds.jsonl`; `false` turns it off, `{ path }` moves it.
+   * The host only overwrites a file it wrote itself (ownership ledger at
+   * `<dataDir>/folds-export-ownership.json`); anything else is an export
+   * conflict that `/folds takeover` (or the resident's `take_over_export`
+   * utility) resolves by keeping the existing file beside the target.
+   */
+  foldsExport?: boolean | { path?: string };
+
+  /**
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
    * an ed25519 keypair in the data dir, enrolled at the home node via an
    * operator invite, exchanged for fresh aid1 audience tokens on demand.
@@ -1578,7 +1591,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode',
+  'channelMode', 'foldsExport',
 ] as const;
 type ListsExactly<K extends string, L extends readonly string[]> =
   [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
@@ -2504,6 +2517,21 @@ export function validateRecipe(raw: unknown): Recipe {
         if (semCfg.includePrivateTools !== undefined && typeof semCfg.includePrivateTools !== 'boolean') {
           throw new Error('modules.history.semantic.includePrivateTools must be a boolean when set.');
         }
+      }
+    }
+
+    // foldsExport: boolean, or { path } (a non-empty string).
+    const foldsExport = mods.foldsExport;
+    if (foldsExport !== undefined && typeof foldsExport !== 'boolean') {
+      if (!foldsExport || typeof foldsExport !== 'object' || Array.isArray(foldsExport)) {
+        throw new Error('Recipe modules.foldsExport must be a boolean or object.');
+      }
+      for (const key of Object.keys(foldsExport)) {
+        if (key !== 'path') throw new Error(`Recipe modules.foldsExport has unknown key ${JSON.stringify(key)} (known: path).`);
+      }
+      const path = (foldsExport as { path?: unknown }).path;
+      if (path !== undefined && (typeof path !== 'string' || path.trim() === '')) {
+        throw new Error('modules.foldsExport.path must be a non-empty string when set.');
       }
     }
 

@@ -66,6 +66,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
+import { FoldsExportModule } from './modules/folds-export-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
@@ -308,6 +309,24 @@ async function createFramework(
     historyModule = new HistoryModule(historyOpts);
     assertSemanticSearchRegistered(historyModule, historyOpts.semantic !== undefined);
     moduleInstances.push(historyModule);
+  }
+
+  // The resident's fold record, folds.jsonl (CONN-20). ON by default; see
+  // recipe.ts `foldsExport`. Bound to the agent's ContextManager below, once
+  // `framework` exists. As a module it stops inside framework.stop(), after
+  // the streams settle and before the store closes, so its final projection
+  // follows the last accepted round and precedes any session's replacement.
+  let foldsExport: FoldsExportModule | null = null;
+  if (modules.foldsExport !== false) {
+    const exportCfg = typeof modules.foldsExport === 'object' ? modules.foldsExport : {};
+    foldsExport = new FoldsExportModule({
+      target: exportCfg.path ? resolve(exportCfg.path) : resolve(config.dataDir, 'memory', 'folds.jsonl'),
+      ledgerPath: resolve(config.dataDir, 'folds-export-ownership.json'),
+      runtime: 'connectome-host',
+      dataDir: config.dataDir,
+      agent: agentName,
+    });
+    moduleInstances.push(foldsExport);
   }
 
   // Gate config — core AF EventGate feature.
@@ -591,6 +610,15 @@ agents: [agentConfig],
     const cm = framework.getAgent(agentName)?.getContextManager();
     if (cm) {
       historyModule.bind(cm, framework.channels ?? undefined);
+    }
+  }
+
+  if (foldsExport) {
+    const cm = framework.getAgent(agentName)?.getContextManager();
+    if (cm) {
+      foldsExport.bind(cm);
+      const exporter = foldsExport;
+      historyModule?.setFoldExportStatus(() => exporter.status());
     }
   }
 

@@ -22,6 +22,7 @@
  *   /newtopic      — Reset head window (auto-summarize or with user context)
  *   /export        — Export lessons to ./output/ (JSON + markdown)
  *   /usage         — Show session token usage and costs
+ *   /folds [takeover] — folds.jsonl export status; take over a conflicted target
  *   /help          — List commands
  */
 
@@ -35,6 +36,7 @@ import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcp
 import { fmtTokens } from './tui.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
+import type { FoldsExportModule } from './modules/folds-export-module.js';
 
 /** Imported lazily to avoid circular deps — index.ts re-exports the type. */
 interface AppContext {
@@ -218,6 +220,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /recipe                Show current recipe info', style: 'system' },
           { text: '  /newtopic [context]    Reset head window (auto-summarize if empty)', style: 'system' },
           { text: '  /usage                 Show session token usage and costs', style: 'system' },
+          { text: '  /folds [takeover]      folds.jsonl export status; take over a conflicted target', style: 'system' },
           { text: '  /fleet                 Show / peek / stop / restart cross-process children', style: 'system' },
           { text: '                         (subcommands: list | status [name] | view | peek <name> | stop <name> | restart <name>)', style: 'system' },
         ],
@@ -239,6 +242,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
     case 'export':
       return handleExport(app);
+
+    case 'folds':
+      return handleFoldsExport(framework, args[0]);
 
     case 'undo':
       return inFlightGuard(app, cmd) ?? handleUndo(app);
@@ -1531,4 +1537,42 @@ function handleFleetRestart(fleet: FleetModule, name: string): CommandResult {
     lines: [{ text: `Restarting ${name}...`, style: 'system' }],
     asyncWork,
   };
+}
+
+/**
+ * /folds: the folds.jsonl projection's status, and the operator's explicit
+ * takeover of a conflicted target (the existing file is kept beside it).
+ */
+function handleFoldsExport(framework: AgentFramework, sub: string | undefined): CommandResult {
+  const exporter = framework.getAllModules().find((m) => m.name === 'folds') as FoldsExportModule | undefined;
+  if (!exporter) {
+    return { lines: [{ text: 'folds.jsonl export is off (recipe modules.foldsExport: false).', style: 'system' }] };
+  }
+  if (sub === 'takeover') {
+    const result = exporter.takeOver('operator');
+    return {
+      lines: [{
+        text: result.ok
+          ? `Took over ${exporter.status().target}${result.keptAs ? `; the existing file is kept as ${result.keptAs}` : ''}.`
+          : result.error,
+        style: 'system',
+      }],
+    };
+  }
+  if (sub !== undefined) {
+    return { lines: [{ text: 'Usage: /folds [takeover]', style: 'system' }] };
+  }
+  const status = exporter.status();
+  const lines: Line[] = [{ text: `folds.jsonl → ${status.target} (${status.state})`, style: 'system' }];
+  if (status.conflict) {
+    lines.push({ text: `  conflict since ${status.conflict.at}: ${status.conflict.reason}`, style: 'system' });
+    lines.push({ text: '  The file is preserved. /folds takeover keeps it beside the target and resumes export.', style: 'system' });
+  }
+  if (status.error) lines.push({ text: `  last write failed: ${status.error}`, style: 'system' });
+  if (status.lastProjection) {
+    const p = status.lastProjection;
+    lines.push({ text: `  last written ${p.at}: branch ${p.branch.name}, ${p.receipts} receipt(s), newest ${p.latestReceiptId ?? 'none'}`, style: 'system' });
+  }
+  lines.push({ text: `  ${status.freshness}`, style: 'system' });
+  return { lines };
 }
