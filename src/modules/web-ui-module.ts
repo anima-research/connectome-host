@@ -482,9 +482,10 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
-    // A skipped or failed optional build (postinstall can be skipped, e.g.
-    // `--ignore-scripts`) otherwise surfaces only as a 503 to whoever opens
-    // the page. Say it once, where the operator starting the host looks.
+    // A missing bundle otherwise shows at run time only as a 503 to whoever
+    // opens the page. Say it once, where the operator starting the host
+    // looks. This also covers a skipped postinstall (e.g. `--ignore-scripts`),
+    // which can't report anything itself.
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it is built. ` +
