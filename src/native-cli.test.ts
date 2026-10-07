@@ -82,7 +82,7 @@ process.stdin.on('end',()=>{
 
 
 function claudeFixtureSource(mode: string): string {
-  // Sanitized recorded WH status: no subscriptionType or credential-store assumption.
+  // Sanitized observed CLI status: no subscriptionType or credential-store assumption.
   const authStatus = mode === 'oauth-logged-out' ? { loggedIn: false, authMethod: 'none' } : {
     loggedIn: true,
     authMethod: mode === 'oauth-api-key' ? 'api_key' : mode.startsWith('oauth-') ? 'oauth_token' : 'claude.ai',
