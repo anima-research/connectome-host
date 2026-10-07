@@ -44,7 +44,11 @@ describe('postinstall Web UI build', () => {
     const { status, stderr } = run(scratch('exit 1'));
     expect(status).toBe(0);
     expect(stderr).toContain('connectome-host: the optional Web UI build failed');
+    expect(stderr).toContain('The host can run without the Web UI');
     expect(stderr).toContain('Retry with: npm run build:web');
+    // An earlier bundle may still be in place: the message claims nothing
+    // about what the Web UI will serve (room-225 #48791).
+    expect(stderr).not.toContain('503');
   }, 60_000);
 
   test('a working build reports nothing', () => {
