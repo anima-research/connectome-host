@@ -322,9 +322,6 @@ async function createFramework(
     foldsExport = new FoldsExportModule({
       target: exportCfg.path ? resolve(exportCfg.path) : resolve(config.dataDir, 'memory', 'folds.jsonl'),
       ledgerPath: resolve(config.dataDir, 'folds-export-ownership.json'),
-      runtime: 'connectome-host',
-      dataDir: config.dataDir,
-      agent: agentName,
     });
     moduleInstances.push(foldsExport);
   }
@@ -611,6 +608,15 @@ agents: [agentConfig],
     if (cm) {
       historyModule.bind(cm, framework.channels ?? undefined);
     }
+  }
+
+  // Fold receipts name the host that wrote them, whether or not folds.jsonl
+  // is exported: the journal is canonical, the file a projection of it.
+  {
+    const cm = framework.getAgent(agentName)?.getContextManager() as
+      | { setReceiptSource?: (source: { runtime?: string; dataDirectory?: string; agent?: string }) => void }
+      | undefined;
+    cm?.setReceiptSource?.({ runtime: 'connectome-host', dataDirectory: resolve(config.dataDir), agent: agentName });
   }
 
   if (foldsExport) {

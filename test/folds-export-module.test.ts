@@ -49,6 +49,8 @@ const modules: FoldsExportModule[] = [];
 async function openStore(name = 'store'): Promise<{ cm: ContextManager; strategy: PlanStrategy }> {
   const strategy = new PlanStrategy();
   const cm = await ContextManager.open({ path: join(dir, name), strategy, namespace: 'agents/linn' });
+  // What the host sets in createFramework, independently of the exporter.
+  cm.setReceiptSource({ runtime: 'connectome-host', dataDirectory: dataDir, agent: 'linn' });
   opened.push(cm);
   return { cm, strategy };
 }
@@ -59,7 +61,7 @@ async function accept(cm: ContextManager): Promise<void> {
 }
 
 function exporter(path = target, checkIntervalMs = 20): FoldsExportModule {
-  const m = new FoldsExportModule({ target: path, ledgerPath, runtime: 'connectome-host', dataDir, agent: 'linn', checkIntervalMs });
+  const m = new FoldsExportModule({ target: path, ledgerPath, checkIntervalMs });
   modules.push(m);
   return m;
 }
@@ -235,6 +237,29 @@ describe('writer safety', () => {
     const afterSwitch = sha(target);
     await accept(first.cm);
     expect(sha(target)).toBe(afterSwitch);
+  });
+
+  test('a second takeover at the same instant never overwrites the first kept file', async () => {
+    const fixed = new Date('2026-10-07T12:00:00.000Z');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'foreign one\n');
+    const { cm } = await openStore();
+    const m = new FoldsExportModule({ target, ledgerPath, checkIntervalMs: 20, now: () => fixed });
+    modules.push(m);
+    m.bind(cm);
+    expect(m.takeOver('operator').ok).toBe(true);
+    await m.stop();
+    writeFileSync(target, 'foreign two\n'); // someone replaces the projection
+    const again = new FoldsExportModule({ target, ledgerPath, checkIntervalMs: 20, now: () => fixed });
+    modules.push(again);
+    again.bind(cm);
+    expect(again.status().state).toBe('conflict');
+    expect(again.takeOver('operator').ok).toBe(true);
+    const kept = readdirSync(dirname(target)).filter((f) => f.startsWith('folds.jsonl.kept-')).sort();
+    expect(kept.length).toBe(2);
+    const contents = kept.map((f) => readFileSync(join(dirname(target), f), 'utf8'));
+    expect(contents).toContain('foreign one\n');
+    expect(contents).toContain('foreign two\n');
   });
 
   test('the resident can take a conflicted target over through its utility', async () => {

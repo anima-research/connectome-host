@@ -39,6 +39,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -64,10 +65,6 @@ export interface FoldsExportOptions {
   target: string;
   /** The host-level ownership ledger (JSON), shared by every session. */
   ledgerPath: string;
-  /** Recorded in every receipt's source. */
-  runtime: string;
-  dataDir: string;
-  agent: string;
   /** Branch-change check interval; roughly one second by default. */
   checkIntervalMs?: number;
   now?: () => Date;
@@ -114,27 +111,70 @@ function sha256(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-/** Write `content` to `path` durably: temp file, fsync, rename, fsync dir. */
+/** Errors meaning this platform can't fsync a directory, not that it failed. */
+const DIR_SYNC_UNSUPPORTED = new Set(['EISDIR', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP']);
+
+/**
+ * Write `content` to `path` durably: temp file written in full and fsynced,
+ * renamed over the target, then the directory fsynced. Throws if any step
+ * fails, including a directory sync that genuinely failed (only a platform
+ * that cannot sync directories is tolerated). A caller that recorded intent
+ * before calling must leave it pending on a throw.
+ */
 function atomicWrite(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  const bytes = Buffer.from(content, 'utf8');
   const fd = openSync(temp, 'w', 0o644);
   try {
-    writeSync(fd, content);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = writeSync(fd, bytes, offset, bytes.length - offset);
+      if (n <= 0) throw new Error(`short write to ${temp}: ${offset} of ${bytes.length} bytes`);
+      offset += n;
+    }
     fsyncSync(fd);
-  } finally {
+  } catch (err) {
     closeSync(fd);
+    try { unlinkSync(temp); } catch { /* best effort */ }
+    throw err;
   }
+  closeSync(fd);
   try {
     renameSync(temp, path);
   } catch (err) {
     try { unlinkSync(temp); } catch { /* best effort */ }
     throw err;
   }
+  let dirFd: number | null = null;
   try {
-    const dirFd = openSync(dirname(path), 'r');
-    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
-  } catch { /* directory fsync is not supported everywhere */ }
+    dirFd = openSync(dirname(path), 'r');
+    fsyncSync(dirFd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (!code || !DIR_SYNC_UNSUPPORTED.has(code)) throw err;
+  } finally {
+    if (dirFd !== null) closeSync(dirFd);
+  }
+}
+
+/**
+ * Move `path` aside to `<path>.kept-<stamp>` without ever overwriting an
+ * earlier kept file: a hard link fails on an existing name (then a counter
+ * is added), and only after the link exists is the original name removed.
+ */
+function keepAside(path: string, stamp: string): string {
+  for (let n = 0; ; n++) {
+    const candidate = n === 0 ? `${path}.kept-${stamp}` : `${path}.kept-${stamp}-${n}`;
+    try {
+      linkSync(path, candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+    unlinkSync(path);
+    return candidate;
+  }
 }
 
 export class FoldsExportModule implements Module {
@@ -153,10 +193,13 @@ export class FoldsExportModule implements Module {
     this.ledgerPath = resolve(opts.ledgerPath);
   }
 
-  /** Attach to the resident's context manager and write the startup projection. */
+  /**
+   * Attach to the resident's context manager and write the startup
+   * projection. The receipts' source facts are the host's to set, whether or
+   * not this export is enabled (index.ts), so binding doesn't touch them.
+   */
   bind(cm: ContextManager): void {
     this.cm = cm;
-    cm.setReceiptSource({ runtime: this.opts.runtime, dataDirectory: resolve(this.opts.dataDir), agent: this.opts.agent });
     this.detach = cm.onFoldReceipt(() => this.project());
     this.project();
     this.timer = setInterval(() => this.checkBranch(), this.opts.checkIntervalMs ?? 1_000);
@@ -230,9 +273,7 @@ export class FoldsExportModule implements Module {
     if (!entry?.conflict) return { ok: false, error: `No export conflict at ${this.target}; nothing to take over.` };
     let keptAs: string | null = null;
     if (existsSync(this.target)) {
-      const stamp = this.now().toISOString().replace(/[:.]/g, '-');
-      keptAs = `${this.target}.kept-${stamp}`;
-      renameSync(this.target, keptAs);
+      keptAs = keepAside(this.target, this.now().toISOString().replace(/[:.]/g, '-'));
     }
     ledger.targets[this.target] = {};
     this.writeLedger(ledger);
