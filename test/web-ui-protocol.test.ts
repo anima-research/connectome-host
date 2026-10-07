@@ -196,10 +196,6 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'everyone' } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, messageId: '' }] } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', extra: 1 } })).toBe(false);
-      // The explicit acceptance an older framework needs is a boolean.
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', legacyMarks: true })).toBe(true);
-      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], legacyMarks: false })).toBe(true);
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', legacyMarks: 'yes' })).toBe(false);
       expect(isClientMessage({
         type: 'rollback', messageId: 's1',
         marks: { scope: 'all', refs: Array.from({ length: 20_001 }, () => ref) },

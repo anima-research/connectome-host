@@ -1591,19 +1591,15 @@ export class WebUiModule implements Module {
     const marks = req.marks ?? 'none';
     if (typeof fw.previewSurgeryMarks !== 'function') {
       // This framework marks every removed Discord message it can address,
-      // and moves those marks with branch switches; it can't be told
-      // otherwise. Default none holds at this ingress too: neither an
-      // omitted choice nor a scope the framework can't honor may stand for
-      // that. Only the operator's explicit acceptance does.
-      const refusal = marks !== 'none'
-        ? `this host's agent-framework does not take an awareness-marks choice: it marks every removed Discord message it can address — upgrade @animalabs/agent-framework`
-        : req.legacyMarks !== true
-          ? `this host's agent-framework marks every removed Discord message it can address and can't be told not to — accept that explicitly, or upgrade @animalabs/agent-framework`
-          : null;
-      if (refusal) {
-        this.send(client, { type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, error: refusal });
-        return;
-      }
+      // and moves those marks with branch switches, whatever the operator
+      // chooses: it can't carry out the agreed one-shot, preview-bound
+      // operation with default none. Refuse rather than run another
+      // contract.
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'unsupported',
+        error: `live ${op} needs an agent-framework that makes Discord awareness marks a choice; this host's would mark every removed Discord message it can address — upgrade @animalabs/agent-framework`,
+      });
+      return;
     }
     try {
       const r = op === 'rollback'
@@ -1611,13 +1607,13 @@ export class WebUiModule implements Module {
             messageId: (req as RollbackMessage).messageId,
             requester,
             ...(note ? { note } : {}),
-            ...(typeof fw.previewSurgeryMarks === 'function' ? { marks } : {}),
+            marks,
           })
         : await fw.suppressMessages!(agentName, {
             messageIds: (req as SuppressMessage).messageIds,
             requester,
             ...(note ? { note } : {}),
-            ...(typeof fw.previewSurgeryMarks === 'function' ? { marks } : {}),
+            marks,
           });
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,

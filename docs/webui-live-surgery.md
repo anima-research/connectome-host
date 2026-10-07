@@ -68,12 +68,11 @@ requests without an answer may still land.
 
 An older agent-framework (no `marks` feature) places 💤 on every removed
 Discord message it can address, and removes and re-adds those marks as
-branches switch; it can't be told not to. Default none still holds at this
-ingress: the server refuses such a surgery unless the request carries
-`legacyMarks: true`, the operator's explicit acceptance of those marks
-(omitted marks and `'none'` are refused alike), and it refuses a scope or
-refs, which that framework can't honor. The dialog explains this and keeps
-its confirm button disabled until the operator ticks the acceptance.
+branches switch, whatever the operator chooses. It can't carry out this
+operation, a local change plus an optional bounded public act, so the server
+refuses every live rollback and suppression there before anything changes
+(`code: 'unsupported'`; omitted marks, `'none'` and a scope alike), and the
+dialog explains that the agent-framework needs upgrading.
 
 ## Quiesce / resume
 
@@ -119,10 +118,9 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?, marks?, legacyMarks?}`,
-`suppress {messageIds, agent?, note?, marks?, legacyMarks?}` (`marks`:
-`'none'` or `{scope: 'addressed' | 'all', refs?}`; `legacyMarks: true` only
-for a framework without `marks`), `surgery-preview {op, messageId | messageIds,
+Client → server: `rollback {messageId, agent?, note?, marks?}`, `suppress
+{messageIds, agent?, note?, marks?}` (`marks`: `'none'` or `{scope:
+'addressed' | 'all', refs?}`), `surgery-preview {op, messageId | messageIds,
 agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
 | release, target}` (`target: 'all'` for retract only), `host-quiesce
 {reason?}`, `host-resume`, `request-host-mode`, `request-operator-log

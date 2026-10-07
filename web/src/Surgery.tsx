@@ -196,11 +196,9 @@ export function SurgeryDialog(props: {
   hostMode: HostModeSnapshot | null;
   /** The framework takes an explicit marks choice ('marks' feature). */
   marksSupported: boolean;
-  /** An older framework that marks every removed Discord message itself. */
+  /** An older framework that marks every removed Discord message itself:
+   *  live surgery is refused there, so the dialog can't proceed. */
   legacyMarking: boolean;
-  /** The operator explicitly accepted that older framework's marks. */
-  legacyAccepted: boolean;
-  onLegacyAccepted(accepted: boolean): void;
   preview: SurgeryMarksPreviewWire | null;
   previewError: string | null;
   marks: MarksChoice;
@@ -213,8 +211,8 @@ export function SurgeryDialog(props: {
   const isRollback = () => props.request.op === 'rollback';
   const title = () => isRollback() ? 'Roll back the live branch' : `Suppress ${props.request.messageIds.length} message${props.request.messageIds.length === 1 ? '' : 's'}`;
   const busy = () => props.result?.ok === false && props.result.code === 'agent-busy';
-  /** An older framework marks regardless: proceeding needs explicit acceptance. */
-  const blocked = () => props.legacyMarking && !props.legacyAccepted;
+  /** An older framework marks regardless of any choice: the host refuses. */
+  const blocked = () => props.legacyMarking;
   const confirm = (): void => { if (!props.pending && !blocked()) props.onConfirm(note()); };
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!props.pending) props.onClose(); }}>
@@ -240,8 +238,6 @@ export function SurgeryDialog(props: {
           <MarksChooser
             supported={props.marksSupported}
             legacy={props.legacyMarking}
-            legacyAccepted={props.legacyAccepted}
-            onLegacyAccepted={props.onLegacyAccepted}
             preview={props.preview}
             error={props.previewError}
             marks={props.marks}
@@ -303,8 +299,6 @@ export function SurgeryDialog(props: {
 function MarksChooser(props: {
   supported: boolean;
   legacy: boolean;
-  legacyAccepted: boolean;
-  onLegacyAccepted(accepted: boolean): void;
   preview: SurgeryMarksPreviewWire | null;
   error: string | null;
   marks: MarksChoice;
@@ -323,17 +317,9 @@ function MarksChooser(props: {
   return (
     <>
       <Show when={props.legacy}>
-        <div class="border border-amber-900/60 rounded p-2 mb-3 space-y-1">
-          <div class="text-[11px] text-amber-300/90 leading-snug">
-            This host's agent-framework places 💤 on every removed Discord message it can address, other people's included,
-            and removes and re-adds those marks as branches switch. It can't be told not to.
-            Upgrade @animalabs/agent-framework to make marks a choice.
-          </div>
-          <label class="flex items-start gap-2 text-xs text-neutral-300 cursor-pointer">
-            <input type="checkbox" class="mt-0.5" checked={props.legacyAccepted} disabled={props.disabled}
-              onChange={(e) => props.onLegacyAccepted(e.currentTarget.checked)} />
-            <span>I accept those marks for this change.</span>
-          </label>
+        <div class="text-[11px] text-amber-300/90 border border-amber-900/60 rounded p-2 mb-3 leading-snug">
+          Live surgery is unavailable on this host: its agent-framework would place 💤 on every removed Discord message it can address,
+          other people's included, whatever is chosen here. Upgrade @animalabs/agent-framework to make marks a choice.
         </div>
       </Show>
       <Show when={props.supported}>
