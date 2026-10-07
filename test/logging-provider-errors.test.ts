@@ -96,6 +96,36 @@ describe('LoggingProviderAdapter error records', () => {
     }
   });
 
+  test('an overlong errorType and providerErrorCode are each cut like the text, within 128 characters; the text, the other fields and the thrown error are unchanged', async () => {
+    const path = logFile();
+    // A pair at every position of a value past the bound, so wherever the
+    // bound places its cuts, some case has a pair straddling each one.
+    const n = 300;
+    const thrown: Array<{ error: Error & { type: string; providerErrorCode: string }; type: string; code: string }> = [];
+    for (let at = 0; at <= n - 2; at++) {
+      const value = `${'x'.repeat(at)}😀${'x'.repeat(n - 2 - at)}`;
+      const type = `zz-type ${value}`;
+      const code = `zz-code ${value}`;
+      const error = Object.assign(membraneLike('zz the actual provider diagnostic'), { type, providerErrorCode: code });
+      await expect(new LoggingProviderAdapter(failing(error), path).complete(request)).rejects.toBe(error);
+      thrown.push({ error, type, code });
+    }
+    const written = records(path);
+    expect(written.length).toBe(thrown.length);
+    written.forEach((record, i) => {
+      for (const [field, prefix] of [['errorType', 'zz-type'], ['providerErrorCode', 'zz-code']] as const) {
+        const kept = record[field] as string;
+        expect(kept.length).toBeLessThanOrEqual(128);
+        expect(kept).toMatch(new RegExp(`^${prefix} .* …\\[\\d+ of ${prefix.length + 1 + n} characters omitted\\]… .+$`));
+        expect(loneSurrogate.test(kept)).toBe(false);
+      }
+      expect(record).toMatchObject({ error: 'MembraneError: zz the actual provider diagnostic', httpStatus: 400, retryable: false });
+      expect('errorChars' in record).toBe(false);
+      const { error, type, code } = thrown[i]!;
+      expect([error.type, error.providerErrorCode]).toEqual([type, code]);
+    });
+  });
+
   test('a message getter that throws loses only the message: the classification is kept, the error rethrown', async () => {
     const path = logFile();
     const hostile = membraneLike('zz');
