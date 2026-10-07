@@ -25,6 +25,16 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+/** The create schema marks `tags` required, but nothing enforces a tool
+ *  input against its schema: a model that omits it (or sends null) used to
+ *  store a lesson whose `tags` was undefined, and every reader that assumes
+ *  an array then threw on it — lessons_query/list (`l.tags.some`),
+ *  RetrievalModule (`l.tags.join`, `l.tags.map`), and the web UI's Lessons
+ *  panel. Normalize at the boundary instead of guarding every reader. */
+function toTags(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((t): t is string => typeof t === 'string') : [];
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -107,6 +117,11 @@ export class LessonsModule implements Module {
     // Merge in lessons from the global shared file
     if (this.globalPath) {
       this.mergeFromGlobal();
+    }
+    // Heal lessons stored before toTags existed, so the readers above never
+    // meet a missing array.
+    for (const lesson of this.state.lessons) {
+      if (!Array.isArray(lesson.tags)) lesson.tags = toTags(lesson.tags);
     }
   }
 
@@ -254,7 +269,7 @@ export class LessonsModule implements Module {
       id: randomUUID().slice(0, 8),
       content: input.content,
       confidence: input.confidence ?? 0.5,
-      tags: input.tags,
+      tags: toTags(input.tags),
       evidence: input.evidence ?? [],
       created: Date.now(),
       updated: Date.now(),
@@ -274,7 +289,7 @@ export class LessonsModule implements Module {
     }
 
     if (input.content !== undefined) lesson.content = input.content;
-    if (input.tags !== undefined) lesson.tags = input.tags;
+    if (input.tags !== undefined) lesson.tags = toTags(input.tags);
     if (input.confidence !== undefined) lesson.confidence = Math.max(0, Math.min(1, input.confidence));
     if (input.evidence !== undefined) {
       // Merge evidence, dedup
