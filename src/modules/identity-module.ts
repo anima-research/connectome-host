@@ -78,6 +78,12 @@ const DEFAULT_SERVICES: Record<string, string> = {
 const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
 
+/** HTTP methods the `request` utility sends. The security boundary is the
+ *  service allowlist with host-attached access, and each service authorizes
+ *  every request itself; this list just names the verbs services route.
+ *  The advertised schema and the runtime check both read it. */
+const REQUEST_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
 const REQUEST_BODY_MAX = 256 * 1024;
 /** Uploads are bytes the host streams from a workspace file, not text the
  *  model wrote, so the small JSON-body cap would be the wrong limit: a track
@@ -166,8 +172,8 @@ export class IdentityModule implements Module {
           properties: {
             service: { type: 'string', description: 'Service name, e.g. "orrery". Unknown names list what is available.' },
             path: { type: 'string', description: 'API path starting with "/", e.g. "/api/ops".' },
-            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Default GET.' },
-            body: { type: 'object', description: 'JSON body for POST/PUT.' },
+            method: { type: 'string', enum: [...REQUEST_METHODS], description: 'Default GET.' },
+            body: { type: 'object', description: 'JSON body; sent with any method other than GET.' },
             fromFile: { type: 'string', description: 'Workspace path whose raw bytes become the request body, e.g. files/music/track.mp3. Use instead of body for uploads; not combinable with it.' },
             contentType: { type: 'string', description: 'Content-Type for fromFile uploads. Inferred from the file extension when omitted.' },
             saveAs: { type: 'string', description: 'Optional workspace path for the raw response bytes, e.g. files/artifacts/image.png. Required to retrieve binary bodies without loss.' },
@@ -405,7 +411,7 @@ export class IdentityModule implements Module {
       return fail('`path` must be a string starting with "/"');
     }
     const method = typeof input.method === 'string' ? input.method.toUpperCase() : 'GET';
-    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) return fail(`unsupported method ${method}`);
+    if (!(REQUEST_METHODS as readonly string[]).includes(method)) return fail(`unsupported method ${method}`);
     let bodyStr: string | undefined;
     if (input.body !== undefined && method !== 'GET') {
       bodyStr = typeof input.body === 'string' ? input.body : JSON.stringify(input.body);
@@ -419,7 +425,7 @@ export class IdentityModule implements Module {
     let upload: { bytes: Buffer; contentType: string; path: string } | undefined;
     if (typeof input.fromFile === 'string' && input.fromFile.length > 0) {
       if (bodyStr !== undefined) return fail('pass either `body` or `fromFile`, not both');
-      if (method === 'GET') return fail('`fromFile` needs a method with a body (POST or PUT)');
+      if (method === 'GET') return fail('`fromFile` needs a method other than GET');
       const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
       if (!workspace) return fail('identity request: workspace module is not available for fromFile');
       // Disk first, store second. An upload is egress: reading it through the
