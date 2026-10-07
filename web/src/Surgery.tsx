@@ -349,7 +349,7 @@ function MarksChooser(props: {
                     channels(p().scopes.all.channels), p().scopes.all.count > 0)}
                   <div class="text-[10px] text-neutral-500 leading-snug">
                     Marks are reactions the bot posts where people can see them. Only the messages previewed here are marked; delivery runs in the background.
-                    A mark stays on Discord until it is retracted: <span class="text-neutral-400">cancel</span> only stops marks not yet sent;
+                    {' '}A mark stays on Discord until it is retracted: <span class="text-neutral-400">cancel</span> only stops marks not yet sent;{' '}
                     <span class="text-neutral-400">retract</span> asks Discord to remove the bot's marks. Both are in the branch panel's awareness list.
                   </div>
                 </>
@@ -527,9 +527,9 @@ export function AwarenessList(props: {
         </button>
       </div>
       <div class="px-1 mb-1 text-[10px] text-neutral-600 leading-snug">
-        Counts are the outcomes of requests recorded here, not what Discord shows now.
-        <span class="text-neutral-500">cancel</span> stops sends not yet made (never removes);
-        <span class="text-neutral-500">retract</span> requests removal of the bot's marks;
+        Counts are the outcomes of requests recorded here, not what Discord shows now.{' '}
+        <span class="text-neutral-500">cancel</span> stops sends not yet made (never removes);{' '}
+        <span class="text-neutral-500">retract</span> requests removal of the bot's marks;{' '}
         <span class="text-neutral-500">release</span> carries out a held batch's recorded actions.
       </div>
       <Show when={props.result}>{(r) => (
