@@ -199,6 +199,9 @@ export function SurgeryDialog(props: {
   /** An older framework that marks every removed Discord message itself:
    *  live surgery is refused there, so the dialog can't proceed. */
   legacyMarking: boolean;
+  /** The session or branch changed since this dialog opened: its preview no
+   *  longer describes what confirming would do. */
+  stale: boolean;
   preview: SurgeryMarksPreviewWire | null;
   previewError: string | null;
   marks: MarksChoice;
@@ -212,7 +215,7 @@ export function SurgeryDialog(props: {
   const title = () => isRollback() ? 'Roll back the live branch' : `Suppress ${props.request.messageIds.length} message${props.request.messageIds.length === 1 ? '' : 's'}`;
   const busy = () => props.result?.ok === false && props.result.code === 'agent-busy';
   /** An older framework marks regardless of any choice: the host refuses. */
-  const blocked = () => props.legacyMarking;
+  const blocked = () => props.legacyMarking || props.stale;
   const confirm = (): void => { if (!props.pending && !blocked()) props.onConfirm(note()); };
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!props.pending) props.onClose(); }}>
@@ -235,6 +238,12 @@ export function SurgeryDialog(props: {
             onInput={(e) => setNote(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
           />
+          <Show when={props.stale}>
+            <div class="text-[11px] text-amber-300/90 border border-amber-900/60 rounded p-2 mb-3 leading-snug">
+              The live session or branch changed since this dialog opened, so what it shows no longer describes what confirming would do.
+              Close it and start again from the current branch.
+            </div>
+          </Show>
           <MarksChooser
             supported={props.marksSupported}
             legacy={props.legacyMarking}
@@ -359,7 +368,7 @@ function MarkersReceipt(props: { markers: SurgeryMarkerReceiptWire }) {
   const notRemoved = () => (m().notRemoved ? `; ${m().notRemoved} previewed but not removed` : '');
   return (
     <div class={`text-xs mb-3 leading-snug ${m().status === 'not-scheduled' ? 'text-rose-300' : m().status === 'unresolved' ? 'text-amber-300' : 'text-neutral-400'}`}>
-      <Show when={m().status === 'none'}>No Discord marks{unmarked()}.</Show>
+      <Show when={m().status === 'none'}>No Discord marks{unmarked()}{notRemoved()}.</Show>
       <Show when={m().status === 'queued'}>
         Marks: {m().queued} queued{m().scope ? ` (${m().scope})` : ''}{unmarked()}{notRemoved()}. Delivery runs in the background.
         In the branch panel's awareness list, cancel stops marks not yet sent; marks already placed stay until you retract them.

@@ -352,7 +352,12 @@ export function App() {
   /** Awareness marks: the operator's choice for the open surgery, its preview,
    *  and the framework's journal (marks / awareness features). */
   const [marksChoice, setMarksChoice] = createSignal<MarksChoice>('none');
+  /** The open dialog's context changed (session or branch): it can't proceed. */
+  const [surgeryStale, setSurgeryStale] = createSignal(false);
   const [marksPreview, setMarksPreview] = createSignal<SurgeryMarksPreviewWire | null>(null);
+  /** The session and branch the open dialog was opened on: the confirmation
+   *  is bound to them, so the server refuses it if either has changed. */
+  let dialogContext: { sessionId?: string; branchId?: string } | null = null;
   const [marksPreviewError, setMarksPreviewError] = createSignal<string | null>(null);
   let marksPreviewCorr: string | null = null;
   const [awareness, setAwareness] = createSignal<AwarenessEntryWire[]>([]);
@@ -369,9 +374,14 @@ export function App() {
    *  scope covers; the choice resets to none until a scope is picked. */
   const requestMarksPreview = (req: SurgeryRequest): void => {
     setMarksChoice('none');
+    setSurgeryStale(false);
     setMarksPreview(null);
     setMarksPreviewError(null);
     marksPreviewCorr = null;
+    const w = welcome();
+    dialogContext = w
+      ? { ...(w.session.id ? { sessionId: w.session.id } : {}), ...(w.branch.id ? { branchId: w.branch.id } : {}) }
+      : null;
     if (!features().has('marks')) return;
     const corrId = `mpv-${Date.now()}`;
     marksPreviewCorr = corrId;
@@ -381,8 +391,15 @@ export function App() {
   };
   const onSurgeryPreview = (msg: SurgeryPreviewResultMessage): void => {
     if (!msg.corrId || msg.corrId !== marksPreviewCorr) return; // a stale dialog's answer
-    if (msg.ok && msg.preview) setMarksPreview(msg.preview);
-    else setMarksPreviewError(msg.error ?? 'preview failed');
+    if (msg.ok && msg.preview) {
+      // A preview computed on another context than the dialog's is stale.
+      if ((msg.sessionId && dialogContext?.sessionId && msg.sessionId !== dialogContext.sessionId)
+        || (msg.branchId && dialogContext?.branchId && msg.branchId !== dialogContext.branchId)) {
+        setSurgeryStale(true);
+        return;
+      }
+      setMarksPreview(msg.preview);
+    } else setMarksPreviewError(msg.error ?? 'preview failed');
   };
   /** The marks to send: bound to the previewed refs of the chosen scope. */
   const marksForSend = (): MarksChoiceWire => {
@@ -460,10 +477,14 @@ export function App() {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
     const marks = marksForSend();
+    const bound = {
+      ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
+      ...(dialogContext?.branchId ? { expectedBranchId: dialogContext.branchId } : {}),
+    };
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, ...bound, corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), marks, corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), marks, ...bound, corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -510,6 +531,7 @@ export function App() {
     if (surgeryPending()) return;
     retryAfterQuiesce = null;
     marksPreviewCorr = null;
+    setSurgeryStale(false);
     setSurgery(null);
     setSurgeryResult(null);
   };
@@ -828,6 +850,14 @@ export function App() {
 
     if (key !== welcomeKey) {
       // Session/branch changed (or first connect): hard reset.
+      // An open surgery dialog was previewed against the old context: its
+      // message, preview and refs no longer describe what confirming would
+      // do, so it can't be confirmed. (After our own surgery the result is
+      // already shown, and a pending one settles with its own result.)
+      if (welcomeKey && surgery() && !surgeryPending() && !surgeryResult()) {
+        setSurgeryStale(true);
+        marksPreviewCorr = null;
+      }
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
       setMessages(entries);
@@ -1402,6 +1432,7 @@ export function App() {
             hostMode={hostMode()}
             marksSupported={features().has('marks')}
             legacyMarking={!features().has('marks')}
+            stale={surgeryStale()}
             preview={marksPreview()}
             previewError={marksPreviewError()}
             marks={marksChoice()}

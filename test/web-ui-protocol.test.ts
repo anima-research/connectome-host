@@ -196,6 +196,10 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'everyone' } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, messageId: '' }] } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', extra: 1 } })).toBe(false);
+      // A preview-bound confirmation names the preview's branch.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 's', expectedBranchId: 'b1' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 7 })).toBe(false);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedBranchId: '' })).toBe(false);
       expect(isClientMessage({
         type: 'rollback', messageId: 's1',
         marks: { scope: 'all', refs: Array.from({ length: 20_001 }, () => ref) },

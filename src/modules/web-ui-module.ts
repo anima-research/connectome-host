@@ -1588,6 +1588,18 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const note = req.note?.trim() || undefined;
+    // A confirmation bound to a preview runs only against the session and
+    // branch that preview described (message ids, and branch ids, can repeat
+    // across sessions' stores). Checked synchronously before the framework
+    // call, so nothing else on this host can rebind or switch in between.
+    if ((req.expectedSessionId !== undefined && this.liveSessionId() !== req.expectedSessionId)
+      || (req.expectedBranchId !== undefined && this.liveBranchId(agentName) !== req.expectedBranchId)) {
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'stale',
+        error: `the live session or branch changed since this ${op} was previewed — preview it again`,
+      });
+      return;
+    }
     const marks = req.marks ?? 'none';
     if (typeof fw.previewSurgeryMarks !== 'function') {
       // This framework marks every removed Discord message it can address,
@@ -1637,6 +1649,27 @@ export class WebUiModule implements Module {
     }
   }
 
+  /** The bound session's id, if it can be read. */
+  private liveSessionId(): string | undefined {
+    try {
+      const id = sharedServer?.app?.sessionManager.getActiveSession()?.id;
+      return typeof id === 'string' && id.length > 0 ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The live branch id of an agent's context, if it can be read. */
+  private liveBranchId(agentName: string): string | undefined {
+    try {
+      const agent = sharedServer?.app?.framework.getAllAgents().find((a) => a.name === agentName);
+      const id = agent?.getContextManager()?.currentBranch()?.id;
+      return typeof id === 'string' && id.length > 0 ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * What a surgery would remove and which Discord messages each marks scope
    * would cover, read without changing anything. The SPA shows this before
@@ -1660,7 +1693,13 @@ export class WebUiModule implements Module {
         agentName,
         req.op === 'rollback' ? { rollbackTo: req.messageId! } : { suppress: req.messageIds! },
       );
-      this.send(client, { type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: true, preview });
+      const sessionId = this.liveSessionId();
+      const branchId = this.liveBranchId(agentName);
+      this.send(client, {
+        type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: true, preview,
+        ...(sessionId ? { sessionId } : {}),
+        ...(branchId ? { branchId } : {}),
+      });
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
     }

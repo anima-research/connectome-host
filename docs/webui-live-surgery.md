@@ -52,7 +52,13 @@ rollback or suppress dialog asks the framework what the change would remove
 
 Each scope shows its count and channels. A chosen scope is sent with exactly
 the refs the preview listed, so messages that arrive while the operator is
-deciding are removed but never marked. The result shows the framework's
+deciding are removed but never marked. The confirmation is bound to the
+session and branch the dialog was opened on: if the host rebinds to another
+session or the branch changes, the open dialog says so and can't be
+confirmed, and the server refuses a confirmation whose session or branch is
+no longer the live one (`code: 'stale'`), checked in the same synchronous
+step that hands the operation to the framework. Ordinary arrivals on the
+same branch don't affect it. The result shows the framework's
 receipt: marks queued (and how many removed messages stay unmarked), not
 scheduled, or unresolved. It never claims Discord accepted anything; delivery
 runs in the background without holding the agent.
@@ -118,9 +124,12 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?, marks?}`, `suppress
-{messageIds, agent?, note?, marks?}` (`marks`: `'none'` or `{scope:
-'addressed' | 'all', refs?}`), `surgery-preview {op, messageId | messageIds,
+Client → server: `rollback {messageId, agent?, note?, marks?,
+expectedSessionId?, expectedBranchId?}`, `suppress {messageIds, agent?,
+note?, marks?, expectedSessionId?, expectedBranchId?}` (`marks`: `'none'` or
+`{scope: 'addressed' | 'all', refs?}`; the expected ids are the session and
+branch the dialog was opened on, and the server refuses with `code:
+'stale'` if either has changed), `surgery-preview {op, messageId | messageIds,
 agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
 | release, target}` (`target: 'all'` for retract only), `host-quiesce
 {reason?}`, `host-resume`, `request-host-mode`, `request-operator-log

@@ -672,6 +672,11 @@ export interface SurgeryPreviewResultMessage {
   ok: boolean;
   error?: string;
   preview?: SurgeryMarksPreviewWire;
+  /** The session and branch the preview was computed on: send them back as
+   *  the surgery's `expectedSessionId`/`expectedBranchId`, so it can't run
+   *  against a different context (ids alone can coincide across stores). */
+  sessionId?: string;
+  branchId?: string;
 }
 
 /**
@@ -732,8 +737,9 @@ export interface SurgeryResultMessage {
   error?: string;
   /** Refusal code when `ok` is false: 'agent-busy' means quiesce (or wait
    *  for idle) and retry; 'unsupported' means this host's agent-framework
-   *  can't make awareness marks a choice (upgrade it); others are input
-   *  problems. */
+   *  can't make awareness marks a choice (upgrade it); 'stale' means the live
+   *  session or branch changed since the preview (preview again); others are
+   *  input problems. */
   code?: string;
   agent?: string;
   sourceBranch?: string;
@@ -1128,6 +1134,10 @@ export interface RollbackMessage {
    *  'marks' feature refuses live surgery: that framework would mark every
    *  removed Discord message regardless of any choice. */
   marks?: MarksChoiceWire;
+  /** The preview's session and branch: refused (`code: 'stale'`) if the
+   *  live session or branch is no longer it. */
+  expectedSessionId?: string;
+  expectedBranchId?: string;
   corrId?: string;
 }
 
@@ -1140,6 +1150,9 @@ export interface SuppressMessage {
   note?: string;
   /** Awareness marks; absent means none. See RollbackMessage.marks. */
   marks?: MarksChoiceWire;
+  /** See RollbackMessage.expectedSessionId/expectedBranchId. */
+  expectedSessionId?: string;
+  expectedBranchId?: string;
   corrId?: string;
 }
 
@@ -1265,6 +1278,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
+        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
+        && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
       return Array.isArray(v.messageIds) && v.messageIds.length > 0
@@ -1272,6 +1287,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
+        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
+        && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'surgery-preview':
       return (v.op === 'rollback'

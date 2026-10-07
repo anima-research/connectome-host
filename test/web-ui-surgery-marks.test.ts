@@ -33,6 +33,8 @@ let webUiModule: WebUiModule;
 
 /** Calls the fake framework received, for assertions. */
 const received: Array<{ method: string; args: unknown[] }> = [];
+/** The fake agent's live branch, which a test may move. */
+const liveBranch = { id: 'b1', name: 'main' };
 
 function fakeFramework(opts: { contract: boolean }) {
   const surgeryResult = (marks: unknown) => ({
@@ -48,8 +50,12 @@ function fakeFramework(opts: { contract: boolean }) {
         }
       : {}),
   });
+  const contextManager = {
+    getAllMessages: () => [],
+    currentBranch: () => ({ ...liveBranch }),
+  };
   const framework: Record<string, unknown> = {
-    getAllAgents: () => [],
+    getAllAgents: () => [{ name: 'resident', model: 'test', getContextManager: () => contextManager }],
     getAllModules: () => [],
     getModule: () => undefined,
     onTrace: () => {},
@@ -97,11 +103,11 @@ function fakeFramework(opts: { contract: boolean }) {
   return framework;
 }
 
-function bind(contract: boolean): void {
+function bind(contract: boolean, sessionId = 's1'): void {
   webUiModule.setApp({
     framework: fakeFramework({ contract }),
     recipe: { name: 'r', description: 'd', version: '1', agent: { name: 'resident' } },
-    sessionManager: { getActiveSession: () => ({ id: 's1', name: 's', manuallyNamed: false }) },
+    sessionManager: { getActiveSession: () => ({ id: sessionId, name: 's', manuallyNamed: false }) },
   } as never);
 }
 
@@ -180,8 +186,11 @@ describe('surgery marks over the WebUI', () => {
       expect((preview.preview as { scopes: { addressed: { count: number } } }).scopes.addressed.count).toBe(2);
       expect(received[0]).toEqual({ method: 'previewSurgeryMarks', args: ['resident', { rollbackTo: 's9' }] });
 
+      expect(preview.branchId).toBe('b1');
+      expect(preview.sessionId).toBe('s1');
+
       const marks = { scope: 'addressed', refs: [ref('a1'), ref('a2')] };
-      client.send({ type: 'rollback', messageId: 's9', marks, corrId: 'r1' });
+      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', corrId: 'r1' });
       const result = await client.next('surgery-result', 'r1');
       // Every operator sees the journal change.
       expect((await client.next('awareness')).corrId).toBeUndefined();
@@ -195,6 +204,17 @@ describe('surgery marks over the WebUI', () => {
       await client.next('surgery-result');
       const suppress = received.find((r) => r.method === 'suppressMessages')!;
       expect((suppress.args[1] as { marks: unknown }).marks).toBe('none');
+
+      // A confirmation bound to a preview of another branch is refused
+      // before the framework sees it.
+      liveBranch.id = 'b2';
+      const calls = received.length;
+      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', corrId: 'r-stale' });
+      const stale = await client.next('surgery-result', 'r-stale');
+      expect(stale.ok).toBe(false);
+      expect(stale.code).toBe('stale');
+      expect(received.length).toBe(calls);
+      liveBranch.id = 'b1';
 
       client.send({ type: 'request-awareness', corrId: 'a1' });
       const listed = await client.next('awareness', 'a1');
@@ -211,6 +231,31 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'awareness-action', action: 'release', target: 'b1', corrId: 'a3' });
       const refused = await client.next('awareness', 'a3');
       expect(refused.error).toMatch(/not held/);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('a confirmation bound to one session is refused after the host rebinds to another, even with matching ids', async () => {
+    bind(true, 'session-a');
+    received.length = 0;
+    const client = await connect();
+    try {
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: '2', corrId: 'p' });
+      const preview = await client.next('surgery-preview', 'p');
+      expect(preview.sessionId).toBe('session-a');
+      // The supported session switch: a new framework on another store, whose
+      // branch and message ids happen to be the same.
+      bind(true, 'session-b');
+      await client.next('welcome');
+      client.send({
+        type: 'rollback', messageId: '2', marks: 'none',
+        expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, corrId: 'r',
+      });
+      const result = await client.next('surgery-result', 'r');
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe('stale');
+      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
     } finally {
       client.ws.close();
     }
