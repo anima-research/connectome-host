@@ -1589,14 +1589,21 @@ export class WebUiModule implements Module {
     const requester = this.requesterFor(client);
     const note = req.note?.trim() || undefined;
     const marks = req.marks ?? 'none';
-    if (marks !== 'none' && typeof fw.previewSurgeryMarks !== 'function') {
-      // This framework can't honor a choice (it marks every addressable
-      // removed message itself); never let a choice silently mean that.
-      this.send(client, {
-        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName,
-        error: `this host's agent-framework does not take an awareness-marks choice — upgrade @animalabs/agent-framework`,
-      });
-      return;
+    if (typeof fw.previewSurgeryMarks !== 'function') {
+      // This framework marks every removed Discord message it can address,
+      // and moves those marks with branch switches; it can't be told
+      // otherwise. Default none holds at this ingress too: neither an
+      // omitted choice nor a scope the framework can't honor may stand for
+      // that. Only the operator's explicit acceptance does.
+      const refusal = marks !== 'none'
+        ? `this host's agent-framework does not take an awareness-marks choice: it marks every removed Discord message it can address — upgrade @animalabs/agent-framework`
+        : req.legacyMarks !== true
+          ? `this host's agent-framework marks every removed Discord message it can address and can't be told not to — accept that explicitly, or upgrade @animalabs/agent-framework`
+          : null;
+      if (refusal) {
+        this.send(client, { type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, error: refusal });
+        return;
+      }
     }
     try {
       const r = op === 'rollback'

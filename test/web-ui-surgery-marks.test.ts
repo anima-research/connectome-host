@@ -216,7 +216,7 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
-  test('an older framework is never handed a choice it would ignore', async () => {
+  test('an older framework: default none holds, so a surgery needs explicit acceptance of the marks it places', async () => {
     bind(false);
     received.length = 0;
     const client = await connect();
@@ -225,18 +225,31 @@ describe('surgery marks over the WebUI', () => {
       expect(features).toContain('rollback');
       expect(features).not.toContain('marks');
 
+      // A scope it can't honor is refused.
       client.send({ type: 'rollback', messageId: 's9', marks: { scope: 'all' }, corrId: 'r1' });
-      const refused = await client.next('surgery-result');
+      const refused = await client.next('surgery-result', 'r1');
       expect(refused.ok).toBe(false);
       expect(String(refused.error)).toMatch(/does not take an awareness-marks choice/);
-      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
 
-      // No choice: the old behaviour, and no marks field it can't read.
+      // So are an omitted choice and an explicit none: that framework would
+      // mark every removed Discord message anyway.
       client.send({ type: 'rollback', messageId: 's9', corrId: 'r2' });
-      const result = await client.next('surgery-result');
+      const omitted = await client.next('surgery-result', 'r2');
+      expect(omitted.ok).toBe(false);
+      expect(String(omitted.error)).toMatch(/accept that explicitly/);
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', corrId: 'r3' });
+      const none = await client.next('surgery-result', 'r3');
+      expect(none.ok).toBe(false);
+      expect(String(none.error)).toMatch(/accept that explicitly/);
+      expect(received.some((r) => r.method === 'rollbackToMessage' || r.method === 'suppressMessages')).toBe(false);
+
+      // Explicit acceptance: the old behaviour, and no marks field it can't read.
+      client.send({ type: 'rollback', messageId: 's9', legacyMarks: true, corrId: 'r4' });
+      const result = await client.next('surgery-result', 'r4');
       expect(result.ok).toBe(true);
       const call = received.find((r) => r.method === 'rollbackToMessage')!;
       expect('marks' in (call.args[1] as object)).toBe(false);
+      expect('legacyMarks' in (call.args[1] as object)).toBe(false);
 
       client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
       const preview = await client.next('surgery-preview');

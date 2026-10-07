@@ -352,6 +352,9 @@ export function App() {
   /** Awareness marks: the operator's choice for the open surgery, its preview,
    *  and the framework's journal (marks / awareness features). */
   const [marksChoice, setMarksChoice] = createSignal<MarksChoice>('none');
+  /** Against an older framework (no 'marks'): the operator's explicit
+   *  acceptance of the marks it places regardless. Reset per dialog. */
+  const [legacyAccepted, setLegacyAccepted] = createSignal(false);
   const [marksPreview, setMarksPreview] = createSignal<SurgeryMarksPreviewWire | null>(null);
   const [marksPreviewError, setMarksPreviewError] = createSignal<string | null>(null);
   let marksPreviewCorr: string | null = null;
@@ -369,6 +372,7 @@ export function App() {
    *  scope covers; the choice resets to none until a scope is picked. */
   const requestMarksPreview = (req: SurgeryRequest): void => {
     setMarksChoice('none');
+    setLegacyAccepted(false);
     setMarksPreview(null);
     setMarksPreviewError(null);
     marksPreviewCorr = null;
@@ -461,10 +465,11 @@ export function App() {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
     const marks = marksForSend();
+    const legacy = !features().has('marks') && legacyAccepted() ? { legacyMarks: true } : {};
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), ...(marks ? { marks } : {}), corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), ...(marks ? { marks } : {}), ...legacy, corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), ...(marks ? { marks } : {}), corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), ...(marks ? { marks } : {}), ...legacy, corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -1403,6 +1408,8 @@ export function App() {
             hostMode={hostMode()}
             marksSupported={features().has('marks')}
             legacyMarking={!features().has('marks')}
+            legacyAccepted={legacyAccepted()}
+            onLegacyAccepted={setLegacyAccepted}
             preview={marksPreview()}
             previewError={marksPreviewError()}
             marks={marksChoice()}

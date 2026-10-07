@@ -1124,6 +1124,10 @@ export interface RollbackMessage {
   note?: string;
   /** Awareness marks ('marks' hosts); absent means none. */
   marks?: MarksChoiceWire;
+  /** Without the 'marks' feature, the framework marks every removed Discord
+   *  message it can address and can't be told otherwise: the surgery is
+   *  refused unless the operator accepts that explicitly with `true`. */
+  legacyMarks?: boolean;
   corrId?: string;
 }
 
@@ -1136,6 +1140,8 @@ export interface SuppressMessage {
   note?: string;
   /** Awareness marks ('marks' hosts); absent means none. */
   marks?: MarksChoiceWire;
+  /** See RollbackMessage.legacyMarks. */
+  legacyMarks?: boolean;
   corrId?: string;
 }
 
@@ -1261,6 +1267,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
+        && (v.legacyMarks === undefined || typeof v.legacyMarks === 'boolean')
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
       return Array.isArray(v.messageIds) && v.messageIds.length > 0
@@ -1268,6 +1275,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
+        && (v.legacyMarks === undefined || typeof v.legacyMarks === 'boolean')
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'surgery-preview':
       return (v.op === 'rollback'

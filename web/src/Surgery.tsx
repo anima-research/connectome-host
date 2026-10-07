@@ -198,6 +198,9 @@ export function SurgeryDialog(props: {
   marksSupported: boolean;
   /** An older framework that marks every removed Discord message itself. */
   legacyMarking: boolean;
+  /** The operator explicitly accepted that older framework's marks. */
+  legacyAccepted: boolean;
+  onLegacyAccepted(accepted: boolean): void;
   preview: SurgeryMarksPreviewWire | null;
   previewError: string | null;
   marks: MarksChoice;
@@ -210,6 +213,9 @@ export function SurgeryDialog(props: {
   const isRollback = () => props.request.op === 'rollback';
   const title = () => isRollback() ? 'Roll back the live branch' : `Suppress ${props.request.messageIds.length} message${props.request.messageIds.length === 1 ? '' : 's'}`;
   const busy = () => props.result?.ok === false && props.result.code === 'agent-busy';
+  /** An older framework marks regardless: proceeding needs explicit acceptance. */
+  const blocked = () => props.legacyMarking && !props.legacyAccepted;
+  const confirm = (): void => { if (!props.pending && !blocked()) props.onConfirm(note()); };
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!props.pending) props.onClose(); }}>
       <div class="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl max-w-lg w-full mx-4 p-5" onClick={(e) => e.stopPropagation()}>
@@ -229,11 +235,13 @@ export function SurgeryDialog(props: {
             placeholder="reason (optional — goes in the operator log)"
             value={note()}
             onInput={(e) => setNote(e.currentTarget.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !props.pending) props.onConfirm(note()); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
           />
           <MarksChooser
             supported={props.marksSupported}
             legacy={props.legacyMarking}
+            legacyAccepted={props.legacyAccepted}
+            onLegacyAccepted={props.onLegacyAccepted}
             preview={props.preview}
             error={props.previewError}
             marks={props.marks}
@@ -249,8 +257,8 @@ export function SurgeryDialog(props: {
             <button type="button" class="px-3 py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-sm" disabled={props.pending} onClick={props.onClose}>Cancel</button>
             <button type="button"
               class={`px-3 py-1.5 rounded text-sm font-semibold disabled:opacity-60 ${isRollback() ? 'bg-amber-900/50 hover:bg-amber-900/80 text-amber-100' : 'bg-rose-900/50 hover:bg-rose-900/80 text-rose-100'}`}
-              disabled={props.pending}
-              onClick={() => props.onConfirm(note())}>
+              disabled={props.pending || blocked()}
+              onClick={confirm}>
               {props.pending ? 'working…' : isRollback() ? 'Roll back' : 'Suppress'}
             </button>
           </div>
@@ -295,6 +303,8 @@ export function SurgeryDialog(props: {
 function MarksChooser(props: {
   supported: boolean;
   legacy: boolean;
+  legacyAccepted: boolean;
+  onLegacyAccepted(accepted: boolean): void;
   preview: SurgeryMarksPreviewWire | null;
   error: string | null;
   marks: MarksChoice;
@@ -313,9 +323,17 @@ function MarksChooser(props: {
   return (
     <>
       <Show when={props.legacy}>
-        <div class="text-[11px] text-amber-300/90 mb-3 leading-snug">
-          This host's agent-framework places 💤 on every removed Discord message it can address, other people's included.
-          Upgrade @animalabs/agent-framework to make that a choice.
+        <div class="border border-amber-900/60 rounded p-2 mb-3 space-y-1">
+          <div class="text-[11px] text-amber-300/90 leading-snug">
+            This host's agent-framework places 💤 on every removed Discord message it can address, other people's included,
+            and removes and re-adds those marks as branches switch. It can't be told not to.
+            Upgrade @animalabs/agent-framework to make marks a choice.
+          </div>
+          <label class="flex items-start gap-2 text-xs text-neutral-300 cursor-pointer">
+            <input type="checkbox" class="mt-0.5" checked={props.legacyAccepted} disabled={props.disabled}
+              onChange={(e) => props.onLegacyAccepted(e.currentTarget.checked)} />
+            <span>I accept those marks for this change.</span>
+          </label>
         </div>
       </Show>
       <Show when={props.supported}>
