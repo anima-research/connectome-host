@@ -198,15 +198,22 @@ export class FoldsExportModule implements Module {
   }
 
   status(): FoldsExportStatus {
-    const entry = this.readLedger().targets[this.target];
+    let entry: OwnershipEntry | undefined;
+    let ledgerError: string | null = null;
+    try {
+      entry = this.readLedger().targets[this.target];
+    } catch (err) {
+      ledgerError = `ownership ledger unreadable: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    const error = ledgerError ?? this.lastError;
     const state: FoldsExportStatus['state'] = !this.cm
       ? 'unbound'
-      : entry?.conflict ? 'conflict' : this.lastError ? 'error' : 'exporting';
+      : entry?.conflict ? 'conflict' : error ? 'error' : 'exporting';
     return {
       target: this.target,
       state,
       ...(entry?.conflict ? { conflict: entry.conflict } : {}),
-      ...(this.lastError ? { error: this.lastError } : {}),
+      ...(error ? { error } : {}),
       ...(this.lastProjection ? { lastProjection: this.lastProjection } : {}),
       freshness: FRESHNESS,
     };
