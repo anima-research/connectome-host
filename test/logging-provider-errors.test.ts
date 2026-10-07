@@ -96,12 +96,25 @@ describe('LoggingProviderAdapter error records', () => {
     }
   });
 
-  test('an error whose message getter throws is still logged, and still rethrown', async () => {
+  test('a message getter that throws loses only the message: the classification is kept, the error rethrown', async () => {
     const path = logFile();
-    const hostile = new Error('zz');
+    const hostile = membraneLike('zz');
     Object.defineProperty(hostile, 'message', { get() { throw new Error('getter failed'); } });
     await expect(new LoggingProviderAdapter(failing(hostile), path).complete(request)).rejects.toBe(hostile);
     const [record] = records(path);
-    expect(record!.error).toBe('[error could not be read]');
+    expect(record!.error).toBe('MembraneError: [message could not be read]');
+    expect(record).toMatchObject({ errorType: 'invalid_request', httpStatus: 400, retryable: false });
+  });
+
+  test('a metadata getter that throws loses only that field: the provider text is kept (room-225 #48791)', async () => {
+    const path = logFile();
+    const error = new Error('zz the actual provider diagnostic');
+    Object.defineProperty(error, 'providerErrorCode', { get() { throw new Error('getter failed'); } });
+    Object.assign(error, { type: 'server', retryable: true });
+    await expect(new LoggingProviderAdapter(failing(error), path).complete(request)).rejects.toBe(error);
+    const [record] = records(path);
+    expect(record!.error).toBe('Error: zz the actual provider diagnostic');
+    expect(record).toMatchObject({ errorType: 'server', retryable: true });
+    expect('providerErrorCode' in record!).toBe(false);
   });
 });

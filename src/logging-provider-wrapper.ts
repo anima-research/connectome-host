@@ -79,21 +79,28 @@ function boundText(text: string, max: number): string {
  * throws: logging must never break inference.
  */
 function describeError(error: unknown): Record<string, unknown> {
-  let text: string;
+  // Each part is read on its own: a field whose getter throws loses only
+  // itself, never the provider's text or the rest of its classification.
+  const read = <T>(get: () => T): T | undefined => {
+    try { return get(); } catch { return undefined; }
+  };
   const fields: Record<string, unknown> = {};
-  try {
-    if (error instanceof Error) {
-      text = `${String(error.name)}: ${String(error.message)}`;
-      const e = error as Error & { type?: unknown; httpStatus?: unknown; providerErrorCode?: unknown; retryable?: unknown };
-      if (typeof e.type === 'string') fields.errorType = boundText(e.type, MAX_CODE_CHARS);
-      if (typeof e.httpStatus === 'number') fields.httpStatus = e.httpStatus;
-      if (typeof e.providerErrorCode === 'string') fields.providerErrorCode = boundText(e.providerErrorCode, MAX_CODE_CHARS);
-      if (typeof e.retryable === 'boolean') fields.retryable = e.retryable;
-    } else {
-      text = String(error);
-    }
-  } catch {
-    text = '[error could not be read]';
+  let text: string;
+  if (error instanceof Error) {
+    const name = read(() => String(error.name)) ?? 'Error';
+    const message = read(() => String(error.message));
+    text = message === undefined ? `${name}: [message could not be read]` : `${name}: ${message}`;
+    const e = error as Error & { type?: unknown; httpStatus?: unknown; providerErrorCode?: unknown; retryable?: unknown };
+    const type = read(() => e.type);
+    if (typeof type === 'string') fields.errorType = boundText(type, MAX_CODE_CHARS);
+    const httpStatus = read(() => e.httpStatus);
+    if (typeof httpStatus === 'number') fields.httpStatus = httpStatus;
+    const code = read(() => e.providerErrorCode);
+    if (typeof code === 'string') fields.providerErrorCode = boundText(code, MAX_CODE_CHARS);
+    const retryable = read(() => e.retryable);
+    if (typeof retryable === 'boolean') fields.retryable = retryable;
+  } else {
+    text = read(() => String(error)) ?? '[error could not be read]';
   }
   const bounded = boundText(text, MAX_ERROR_CHARS);
   return { error: bounded, ...fields, ...(bounded !== text ? { errorChars: text.length } : {}) };
