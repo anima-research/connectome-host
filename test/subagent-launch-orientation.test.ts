@@ -3,12 +3,13 @@
  * first inference, and the caller's receipt describes the same launch.
  *
  * One launch description is resolved at the call: lineage, model, provider,
- * system prompt source, strategy and its windows, budgets, tool rules, and
- * the parent's values at the call. The stream is created from it, the
- * receipt renders it, and the stream's first context renders it again,
- * byte for byte. The first context then adds what is known only when the
- * stream is created: which inheritance path ran, its context budget as
- * created, and the tools it is shown beside what its parent is shown now.
+ * system prompt source, strategy and its windows, budgets, prose routing,
+ * tool rules, and the parent's values at the call. The stream is created
+ * from it, the receipt renders it, and the stream's first context renders
+ * it again, byte for byte. The first context then adds what is known only
+ * when the stream is created: which inheritance path ran, its context
+ * budget as created, its prose routing when the launch left that to the
+ * framework, and the tools it is shown beside what its parent is shown now.
  *
  * Most cases stub runEphemeralToCompletion and read the child's stored
  * context. The last describe block runs the real one against the mock
@@ -25,6 +26,8 @@ import { SubagentModule, type SubagentModuleConfig } from '../src/modules/subage
 
 interface Run {
   name: string;
+  /** The prose routing the child agent was created with. */
+  proseRouting: string;
   /** Text of the child's last message: the fork's tool_result, or the
    *  spawn's / parentless fork's task message. */
   firstContext: string;
@@ -99,13 +102,14 @@ async function makeHarness(opts: {
   const holds: Array<() => void> = [];
   let holdNext: (() => void) | null = null;
   fw.runEphemeralToCompletion = async (agent: unknown, cm: unknown) => {
-    const a = agent as { name: string };
+    const a = agent as { name: string; proseRouting: string };
     fw.agents.set(a.name, agent); // what the real run does at its start
     try {
       const { messages } = (cm as { queryMessages(q: object): { messages: Array<{ content: unknown }> } })
         .queryMessages({});
       runs.push({
         name: a.name,
+        proseRouting: a.proseRouting,
         firstContext: textOf(messages[messages.length - 1]?.content),
         allText: messages.map((m) => textOf(m.content)).join('\n'),
         surface: framework.listToolClasses(a.name).map((t) => t.tool),
@@ -162,6 +166,16 @@ const CUT_AT_EXCHANGE =
   "with sibling fork calls and their results removed and this call's result rewritten as this message. " +
   'No other message after the call is included.';
 
+/** What the orientation says each prose-routing mode does with plain text. */
+const ROUTING_EFFECT = {
+  locus: 'plain text is published to the channel the framework infers for each turn, if there is one',
+  explicit: 'plain text is delivered only after a destination prefix line such as ">>#channel" in the same turn; ' +
+    'the prose_help tool shows the syntax',
+  hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
+    'a leading ">>>destination" envelope routes that text to the destination it names instead',
+  disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+} as const;
+
 function launchBlock(receipt: string): string {
   const at = receipt.indexOf('\n\nLaunch of ');
   expect(at).toBeGreaterThan(-1);
@@ -201,7 +215,7 @@ describe('fork orientation', () => {
       // The harness parent runs passthrough: no windows or cap to compare.
       expect(line(block, '- Against the parent at the call')).toBe(
         '- Against the parent at the call: Differs in model, strategy type and stream budget. ' +
-        'Same: provider connection, system prompt, output limit and tool rules. ' +
+        'Same: provider connection, system prompt, output limit, prose routing and tool rules. ' +
         "Not compared: head window, recent window, message cap and compression model (the parent doesn't report them), " +
         'and context budget (set when the stream starts).',
       );
@@ -209,10 +223,13 @@ describe('fork orientation', () => {
       expect(block).toContain("- Provider: mock, the parent's own connection.");
       expect(block).toContain("- Recent window: 80,000 tokens (the parent's isn't reported).");
       expect(block).toContain("- Output limit: 256 tokens, the same as the parent's.");
+      // The harness parent sets no mode, so it runs the framework's default.
+      expect(block).toContain(`- Prose routing: locus, inherited from the parent: ${ROUTING_EFFECT.locus}.`);
       expect(block).toContain("summary text already in the parent's compiled context comes with that context");
       expect(block).not.toContain('Matches');
 
       const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('locus');
       expect(run.firstContext).toContain('Two parallel streams of you continue from this point');
       expect(run.firstContext).toContain(block);
       const start = startSection(run.firstContext);
@@ -239,7 +256,7 @@ describe('fork orientation', () => {
       const block = launchBlock(res.data as string);
       expect(line(block, '- Against the parent at the call')).toBe(
         '- Against the parent at the call: Same: model, provider connection, system prompt, strategy type, ' +
-        'recent window, message cap, stream budget, output limit and tool rules. ' +
+        'recent window, message cap, stream budget, output limit, prose routing and tool rules. ' +
         "Not compared: head window and compression model (the parent doesn't report them), " +
         'and context budget (set when the stream starts).',
       );
@@ -276,8 +293,10 @@ describe('fork orientation', () => {
       await h.asyncPromise('leaf');
       const block = launchBlock(res.data as string);
       expect(block).toContain('depth 1 of 1');
+      expect(block).toContain(`- Prose routing: explicit, inherited from the parent: ${ROUTING_EFFECT.explicit}.`);
       expect(block).toContain('- Tool rules: every tool the process offers except the subagent tools, keeping subagent--return: no further forks or spawns at this depth; the parent has no restriction.');
       const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('explicit');
       expect(run.surface).toContain('prose_help');
       expect(run.surface).not.toContain('subagent--fork');
       const parentTools = h.framework.listToolClasses('parent').map((t) => t.tool);
@@ -321,6 +340,7 @@ describe('fork orientation', () => {
       const block = launchBlock(res.data as string);
       expect(block).toContain('- Lineage: no parent stream, so this fork inherits no context; depth 1 of 3.');
       expect(block).toContain('- System prompt: the default research-assistant prompt.');
+      expect(block).toContain("- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.");
       expect(block).not.toContain('Against the parent');
       const run = h.runs[0]!;
       // Before this change a parentless fork started with an empty context.
@@ -328,6 +348,8 @@ describe('fork orientation', () => {
       expect(run.firstContext).toContain(block);
       const start = startSection(run.firstContext);
       expect(start).toContain('- Inherited: nothing; there is no parent stream.');
+      expect(run.proseRouting).toBe('locus');
+      expect(start).toContain(`- Prose routing: locus, the framework's default: ${ROUTING_EFFECT.locus}.`);
       expect(start).toContain(`- Tools: ${run.surface.length} available to this stream: `);
       for (const name of run.surface) expect(start).toContain(name);
     } finally {
@@ -361,11 +383,32 @@ describe('fork orientation', () => {
       await h.cleanup();
     }
   });
+
+  test('each prose-routing mode is named with what it does to plain text, and the stream runs it', async () => {
+    for (const mode of ['locus', 'explicit', 'hybrid', 'disabled'] as const) {
+      const h = await makeHarness({ parent: { proseRouting: mode } });
+      try {
+        const input = { name: `speaker-${mode}`, task: 'say something' };
+        seedForkCall(h.framework, `toolu_${mode}`, input);
+        const res = await h.subagent.handleToolCall(call('fork', `toolu_${mode}`, input));
+        await h.asyncPromise(input.name);
+        const block = launchBlock(res.data as string);
+        expect(line(block, '- Prose routing:')).toBe(`- Prose routing: ${mode}, inherited from the parent: ${ROUTING_EFFECT[mode]}.`);
+        expect(line(block, '- Against the parent at the call')).toContain('prose routing and tool rules.');
+        const run = h.runs[0]!;
+        expect(run.proseRouting).toBe(mode);
+        expect(run.firstContext).toContain(block);
+      } finally {
+        await h.cleanup();
+      }
+    }
+  });
 });
 
 describe('spawn orientation', () => {
   test("a spawn's task message carries the same launch as the receipt and names its whole surface", async () => {
-    const h = await makeHarness({});
+    // A caller off the default mode, so the spawn's inheritance shows.
+    const h = await makeHarness({ parent: { proseRouting: 'disabled' } });
     try {
       const input = { name: 'probe', systemPrompt: 'you are a probe', task: 'probe the harness', tools: ['time--now'] };
       const res = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_1', input));
@@ -375,9 +418,11 @@ describe('spawn orientation', () => {
       expect(block).toContain("Launch of spawn 'probe', as resolved at its subagent--spawn call:");
       expect(block).toContain('- Lineage: spawned by stream "parent" as a separate agent with its own system prompt and task; it inherits none of the caller\'s context; depth 1 of 3.');
       expect(block).toContain('- System prompt: supplied by the caller for this spawn.');
+      expect(block).toContain(`- Prose routing: disabled, inherited from the caller: ${ROUTING_EFFECT.disabled}.`);
       expect(block).toContain('- Tool rules: only the 1 the caller listed (time--now), plus subagent--return; the caller has no restriction.');
       expect(input.tools).toEqual(['time--now']); // the caller's array is not mutated
       const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('disabled');
       expect(run.firstContext).toStartWith('probe the harness\n');
       expect(run.firstContext).toContain(block);
       const start = startSection(run.firstContext);
@@ -419,7 +464,7 @@ describe('a queued launch', () => {
       const block = launchBlock(receipt);
       expect(line(block, '- Against the parent at the call')).toBe(
         '- Against the parent at the call: Differs in recent window and message cap. ' +
-        'Same: model, provider connection, system prompt, strategy type, stream budget, output limit and tool rules. ' +
+        'Same: model, provider connection, system prompt, strategy type, stream budget, output limit, prose routing and tool rules. ' +
         "Not compared: head window and compression model (the parent doesn't report them), " +
         'and context budget (set when the stream starts).',
       );
@@ -583,6 +628,7 @@ describe('the first request a fork actually sends', () => {
       const request = adapter.getRequestLog().map((r) => r.request).find((r) => r.model === 'mock-leaf');
       expect(request).toBeDefined();
       const wire = JSON.stringify(request!.messages);
+      expect(wire).toContain(sent(`- Prose routing: explicit, inherited from the parent: ${ROUTING_EFFECT.explicit}.`));
       const toolNames = (request!.tools ?? []).map((t) => (t as { name: string }).name);
       expect(toolNames).toContain('prose_help');
       expect(toolNames).toContain('subagent--return');

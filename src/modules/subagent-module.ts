@@ -281,6 +281,19 @@ const NO_PARENT_SYSTEM_PROMPT = 'You are a research assistant.';
 
 type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled';
 
+/** What each prose-routing mode does with a stream's plain text, as
+ *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
+ *  as AF's own mode primer, since a spawn's orientation is a user-role
+ *  message. */
+const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
+  locus: 'plain text is published to the channel the framework infers for each turn, if there is one',
+  explicit: 'plain text is delivered only after a destination prefix line such as ">>#channel" in the same turn; ' +
+    'the prose_help tool shows the syntax',
+  hybrid: 'unprefixed plain text is published to the channel the framework infers for each turn, if there is one; ' +
+    'a leading ">>>destination" envelope routes that text to the destination it names instead',
+  disabled: 'plain text is never published, even with a prefix; only explicit send tools reach a channel',
+};
+
 /**
  * What a forked or spawned stream is launched with, resolved once at the
  * call. The stream is created from exactly these inputs, and both the
@@ -310,6 +323,9 @@ export interface SubagentLaunch {
     maxMessageTokens: number;
     compressionModel: string;
   };
+  /** The calling stream's prose routing, which the stream inherits;
+   *  undefined when there is no calling stream, so the framework's default
+   *  applies (stated when the stream starts). */
   proseRouting?: ProseRouting;
   /** The tool rules the stream is created with. filterToolNames applies
    *  them when the stream is created, as it always has; the stream's first
@@ -346,6 +362,9 @@ export interface SubagentStart {
     | { kind: 'none'; reason: 'no-parent' | 'parent-gone' | 'spawn' };
   /** The stream's runtime settings' context budget, as created. */
   contextBudgetTokens: number;
+  /** The stream's prose routing, as created; stated here only when the
+   *  launch didn't set it. */
+  proseRouting: ProseRouting;
   /** The tools the stream is shown at its first inference. */
   tools: string[];
   /** What the calling stream is shown now; undefined when it can't be read. */
@@ -471,6 +490,22 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
   tokens('stream budget', 'Stream budget', launch.maxStreamTokens, p?.maxStreamTokens);
   tokens('output limit', 'Output limit', launch.maxTokens, p?.maxTokens);
 
+  // The stream runs its caller's prose routing, so with a calling stream it
+  // is the same by construction; without one the framework's default
+  // applies, and the stream's start states it.
+  const routing = launch.proseRouting;
+  settings.push(routing === undefined
+    ? {
+        name: 'prose routing',
+        ...(p ? { uncompared: 'at-start' as const } : {}),
+        line: "- Prose routing: not set by this launch, so the framework's default applies, stated when the stream starts.",
+      }
+    : {
+        name: 'prose routing',
+        ...(p ? { same: true } : {}),
+        line: `- Prose routing: ${routing}${p ? `, inherited from ${them}` : ''}: ${PROSE_ROUTING_EFFECT[routing]}.`,
+      });
+
   const requested = launch.tools.requested;
   let toolRule: string;
   if (requested !== undefined) {
@@ -513,8 +548,9 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
 
 /**
  * What the stream's own first context adds after the launch block: what it
- * actually inherited, its context budget as created, and the tools it is
- * shown at its first inference, beside what its caller is shown now. All
+ * actually inherited, its context budget as created, its prose routing when
+ * the launch left that to the framework, and the tools it is shown at its
+ * first inference, beside what its caller is shown now. All
  * of it is known only when the stream is created, which can be well after
  * the call if the launch waited for a slot.
  */
@@ -553,6 +589,9 @@ export function describeSubagentStart(launch: SubagentLaunch, start: SubagentSta
     `- Context budget: ${formatTokens(start.contextBudgetTokens)}` +
       (p ? ` (${fork ? 'the parent' : 'the caller'}'s at the call: ${formatTokens(p.contextBudgetTokens)})` : '') + '.',
   );
+  if (launch.proseRouting === undefined) {
+    lines.push(`- Prose routing: ${start.proseRouting}, the framework's default: ${PROSE_ROUTING_EFFECT[start.proseRouting]}.`);
+  }
 
   const mine = start.tools;
   const gone = inh.kind === 'none' && inh.reason === 'parent-gone';
@@ -1895,11 +1934,11 @@ export class SubagentModule implements Module {
    * run starts, so listToolClasses can't be asked yet. The orientation test
    * checks this against listToolClasses once the stream is registered.
    */
-  private streamSurface(agent: { canUseTool(name: string): boolean }, launch: SubagentLaunch): string[] {
+  private streamSurface(agent: { canUseTool(name: string): boolean; proseRouting: ProseRouting }): string[] {
     const names = this.getFramework().getAllTools()
       .filter((t) => agent.canUseTool(t.name))
       .map((t) => t.name);
-    if (launch.proseRouting === 'explicit' && !names.includes('prose_help')) names.push('prose_help');
+    if (agent.proseRouting === 'explicit' && !names.includes('prose_help')) names.push('prose_help');
     return names;
   }
 
@@ -1907,7 +1946,11 @@ export class SubagentModule implements Module {
    *  call, then what happened when the stream was created. */
   private orientationFor(
     launch: SubagentLaunch,
-    agent: { canUseTool(name: string): boolean; getRuntimeSettings(): { contextBudgetTokens: number } },
+    agent: {
+      canUseTool(name: string): boolean;
+      getRuntimeSettings(): { contextBudgetTokens: number };
+      proseRouting: ProseRouting;
+    },
     inherited: SubagentStart['inherited'],
   ): string {
     const framework = this.getFramework();
@@ -1920,7 +1963,8 @@ export class SubagentModule implements Module {
     const start: SubagentStart = {
       inherited,
       contextBudgetTokens: agent.getRuntimeSettings().contextBudgetTokens,
-      tools: this.streamSurface(agent, launch),
+      proseRouting: agent.proseRouting,
+      tools: this.streamSurface(agent),
       ...(parentTools !== undefined ? { parentTools } : {}),
     };
     return `${describeSubagentLaunch(launch)}\n${describeSubagentStart(launch, start)}`;
