@@ -9,7 +9,7 @@ test('native CLI admission requires supported provider and explicit model/effort
 
 import { AgentFramework, PassthroughStrategy, type Module } from '@animalabs/agent-framework';
 import { Membrane } from '@animalabs/membrane';
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, readdirSync, mkdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync, readdirSync, mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { NativeCLIHost, PassiveNativeCLIAdapter, CODEX_NATIVE_CONFIG, assertCodexClosedConfig, codexNativeArgs, readNativeCLIQualification, nativeClaudeEffort, sha256, type NativeCLIEvent } from './native-cli.js';
@@ -82,9 +82,15 @@ process.stdin.on('end',()=>{
 
 
 function claudeFixtureSource(mode: string): string {
+  // Sanitized recorded WH status: no subscriptionType or credential-store assumption.
+  const authStatus = mode === 'oauth-logged-out' ? { loggedIn: false, authMethod: 'none' } : {
+    loggedIn: true,
+    authMethod: mode === 'oauth-api-key' ? 'api_key' : mode.startsWith('oauth-') ? 'oauth_token' : 'claude.ai',
+    apiProvider: ['oauth-other-provider', 'claudeai-other-provider'].includes(mode) ? 'thirdParty' : 'firstParty',
+  };
   return `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('2.1.291 (Claude Code)');process.exit(0);}
-if(process.argv.includes('auth')) {console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',subscriptionType:'max'}));process.exit(0);}
+if(process.argv.includes('auth')) {const status=${JSON.stringify(authStatus)};console.log(JSON.stringify(status));process.exit(status.loggedIn?0:1);}
 const mode=${JSON.stringify(mode)};
 const arg=n=>process.argv[process.argv.indexOf(n)+1];
 const session=arg('--session-id');
@@ -141,10 +147,32 @@ let buffer='';process.stdin.on('data',async bytes=>{
 
 async function runFixture(mode: string, cli = 'codex') {
   const dir = realpathSync(mkdtempSync(join(realpathSync(process.env.CONNECTOME_TEST_EVIDENCE_DIR ?? tmpdir()), 'native-cli-test-')));
-  const binary = join(dir, 'codex-fixture');
-  writeFileSync(binary, fixtureSource(mode, cli)); chmodSync(binary, 0o700);
+  const aliasMode = mode.startsWith('alias-');
+  const fixture = join(dir, 'codex-fixture');
+  const source = fixtureSource(aliasMode ? 'success' : mode, cli);
+  const invocationLog = join(dir, 'invocations.log');
+  const phaseLog = `require('node:fs').appendFileSync(${JSON.stringify(invocationLog)}, (process.argv.includes('--version')?'version':process.argv.includes('auth')?'auth':'main')+'\\n');`;
+  writeFileSync(fixture, aliasMode ? source : source.replace('\n', `\n${phaseLog}\n`)); chmodSync(fixture, 0o700);
+  const binary = aliasMode ? join(dir, 'ai-killswitch-wrapper.sh') : fixture;
+  const invocationPath = aliasMode ? join(dir, cli) : binary;
+  if (aliasMode) {
+    const other = join(dir, 'other-wrapper.sh');
+    writeFileSync(other, '#!/bin/sh\nexit 65\n'); chmodSync(other, 0o700);
+    // Observed wrapper contract: only the configured claude/codex basename selects a provider.
+    writeFileSync(binary, `#!/bin/sh
+case "\${0##*/}" in claude|codex) ;; *) exit 64 ;; esac
+phase=main
+case "\${1-}" in --version) phase=version ;; auth) phase=auth ;; esac
+printf '%s\\n' "$phase" >> '${invocationLog}'
+if [ '${mode}' = "alias-retarget-$phase" ]; then /bin/ln -sf '${other}' '${invocationPath}'; fi
+exec '${fixture}' "$@"
+`);
+    chmodSync(binary, 0o700);
+    symlinkSync(mode === 'alias-wrong-target' ? other : binary, invocationPath);
+    symlinkSync(binary, join(dir, cli === 'claude' ? 'codex' : 'claude'));
+  }
   const envName = cli === 'claude' ? 'CLAUDE_BINARY' : 'CODEX_BINARY';
-  const old = process.env[envName]; process.env[envName] = binary;
+  const old = process.env[envName]; process.env[envName] = invocationPath;
   const oldInstruction = process.env.CONNECTOME_TEST_NATIVE_INSTRUCTION_PATH;
   const instructionPath = join(dir, 'native-instructions.txt');
   const qualifiedSource = cli === 'codex' && ['qualified-source', 'source-unknown', 'source-missing', 'source-drift'].includes(mode);
@@ -167,9 +195,12 @@ async function runFixture(mode: string, cli = 'codex') {
     const path = join(dir, `native-cli-${key}.json`); const bytes = JSON.stringify(key === 'installedConfig' ? { nativeBinary: { path: binary, sha256: mode === 'binary-drift' ? '0'.repeat(64) : sha256(readFileSync(binary)) }, ...(qualifiedSource ? { nativeInstructionSources: [{ path: instructionPath, sha256: sha256(readFileSync(instructionPath)) }] } : {}), ...(cli === 'claude' ? { nativeTranscript: { projectDir: join(dir, 'native-history'), cwd: process.cwd(), cliBinaryPath: binary, cliBinarySha256: sha256(readFileSync(binary)), cliVersion: '2.1.291' } } : {}) } : { fixture: key }); writeFileSync(path, bytes);
     return [key, { path, sha256: sha256(bytes) }];
   }));
+  const loginMode = cli === 'claude'
+    ? (mode === 'claudeai-mode-drift' || (mode.startsWith('oauth-') && mode !== 'oauth-mode-drift') ? 'oauth_token' : 'claude.ai')
+    : 'chatgpt';
   const report = { binding: { fixture: true }, role: 'fixture', instance: 'bound', runtime: { fixture: true },
     recipeSha256: sha256(JSON.stringify(recipe, null, 2)), cli, cliVersion: cli === 'claude' ? '2.1.291' : '0.160.1', interface: cli === 'claude' ? 'claude-print-stream-json' : 'codex-app-server-stdio',
-    loginMode: cli === 'claude' ? 'claude.ai' : 'chatgpt', model: 'gpt-fixture', effort: 'medium', qualified: true, proofs };
+    loginMode, model: 'gpt-fixture', effort: 'medium', qualified: true, proofs };
   const reportPath = join(dir, 'native-cli-qualification.json'); const reportBytes = JSON.stringify(report); writeFileSync(reportPath, reportBytes);
   const oldPath = process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_PATH;
   const oldHash = process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_SHA256;
@@ -194,7 +225,32 @@ async function runFixture(mode: string, cli = 'codex') {
   if (oldHash === undefined) delete process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_SHA256; else process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_SHA256 = oldHash;
   const raw = readFileSync(join(dir, readdirSync(dir).find(p => p.startsWith('native-cli.') && p.endsWith('.jsonl') && !p.endsWith('.native-session.jsonl'))!), 'utf8');
   expect(raw).not.toContain('never-retain-this-fixture-value');
-  return { events, messages, calls, raw };
+  return { events, messages, calls, raw, invocations: readdirSync(dir).includes('invocations.log') ? readFileSync(invocationLog, 'utf8').trim().split('\n') : [] };
+}
+
+for (const cli of ['claude', 'codex']) {
+  test(`native ${cli} preserves configured alias through version, auth and main dispatch`, async () => {
+    const result = await runFixture('alias-success', cli);
+    const terminal = result.events.at(-1)!;
+    if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+    expect(terminal.outcome).toBe('completed');
+    expect(terminal.finalText).toBe('The genuine fixture final.');
+    expect(terminal.reaped).toBe(true); expect(terminal.pidAbsent).toBe(true); expect(terminal.exitCode).toBe(0);
+    expect(result.calls).toBe(1);
+    expect(result.invocations).toEqual(cli === 'claude' ? ['version', 'auth', 'main'] : ['version', 'main']);
+  });
+  for (const mode of ['alias-wrong-target', 'alias-retarget-version', ...(cli === 'claude' ? ['alias-retarget-auth'] : [])]) {
+    test(`native ${cli} rejects ${mode} before the next dispatch or Framework effect`, async () => {
+      const result = await runFixture(mode, cli);
+      const terminal = result.events.at(-1)!;
+      if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+      expect(terminal.outcome).toBe('failed'); expect(terminal.finalText).toBeNull();
+      expect(result.calls).toBe(0);
+      expect(result.events.some(e => e.type === 'native-cli:started')).toBe(false);
+      expect(result.events.some(e => e.type === 'native-cli:failure' && e.reason.includes('qualified binary identity'))).toBe(true);
+      expect(result.invocations).toEqual(mode === 'alias-wrong-target' ? [] : mode === 'alias-retarget-auth' ? ['version', 'auth'] : ['version']);
+    });
+  }
 }
 
 for (const mode of ['success', 'qualified-source', 'observed-protocol']) test(`native Codex ${mode} supported protocol links real Framework pairs and stores genuine final text`, async () => {
@@ -348,17 +404,17 @@ for (const mode of ['malformed', 'dropout', 'foreign', 'foreign-get', 'unbound-g
 }
 
 
-test('trusted current qualification refuses omission, conflicting binding, tampered proof and namespace drift', () => {
+for (const cli of ['claude', 'codex']) test(`trusted current ${cli} qualification supports truthful login modes and refuses conflicting binding, tampered proof and namespace drift`, () => {
   const dir = realpathSync(mkdtempSync(join(realpathSync(process.env.CONNECTOME_TEST_EVIDENCE_DIR ?? tmpdir()), 'native-cli-qualification-test-')));
-  const recipe = validateRecipe({ name: 'qualified', agent: { execution: 'native-cli', provider: 'openai-codex',
-    name: 'bound', model: 'gpt-fixture', systemPrompt: 'Bound system', responses: { reasoningEffort: 'medium' } } });
+  const recipe = validateRecipe({ name: 'qualified', agent: { execution: 'native-cli', provider: cli === 'claude' ? 'anthropic' : 'openai-codex',
+    name: 'bound', model: 'gpt-fixture', systemPrompt: 'Bound system', ...(cli === 'claude' ? { thinking: { enabled: true, effort: 'medium' } } : { responses: { reasoningEffort: 'medium' } }) } });
   const proofs = Object.fromEntries(['installedConfig', 'toolClosure', 'protocol', 'lifecycle'].map(key => {
     const path = join(dir, `native-cli-${key}.json`); const bytes = JSON.stringify({ fixture: key }); writeFileSync(path, bytes);
     return [key, { path, sha256: sha256(bytes) }];
   }));
   const base = { binding: { fixture: true }, role: 'fixture', instance: 'bound', runtime: { fixture: true },
-    recipeSha256: sha256(JSON.stringify(recipe, null, 2)), cli: 'codex', cliVersion: '0.160.1', interface: 'codex-app-server-stdio',
-    loginMode: 'chatgpt', model: 'gpt-fixture', effort: 'medium', qualified: true, proofs };
+    recipeSha256: sha256(JSON.stringify(recipe, null, 2)), cli, cliVersion: cli === 'claude' ? '2.1.291' : '0.160.1', interface: cli === 'claude' ? 'claude-print-stream-json' : 'codex-app-server-stdio',
+    loginMode: cli === 'claude' ? 'claude.ai' : 'chatgpt', model: 'gpt-fixture', effort: 'medium', qualified: true, proofs };
   const path = join(dir, 'native-cli-qualification.json');
   const oldPath = process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_PATH;
   const oldHash = process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_SHA256;
@@ -368,6 +424,13 @@ test('trusted current qualification refuses omission, conflicting binding, tampe
     delete process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_PATH; delete process.env.CONNECTOME_NATIVE_CLI_QUALIFICATION_SHA256;
     expect(() => readNativeCLIQualification(recipe, 'bound')).toThrow();
     publish(base); expect(readNativeCLIQualification(recipe, 'bound').files).toHaveLength(5);
+    if (cli === 'claude') {
+      publish({ ...base, loginMode: 'oauth_token' });
+      expect(readNativeCLIQualification(recipe, 'bound').report.loginMode).toBe('oauth_token');
+    }
+    for (const loginMode of cli === 'claude' ? ['apiKey', 'none', 'chatgpt'] : ['apiKey', 'none', 'claude.ai', 'oauth_token']) {
+      publish({ ...base, loginMode }); expect(() => readNativeCLIQualification(recipe, 'bound')).toThrow('binding');
+    }
     for (const patch of [{ qualified: false }, { instance: 'foreign' }, { model: 'foreign' }, { effort: 'high' },
       { cliVersion: '0.160.2' }, { loginMode: 'apiKey' }, { recipeSha256: '0'.repeat(64) }]) {
       publish({ ...base, ...patch }); expect(() => readNativeCLIQualification(recipe, 'bound')).toThrow('binding');
@@ -556,3 +619,77 @@ test('native clean exit with a late foreign final never stores successful assist
   expect(result.raw).toContain('late-answer');
   expect(result.messages.some(message => message.content.some(block => block.type === 'text' && block.text === 'The genuine fixture final.'))).toBe(false);
 });
+
+
+test('native Claude accepts the documented subscription OAuth environment and firstParty status', async () => {
+  const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  try {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'fixture-subscription-oauth';
+    const result = await runFixture('oauth-token', 'claude');
+    const terminal = result.events.at(-1)!;
+    if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+    expect(terminal.outcome).toBe('completed'); expect(terminal.finalText).toBe('The genuine fixture final.');
+    expect(result.calls).toBe(1); expect(terminal.reaped).toBe(true); expect(terminal.pidAbsent).toBe(true);
+    const rows = result.raw.trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.find(row => row.direction === 'auth-mode')).toEqual({ ts: expect.any(Number), direction: 'auth-mode', loggedIn: true, authMethod: 'oauth_token', apiProvider: 'firstParty' });
+    expect(rows.find(row => row.direction === 'qualification-binding').report.loginMode).toBe('oauth_token');
+    expect(result.invocations).toEqual(['version', 'auth', 'main']);
+    expect(rows.some(row => JSON.stringify(row).includes('fixture-subscription-oauth'))).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN; else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous;
+  }
+});
+
+test('native Codex keeps its ChatGPT route when Claude subscription OAuth is present', async () => {
+  const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  try {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'fixture-subscription-oauth';
+    const result = await runFixture('success');
+    const terminal = result.events.at(-1)!;
+    if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+    expect(terminal.outcome).toBe('completed'); expect(result.calls).toBe(1);
+    expect(terminal.reaped).toBe(true); expect(terminal.pidAbsent).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN; else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous;
+  }
+});
+
+for (const mode of ['oauth-other-provider', 'oauth-logged-out', 'claudeai-other-provider', 'oauth-api-key', 'oauth-mode-drift', 'claudeai-mode-drift']) test(`native Claude refuses ${mode} before main dispatch and native tools`, async () => {
+  const result = await runFixture(mode, 'claude');
+  const terminal = result.events.at(-1)!;
+  if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+  expect(terminal.outcome).toBe('failed'); expect(terminal.finalText).toBe(null);
+  expect(result.calls).toBe(0); expect(terminal.pid).toBeNull();
+  expect(result.events.some(event => event.type === 'native-cli:started')).toBe(false);
+  expect(result.events.some(event => event.type === 'native-cli:failure' && event.reason.includes('subscription login'))).toBe(true);
+  expect(result.invocations).toEqual(['version', 'auth']);
+});
+
+
+test('native Claude accepts firstParty OAuth status supplied by its existing CLI wrapper', async () => {
+  const result = await runFixture('oauth-token', 'claude');
+  const terminal = result.events.at(-1)!;
+  if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+  expect(terminal.outcome).toBe('completed'); expect(result.calls).toBe(1);
+  expect(terminal.finalText).toBe('The genuine fixture final.');
+  expect(terminal.reaped).toBe(true); expect(terminal.pidAbsent).toBe(true);
+});
+
+for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']) {
+  test(`native Claude preserves refusal of alternate route ${key}`, async () => {
+    const previous = process.env[key];
+    try {
+      process.env[key] = 'fixture-alternate-route';
+      const result = await runFixture('oauth-token', 'claude');
+      const terminal = result.events.at(-1)!;
+      if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+      expect(terminal.outcome).toBe('failed'); expect(terminal.pid).toBeNull(); expect(result.calls).toBe(0);
+      expect(result.events.some(event => event.type === 'native-cli:started')).toBe(false);
+      expect(result.events.some(event => event.type === 'native-cli:failure' && event.reason.includes(key))).toBe(true);
+      expect(result.raw).not.toContain('fixture-alternate-route');
+      expect(result.invocations).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+    }
+  });
+}

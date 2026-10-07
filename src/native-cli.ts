@@ -170,7 +170,7 @@ export function readNativeCLIQualification(recipe: Recipe, agentName: string, re
   if (!equal(validated, recipe) || report.qualified !== true || report.instance !== agentName ||
       report.recipeSha256 !== rawHash || report.cli !== cli || report.cliVersion !== (cli === 'claude' ? '2.1.291' : '0.160.1') ||
       report.interface !== (cli === 'claude' ? 'claude-print-stream-json' : 'codex-app-server-stdio') ||
-      report.loginMode !== (cli === 'claude' ? 'claude.ai' : 'chatgpt') || report.model !== recipe.agent.model || report.effort !== effort ||
+      !(cli === 'claude' ? ['claude.ai', 'oauth_token'] : ['chatgpt']).includes(report.loginMode) || report.model !== recipe.agent.model || report.effort !== effort ||
       !report.binding || !report.role || !report.runtime) throw new Error('Native CLI current qualification binding is missing or conflicting.');
   const files = [{ path: nonempty(path), sha256: nonempty(hash) }];
   for (const key of ['installedConfig', 'toolClosure', 'protocol', 'lifecycle']) {
@@ -427,7 +427,7 @@ export class NativeCLIHost {
       return result.result;
     };
     try {
-      for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL']) {
+      for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']) {
         if (process.env[key]) throw new Error(`Native CLI refuses an alternate provider/authentication route: ${key}.`);
       }
       const installedRef = this.qualification.report.proofs.installedConfig;
@@ -437,8 +437,13 @@ export class NativeCLIHost {
       const binaryHash = nonempty(nativeBinary.sha256);
       readFrozen(binary, binaryHash);
       const configured = process.env[cli === 'claude' ? 'CLAUDE_BINARY' : 'CODEX_BINARY'];
-      if (configured && realpathSync(configured) !== binary) throw new Error('Native executable conflicts with qualified binary identity.');
-      const version = Bun.spawn([binary, '--version'], { stdout: 'pipe', stderr: 'pipe' });
+      const invocationPath = resolve(configured || binary);
+      const checkedInvocationPath = () => {
+        if (realpathSync(invocationPath) !== binary) throw new Error('Native executable conflicts with qualified binary identity.');
+        readFrozen(binary, binaryHash);
+        return invocationPath;
+      };
+      const version = Bun.spawn([checkedInvocationPath(), '--version'], { stdout: 'pipe', stderr: 'pipe' });
       queryProcess = version;
       const [versionText, versionCode] = await Promise.all([new Response(version.stdout).text(), version.exited]);
       queryProcess = null;
@@ -452,16 +457,19 @@ export class NativeCLIHost {
       if (cli === 'claude') {
         nativeTranscriptPath = nativeClaudeTranscriptPath(installedConfig,
           process.cwd(), binary, binaryHash, invocationId);
-        const auth = Bun.spawn([binary, 'auth', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe' });
+        const auth = Bun.spawn([checkedInvocationPath(), 'auth', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe' });
         queryProcess = auth;
         const [statusText, statusCode] = await Promise.all([new Response(auth.stdout).text(), auth.exited]);
         queryProcess = null;
         if (cancelled) throw new Error('Native CLI invocation cancelled.');
         const status = object(JSON.parse(statusText));
-        if (statusCode !== 0 || status.loggedIn !== true || status.authMethod !== 'claude.ai') {
+        const subscriptionLogin = status.apiProvider === 'firstParty' &&
+          (status.authMethod === 'claude.ai' || status.authMethod === 'oauth_token');
+        if (statusCode !== 0 || status.loggedIn !== true || !subscriptionLogin ||
+            status.authMethod !== this.qualification.report.loginMode) {
           throw new Error('Native Claude requires its existing subscription login, not API billing.');
         }
-        record({ direction: 'auth-mode', loggedIn: true, authMethod: 'claude.ai', subscriptionType: status.subscriptionType });
+        record({ direction: 'auth-mode', loggedIn: true, authMethod: status.authMethod, apiProvider: status.apiProvider, subscriptionType: status.subscriptionType });
         this.recheck(input);
         const endpoint = `/${randomUUID()}`;
         const session = randomUUID();
@@ -533,7 +541,7 @@ export class NativeCLIHost {
       } else { args = codexNativeArgs(); }
       this.recheck(input);
       readFrozen(binary, binaryHash);
-      child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: process.cwd(), env: process.env });
+      child = spawn(checkedInvocationPath(), args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: process.cwd(), env: process.env });
       owned.child = child;
       child.stdin.on('error', fail);
       if (!child.pid) throw new Error('Native CLI process did not spawn.');
