@@ -196,8 +196,9 @@ export function SurgeryDialog(props: {
   hostMode: HostModeSnapshot | null;
   /** The framework takes an explicit marks choice ('marks' feature). */
   marksSupported: boolean;
-  /** An older framework that marks every removed Discord message itself:
-   *  live surgery is refused there, so the dialog can't proceed. */
+  /** A framework without preview-bound surgery (the marks choice and the
+   *  store-and-branch check): live surgery is refused there, so the dialog
+   *  can't proceed. */
   legacyMarking: boolean;
   /** The session or branch changed since this dialog opened: its preview no
    *  longer describes what confirming would do. */
@@ -328,8 +329,7 @@ function MarksChooser(props: {
     <>
       <Show when={props.legacy}>
         <div class="text-[11px] text-amber-300/90 border border-amber-900/60 rounded p-2 mb-3 leading-snug">
-          Live surgery is unavailable on this host: its agent-framework would place 💤 on every removed Discord message it can address,
-          other people's included, whatever is chosen here. Upgrade @animalabs/agent-framework to make marks a choice.
+          Live surgery is unavailable on this host. Upgrade @animalabs/agent-framework to a release that supports explicit marks choices and checks the previewed store and branch.
         </div>
       </Show>
       <Show when={props.supported}>

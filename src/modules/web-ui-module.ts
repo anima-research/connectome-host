@@ -1616,12 +1616,13 @@ export class WebUiModule implements Module {
       // The operation offered here is a previewed choice: a local cut on the
       // previewed store and branch, plus an optional bounded public act. A
       // framework without both the marks choice and the expected-context
-      // check (an older one marks every removed Discord message itself and
-      // moves those marks with branch switches) can't carry it out: refuse
-      // rather than run another contract.
+      // check can't carry it out (an older one even marks every removed
+      // Discord message itself and moves those marks with branch switches;
+      // one with the choice alone can't keep the cut on what was previewed):
+      // refuse rather than run another contract.
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'unsupported',
-        error: `live ${op} needs an agent-framework that makes Discord awareness marks a choice and checks the previewed store and branch — upgrade @animalabs/agent-framework`,
+        error: `live ${op} is unavailable on this host: upgrade @animalabs/agent-framework to a release that supports explicit marks choices and checks the previewed store and branch`,
       });
       return;
     }
