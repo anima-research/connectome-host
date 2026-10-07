@@ -16,13 +16,14 @@
  */
 
 import { createSignal, For, Show } from 'solid-js';
-import type {
-  AwarenessEntryWire,
-  HostModeSnapshot,
-  OperatorLogEntryWire,
-  SurgeryMarkerReceiptWire,
-  SurgeryMarksPreviewWire,
-  SurgeryResultMessage,
+import {
+  MAX_MARKS_REFS,
+  type AwarenessEntryWire,
+  type HostModeSnapshot,
+  type OperatorLogEntryWire,
+  type SurgeryMarkerReceiptWire,
+  type SurgeryMarksPreviewWire,
+  type SurgeryResultMessage,
 } from '@conhost/web/protocol';
 
 // ---------------------------------------------------------------------------
@@ -201,8 +202,10 @@ export function SurgeryDialog(props: {
    *  can't proceed. */
   legacyMarking: boolean;
   /** The session or branch changed since this dialog opened: its preview no
-   *  longer describes what confirming would do. */
+   *  longer describes what confirming (or retrying) would do. */
   stale: boolean;
+  /** The socket is open: nothing can be sent while it isn't. */
+  connected: boolean;
   preview: SurgeryMarksPreviewWire | null;
   previewError: string | null;
   marks: MarksChoice;
@@ -215,10 +218,20 @@ export function SurgeryDialog(props: {
   const isRollback = () => props.request.op === 'rollback';
   const title = () => isRollback() ? 'Roll back the live branch' : `Suppress ${props.request.messageIds.length} message${props.request.messageIds.length === 1 ? '' : 's'}`;
   const busy = () => props.result?.ok === false && props.result.code === 'agent-busy';
-  /** An older framework marks regardless of any choice: the host refuses. */
-  /** Every live surgery is preview-bound: confirming needs the preview. */
-  const blocked = () => props.legacyMarking || props.stale || (props.marksSupported && !props.preview?.context);
+  /** A chosen scope too large for one marks choice can't be sent (it is
+   *  never truncated); the chooser doesn't offer one. */
+  const overLimit = () => props.marks !== 'none' && (props.preview?.scopes[props.marks].refs.length ?? 0) > MAX_MARKS_REFS;
+  /** An older framework marks regardless of any choice: the host refuses.
+   *  Every live surgery is preview-bound: confirming needs the preview. */
+  const blocked = () => props.legacyMarking || props.stale || !props.connected || overLimit()
+    || (props.marksSupported && !props.preview?.context);
   const confirm = (): void => { if (!props.pending && !blocked()) props.onConfirm(note()); };
+  const staleNotice = () => (
+    <div class="text-[11px] text-amber-300/90 border border-amber-900/60 rounded p-2 mb-3 leading-snug">
+      The live session or branch changed since this dialog opened, so what it shows no longer describes what confirming would do.
+      Close it and start again from the current branch.
+    </div>
+  );
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!props.pending) props.onClose(); }}>
       <div class="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl max-w-lg w-full mx-4 p-5" onClick={(e) => e.stopPropagation()}>
@@ -240,11 +253,9 @@ export function SurgeryDialog(props: {
             onInput={(e) => setNote(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
           />
-          <Show when={props.stale}>
-            <div class="text-[11px] text-amber-300/90 border border-amber-900/60 rounded p-2 mb-3 leading-snug">
-              The live session or branch changed since this dialog opened, so what it shows no longer describes what confirming would do.
-              Close it and start again from the current branch.
-            </div>
+          <Show when={props.stale}>{staleNotice()}</Show>
+          <Show when={!props.connected && !props.stale}>
+            <div class="text-[11px] text-amber-300/90 mb-3 leading-snug">Not connected to the host: nothing can be sent until the connection is back.</div>
           </Show>
           <MarksChooser
             supported={props.marksSupported}
@@ -275,7 +286,11 @@ export function SurgeryDialog(props: {
           {(r) => (
             <>
               <Show when={r().ok} fallback={
-                <div class="text-sm text-rose-300 mb-3 font-mono whitespace-pre-wrap">{r().error ?? 'failed'}</div>
+                <>
+                  {/* A lost connection leaves the outcome unknown, not failed. */}
+                  <div class={`text-sm mb-3 font-mono whitespace-pre-wrap ${r().code === 'connection-lost' ? 'text-amber-300' : 'text-rose-300'}`}>{r().error ?? 'failed'}</div>
+                  <Show when={props.stale}>{staleNotice()}</Show>
+                </>
               }>
                 <div class="text-sm text-emerald-300 mb-1">Done — {r().messagesRemoved ?? 0} message{r().messagesRemoved === 1 ? '' : 's'} left the live context.</div>
                 <div class="text-xs font-mono text-neutral-400 mb-1">now on <span class="text-cyan-300">{r().targetBranch}</span> · was {r().sourceBranch}</div>
@@ -285,7 +300,8 @@ export function SurgeryDialog(props: {
                 <Show when={r().markers}>{(m) => <MarkersReceipt markers={m()} />}</Show>
               </Show>
               <div class="flex gap-2 justify-end">
-                <Show when={busy() && props.canQuiesce}>
+                {/* A retry quiesces the host: only for the context it was refused in. */}
+                <Show when={busy() && props.canQuiesce && !props.stale && props.connected}>
                   <button type="button" class="px-3 py-1.5 rounded bg-amber-900/50 hover:bg-amber-900/80 text-amber-100 text-sm" disabled={props.pending}
                     onClick={() => props.onQuiesceAndRetry(note())}>
                     {props.pending ? 'quiescing…' : 'Quiesce, then retry'}
@@ -318,11 +334,19 @@ function MarksChooser(props: {
 }) {
   const channels = (list: Array<{ channelId: string; count: number }>): string =>
     list.map((c) => `${c.channelId.split(':').at(-1)} ×${c.count}`).join(', ');
+  type Scope = SurgeryMarksPreviewWire['scopes']['all'];
+  /** One choice carries at most MAX_MARKS_REFS refs; a larger scope isn't
+   *  offered rather than sent cut short. */
+  const fits = (scope: Scope): boolean => scope.refs.length <= MAX_MARKS_REFS;
+  const scopeDetail = (scope: Scope): string => fits(scope)
+    ? channels(scope.channels)
+    : `unavailable: ${scope.refs.length.toLocaleString()} messages, more than one change can mark (at most ${MAX_MARKS_REFS.toLocaleString()}). Choose no marks, a smaller scope, or a smaller change.`;
   const option = (choice: MarksChoice, label: string, detail?: string, enabled = true) => (
     <label class={`flex items-start gap-2 text-xs ${enabled ? 'text-neutral-300 cursor-pointer' : 'text-neutral-600'}`}>
       <input type="radio" name="marks" class="mt-0.5" checked={props.marks === choice}
         disabled={props.disabled || !enabled} onChange={() => props.onMarks(choice)} />
-      <span>{label}<Show when={detail}><span class="block text-[10px] text-neutral-500 font-mono truncate">{detail}</span></Show></span>
+      {/* An unavailable option's detail says why, so it wraps rather than truncates. */}
+      <span>{label}<Show when={detail}><span class={`block text-[10px] font-mono ${enabled ? 'text-neutral-500 truncate' : 'text-amber-300/80'}`}>{detail}</span></Show></span>
     </label>
   );
   return (
@@ -344,9 +368,9 @@ function MarksChooser(props: {
                   </div>
                   {option('none', "Don't mark: the change stays local to the agent")}
                   {option('addressed', `Mark the ${p().scopes.addressed.count} that addressed the agent (mentions, replies, DMs) with ${p().emoji}`,
-                    channels(p().scopes.addressed.channels), p().scopes.addressed.count > 0)}
+                    scopeDetail(p().scopes.addressed), p().scopes.addressed.count > 0 && fits(p().scopes.addressed))}
                   {option('all', `Mark all ${p().scopes.all.count} with ${p().emoji}`,
-                    channels(p().scopes.all.channels), p().scopes.all.count > 0)}
+                    scopeDetail(p().scopes.all), p().scopes.all.count > 0 && fits(p().scopes.all))}
                   <div class="text-[10px] text-neutral-500 leading-snug">
                     Marks are reactions the bot posts where people can see them. Only the messages previewed here are marked; delivery runs in the background.
                     {' '}A mark stays on Discord until it is retracted: <span class="text-neutral-400">cancel</span> only stops marks not yet sent;{' '}

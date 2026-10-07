@@ -12,7 +12,7 @@
  * Bun runs each test file in its own process, so this file's module
  * singleton (the shared HTTP/WS server) is its own.
  */
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,10 +33,21 @@ let webUiModule: WebUiModule;
 
 /** Calls the fake framework received, for assertions. */
 const received: Array<{ method: string; args: unknown[] }> = [];
+/** What the host recorded in the operator log through the framework. */
+const logged: Array<Record<string, unknown>> = [];
 /** The fake agent's live branch, which a test may move. */
 const liveBranch = { id: 'b1', name: 'main' };
 /** The fake framework's store identity. */
 const storeIdentity = { id: 'store-a' };
+
+/** The fake's own expected-context check, as the framework runs it under its
+ *  reservation: refused as stale against another store or branch. */
+function checkExpected(args: unknown[]): void {
+  const expected = (args[1] as { expected?: { storeId?: string; branch?: string } }).expected;
+  if (expected && (expected.storeId !== storeIdentity.id || expected.branch !== liveBranch.name)) {
+    throw Object.assign(new Error('resolved against another store or branch'), { code: 'stale' });
+  }
+}
 
 function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
   const surgeryResult = (marks: unknown) => ({
@@ -56,6 +67,7 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
     getAllMessages: () => [],
     currentBranch: () => ({ ...liveBranch }),
   };
+  let quiesced = false;
   const framework: Record<string, unknown> = {
     getAllAgents: () => [{ name: 'resident', model: 'test', getContextManager: () => contextManager }],
     getAllModules: () => [],
@@ -64,16 +76,18 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
     getSessionUsage: () => { throw new Error('no usage in this harness'); },
     rollbackToMessage: async (...args: unknown[]) => {
       received.push({ method: 'rollbackToMessage', args });
-      const expected = (args[1] as { expected?: { storeId?: string; branch?: string } }).expected;
-      if (expected && (expected.storeId !== storeIdentity.id || expected.branch !== liveBranch.name)) {
-        throw Object.assign(new Error('resolved against another store'), { code: 'stale' });
-      }
+      checkExpected(args);
       return surgeryResult((args[1] as { marks?: unknown }).marks);
     },
     suppressMessages: async (...args: unknown[]) => {
       received.push({ method: 'suppressMessages', args });
+      checkExpected(args);
       return surgeryResult((args[1] as { marks?: unknown }).marks);
     },
+    recordOperatorAction: (entry: Record<string, unknown>) => { logged.push(entry); return entry; },
+    quiesce: async (...args: unknown[]) => { received.push({ method: 'quiesce', args }); quiesced = true; },
+    resume: async () => { quiesced = false; },
+    getHostModeStatus: () => ({ quiesced, drained: true }),
   };
   if (opts.contract) {
     Object.assign(framework, {
@@ -179,6 +193,14 @@ afterAll(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+beforeEach(() => {
+  received.length = 0;
+  logged.length = 0;
+  liveBranch.id = 'b1';
+  liveBranch.name = 'main';
+  storeIdentity.id = 'store-a';
+});
+
 describe('surgery marks over the WebUI', () => {
   test('a contract framework: preview, a choice bound to previewed refs, the receipt, and the journal controls', async () => {
     bind(true);
@@ -227,11 +249,13 @@ describe('surgery marks over the WebUI', () => {
       expect((call.args[1] as { marks: unknown }).marks).toEqual(marks);
       expect((call.args[1] as { expected: unknown }).expected).toEqual(context);
 
-      // Without a choice the framework is told none explicitly.
+      // Without a choice the framework is told none explicitly; a suppression
+      // carries the preview's context to the framework just as a rollback does.
       client.send({ type: 'suppress', messageIds: ['s3'], expectedContext: context, corrId: 'r2' });
-      await client.next('surgery-result');
+      expect((await client.next('surgery-result', 'r2')).ok).toBe(true);
       const suppress = received.find((r) => r.method === 'suppressMessages')!;
       expect((suppress.args[1] as { marks: unknown }).marks).toBe('none');
+      expect((suppress.args[1] as { expected: unknown }).expected).toEqual(context);
 
       // A confirmation bound to a preview of another branch is refused
       // before the framework sees it.
@@ -247,18 +271,29 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'request-awareness', corrId: 'a1' });
       const listed = await client.next('awareness', 'a1');
       expect((listed.batches as unknown[]).length).toBe(1);
+      const instance = listed.frameworkInstanceId as string;
+      expect(typeof instance).toBe('string');
 
-      client.send({ type: 'awareness-action', action: 'cancel', target: 'b1', corrId: 'a2' });
+      client.send({ type: 'awareness-action', action: 'cancel', target: 'b1', expectedFrameworkInstanceId: instance, corrId: 'a2' });
       const cancelled = await client.next('awareness', 'a2');
       expect(cancelled.action).toBe('cancel');
       expect((cancelled.receipt as { cancelled: number }).cancelled).toBe(2);
+      expect(cancelled.frameworkInstanceId).toBe(instance);
       const cancelCall = received.find((r) => r.method === 'cancelDiscordAwareness')!;
       expect(cancelCall.args[0]).toBe('b1');
       expect((cancelCall.args[1] as { requester: { via: string } }).requester.via).toBe('webui');
 
-      client.send({ type: 'awareness-action', action: 'release', target: 'b1', corrId: 'a3' });
+      client.send({ type: 'awareness-action', action: 'release', target: 'b1', expectedFrameworkInstanceId: instance, corrId: 'a3' });
       const refused = await client.next('awareness', 'a3');
       expect(refused.error).toMatch(/not held/);
+
+      // An action that names no journal it was chosen from is malformed and
+      // never reaches the framework (frames are handled in order, so the
+      // later listing's answer means the action has been handled).
+      client.send({ type: 'awareness-action', action: 'retract', target: 'all', corrId: 'a4' });
+      client.send({ type: 'request-awareness', corrId: 'a5' });
+      await client.next('awareness', 'a5');
+      expect(received.some((r) => r.method === 'retractDiscordAwareness')).toBe(false);
     } finally {
       client.ws.close();
     }
@@ -345,6 +380,176 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
       const preview = await client.next('surgery-preview');
       expect(preview.ok).toBe(false);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('a suppression is bound to its preview as a rollback is: another session, branch or store refuses it', async () => {
+    bind(true, 'session-a');
+    const client = await connect();
+    try {
+      client.send({ type: 'surgery-preview', op: 'suppress', messageIds: ['s3'], corrId: 'p' });
+      const preview = await client.next('surgery-preview', 'p');
+      const context = (preview.preview as { context: Record<string, string> }).context;
+      const bound = { expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, expectedContext: context };
+
+      // The host's own check: the branch moved since the preview.
+      liveBranch.id = 'b2';
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', ...bound, corrId: 's1' });
+      expect((await client.next('surgery-result', 's1')).code).toBe('stale');
+      expect(received.some((r) => r.method === 'suppressMessages')).toBe(false);
+      liveBranch.id = 'b1';
+
+      // The framework's check, which holds where the host's can't tell (a
+      // client that omits its session and branch): another store, then
+      // another branch, each refused with the preview's context in hand.
+      storeIdentity.id = 'store-b';
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', expectedContext: context, corrId: 's2' });
+      const otherStore = await client.next('surgery-result', 's2');
+      expect(otherStore.ok).toBe(false);
+      expect(otherStore.code).toBe('stale');
+      storeIdentity.id = 'store-a';
+      liveBranch.name = 'elsewhere';
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', expectedContext: context, corrId: 's3' });
+      const otherBranch = await client.next('surgery-result', 's3');
+      expect(otherBranch.ok).toBe(false);
+      expect(otherBranch.code).toBe('stale');
+      liveBranch.name = 'main';
+      const calls = received.filter((r) => r.method === 'suppressMessages');
+      expect(calls.length).toBe(2);
+      for (const call of calls) expect((call.args[1] as { expected: unknown }).expected).toEqual(context);
+
+      // After the host rebinds to another session, it refuses before the
+      // framework sees anything.
+      bind(true, 'session-b');
+      await client.next('welcome');
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', ...bound, corrId: 's4' });
+      expect((await client.next('surgery-result', 's4')).code).toBe('stale');
+      expect(received.filter((r) => r.method === 'suppressMessages').length).toBe(2);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('a journal action reaches only the framework instance it was listed from, whatever the session label says', async () => {
+    bind(true, 'session-a');
+    const client = await connect();
+    try {
+      client.send({ type: 'request-awareness', corrId: 'l1' });
+      const firstInstance = (await client.next('awareness', 'l1')).frameworkInstanceId as string;
+
+      // Another framework bound under the same session label: what a session
+      // switch looks like from the label while it creates the new framework
+      // (the new session is active before its framework is bound).
+      bind(true, 'session-a');
+      await client.next('welcome');
+      client.send({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: firstInstance, corrId: 'x1' });
+      const refused = await client.next('awareness', 'x1');
+      expect(refused.code).toBe('stale');
+      expect(String(refused.error)).toMatch(/no longer serves/);
+      expect(received.some((r) => r.method === 'retractDiscordAwareness')).toBe(false);
+      // The refusal lists the live journal under its own instance, and is
+      // recorded as the framework records its own refusals.
+      const liveInstance = refused.frameworkInstanceId as string;
+      expect(liveInstance).not.toBe(firstInstance);
+      expect((refused.batches as unknown[]).length).toBe(1);
+      expect(logged).toContainEqual({
+        kind: 'awareness-retract', agent: '*', requester: expect.objectContaining({ via: 'webui' }),
+        params: { target: 'all' }, error: refused.error,
+      });
+
+      // Chosen from the live journal, it acts.
+      client.send({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: liveInstance, corrId: 'x2' });
+      expect((await client.next('awareness', 'x2')).error).toBeUndefined();
+      expect(received.filter((r) => r.method === 'retractDiscordAwareness').map((r) => r.args[0])).toEqual(['all']);
+
+      // A switch to another session, likewise.
+      bind(true, 'session-b');
+      await client.next('welcome');
+      client.send({ type: 'awareness-action', action: 'cancel', target: 'b1', expectedFrameworkInstanceId: liveInstance, corrId: 'x3' });
+      expect((await client.next('awareness', 'x3')).code).toBe('stale');
+      expect(received.some((r) => r.method === 'cancelDiscordAwareness')).toBe(false);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test("a retry's quiesce is bound to the session and store its surgery was previewed on", async () => {
+    bind(true, 'session-a');
+    const client = await connect();
+    try {
+      expect(client.welcome.features).toEqual(expect.arrayContaining(['quiesce']));
+
+      // Another store behind the previewed session label: refused before
+      // anything is paused, recorded, and answered with the live host mode
+      // (which settles a client waiting on its quiesce).
+      storeIdentity.id = 'store-b';
+      client.send({ type: 'host-quiesce', reason: 'rollback via webui', expectedSessionId: 'session-a', expectedStoreId: 'store-a', corrId: 'q1' });
+      expect(String((await client.next('error', 'q1')).message)).toMatch(/nothing was paused/);
+      expect(((await client.next('host-mode', 'q1')).hostMode as { mode: string }).mode).toBe('serving');
+      expect(received.some((r) => r.method === 'quiesce')).toBe(false);
+      expect(logged).toContainEqual(expect.objectContaining({
+        kind: 'quiesce', note: 'rollback via webui',
+        params: { expectedSessionId: 'session-a', expectedStoreId: 'store-a' },
+        error: expect.stringMatching(/nothing was paused/),
+      }));
+      storeIdentity.id = 'store-a';
+
+      // Another session: refused likewise.
+      bind(true, 'session-b');
+      await client.next('welcome');
+      client.send({ type: 'host-quiesce', expectedSessionId: 'session-a', expectedStoreId: 'store-a', corrId: 'q2' });
+      expect(String((await client.next('error', 'q2')).message)).toMatch(/nothing was paused/);
+      expect(received.some((r) => r.method === 'quiesce')).toBe(false);
+
+      // Still the previewed session and store: it quiesces.
+      client.send({ type: 'host-quiesce', expectedSessionId: 'session-b', expectedStoreId: 'store-a', corrId: 'q3' });
+      expect(((await client.next('host-mode', 'q3')).hostMode as { mode: string }).mode).toBe('quiesced');
+      expect(received.filter((r) => r.method === 'quiesce').length).toBe(1);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('refusals the host makes before the framework sees a surgery are recorded as the framework records its own', async () => {
+    bind(false);
+    const client = await connect();
+    try {
+      // An older framework: unsupported.
+      client.send({ type: 'rollback', messageId: 's9', note: ' why not ', marks: { scope: 'all', refs: [ref('a1')] }, corrId: 'u' });
+      const unsupported = await client.next('surgery-result', 'u');
+      expect(unsupported.code).toBe('unsupported');
+      expect(logged.at(-1)).toEqual({
+        kind: 'rollback', agent: 'resident', requester: expect.objectContaining({ via: 'webui' }), note: 'why not',
+        params: { messageId: 's9', marks: { scope: 'all', authorizedRefs: 1 } },
+        error: unsupported.error,
+      });
+
+      bind(true, 'session-a');
+      await client.next('welcome');
+      // No preview context.
+      client.send({ type: 'suppress', messageIds: ['s3', 's4'], corrId: 'm' });
+      const unpreviewed = await client.next('surgery-result', 'm');
+      expect(unpreviewed.code).toBe('stale');
+      expect(logged.at(-1)).toEqual({
+        kind: 'suppress', agent: 'resident', requester: expect.objectContaining({ via: 'webui' }),
+        params: { messageIds: ['s3', 's4'], marks: 'none' }, error: unpreviewed.error,
+      });
+
+      // Previewed on another session.
+      client.send({
+        type: 'rollback', messageId: 's9', marks: 'none', expectedSessionId: 'session-z',
+        expectedContext: { storeId: 'store-a', branch: 'main' }, corrId: 's',
+      });
+      const stale = await client.next('surgery-result', 's');
+      expect(stale.code).toBe('stale');
+      expect(logged.at(-1)).toMatchObject({ kind: 'rollback', agent: 'resident', params: { messageId: 's9', marks: 'none' }, error: stale.error });
+
+      // Each records what was asked and why it didn't run: never a result.
+      expect(logged.length).toBe(3);
+      expect(logged.every((entry) => !('result' in entry))).toBe(true);
+      expect(received.some((r) => r.method === 'rollbackToMessage' || r.method === 'suppressMessages')).toBe(false);
     } finally {
       client.ws.close();
     }

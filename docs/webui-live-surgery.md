@@ -24,7 +24,16 @@ deleted. Whether the people whose Discord messages left the context see a
 marks](#discord-awareness-marks)); by default they don't.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
-queued. The dialog then offers **Quiesce, then retry**.
+queued. The dialog then offers **Quiesce, then retry**. That quiesce is
+bound to the session and store the surgery was previewed on: if the dialog
+has gone stale it isn't offered, and the server refuses a retry's quiesce
+(nothing is paused) once the live session or the bound framework's store
+is no longer the previewed one.
+
+A surgery is never resent. If the connection is down, nothing is sent and
+the dialog waits for it to come back; if it drops while a surgery is
+pending, the result can't arrive, and the dialog says the outcome is
+unknown (check the branch panel and the operator log) instead of waiting.
 
 ## Suppress messages
 
@@ -53,8 +62,12 @@ change would remove (`surgery-preview`, read-only) and offers:
 
 Each scope shows its count and channels. A chosen scope is sent with exactly
 the refs the preview listed, so messages that arrive while the operator is
-deciding are removed but never marked. Every live surgery here is
-preview-bound: confirming waits for the preview, and the confirmation
+deciding are removed but never marked. One choice carries at most 20,000
+refs: a larger scope is shown as unavailable with its size and is never
+cut short, while no marks and any smaller scope stay available. Every live
+surgery here is preview-bound: confirming waits for the preview (asked for
+again when the connection comes back on the same session and branch, since
+a request or answer can be lost with the old socket), and the confirmation
 carries the framework's preview `context` (its store identity and branch),
 which the framework checks under its own reservation before preparing or
 changing anything. The host also checks the session and branch the dialog
@@ -74,7 +87,14 @@ marks or a retract's removals and never removes anything; **retract** queues
 removal of this bot's marks from a batch's messages (or from every message,
 **retract all**) after asking, since it sends Discord requests; **release**
 sends a batch the framework held at startup. Receipts are shown as returned:
-requests without an answer may still land.
+requests without an answer may still land. An action reaches only the
+framework whose journal it was chosen from: each listing carries an opaque
+id the host mints for the framework instance it read, the action sends it
+back, and the server refuses it (`code: 'stale'`, recorded in the operator
+log) once another framework is bound, answering with the live journal. The
+session label can't stand in for that id, since a session switch makes the
+new session active before its framework replaces the old one. After a
+session switch the panel drops the old journal and lists the new one.
 
 An agent-framework without that contract can't carry out this operation, a
 local change on the previewed store and branch plus an optional bounded
@@ -118,7 +138,12 @@ line per operator mutation:
 `rollback`, `suppress`, `hide`, `undo-turn`, `redo-turn`, `unstick`, `nudge`,
 `settings-update`, `settings-reset`, `settings-cancel-transition`,
 `quiesce`, `resume`, `awareness-cancel`, `awareness-retract`,
-`awareness-release`. A surgery's `params.marks` records the marks choice. Refusals are logged too (with `error`). The branch
+`awareness-release`. A surgery's `params.marks` records the marks choice.
+Refusals are logged too (with `error`), including those the host makes
+before the framework sees a request (a stale or unpreviewed surgery, one an
+older framework can't carry out, a journal action chosen from another
+framework's journal, a retry's quiesce for another session or store), in
+the framework's own entry shape. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -137,12 +162,16 @@ refs?}`; `expectedContext` is the preview's `context`, required, checked by
 the framework; the expected ids are the session and branch the dialog was
 opened on, checked by the host), `surgery-preview {op, messageId | messageIds,
 agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
-| release, target}` (`target: 'all'` for retract only), `host-quiesce
-{reason?}`, `host-resume`, `request-host-mode`, `request-operator-log
-{limit?}`.
+| release, target, expectedFrameworkInstanceId}` (`target: 'all'` for
+retract only; the id is the listing's `frameworkInstanceId`, required),
+`host-quiesce {reason?, expectedSessionId?, expectedStoreId?}` (a retry's
+quiesce sends its preview's session and `context.storeId`), `host-resume`,
+`request-host-mode`, `request-operator-log {limit?}`.
 Server → client: `surgery-result` (with `markers` on `marks` hosts),
-`surgery-preview`, `awareness` (the journal; also broadcast to operators
-after a surgery that queued marks and after each action), `host-mode`,
+`surgery-preview`, `awareness {batches, frameworkInstanceId, …}` (the
+journal; also broadcast to operators after a surgery that queued marks and
+after each action; an action's answer carries `code: 'stale'` when refused
+for another framework's journal), `host-mode`,
 `operator-log`; `welcome.features`, `welcome.hostMode`. After a successful
 surgery the server does what `/checkout` does: `branch-changed` + a fresh
 welcome for every client.

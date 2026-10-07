@@ -40,7 +40,7 @@ import type { ServerWebSocket } from 'bun';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
@@ -285,13 +285,6 @@ export { buildContextCoverageSnapshot, type ContextCoverageSnapshot } from '../w
  * duck-typed so this host runs unchanged against older framework builds
  * (the SPA hides affordances the `features` list does not advertise).
  */
-/** The explicit preview-bound surgery contract: the marks choice, and the
- *  framework's own check of the previewed store and branch (preview
- *  `context`, operation `expected`), detected by its store identity. */
-function hasPreviewBoundSurgery(fw: SurgeryCapableFramework): boolean {
-  return typeof fw.previewSurgeryMarks === 'function' && typeof fw.getStoreIdentity === 'function';
-}
-
 interface SurgeryCapableFramework {
   rollbackToMessage?: (
     agentName: string,
@@ -331,6 +324,58 @@ interface SurgeryCapableFramework {
   recordOperatorAction?: (entry: Omit<OperatorLogEntryWire, 'at'>) => unknown;
   getOperatorLog?: (opts?: { limit?: number }) => OperatorLogEntryWire[];
   getOperatorLogPath?: () => string | undefined;
+}
+
+/** The explicit preview-bound surgery contract: the marks choice, and the
+ *  framework's own check of the previewed store and branch (preview
+ *  `context`, operation `expected`), detected by its store identity. */
+function hasPreviewBoundSurgery(fw: SurgeryCapableFramework): boolean {
+  return typeof fw.previewSurgeryMarks === 'function' && typeof fw.getStoreIdentity === 'function';
+}
+
+/** The bound framework's store identity, if it offers one and it can be read. */
+function storeIdentityOf(fw: SurgeryCapableFramework): string | undefined {
+  try {
+    const id = typeof fw.getStoreIdentity === 'function' ? fw.getStoreIdentity() : undefined;
+    return typeof id === 'string' && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const frameworkInstanceIds = new WeakMap<object, string>();
+
+/**
+ * An opaque id for one framework instance, minted the first time it's asked
+ * for. A journal listing carries the id of the framework it was read from,
+ * and an action chosen from that listing is refused unless the bound
+ * framework is still that object. The session label can't stand in for it:
+ * a session switch sets the new session active before the new framework
+ * replaces the old one.
+ */
+function frameworkInstanceId(fw: object): string {
+  let id = frameworkInstanceIds.get(fw);
+  if (!id) {
+    id = randomUUID();
+    frameworkInstanceIds.set(fw, id);
+  }
+  return id;
+}
+
+/** A marks choice as the framework's operator log records it. */
+function describeMarksChoice(marks: MarksChoiceWire | undefined): 'none' | Record<string, unknown> {
+  if (!marks || marks === 'none') return 'none';
+  return { scope: marks.scope, ...(marks.refs ? { authorizedRefs: marks.refs.length } : {}) };
+}
+
+/** Record a request this host refused before the framework saw it. The log
+ *  is observability: it never turns a refusal into another failure. */
+function recordOperatorRefusal(fw: SurgeryCapableFramework, entry: Omit<OperatorLogEntryWire, 'at'>): void {
+  try {
+    fw.recordOperatorAction?.(entry);
+  } catch {
+    // swallowed: the refusal itself still goes back to the operator
+  }
 }
 
 interface WindowCapableCm {
@@ -1579,36 +1624,49 @@ export class WebUiModule implements Module {
     const panel = this.panelApp();
     if (!app || !panel) return;
     const fw = app.framework as unknown as SurgeryCapableFramework;
-    const fn = op === 'rollback' ? fw.rollbackToMessage : fw.suppressMessages;
-    if (typeof fn !== 'function') {
+    const requester = this.requesterFor(client);
+    const note = req.note?.trim() || undefined;
+    /** Refuse before the framework sees the request, and record the refusal
+     *  in the operator log as the framework records its own: what was asked
+     *  (kind, agent, requester, note, params) and why it didn't run. */
+    const refuse = (error: string, fields: { agent?: string; code?: string } = {}): void => {
+      const agent = fields.agent ?? req.agent;
+      recordOperatorRefusal(fw, {
+        kind: op,
+        ...(agent ? { agent } : {}),
+        requester,
+        ...(note ? { note } : {}),
+        params: op === 'rollback'
+          ? { messageId: (req as RollbackMessage).messageId, marks: describeMarksChoice(req.marks) }
+          : { messageIds: (req as SuppressMessage).messageIds, marks: describeMarksChoice(req.marks) },
+        error,
+      });
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: false,
-        error: `this host's agent-framework has no live ${op} — upgrade @animalabs/agent-framework`,
+        ...(fields.agent ? { agent: fields.agent } : {}),
+        ...(fields.code ? { code: fields.code } : {}),
+        error,
       });
+    };
+    const fn = op === 'rollback' ? fw.rollbackToMessage : fw.suppressMessages;
+    if (typeof fn !== 'function') {
+      refuse(`this host's agent-framework has no live ${op} — upgrade @animalabs/agent-framework`);
       return;
     }
     let agentName: string;
     try {
       agentName = resolveAgent(panel, req.agent);
     } catch (err) {
-      this.send(client, {
-        type: 'surgery-result', corrId: req.corrId, op, ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      refuse(err instanceof Error ? err.message : String(err));
       return;
     }
-    const requester = this.requesterFor(client);
-    const note = req.note?.trim() || undefined;
     // A confirmation bound to a preview runs only against the session and
     // branch that preview described (message ids, and branch ids, can repeat
     // across sessions' stores). Checked synchronously before the framework
     // call, so nothing else on this host can rebind or switch in between.
     if ((req.expectedSessionId !== undefined && this.liveSessionId() !== req.expectedSessionId)
       || (req.expectedBranchId !== undefined && this.liveBranchId(agentName) !== req.expectedBranchId)) {
-      this.send(client, {
-        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'stale',
-        error: `the live session or branch changed since this ${op} was previewed — preview it again`,
-      });
+      refuse(`the live session or branch changed since this ${op} was previewed — preview it again`, { agent: agentName, code: 'stale' });
       return;
     }
     const marks = req.marks ?? 'none';
@@ -1620,19 +1678,16 @@ export class WebUiModule implements Module {
       // Discord message itself and moves those marks with branch switches;
       // one with the choice alone can't keep the cut on what was previewed):
       // refuse rather than run another contract.
-      this.send(client, {
-        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'unsupported',
-        error: `live ${op} is unavailable on this host: upgrade @animalabs/agent-framework to a release that supports explicit marks choices and checks the previewed store and branch`,
-      });
+      refuse(
+        `live ${op} is unavailable on this host: upgrade @animalabs/agent-framework to a release that supports explicit marks choices and checks the previewed store and branch`,
+        { agent: agentName, code: 'unsupported' },
+      );
       return;
     }
     if (!req.expectedContext?.storeId || !req.expectedContext.branch) {
       // Every live surgery here is preview-bound: the framework's own check
       // of the previewed store and branch is what keeps the body on them.
-      this.send(client, {
-        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'stale',
-        error: `preview this ${op} first: it runs only against the store and branch its preview described`,
-      });
+      refuse(`preview this ${op} first: it runs only against the store and branch its preview described`, { agent: agentName, code: 'stale' });
       return;
     }
     try {
@@ -1737,20 +1792,20 @@ export class WebUiModule implements Module {
     }
   }
 
-  /** The awareness journal's batches, or null when the framework has none. */
-  private awarenessBatches(): AwarenessEntryWire[] | null {
+  /** The bound framework's awareness journal, with the id of the framework
+   *  instance it was read from, or null when the framework has none. */
+  private awarenessJournal(): { batches: AwarenessEntryWire[]; frameworkInstanceId: string } | null {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
     if (!fw || typeof fw.listDiscordAwareness !== 'function') return null;
-    return fw.listDiscordAwareness();
+    return { batches: fw.listDiscordAwareness(), frameworkInstanceId: frameworkInstanceId(fw) };
   }
 
   private sendAwareness(client: ClientState, corrId?: string): void {
     try {
-      const batches = this.awarenessBatches();
-      this.send(client, {
-        type: 'awareness', corrId, batches: batches ?? [],
-        ...(batches ? {} : { error: `this host's agent-framework has no awareness journal controls` }),
-      });
+      const journal = this.awarenessJournal();
+      this.send(client, journal
+        ? { type: 'awareness', corrId, ...journal }
+        : { type: 'awareness', corrId, batches: [], error: `this host's agent-framework has no awareness journal controls` });
     } catch (err) {
       this.send(client, {
         type: 'awareness', corrId, batches: [],
@@ -1761,18 +1816,18 @@ export class WebUiModule implements Module {
 
   /** Every full operator sees the journal change (a surgery or an action). */
   private broadcastAwareness(): void {
-    let batches: AwarenessEntryWire[] | null;
+    let journal: { batches: AwarenessEntryWire[]; frameworkInstanceId: string } | null;
     try {
-      batches = this.awarenessBatches();
+      journal = this.awarenessJournal();
     } catch {
       return;
     }
-    if (!batches) return;
+    if (!journal) return;
     if (!sharedServer) return;
     // Full operators only: the journal is operator state (observers with the
     // ops scope may still ask for it with request-awareness).
     for (const client of sharedServer.clients.values()) {
-      if (client.auth === 'full' && client.welcomed) this.send(client, { type: 'awareness', batches });
+      if (client.auth === 'full' && client.welcomed) this.send(client, { type: 'awareness', ...journal });
     }
   }
 
@@ -1780,30 +1835,53 @@ export class WebUiModule implements Module {
    * cancel / retract / release on the awareness journal. The framework
    * records each in the operator log with this client's identity; the
    * receipt (what was stopped, queued, or may still land) goes back as is.
+   * An action reaches only the framework instance whose journal it was
+   * chosen from.
    */
   private handleAwarenessAction(client: ClientState, req: AwarenessActionMessage): void {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
     const act = fw && (req.action === 'cancel' ? fw.cancelDiscordAwareness
       : req.action === 'retract' ? fw.retractDiscordAwareness
       : fw.releaseDiscordAwareness);
-    const reply = (fields: { receipt?: Record<string, unknown>; error?: string }): void => {
-      let batches: AwarenessEntryWire[] = [];
-      try { batches = this.awarenessBatches() ?? []; } catch { /* reported by the action's own error */ }
+    // Every answer lists the live journal, so a refused client sees what an
+    // action would act on now.
+    const reply = (fields: { receipt?: Record<string, unknown>; error?: string; code?: string }): void => {
+      let journal: { batches: AwarenessEntryWire[]; frameworkInstanceId: string } | null = null;
+      try { journal = this.awarenessJournal(); } catch { /* reported by the action's own error */ }
       this.send(client, {
-        type: 'awareness', corrId: req.corrId, batches,
+        type: 'awareness', corrId: req.corrId, batches: journal?.batches ?? [],
+        ...(journal ? { frameworkInstanceId: journal.frameworkInstanceId } : {}),
         action: req.action, target: req.target, ...fields,
       });
     };
-    if (typeof act !== 'function') {
+    if (!fw || typeof act !== 'function') {
       reply({ error: `this host's agent-framework has no awareness ${req.action} — upgrade @animalabs/agent-framework` });
       return;
     }
+    const requester = this.requesterFor(client);
+    // Chosen from another framework instance's journal (the host rebound,
+    // e.g. a session switch): "retract all" there would reach this one's
+    // marks. Checked in the same synchronous step as the call, so nothing
+    // can rebind in between.
+    if (frameworkInstanceId(fw) !== req.expectedFrameworkInstanceId) {
+      const error = `${req.action} refused: it was chosen from the awareness journal of a framework this host no longer serves (replaced, e.g. by a session switch); nothing was done. Choose again from the current journal.`;
+      recordOperatorRefusal(fw, {
+        kind: `awareness-${req.action}`,
+        agent: '*',
+        requester,
+        params: req.action === 'release' ? { batchId: req.target } : { target: req.target },
+        error,
+      });
+      reply({ error, code: 'stale' });
+      return;
+    }
     try {
-      const receipt = act.call(fw, req.target, { requester: this.requesterFor(client) });
+      const receipt = act.call(fw, req.target, { requester });
       reply({ receipt });
       this.broadcastAwareness();
     } catch (err) {
-      reply({ error: err instanceof Error ? err.message : String(err) });
+      const code = (err as { code?: unknown } | null)?.code;
+      reply({ error: err instanceof Error ? err.message : String(err), ...(typeof code === 'string' ? { code } : {}) });
     }
   }
 
@@ -1826,6 +1904,31 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const reason = verb === 'quiesce' ? (req as HostQuiesceMessage).reason?.trim() || undefined : undefined;
+    if (verb === 'quiesce') {
+      // A quiesce for a surgery's retry is bound to that surgery's preview:
+      // pausing whatever resident is bound now could pause another session's.
+      // Checked against this framework immediately before calling it.
+      const { expectedSessionId, expectedStoreId } = req as HostQuiesceMessage;
+      if ((expectedSessionId !== undefined && this.liveSessionId() !== expectedSessionId)
+        || (expectedStoreId !== undefined && storeIdentityOf(fw) !== expectedStoreId)) {
+        const message = 'quiesce refused: the host no longer serves the session and store this retry was previewed on, so it would pause another resident; nothing was paused';
+        recordOperatorRefusal(fw, {
+          kind: 'quiesce',
+          requester,
+          ...(reason ? { note: reason } : {}),
+          params: {
+            ...(expectedSessionId !== undefined ? { expectedSessionId } : {}),
+            ...(expectedStoreId !== undefined ? { expectedStoreId } : {}),
+          },
+          error: message,
+        });
+        this.send(client, { type: 'error', corrId: req.corrId, message });
+        // The live host's mode settles a client waiting on its quiesce.
+        const hostMode = this.hostModeSnapshot();
+        if (hostMode) this.send(client, { type: 'host-mode', corrId: req.corrId, hostMode });
+        return;
+      }
+    }
     try {
       // quiesce({reason?, timeoutMs?, abandon?}) waits for in-flight turns to
       // drain (up to its timeout); resume({force?}) re-runs the per-agent

@@ -223,15 +223,27 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'surgery-preview', op: 'hide', messageId: 's1' })).toBe(false);
     });
 
-    test('awareness-action: cancel/retract/release on a target; only retract takes all', () => {
+    test('awareness-action: cancel/retract/release on a target, bound to the journal it was chosen from; only retract takes all', () => {
+      const bound = { expectedFrameworkInstanceId: 'fw-1' };
       expect(isClientMessage({ type: 'request-awareness' })).toBe(true);
-      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'b1' })).toBe(true);
-      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all' })).toBe(true);
-      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'b1' })).toBe(true);
-      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'all' })).toBe(false);
-      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'all' })).toBe(false);
-      expect(isClientMessage({ type: 'awareness-action', action: 'delete', target: 'b1' })).toBe(false);
-      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: '' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'b1', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'b1', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'all', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'all', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'delete', target: 'b1', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: '', ...bound })).toBe(false);
+      // An action names the journal listing it was chosen from.
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: 7 })).toBe(false);
+    });
+
+    test("host-quiesce may be bound to a retry's previewed session and store", () => {
+      expect(isClientMessage({ type: 'host-quiesce' })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', reason: 'r', expectedSessionId: 's', expectedStoreId: 'store-a' })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', expectedSessionId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 3 })).toBe(false);
     });
   });
 

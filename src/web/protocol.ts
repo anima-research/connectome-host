@@ -732,10 +732,18 @@ export interface AwarenessMessage {
   type: 'awareness';
   corrId?: string;
   batches: AwarenessEntryWire[];
+  /** The framework instance these entries were listed from: an opaque id
+   *  the host mints for each framework it binds (a session switch binds a
+   *  new one). An action chosen from this list sends it back as
+   *  `expectedFrameworkInstanceId`. Absent when there is no journal. */
+  frameworkInstanceId?: string;
   action?: 'cancel' | 'retract' | 'release';
   target?: string;
   receipt?: Record<string, unknown>;
   error?: string;
+  /** Refusal code with `error`: 'stale' means the action was chosen from
+   *  another framework instance's journal (this frame lists the live one). */
+  code?: string;
 }
 
 /** Outcome of a `rollback` / `suppress` request. On success the server also
@@ -1201,6 +1209,10 @@ export interface AwarenessActionMessage {
   type: 'awareness-action';
   action: 'cancel' | 'retract' | 'release';
   target: string;
+  /** The `frameworkInstanceId` of the journal listing this action was chosen
+   *  from: refused (`code: 'stale'`) unless that framework is still the one
+   *  bound, so an action never reaches another session's journal. */
+  expectedFrameworkInstanceId: string;
   corrId?: string;
 }
 
@@ -1208,6 +1220,11 @@ export interface AwarenessActionMessage {
 export interface HostQuiesceMessage {
   type: 'host-quiesce';
   reason?: string;
+  /** A quiesce for a surgery's retry is bound to that surgery's preview:
+   *  refused unless the live session is still this one and the bound
+   *  framework's store identity is still the preview's `context.storeId`. */
+  expectedSessionId?: string;
+  expectedStoreId?: string;
   corrId?: string;
 }
 
@@ -1323,9 +1340,12 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && isNonEmptyString(v.target)
         // Only retract acts across batches.
         && (v.target !== 'all' || v.action === 'retract')
+        && isNonEmptyString(v.expectedFrameworkInstanceId) && v.expectedFrameworkInstanceId.length <= 200
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'host-quiesce':
       return (v.reason === undefined || typeof v.reason === 'string')
+        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
+        && (v.expectedStoreId === undefined || (isNonEmptyString(v.expectedStoreId) && v.expectedStoreId.length <= 200))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'host-resume':
     case 'request-host-mode':
@@ -1437,8 +1457,10 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
   }
 }
 
-/** Bounded so one frame can't hand the framework an unbounded ref list. */
-const MAX_MARKS_REFS = 20_000;
+/** The most refs one marks choice may carry: bounded so one frame can't hand
+ *  the framework an unbounded ref list. The SPA offers no scope larger than
+ *  this (it never truncates one), so a valid choice always fits. */
+export const MAX_MARKS_REFS = 20_000;
 
 function isSurgeryContext(v: unknown): v is SurgeryContextWire {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
