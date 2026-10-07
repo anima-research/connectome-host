@@ -337,8 +337,10 @@ function MarksChooser(props: {
                     channels(p().scopes.addressed.channels), p().scopes.addressed.count > 0)}
                   {option('all', `Mark all ${p().scopes.all.count} with ${p().emoji}`,
                     channels(p().scopes.all.channels), p().scopes.all.count > 0)}
-                  <div class="text-[10px] text-neutral-600 leading-snug">
+                  <div class="text-[10px] text-neutral-500 leading-snug">
                     Marks are reactions the bot posts where people can see them. Only the messages previewed here are marked; delivery runs in the background.
+                    A mark stays on Discord until it is retracted: <span class="text-neutral-400">cancel</span> only stops marks not yet sent;
+                    <span class="text-neutral-400">retract</span> asks Discord to remove the bot's marks. Both are in the branch panel's awareness list.
                   </div>
                 </>
               )}
@@ -359,7 +361,8 @@ function MarkersReceipt(props: { markers: SurgeryMarkerReceiptWire }) {
     <div class={`text-xs mb-3 leading-snug ${m().status === 'not-scheduled' ? 'text-rose-300' : m().status === 'unresolved' ? 'text-amber-300' : 'text-neutral-400'}`}>
       <Show when={m().status === 'none'}>No Discord marks{unmarked()}.</Show>
       <Show when={m().status === 'queued'}>
-        Marks: {m().queued} queued{m().scope ? ` (${m().scope})` : ''}{unmarked()}{notRemoved()}. Delivery runs in the background; the awareness list shows outcomes and can cancel.
+        Marks: {m().queued} queued{m().scope ? ` (${m().scope})` : ''}{unmarked()}{notRemoved()}. Delivery runs in the background.
+        In the branch panel's awareness list, cancel stops marks not yet sent; marks already placed stay until you retract them.
       </Show>
       <Show when={m().status === 'not-scheduled'}>Marks were not scheduled and will not be sent: {m().error}</Show>
       <Show when={m().status === 'unresolved'}>
@@ -483,13 +486,19 @@ export function AwarenessList(props: {
   onAction(action: 'cancel' | 'retract' | 'release', target: string): void;
 }) {
   const newestFirst = () => [...props.entries].sort((a, b) => (b.createdAt ?? b.at ?? 0) - (a.createdAt ?? a.at ?? 0));
-  const act = (action: 'cancel' | 'retract' | 'release', target: string, refs?: number): void => {
+  const [open, setOpen] = createSignal<string | null>(null);
+  const act = (action: 'cancel' | 'retract' | 'release', target: string, detail?: { refs?: number; emoji?: string }): void => {
     if (action === 'retract' && !window.confirm(
       target === 'all'
-        ? "Remove this bot's 💤 from every message any batch marked? This sends one Discord request per message."
-        : `Remove this bot's mark from this batch's ${refs ?? ''} message(s)? This sends one Discord request per message.`,
+        ? "Ask Discord to remove this bot's awareness reaction from every message any batch recorded (including batches not yet sent)? "
+          + 'This sends one Discord request per message, whether or not a mark is there. It does not stop anything already on the wire.'
+        : `Ask Discord to remove this bot's ${detail?.emoji ?? 'awareness'} reaction from this batch's ${detail?.refs ?? ''} recorded message(s)? `
+          + 'This sends one Discord request per message, whether or not the mark landed.',
     )) return;
-    if (action === 'release' && !window.confirm(`Send this held batch's ${refs ?? ''} queued mark(s) to Discord?`)) return;
+    if (action === 'release' && !window.confirm(
+      `Carry out this held batch's ${detail?.refs ?? ''} recorded action(s)? Held actions can add or remove this bot's reactions; `
+      + 'each is sent to Discord as recorded.',
+    )) return;
     props.onAction(action, target);
   };
   const button = (label: string, onClick: () => void, tone = 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300') => (
@@ -507,6 +516,12 @@ export function AwarenessList(props: {
           {props.loading ? '…' : 'refresh'}
         </button>
       </div>
+      <div class="px-1 mb-1 text-[10px] text-neutral-600 leading-snug">
+        Counts are the outcomes of requests recorded here, not what Discord shows now.
+        <span class="text-neutral-500">cancel</span> stops sends not yet made (never removes);
+        <span class="text-neutral-500">retract</span> requests removal of the bot's marks;
+        <span class="text-neutral-500">release</span> carries out a held batch's recorded actions.
+      </div>
       <Show when={props.result}>{(r) => (
         <div class={`px-1 mb-1 text-[10px] font-mono break-all ${r().error ? 'text-rose-300' : 'text-neutral-400'}`}>
           {r().action} {r().target}: {r().error ?? (() => { try { return JSON.stringify(r().receipt); } catch { return ''; } })()}
@@ -515,41 +530,50 @@ export function AwarenessList(props: {
       <Show when={newestFirst().length > 0} fallback={<div class="px-1 text-neutral-600 italic text-[11px]">No awareness marks recorded.</div>}>
         <div class="space-y-1 max-h-72 overflow-y-auto pr-1">
           <For each={newestFirst()}>{(e) => (
-            <div class="rounded px-1.5 py-1 border border-neutral-800/60 bg-neutral-900/30"
-              title={(() => { try { return JSON.stringify(e, null, 1); } catch { return ''; } })()}>
+            <div class="rounded px-1.5 py-1 border border-neutral-800/60 bg-neutral-900/30">
               <div class="flex items-center gap-2 text-[10px]">
                 <span class="font-semibold text-neutral-300">{e.kind === 'retract' ? 'retract' : `${e.scope ?? '?'} marks`}</span>
                 <span class="text-neutral-500">{e.kind === 'retract' ? `of ${e.target}` : `${e.status}${e.cancelled ? ', cancelled' : ''}`}</span>
                 <span class="ml-auto text-neutral-600">{(e.createdAt ?? e.at) ? fmtAt(new Date((e.createdAt ?? e.at)!).toISOString()) : ''}</span>
               </div>
-              <div class="text-[10px] text-neutral-400 truncate">
+              <div class="text-[10px] text-neutral-400 break-words">
                 {e.kind === 'batch'
                   ? `${e.agentName ?? ''} → ${e.targetBranch ?? ''} · ${e.refs ?? 0} message(s)${e.unmarked ? ` · ${e.unmarked} unmarked` : ''}`
                   : `${e.by ? `by ${e.by}` : ''}${e.cancelled ? ' · cancelled' : ''}`}
               </div>
-              <div class="text-[10px] text-neutral-500 truncate">
-                {[countsLine('adds', e.adds), countsLine('removals', e.removals)].filter(Boolean).join(' · ')}
-                {e.unresolvedAttempts ? ` · ${e.unresolvedAttempts} request(s) without an answer (may land)` : ''}
+              <div class="text-[10px] text-neutral-500 break-words">
+                {[countsLine('add requests', e.adds), countsLine('removal requests', e.removals)].filter(Boolean).join(' · ')}
               </div>
-              <Show when={e.held}><div class="text-[10px] text-amber-300/90 truncate">held: {e.held!.reason}</div></Show>
-              <Show when={e.legacy}>
-                <div class="text-[10px] text-neutral-500 truncate">
-                  earlier ledger: {e.legacy!.lastAddConfirmed} add(s) confirmed, {e.legacy!.outcomesUnrecorded} attempt outcome(s) unrecorded
+              <Show when={e.unresolvedAttempts}>
+                <div class="text-[10px] text-amber-300/90 break-words">
+                  {e.unresolvedAttempts} request(s) without an answer: each may have landed, or may still land.
                 </div>
               </Show>
-              <Show when={!props.readOnly}>
-                <div class="flex gap-1 mt-0.5">
+              <Show when={e.held}><div class="text-[10px] text-amber-300/90 break-words">held: {e.held!.reason}</div></Show>
+              <Show when={e.legacy}>
+                <div class="text-[10px] text-neutral-500 break-words">
+                  earlier ledger: {e.legacy!.lastAddConfirmed} add(s) confirmed, {e.legacy!.outcomesUnrecorded} attempt outcome(s) unrecorded (they may have landed)
+                </div>
+              </Show>
+              <Show when={open() === e.id}>
+                <pre class="mt-1 p-1 text-[10px] text-neutral-400 bg-neutral-950 border border-neutral-800 rounded whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                  {(() => { try { return JSON.stringify(e, null, 2); } catch { return ''; } })()}
+                </pre>
+              </Show>
+              <div class="flex gap-1 mt-0.5">
+                {button(open() === e.id ? 'hide details' : 'details', () => setOpen(open() === e.id ? null : e.id))}
+                <Show when={!props.readOnly}>
                   <Show when={e.kind === 'retract' ? !e.cancelled : e.status !== 'discarded' && !e.cancelled}>
                     {button('cancel', () => act('cancel', e.id))}
                   </Show>
                   <Show when={e.kind === 'batch' && e.status !== 'discarded'}>
-                    {button('retract', () => act('retract', e.id, e.refs), 'bg-rose-950/60 hover:bg-rose-900/60 text-rose-200')}
+                    {button('retract', () => act('retract', e.id, { refs: e.refs, emoji: e.emoji }), 'bg-rose-950/60 hover:bg-rose-900/60 text-rose-200')}
                   </Show>
                   <Show when={e.kind === 'batch' && e.status === 'held'}>
-                    {button('release', () => act('release', e.id, e.held?.releaseActions), 'bg-amber-900/50 hover:bg-amber-900/80 text-amber-100')}
+                    {button('release', () => act('release', e.id, { refs: e.held?.releaseActions }), 'bg-amber-900/50 hover:bg-amber-900/80 text-amber-100')}
                   </Show>
-                </div>
-              </Show>
+                </Show>
+              </div>
             </div>
           )}</For>
         </div>

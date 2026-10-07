@@ -11,4 +11,6 @@
   rollback and suppression (`code: 'unsupported'`) and the dialog says the
   framework needs upgrading; previously it ran them and the framework marked
   everything. This follows an incident in which one rollback queued 918
-  reactions, mostly on other people's messages.
+  reactions, mostly on other people's messages. It needs an agent-framework
+  release carrying the marks contract (anima-research/agent-framework#250);
+  until the host depends on one, live rollback and suppression are refused.
