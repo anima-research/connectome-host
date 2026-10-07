@@ -457,7 +457,7 @@ export class NativeCLIHost {
       if (cli === 'claude') {
         nativeTranscriptPath = nativeClaudeTranscriptPath(installedConfig,
           process.cwd(), binary, binaryHash, invocationId);
-        const auth = Bun.spawn([checkedInvocationPath(), 'auth', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe' });
+        const auth = Bun.spawn([checkedInvocationPath(), 'auth', 'status'], { stdout: 'pipe', stderr: 'pipe' });
         queryProcess = auth;
         const [statusText, statusCode] = await Promise.all([new Response(auth.stdout).text(), auth.exited]);
         queryProcess = null;

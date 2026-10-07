@@ -90,7 +90,11 @@ function claudeFixtureSource(mode: string): string {
   };
   return `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('2.1.291 (Claude Code)');process.exit(0);}
-if(process.argv.includes('auth')) {const status=${JSON.stringify(authStatus)};console.log(JSON.stringify(status));process.exit(status.loggedIn?0:1);}
+if(process.argv.includes('auth')) {
+ // Observed read-only wrapper contract: plain auth status is JSON; extra arguments exit 78.
+ if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(['auth','status'])) process.exit(78);
+ const status=${JSON.stringify(authStatus)};console.log(JSON.stringify(status));process.exit(status.loggedIn?0:1);
+}
 const mode=${JSON.stringify(mode)};
 const arg=n=>process.argv[process.argv.indexOf(n)+1];
 const session=arg('--session-id');
@@ -693,3 +697,24 @@ for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'
     }
   });
 }
+
+
+test('native Claude uses plain auth status through a read-only wrapper', async () => {
+  const dir = realpathSync(mkdtempSync(join(realpathSync(process.env.CONNECTOME_TEST_EVIDENCE_DIR ?? tmpdir()), 'native-auth-status-test-')));
+  const binary = join(dir, 'claude-fixture');
+  writeFileSync(binary, claudeFixtureSource('success')); chmodSync(binary, 0o700);
+  const plain = Bun.spawn([binary, 'auth', 'status'], { stdout: 'pipe', stderr: 'pipe' });
+  const [statusText, plainCode] = await Promise.all([new Response(plain.stdout).text(), plain.exited]);
+  expect(plainCode).toBe(0);
+  expect(JSON.parse(statusText)).toEqual({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' });
+  const flagged = Bun.spawn([binary, 'auth', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe' });
+  const [flaggedText, flaggedCode] = await Promise.all([new Response(flagged.stdout).text(), flagged.exited]);
+  expect(flaggedCode).toBe(78); expect(flaggedText).toBe('');
+  const result = await runFixture('success', 'claude');
+  const terminal = result.events.at(-1)!;
+  if (terminal.type !== 'native-cli:terminal') throw new Error('Missing terminal');
+  expect(terminal.outcome).toBe('completed');
+  expect(terminal.finalText).toBe('The genuine fixture final.');
+  expect(terminal.reaped).toBe(true); expect(terminal.pidAbsent).toBe(true);
+  expect(result.calls).toBe(1); expect(result.invocations).toEqual(['version', 'auth', 'main']);
+});
