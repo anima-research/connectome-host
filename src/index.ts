@@ -69,6 +69,8 @@ import {
   parseRecipeArg,
   deprecatedConversationsNotices,
 } from './recipe.js';
+import { PassthroughStrategy } from '@animalabs/agent-framework';
+import { NativeCLIHost, PassiveNativeCLIAdapter, nativeCLIEnabled } from './native-cli.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
@@ -117,6 +119,7 @@ interface AppContext {
   branchState: BranchState;
   userMessageCount: number;
   codexAdapter?: CodexSubscriptionAdapter;
+  nativeCli?: NativeCLIHost;
   /** Content-free recent provider-call ledger. Consumed by the panel-data
    *  layer (health snapshots) in BOTH runtimes — WebUI host and headless
    *  fleet child. Null when the provider adapter exposes no ledger. */
@@ -490,8 +493,15 @@ async function createFramework(
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 
   // -- Build strategy --
-  const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
+  const strategy = nativeCLIEnabled(recipe)
+    ? new PassthroughStrategy()
+    : buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
+  if (nativeCLIEnabled(recipe)) {
+    delete agentConfig.maxTokens;
+    delete agentConfig.maxStreamTokens;
+    delete agentConfig.contextBudgetTokens;
+  }
 
   // Per-channel conversation routing: the recipe agent becomes the trunk
   // template; forks get a fresh instance of the same recipe strategy.
@@ -503,6 +513,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
+    ...(nativeCLIEnabled(recipe) ? { inferencePolicy: { shouldInfer: () => false }, maintenanceIntervalMs: 0 } : {}),
 agents: [agentConfig],
     modules: moduleInstances,
     mcplServers: finalServers,
@@ -798,6 +809,11 @@ async function runPiped(app: AppContext) {
         console.log('Session switched.');
       }
     } else {
+      if (app.nativeCli) {
+        app.nativeCli.publishInput(trimmed);
+        await app.nativeCli.waitForIdle();
+        return false;
+      }
       app.framework.pushEvent({
         type: 'external-message', source: 'cli',
         content: trimmed, metadata: {}, triggerInference: true,
@@ -818,6 +834,7 @@ async function runPiped(app: AppContext) {
       if (await processLine(line)) break;
     }
     console.log('Done.');
+    await app.nativeCli?.stop();
     await app.framework.stop();
     return;
   }
@@ -832,6 +849,7 @@ async function runPiped(app: AppContext) {
   });
   await new Promise<void>(r => rl.on('close', r));
   console.log('\nShutting down...');
+  await app.nativeCli?.stop();
   await app.framework.stop();
 }
 
@@ -862,6 +880,8 @@ function countLines(path: string): number {
 async function main() {
   const recipe = await resolveRecipe();
   const provider = recipe.agent.provider ?? 'anthropic';
+  const nativeMode = nativeCLIEnabled(recipe);
+  if (nativeMode && !headless && !noTui) throw new Error('Native CLI execution requires --headless or --no-tui.');
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');
@@ -875,7 +895,7 @@ async function main() {
     console.error('Missing AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY for recipe provider "bedrock".');
     process.exit(1);
   }
-  if (provider === 'anthropic' && !config.apiKey && !config.authToken) {
+  if (!nativeMode && provider === 'anthropic' && !config.apiKey && !config.authToken) {
     console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
     process.exit(1);
   }
@@ -893,7 +913,7 @@ async function main() {
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
-  const callLedger = provider === 'anthropic'
+  const callLedger = !nativeMode && provider === 'anthropic'
     ? new CallLedger({
         dataDir: config.dataDir,
         defaultTtl: recipe.agent.cacheTtl ?? '5m',
@@ -901,7 +921,7 @@ async function main() {
     : null;
   // The Codex subscription adapter owns ChatGPT login/refresh independently
   // of the API-key transports below.
-  const codexAdapter = provider === 'openai-codex'
+  const codexAdapter = !nativeMode && provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
@@ -909,7 +929,7 @@ async function main() {
     : undefined;
   // Subscription credentials draw down utilization windows instead of being
   // billed per token; the meter reads them out-of-band (no inference spend).
-  const quotaMeter = provider === 'anthropic' && config.authToken
+  const quotaMeter = !nativeMode && provider === 'anthropic' && config.authToken
     ? new QuotaMeter(new AnthropicOAuthQuotaSource({
         authToken: config.authToken,
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
@@ -1037,7 +1057,9 @@ async function main() {
 
   const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
-  const adapter = provider === 'openai-responses'
+  const adapter = nativeMode
+    ? new PassiveNativeCLIAdapter()
+    : provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
           apiKey: config.openaiApiKey!,
@@ -1175,7 +1197,9 @@ async function main() {
     quotaMeter,
 
     async switchSession(id: string) {
+      if (nativeMode) throw new Error('Native CLI session switching requires a fresh qualified Host process.');
       handleExport(this);
+      await this.nativeCli?.stop();
       await this.framework.stop();
       sessionManager.setActiveSession(id);
       const newStorePath = sessionManager.getStorePath(id);
@@ -1187,12 +1211,14 @@ async function main() {
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
-      setupSynesthete(this);
+      if (!nativeMode) setupSynesthete(this);
       setupMcplStderrLog(this, newStorePath);
       getWebUiModule(this.framework)?.setApp(this);
     },
   };
 
+  if (nativeMode) app.nativeCli = new NativeCLIHost(framework, recipe, agentName, config.dataDir, parseRecipeArg(process.argv).source ?? undefined);
+  if (app.nativeCli && !headless) app.nativeCli.onEvent(event => console.log(JSON.stringify(event)));
   appRefForDebt = app;
 
   // Off-path refusal dragnet → ops alerts (observability M3): refusals on
@@ -1218,7 +1244,7 @@ async function main() {
   }
 
   framework.start();
-  setupSynesthete(app);
+  if (!nativeMode) setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);
 
@@ -1233,6 +1259,7 @@ async function main() {
       await runTui(app);
     }
   } finally {
+    await app.nativeCli?.stop();
     codexAdapter?.dispose();
   }
 }

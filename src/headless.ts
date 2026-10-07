@@ -149,7 +149,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     const type = typeof event.type === 'string' ? event.type : '';
     if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
     try {
-      currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n');
+      currentClient.write(JSON.stringify({ ...event, ts: type.startsWith('native-cli:') && typeof event.ts === 'number' ? event.ts : Date.now() }) + '\n');
     } catch (err) {
       log(`emit failed for type=${type}: ${String(err)}`);
     }
@@ -198,6 +198,11 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       case 'text': {
         if (typeof cmd.content !== 'string') {
           log('text rejected: content must be string');
+          return;
+        }
+        if (app.nativeCli) {
+          try { reply({ ...app.nativeCli.publishInput(cmd.content) }); }
+          catch (error) { reply({ type: 'native-cli:input-refused', reason: String(error) }); }
           return;
         }
         app.framework.pushEvent({
@@ -401,6 +406,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // -- Socket server --
   const server: Server = createServer((socket) => {
     if (currentClient) {
+      if (app.nativeCli?.isBusy) void app.nativeCli.cancelActive().catch(err => log(`native CLI replacement cancellation failed: ${String(err)}`));
       log('new client connecting; closing previous client');
       try { currentClient.end(); } catch { /* noop */ }
     }
@@ -437,11 +443,20 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       if (currentClient === socket) {
         currentClient = null;
         log('client disconnected; child stays up');
+        if (app.nativeCli?.isBusy) void app.nativeCli.cancelActive().catch(err => log(`native CLI disconnect cancellation failed: ${String(err)}`));
       }
     });
 
     socket.on('error', (err) => {
       log(`client socket error: ${String(err)}`);
+      if (currentClient === socket && app.nativeCli?.isBusy) void app.nativeCli.cancelActive().catch(err => log(`native CLI socket cancellation failed: ${String(err)}`));
+    });
+
+    socket.on('close', () => {
+      if (currentClient === socket) {
+        currentClient = null;
+        if (app.nativeCli?.isBusy) void app.nativeCli.cancelActive().catch(err => log(`native CLI close cancellation failed: ${String(err)}`));
+      }
     });
 
     // Send ready event as soon as the socket is live.  The framework was
@@ -479,6 +494,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Give the exiting event a tick to flush onto the socket.
     await new Promise((r) => setTimeout(r, 50));
 
+    try { await app.nativeCli?.stop(); } catch (err) { log(`nativeCli.stop() failed: ${String(err)}`); }
     try { await app.framework.stop(); } catch (err) { log(`framework.stop() failed: ${String(err)}`); }
     try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
     try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
@@ -517,6 +533,11 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // not the final speech).  Emitted on inference:completed if non-empty.
     let currentSpeech = '';
 
+    app.nativeCli?.onEvent(event => {
+      emit({ ...event });
+      if (event.type === 'native-cli:started') { hadAtLeastOneInference = true; idleEmitted = false; }
+    });
+
     app.framework.onTrace((event) => {
       const t = (event as { type?: string }).type;
       const agentName = (event as { agentName?: string }).agentName;
@@ -542,7 +563,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     const idlePoll = setInterval(() => {
       if (shuttingDown) { clearInterval(idlePoll); return; }
       const agents = app.framework.getAllAgents();
-      const allIdle = agents.every((a) => a.state.status === 'idle');
+      const allIdle = !app.nativeCli?.isBusy && agents.every((a) => a.state.status === 'idle');
       if (!hadAtLeastOneInference || !allIdle) {
         idleSince = 0;
         return;

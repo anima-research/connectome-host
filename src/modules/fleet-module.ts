@@ -1549,6 +1549,8 @@ export class FleetModule implements Module {
   private async connectChildSocket(child: FleetChild): Promise<void> {
     return new Promise((resolveConn, rejectConn) => {
       const sock = netConnect(child.socketPath);
+      // Socket decoding retains incomplete UTF-8 characters across chunks.
+      sock.setEncoding('utf8');
       const timer = setTimeout(() => {
         sock.destroy();
         rejectConn(new Error('socket connect timeout'));
@@ -1557,7 +1559,10 @@ export class FleetModule implements Module {
       sock.once('connect', () => {
         clearTimeout(timer);
         child.socket = sock;
-        sock.on('data', (chunk: Buffer) => this.handleChildData(child, chunk));
+        child.buffer = '';
+        sock.on('data', (chunk: string) => {
+          if (child.socket === sock) this.handleChildData(child, chunk);
+        });
         sock.on('end', () => {
           if (child.socket === sock) child.socket = null;
         });
@@ -1586,8 +1591,8 @@ export class FleetModule implements Module {
     throw new Error(`child did not report ready within ${timeout}ms`);
   }
 
-  private handleChildData(child: FleetChild, chunk: Buffer): void {
-    child.buffer += chunk.toString('utf-8');
+  private handleChildData(child: FleetChild, chunk: string): void {
+    child.buffer += chunk;
     let nl: number;
     while ((nl = child.buffer.indexOf('\n')) >= 0) {
       const line = child.buffer.slice(0, nl).trim();
@@ -1802,8 +1807,20 @@ export class FleetModule implements Module {
     });
   }
 
+  /**
+   * Stop a tracked child. Only confirmed death of this tracked generation
+   * (a reaped spawned handle, or ESRCH for a validated adoption) reuses the
+   * existing guarded cleanupStaleChildFiles reconciliation. Unconfirmed
+   * death throws first; detach never reaches here; killAllOnExitSync stays
+   * synchronous and does not reconcile.
+   */
   private async killChild(child: FleetChild): Promise<void> {
-    if (child.status === 'exited' || child.status === 'crashed') return;
+    if (child.status === 'exited' || child.status === 'crashed') {
+      // Reaped spawned handles already confirmed this generation's death.
+      // Reconstructed historical records (process null) keep launch-only reconciliation.
+      if (child.process) await this.cleanupStaleChildFiles(child);
+      return;
+    }
     const proc = child.process;
     const pid = child.pid;
     if (!proc && !child.adopted) {
@@ -1848,6 +1865,9 @@ export class FleetModule implements Module {
       child.socket = null;
       this.persistState();
     }
+    // Confirmed death of the tracked generation: reuse the existing guarded
+    // reconciliation; live, replaced, unknown or inaccessible evidence stays.
+    await this.cleanupStaleChildFiles(child);
   }
 
   private waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {

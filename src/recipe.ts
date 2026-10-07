@@ -208,6 +208,8 @@ export interface RecipeKvUnifiedConfig {
 }
 
 export interface RecipeAgent {
+  /** Explicit native CLI execution; omission preserves the HTTP transport. */
+  execution?: 'native-cli';
   name?: string;
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
@@ -248,6 +250,8 @@ export interface RecipeAgent {
    * chapterx CLI-sim's "<cmd>cat untitled.txt</cmd>"). Prefill formatter only. */
   prefillUserMessage?: string;
   systemPrompt: string;
+  /** Exact-name Framework tool allowlist. Omission preserves the Framework default. */
+  allowedTools?: 'all' | string[];
   maxTokens?: number;
   /**
    * Per-agent stream token budget — the accumulated-input ceiling at which the
@@ -332,6 +336,8 @@ export interface RecipeAgent {
      * 'omitted' returns empty text + signature only. Models 4.7+ default
      * to 'omitted' server-side. */
     display?: 'summarized' | 'omitted';
+    /** Native CLI effort; the selected CLI owns provider configuration. */
+    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   };
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
    * compaction and serviceTier are API-key transport settings. */
@@ -1496,7 +1502,7 @@ const RECIPE_KEYS = [
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'toolClassOverrides',
 ] as const;
 const RECIPE_AGENT_KEYS = [
-  'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
+  'execution', 'allowedTools', 'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
   'toolWrapperProseGuard', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
@@ -1614,6 +1620,26 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   const agent = obj.agent as Record<string, unknown>;
+  if (agent.execution !== undefined && agent.execution !== 'native-cli') {
+    throw new Error('Recipe agent.execution must be native-cli when present.');
+  }
+  if (agent.execution === 'native-cli') {
+    if (agent.provider !== 'anthropic' && agent.provider !== 'openai-codex') {
+      throw new Error('native-cli requires an explicit anthropic or openai-codex provider.');
+    }
+    if (typeof agent.model !== 'string' || !agent.model.trim()) {
+      throw new Error('native-cli requires an explicit agent.model.');
+    }
+    const effort = agent.provider === 'anthropic'
+      ? (agent.thinking as { effort?: unknown } | undefined)?.effort
+      : (agent.responses as { reasoningEffort?: unknown } | undefined)?.reasoningEffort;
+    if (typeof effort !== 'string' || !['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
+      throw new Error('native-cli requires an explicit supported effort.');
+    }
+    if (obj.conversations || obj.subconscious || obj.codeExecution || obj.extensions || obj.subagents || (obj.modules as { subagents?: unknown } | undefined)?.subagents) {
+      throw new Error('native-cli requires a single passive resident without additional inference or execution owners.');
+    }
+  }
   // Absent or empty systemPrompt is a valid configuration: '' is dropped at
   // the provider boundary (membrane omits falsy `system`), so the wire
   // request carries no system block at all.
@@ -1621,6 +1647,12 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.systemPrompt = '';
   } else if (typeof agent.systemPrompt !== 'string') {
     throw new Error('Recipe agent "systemPrompt" must be a string when present');
+  }
+
+  if (agent.allowedTools !== undefined && agent.allowedTools !== 'all' &&
+      (!Array.isArray(agent.allowedTools) ||
+       !Array.from(agent.allowedTools).every((tool) => typeof tool === 'string'))) {
+    throw new Error("Recipe agent.allowedTools must be 'all' or an array of tool-name strings.");
   }
 
   if (agent.provider !== undefined &&
