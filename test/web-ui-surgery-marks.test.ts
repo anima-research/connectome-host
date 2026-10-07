@@ -35,8 +35,10 @@ let webUiModule: WebUiModule;
 const received: Array<{ method: string; args: unknown[] }> = [];
 /** The fake agent's live branch, which a test may move. */
 const liveBranch = { id: 'b1', name: 'main' };
+/** The fake framework's store identity. */
+const storeIdentity = { id: 'store-a' };
 
-function fakeFramework(opts: { contract: boolean }) {
+function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
   const surgeryResult = (marks: unknown) => ({
     sourceBranch: 'main',
     targetBranch: 'rollback/resident/1',
@@ -62,6 +64,10 @@ function fakeFramework(opts: { contract: boolean }) {
     getSessionUsage: () => { throw new Error('no usage in this harness'); },
     rollbackToMessage: async (...args: unknown[]) => {
       received.push({ method: 'rollbackToMessage', args });
+      const expected = (args[1] as { expected?: { storeId?: string; branch?: string } }).expected;
+      if (expected && (expected.storeId !== storeIdentity.id || expected.branch !== liveBranch.name)) {
+        throw Object.assign(new Error('resolved against another store'), { code: 'stale' });
+      }
       return surgeryResult((args[1] as { marks?: unknown }).marks);
     },
     suppressMessages: async (...args: unknown[]) => {
@@ -71,9 +77,11 @@ function fakeFramework(opts: { contract: boolean }) {
   };
   if (opts.contract) {
     Object.assign(framework, {
+      ...(opts.storeIdentity === false ? {} : { getStoreIdentity: () => storeIdentity.id }),
       previewSurgeryMarks: (...args: unknown[]) => {
         received.push({ method: 'previewSurgeryMarks', args });
         return {
+          ...(opts.storeIdentity === false ? {} : { context: { storeId: storeIdentity.id, branch: liveBranch.name } }),
           messagesRemoved: 3,
           addressable: 3,
           emoji: '💤',
@@ -103,9 +111,9 @@ function fakeFramework(opts: { contract: boolean }) {
   return framework;
 }
 
-function bind(contract: boolean, sessionId = 's1'): void {
+function bind(contract: boolean, sessionId = 's1', storeIdentityCheck = true): void {
   webUiModule.setApp({
-    framework: fakeFramework({ contract }),
+    framework: fakeFramework({ contract, storeIdentity: storeIdentityCheck }),
     recipe: { name: 'r', description: 'd', version: '1', agent: { name: 'resident' } },
     sessionManager: { getActiveSession: () => ({ id: sessionId, name: 's', manuallyNamed: false }) },
   } as never);
@@ -189,8 +197,20 @@ describe('surgery marks over the WebUI', () => {
       expect(preview.branchId).toBe('b1');
       expect(preview.sessionId).toBe('s1');
 
+      expect(preview.preview).toMatchObject({ context: { storeId: 'store-a', branch: 'main' } });
+      const context = (preview.preview as { context: Record<string, string> }).context;
+
+      // Without the preview's context, nothing runs.
+      client.send({ type: 'rollback', messageId: 's9', marks: 'none', corrId: 'r0' });
+      const unbound = await client.next('surgery-result', 'r0');
+      expect(unbound.ok).toBe(false);
+      expect(unbound.code).toBe('stale');
+
       const marks = { scope: 'addressed', refs: [ref('a1'), ref('a2')] };
-      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', corrId: 'r1' });
+      client.send({
+        type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1',
+        expectedContext: context, corrId: 'r1',
+      });
       const result = await client.next('surgery-result', 'r1');
       // Every operator sees the journal change.
       expect((await client.next('awareness')).corrId).toBeUndefined();
@@ -198,9 +218,10 @@ describe('surgery marks over the WebUI', () => {
       expect((result.markers as { status: string; queued: number }).status).toBe('queued');
       const call = received.find((r) => r.method === 'rollbackToMessage')!;
       expect((call.args[1] as { marks: unknown }).marks).toEqual(marks);
+      expect((call.args[1] as { expected: unknown }).expected).toEqual(context);
 
       // Without a choice the framework is told none explicitly.
-      client.send({ type: 'suppress', messageIds: ['s3'], corrId: 'r2' });
+      client.send({ type: 'suppress', messageIds: ['s3'], expectedContext: context, corrId: 'r2' });
       await client.next('surgery-result');
       const suppress = received.find((r) => r.method === 'suppressMessages')!;
       expect((suppress.args[1] as { marks: unknown }).marks).toBe('none');
@@ -209,7 +230,7 @@ describe('surgery marks over the WebUI', () => {
       // before the framework sees it.
       liveBranch.id = 'b2';
       const calls = received.length;
-      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', corrId: 'r-stale' });
+      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', expectedContext: context, corrId: 'r-stale' });
       const stale = await client.next('surgery-result', 'r-stale');
       expect(stale.ok).toBe(false);
       expect(stale.code).toBe('stale');
@@ -248,13 +269,41 @@ describe('surgery marks over the WebUI', () => {
       // branch and message ids happen to be the same.
       bind(true, 'session-b');
       await client.next('welcome');
+      const context = (preview.preview as { context: Record<string, string> }).context;
       client.send({
         type: 'rollback', messageId: '2', marks: 'none',
-        expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, corrId: 'r',
+        expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, expectedContext: context, corrId: 'r',
       });
       const result = await client.next('surgery-result', 'r');
       expect(result.ok).toBe(false);
       expect(result.code).toBe('stale');
+      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
+
+      // Even where the host's own check can't tell (a client that omits its
+      // session and branch), the framework refuses another store's context.
+      storeIdentity.id = 'store-b';
+      client.send({ type: 'rollback', messageId: '2', marks: 'none', expectedContext: context, corrId: 'r2' });
+      const refused = await client.next('surgery-result', 'r2');
+      expect(refused.ok).toBe(false);
+      expect(refused.code).toBe('stale');
+      storeIdentity.id = 'store-a';
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('a framework with the marks choice but no store-and-branch check (AF #250 alone) gets no live surgery either', async () => {
+    bind(true, 's1', false);
+    received.length = 0;
+    const client = await connect();
+    try {
+      expect(client.welcome.features as string[]).not.toContain('marks');
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
+      expect((await client.next('surgery-preview', 'p')).ok).toBe(false);
+      client.send({ type: 'rollback', messageId: 's9', marks: 'none', expectedContext: { storeId: 'x', branch: 'main' }, corrId: 'r' });
+      const refused = await client.next('surgery-result', 'r');
+      expect(refused.ok).toBe(false);
+      expect(refused.code).toBe('unsupported');
       expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
     } finally {
       client.ws.close();

@@ -215,7 +215,8 @@ export function SurgeryDialog(props: {
   const title = () => isRollback() ? 'Roll back the live branch' : `Suppress ${props.request.messageIds.length} message${props.request.messageIds.length === 1 ? '' : 's'}`;
   const busy = () => props.result?.ok === false && props.result.code === 'agent-busy';
   /** An older framework marks regardless of any choice: the host refuses. */
-  const blocked = () => props.legacyMarking || props.stale;
+  /** Every live surgery is preview-bound: confirming needs the preview. */
+  const blocked = () => props.legacyMarking || props.stale || (props.marksSupported && !props.preview?.context);
   const confirm = (): void => { if (!props.pending && !blocked()) props.onConfirm(note()); };
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!props.pending) props.onClose(); }}>
@@ -334,8 +335,8 @@ function MarksChooser(props: {
       <Show when={props.supported}>
         <div class="border border-neutral-800 rounded p-2 mb-3 space-y-1">
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">Discord awareness marks</div>
-          <Show when={!props.error} fallback={<div class="text-[11px] text-rose-300">preview failed: {props.error} — no marks can be chosen</div>}>
-            <Show when={props.preview} fallback={<div class="text-[11px] text-neutral-500 italic">checking which Discord messages this removes…</div>}>
+          <Show when={!props.error} fallback={<div class="text-[11px] text-rose-300">preview failed: {props.error} — this change can't be confirmed without its preview</div>}>
+            <Show when={props.preview} fallback={<div class="text-[11px] text-neutral-500 italic">checking what this removes (confirming waits for it)…</div>}>
               {(p) => (
                 <>
                   <div class="text-[11px] text-neutral-400">

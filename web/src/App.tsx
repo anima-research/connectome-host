@@ -477,9 +477,12 @@ export function App() {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
     const marks = marksForSend();
+    const preview = marksPreview();
     const bound = {
       ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
       ...(dialogContext?.branchId ? { expectedBranchId: dialogContext.branchId } : {}),
+      // The framework checks the previewed store and branch itself.
+      ...(preview?.context ? { expectedContext: preview.context } : {}),
     };
     if (req.op === 'rollback') {
       wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, ...bound, corrId });

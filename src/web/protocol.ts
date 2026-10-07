@@ -663,6 +663,16 @@ export interface SurgeryMarksPreviewWire {
     channels: Array<{ channelId: string; count: number }>;
     refs: DiscordRefWire[];
   }>;
+  /** The framework's own identity of what it previewed (store and branch),
+   *  when it offers one: send it back as `expectedContext`, and the framework
+   *  refuses the operation if either changed, under its own reservation. */
+  context?: SurgeryContextWire;
+}
+
+/** A framework's store and branch identity, opaque to the host. */
+export interface SurgeryContextWire {
+  storeId?: string;
+  branch?: string;
 }
 
 export interface SurgeryPreviewResultMessage {
@@ -1138,6 +1148,8 @@ export interface RollbackMessage {
    *  live session or branch is no longer it. */
   expectedSessionId?: string;
   expectedBranchId?: string;
+  /** The framework's preview `context`, passed to it as `expected`. */
+  expectedContext?: SurgeryContextWire;
   corrId?: string;
 }
 
@@ -1150,9 +1162,10 @@ export interface SuppressMessage {
   note?: string;
   /** Awareness marks; absent means none. See RollbackMessage.marks. */
   marks?: MarksChoiceWire;
-  /** See RollbackMessage.expectedSessionId/expectedBranchId. */
+  /** See RollbackMessage.expectedSessionId/expectedBranchId/expectedContext. */
   expectedSessionId?: string;
   expectedBranchId?: string;
+  expectedContext?: SurgeryContextWire;
   corrId?: string;
 }
 
@@ -1280,6 +1293,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.marks === undefined || isMarksChoice(v.marks))
         && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
         && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
+        && (v.expectedContext === undefined || isSurgeryContext(v.expectedContext))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
       return Array.isArray(v.messageIds) && v.messageIds.length > 0
@@ -1289,6 +1303,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.marks === undefined || isMarksChoice(v.marks))
         && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
         && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
+        && (v.expectedContext === undefined || isSurgeryContext(v.expectedContext))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'surgery-preview':
       return (v.op === 'rollback'
@@ -1422,6 +1437,14 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
 
 /** Bounded so one frame can't hand the framework an unbounded ref list. */
 const MAX_MARKS_REFS = 20_000;
+
+function isSurgeryContext(v: unknown): v is SurgeryContextWire {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const c = v as Record<string, unknown>;
+  return Object.keys(c).every((k) => k === 'storeId' || k === 'branch')
+    && (c.storeId === undefined || (isNonEmptyString(c.storeId) && c.storeId.length <= 200))
+    && (c.branch === undefined || (isNonEmptyString(c.branch) && c.branch.length <= 500));
+}
 
 function isMarksChoice(v: unknown): v is MarksChoiceWire {
   if (v === 'none') return true;

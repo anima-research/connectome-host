@@ -11,6 +11,11 @@
   rollback and suppression (`code: 'unsupported'`) and the dialog says the
   framework needs upgrading; previously it ran them and the framework marked
   everything. This follows an incident in which one rollback queued 918
-  reactions, mostly on other people's messages. It needs an agent-framework
-  release carrying the marks contract (anima-research/agent-framework#250);
-  until the host depends on one, live rollback and suppression are refused.
+  reactions, mostly on other people's messages. Every live surgery is now
+  preview-bound: it runs only against the store and branch its preview
+  described, which the framework checks under its own reservation, and the
+  host refuses a confirmation after a session rebind or branch change. This
+  needs an agent-framework release carrying both the marks contract
+  (anima-research/agent-framework#250) and its store-identity check (the
+  R2 operator-change work); until the host depends on one, live rollback and
+  suppression are refused.

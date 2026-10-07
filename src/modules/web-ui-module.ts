@@ -74,6 +74,7 @@ import {
   type MarksChoiceWire,
   type SurgeryMarkerReceiptWire,
   type SurgeryMarksPreviewWire,
+  type SurgeryContextWire,
   type HostQuiesceMessage,
   type HostResumeMessage,
   type RequestOperatorLogMessage,
@@ -284,10 +285,17 @@ export { buildContextCoverageSnapshot, type ContextCoverageSnapshot } from '../w
  * duck-typed so this host runs unchanged against older framework builds
  * (the SPA hides affordances the `features` list does not advertise).
  */
+/** The explicit preview-bound surgery contract: the marks choice, and the
+ *  framework's own check of the previewed store and branch (preview
+ *  `context`, operation `expected`), detected by its store identity. */
+function hasPreviewBoundSurgery(fw: SurgeryCapableFramework): boolean {
+  return typeof fw.previewSurgeryMarks === 'function' && typeof fw.getStoreIdentity === 'function';
+}
+
 interface SurgeryCapableFramework {
   rollbackToMessage?: (
     agentName: string,
-    opts: { messageId: string; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire },
+    opts: { messageId: string; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire; expected?: SurgeryContextWire },
   ) => Promise<{
     sourceBranch: string;
     targetBranch: string;
@@ -297,7 +305,7 @@ interface SurgeryCapableFramework {
   }>;
   suppressMessages?: (
     agentName: string,
-    opts: { messageIds: string[]; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire },
+    opts: { messageIds: string[]; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire; expected?: SurgeryContextWire },
   ) => Promise<{
     sourceBranch: string;
     targetBranch: string;
@@ -305,6 +313,9 @@ interface SurgeryCapableFramework {
     lastVisible?: { participant?: string; role?: string; preview?: string } | null;
     markers?: SurgeryMarkerReceiptWire;
   }>;
+  /** The store identity the explicit expected-context contract checks
+   *  (with the preview's `context` and the operation's `expected`). */
+  getStoreIdentity?: () => string;
   /** Awareness marks are an explicit choice (agent-framework's marks contract). */
   previewSurgeryMarks?: (
     agentName: string,
@@ -1514,7 +1525,7 @@ export class WebUiModule implements Module {
     if (typeof fw.suppressMessages === 'function') features.push('suppress');
     // A framework that previews marks also takes the choice; without it, an
     // older framework marks every removed Discord message it can address.
-    if (typeof fw.previewSurgeryMarks === 'function') features.push('marks');
+    if (hasPreviewBoundSurgery(fw)) features.push('marks');
     if (typeof fw.listDiscordAwareness === 'function') features.push('awareness');
     if (typeof fw.quiesce === 'function' && typeof fw.resume === 'function'
       && typeof fw.getHostModeStatus === 'function') features.push('quiesce');
@@ -1601,15 +1612,25 @@ export class WebUiModule implements Module {
       return;
     }
     const marks = req.marks ?? 'none';
-    if (typeof fw.previewSurgeryMarks !== 'function') {
-      // This framework marks every removed Discord message it can address,
-      // and moves those marks with branch switches, whatever the operator
-      // chooses: it can't carry out the agreed one-shot, preview-bound
-      // operation with default none. Refuse rather than run another
-      // contract.
+    if (!hasPreviewBoundSurgery(fw)) {
+      // The operation offered here is a previewed choice: a local cut on the
+      // previewed store and branch, plus an optional bounded public act. A
+      // framework without both the marks choice and the expected-context
+      // check (an older one marks every removed Discord message itself and
+      // moves those marks with branch switches) can't carry it out: refuse
+      // rather than run another contract.
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'unsupported',
-        error: `live ${op} needs an agent-framework that makes Discord awareness marks a choice; this host's would mark every removed Discord message it can address — upgrade @animalabs/agent-framework`,
+        error: `live ${op} needs an agent-framework that makes Discord awareness marks a choice and checks the previewed store and branch — upgrade @animalabs/agent-framework`,
+      });
+      return;
+    }
+    if (!req.expectedContext) {
+      // Every live surgery here is preview-bound: the framework's own check
+      // of the previewed store and branch is what keeps the body on them.
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName, code: 'stale',
+        error: `preview this ${op} first: it runs only against the store and branch its preview described`,
       });
       return;
     }
@@ -1620,12 +1641,16 @@ export class WebUiModule implements Module {
             requester,
             ...(note ? { note } : {}),
             marks,
+            // Checked by the framework under its own reservation, before
+            // anything is prepared or changed.
+            expected: req.expectedContext,
           })
         : await fw.suppressMessages!(agentName, {
             messageIds: (req as SuppressMessage).messageIds,
             requester,
             ...(note ? { note } : {}),
             marks,
+            expected: req.expectedContext,
           });
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
@@ -1683,16 +1708,22 @@ export class WebUiModule implements Module {
     const fail = (error: string): void => {
       this.send(client, { type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: false, error });
     };
-    if (typeof fw.previewSurgeryMarks !== 'function') {
-      fail(`this host's agent-framework has no marks preview — upgrade @animalabs/agent-framework`);
+    if (!hasPreviewBoundSurgery(fw)) {
+      fail(`this host's agent-framework has no preview-bound surgery (marks choice and store identity) — upgrade @animalabs/agent-framework`);
       return;
     }
     try {
       const agentName = resolveAgent(panel, req.agent);
-      const preview = fw.previewSurgeryMarks(
+      const preview = fw.previewSurgeryMarks!(
         agentName,
         req.op === 'rollback' ? { rollbackTo: req.messageId! } : { suppress: req.messageIds! },
       );
+      if (!preview.context?.storeId || !preview.context.branch) {
+        // Without the framework's context, a confirmation can't be bound to
+        // what this preview described.
+        fail(`this host's agent-framework returned a preview without its store and branch — upgrade @animalabs/agent-framework`);
+        return;
+      }
       const sessionId = this.liveSessionId();
       const branchId = this.liveBranchId(agentName);
       this.send(client, {

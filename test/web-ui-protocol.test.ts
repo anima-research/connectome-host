@@ -199,6 +199,9 @@ describe('isClientMessage', () => {
       // A preview-bound confirmation names the preview's branch.
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 's', expectedBranchId: 'b1' })).toBe(true);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 7 })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'main' } })).toBe(true);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedContext: { storeId: '' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', other: 1 } })).toBe(false);
       expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedBranchId: '' })).toBe(false);
       expect(isClientMessage({
         type: 'rollback', messageId: 's1',

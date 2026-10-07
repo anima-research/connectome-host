@@ -41,9 +41,10 @@ entered if that matters.
 
 ## Discord awareness marks
 
-With an agent-framework that takes the choice (feature `marks`), opening the
-rollback or suppress dialog asks the framework what the change would remove
-(`surgery-preview`, read-only) and offers:
+With an agent-framework that offers preview-bound surgery (feature `marks`:
+it takes the marks choice, and it checks the previewed store and branch
+itself), opening the rollback or suppress dialog asks the framework what the
+change would remove (`surgery-preview`, read-only) and offers:
 
 - **Don't mark** (the default): the change stays local to the agent.
 - **Mark the N that addressed the agent**: removed messages tagged
@@ -52,13 +53,16 @@ rollback or suppress dialog asks the framework what the change would remove
 
 Each scope shows its count and channels. A chosen scope is sent with exactly
 the refs the preview listed, so messages that arrive while the operator is
-deciding are removed but never marked. The confirmation is bound to the
-session and branch the dialog was opened on: if the host rebinds to another
-session or the branch changes, the open dialog says so and can't be
-confirmed, and the server refuses a confirmation whose session or branch is
-no longer the live one (`code: 'stale'`), checked in the same synchronous
-step that hands the operation to the framework. Ordinary arrivals on the
-same branch don't affect it. The result shows the framework's
+deciding are removed but never marked. Every live surgery here is
+preview-bound: confirming waits for the preview, and the confirmation
+carries the framework's preview `context` (its store identity and branch),
+which the framework checks under its own reservation before preparing or
+changing anything. The host also checks the session and branch the dialog
+opened on: if the host rebinds to another session or the branch changes,
+the open dialog says so and can't be confirmed, and the server refuses a
+confirmation whose session or branch is no longer the live one. Either
+refusal is `code: 'stale'`. Ordinary arrivals on the same branch don't
+affect it. The result shows the framework's
 receipt: marks queued (and how many removed messages stay unmarked), not
 scheduled, or unresolved. It never claims Discord accepted anything; delivery
 runs in the background without holding the agent.
@@ -72,13 +76,14 @@ removal of this bot's marks from a batch's messages (or from every message,
 sends a batch the framework held at startup. Receipts are shown as returned:
 requests without an answer may still land.
 
-An older agent-framework (no `marks` feature) places 💤 on every removed
-Discord message it can address, and removes and re-adds those marks as
-branches switch, whatever the operator chooses. It can't carry out this
-operation, a local change plus an optional bounded public act, so the server
-refuses every live rollback and suppression there before anything changes
-(`code: 'unsupported'`; omitted marks, `'none'` and a scope alike), and the
-dialog explains that the agent-framework needs upgrading.
+An agent-framework without that contract can't carry out this operation, a
+local change on the previewed store and branch plus an optional bounded
+public act: an older one places 💤 on every removed Discord message it can
+address and removes and re-adds those marks as branches switch, and one
+with the marks choice but no store-and-branch check can't keep the change on
+what was previewed. The server refuses every live rollback and suppression
+there before anything changes (`code: 'unsupported'`), and the dialog
+explains that the agent-framework needs upgrading.
 
 ## Quiesce / resume
 
@@ -125,11 +130,12 @@ cannot mutate, so they only appear for read requests that fail).
 ## Wire additions
 
 Client → server: `rollback {messageId, agent?, note?, marks?,
-expectedSessionId?, expectedBranchId?}`, `suppress {messageIds, agent?,
-note?, marks?, expectedSessionId?, expectedBranchId?}` (`marks`: `'none'` or
-`{scope: 'addressed' | 'all', refs?}`; the expected ids are the session and
-branch the dialog was opened on, and the server refuses with `code:
-'stale'` if either has changed), `surgery-preview {op, messageId | messageIds,
+expectedContext, expectedSessionId?, expectedBranchId?}`, `suppress
+{messageIds, agent?, note?, marks?, expectedContext, expectedSessionId?,
+expectedBranchId?}` (`marks`: `'none'` or `{scope: 'addressed' | 'all',
+refs?}`; `expectedContext` is the preview's `context`, required, checked by
+the framework; the expected ids are the session and branch the dialog was
+opened on, checked by the host), `surgery-preview {op, messageId | messageIds,
 agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
 | release, target}` (`target: 'all'` for retract only), `host-quiesce
 {reason?}`, `host-resume`, `request-host-mode`, `request-operator-log
