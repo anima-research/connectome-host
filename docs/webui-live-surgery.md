@@ -18,9 +18,10 @@ do not, so they have no button).
 
 What happens (`framework.rollbackToMessage`): the chronicle is forked at that
 message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
-becomes the current branch, `_config` is re-materialized, and Discord
-messages that left the context get the awareness marker through the durable
-outbox exactly as `/undo` does. Nothing is deleted.
+becomes the current branch, and `_config` is re-materialized. Nothing is
+deleted. Whether the people whose Discord messages left the context see a
+💤 is the operator's choice in the dialog (see [Discord awareness
+marks](#discord-awareness-marks)); by default they don't.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
 queued. The dialog then offers **Quiesce, then retry**.
@@ -37,6 +38,37 @@ agent is put back on the untouched source branch.
 Not retroactive over derived state: a message already folded into an
 autobiographical summary stays in that summary. Roll back to before it
 entered if that matters.
+
+## Discord awareness marks
+
+With an agent-framework that takes the choice (feature `marks`), opening the
+rollback or suppress dialog asks the framework what the change would remove
+(`surgery-preview`, read-only) and offers:
+
+- **Don't mark** (the default): the change stays local to the agent.
+- **Mark the N that addressed the agent**: removed messages tagged
+  `chat:addressed` (mentions, replies to the bot, DMs).
+- **Mark all N** removed Discord messages.
+
+Each scope shows its count and channels. A chosen scope is sent with exactly
+the refs the preview listed, so messages that arrive while the operator is
+deciding are removed but never marked. The result shows the framework's
+receipt: marks queued (and how many removed messages stay unmarked), not
+scheduled, or unresolved. It never claims Discord accepted anything; delivery
+runs in the background without holding the agent.
+
+The branch panel lists the framework's awareness journal (feature
+`awareness`): each surgery's batch of marks and each retract, with what is
+known about their requests. **cancel** stops all further sends of a batch's
+marks or a retract's removals and never removes anything; **retract** queues
+removal of this bot's marks from a batch's messages (or from every message,
+**retract all**) after asking, since it sends Discord requests; **release**
+sends a batch the framework held at startup. Receipts are shown as returned:
+requests without an answer may still land.
+
+An older agent-framework (no `marks` feature) places 💤 on every removed
+Discord message it can address. The dialog says so, and the server refuses a
+marks choice rather than hand it a field it would ignore.
 
 ## Quiesce / resume
 
@@ -70,7 +102,8 @@ line per operator mutation:
 `at, kind, agent, requester{via,name}, note, params, result | error`. Kinds:
 `rollback`, `suppress`, `hide`, `undo-turn`, `redo-turn`, `unstick`, `nudge`,
 `settings-update`, `settings-reset`, `settings-cancel-transition`,
-`quiesce`, `resume`. Refusals are logged too (with `error`). The branch
+`quiesce`, `resume`, `awareness-cancel`, `awareness-retract`,
+`awareness-release`. A surgery's `params.marks` records the marks choice. Refusals are logged too (with `error`). The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -81,10 +114,16 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?}`, `suppress
-{messageIds, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
-`request-host-mode`, `request-operator-log {limit?}`.
-Server → client: `surgery-result`, `host-mode`, `operator-log`;
-`welcome.features`, `welcome.hostMode`. After a successful surgery the
-server does what `/checkout` does: `branch-changed` + a fresh welcome for
-every client.
+Client → server: `rollback {messageId, agent?, note?, marks?}`, `suppress
+{messageIds, agent?, note?, marks?}` (`marks`: `'none'` or `{scope:
+'addressed' | 'all', refs?}`), `surgery-preview {op, messageId | messageIds,
+agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
+| release, target}` (`target: 'all'` for retract only), `host-quiesce
+{reason?}`, `host-resume`, `request-host-mode`, `request-operator-log
+{limit?}`.
+Server → client: `surgery-result` (with `markers` on `marks` hosts),
+`surgery-preview`, `awareness` (the journal; also broadcast to operators
+after a surgery that queued marks and after each action), `host-mode`,
+`operator-log`; `welcome.features`, `welcome.hostMode`. After a successful
+surgery the server does what `/checkout` does: `branch-changed` + a fresh
+welcome for every client.

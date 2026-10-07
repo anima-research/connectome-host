@@ -34,6 +34,11 @@ import {
   type HostModeSnapshot,
   type SurgeryResultMessage,
   type OperatorLogEntryWire,
+  type SurgeryMarksPreviewWire,
+  type SurgeryPreviewResultMessage,
+  type AwarenessEntryWire,
+  type AwarenessMessage,
+  type MarksChoiceWire,
 } from '@conhost/web/protocol';
 import {
   Lightbox,
@@ -41,6 +46,7 @@ import {
   HostModeToggle,
   SurgeryDialog,
   SelectionBar,
+  type MarksChoice,
   type SurgeryRequest,
 } from './Surgery';
 
@@ -343,11 +349,64 @@ export function App() {
   const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
   const [opLogPath, setOpLogPath] = createSignal<string | undefined>(undefined);
   const [opLogLoading, setOpLogLoading] = createSignal(false);
+  /** Awareness marks: the operator's choice for the open surgery, its preview,
+   *  and the framework's journal (marks / awareness features). */
+  const [marksChoice, setMarksChoice] = createSignal<MarksChoice>('none');
+  const [marksPreview, setMarksPreview] = createSignal<SurgeryMarksPreviewWire | null>(null);
+  const [marksPreviewError, setMarksPreviewError] = createSignal<string | null>(null);
+  let marksPreviewCorr: string | null = null;
+  const [awareness, setAwareness] = createSignal<AwarenessEntryWire[]>([]);
+  const [awarenessLoading, setAwarenessLoading] = createSignal(false);
+  const [awarenessResult, setAwarenessResult] = createSignal<{ action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null>(null);
 
   const previewOf = (m: Message): string => {
     const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
     const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
+  };
+
+  /** Ask what the surgery would remove and which Discord messages each marks
+   *  scope covers; the choice resets to none until a scope is picked. */
+  const requestMarksPreview = (req: SurgeryRequest): void => {
+    setMarksChoice('none');
+    setMarksPreview(null);
+    setMarksPreviewError(null);
+    marksPreviewCorr = null;
+    if (!features().has('marks')) return;
+    const corrId = `mpv-${Date.now()}`;
+    marksPreviewCorr = corrId;
+    wire.send(req.op === 'rollback'
+      ? { type: 'surgery-preview', op: 'rollback', messageId: req.messageIds[0], corrId }
+      : { type: 'surgery-preview', op: 'suppress', messageIds: req.messageIds, corrId });
+  };
+  const onSurgeryPreview = (msg: SurgeryPreviewResultMessage): void => {
+    if (!msg.corrId || msg.corrId !== marksPreviewCorr) return; // a stale dialog's answer
+    if (msg.ok && msg.preview) setMarksPreview(msg.preview);
+    else setMarksPreviewError(msg.error ?? 'preview failed');
+  };
+  /** The marks to send: bound to the previewed refs of the chosen scope. */
+  const marksForSend = (): MarksChoiceWire | undefined => {
+    if (!features().has('marks')) return undefined;
+    const choice = marksChoice();
+    const preview = marksPreview();
+    if (choice === 'none' || !preview) return 'none';
+    return { scope: choice, refs: preview.scopes[choice].refs };
+  };
+  const refreshAwareness = (): void => {
+    if (!features().has('awareness')) return;
+    setAwarenessLoading(true);
+    wire.send({ type: 'request-awareness' });
+  };
+  const onAwareness = (msg: AwarenessMessage): void => {
+    setAwareness(msg.batches);
+    setAwarenessLoading(false);
+    if (msg.action) setAwarenessResult({ action: msg.action, target: msg.target, receipt: msg.receipt, error: msg.error });
+    else if (msg.error) setAwarenessResult({ error: msg.error });
+  };
+  const awarenessAction = (action: 'cancel' | 'retract' | 'release', target: string): void => {
+    if (!features().has('awareness') || isObserver()) return;
+    setAwarenessLoading(true);
+    wire.send({ type: 'awareness-action', action, target });
   };
 
   /** Rollback so `storeId` becomes the tail. `preview` is used when the
@@ -357,7 +416,7 @@ export function App() {
     const idx = messages.findIndex((m) => m.storeId === storeId);
     const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
     setSurgeryResult(null);
-    setSurgery({
+    const req: SurgeryRequest = {
       op: 'rollback',
       messageIds: [storeId],
       previews: [
@@ -366,7 +425,9 @@ export function App() {
         ...(after.length > 12 ? [`… and ${after.length - 12} more`] : []),
       ],
       ...(idx >= 0 ? { affected: after.length } : {}),
-    });
+    };
+    setSurgery(req);
+    requestMarksPreview(req);
   };
 
   const toggleSelected = (storeId: string): void => {
@@ -387,20 +448,23 @@ export function App() {
     if (ids.length === 0) return;
     const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
     setSurgeryResult(null);
-    setSurgery({
+    const req: SurgeryRequest = {
       op: 'suppress',
       messageIds: ids,
       previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
-    });
+    };
+    setSurgery(req);
+    requestMarksPreview(req);
   };
 
   const sendSurgery = (req: SurgeryRequest, note: string): void => {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
+    const marks = marksForSend();
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), ...(marks ? { marks } : {}), corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), ...(marks ? { marks } : {}), corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -441,11 +505,12 @@ export function App() {
     setSurgeryPending(false);
     setSurgeryResult(r);
     if (r.ok) clearSelection();
-    if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); }
+    if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); refreshAwareness(); }
   };
   const closeSurgery = (): void => {
     if (surgeryPending()) return;
     retryAfterQuiesce = null;
+    marksPreviewCorr = null;
     setSurgery(null);
     setSurgeryResult(null);
   };
@@ -1041,6 +1106,8 @@ export function App() {
     setStreamLines([]);
     streamTokenBuffer = '';
     refreshBranches();
+    refreshOpLog();
+    refreshAwareness();
   };
 
   const toggleExpand = (id: string): void => {
@@ -1190,6 +1257,8 @@ export function App() {
           if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
         },
         onSurgeryResult,
+        onSurgeryPreview,
+        onAwareness,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
       });
@@ -1332,6 +1401,12 @@ export function App() {
             result={surgeryResult()}
             canQuiesce={canQuiesce()}
             hostMode={hostMode()}
+            marksSupported={features().has('marks')}
+            legacyMarking={!features().has('marks')}
+            preview={marksPreview()}
+            previewError={marksPreviewError()}
+            marks={marksChoice()}
+            onMarks={setMarksChoice}
             onConfirm={confirmSurgery}
             onQuiesceAndRetry={quiesceAndRetry}
             onClose={closeSurgery}
@@ -1539,12 +1614,17 @@ export function App() {
             loading={branchesLoading()}
             readOnly={wire.observerState() === 'observer'}
             onCheckout={checkoutBranch}
-            onRefresh={() => { refreshBranches(); refreshOpLog(); }}
+            onRefresh={() => { refreshBranches(); refreshOpLog(); refreshAwareness(); }}
             onClose={closePanel}
             operatorLog={features().has('operator-log') ? opLog() : null}
             operatorLogPath={opLogPath()}
             operatorLogLoading={opLogLoading()}
             onRefreshLog={refreshOpLog}
+            awareness={features().has('awareness') ? awareness() : null}
+            awarenessLoading={awarenessLoading()}
+            awarenessResult={awarenessResult()}
+            onRefreshAwareness={refreshAwareness}
+            onAwarenessAction={awarenessAction}
           />
         </Show>
         {/* Was w-72 (288px): the context/settings panels have dense numeric
@@ -1728,6 +1808,10 @@ interface HandlerHooks {
   /** A turn ended — refresh host mode if a quiesce was still draining. */
   onTurnSettled: () => void;
   onSurgeryResult: (result: SurgeryResultMessage) => void;
+  /** A marks preview for the open surgery dialog. */
+  onSurgeryPreview: (msg: SurgeryPreviewResultMessage) => void;
+  /** The awareness journal (list, or the answer to an action). */
+  onAwareness: (msg: AwarenessMessage) => void;
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   /** An operator:action trace landed — refresh the log if it is on screen. */
   onOperatorAction: () => void;
@@ -1758,6 +1842,12 @@ function handleServerMessage(
       return;
     case 'surgery-result':
       hooks.onSurgeryResult(msg);
+      return;
+    case 'surgery-preview':
+      hooks.onSurgeryPreview(msg);
+      return;
+    case 'awareness':
+      hooks.onAwareness(msg);
       return;
     case 'operator-log':
       hooks.setOperatorLog(msg.entries, msg.path);

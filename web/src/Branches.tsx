@@ -10,8 +10,8 @@
  */
 
 import { createMemo, For, Show } from 'solid-js';
-import type { BranchRow, OperatorLogEntryWire } from '@conhost/web/protocol';
-import { OperatorLogList } from './Surgery';
+import type { AwarenessEntryWire, BranchRow, OperatorLogEntryWire } from '@conhost/web/protocol';
+import { AwarenessList, OperatorLogList } from './Surgery';
 
 interface TreeRow {
   branch: BranchRow;
@@ -72,6 +72,12 @@ export function BranchPanel(props: {
   operatorLogPath?: string;
   operatorLogLoading?: boolean;
   onRefreshLog?(): void;
+  /** The framework's awareness-marks journal; null when it has none. */
+  awareness?: AwarenessEntryWire[] | null;
+  awarenessLoading?: boolean;
+  awarenessResult?: { action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null;
+  onRefreshAwareness?(): void;
+  onAwarenessAction?(action: 'cancel' | 'retract' | 'release', target: string): void;
 }) {
   const rows = createMemo(() => toTreeRows(props.branches));
   /** Branch names created by live surgery / undo carry their purpose as a prefix. */
@@ -166,6 +172,16 @@ export function BranchPanel(props: {
             path={props.operatorLogPath}
             loading={props.operatorLogLoading ?? false}
             onRefresh={() => props.onRefreshLog?.()}
+          />
+        </Show>
+        <Show when={props.awareness}>
+          <AwarenessList
+            entries={props.awareness!}
+            loading={props.awarenessLoading ?? false}
+            readOnly={props.readOnly}
+            result={props.awarenessResult ?? null}
+            onRefresh={() => props.onRefreshAwareness?.()}
+            onAction={(action, target) => props.onAwarenessAction?.(action, target)}
           />
         </Show>
       </div>

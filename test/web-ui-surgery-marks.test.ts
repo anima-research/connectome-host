@@ -1,0 +1,248 @@
+/**
+ * WebUI live surgery and Discord awareness marks, over the real WebSocket
+ * surface with a fake framework.
+ *
+ * After a field incident in which one web-UI rollback queued a 💤 reaction on
+ * each of 918 removed Discord messages (agent-framework's marks contract,
+ * room-225): marks are the operator's explicit choice, previewed first and
+ * bound to the previewed messages; the framework's journal can be listed,
+ * cancelled, retracted and released from the UI; and a framework too old to
+ * take a choice is never handed one it would silently ignore.
+ *
+ * Bun runs each test file in its own process, so this file's module
+ * singleton (the shared HTTP/WS server) is its own.
+ */
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ModuleContext } from '@animalabs/agent-framework';
+import {
+  WebUiModule,
+  __getSharedServerPortForTests,
+  __resetSharedServerForTests,
+} from '../src/modules/web-ui-module.js';
+
+const USER = 'admin';
+const PASS = 'open-sesame';
+const ref = (messageId: string) => ({ serverId: 'discord', channelId: 'discord:g1:c1', messageId });
+
+let port: number;
+let tmp: string;
+let webUiModule: WebUiModule;
+
+/** Calls the fake framework received, for assertions. */
+const received: Array<{ method: string; args: unknown[] }> = [];
+
+function fakeFramework(opts: { contract: boolean }) {
+  const surgeryResult = (marks: unknown) => ({
+    sourceBranch: 'main',
+    targetBranch: 'rollback/resident/1',
+    messagesRemoved: 3,
+    lastVisible: null,
+    ...(opts.contract
+      ? {
+          markers: marks && marks !== 'none'
+            ? { scope: 'addressed', unmarked: 1, notRemoved: 0, status: 'queued', queued: 2, batchId: 'b1' }
+            : { scope: 'none', unmarked: 3, notRemoved: 0, status: 'none', queued: 0 },
+        }
+      : {}),
+  });
+  const framework: Record<string, unknown> = {
+    getAllAgents: () => [],
+    getAllModules: () => [],
+    getModule: () => undefined,
+    onTrace: () => {},
+    getSessionUsage: () => { throw new Error('no usage in this harness'); },
+    rollbackToMessage: async (...args: unknown[]) => {
+      received.push({ method: 'rollbackToMessage', args });
+      return surgeryResult((args[1] as { marks?: unknown }).marks);
+    },
+    suppressMessages: async (...args: unknown[]) => {
+      received.push({ method: 'suppressMessages', args });
+      return surgeryResult((args[1] as { marks?: unknown }).marks);
+    },
+  };
+  if (opts.contract) {
+    Object.assign(framework, {
+      previewSurgeryMarks: (...args: unknown[]) => {
+        received.push({ method: 'previewSurgeryMarks', args });
+        return {
+          messagesRemoved: 3,
+          addressable: 3,
+          emoji: '💤',
+          scopes: {
+            addressed: { count: 2, channels: [{ channelId: 'discord:g1:c1', count: 2 }], refs: [ref('a1'), ref('a2')] },
+            all: { count: 3, channels: [{ channelId: 'discord:g1:c1', count: 3 }], refs: [ref('a1'), ref('a2'), ref('x1')] },
+          },
+        };
+      },
+      listDiscordAwareness: () => [
+        { kind: 'batch', id: 'b1', status: 'active', scope: 'addressed', refs: 2, adds: { requested: 2 }, removals: {}, unresolvedAttempts: 0 },
+      ],
+      cancelDiscordAwareness: (...args: unknown[]) => {
+        received.push({ method: 'cancelDiscordAwareness', args });
+        return { target: args[0], kind: 'batch', cancelled: 2, heldDropped: 0, inFlight: 0, unknown: 0, confirmed: 0, unresolvedAttempts: 0, legacyOutcomesUnrecorded: 0 };
+      },
+      retractDiscordAwareness: (...args: unknown[]) => {
+        received.push({ method: 'retractDiscordAwareness', args });
+        return { requestId: 'r1', removalsQueued: 2, addsSuperseded: 0, keysWithUnresolvedAdds: 0, unresolvedAddAttempts: 0, keysWithLegacyUncertainty: 0 };
+      },
+      releaseDiscordAwareness: (...args: unknown[]) => {
+        received.push({ method: 'releaseDiscordAwareness', args });
+        throw new Error('Discord awareness batch b1 is active, not held');
+      },
+    });
+  }
+  return framework;
+}
+
+function bind(contract: boolean): void {
+  webUiModule.setApp({
+    framework: fakeFramework({ contract }),
+    recipe: { name: 'r', description: 'd', version: '1', agent: { name: 'resident' } },
+    sessionManager: { getActiveSession: () => ({ id: 's1', name: 's', manuallyNamed: false }) },
+  } as never);
+}
+
+/** A connected, welcomed operator client that collects frames. */
+async function connect(): Promise<{
+  ws: WebSocket;
+  welcome: Record<string, unknown>;
+  /** The next frame of a type (and, when given, with that corrId): the
+   *  journal is also broadcast unsolicited after surgeries and actions. */
+  next(type: string, corrId?: string): Promise<Record<string, unknown>>;
+  send(msg: unknown): void;
+}> {
+  const frames: Array<Record<string, unknown>> = [];
+  const waiters: Array<{ type: string; corrId?: string; resolve: (f: Record<string, unknown>) => void }> = [];
+  const matches = (f: Record<string, unknown>, type: string, corrId?: string) =>
+    f.type === type && (corrId === undefined || f.corrId === corrId);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+    headers: {
+      origin: `http://127.0.0.1:${port}`,
+      authorization: `Basic ${Buffer.from(`${USER}:${PASS}`).toString('base64')}`,
+    },
+  } as unknown as undefined);
+  ws.addEventListener('message', (ev) => {
+    const frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
+    const index = waiters.findIndex((w) => matches(frame, w.type, w.corrId));
+    if (index >= 0) waiters.splice(index, 1)[0].resolve(frame);
+    else frames.push(frame);
+  });
+  const next = (type: string, corrId?: string) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const index = frames.findIndex((f) => matches(f, type, corrId));
+    if (index >= 0) { resolve(frames.splice(index, 1)[0]); return; }
+    const timer = setTimeout(() => reject(new Error(`no ${type} frame`)), 5000);
+    waiters.push({ type, corrId, resolve: (f) => { clearTimeout(timer); resolve(f); } });
+  });
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve());
+    ws.addEventListener('error', (e) => reject(e as unknown as Error));
+  });
+  const welcome = await next('welcome');
+  return { ws, welcome, next, send: (msg) => ws.send(JSON.stringify(msg)) };
+}
+
+beforeAll(async () => {
+  tmp = mkdtempSync(join(tmpdir(), 'webui-marks-'));
+  const staticRoot = join(tmp, 'web');
+  mkdirSync(staticRoot, { recursive: true });
+  writeFileSync(join(staticRoot, 'index.html'), '<!doctype html><title>t</title>');
+  webUiModule = new WebUiModule({
+    port: 0,
+    host: '127.0.0.1',
+    basicAuth: { username: USER, password: PASS },
+    staticDir: staticRoot,
+  });
+  await webUiModule.start({} as ModuleContext);
+  port = __getSharedServerPortForTests()!;
+});
+
+afterAll(async () => {
+  await webUiModule.stop();
+  await __resetSharedServerForTests();
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+describe('surgery marks over the WebUI', () => {
+  test('a contract framework: preview, a choice bound to previewed refs, the receipt, and the journal controls', async () => {
+    bind(true);
+    received.length = 0;
+    const client = await connect();
+    try {
+      expect(client.welcome.features).toEqual(expect.arrayContaining(['rollback', 'suppress', 'marks', 'awareness']));
+
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
+      const preview = await client.next('surgery-preview');
+      expect(preview.ok).toBe(true);
+      expect(preview.corrId).toBe('p1');
+      expect((preview.preview as { scopes: { addressed: { count: number } } }).scopes.addressed.count).toBe(2);
+      expect(received[0]).toEqual({ method: 'previewSurgeryMarks', args: ['resident', { rollbackTo: 's9' }] });
+
+      const marks = { scope: 'addressed', refs: [ref('a1'), ref('a2')] };
+      client.send({ type: 'rollback', messageId: 's9', marks, corrId: 'r1' });
+      const result = await client.next('surgery-result', 'r1');
+      // Every operator sees the journal change.
+      expect((await client.next('awareness')).corrId).toBeUndefined();
+      expect(result.ok).toBe(true);
+      expect((result.markers as { status: string; queued: number }).status).toBe('queued');
+      const call = received.find((r) => r.method === 'rollbackToMessage')!;
+      expect((call.args[1] as { marks: unknown }).marks).toEqual(marks);
+
+      // Without a choice the framework is told none explicitly.
+      client.send({ type: 'suppress', messageIds: ['s3'], corrId: 'r2' });
+      await client.next('surgery-result');
+      const suppress = received.find((r) => r.method === 'suppressMessages')!;
+      expect((suppress.args[1] as { marks: unknown }).marks).toBe('none');
+
+      client.send({ type: 'request-awareness', corrId: 'a1' });
+      const listed = await client.next('awareness', 'a1');
+      expect((listed.batches as unknown[]).length).toBe(1);
+
+      client.send({ type: 'awareness-action', action: 'cancel', target: 'b1', corrId: 'a2' });
+      const cancelled = await client.next('awareness', 'a2');
+      expect(cancelled.action).toBe('cancel');
+      expect((cancelled.receipt as { cancelled: number }).cancelled).toBe(2);
+      const cancelCall = received.find((r) => r.method === 'cancelDiscordAwareness')!;
+      expect(cancelCall.args[0]).toBe('b1');
+      expect((cancelCall.args[1] as { requester: { via: string } }).requester.via).toBe('webui');
+
+      client.send({ type: 'awareness-action', action: 'release', target: 'b1', corrId: 'a3' });
+      const refused = await client.next('awareness', 'a3');
+      expect(refused.error).toMatch(/not held/);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('an older framework is never handed a choice it would ignore', async () => {
+    bind(false);
+    received.length = 0;
+    const client = await connect();
+    try {
+      const features = client.welcome.features as string[];
+      expect(features).toContain('rollback');
+      expect(features).not.toContain('marks');
+
+      client.send({ type: 'rollback', messageId: 's9', marks: { scope: 'all' }, corrId: 'r1' });
+      const refused = await client.next('surgery-result');
+      expect(refused.ok).toBe(false);
+      expect(String(refused.error)).toMatch(/does not take an awareness-marks choice/);
+      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
+
+      // No choice: the old behaviour, and no marks field it can't read.
+      client.send({ type: 'rollback', messageId: 's9', corrId: 'r2' });
+      const result = await client.next('surgery-result');
+      expect(result.ok).toBe(true);
+      const call = received.find((r) => r.method === 'rollbackToMessage')!;
+      expect('marks' in (call.args[1] as object)).toBe(false);
+
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
+      const preview = await client.next('surgery-preview');
+      expect(preview.ok).toBe(false);
+    } finally {
+      client.ws.close();
+    }
+  });
+});

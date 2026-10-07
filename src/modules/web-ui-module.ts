@@ -68,6 +68,12 @@ import {
   type HostModeSnapshot,
   type RollbackMessage,
   type SuppressMessage,
+  type SurgeryPreviewMessage,
+  type AwarenessActionMessage,
+  type AwarenessEntryWire,
+  type MarksChoiceWire,
+  type SurgeryMarkerReceiptWire,
+  type SurgeryMarksPreviewWire,
   type HostQuiesceMessage,
   type HostResumeMessage,
   type RequestOperatorLogMessage,
@@ -281,22 +287,33 @@ export { buildContextCoverageSnapshot, type ContextCoverageSnapshot } from '../w
 interface SurgeryCapableFramework {
   rollbackToMessage?: (
     agentName: string,
-    opts: { messageId: string; requester?: { via: string; name?: string }; note?: string },
+    opts: { messageId: string; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire },
   ) => Promise<{
     sourceBranch: string;
     targetBranch: string;
     messagesRemoved: number;
     lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+    markers?: SurgeryMarkerReceiptWire;
   }>;
   suppressMessages?: (
     agentName: string,
-    opts: { messageIds: string[]; requester?: { via: string; name?: string }; note?: string },
+    opts: { messageIds: string[]; requester?: { via: string; name?: string }; note?: string; marks?: MarksChoiceWire },
   ) => Promise<{
     sourceBranch: string;
     targetBranch: string;
     messagesRemoved: number;
     lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+    markers?: SurgeryMarkerReceiptWire;
   }>;
+  /** Awareness marks are an explicit choice (agent-framework's marks contract). */
+  previewSurgeryMarks?: (
+    agentName: string,
+    target: { rollbackTo: string } | { suppress: string[] },
+  ) => SurgeryMarksPreviewWire;
+  listDiscordAwareness?: () => AwarenessEntryWire[];
+  cancelDiscordAwareness?: (batchId: string, opts?: { requester?: { via: string; name?: string } }) => Record<string, unknown>;
+  retractDiscordAwareness?: (target: string, opts?: { requester?: { via: string; name?: string } }) => Record<string, unknown>;
+  releaseDiscordAwareness?: (batchId: string, opts?: { requester?: { via: string; name?: string } }) => Record<string, unknown>;
   quiesce?: (opts?: Record<string, unknown>) => Promise<unknown>;
   resume?: (opts?: Record<string, unknown>) => Promise<unknown>;
   getHostModeStatus?: () => unknown;
@@ -1474,6 +1491,7 @@ export class WebUiModule implements Module {
     // Host serving state is liveness telemetry; the operator log is ops.
     if (type === 'request-host-mode') return client.scopes?.has('health') ?? false;
     if (type === 'request-operator-log') return client.scopes?.has('ops') ?? false;
+    if (type === 'request-awareness') return client.scopes?.has('ops') ?? false;
     return false; // observers are read-only: no user-message/command/mcpl/fleet/surgery
   }
 
@@ -1494,6 +1512,10 @@ export class WebUiModule implements Module {
     if (!fw) return features;
     if (typeof fw.rollbackToMessage === 'function') features.push('rollback');
     if (typeof fw.suppressMessages === 'function') features.push('suppress');
+    // A framework that previews marks also takes the choice; without it, an
+    // older framework marks every removed Discord message it can address.
+    if (typeof fw.previewSurgeryMarks === 'function') features.push('marks');
+    if (typeof fw.listDiscordAwareness === 'function') features.push('awareness');
     if (typeof fw.quiesce === 'function' && typeof fw.resume === 'function'
       && typeof fw.getHostModeStatus === 'function') features.push('quiesce');
     if (typeof fw.getOperatorLog === 'function') features.push('operator-log');
@@ -1566,23 +1588,37 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const note = req.note?.trim() || undefined;
+    const marks = req.marks ?? 'none';
+    if (marks !== 'none' && typeof fw.previewSurgeryMarks !== 'function') {
+      // This framework can't honor a choice (it marks every addressable
+      // removed message itself); never let a choice silently mean that.
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName,
+        error: `this host's agent-framework does not take an awareness-marks choice — upgrade @animalabs/agent-framework`,
+      });
+      return;
+    }
     try {
       const r = op === 'rollback'
         ? await fw.rollbackToMessage!(agentName, {
             messageId: (req as RollbackMessage).messageId,
             requester,
             ...(note ? { note } : {}),
+            ...(typeof fw.previewSurgeryMarks === 'function' ? { marks } : {}),
           })
         : await fw.suppressMessages!(agentName, {
             messageIds: (req as SuppressMessage).messageIds,
             requester,
             ...(note ? { note } : {}),
+            ...(typeof fw.previewSurgeryMarks === 'function' ? { marks } : {}),
           });
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
         sourceBranch: r.sourceBranch, targetBranch: r.targetBranch,
         messagesRemoved: r.messagesRemoved, lastVisible: r.lastVisible ?? null,
+        ...(r.markers ? { markers: r.markers } : {}),
       });
+      if (r.markers?.status === 'queued' || r.markers?.status === 'unresolved') this.broadcastAwareness();
       // Same follow-through as a /checkout: config mount, branch chip,
       // fresh tail for every welcomed client.
       await this.materializeConfigMount();
@@ -1595,6 +1631,105 @@ export class WebUiModule implements Module {
         error: err instanceof Error ? err.message : String(err),
         ...(typeof code === 'string' ? { code } : {}),
       });
+    }
+  }
+
+  /**
+   * What a surgery would remove and which Discord messages each marks scope
+   * would cover, read without changing anything. The SPA shows this before
+   * the operator chooses, and binds the choice to the previewed refs.
+   */
+  private handleSurgeryPreview(client: ClientState, req: SurgeryPreviewMessage): void {
+    const app = sharedServer?.app;
+    const panel = this.panelApp();
+    if (!app || !panel) return;
+    const fw = app.framework as unknown as SurgeryCapableFramework;
+    const fail = (error: string): void => {
+      this.send(client, { type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: false, error });
+    };
+    if (typeof fw.previewSurgeryMarks !== 'function') {
+      fail(`this host's agent-framework has no marks preview — upgrade @animalabs/agent-framework`);
+      return;
+    }
+    try {
+      const agentName = resolveAgent(panel, req.agent);
+      const preview = fw.previewSurgeryMarks(
+        agentName,
+        req.op === 'rollback' ? { rollbackTo: req.messageId! } : { suppress: req.messageIds! },
+      );
+      this.send(client, { type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: true, preview });
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** The awareness journal's batches, or null when the framework has none. */
+  private awarenessBatches(): AwarenessEntryWire[] | null {
+    const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
+    if (!fw || typeof fw.listDiscordAwareness !== 'function') return null;
+    return fw.listDiscordAwareness();
+  }
+
+  private sendAwareness(client: ClientState, corrId?: string): void {
+    try {
+      const batches = this.awarenessBatches();
+      this.send(client, {
+        type: 'awareness', corrId, batches: batches ?? [],
+        ...(batches ? {} : { error: `this host's agent-framework has no awareness journal controls` }),
+      });
+    } catch (err) {
+      this.send(client, {
+        type: 'awareness', corrId, batches: [],
+        error: `awareness journal unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  /** Every full operator sees the journal change (a surgery or an action). */
+  private broadcastAwareness(): void {
+    let batches: AwarenessEntryWire[] | null;
+    try {
+      batches = this.awarenessBatches();
+    } catch {
+      return;
+    }
+    if (!batches) return;
+    if (!sharedServer) return;
+    // Full operators only: the journal is operator state (observers with the
+    // ops scope may still ask for it with request-awareness).
+    for (const client of sharedServer.clients.values()) {
+      if (client.auth === 'full' && client.welcomed) this.send(client, { type: 'awareness', batches });
+    }
+  }
+
+  /**
+   * cancel / retract / release on the awareness journal. The framework
+   * records each in the operator log with this client's identity; the
+   * receipt (what was stopped, queued, or may still land) goes back as is.
+   */
+  private handleAwarenessAction(client: ClientState, req: AwarenessActionMessage): void {
+    const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
+    const act = fw && (req.action === 'cancel' ? fw.cancelDiscordAwareness
+      : req.action === 'retract' ? fw.retractDiscordAwareness
+      : fw.releaseDiscordAwareness);
+    const reply = (fields: { receipt?: Record<string, unknown>; error?: string }): void => {
+      let batches: AwarenessEntryWire[] = [];
+      try { batches = this.awarenessBatches() ?? []; } catch { /* reported by the action's own error */ }
+      this.send(client, {
+        type: 'awareness', corrId: req.corrId, batches,
+        action: req.action, target: req.target, ...fields,
+      });
+    };
+    if (typeof act !== 'function') {
+      reply({ error: `this host's agent-framework has no awareness ${req.action} — upgrade @animalabs/agent-framework` });
+      return;
+    }
+    try {
+      const receipt = act.call(fw, req.target, { requester: this.requesterFor(client) });
+      reply({ receipt });
+      this.broadcastAwareness();
+    } catch (err) {
+      reply({ error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -1823,6 +1958,18 @@ export class WebUiModule implements Module {
 
       case 'suppress':
         void this.handleSurgery(client, 'suppress', parsed);
+        return;
+
+      case 'surgery-preview':
+        this.handleSurgeryPreview(client, parsed);
+        return;
+
+      case 'request-awareness':
+        this.sendAwareness(client, parsed.corrId);
+        return;
+
+      case 'awareness-action':
+        this.handleAwarenessAction(client, parsed);
         return;
 
       case 'host-quiesce':

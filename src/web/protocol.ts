@@ -91,7 +91,10 @@ export interface WelcomeMessage {
   /**
    * Optional host capabilities the SPA feature-detects before showing an
    * affordance: 'rollback' | 'suppress' | 'quiesce' | 'media' |
-   * 'operator-log'. Absent on older hosts (nothing shown).
+   * 'operator-log' | 'marks' (surgeries take an explicit awareness-marks
+   * choice, previewed with `surgery-preview`) | 'awareness' (the marks
+   * journal's list/cancel/retract/release). Absent on older hosts (nothing
+   * shown).
    */
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
@@ -617,6 +620,107 @@ export interface HostModeMessage {
   hostMode: HostModeSnapshot;
 }
 
+/** A Discord message address, as the framework's awareness journal keys it. */
+export interface DiscordRefWire {
+  serverId: string;
+  channelId: string;
+  messageId: string;
+}
+
+/**
+ * The operator's awareness-marks choice for a surgery: `none` (the default:
+ * the surgery is local to the agent), or a publication scope. `addressed`
+ * covers removed messages that addressed the agent (mentions, replies to the
+ * bot, DMs). `refs` binds the choice to exactly the previewed messages.
+ */
+export type MarksChoiceWire = 'none' | {
+  scope: 'addressed' | 'all';
+  refs?: DiscordRefWire[];
+};
+
+/** What the framework reports about a surgery's marks: scheduling, never
+ *  Discord acceptance (mirrors agent-framework's SurgeryMarkerReceipt). */
+export interface SurgeryMarkerReceiptWire {
+  status: 'none' | 'queued' | 'not-scheduled' | 'unresolved';
+  queued: number;
+  scope?: 'none' | 'addressed' | 'all';
+  /** Removed addressable messages left unmarked. */
+  unmarked?: number;
+  /** Authorized refs the surgery did not remove. */
+  notRemoved?: number;
+  batchId?: string;
+  error?: string;
+}
+
+/** Preview of a surgery's awareness marks (agent-framework previewSurgeryMarks). */
+export interface SurgeryMarksPreviewWire {
+  messagesRemoved: number;
+  /** Removed messages that carry a Discord address at all. */
+  addressable: number;
+  emoji: string;
+  scopes: Record<'addressed' | 'all', {
+    count: number;
+    channels: Array<{ channelId: string; count: number }>;
+    refs: DiscordRefWire[];
+  }>;
+}
+
+export interface SurgeryPreviewResultMessage {
+  type: 'surgery-preview';
+  corrId?: string;
+  op: 'rollback' | 'suppress';
+  ok: boolean;
+  error?: string;
+  preview?: SurgeryMarksPreviewWire;
+}
+
+/**
+ * One entry of the framework's awareness journal: a surgery's batch of marks
+ * (`kind: 'batch'`, DiscordAwarenessBatchView) or an operator's retract
+ * request (`kind: 'retract'`, DiscordAwarenessRetractView). Both ids are what
+ * `awareness-action` cancel takes.
+ */
+export interface AwarenessEntryWire {
+  kind: 'batch' | 'retract';
+  id: string;
+  /** Batch: prepared | active | held | discarded. */
+  status?: string;
+  scope?: string;
+  /** Retract: the batch it retracted, or 'all'. */
+  target?: string;
+  /** Retract: when it was requested, and by whom. */
+  at?: number;
+  by?: string;
+  agentName?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
+  emoji?: string;
+  createdAt?: number;
+  refs?: number;
+  unmarked?: number;
+  notRemoved?: number;
+  held?: { reason: string; at: number; releaseActions: number };
+  cancelled?: { at: number; by?: string };
+  released?: { at: number; by?: string };
+  adds?: Record<string, number>;
+  removals?: Record<string, number>;
+  unresolvedAttempts?: number;
+  /** Batch imported from an earlier ledger: what it recorded, as facts. */
+  legacy?: { entries: number; lastAddConfirmed: number; lastRemoveConfirmed: number; outcomesUnrecorded: number };
+}
+
+/** The awareness journal's entries, and the receipt of the action that
+ *  produced this answer (if any). */
+export interface AwarenessMessage {
+  type: 'awareness';
+  corrId?: string;
+  batches: AwarenessEntryWire[];
+  action?: 'cancel' | 'retract' | 'release';
+  target?: string;
+  receipt?: Record<string, unknown>;
+  error?: string;
+}
+
 /** Outcome of a `rollback` / `suppress` request. On success the server also
  *  broadcasts `branch-changed` and re-welcomes every client with the new
  *  branch's messages. */
@@ -634,6 +738,8 @@ export interface SurgeryResultMessage {
   targetBranch?: string;
   messagesRemoved?: number;
   lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  /** Awareness marks, when the framework reports them ('marks' hosts). */
+  markers?: SurgeryMarkerReceiptWire;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */
@@ -682,6 +788,8 @@ export type WebUiServerMessage =
   | ObserverAckMessage
   | HostModeMessage
   | SurgeryResultMessage
+  | SurgeryPreviewResultMessage
+  | AwarenessMessage
   | OperatorLogMessage
   | ErrorMessage;
 
@@ -1014,6 +1122,8 @@ export interface RollbackMessage {
   agent?: string;
   /** Free-text reason, recorded in the operator log. */
   note?: string;
+  /** Awareness marks ('marks' hosts); absent means none. */
+  marks?: MarksChoiceWire;
   corrId?: string;
 }
 
@@ -1024,6 +1134,41 @@ export interface SuppressMessage {
   messageIds: string[];
   agent?: string;
   note?: string;
+  /** Awareness marks ('marks' hosts); absent means none. */
+  marks?: MarksChoiceWire;
+  corrId?: string;
+}
+
+/** Ask what a rollback or suppression would remove and which Discord
+ *  messages each marks scope would cover. Changes nothing. */
+export interface SurgeryPreviewMessage {
+  type: 'surgery-preview';
+  op: 'rollback' | 'suppress';
+  /** Rollback: the message that would become the new tail. */
+  messageId?: string;
+  /** Suppress: the messages that would be redacted. */
+  messageIds?: string[];
+  agent?: string;
+  corrId?: string;
+}
+
+/** List the framework's awareness journal ('awareness' hosts). */
+export interface RequestAwarenessMessage {
+  type: 'request-awareness';
+  corrId?: string;
+}
+
+/**
+ * Act on the awareness journal: `cancel` stops all further sends of a batch's
+ * marks or of a retract's removals (target: a batch or retract id; it never
+ * removes or undoes anything); `retract` queues removal of this bot's marks
+ * on a batch's messages, or on every message any batch marked
+ * (`target: 'all'`); `release` queues a batch held at startup.
+ */
+export interface AwarenessActionMessage {
+  type: 'awareness-action';
+  action: 'cancel' | 'retract' | 'release';
+  target: string;
   corrId?: string;
 }
 
@@ -1057,6 +1202,9 @@ export type WebUiClientMessage =
   | ObserverHelloMessage
   | RollbackMessage
   | SuppressMessage
+  | SurgeryPreviewMessage
+  | RequestAwarenessMessage
+  | AwarenessActionMessage
   | HostQuiesceMessage
   | HostResumeMessage
   | RequestHostModeMessage
@@ -1112,12 +1260,31 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
       return isNonEmptyString(v.messageId)
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
+        && (v.marks === undefined || isMarksChoice(v.marks))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
       return Array.isArray(v.messageIds) && v.messageIds.length > 0
         && v.messageIds.every((id) => isNonEmptyString(id))
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
+        && (v.marks === undefined || isMarksChoice(v.marks))
+        && (v.corrId === undefined || typeof v.corrId === 'string');
+    case 'surgery-preview':
+      return (v.op === 'rollback'
+          ? isNonEmptyString(v.messageId) && v.messageIds === undefined
+          : v.op === 'suppress'
+            && Array.isArray(v.messageIds) && v.messageIds.length > 0
+            && v.messageIds.every((id) => isNonEmptyString(id))
+            && v.messageId === undefined)
+        && (v.agent === undefined || isNonEmptyString(v.agent))
+        && (v.corrId === undefined || typeof v.corrId === 'string');
+    case 'request-awareness':
+      return v.corrId === undefined || typeof v.corrId === 'string';
+    case 'awareness-action':
+      return (v.action === 'cancel' || v.action === 'retract' || v.action === 'release')
+        && isNonEmptyString(v.target)
+        // Only retract acts across batches.
+        && (v.target !== 'all' || v.action === 'retract')
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'host-quiesce':
       return (v.reason === undefined || typeof v.reason === 'string')
@@ -1230,6 +1397,27 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     default:
       return false;
   }
+}
+
+/** Bounded so one frame can't hand the framework an unbounded ref list. */
+const MAX_MARKS_REFS = 20_000;
+
+function isMarksChoice(v: unknown): v is MarksChoiceWire {
+  if (v === 'none') return true;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const choice = v as Record<string, unknown>;
+  if (choice.scope !== 'addressed' && choice.scope !== 'all') return false;
+  for (const key of Object.keys(choice)) {
+    if (key !== 'scope' && key !== 'refs') return false;
+  }
+  if (choice.refs === undefined) return true;
+  return Array.isArray(choice.refs)
+    && choice.refs.length <= MAX_MARKS_REFS
+    && choice.refs.every((ref) => {
+      if (!ref || typeof ref !== 'object') return false;
+      const r = ref as Record<string, unknown>;
+      return isNonEmptyString(r.serverId) && isNonEmptyString(r.channelId) && isNonEmptyString(r.messageId);
+    });
 }
 
 function isNonEmptyString(v: unknown): v is string {

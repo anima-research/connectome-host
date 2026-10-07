@@ -183,6 +183,46 @@ describe('isClientMessage', () => {
     });
   });
 
+  describe('surgery marks and the awareness journal', () => {
+    const ref = { serverId: 'discord', channelId: 'discord:g1:c1', messageId: 'm1' };
+
+    test('rollback/suppress take an optional marks choice: none, or a scope with previewed refs', () => {
+      expect(isClientMessage({ type: 'rollback', messageId: 's1' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'none' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'addressed' } })).toBe(true);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], marks: { scope: 'all', refs: [ref] } })).toBe(true);
+      // A publication choice is never guessed: anything else is malformed.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'everyone' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, messageId: '' }] } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', extra: 1 } })).toBe(false);
+      expect(isClientMessage({
+        type: 'rollback', messageId: 's1',
+        marks: { scope: 'all', refs: Array.from({ length: 20_001 }, () => ref) },
+      })).toBe(false);
+    });
+
+    test('surgery-preview names exactly the target of its op', () => {
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageId: 's1' })).toBe(true);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: ['s1', 's2'], corrId: 'c' })).toBe(true);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageIds: ['s1'] })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageId: 's1' })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: [] })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'hide', messageId: 's1' })).toBe(false);
+    });
+
+    test('awareness-action: cancel/retract/release on a target; only retract takes all', () => {
+      expect(isClientMessage({ type: 'request-awareness' })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'b1' })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all' })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'b1' })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'delete', target: 'b1' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: '' })).toBe(false);
+    });
+  });
+
   test('mcpl-remove validates id', () => {
     expect(isClientMessage({ type: 'mcpl-remove', id: 'a' })).toBe(true);
     expect(isClientMessage({ type: 'mcpl-remove', id: '../oops' })).toBe(false);
