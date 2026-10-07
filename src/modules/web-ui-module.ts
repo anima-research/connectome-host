@@ -37,6 +37,7 @@ import type {
   SessionUsageSnapshot,
 } from '@animalabs/agent-framework';
 import type { ServerWebSocket } from 'bun';
+import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -481,6 +482,15 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+    // A skipped or failed optional build (postinstall can be skipped, e.g.
+    // `--ignore-scripts`) otherwise surfaces only as a 503 to whoever opens
+    // the page. Say it once, where the operator starting the host looks.
+    if (!existsSync(join(state.staticRoot, 'index.html'))) {
+      console.warn(
+        `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it is built. ` +
+        `Run \`npm run build:web\` (or postinstall) to produce it.`,
+      );
+    }
 
     // Provider calls include auxiliary compression requests that never emit a
     // framework usage trace, so subscribe at the adapter ledger itself. This
