@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ContextManager } from '@animalabs/context-manager';
+import { JsStore } from '@animalabs/chronicle';
 import type {
   ContextEntry,
   ContextLogView,
@@ -144,6 +145,41 @@ describe('folds.jsonl projection', () => {
     expect(lines()[0]!.receipts).toBe(0);
     exporter().bind(cm);
     expect(lines()[0]!.receipts).toBe(1);
+  });
+
+  test('converges on a receipt whose commit landed but reported failure, once it is recovered', async () => {
+    let landThenThrow = false;
+    const real = JsStore.openOrCreate({ path: join(dir, 'flaky-store') });
+    const flaky = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'appendJson') {
+          return (type: string, payload: unknown) => {
+            const written = target.appendJson(type, payload);
+            if (landThenThrow && type === 'context-manager/accepted-layout') {
+              landThenThrow = false;
+              throw new Error('write reported failure after landing');
+            }
+            return written;
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as JsStore;
+    const strategy = new PlanStrategy();
+    const cm = await ContextManager.open({ store: flaky, strategy, namespace: 'agents/linn' });
+    opened.push(cm);
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    const compiled = await cm.compile(BUDGET);
+    landThenThrow = true;
+    expect(() => cm.acceptRound({ provenance: compiled.provenance! })).toThrow(/after landing/);
+    expect(lines()[0]!.receipts).toBe(0);
+    // The stream retries acceptance at its next round: the record is found, and announced.
+    cm.acceptRound({ provenance: compiled.provenance! });
+    expect(lines()[0]!.receipts).toBe(1);
+    expect(lines()[1]!.kind).toBe('baseline');
   });
 
   test('adopts its own interrupted write (crash between rename and the ledger commit)', async () => {
