@@ -203,6 +203,35 @@ describe('folds.jsonl projection', () => {
 });
 
 describe('writer safety', () => {
+  test('recovers its own file across two interrupted replacements without a false conflict', async () => {
+    const { cm, strategy } = await openStore();
+    const ids = [cm.addMessage('user', [{ type: 'text', text: 'one' }]), cm.addMessage('user', [{ type: 'text', text: 'two' }])];
+    const m = exporter();
+    m.bind(cm);
+    await accept(cm); // committed: A (with the baseline)
+    // First interruption: our replacement B landed on disk, but its commit did not.
+    const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    const key = Object.keys(ledger.targets)[0]!;
+    writeFileSync(target, `${readFileSync(target, 'utf8')}{"id":"ours-b"}\n`);
+    ledger.targets[key] = { committed: ledger.targets[key].committed, pending: sha(target) };
+    writeFileSync(ledgerPath, JSON.stringify(ledger));
+    // Second interruption: the next intent is recorded, then the replace fails.
+    const { chmodSync } = await import('node:fs');
+    chmodSync(dirname(target), 0o555);
+    strategy.omit.add(ids[0]!);
+    try {
+      await accept(cm);
+    } finally {
+      chmodSync(dirname(target), 0o755);
+    }
+    expect(m.status().state).toBe('error');
+    // Recovery: the file is still recognized as ours.
+    strategy.omit.add(ids[1]!);
+    await accept(cm);
+    expect(m.status().state).toBe('exporting');
+    expect(lines()[0]!.receipts).toBe(3);
+  });
+
   test('preserves a foreign file found at first use, and resumes after a new target or an explicit takeover', async () => {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, '{"written":"by another runtime"}\n');

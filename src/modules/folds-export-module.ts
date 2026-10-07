@@ -361,7 +361,12 @@ export class FoldsExportModule implements Module {
       if (entry?.committed !== hash || entry.pending !== undefined) this.writeLedger(ledger);
       return true;
     }
-    ledger.targets[this.target] = { ...(entry?.committed ? { committed: entry.committed } : {}), pending: hash };
+    // The file on disk, when present, has just been recognized as ours (the
+    // committed projection, or a pending one whose replace landed): it is the
+    // recovery base. Keeping it as `committed` means a further interrupted
+    // attempt still leaves the file recognizable, instead of a false conflict.
+    const base = onDisk ?? entry?.committed;
+    ledger.targets[this.target] = { ...(base ? { committed: base } : {}), pending: hash };
     this.writeLedger(ledger);
     atomicWrite(this.target, content);
     ledger.targets[this.target] = { committed: hash };
