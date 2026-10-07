@@ -201,6 +201,11 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 7 })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'main' } })).toBe(true);
       expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedContext: { storeId: '' } })).toBe(false);
+      // Both fields are required: an absent one would go unchecked.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: {} })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { branch: 'main' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's', branch: '' } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', other: 1 } })).toBe(false);
       expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedBranchId: '' })).toBe(false);
       expect(isClientMessage({

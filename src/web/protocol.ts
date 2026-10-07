@@ -669,10 +669,12 @@ export interface SurgeryMarksPreviewWire {
   context?: SurgeryContextWire;
 }
 
-/** A framework's store and branch identity, opaque to the host. */
+/** A framework's store and branch identity, opaque to the host. Both are
+ *  required here: the framework treats an absent field as unchecked, and
+ *  this host's operation is bound to both. */
 export interface SurgeryContextWire {
-  storeId?: string;
-  branch?: string;
+  storeId: string;
+  branch: string;
 }
 
 export interface SurgeryPreviewResultMessage {
@@ -1442,8 +1444,8 @@ function isSurgeryContext(v: unknown): v is SurgeryContextWire {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const c = v as Record<string, unknown>;
   return Object.keys(c).every((k) => k === 'storeId' || k === 'branch')
-    && (c.storeId === undefined || (isNonEmptyString(c.storeId) && c.storeId.length <= 200))
-    && (c.branch === undefined || (isNonEmptyString(c.branch) && c.branch.length <= 500));
+    && isNonEmptyString(c.storeId) && c.storeId.length <= 200
+    && isNonEmptyString(c.branch) && c.branch.length <= 500;
 }
 
 function isMarksChoice(v: unknown): v is MarksChoiceWire {

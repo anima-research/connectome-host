@@ -1625,7 +1625,7 @@ export class WebUiModule implements Module {
       });
       return;
     }
-    if (!req.expectedContext) {
+    if (!req.expectedContext?.storeId || !req.expectedContext.branch) {
       // Every live surgery here is preview-bound: the framework's own check
       // of the previewed store and branch is what keeps the body on them.
       this.send(client, {
@@ -1643,14 +1643,14 @@ export class WebUiModule implements Module {
             marks,
             // Checked by the framework under its own reservation, before
             // anything is prepared or changed.
-            expected: req.expectedContext,
+            expected: { storeId: req.expectedContext.storeId, branch: req.expectedContext.branch },
           })
         : await fw.suppressMessages!(agentName, {
             messageIds: (req as SuppressMessage).messageIds,
             requester,
             ...(note ? { note } : {}),
             marks,
-            expected: req.expectedContext,
+            expected: { storeId: req.expectedContext.storeId, branch: req.expectedContext.branch },
           });
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,

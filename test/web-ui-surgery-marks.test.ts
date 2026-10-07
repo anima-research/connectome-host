@@ -200,11 +200,18 @@ describe('surgery marks over the WebUI', () => {
       expect(preview.preview).toMatchObject({ context: { storeId: 'store-a', branch: 'main' } });
       const context = (preview.preview as { context: Record<string, string> }).context;
 
-      // Without the preview's context, nothing runs.
+      // Without the preview's whole context, nothing runs: none, an empty
+      // one, or one missing either field (malformed frames are dropped by
+      // validation and answered with an error frame, not run).
       client.send({ type: 'rollback', messageId: 's9', marks: 'none', corrId: 'r0' });
       const unbound = await client.next('surgery-result', 'r0');
       expect(unbound.ok).toBe(false);
       expect(unbound.code).toBe('stale');
+      for (const partial of [{}, { storeId: 'store-a' }, { branch: 'main' }]) {
+        client.send({ type: 'rollback', messageId: 's9', marks: 'none', expectedContext: partial, corrId: 'rp' });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
 
       const marks = { scope: 'addressed', refs: [ref('a1'), ref('a2')] };
       client.send({
