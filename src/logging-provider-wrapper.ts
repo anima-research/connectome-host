@@ -86,11 +86,13 @@ function describeError(error: unknown): Record<string, unknown> {
   };
   const fields: Record<string, unknown> = {};
   let text: string;
-  if (error instanceof Error) {
-    const name = read(() => String(error.name)) ?? 'Error';
-    const message = read(() => String(error.message));
-    text = message === undefined ? `${name}: [message could not be read]` : `${name}: ${message}`;
+  // Even the type test is guarded: a revoked Proxy or a throwing
+  // getPrototypeOf trap makes `instanceof` itself throw.
+  if (read(() => error instanceof Error) === true) {
     const e = error as Error & { type?: unknown; httpStatus?: unknown; providerErrorCode?: unknown; retryable?: unknown };
+    const name = read(() => String(e.name)) ?? 'Error';
+    const message = read(() => String(e.message));
+    text = message === undefined ? `${name}: [message could not be read]` : `${name}: ${message}`;
     const type = read(() => e.type);
     if (typeof type === 'string') fields.errorType = boundText(type, MAX_CODE_CHARS);
     const httpStatus = read(() => e.httpStatus);
@@ -212,6 +214,15 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     });
   }
 
+  /** Log a failed call; nothing here may replace the provider's error. */
+  private recordFailure(kind: 'complete' | 'stream', request: ProviderRequest, started: number, error: unknown): void {
+    try {
+      this.record(kind, request, started, undefined, error);
+    } catch {
+      // Logging must never break inference, nor change what it throws.
+    }
+  }
+
   async complete(
     request: ProviderRequest,
     options?: ProviderRequestOptions,
@@ -222,7 +233,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       this.record('complete', request, started, response);
       return response;
     } catch (error) {
-      this.record('complete', request, started, undefined, error);
+      this.recordFailure('complete', request, started, error);
       throw error;
     }
   }
@@ -238,7 +249,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       this.record('stream', request, started, response);
       return response;
     } catch (error) {
-      this.record('stream', request, started, undefined, error);
+      this.recordFailure('stream', request, started, error);
       throw error;
     }
   }

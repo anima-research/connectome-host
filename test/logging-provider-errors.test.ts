@@ -106,6 +106,17 @@ describe('LoggingProviderAdapter error records', () => {
     expect(record).toMatchObject({ errorType: 'invalid_request', httpStatus: 400, retryable: false });
   });
 
+  test('a thrown value whose type test itself throws (a revoked Proxy) is rethrown as the same reference (room-225 #48939)', async () => {
+    const path = logFile();
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    let thrown: unknown;
+    try { await new LoggingProviderAdapter(failing(proxy), path).complete(request); } catch (e) { thrown = e; }
+    expect(thrown === proxy).toBe(true);
+    const [record] = records(path);
+    expect(record!.error).toBe('[error could not be read]');
+  });
+
   test('a metadata getter that throws loses only that field: the provider text is kept (room-225 #48791)', async () => {
     const path = logFile();
     const error = new Error('zz the actual provider diagnostic');
