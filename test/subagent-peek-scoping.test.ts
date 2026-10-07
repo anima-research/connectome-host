@@ -47,7 +47,7 @@ interface FakeLiveState {
  * child-b = 'fw-b', grandchild-a1 = 'fw-a1', peer = 'fw-peer'.
  */
 function makeTree(): SubagentModule {
-  const mod = new SubagentModule();
+  const mod = new SubagentModule({ provider: 'mock' });
   const privateView = mod as unknown as {
     liveSubagents: Map<string, FakeLiveState>;
     frameworkNameIndex: Map<string, string>;

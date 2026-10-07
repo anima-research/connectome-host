@@ -1,0 +1,2 @@
+- A fork with no parent stream (no caller and no configured parent agent) started with an empty context: no task and no framing. It now starts with its intention and its orientation.
+- `subagent--spawn` no longer appends `subagent--return` to the caller's own `tools` array; the stream gets a copy.
