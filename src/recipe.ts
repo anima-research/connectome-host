@@ -264,6 +264,13 @@ export interface RecipeAgent {
    *  cache and rejects the ttl field. */
   cacheTtl?: '5m' | '1h';
   /**
+   * Home channel for turns with no triggering channel (heartbeats, timers):
+   * their plain-text speech routes here instead of whichever channel last
+   * received a message. A turn triggered from a channel still replies there.
+   * Channel id form, e.g. `discord:{guildId}:{channelId}`.
+   */
+  homeChannel?: string;
+  /**
    * Prompt-cache keepalive. With `cacheTtl: '1h'`, an idle agent's cached
    * prefix expires after an hour and its next wake pays a 2x cache write over
    * the whole context. Reading an entry refreshes its TTL at 0.1x, so a
@@ -1466,6 +1473,7 @@ const RECIPE_KEYS = [
 const RECIPE_AGENT_KEYS = [
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
+  'homeChannel',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
   'toolWrapperProseGuard', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling',
@@ -1681,6 +1689,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
     throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  }
+
+  if (agent.homeChannel !== undefined && (typeof agent.homeChannel !== 'string' || agent.homeChannel.trim().length === 0)) {
+    throw new Error('Recipe agent.homeChannel must be a non-empty channel id (e.g. "discord:{guildId}:{channelId}").');
   }
 
   // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
