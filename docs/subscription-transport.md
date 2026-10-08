@@ -86,13 +86,46 @@ keeps its existing automatic app-server refresh on that retry.
 ### Channel-side notices
 
 A jammed host is silent on the channel side: a quota hold parks the request
-before inference starts, so not even the typing indicator appears. With
-`modules.activity.jamNotices: true`, a subscribed channel that receives a
-message during a jam gets one host-attributed line per episode ("cannot
-respond right now: its subscription quota is spent. Expected back after …")
-and one "can respond again" line on the clear; see `ActivityModule`. The
-publish path carries no topic, so on Zulip the notice lands in the stream's
-default topic.
+before inference starts, so not even the typing indicator appears. The
+`notices` module (`modules.notices`) closes that gap for every outage the
+framework can name, not only credential ones: it is a sink of the `ops:alert`
+stream, and decides where and how loudly each alert kind is told.
+
+```json
+"modules": {
+  "notices": {
+    "statusChannels": ["zulip:ops"],
+    "reply": { "in": ["zulip:*"], "not": ["zulip:general"] },
+    "kinds": { "hard-down": "reply", "auth-*": "reply", "refusal": "silent" },
+    "quietMs": 60000
+  }
+}
+```
+
+- `reply` kinds (by default: `hard-down`, `quota-spent`, `auth-expired`,
+  `auth-rejected`, `auth-login-required`, `provider-hold`) mean the agent
+  cannot answer. A person who writes to it in a channel matching `reply.in`
+  gets one canned host-attributed line per episode ("cannot respond right
+  now: its subscription quota is spent. Expected back after …"), the channel
+  whose message triggered the failing turn is told the same, and every
+  channel that was told gets one "can respond again" line when the outage
+  ends. `reply.in` / `reply.not` are channel-id patterns, so "notify on
+  Zulip, never on Discord" is one line. Public channels never see error text.
+- `status` kinds (`context-refusal`, `mcpl-down`, `quota-unreadable`,
+  `auth-expiring`, …) and all `reply` kinds also go to `statusChannels` with
+  the operator-grade message (kind + error text), after `quietMs` without a
+  clear, so a flap that resolves in seconds says nothing.
+- `silent` kinds (`refusal`, and anything unknown) only reach failures.log
+  and the webhook as before.
+
+Episodes close on the kind's `-clear` alert, or, for framework kinds with no
+clear (`hard-down`, refusals), on the agent's next completed inference; an
+`mcpl-down` episode closes when that server reconnects. Channel ids are opaque
+and resolved at post time: a notice whose chat server is itself down is parked
+on the episode and delivered if the server comes back while the outage is
+still on, else dropped. The publish path carries no topic, so on Zulip a
+notice lands in the stream's default topic. One chronicle marker per episode
+tells the agent, on recovery, that the host spoke in its channel.
 
 ## Remaining authentication integration
 
