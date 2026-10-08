@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSy
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
+import { serverProblems } from './mcpl-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 
 // ---------------------------------------------------------------------------
@@ -409,13 +410,30 @@ export interface RecipeMcpServer {
    * tools/list, channels/*), in milliseconds. Passed through to the
    * framework's `McplServerConfig.requestTimeoutMs`. Raise it for tools that
    * legitimately outlive the 60s default (image-generation gateways, long
-   * searches); `0` disables the timeout.
+   * searches); `0` disables the timeout. On a modern MCP server it is one
+   * deadline per tool call and must be an integer from 1 to 2^31−1: 0 is
+   * refused there.
    */
   requestTimeoutMs?: number;
-  /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
+  /**
+   * Network server URL; mutually exclusive with command. The scheme decides
+   * the protocol: `ws://`/`wss://` is an MCPL server over WebSocket,
+   * `http://`/`https://` a modern MCP (2026-07-28) server over Streamable
+   * HTTP.
+   */
   url?: string;
-  transport?: 'stdio' | 'websocket';
-  /** Bearer token for WebSocket auth (appended as ?token= query param). */
+  /** Optional, and must agree with the url's scheme when set. */
+  transport?: 'stdio' | 'websocket' | 'http';
+  /**
+   * A stdio (`command`) server's protocol: `legacy` (MCP 2024-11-05 + MCPL,
+   * the default) or `modern` (MCP 2026-07-28). URL servers take theirs from
+   * the scheme, so setting it on one is an error. A modern server offers
+   * tools only: MCPL policy fields (feature sets, capabilities,
+   * toolLifecycle, channelSubscription, ...) are errors on it.
+   */
+  protocol?: 'legacy' | 'modern';
+  /** Bearer token: a WebSocket server's ?token= query param, an HTTP
+   *  server's Authorization header. */
   token?: string;
   /**
    * Name of a host-managed access grant (archipelago audience, e.g.
@@ -2134,6 +2152,19 @@ export function validateRecipe(raw: unknown): Recipe {
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
         throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
+      }
+      if (server.protocol !== undefined && server.protocol !== 'legacy' && server.protocol !== 'modern') {
+        throw new Error(`mcpServers.${id}.protocol must be "legacy" or "modern"`);
+      }
+      if (server.transport !== undefined && !['stdio', 'websocket', 'http'].includes(server.transport as string)) {
+        throw new Error(`mcpServers.${id}.transport must be "stdio", "websocket" or "http"`);
+      }
+      // An entry that defines its server outright is checked by the
+      // framework's own rules now. An id-only entry is checked once it has
+      // been merged with its mcpl-servers.json definition, at startup.
+      if (server.command !== undefined || server.url !== undefined) {
+        const problems = serverProblems({ id, ...server });
+        if (problems.length > 0) throw new Error(`mcpServers.${id}: ${problems.join('; ')}`);
       }
       if (server.source !== undefined) {
         if (typeof server.source !== 'object' || server.source === null) {

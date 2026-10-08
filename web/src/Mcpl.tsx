@@ -20,7 +20,10 @@ import { createSignal, For, Show } from 'solid-js';
 
 export interface McplServerRow {
   id: string;
-  command: string;
+  /** A stdio entry's command; a network entry has `url` instead. */
+  command?: string;
+  url?: string;
+  protocol?: 'legacy' | 'modern';
   args?: string[];
   env?: Record<string, string>;
   toolPrefix?: string;
@@ -36,6 +39,9 @@ export interface McplLiveRow {
   toolCount: number;
   toolPrefix?: string;
   target?: string;
+  family?: 'legacy' | 'modern';
+  protocolVersion?: string;
+  transport?: string;
 }
 
 /** One tool's effective MCPL class (RFC-008) and where it came from. */
@@ -136,6 +142,12 @@ export function McplPanel(props: {
                   title={s.connected ? 'connected' : 'disconnected'} />
                 <span class="font-mono text-cyan-300 truncate">{s.id}</span>
                 <span class="text-[10px] text-neutral-500 shrink-0">{s.toolCount} tools</span>
+                <Show when={s.family}>
+                  <span class="text-[10px] text-neutral-500 shrink-0"
+                    title={s.family === 'modern' ? 'modern MCP (no MCPL surface)' : 'MCP + MCPL'}>
+                    {s.family}{s.protocolVersion ? `@${s.protocolVersion}` : ''}{s.transport ? `/${s.transport}` : ''}
+                  </span>
+                </Show>
                 <Show when={s.toolPrefix}>
                   <span class="text-[10px] text-neutral-600 shrink-0">prefix={s.toolPrefix}</span>
                 </Show>
@@ -264,7 +276,9 @@ function ServerCard(props: {
 }) {
   const [editEnv, setEditEnv] = createSignal(false);
   const [confirmDel, setConfirmDel] = createSignal(false);
-  const cmdLine = (): string => [props.server.command, ...(props.server.args ?? [])].join(' ');
+  const cmdLine = (): string =>
+    (props.server.url ?? [props.server.command, ...(props.server.args ?? [])].join(' '))
+    + (props.server.protocol ? ` (protocol: ${props.server.protocol})` : '');
   const envEntries = (): Array<[string, string]> => Object.entries(props.server.env ?? {});
 
   return (

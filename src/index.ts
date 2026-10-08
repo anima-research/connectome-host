@@ -56,7 +56,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, serverProblems, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { SessionManager } from './session-manager.js';
@@ -459,6 +459,18 @@ async function createFramework(
     recipeServers as unknown as Record<string, Record<string, unknown>>,
     fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
   );
+
+  // Every operator-defined server, recipe and file merged, must be one the
+  // framework accepts; a mistake there stops startup, as recipe errors do.
+  // An id-only recipe entry is only checkable here, after the merge gave it
+  // its definition. (Overlay entries are the agent's: applyAgentOverlay
+  // skips an unusable one rather than failing the host.)
+  for (const server of allServers) {
+    const problems = serverProblems(server);
+    if (problems.length > 0) {
+      throw new Error(`MCP server "${server.id}": ${problems.join('; ')}`);
+    }
+  }
 
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and

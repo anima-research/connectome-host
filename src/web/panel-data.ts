@@ -274,6 +274,13 @@ export interface McplLiveServer {
   toolPrefix?: string;
   /** command or url — whatever the transport targets. */
   target?: string;
+  /** Which engine serves it: `legacy` (MCP 2024-11-05 + MCPL) or `modern`
+   *  (MCP 2026-07-28). Absent from a framework without modern support. */
+  family?: 'legacy' | 'modern';
+  /** The MCP revision its handshake established. */
+  protocolVersion?: string;
+  /** `stdio`, `websocket` or `http`. */
+  transport?: string;
 }
 
 /**
@@ -294,6 +301,7 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       listMcplServers?: () => Array<{
         id: string; connected?: boolean; toolCount?: number; toolPrefix?: string;
         command?: string; url?: string;
+        family?: 'legacy' | 'modern'; protocolVersion?: string | null; transport?: string;
       }>;
     };
     if (typeof fw.listMcplServers === 'function') {
@@ -303,6 +311,10 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
         toolCount: s.toolCount ?? 0,
         ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
         ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
+        // Absent from a framework older than modern MCP support.
+        ...(s.family ? { family: s.family } : {}),
+        ...(s.protocolVersion ? { protocolVersion: s.protocolVersion } : {}),
+        ...(s.transport ? { transport: s.transport } : {}),
       }));
     }
   } catch { /* live view is best-effort; the file registry still renders */ }
@@ -317,7 +329,9 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     configPath: DEFAULT_CONFIG_PATH,
     servers: Object.entries(servers).map(([id, entry]) => ({
       id,
-      command: entry.command,
+      ...(entry.command !== undefined ? { command: entry.command } : {}),
+      ...(entry.url !== undefined ? { url: entry.url } : {}),
+      ...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
       ...(entry.args ? { args: entry.args } : {}),
       ...(entry.env ? { env: entry.env } : {}),
       ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),

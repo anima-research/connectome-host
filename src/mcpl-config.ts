@@ -6,7 +6,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { REFUSAL_REACTION_BASELINE } from '@animalabs/agent-framework';
+import { REFUSAL_REACTION_BASELINE, resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
+import type { McplServerConfig } from '@animalabs/agent-framework';
 import type { RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
 
@@ -17,7 +18,8 @@ export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
  * Serializable subset of McplServerConfig (everything except callbacks and scopes).
  */
 export interface ServerFileEntry {
-  command: string;
+  /** Executable to spawn (stdio). An entry has either `command` or `url`. */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   /** Opt in to the full host environment for stdio servers. Requires an
@@ -41,6 +43,22 @@ export interface ServerFileEntry {
    * credential — `access` is a name, not a secret.
    */
   access?: string;
+  /**
+   * Network server URL. The scheme decides the protocol family:
+   * `ws://`/`wss://` is an MCPL server over WebSocket, `http://`/`https://`
+   * a modern MCP (2026-07-28) server over Streamable HTTP.
+   */
+  url?: string;
+  transport?: 'stdio' | 'websocket' | 'http';
+  /** Bearer token: a WebSocket server's ?token=, an HTTP server's Authorization. */
+  token?: string;
+  /** A stdio server's protocol family: `legacy` (MCP 2024-11-05 + MCPL,
+   *  the default) or `modern` (MCP 2026-07-28). URL servers take their
+   *  family from the scheme and must not set this. */
+  protocol?: 'legacy' | 'modern';
+  /** Per-request timeout in ms (framework default 60000). For a modern
+   *  server it is one deadline per tool call, an integer from 1 to 2^31−1. */
+  requestTimeoutMs?: number;
   /** MCPL tool lifecycle (RFC-007) policy — see RecipeMcpServer.toolLifecycle. */
   toolLifecycle?: RecipeToolLifecycle;
 }
@@ -76,9 +94,15 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       return arg;
     });
 
-    servers.push({
+    const loaded: LoadedServerConfig = {
       id,
-      command: entry.command,
+      ...(entry.command !== undefined ? { command: entry.command } : {}),
+      ...(entry.url !== undefined ? { url: entry.url } : {}),
+      ...(entry.transport !== undefined ? { transport: entry.transport } : {}),
+      ...(entry.token !== undefined ? { token: entry.token } : {}),
+      ...(entry.access !== undefined ? { access: entry.access } : {}),
+      ...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
+      ...(entry.requestTimeoutMs !== undefined ? { requestTimeoutMs: entry.requestTimeoutMs } : {}),
       args,
       env: entry.env,
       ...(entry.inheritEnv !== undefined
@@ -94,10 +118,44 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       disabledTools: entry.disabledTools,
       channelSubscription: entry.channelSubscription,
       ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
-    });
+    };
+    // A file entry defines a server outright, so it must name a usable one.
+    const problems = serverProblems(loaded);
+    if (problems.length > 0) {
+      throw new Error(`mcpl-servers.json: mcplServers.${id}: ${problems.join('; ')}`);
+    }
+    servers.push(loaded);
   }
 
   return servers;
+}
+
+/**
+ * What agent-framework would refuse about a server's protocol settings, as
+ * messages; empty when it is usable. The rules are the framework's own
+ * (`resolveServerBinding`, `serverConfigProblems`), so host validation and
+ * the framework can't drift:
+ * - a URL's scheme decides the family, and `protocol` is a stdio-only choice;
+ * - `transport` has to agree with the URL;
+ * - a modern server has a real deadline and no MCPL-only policy.
+ */
+export function serverProblems(config: { id: string }): string[] {
+  const asConfig = config as unknown as McplServerConfig;
+  try {
+    resolveServerBinding(asConfig);
+  } catch (error) {
+    return [error instanceof Error ? error.message : String(error)];
+  }
+  return serverConfigProblems(asConfig);
+}
+
+/** Whether a server config resolves to the modern MCP family. */
+export function isModernServer(config: { id: string }): boolean {
+  try {
+    return resolveServerBinding(config as unknown as McplServerConfig).family === 'modern';
+  } catch {
+    return false;
+  }
 }
 
 function checkedInheritEnv(value: unknown, where: string): boolean {
@@ -119,8 +177,10 @@ export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   'channelSubscription', 'toolPrefix', 'enabledFeatureSets', 'disabledFeatureSets',
   'enabledTools', 'disabledTools', 'reconnect', 'reconnectIntervalMs', 'reconnectMaxIntervalMs',
   'inheritEnv',
-  // A recipe may adopt WebSocket transport for a file-defined server.
-  'url', 'transport', 'token', 'access',
+  // A recipe may move a file-defined server onto a network transport
+  // (WebSocket for MCPL, Streamable HTTP for modern MCP), or run its stdio
+  // command as a modern MCP server.
+  'url', 'transport', 'token', 'access', 'protocol',
   // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
   // policy, like tool toggles — not a property of where the server came from.
   'toolLifecycle',
@@ -189,11 +249,6 @@ export const DEFAULT_AGENT_OVERLAY_PATH = resolve(process.cwd(), 'mcpl-servers.a
  * a `command` (stdio) or a `url` (WebSocket), and tombstones have neither.
  */
 export interface AgentOverlayEntry extends Partial<ServerFileEntry> {
-  /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
-  url?: string;
-  transport?: 'stdio' | 'websocket';
-  /** Bearer token for WebSocket auth. */
-  token?: string;
   /** Tombstone: suppress a recipe/file server the agent unloaded. */
   disabled?: boolean;
 }
@@ -315,6 +370,9 @@ export function resolveOverlayEntry(
   // default: reconnect does not respawn a dead child anyway (mcpl_restart
   // is that path), so `true` there would promise something it can't do.
   if (entry.url && rec.reconnect === undefined) rec.reconnect = true;
+  // A modern MCP server has no MCPL capabilities to mask: its only surface
+  // is tools, which is what a self-deployed server is allowed anyway.
+  const modern = isModernServer({ id, ...rec });
   const denied = new Set<string>([
     ...AGENT_DEPLOY_DENIED_CAPABILITIES,
     ...(Array.isArray(rec.disabledCapabilities) ? (rec.disabledCapabilities as unknown[]).map(String) : []),
@@ -322,7 +380,7 @@ export function resolveOverlayEntry(
   return {
     id,
     ...rec,
-    disabledCapabilities: [...denied].sort(),
+    ...(modern ? {} : { disabledCapabilities: [...denied].sort() }),
     ...(entry.args
       ? {
           args: entry.args.map(arg =>
@@ -352,6 +410,14 @@ export function applyAgentOverlay<T extends { id: string }>(
   for (const [id, entry] of Object.entries(overlay)) {
     const loaded = resolveOverlayEntry(id, entry, overlayPath);
     if (!loaded) continue;
+    // The overlay is the agent's file: an entry the framework would refuse
+    // is skipped, with a reason, rather than failing the host's startup.
+    // mcpl_deploy refuses such an entry before writing it.
+    const problems = serverProblems(loaded);
+    if (problems.length > 0) {
+      console.error(`[mcpl] overlay server "${id}" skipped: ${problems.join('; ')}`);
+      continue;
+    }
     const idx = result.findIndex(s => s.id === id);
     if (idx >= 0) result[idx] = loaded;
     else result.push(loaded);

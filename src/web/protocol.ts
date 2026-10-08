@@ -430,7 +430,11 @@ export interface McplListMessage {
   configPath: string;
   servers: Array<{
     id: string;
-    command: string;
+    /** A stdio entry's command; a network entry has `url` instead. */
+    command?: string;
+    url?: string;
+    /** A stdio entry's protocol family, when the file sets one. */
+    protocol?: 'legacy' | 'modern';
     args?: string[];
     env?: Record<string, string>;
     toolPrefix?: string;
@@ -449,6 +453,13 @@ export interface McplListMessage {
     toolPrefix?: string;
     /** command or url — whatever the transport targets. */
     target?: string;
+    /** `legacy` (MCP 2024-11-05 + MCPL) or `modern` (MCP 2026-07-28);
+     *  absent from a framework without modern support. */
+    family?: 'legacy' | 'modern';
+    /** The MCP revision its handshake established. */
+    protocolVersion?: string;
+    /** `stdio`, `websocket` or `http`. */
+    transport?: string;
   }>;
   /** Every tool the scoped process offers, with its effective MCPL class
    *  (RFC-008) and the source that decided it: `override` (recipe

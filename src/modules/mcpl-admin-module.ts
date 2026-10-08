@@ -41,6 +41,7 @@ import {
   readAgentOverlay,
   saveAgentOverlay,
   resolveOverlayEntry,
+  serverProblems,
   type AgentOverlayEntry,
 } from '../mcpl-config.js';
 
@@ -130,8 +131,12 @@ export class McplAdminModule implements Module {
           'Deploy an MCPL server: persist it to your agent overlay (survives host ' +
           'restarts) and hot-connect it now — its tools become available immediately. ' +
           'If a server with this id is already running it is restarted with the new ' +
-          'config. Provide either `command` (stdio, spawned as the host user) or `url` ' +
-          '(WebSocket). Relative ./ args resolve against the host working directory. ' +
+          'config. Provide either `command` (stdio, spawned as the host user) or `url`: ' +
+          'ws:// or wss:// for an MCPL server over WebSocket, http:// or https:// for a ' +
+          'modern MCP (2026-07-28) server over Streamable HTTP. A stdio server that speaks ' +
+          'modern MCP takes protocol: "modern". A modern server offers tools only, so the ' +
+          'feature-set fields don\'t apply to it. ' +
+          'Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
           '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
@@ -148,8 +153,9 @@ export class McplAdminModule implements Module {
             command: { type: 'string', description: 'Executable to spawn (stdio transport). Mutually exclusive with url.' },
             args: { type: 'array', items: { type: 'string' }, description: 'Arguments for the command.' },
             env: { type: 'object', description: 'Environment variables for the spawned process.' },
-            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command.' },
-            token: { type: 'string', description: 'Bearer token for WebSocket auth (only when the operator hands you one — prefer `access`).' },
+            url: { type: 'string', description: 'Server URL: ws:// or wss:// (MCPL over WebSocket) or http:// or https:// (modern MCP over Streamable HTTP). Mutually exclusive with command.' },
+            protocol: { type: 'string', enum: ['legacy', 'modern'], description: 'For a `command` server only: "modern" if it speaks MCP 2026-07-28, otherwise omit (legacy MCP + MCPL). URL servers take their protocol from the scheme.' },
+            token: { type: 'string', description: 'Bearer token (only when the operator hands you one — prefer `access`).' },
             access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
             reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
@@ -255,6 +261,9 @@ export class McplAdminModule implements Module {
           lastNegotiatedAt: number | null;
         };
         toolClasses?: ServerToolClass[];
+        family?: 'legacy' | 'modern';
+        protocolVersion?: string | null;
+        transport?: string;
       }
     >;
     const overlay = readAgentOverlay(this.overlayPath);
@@ -273,8 +282,19 @@ export class McplAdminModule implements Module {
       const hostCommands = s.allowHostCommands === undefined
         ? 'unknown'
         : s.allowHostCommands ? 'allow' : 'deny';
+      // Which engine serves it, and over what: `modern@2026-07-28/http`.
+      const protocol = `${s.family ?? 'unknown'}@${s.protocolVersion ?? 'unestablished'}/${s.transport ?? 'unknown'}`;
+      if (s.family === 'modern') {
+        // A modern server has no MCPL grant, policy or manifest to report.
+        lines.push(
+          `${s.id}: ${connectionState} — protocol=${protocol}; ${s.toolCount} tools, ` +
+          `classes=${formatServerToolClasses(s.toolClasses)}, ` +
+          `prefix=${s.toolPrefix}, source=${source}, ${target}`,
+        );
+        continue;
+      }
       lines.push(
-        `${s.id}: ${connectionState} — policy=${policyState}, ` +
+        `${s.id}: ${connectionState} — protocol=${protocol}, policy=${policyState}, ` +
         `grant=${formatCapabilityList(s.effectiveGrant)}, ` +
         `masked=${formatCapabilityList(s.maskedCapabilities)}, ` +
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +
@@ -311,13 +331,21 @@ export class McplAdminModule implements Module {
 
     const command = typeof input.command === 'string' ? input.command : undefined;
     const url = typeof input.url === 'string' ? input.url : undefined;
-    if (!command && !url) return fail('mcpl_deploy requires either `command` (stdio) or `url` (websocket).');
+    if (!command && !url) return fail('mcpl_deploy requires either `command` (stdio) or `url` (ws(s):// or http(s)://).');
     if (command && url) return fail('`command` and `url` are mutually exclusive.');
 
-    // Build the overlay entry from recognized fields only.
+    // Build the overlay entry from recognized fields only. A URL's scheme
+    // decides its transport and family; a WebSocket entry keeps the explicit
+    // `transport` it has always been written with.
     const entry: AgentOverlayEntry = {};
     if (command) entry.command = command;
-    if (url) { entry.url = url; entry.transport = 'websocket'; }
+    if (url) {
+      entry.url = url;
+      if (/^wss?:\/\//i.test(url)) entry.transport = 'websocket';
+    }
+    // Strict function calling sends every property, so an empty string is
+    // "unspecified" here, as for the list fields below.
+    if (input.protocol === 'legacy' || input.protocol === 'modern') entry.protocol = input.protocol;
     if (Array.isArray(input.args)) entry.args = input.args.map(String);
     if (input.env && typeof input.env === 'object') entry.env = input.env as Record<string, string>;
     if (typeof input.token === 'string') entry.token = input.token;
@@ -345,13 +373,21 @@ export class McplAdminModule implements Module {
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
     if (Array.isArray(input.disabledTools) && input.disabledTools.length) entry.disabledTools = input.disabledTools.map(String);
 
+    // A configuration the framework would refuse is refused here, before it
+    // is written: an overlay entry that can never load helps nobody.
+    const resolved = resolveOverlayEntry(id, entry, this.overlayPath);
+    const problems = resolved ? serverProblems(resolved) : ['nothing to connect'];
+    if (problems.length > 0) {
+      return fail(`mcpl_deploy refused "${id}": ${problems.join('; ')}. Nothing was saved.`);
+    }
+
     // Persist to the overlay first — a connect failure still leaves the entry
     // in place so the agent can fix the server and mcpl_restart it.
     const overlay = readAgentOverlay(this.overlayPath);
     overlay[id] = entry;
     saveAgentOverlay(this.overlayPath, overlay);
 
-    const config = resolveOverlayEntry(id, entry, this.overlayPath) as unknown as McplServerConfig;
+    const config = resolved as unknown as McplServerConfig;
     config.env = { ...(config.env ?? {}), AGENT_TIMEZONE: this.timeZone };
     if (entry.access && this.identity) {
       const identity = this.identity;

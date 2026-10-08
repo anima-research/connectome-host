@@ -1245,8 +1245,9 @@ function handleMcpList(): CommandResult {
 
   const lines: Line[] = [{ text: `--- MCPL Servers (${entries.length}) ---`, style: 'system' }];
   for (const [id, entry] of entries) {
-    const cmdLine = [entry.command, ...(entry.args ?? [])].join(' ');
-    lines.push({ text: `  ${id}: ${cmdLine}`, style: 'system' });
+    const target = entry.url ?? [entry.command, ...(entry.args ?? [])].join(' ');
+    const protocol = entry.protocol ? ` (protocol: ${entry.protocol})` : '';
+    lines.push({ text: `  ${id}: ${target}${protocol}`, style: 'system' });
     if (entry.env && Object.keys(entry.env).length > 0) {
       const envStr = Object.entries(entry.env).map(([k, v]) => `${k}=${v}`).join(' ');
       lines.push({ text: `    env: ${envStr}`, style: 'system' });

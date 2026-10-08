@@ -174,15 +174,15 @@ If `systemPrompt` is an HTTP(S) URL (no spaces or newlines), it's fetched as pla
 ### MCP servers
 
 A recipe's `mcpServers` decides which servers the agent gets. An entry can
-define a server outright (`command` + `args`, or `url` for WebSocket), or name
+define a server outright (`command` + `args`, or a `url`), or name
 an id from **`mcpl-servers.json`** — a registry in the working directory
 (edited with `/mcp add|remove|env`). Registry servers are **opt-in**: one
 loads only when a recipe names its id. For a named id the registry supplies
 the command, args and env, and the recipe entry may carry only policy fields —
 no `command` or `url` needed: `channelSubscription`, `toolPrefix`, feature-set
-and tool toggles, reconnect settings, WebSocket transport, `access`,
-`toolLifecycle` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
-`src/mcpl-config.ts`).
+and tool toggles, reconnect settings, a network `url`/`transport`/`token`,
+`access`, `protocol`, `toolLifecycle` and `inheritEnv`
+(`RECIPE_OVERRIDABLE_SERVER_FIELDS` in `src/mcpl-config.ts`).
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
 
@@ -193,6 +193,49 @@ the recipe.
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
 by default) for slow tools, and `agent.retry` passes a Membrane retry policy
 through for flaky gateways.
+
+#### Modern MCP servers
+
+The host speaks two protocol families:
+- **Legacy**: MCP 2024-11-05 plus the MCPL extensions (channels, feature sets, push events, context hooks). This covers every server described above.
+- **Modern**: MCP 2026-07-28, as current MCP servers speak it.
+
+A server's configuration decides which family it uses:
+
+| Entry | Family |
+|---|---|
+| `command` (stdio) | legacy |
+| `command` + `"protocol": "modern"` | modern, over stdio |
+| `url` with `ws://` / `wss://` | legacy (MCPL over WebSocket) |
+| `url` with `http://` / `https://` | modern, over Streamable HTTP |
+
+```json
+{
+  "mcpServers": {
+    "search": { "url": "https://tools.example/mcp", "access": "example-audience" },
+    "local-files": { "command": "npx", "args": ["-y", "some-mcp-server"], "protocol": "modern", "requestTimeoutMs": 120000 }
+  }
+}
+```
+
+The family is never guessed by probing the server. A modern server that refuses 2026-07-28 fails its connect with the server's own error. On the legacy side:
+- A server that answers `initialize` with any revision other than 2024-11-05 is refused, and the error names what was offered and what came back.
+- A server that rejects 2024-11-05 outright (error `-32022`) gets an error naming the revisions it supports, with a hint to set `protocol: "modern"`.
+
+A modern server offers tools only: the model calls its tools, and modules and scripts can call them directly. Rules that come with that:
+- **Tool policy.** `toolPrefix`, `enabledTools` and `disabledTools` work as for any server.
+- **MCPL-only policy is an error.** On a modern server, feature sets, capabilities, `channelSubscription`, `toolLifecycle`, `allowHostCommands`, `autofetch` and `shouldTriggerInference` are refused. So is `protocol` on any URL server, since the scheme already decides.
+- **Deadline.** `requestTimeoutMs` is one deadline per tool call, an integer from 1 to 2³¹−1; `0` is refused here.
+- **On timeout.** The call is cancelled and reported as possibly completed, never retried.
+- **Credentials.** `token` and `access` become a bearer `Authorization` header. An `access` credential is cached and fetched fresh when the server answers 401.
+- **Results.** Images come inline. Audio, binary and embedded resources are saved to the workspace under `tool-results/`, and links are shown, not fetched. A structured result (`structuredContent`) reaches scripts whole.
+
+The same rules hold in `mcpl-servers.json`, the agent overlay and `mcpl_deploy`. The host checks every entry with agent-framework's own validation:
+- a bad recipe or file entry stops startup;
+- a bad overlay entry is skipped with a logged reason;
+- `mcpl_deploy` refuses a bad entry before saving it.
+
+`mcpl_list` and the web panel show each server's family, negotiated revision and transport (`modern@2026-07-28/http`).
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the host's `DISCORD_SUPPRESSED_REACTIONS_BASELINE`, then the entry's `env`, then `AGENT_TIMEZONE`. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 

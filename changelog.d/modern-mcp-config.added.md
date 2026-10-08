@@ -1,0 +1,8 @@
+- Modern MCP (2026-07-28) servers can be configured on every surface: recipe `mcpServers`, `mcpl-servers.json`, the agent overlay and `mcpl_deploy`.
+  - An `http(s)://` `url` is a modern server over Streamable HTTP. `"protocol": "modern"` runs a stdio `command` as one. `ws(s)://` stays MCPL over WebSocket.
+  - `protocol` joins the fields a recipe may override on a file-defined server.
+  - `mcpl-servers.json` entries now carry `url`, `transport`, `token`, `access`, `protocol` and `requestTimeoutMs` through to the framework. Before this the loader passed none of them on, not even `access`, which the file's type already declared.
+  - Every entry is checked by agent-framework's own rules (`resolveServerBinding`, `serverConfigProblems`): a bad recipe or file entry stops startup, a bad overlay entry is skipped with a logged reason, and `mcpl_deploy` refuses one before saving it.
+  - Agent-deployed modern servers carry no MCPL capability mask, since they have no MCPL surface.
+  - `mcpl_list` and the web panel show each server's family, negotiated revision and transport.
+  - Requires an agent-framework release with modern MCP support.
