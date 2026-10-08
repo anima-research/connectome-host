@@ -181,6 +181,9 @@ export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   // (WebSocket for MCPL, Streamable HTTP for modern MCP), or run its stdio
   // command as a modern MCP server.
   'url', 'transport', 'token', 'access', 'protocol',
+  // How long this agent waits on the server's calls is the recipe's call;
+  // the merged value is validated with the rest at startup.
+  'requestTimeoutMs',
   // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
   // policy, like tool toggles — not a property of where the server came from.
   'toolLifecycle',
@@ -194,6 +197,17 @@ export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
   const merged: Record<string, unknown> = { ...fileEntry };
   for (const field of RECIPE_OVERRIDABLE_SERVER_FIELDS) {
     if (recipeEntry[field] !== undefined) merged[field] = recipeEntry[field];
+  }
+  // A recipe that points a file-defined server at an http(s) URL chooses a
+  // modern MCP server over Streamable HTTP. Left with the file's command, the
+  // merged entry would still resolve to that command (the framework's rule
+  // for a config with both and no transport), so the file's stdio launch is
+  // set aside. A ws(s) URL keeps its existing meaning: it takes effect with
+  // `transport: 'websocket'`, as before.
+  if (typeof recipeEntry.url === 'string' && /^https?:\/\//i.test(recipeEntry.url)) {
+    for (const stdioOnly of ['command', 'args', 'inheritEnv', 'protocol']) {
+      if (recipeEntry[stdioOnly] === undefined) delete merged[stdioOnly];
+    }
   }
   return merged as T & Record<string, unknown>;
 }
@@ -365,10 +379,12 @@ export function resolveOverlayEntry(
   // true` was severed PERMANENTLY by any server restart — with no signal to
   // anyone — until the agent's own next restart, which for a long-lived
   // resident is days away (Mythos, eventless in eidoverse after the
-  // 2026-08-04 door deploy). Websocket entries now default to reconnect
-  // unless the entry explicitly says false. Stdio entries keep the old
-  // default: reconnect does not respawn a dead child anyway (mcpl_restart
-  // is that path), so `true` there would promise something it can't do.
+  // 2026-08-04 door deploy). URL entries, WebSocket and HTTP alike, now
+  // default to reconnect unless the entry explicitly says false. Stdio
+  // entries keep the old default: for a legacy command server reconnect does
+  // not respawn a dead child (mcpl_restart is that path), so `true` there
+  // would promise something it can't do. A modern command server is
+  // relaunched by reconnect, when its entry asks for it.
   if (entry.url && rec.reconnect === undefined) rec.reconnect = true;
   // A modern MCP server has no MCPL capabilities to mask: its only surface
   // is tools, which is what a self-deployed server is allowed anyway.

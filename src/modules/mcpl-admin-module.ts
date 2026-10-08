@@ -154,11 +154,11 @@ export class McplAdminModule implements Module {
             args: { type: 'array', items: { type: 'string' }, description: 'Arguments for the command.' },
             env: { type: 'object', description: 'Environment variables for the spawned process.' },
             url: { type: 'string', description: 'Server URL: ws:// or wss:// (MCPL over WebSocket) or http:// or https:// (modern MCP over Streamable HTTP). Mutually exclusive with command.' },
-            protocol: { type: 'string', enum: ['legacy', 'modern'], description: 'For a `command` server only: "modern" if it speaks MCP 2026-07-28, otherwise omit (legacy MCP + MCPL). URL servers take their protocol from the scheme.' },
+            protocol: { type: 'string', enum: ['', 'legacy', 'modern'], description: 'For a `command` server only: "modern" if it speaks MCP 2026-07-28. Omit it, or pass "", for a URL server (the scheme decides) or a legacy (MCP + MCPL) command server.' },
             token: { type: 'string', description: 'Bearer token (only when the operator hands you one — prefer `access`).' },
             access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
-            reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
+            reconnect: { type: 'boolean', description: 'Auto-reconnect when the connection is lost. Default: true for URL servers, ws:// and http(s):// alike (a bounced server comes back on its own); false for command servers. For a legacy command server it does NOT respawn a crashed child (use mcpl_restart for that); a protocol: "modern" command server is relaunched when this is true.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
@@ -172,7 +172,8 @@ export class McplAdminModule implements Module {
         description:
           'Restart an MCPL server: kill the process and respawn it with its current ' +
           'config. Use after rebuilding a server\'s dist, or to recover a crashed ' +
-          'server (reconnect:true does not respawn dead children — this does). ' +
+          'server (for a legacy command server, reconnect:true does not respawn a dead ' +
+          'child — this does). ' +
           'CAUTION: restarting the server that carries your active conversation ' +
           '(e.g. discord) briefly interrupts your own message delivery; it reconnects ' +
           'within a few seconds.',
@@ -274,7 +275,9 @@ export class McplAdminModule implements Module {
       const source = overlay[s.id] && !overlay[s.id]!.disabled
         ? 'agent-overlay'
         : s.id in fileServers ? 'file/recipe' : 'recipe';
-      const target = s.command ?? s.url ?? '?';
+      // What the connection actually targets: a network transport's url,
+      // never a command it doesn't run.
+      const target = (s.transport === 'http' || s.transport === 'websocket' ? s.url : s.command) ?? s.command ?? s.url ?? '?';
       const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
       const policyState = s.policyEstablished === undefined
         ? 'unknown'
@@ -343,9 +346,15 @@ export class McplAdminModule implements Module {
       entry.url = url;
       if (/^wss?:\/\//i.test(url)) entry.transport = 'websocket';
     }
-    // Strict function calling sends every property, so an empty string is
-    // "unspecified" here, as for the list fields below.
-    if (input.protocol === 'legacy' || input.protocol === 'modern') entry.protocol = input.protocol;
+    // Strict function calling sends every property, so "" is the schema's
+    // "unspecified", as an empty list is below. Anything else is refused
+    // rather than saved as a default.
+    if (input.protocol !== undefined && input.protocol !== null && input.protocol !== '') {
+      if (input.protocol !== 'legacy' && input.protocol !== 'modern') {
+        return fail(`mcpl_deploy refused "${id}": protocol must be "legacy", "modern" or "" (unspecified), not ${JSON.stringify(input.protocol)}. Nothing was saved.`);
+      }
+      entry.protocol = input.protocol;
+    }
     if (Array.isArray(input.args)) entry.args = input.args.map(String);
     if (input.env && typeof input.env === 'object') entry.env = input.env as Record<string, string>;
     if (typeof input.token === 'string') entry.token = input.token;
@@ -412,9 +421,22 @@ export class McplAdminModule implements Module {
       );
     }
 
-    const status = framework.listMcplServers().find(s => s.id === id);
+    const status = framework.listMcplServers().find(s => s.id === id) as
+      (ReturnType<AgentFramework['listMcplServers']>[number] & {
+        retrying?: boolean;
+        family?: 'legacy' | 'modern';
+        protocolVersion?: string | null;
+        transport?: string;
+      }) | undefined;
+    // Report what the framework says now, not what the call's success implies.
+    const disposition = status?.connected
+      ? 'connected'
+      : status?.retrying
+        ? 'NOT connected yet; reconnecting in the background'
+        : 'NOT connected';
+    const protocol = `${status?.family ?? 'unknown'}@${status?.protocolVersion ?? 'unestablished'}/${status?.transport ?? 'unknown'}`;
     return ok(
-      `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
+      `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}": ${disposition}, protocol=${protocol}, ` +
       `${status?.toolCount ?? 0} tools under prefix ${status?.toolPrefix ?? `mcpl--${id}`}. ` +
       'Persisted to your agent overlay (survives host restarts).',
     );

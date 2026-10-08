@@ -25,6 +25,7 @@ import {
   serverProblems,
 } from '../src/mcpl-config.js';
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.js';
+import { buildMcplSnapshot } from '../src/web/panel-data.js';
 
 const BASELINE = [...AGENT_DEPLOY_DENIED_CAPABILITIES].sort();
 
@@ -96,6 +97,31 @@ describe('recipe mcpServers', () => {
     );
     expect(serverProblems(misapplied[0]!).join('; ')).toMatch(/enabledFeatureSets/);
   });
+
+  test('a recipe deadline override survives the merge and is checked there', () => {
+    const file = [{ id: 'srv', command: 'node' }];
+    const kept = mergeRecipeServers({ srv: { protocol: 'modern', requestTimeoutMs: 120000 } }, file);
+    expect(kept[0]).toMatchObject({ protocol: 'modern', requestTimeoutMs: 120000 });
+    expect(serverProblems(kept[0]!)).toEqual([]);
+    const zero = mergeRecipeServers({ srv: { protocol: 'modern', requestTimeoutMs: 0 } }, file);
+    expect(zero[0]).toMatchObject({ requestTimeoutMs: 0 });
+    expect(serverProblems(zero[0]!).join('; ')).toMatch(/requestTimeoutMs/);
+  });
+
+  test("a recipe's http(s) url makes a file-defined server modern HTTP; a ws url keeps its old meaning", () => {
+    const file = [{ id: 'srv', command: 'old-server', args: ['--x'], protocol: 'legacy', env: { A: '1' } }];
+    const http = mergeRecipeServers({ srv: { url: 'https://tools.example/mcp', token: 't' } }, file)[0]!;
+    expect(http).toMatchObject({ id: 'srv', url: 'https://tools.example/mcp', token: 't' });
+    expect(http.command).toBeUndefined();
+    expect(http.args).toBeUndefined();
+    expect(http.protocol).toBeUndefined();
+    expect(isModernServer(http)).toBe(true);
+    expect(serverProblems(http)).toEqual([]);
+    // A ws url without a transport leaves the file's command in charge, as before.
+    const ws = mergeRecipeServers({ srv: { url: 'wss://host/mcpl' } }, file)[0]!;
+    expect(ws).toMatchObject({ command: 'old-server', url: 'wss://host/mcpl' });
+    expect(isModernServer(ws)).toBe(false);
+  });
 });
 
 describe('mcpl-servers.json', () => {
@@ -162,18 +188,20 @@ describe('agent overlay', () => {
 describe('mcpl_deploy and mcpl_list', () => {
   interface Connected { id: string; url?: string; command?: string; transport?: string; protocol?: string; disabledCapabilities?: string[] }
 
-  function makeFramework() {
+  function makeFramework(state: { connected: boolean; retrying?: boolean } = { connected: true }) {
     const connected: Connected[] = [];
     const framework = {
       listMcplServers: () => connected.map((c) => ({
         id: c.id,
-        connected: true,
+        connected: state.connected,
+        retrying: state.retrying ?? false,
         toolCount: 2,
         toolPrefix: `mcpl--${c.id}`,
-        ...(c.url ? { url: c.url } : { command: c.command }),
+        ...(c.url ? { url: c.url } : {}),
+        ...(c.command ? { command: c.command } : {}),
         family: c.url?.startsWith('http') || c.protocol === 'modern' ? 'modern' as const : 'legacy' as const,
-        protocolVersion: c.url?.startsWith('http') || c.protocol === 'modern' ? '2026-07-28' : '2024-11-05',
-        transport: c.url?.startsWith('http') ? 'http' : c.url ? 'websocket' : 'stdio',
+        protocolVersion: state.connected ? (c.url?.startsWith('http') || c.protocol === 'modern' ? '2026-07-28' : '2024-11-05') : null,
+        transport: c.transport ?? (c.url?.startsWith('http') ? 'http' : c.url ? 'websocket' : 'stdio'),
       })),
       connectMcplServer: async (config: Connected) => { connected.push(config); },
       restartMcplServer: async () => {},
@@ -240,5 +268,41 @@ describe('mcpl_deploy and mcpl_list', () => {
     expect(text).toMatch(/tools: CONNECTED — protocol=modern@2026-07-28\/http; 2 tools/);
     expect(text).not.toMatch(/tools: .*policy=/);
     expect(text).toMatch(/chat: CONNECTED — protocol=legacy@2024-11-05\/stdio, policy=/);
+  });
+
+  test('status names the target its transport uses, not an unused command', async () => {
+    const { framework, connected } = makeFramework();
+    connected.push({ id: 'moved', command: 'old-server', url: 'https://tools.example/mcp', transport: 'http' });
+    const mod = makeModule(framework);
+    const text = String((await call(mod, 'mcpl_list', {})).data ?? '');
+    expect(text).toMatch(/moved: CONNECTED — protocol=modern@2026-07-28\/http; .*https:\/\/tools\.example\/mcp/);
+    expect(text).not.toMatch(/old-server/);
+    const snap = buildMcplSnapshot({ framework } as never) as { live: Array<{ id: string; target?: string; family?: string; transport?: string }> };
+    expect(snap.live[0]).toMatchObject({ id: 'moved', target: 'https://tools.example/mcp', family: 'modern', transport: 'http' });
+  });
+
+  test('protocol: "" is the schema-valid unspecified value; anything unknown is refused', async () => {
+    const { framework } = makeFramework();
+    const mod = makeModule(framework);
+    const deploy = mod.getTools().concat(mod.getUtilities()).find((t) => t.name === 'mcpl_deploy')!;
+    expect((deploy.inputSchema as { properties: { protocol: { enum: string[] } } }).properties.protocol.enum).toEqual(['', 'legacy', 'modern']);
+    expect((await call(mod, 'mcpl_deploy', { id: 'h', url: 'https://tools.example/mcp', protocol: '' })).success).toBe(true);
+    const refused = await call(mod, 'mcpl_deploy', { id: 'f', command: 'node', protocol: 'future' });
+    expect(refused.success).toBe(false);
+    expect(String(refused.error ?? refused.data)).toMatch(/protocol must be "legacy", "modern" or ""/);
+    expect(readAgentOverlay(join(dir, 'mcpl-servers.agent.json')).f).toBeUndefined();
+  });
+
+  test("deploy reports the framework's actual disposition and protocol", async () => {
+    const { framework } = makeFramework({ connected: false, retrying: true });
+    const mod = makeModule(framework);
+    const result = await call(mod, 'mcpl_deploy', { id: 'slow', url: 'https://tools.example/mcp' });
+    expect(result.success).toBe(true);
+    const text = String(result.data ?? '');
+    expect(text).toMatch(/"slow": NOT connected yet; reconnecting in the background, protocol=modern@unestablished\/http/);
+    expect(text).not.toMatch(/: connected,/);
+    const live = makeFramework();
+    const ok = await call(makeModule(live.framework), 'mcpl_deploy', { id: 'fast', url: 'https://tools.example/mcp' });
+    expect(String(ok.data ?? '')).toMatch(/"fast": connected, protocol=modern@2026-07-28\/http, 2 tools/);
   });
 });

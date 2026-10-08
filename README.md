@@ -198,7 +198,7 @@ through for flaky gateways.
 
 The host speaks two protocol families:
 - **Legacy**: MCP 2024-11-05 plus the MCPL extensions (channels, feature sets, push events, context hooks). This covers every server described above.
-- **Modern**: MCP 2026-07-28, as current MCP servers speak it.
+- **Modern**: MCP revision 2026-07-28, the one revision the modern engine supports.
 
 A server's configuration decides which family it uses:
 
@@ -226,9 +226,9 @@ A modern server offers tools only: the model calls its tools, and modules and sc
 - **Tool policy.** `toolPrefix`, `enabledTools` and `disabledTools` work as for any server.
 - **MCPL-only policy is an error.** On a modern server, feature sets, capabilities, `channelSubscription`, `toolLifecycle`, `allowHostCommands`, `autofetch` and `shouldTriggerInference` are refused. So is `protocol` on any URL server, since the scheme already decides.
 - **Deadline.** `requestTimeoutMs` is one deadline per tool call, an integer from 1 to 2³¹−1; `0` is refused here.
-- **On timeout.** The call is cancelled and reported as possibly completed, never retried.
+- **On timeout.** At the deadline the client requests cancellation, and the outcome is reported as unknown: the server may still complete the call. It is never retried.
 - **Credentials.** `token` and `access` become a bearer `Authorization` header. An `access` credential is cached and fetched fresh when the server answers 401.
-- **Results.** Images come inline. Audio, binary and embedded resources are saved to the workspace under `tool-results/`, and links are shown, not fetched. A structured result (`structuredContent`) reaches scripts whole.
+- **Results.** Text and images are shown inline, including an embedded resource's text. Audio and binary payloads (blobs, binary embedded resources) are saved to the workspace under `tool-results/`, with a short note saying where. Links are shown, not fetched. A structured result (`structuredContent`) reaches scripts whole.
 
 The same rules hold in `mcpl-servers.json`, the agent overlay and `mcpl_deploy`. The host checks every entry with agent-framework's own validation:
 - a bad recipe or file entry stops startup;

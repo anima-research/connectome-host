@@ -310,7 +310,12 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
         connected: s.connected === true,
         toolCount: s.toolCount ?? 0,
         ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
-        ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
+        // The target its transport actually uses: a network server's url,
+        // never a command it doesn't run.
+        ...((() => {
+          const target = (s.transport === 'http' || s.transport === 'websocket' ? s.url : s.command) ?? s.command ?? s.url;
+          return target ? { target } : {};
+        })()),
         // Absent from a framework older than modern MCP support.
         ...(s.family ? { family: s.family } : {}),
         ...(s.protocolVersion ? { protocolVersion: s.protocolVersion } : {}),
