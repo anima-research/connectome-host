@@ -122,6 +122,33 @@ describe('recipe mcpServers', () => {
     expect(ws).toMatchObject({ command: 'old-server', url: 'wss://host/mcpl' });
     expect(isModernServer(ws)).toBe(false);
   });
+
+  test("a file's own transport doesn't outlive a recipe's http(s) url; a recipe transport is kept and checked", () => {
+    const fromStdio = mergeRecipeServers(
+      { srv: { url: 'https://tools.example/mcp' } },
+      [{ id: 'srv', command: 'node', transport: 'stdio' }],
+    )[0]!;
+    expect(fromStdio.transport).toBeUndefined();
+    expect(fromStdio.command).toBeUndefined();
+    expect(serverProblems(fromStdio)).toEqual([]);
+    expect(isModernServer(fromStdio)).toBe(true);
+
+    const fromWs = mergeRecipeServers(
+      { srv: { url: 'https://tools.example/mcp' } },
+      [{ id: 'srv', url: 'wss://host/mcpl', transport: 'websocket', token: 't' }],
+    )[0]!;
+    expect(fromWs).toMatchObject({ url: 'https://tools.example/mcp', token: 't' });
+    expect(fromWs.transport).toBeUndefined();
+    expect(serverProblems(fromWs)).toEqual([]);
+    expect(isModernServer(fromWs)).toBe(true);
+
+    const explicit = mergeRecipeServers(
+      { srv: { url: 'https://tools.example/mcp', transport: 'websocket' } },
+      [{ id: 'srv', command: 'node' }],
+    )[0]!;
+    expect(explicit.transport).toBe('websocket');
+    expect(serverProblems(explicit).length).toBeGreaterThan(0);
+  });
 });
 
 describe('mcpl-servers.json', () => {

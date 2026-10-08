@@ -202,11 +202,13 @@ export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
   // modern MCP server over Streamable HTTP. Left with the file's command, the
   // merged entry would still resolve to that command (the framework's rule
   // for a config with both and no transport), so the file's stdio launch is
-  // set aside. A ws(s) URL keeps its existing meaning: it takes effect with
-  // `transport: 'websocket'`, as before.
+  // set aside, along with a `transport` the file chose for its own target
+  // (stdio, or websocket for its old URL). A transport the recipe itself
+  // gives stays, to be validated against the URL. A ws(s) URL keeps its
+  // existing meaning: it takes effect with `transport: 'websocket'`.
   if (typeof recipeEntry.url === 'string' && /^https?:\/\//i.test(recipeEntry.url)) {
-    for (const stdioOnly of ['command', 'args', 'inheritEnv', 'protocol']) {
-      if (recipeEntry[stdioOnly] === undefined) delete merged[stdioOnly];
+    for (const fileOnly of ['command', 'args', 'inheritEnv', 'protocol', 'transport']) {
+      if (recipeEntry[fileOnly] === undefined) delete merged[fileOnly];
     }
   }
   return merged as T & Record<string, unknown>;
