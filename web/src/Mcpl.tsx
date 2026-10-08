@@ -21,12 +21,16 @@ import { createSignal, For, Show } from 'solid-js';
 export interface McplServerRow {
   id: string;
   /** What the entry connects to, as the host resolved it by the framework's
-   *  binding rules: its command line on stdio, its url on a network transport. */
-  target: string;
+   *  binding rules: its command line on stdio, its url on a network
+   *  transport. Absent from a fleet child older than this field. */
+  target?: string;
   family?: 'legacy' | 'modern';
   transport?: 'stdio' | 'websocket' | 'http';
   /** Why the framework refuses the entry (it stops the host's startup). */
   problems?: string[];
+  /** The entry's own command line: shown only by a row without `target`. */
+  command?: string;
+  args?: string[];
   env?: Record<string, string>;
   toolPrefix?: string;
   reconnect?: boolean;
@@ -278,6 +282,10 @@ function ServerCard(props: {
 }) {
   const [editEnv, setEditEnv] = createSignal(false);
   const [confirmDel, setConfirmDel] = createSignal(false);
+  // The host-resolved target; a row from a fleet child adopted across a
+  // parent upgrade predates it and has only its command line.
+  const target = (): string =>
+    props.server.target ?? [props.server.command, ...(props.server.args ?? [])].join(' ');
   const envEntries = (): Array<[string, string]> => Object.entries(props.server.env ?? {});
 
   return (
@@ -333,7 +341,7 @@ function ServerCard(props: {
         </Show>
       </div>
       <div class="font-mono text-neutral-300 text-[11px] break-all leading-tight">
-        {props.server.target}
+        {target()}
       </div>
       <Show when={props.server.problems}>
         <div class="mt-1 text-[10px] text-rose-300 break-all leading-tight">

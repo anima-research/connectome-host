@@ -432,8 +432,9 @@ export interface McplListMessage {
     id: string;
     /** What the entry connects to, by the framework's binding rules: its
      *  command line on stdio, its url on a network transport. Empty when
-     *  the entry names neither. */
-    target: string;
+     *  the entry names neither. Absent from a fleet child older than this
+     *  field (one adopted across a parent upgrade). */
+    target?: string;
     /** `legacy` or `modern`; absent when the entry can't be resolved. */
     family?: 'legacy' | 'modern';
     /** `stdio`, `websocket` or `http`; absent when the entry can't be resolved. */
@@ -441,6 +442,10 @@ export interface McplListMessage {
     /** Why the framework refuses the entry, which stops the host's startup;
      *  absent when it is usable. */
     problems?: string[];
+    /** The entry's own command line, for readers older than `target`; a
+     *  current reader shows `target`, and these only when it is absent. */
+    command?: string;
+    args?: string[];
     env?: Record<string, string>;
     toolPrefix?: string;
     reconnect?: boolean;

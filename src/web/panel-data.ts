@@ -339,6 +339,11 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       // (target, family, transport), and why the framework refuses it, if
       // it does. The browser can't apply those rules itself.
       ...registryEntryView(id, entry),
+      // Kept for readers older than `target`: a panel loaded before an
+      // upgrade shows the command line from these. Current readers use
+      // `target`, which follows the binding.
+      ...(entry.command !== undefined ? { command: entry.command } : {}),
+      ...(entry.args ? { args: entry.args } : {}),
       ...(entry.env ? { env: entry.env } : {}),
       ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),
       ...(entry.reconnect !== undefined ? { reconnect: entry.reconnect } : {}),

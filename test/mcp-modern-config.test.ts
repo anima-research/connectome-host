@@ -280,11 +280,13 @@ describe('registry views: /mcp list, /mcp add and the panel registry', () => {
     expect(broken).toBeGreaterThan(0);
     expect(lines[broken + 1]).toMatch(/^ {4}refused at startup: .*transport "websocket" requires "url"/);
 
+    // Rows keep the entry's own command line for panels older than `target`;
+    // a current panel shows `target`.
     const snap = buildMcplSnapshot({ framework: {} } as never) as { servers: Array<Record<string, unknown>> };
     expect(snap.servers).toEqual([
-      { id: 'mixed', target: 'node srv.js', family: 'legacy', transport: 'stdio' },
-      { id: 'moved', target: 'https://tools.example/mcp', family: 'modern', transport: 'http' },
-      { id: 'broken', target: 'node', problems: [expect.stringMatching(/transport "websocket" requires "url"/)] },
+      { id: 'mixed', target: 'node srv.js', family: 'legacy', transport: 'stdio', command: 'node', args: ['srv.js'] },
+      { id: 'moved', target: 'https://tools.example/mcp', family: 'modern', transport: 'http', command: 'node' },
+      { id: 'broken', target: 'node', problems: [expect.stringMatching(/transport "websocket" requires "url"/)], command: 'node' },
     ]);
   });
 
