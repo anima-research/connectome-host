@@ -43,6 +43,7 @@ function adapterWithTrigger(trigger: () => typeof wake | null) {
   const adapter = new AnthropicAdapter({ apiKey: 'sk-test', cacheKeepalive: { enabled: false }, dynamicHeaders: dyn } as any);
   const calls: Array<{ kind: string; headers: Record<string, string> | undefined }> = [];
   (adapter as any).client = {
+    withOptions() { return this; },
     messages: {
       create: async (_req: unknown, opts: { headers?: Record<string, string> }) => { calls.push({ kind: 'complete', headers: opts?.headers }); return RESPONSE; },
       stream: async (_req: unknown, opts: { headers?: Record<string, string> }) => { calls.push({ kind: 'stream', headers: opts?.headers }); return mockStream(); },
