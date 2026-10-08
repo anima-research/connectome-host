@@ -36,7 +36,7 @@ The thinking-signature situation is load-bearing. The API rejects `thinking` blo
 - `ANTHROPIC_API_KEY` exported in your shell
 - Bun installed (conhost runs on Bun, not Node)
 - A claude.ai data export extracted to a directory (let's call it `~/claude-export/`). The directory must contain `conversations.json`; `memories.json` is optional but recommended.
-- Working tree of connectome-host with this PR's branch; `bun install` already run
+- A connectome-host checkout (the scripts are on `main`) with `bun install` already run
 
 ## The pipeline
 
@@ -76,7 +76,7 @@ Four stages. The first two (import, recipe compose) are independent and can be r
 bun scripts/import-claudeai-export.ts ~/claude-export
 ```
 
-By default, runs the interactive picker: lists every conversation by name, date, message count, and a short id; you toggle which to import with index ranges (`1,3-5,7`), `a` (all), `n` (none), `i` (invert), then `Enter` to commit. For non-interactive use add `--no-interactive` (imports everything matching `--filter`) or `--dry-run` (parses and reports without writing).
+By default (when stdin is a terminal), runs the interactive picker: lists every conversation by name, date, message count, and a short id; you toggle which to import with index ranges (`1,3-5,7`), `a` (all), `n` (none), `i` (invert), then `Enter` to commit. For non-interactive use add `--no-interactive` (imports everything matching `--filter`) or `--dry-run` (parses and reports without writing).
 
 Each conversation becomes its own conhost session with an isolated Chronicle store under `data/sessions/<id>/`, named after the original. Branched conversations are linearized to the latest-leaf-time path; you'll see a `[branched: kept latest-leaf path]` tag on those.
 
@@ -89,6 +89,7 @@ Useful flags:
 | `--filter <regex>` | Case-insensitive name regex; combines with the interactive picker |
 | `--dry-run` | Parse + report, don't write |
 | `--no-interactive` | Skip the picker; import everything (after `--filter`) |
+| `--interactive` | Force the picker on even when stdin isn't a terminal |
 
 After import you'll see one line per conversation showing the new session id, message count, and any branched-path note. A sidecar `<id>.import-source.json` is written alongside each session dir with provenance metadata (original UUID, timestamps, branch flag). The pre-import active session is restored at the end, so a bulk import won't silently steal your working session.
 
@@ -104,7 +105,7 @@ You have two paths here. Both produce a `recipe.json` you'll point conhost at in
 bun scripts/evacuator.ts ~/claude-export
 ```
 
-The five steps, each checkpointed to `data/evacuator-state.json` so you can `--resume`:
+The five steps, each checkpointed to `evacuator-state.json` in the data dir (`data/` unless you pass `--data-dir`) so you can `--resume`:
 
 1. **Model detection.** Tallies model IDs across the export (both conversation-level and per-message). Most-frequent wins; you confirm or override.
 2. **Prompt source.** Fetches the leaked system prompt for that model from a known URL (the script keeps a small map of `MODEL_PROMPT_SOURCES`, indexed by canonical model ID — currently Sonnet 4.5, Sonnet 4.6, Opus 4.1, Opus 4.5, Haiku 4.5). If your model isn't mapped, you'll get a dialog: pick from a Levenshtein-ranked list of siblings, paste a URL or local path, type `empty`, type `minimal`, or type `model` to switch models entirely.
@@ -118,13 +119,14 @@ Before writing the recipe, the evacuator asks whether to warm up a session. Ente
 
 Participant selection runs again on `--resume`; the checkpoint does not pin it. If the recipe already at `--out` names a different participant, the evacuator warns before replacing it and explains that previous warmup summaries remain in their original namespace. To retain a custom identity when skipping warmup on a resumed run, pass `--agent <prior-name>` or select that session again. The output recipe is compared for a warning, not used as a hidden source of identity.
 
-Retired-model handling: if you name a model that's no longer on the Anthropic API (Claude 3.x families, Claude 2, Instant), the evacuator surfaces a memorial dialog instead of silently swapping. You can explicitly substitute a living relative, type any other model ID, or `abort` to exit with a small acknowledgment. The fact that the original cognitive state is unreachable deserves to be faced.
+Retired-model handling: if the model ID you pick starts with `claude-3-sonnet`, `claude-3-haiku`, `claude-3-opus`, `claude-2` or `claude-instant` (the original Claude 3 models, Claude 2, Instant), the evacuator surfaces a memorial dialog instead of silently swapping. The check is a prefix match on that list only — 3.5 and 3.7 IDs are not flagged, whatever their API status. You can explicitly substitute a living relative, type any other model ID, or `abort` to exit with a small acknowledgment. The fact that the original cognitive state is unreachable deserves to be faced.
 
 Useful evacuator flags:
 
 | Flag | Purpose |
 |---|---|
 | `--out <path>` | Output recipe path (default `data/evacuated-recipe.json`) |
+| `--data-dir <dir>` | Conhost data dir (default `./data`): holds the checkpoint, and is passed to a chained warmup |
 | `--model <id>` | Skip detection; use this model |
 | `--agent <name>` | Explicit participant name for recipe and warmup. Otherwise use the chosen warmup session's sidecar, then `Claude`. Required for custom-name imports when no warmup session is selected. |
 | `--prompt-source <url\|path>` | Skip the leaked-prompt lookup |
@@ -133,7 +135,7 @@ Useful evacuator flags:
 | `--resume` | Pick up from `data/evacuator-state.json` |
 | `--reset` | Clear checkpoint state first |
 
-The evacuator can chain straight into Stage 3 at the end ("Start a warmup pass now?"); decline if you'd rather run warmup separately.
+The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?" before writing the recipe, so the chosen session can name the participant, and runs the warmup once the recipe is written. Decline if you'd rather run warmup separately (and pass `--agent` for a custom-name import).
 
 ### Stage 3 — Warmup (compress the message history)
 
@@ -143,7 +145,7 @@ Bulk-imported sessions land in Chronicle with thousands of raw messages and no a
 bun scripts/warmup-session.ts "<conversation name or session id>"
 ```
 
-Compression is driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name.
+Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
 Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
 
@@ -152,7 +154,7 @@ Useful warmup flags:
 | Flag | Purpose |
 |---|---|
 | `--data-dir <dir>` | Conhost data dir (default `./data`) |
-| `--model <id>` | Compression model (default `claude-sonnet-4-5-20250929`) |
+| `--model <id>` | Compression model (default `claude-sonnet-4-5-20250929`). Bedrock IDs (`anthropic.…` or `<region>.anthropic.…`) are accepted and go through Bedrock, using `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_REGION`) instead of `ANTHROPIC_API_KEY` |
 | `--agent <name>` | Participant name for assistant turns. If omitted, read from the session's import-source sidecar; falls back to `Claude` otherwise. Must equal the value the session was imported with — Membrane formats the assistant role by string-comparing message participants against this name. |
 | `--max-spend <usd>` | Soft cap — halts gracefully when running cost hits the cap. Re-run to resume. |
 | `--l1-budget <n>`, `--l2-budget <n>`, `--l3-budget <n>` | Autobio tier token budgets |
@@ -212,7 +214,7 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 - **Images without inline bytes are placeholder-only.** The export records `file_uuid` for images but doesn't include the bytes. Recovering them requires a separate cookie-authed fetch against claude.ai, which is not yet built.
 - **Thinking blocks are not native thinking blocks at replay.** They're wrapped text. The model can see and read its prior reasoning, but it's no longer thinking-flagged content for the API. New thinking happens normally in its own private channel.
 - **Tool calls to web-only tools are inert.** They stay visible as evidence of past activity but the tools themselves aren't registered. The transplant addendum tells the model this explicitly.
-- **The `--agent` name matters, but the sidecar carries it forward.** The importer records the agent name in `<id>.import-source.json`; warmup reads it back, and the evacuator pins it when that session is selected for warmup. Without a selected session, the evacuator and bundled revival recipe use `Claude` unless overridden. Make the recipe's pinned name match the imported participant, or warmup and the live agent will write summaries to different Chronicle namespaces and the agent will appear amnesiac on first open.
+- **The `--agent` name matters, but the sidecar carries it forward.** The importer records the agent name in `<id>.import-source.json`; warmup reads it back, and the evacuator pins it in its recipe when that session is selected for warmup. Without a selected session, the evacuator and the bundled revival recipe use `Claude` unless overridden. Conhost itself uses the recipe's `agent.name` whenever one is set — the sidecar only fills in when it's absent — so make the recipe's pinned name match the imported participant. Recipes written by earlier versions of the evacuator carry `agent.name: "agent"` and need that field changed. Otherwise warmup and the live agent end up writing summaries to different Chronicle namespaces and the agent will appear amnesiac on first open. If the session active at startup is an imported one whose sidecar disagrees with the recipe, conhost prints an `agent name disagreement` warning (it doesn't re-check after `/session switch`).
 - **`memories.json` is optional.** If the export was made before persistent memories existed, or the user never enabled them, the file is absent or empty and the evacuator simply skips step 5.
 - **The leaked-prompt map drifts.** `MODEL_PROMPT_SOURCES` in `evacuator.ts` points to third-party githubusercontent URLs that may move. If a fetch fails, the dialog falls back to letting you paste a URL or local path.
 
@@ -221,15 +223,17 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `400 invalid_request_error … signature: Field required` | A native `thinking` block reached the API without a signature | Confirm the importer was run; check that historical assistant turns contain `<recovered_thinking>` wrapped text, not raw thinking blocks |
-| Assistant turns appear as user role | `--agent` mismatch between import and recipe | Re-import with `--agent <name>` matching `agent.name` in your recipe |
+| Assistant turns appear as user role (startup may warn `agent name disagreement`) | `--agent` mismatch between import and recipe — including a recipe from an earlier evacuator left at `agent.name: "agent"` | Set the recipe's `agent.name` to the import's `--agent` value (default `Claude`), or re-import with `--agent <name>` matching the recipe |
 | First compile blows the context window | Warmup wasn't run on a large conversation | Run `bun scripts/warmup-session.ts "<name>"` to convergence |
 | Warmup hangs at near-100% CPU on subsequent prompts | Bun 1.3 readline-on-pipe bug | Already worked around in both scripts via a persistent line reader; if you hit it elsewhere, ensure stdin isn't being multiplexed |
 | Evacuator's adjustment step fails | No `ANTHROPIC_API_KEY` set, or model unreachable | Set the env var, or skip step 3 (the raw leaked prompt is also a fine starting point — step 4's editor pass lets you do the trimming by hand) |
-| Repeat run of the evacuator restarts from step 1 | `--resume` not passed | `bun scripts/evacuator.ts <export-dir> --resume` |
+| Repeat run of the evacuator aborts with `Found existing checkpoint …` | A checkpoint exists and neither `--resume` nor `--reset` was passed | `bun scripts/evacuator.ts <export-dir> --resume` to continue (or `--reset` to start over) |
 | `data/evacuator-state.json` reflects an earlier model choice you've moved past | Checkpoint stuck | `bun scripts/evacuator.ts <export-dir> --reset` |
 
 ## Related
 
 - `scripts/test-historical-thinking.ts` — the empirical record of why wrapped-text is the only encoding that round-trips. Re-run if Anthropic ever loosens.
 - `recipes/prompts/transplant-addendum.md` — the boilerplate that explains the transplant artifacts to the model in first-person voice.
+- `docs/claude-code-ingest.md` — the same move for a Claude Code session transcript, where signed thinking *is* preserved.
+- `scripts/import-codex-rollout.ts` — imports a Codex rollout JSONL as an OpenAI Responses session.
 - `docs/LIBRARY-PIPELINE.md` — another non-obvious workflow guide, for the three-agent knowledge pipeline.

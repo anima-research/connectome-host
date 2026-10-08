@@ -82,6 +82,7 @@ import {
   resolveAgent,
   buildMediaBlock,
   buildMcplSnapshot,
+  buildToolClassesSnapshot,
   buildSettingsState,
   buildPinsSnapshot,
   buildHealthSnapshot,
@@ -222,6 +223,7 @@ const HTTP_PANEL_OPS: Record<string, string> = {
   '/debug/context/preview': 'context-preview',
   '/debug/context/maintenance': 'context-maintenance',
   '/debug/context': 'debug-context',
+  '/debug/tool-classes': 'tool-classes',
   '/healthz': 'health',
   '/quota': 'quota',
 };
@@ -390,6 +392,13 @@ interface SharedServerState {
 
 let sharedServer: SharedServerState | null = null;
 
+/** An openable URL for a bind address: IPv6 literals (the `::1` loopback
+ *  bind, say) need brackets, or the port reads as part of the address. */
+export function webUiHttpUrl(host: string, port: number): string {
+  const literal = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${literal}:${port}`;
+}
+
 export class WebUiModule implements Module {
   readonly name = 'webui';
 
@@ -486,7 +495,7 @@ export class WebUiModule implements Module {
       }
     }) ?? null;
 
-    console.log(`[webui] listening on http://${host}:${boundPort}`);
+    console.log(`[webui] listening on ${webUiHttpUrl(host, boundPort)}`);
   }
 
   async stop(): Promise<void> {
@@ -502,6 +511,13 @@ export class WebUiModule implements Module {
     sharedServer.treeAggregator?.dispose();
     sharedServer.treeAggregator = null;
     sharedServer.app = null;
+  }
+
+  /** Where the process-level web server listens, or null if none is up.
+   *  It outlives stop(), so batch mode reports it after the agent stops. */
+  listeningUrl(): string | null {
+    if (!sharedServer) return null;
+    return webUiHttpUrl(sharedServer.host, sharedServer.port);
   }
 
   getTools(): ToolDefinition[] { return []; }
@@ -587,7 +603,7 @@ export class WebUiModule implements Module {
     // Fleet integration: if FleetModule is mounted, spin up a private
     // FleetTreeAggregator and start forwarding child events to clients. The
     // aggregator's per-child reducers are populated via the `describe`/snapshot
-    // protocol, exactly as the TUI uses them — see UNIFIED-TREE-PLAN.md §3.
+    // protocol, exactly as the TUI uses them — see docs/history/UNIFIED-TREE-PLAN.md §3.
     const fleetMod = app.framework
       .getAllModules()
       .find((m) => m.name === 'fleet') as FleetModule | undefined;
@@ -1110,6 +1126,12 @@ export class WebUiModule implements Module {
       return this.handleDebugContext(url);
     }
 
+    // Each tool's effective MCPL class (RFC-008) and the source that decided
+    // it. Every tool offered, or one agent's surface with ?agent=<name>.
+    if (url.pathname === '/debug/tool-classes') {
+      return this.handleToolClasses(url);
+    }
+
     // Inline image bytes for transcript media refs (see serveMedia). Same
     // sensitivity tier as the transcript itself.
     if (url.pathname.startsWith('/media/')) {
@@ -1212,6 +1234,17 @@ export class WebUiModule implements Module {
     if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
     try {
       return Response.json(buildContextMaintenance(app));
+    } catch (err) {
+      return panelErrorResponse(err);
+    }
+  }
+
+  /** Tool names, classes and class sources — no arguments or results. */
+  private handleToolClasses(url: URL): Response {
+    const app = this.panelApp();
+    if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+    try {
+      return Response.json(buildToolClassesSnapshot(app, url.searchParams.get('agent') || undefined));
     } catch (err) {
       return panelErrorResponse(err);
     }
@@ -2355,6 +2388,7 @@ export class WebUiModule implements Module {
       configPath: string;
       servers: McplListMessage['servers'];
       live: McplLiveServer[];
+      toolClasses?: McplListMessage['toolClasses'];
     };
     const out: McplListMessage = { type: 'mcpl-list', scope: 'local', ...snap };
     this.send(client, out);

@@ -14,6 +14,7 @@
  *   /status        — Show agent/module status
  *   /clear         — Clear conversation display
  *   /mcp list|add|remove|env — Manage MCPL server config
+ *   /tools [agent] — Each tool's effective class (MCPL RFC-008) and its source
  *   /budget [N]    — Show/set stream token budget (e.g. /budget 1m)
  *   /fast [on|off|status] — Toggle Codex subscription Fast mode
  *   /session       — Session management (list, new, switch, rename, delete)
@@ -31,6 +32,7 @@ import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { fmtTokens } from './tui.js';
+import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 
 /** Imported lazily to avoid circular deps — index.ts re-exports the type. */
@@ -151,7 +153,10 @@ function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
 }
 
 export function handleCommand(command: string, app: AppContext): CommandResult {
-  const parts = command.slice(1).split(/\s+/);
+  // Trimmed first: a trailing space (common from headless/web senders) would
+  // otherwise leave an empty last token, and name-taking commands that join
+  // the rest of the line would look up "name " instead of "name".
+  const parts = command.slice(1).trim().split(/\s+/);
   const cmd = parts[0]!;
   const args = parts.slice(1);
   const framework = app.framework;
@@ -194,6 +199,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /mcp add <id> <cmd>    Add/overwrite server', style: 'system' },
           { text: '  /mcp remove <id>       Remove a server', style: 'system' },
           { text: '  /mcp env <id> K=V ...  Set env vars on server', style: 'system' },
+          { text: '  /tools [agent]         Each tool\'s effective class and where it came from', style: 'system' },
           { text: '  /budget [tokens]       Show/set stream token budget', style: 'system' },
           { text: '  /fast [on|off|status]  Toggle Codex subscription Fast mode', style: 'system' },
           { text: '  /session               Show current session', style: 'system' },
@@ -266,6 +272,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
     case 'mcp':
       return handleMcp(args);
+
+    case 'tools':
+      return handleTools(framework, args.join(' ') || undefined);
 
     case 'budget':
       return handleBudget(framework, args[0]);
@@ -1163,6 +1172,46 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
       : 'Generating transition summary...', style: 'system' }],
     asyncWork,
   };
+}
+
+// ---------------------------------------------------------------------------
+// /tools — effective tool classes (MCPL RFC-008 §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every tool with its effective class and the source that decided it, so a
+ * surprising class (or a tool left unclassed) is visible before a lifecycle
+ * observer grant depends on it. Without an agent: every tool the framework
+ * offers to anyone; with one: exactly that agent's surface.
+ */
+function handleTools(framework: AgentFramework, agentName?: string): CommandResult {
+  let rows: ReturnType<typeof readToolClasses>;
+  try {
+    rows = readToolClasses(framework, agentName);
+  } catch (err) {
+    return { lines: [{ text: err instanceof Error ? err.message : String(err), style: 'system' }] };
+  }
+  if (rows === null) {
+    return { lines: [{ text: 'This agent-framework build does not report tool classes.', style: 'system' }] };
+  }
+  const scope = agentName === undefined ? 'all agents' : agentName;
+  if (rows.length === 0) {
+    return { lines: [{ text: `No tools offered (${scope}).`, style: 'system' }] };
+  }
+  const [summary, ...table] = formatToolClassRows(rows);
+  const lines: Line[] = [
+    { text: `--- Tool classes: ${rows.length} tool${rows.length === 1 ? '' : 's'} (${scope}) ---`, style: 'system' },
+    { text: `  ${summary}`, style: 'system' },
+    ...table.map((text): Line => ({ text: `  ${text}`, style: 'system' })),
+  ];
+  if (rows.some((r) => r.source === 'none')) {
+    lines.push({
+      text: '  Unclassed tools get the most restrictive handling (observers never see their arguments); ' +
+        'class them with the recipe\'s toolClassOverrides.',
+      style: 'system',
+    });
+  }
+  return { lines };
 }
 
 // ---------------------------------------------------------------------------

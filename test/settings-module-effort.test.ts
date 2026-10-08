@@ -44,7 +44,7 @@ describe('SettingsModule reasoning_effort', () => {
     });
     ext.update('a', { reasoning_effort: 'low' });
     expect(destinationSettings).toEqual({
-      reasoning: { enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'low' },
+      reasoning: { enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'low', effortExplicit: true },
     });
     expect(persisted()).toEqual(previousSettings);
   });
@@ -80,12 +80,86 @@ describe('SettingsModule reasoning_effort', () => {
     expect(mod.getReasoning().effort).toBe('default');
   });
 
-  test('reset by key and reset-all both restore default', async () => {
+  test('an invalid saved value falls back to its default instead of failing every turn', async () => {
+    const { mod, ext } = await started({
+      reasoning: { enabled: true, budgetTokens: 'lots', display: 'full', effort: 'minimal' },
+    });
+    expect(mod.getReasoning()).toEqual({ enabled: true, budgetTokens: 8192, display: 'summarized', effort: 'default' });
+    expect(ext.get('a').reasoning_effort).toBe('default');
+  });
+
+  test('valid saved values are restored unchanged', async () => {
+    const saved = { enabled: true, budgetTokens: 2048, display: 'omitted', effort: 'xhigh' };
+    const { mod } = await started({ reasoning: saved });
+    expect(mod.getReasoning()).toEqual(saved);
+  });
+
+  test('reset by key and reset-all both restore recipe baseline', async () => {
     const { ext } = await started(undefined, 'medium');
     ext.update('a', { reasoning_effort: 'low' });
     expect(ext.reset('a', ['reasoning_display']).reasoning_effort).toBe('low');
-    expect(ext.reset('a', ['reasoning_effort']).reasoning_effort).toBe('default');
+    expect(ext.reset('a', ['reasoning_effort']).reasoning_effort).toBe('medium');
     ext.update('a', { reasoning_effort: 'max' });
-    expect(ext.reset('a').reasoning_effort).toBe('default');
+    expect(ext.reset('a').reasoning_effort).toBe('medium');
+  });
+});
+
+
+describe('recipe effort baseline and explicit override across restarts', () => {
+  test('unrelated settings do not save the recipe baseline as an override', async () => {
+    const first = await started(undefined, 'medium');
+    first.ext.update('a', { reasoning_display: 'omitted' });
+    expect((first.persisted() as { reasoning: Record<string, unknown> }).reasoning.effort).toBeUndefined();
+    const restarted = await started(first.persisted(), 'low');
+    expect(restarted.mod.getReasoning()).toMatchObject({ display: 'omitted', effort: 'low' });
+  });
+
+  test('legacy default follows recipe, while a legacy nondefault remains explicit', async () => {
+    expect((await started({ reasoning: { effort: 'default' } }, 'medium')).mod.getReasoning().effort).toBe('medium');
+    const legacy = await started({ reasoning: { effort: 'high' } }, 'medium');
+    legacy.ext.update('a', { reasoning_enabled: true });
+    expect((await started(legacy.persisted(), 'low')).mod.getReasoning().effort).toBe('high');
+  });
+
+  test('an explicit model default survives unrelated updates and recipe edits until reset', async () => {
+    const first = await started(undefined, 'medium');
+    first.ext.update('a', { reasoning_effort: 'default' });
+    first.ext.update('a', { reasoning_display: 'omitted' });
+    const restarted = await started(first.persisted(), 'low');
+    expect(restarted.mod.getReasoning().effort).toBe('default');
+    expect(restarted.ext.reset('a', ['reasoning_effort']).reasoning_effort).toBe('low');
+    expect((await started(restarted.persisted(), 'high')).mod.getReasoning().effort).toBe('high');
+  });
+
+  test('reset-all drops effort override and restart follows edited recipe', async () => {
+    const first = await started(undefined, 'medium');
+    first.ext.update('a', { reasoning_effort: 'max', reasoning_enabled: true });
+    expect(first.ext.reset('a').reasoning_effort).toBe('medium');
+    expect((await started(first.persisted(), 'low')).mod.getReasoning()).toEqual({
+      enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'low',
+    });
+  });
+
+  test('invalid saved fields retain independent restore validation and recipe fallback', async () => {
+    const first = await started({ reasoning: {
+      enabled: 'yes', budgetTokens: 'lots', display: 'full', effort: 'invalid', effortExplicit: true,
+    } }, 'medium');
+    expect(first.mod.getReasoning()).toEqual({
+      enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'medium',
+    });
+    for (const marker of [false, 'true', 1]) {
+      expect((await started({ reasoning: { effort: 'default', effortExplicit: marker } }, 'medium')).mod.getReasoning().effort).toBe('medium');
+    }
+  });
+
+  test('reused module clears override for a destination with saved unrelated fields', async () => {
+    const first = await started(undefined, 'medium');
+    first.ext.update('a', { reasoning_effort: 'default' });
+    await first.mod.stop();
+    let destination: unknown = { reasoning: { display: 'omitted' } };
+    await first.mod.start({ getState: () => destination, setState: (s: unknown) => { destination = structuredClone(s); } } as unknown as ModuleContext);
+    expect(first.mod.getReasoning()).toMatchObject({ display: 'omitted', effort: 'medium' });
+    first.ext.update('a', { reasoning_enabled: true });
+    expect((await started(destination, 'low')).mod.getReasoning().effort).toBe('low');
   });
 });

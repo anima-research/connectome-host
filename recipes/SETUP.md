@@ -24,7 +24,7 @@ An AI research agent that can:
 ```bash
 git clone https://github.com/anima-research/connectome-host.git
 cd connectome-host
-npm install
+bun install        # npm install also works
 ```
 
 ## Step 2: Set up your data sources
@@ -54,7 +54,7 @@ cp ~/Downloads/.zuliprc ./.zuliprc
 4. Install the Zulip MCP server:
 
 ```bash
-git clone https://github.com/anima-research/zulip_mcp.git ../zulip_mcp
+git clone https://github.com/antra-tess/zulip_mcp.git ../zulip_mcp
 cd ../zulip_mcp && npm install && npm run build && cd -
 ```
 
@@ -65,13 +65,13 @@ Works with both gitlab.com and self-hosted GitLab instances.
 1. Go to your GitLab instance > **User Settings > Access Tokens**
 2. Create a personal access token with scopes: `read_api`, `read_repository`
    - Add `api` scope if you want write access (creating issues, comments)
-3. Note your token and your GitLab API URL
+3. Note your token and your GitLab API URL — they go in `.env` in Step 3
 
-No separate installation needed — the recipe uses `npx` to run `@zereight/mcp-gitlab` on demand.
+No separate installation needed — the recipe uses `npx` to run `@zereight/mcp-gitlab` (pinned to `2.1.25`) on demand.
 
 ### Notion (optional, via an MCP server — not included by default)
 
-The recipe ships **without** a Notion server: the adapter its prompt was developed against (`syncntn`) is not publicly available. If you want the agent to read your Notion workspace, add an `mcpServers` entry pointing at any MCP server that exposes Notion search and page-read tools. The entry name `syncntn` is just a label — any Notion MCP server works, as long as its exposed tool names match what the system prompt references (`syncntn--search_pages`, `syncntn--get_page_markdown`, and friends). If your server uses different tool names, either name the MCP key `syncntn` and update the prompt, or accept that the agent will discover the tools under whatever names they export.
+The recipe ships **without** a Notion server: the adapter its prompt was developed against (`syncntn`) is not publicly available. If you want the agent to read your Notion workspace, add an `mcpServers` entry pointing at any MCP server that exposes Notion search and page-read tools. The entry name `syncntn` is just a label, but the prompt depends on it: the agent sees each tool as `mcpl--<entry name>--<tool>`, and the system prompt references `mcpl--syncntn--search_pages`, `mcpl--syncntn--get_page_markdown` and friends. Any Notion MCP server works if you name its entry `syncntn` and it exports tools with those names (`search_pages`, `get_page_markdown`, …). If its tool names differ, update the prompt to match, or accept that the agent will discover the tools under whatever names they export.
 
 Typical setup:
 
@@ -104,13 +104,22 @@ The miner's prompt also knows how to drive [`dariakroshka/scribe-mcp`](https://g
 
 ## Step 3: Configure the recipe
 
-Copy the template recipe and fill in your credentials:
+The shipped recipe holds no secrets: it reads them from the environment through `${VAR}` placeholders, substituted when the recipe loads (`${VAR}` is required; `${VAR:-default}` falls back to the default when `VAR` is unset or empty). Put the GitLab values in `.env` in the project directory:
+
+```ini
+GITLAB_TOKEN=glpat-...
+GITLAB_API_URL=https://gitlab.example.com/api/v4
+```
+
+If a required variable is unset, the recipe refuses to load with `Recipe "…" references environment variable ${GITLAB_TOKEN} which is not set.` — set it, or remove the block that uses it.
+
+To change which sources are wired in, copy the template and edit the copy:
 
 ```bash
 cp recipes/knowledge-miner.json my-recipe.json
 ```
 
-Edit `my-recipe.json` and replace the placeholder values in `mcpServers`:
+Its `mcpServers` look like this (the shipped entries also carry `source` blocks — install metadata for build tooling, ignored at runtime):
 
 ```jsonc
 {
@@ -122,34 +131,36 @@ Edit `my-recipe.json` and replace the placeholder values in `mcpServers`:
         "ENABLE_ZULIP": "true",
         "ENABLE_DISCORD": "false",
         "ZULIP_RC_PATH": "./.zuliprc"          // path to your .zuliprc
-      }
-    },
-    // Optional — NOT in the shipped recipe. Add only if you set up a
-    // Notion MCP server (see Step 2 above):
-    "syncntn": {
-      "command": "../your-notion-mcp/start.sh",
-      "env": {
-        "STORAGE_URL": "http://localhost:8000",
-        "WORKSPACE_ID": "YOUR_WORKSPACE_ID"    // <-- replace this
-      }
+      },
+      "channelSubscription": "manual"
     },
     "gitlab": {
       "command": "npx",
-      "args": ["-y", "@zereight/mcp-gitlab"],
+      "args": ["-y", "@zereight/mcp-gitlab@2.1.25"],
       "env": {
-        "GITLAB_PERSONAL_ACCESS_TOKEN": "YOUR_GITLAB_TOKEN",  // <-- replace
-        "GITLAB_API_URL": "https://gitlab.example.com/api/v4" // <-- replace
+        "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_TOKEN}",   // from .env
+        "GITLAB_API_URL": "${GITLAB_API_URL}"                // from .env
       }
     },
     "ddg": {
       "command": "../duckduckgo-mcp-server/.venv/bin/duckduckgo-mcp-server"
       // no creds; public web. Remove this block to disable web search.
+    },
+    // Optional — NOT in the shipped recipe. Add only if you set up a
+    // Notion MCP server (see Step 2 above), and set NOTION_STORAGE_URL /
+    // NOTION_WORKSPACE_ID in .env:
+    "syncntn": {
+      "command": "../your-notion-mcp/start.sh",
+      "env": {
+        "STORAGE_SERVICE_URL": "${NOTION_STORAGE_URL}",
+        "WORKSPACE_ID": "${NOTION_WORKSPACE_ID}"
+      }
     }
   }
 }
 ```
 
-**Don't need all three?** Just remove the server entries you don't have. The agent works with any combination.
+**Don't need all of them?** Just remove the server entries you don't have. The agent works with any combination.
 
 ## Step 4: Set your API key
 
@@ -162,10 +173,12 @@ Or add it to a `.env` file in the project directory.
 ## Step 5: Run
 
 ```bash
-bun src/index.ts my-recipe.json
+bun src/index.ts my-recipe.json      # or recipes/knowledge-miner.json if you didn't copy it
 ```
 
 On subsequent runs, just `bun src/index.ts` — the recipe is remembered.
+
+The recipe doesn't pin a model, so the agent runs on `claude-opus-4-6` unless you set `MODEL` in `.env`. Besides writing reports to `./output/`, it creates and watches `./knowledge-requests/` (a new ticket file there wakes it — that's how the [Triumvirate](./TRIUMVIRATE-SETUP.md)'s clerk hands it work) and watches `./library-approved/` read-only for human-approved material (not created for you).
 
 ## Using the agent
 
@@ -195,7 +208,7 @@ The agent will:
 | `/lessons` | Show all extracted knowledge, sorted by confidence |
 | `/status` | Agent state, session info |
 | `/undo` | Roll back the last agent turn |
-| `/mcp list` | Show connected data sources |
+| `/mcp list` | Show the servers saved in `mcpl-servers.json` (not the recipe's `mcpServers`) |
 | `/newtopic [context]` | Reset context window for a new topic (compresses old context) |
 | `/session new` | Start a fresh session (lessons persist) |
 | `Esc` | Interrupt the agent mid-turn |
@@ -216,13 +229,15 @@ Remove MCP server entries from the recipe for sources you don't have. The system
 
 ### Overriding servers at runtime
 
-Instead of editing the recipe, you can override server config in `mcpl-servers.json`:
+Instead of editing the recipe, you can keep a server's launch command and credentials in `mcpl-servers.json` (in the directory you launch from):
 
 ```bash
 # Add or override a server (persists across restarts)
-/mcp add gitlab npx -y @zereight/mcp-gitlab
+/mcp add gitlab npx -y @zereight/mcp-gitlab@2.1.25
 /mcp env gitlab GITLAB_PERSONAL_ACCESS_TOKEN=glpat-xxx GITLAB_API_URL=https://gitlab.myco.com/api/v4
 ```
+
+A file entry is used only when the recipe names the same id under `mcpServers` (the miner recipe does name `gitlab`). For that id the file supplies `command`, `args` and `env`; the recipe entry can still override policy fields such as `channelSubscription`, `toolPrefix`, tool/feature-set filters and reconnect settings. An empty `enabledFeatureSets: []` in either file enables no feature sets rather than all of them; see [Feature sets and tool names](../README.md#feature-sets-and-tool-names). The recipe is still loaded with `${VAR}` substitution first, so while its `gitlab` block references `${GITLAB_TOKEN}`, that variable must be set (or the `env` removed from the recipe's block) even though the file's values are the ones used.
 
 Changes require a restart to take effect.
 
@@ -233,10 +248,10 @@ If you want the agent to only read from GitLab (no issue creation, no MR comment
 ```json
 "gitlab": {
   "command": "npx",
-  "args": ["-y", "@zereight/mcp-gitlab"],
+  "args": ["-y", "@zereight/mcp-gitlab@2.1.25"],
   "env": {
-    "GITLAB_PERSONAL_ACCESS_TOKEN": "YOUR_TOKEN",
-    "GITLAB_API_URL": "https://gitlab.example.com/api/v4",
+    "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_TOKEN}",
+    "GITLAB_API_URL": "${GITLAB_API_URL}",
     "GITLAB_READ_ONLY_MODE": "true"
   }
 }
@@ -263,7 +278,9 @@ In the Knowledge Miner session:
 /export
 ```
 
-Or just quit — lessons are auto-exported on exit. This creates `./output/lessons-export.json` and `./output/lessons-export.md`.
+Or just `/quit` — it exports lessons on the way out. This creates `./output/lessons-export.json` and `./output/lessons-export.md`.
+
+Before quitting, run `/session new` in the miner too. Both agents use the same data dir (`./data` by default), and an agent launched there resumes whichever session is active — without this, the reviewer would open inside the miner's session. (`/session switch` brings the mining session back later.)
 
 ### Step 2: Run the Reviewer
 
@@ -271,14 +288,16 @@ Or just quit — lessons are auto-exported on exit. This creates `./output/lesso
 bun src/index.ts recipes/knowledge-reviewer.json
 ```
 
-The Reviewer reads the exported lessons and documents from `./output/` (mounted as read-only `input/`). It produces:
+The Reviewer reads the documents in `./output/`, mounted read-only as `library-mined/`, and sees the miner's lessons directly: lessons live in `./data/lessons.json`, shared by every session in the same data dir (`library-mined/lessons-export.md` is the human-readable copy). It produces:
 - **Critic findings** per document — internal contradictions, unsupported claims, missing markers
 - **SME checklist** — a focused list of items for domain experts to verify
 
 Ask it:
 ```
-> Review all documents in input/. Generate the SME checklist.
+> Review all documents in library-mined/. Generate the SME checklist.
 ```
+
+It may start before you ask: a new session's first scan of `library-mined/` reports each existing `*.md` there as new, and the reviewer's `new-reports` wake policy acts on those.
 
 ### Step 3: Human review
 
@@ -306,7 +325,8 @@ Internal `[SRC]` always wins over `[WEB]` when both speak to the same org-specif
 
 | Problem | Fix |
 |---------|-----|
-| `ANTHROPIC_API_KEY not set` | `export ANTHROPIC_API_KEY=sk-ant-...` |
+| `Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN)` | `export ANTHROPIC_API_KEY=sk-ant-...`, or put it in `.env` |
+| `Recipe "…" references environment variable ${…} which is not set` | Add the variable to `.env`, or remove the `mcpServers` block that uses it |
 | Zulip tools not appearing | Check `.zuliprc` path and that zulip_mcp is built |
 | GitLab 401 errors | Verify your token has the right scopes and hasn't expired |
 | Notion tools not appearing or connection refused | Make sure your Notion MCP server is running and reachable at the command/URL the recipe expects |

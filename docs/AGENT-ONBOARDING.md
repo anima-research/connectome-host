@@ -102,8 +102,9 @@ add up, so give it room (≈40–80 GB SSD per box is comfortable). Use a recent
 You (the assisting instance) can provision it end-to-end from the provider's initial root/SSH
 access — do this hardening + base setup *first*:
 - create a non-root sudo user, add the operator's SSH **public key**, disable root password login;
-- `apt update && apt install -y git build-essential`, then install **nvm/node ≥ 20**, **Bun**,
-  and **`rustup`** (for chronicle's native build);
+- `apt update && apt install -y git build-essential`, then install **nvm/node ≥ 20** and
+  **Bun** — plus **`rustup`** only if you'll take the local-checkout path in §4 (building
+  chronicle's native module from source; the stock install uses prebuilt binaries);
 - a basic firewall allowing **SSH only** — the webui stays on **loopback**, reached by SSH
   tunnel, never exposed publicly;
 - then create the per-agent isolated user (§3) and continue.
@@ -165,7 +166,10 @@ Verify runtimes as the agent user: `node --version`, `bun --version`.
 shell. First, the **hard prerequisites** (install / confirm before anything else; ask the user
 or their box owner if unsure):
 - **git**, **Bun** (`curl -fsSL https://bun.sh/install | bash`), **node ≥ 20** (via `nvm`);
-- a **Rust toolchain** (`rustup`) — `chronicle` has a native (napi) component built from Rust;
+- a **Rust toolchain** (`rustup`) — **only for the local-checkout path** below, where you build
+  `chronicle`'s native (napi) component from source. The npm `@animalabs/chronicle` package
+  ships prebuilt `.node` binaries (linux x64/arm64 glibc, macOS x64/arm64, Windows x64), so the
+  stock install needs no Rust on those platforms;
 - the `anima-research` / `antra-tess` GitHub repos. These are **public** (as of 2026-07;
   they previously required org access), and the `@animalabs/*` npm packages install without
   auth. If a `git clone` / `bun install` fails on access, check whether the repo moved
@@ -188,13 +192,16 @@ The repos (clone all as siblings under one dir, canonically `~/connectome-local/
 Two ways to install — pick based on whether the user needs released or unreleased code:
 
 - **Stock (simplest, released versions):** clone just **connectome-host**, then inside it
-  `bun install` (pulls the `@animalabs/*` libs; the Rust toolchain lets chronicle's native
-  build run), then `cd web && bun install && bun run build`. Run with
+  `bun install` (pulls the `@animalabs/*` libs, chronicle's prebuilt native binary included;
+  its postinstall builds the web UI with npm). That postinstall swallows failures, so if
+  `dist/web/` is missing afterwards, run `npm run build:web`. Run with
   `bun src/index.ts <recipe> --headless`. Its `README.md` quick-start documents exactly this.
 - **Local-checkout / dev (what production boxes actually run):** clone **all** the repos above
   as siblings, build bottom-up (`npm install && npm run build` in each, order: `mcpl-core-ts` →
-  `membrane`, `chronicle` → `context-manager` → `agent-framework` → the MCP servers →
-  `connectome-host`; chronicle's build is `napi build …`), then **wire the single-instance
+  `membrane`, `chronicle` → `context-manager` → `agent-framework` → the MCP servers;
+  chronicle's build is `napi build …`), then `bun install` in `connectome-host` — the host
+  runs from source under Bun and has **no `build` script** (`npm run build` fails there; its
+  postinstall / `npm run build:web` builds only the web UI), then **wire the single-instance
   `@animalabs/*` symlinks** so every component shares ONE copy of each shared lib. **The repo's
   own `docs/DEV-ENVIRONMENT.md` is the authoritative step-by-step** for this (exact clone lines,
   build order, the symlink commands, runtime notes) — follow it rather than improvising. Use
@@ -277,12 +284,19 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
                "subagents": false, "lessons": false, "retrieval": false
                /* + wake policies, workspace mounts (files/, notes/) */ },
   "mcpServers": {
-    "shell":   { /* terminal-sessions stdio server; env: SESSION_SERVER_TOKEN, SESSION_SERVER_PORT */ },
-    "discord": { /* discord-mcpl; env: DISCORD_TOKEN, DISCORD_GUILD_ID, ... */ },
-    "heartbeat": { /* heartbeat-mcpl; env: HEARTBEAT_CONFIG_FILE */ }
+    "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
+    "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ },
+    "heartbeat": { /* heartbeat-mcpl; "env": { "HEARTBEAT_CONFIG_FILE": "${HEARTBEAT_CONFIG_FILE}" } */ }
   }
 }
 ```
+
+For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
+set the recipe baseline; `enabled` is still required and can be `false`.
+Explicit `agent_settings` effort overrides the recipe until reset. Unrelated
+settings updates preserve the baseline, and compression calls are unaffected.
+Other providers ignore this field; OpenAI recipes use `agent.responses.reasoningEffort`.
+
 
 These are the values the long-running production residents converge on for a
 ≥500k-window model (300k budget / 100k recent tail / 32k reply). For a **200k-window**
@@ -331,8 +345,14 @@ WEBUI_USER=<name>
 WEBUI_PASS=<random>
 HEARTBEAT_CONFIG_FILE=/home/<agent>/<agent>-cm/data/heartbeat-config.json
 SLEEP_PRIVILEGED_FILE=/home/<agent>/<agent>-cm/sleep-privileged.json
-COUNT_TOKENS_MODEL=<a live model id>     # for the context-makeup endpoint (§11.4)
+COUNT_TOKENS_MODEL=<a live model id>     # optional override; makeup counts with the agent's own model by default (§11.4)
 ```
+
+Stdio MCPL servers see only what their entry declares in `env` (plus a small
+system allowlist — see the README's MCP section). Map every variable a server
+reads, as in the skeleton above. A variable left only in `.env` is unset for
+the server — and an unset `DISCORD_GUILD_ID` means every channel the bot is
+invited to (§7).
 
 ## 5b. Folding solver — `kv-stable` (default) vs `kv-unified` (opt-in)
 
@@ -350,7 +370,7 @@ the configured prices), **continuity** (how much recent, still-referenced materi
 stays verbatim) and fidelity, and picks the cheapest acceptable one. On a large-budget
 resident (600k budget / 300k tail on a 1M-window model) it has cut effective cache
 spend materially (on the order of 40 % in our accounting). It is **fail-closed**:
-selecting it without every field is a recipe error — there are no live defaults.
+selecting it without every required field is a recipe-load error — there are no live defaults.
 
 Reference configuration in production (600k / 300k resident; tune `labelCeiling`
 and the bucket sizes to your budget):
@@ -388,13 +408,16 @@ and the bucket sizes to your budget):
 **Preconditions — read before flipping a resident:**
 
 - **Strictly contiguous summary forest.** kv-unified's bounded solve assumes every
-  summary owns a contiguous run of leaves. A store whose summaries cross (an old
-  head-window ratchet bug produced late single-message L1s stitched into era
-  summaries) forces the solver into *buffered* mode (`preserveGapBearingSummaries`
-  / internal holes), where label propagation can run away —
+  summary owns a contiguous run of leaves. A store whose summaries cross (the
+  pre-0.12 head-window ratchet produced late single-message L1s stitched into era
+  summaries) does not open at all under the default `reject` topology policy,
+  whatever the folding strategy (§11.8). Setting `preserveGapBearingSummaries` or
+  `treeifyNonContiguousSummaries` switches the policy to `report`: the store opens,
+  `compressionDebt` goes `critical`, and the solver runs *buffered* (internal holes),
+  where label propagation can run away —
   `exact label propagation exceeded ceiling <N>` at ~1.35× `labelCeiling`, deterministic,
-  survives restart, raising the ceiling only moves the number. Run the topology
-  audit first (§11.8); repair or stay on `kv-stable`.
+  survives restart, raising the ceiling only moves the number. Audit (§11.8) and
+  repair first; staying on `kv-stable` does not open a crossed store either.
 - **`treeifyNonContiguousSummaries: true` is not an escape hatch** on a crossed
   store: it solves fast but drops the deepest summaries, and the floor can land
   above your budget (`budgetMet=false`).
@@ -407,9 +430,12 @@ and the bucket sizes to your budget):
 - `hysteresisCertificate: true` skips the full Pareto pass when the previously
   accepted layout is provably still selected — large latency win on quiet turns;
   `adoptEpsilon` is the score slack that lets an unchanged layout be retained.
-- Not every context-manager release carries every key; the host passes the
-  `kvUnified` object through whole, so an unknown key is a CM-side error at boot.
-  Pin the runtime and validate the recipe against it.
+- `hysteresisCertificate` is optional (off unless set); every other field is
+  required. The host checks the required keys at recipe load — including that
+  `treeifyNonContiguousSummaries` / `preserveGapBearingSummaries` are explicit
+  booleans and not both `true` — and passes the object through whole;
+  context-manager ignores keys it doesn't know, so a misspelled optional key
+  silently does nothing. Pin the runtime and validate the recipe against it.
 
 ---
 
@@ -576,9 +602,13 @@ agent *speaks* on a more fragile one — they're separate settings, and the summ
 "in the agent's voice" via `summaryParticipant`. (Note: if you switch compression off the
 agent's own model, mention it to the user — it's mildly identity-adjacent.)
 
-**11.4 — Exact token counts via a *live* model.** The makeup endpoint counts tokens with
-`COUNT_TOKENS_MODEL`. Claude models share a tokenizer, so set this to any *currently-callable*
-Claude model even if the agent runs on a deprecated one — `count_tokens` on the dead model 404s.
+**11.4 — Exact token counts via a *live* model.** The makeup endpoint calls `count_tokens`
+(at `ANTHROPIC_BASE_URL` when set) with the agent's own model, provider/gateway prefixes
+normalized away (`anthropic/claude-opus-4` → `claude-opus-4`); `COUNT_TOKENS_MODEL` overrides
+that. You need the override when the agent's model can't be counted — a deprecated or
+gateway-only model, where `count_tokens` fails (a dead model 404s) and the makeup shows no
+exact total (`countSource: count_tokens_failed_<status>`). Claude models share a tokenizer, so
+set it to any *currently-callable* Claude model.
 
 **11.5 — Import traps.** Rolling-window re-exports overlap (delta only); image blocks may have
 wrong `media_type` (sniff magic bytes; the membrane formatter now does this); rendered
@@ -595,14 +625,31 @@ before touching `treeifyNonContiguousSummaries`. `flat-profile` is the robust fa
 — this is not a permissions problem. The bot also needs **Read Message History** for backscroll
 (separate from View Channel).
 
-**11.8 — Store topology is audited at open, and opening a store mutates it.** Recent
-context-manager releases refuse to open a store whose summary ownership is crossed
-(`StoreTopologyError`, recipe `strategy.topologyPolicy` defaults to `reject`; `report` logs and
-exposes `topologyViolations` instead). Before **any** context-manager upgrade of an existing
-resident, run the audit on a **copy of the stopped store**:
-`node <cm>/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json > audit.json`
-(exit 2 on violations). Repair with `scripts/repair-topology.js <store> --namespace agents/<agent>
---mode lossless|compact|rebuild [--apply]` — on the *stopped* store, after a cold backup, then
+**11.8 — Store topology audit, and opening a store mutates it.** Since context-manager 0.12.0
+(this host depends on ^0.13.0) every load audits the summary archive for crossed ownership — a
+summary whose leaves are not contiguous in store order (the pre-0.12 head-window ratchet,
+restore/branch interleavings, hand surgery). Under the default `topologyPolicy: reject`,
+`ContextManager.open` throws `StoreTopologyError` and the resident does not boot — on `kv-stable`
+as on `kv-unified`; the store is left intact. `report` logs the violations and boots; a
+`kvUnified` block with `preserveGapBearingSummaries` or `treeifyNonContiguousSummaries` set to
+`true` defaults to it. This host does not forward a `strategy.topologyPolicy` recipe key (it is
+silently ignored), so the error's "set topologyPolicy: 'report'" hint is not reachable from a
+recipe — repair the store. Separately, a merge that would mint a crossed node is refused into the
+merge quarantine. Both show on `/healthz` as `compressionDebt.<agent>.topologyViolations` /
+`.topologyRefusals`, with `state: critical`. Before **any** context-manager upgrade of an existing
+resident — including a host upgrade from a pre-0.12 context-manager — run the audit on a **copy of
+the stopped store**:
+`node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json > audit.json`
+(exit 0 clean, 2 violations, 1 could not open; a warning that it saw no summaries means a wrong
+`--namespace`). Repair the *stopped* store, after a cold backup, with
+`node …/dist/scripts/repair-topology.js <store> --namespace agents/<agent> [--mode lossless|compact|rebuild] [--rebuild-since <messageId|ISO date>] [--apply]`
+— a dry run unless `--apply`; after `--apply` it reopens the store under `reject` to verify (exit
+0 clean or verified, 2 plan incomplete or verification failed, 1 usage/open error). `lossless`
+(the default) only detaches, so the pyramid unravels around each fragment; `compact` keeps depth
+at the price of prose gaps; `rebuild` dissolves crossed towers back to L1 for the merge ladder to
+re-fold — run `…/dist/scripts/drain-autobiographical.js <store> agents/<agent> --apply
+--model=<model> --participant=<agent>` on the stopped store before restarting.
+`--rebuild-since` rebuilds only crossings from that message on and compacts older ones. Then
 re-audit to zero. Two traps: (a) any `ContextManager.open` with a normal strategy config chunks
 the store's frontier under *that* config — verify only with the `auditOnly` scripts, never by
 opening a live store from a one-off script; (b) reflink/rsync copies of a *running* store read
@@ -649,10 +696,13 @@ blocks; expect folds to interact with this on the next model generation.
 - **Per-call logs:** `data/llm-calls.<iso>.jsonl` (raw request + response + error) — rotates to a
   new file on every restart; re-list by mtime after a bounce. Counts *attempts*; `failures.log`
   counts *turns*.
-- **Topology audit / repair (context-manager):** `dist/scripts/audit-topology.js <store-copy>
-  --namespace agents/<agent> --json`, `dist/scripts/repair-topology.js … --mode lossless [--apply]`
-  — stopped store, cold backup first (§11.8)
-- **Health:** `GET /healthz` — per-agent `compressionQuarantine`, topology violations, head size
+- **Topology audit / repair (context-manager ≥ 0.12, §11.8):**
+  `node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json`
+  (exit 2 = crossed), `…/repair-topology.js <store> --namespace agents/<agent> --mode lossless [--apply]`
+  — stopped store, cold backup first
+- **Health:** `GET /healthz` — per-agent `compressionQuarantine`, `compressionDebt` (incl.
+  `topologyViolations` / `topologyRefusals`),
+  `contextComposition` (head / raw / summaries / tail as last rendered), `runtimeSettings`
 - **Import guides:** [`claude-code-ingest.md`](./claude-code-ingest.md) ·
   [`claudeai-evacuation.md`](./claudeai-evacuation.md)
 - **Identity is the user's call. The mechanics are yours. Check everything. Be kind about who you're setting up.**

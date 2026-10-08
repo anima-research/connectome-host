@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework, EventGate, type ModuleContext } from '@animalabs/agent-framework';
@@ -45,8 +45,8 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
   const channelInstructions = prompt.slice(prompt.indexOf('## Channel Management'), prompt.indexOf('## Subagents'));
   expect(channelInstructions).toContain('wake_add_rule');
   expect(channelInstructions).toContain('wake_remove_rule');
-  expect(channelInstructions).toContain('zulip--listen');
-  expect(channelInstructions).toContain('zulip--unlisten');
+  expect(channelInstructions).toContain('`mcpl--zulip--listen`');
+  expect(channelInstructions).toContain('`mcpl--zulip--unlisten`');
   expect(channelInstructions).not.toContain('workspace--edit');
   expect(channelInstructions).not.toContain('~1 second');
   expect(channelInstructions).toContain('explicit user confirmation');
@@ -94,4 +94,25 @@ test('clerk channel instructions use live wake tools and a valid persistent rule
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('shipped prompts name MCPL server tools as the model sees them', () => {
+  // The host sets no toolPrefix, so a server's tools reach the model as
+  // `mcpl--<id>--<tool>`. Ids: every server a shipped recipe configures, plus
+  // the optional ones the setup guides tell operators to add.
+  const files = readdirSync(new URL('../recipes/', import.meta.url)).filter((f) => f.endsWith('.json'));
+  const recipes = files.map((file) => ({ file, recipe: readRecipe(file) }));
+  const ids = new Set(['syncntn', 'scribe']);
+  for (const { recipe } of recipes) {
+    for (const [id, server] of Object.entries(recipe.mcpServers ?? {})) {
+      if (!(server as { toolPrefix?: string }).toolPrefix) ids.add(id);
+    }
+  }
+  expect(ids.has('zulip') && ids.has('gitlab') && ids.has('ddg')).toBe(true);
+  const bare = new RegExp(`(?<![\\w-])(${[...ids].join('|')})--[\\w*]`, 'g');
+  for (const { file, recipe } of recipes) {
+    const prompt = typeof recipe.agent?.systemPrompt === 'string' ? recipe.agent.systemPrompt : '';
+    expect({ file, bare: prompt.match(bare) ?? [] }).toEqual({ file, bare: [] });
+  }
+  expect(validateRecipe(readRecipe('knowledge-miner.json')).agent.systemPrompt).toContain('`mcpl--gitlab--get_issue`');
 });

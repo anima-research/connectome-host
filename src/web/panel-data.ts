@@ -28,6 +28,12 @@ import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
+import {
+  countToolClassSources,
+  readToolClasses,
+  type ToolClassRow,
+  type ToolClassSource,
+} from '../tool-lifecycle-config.js';
 
 /** Minimal slice of AppContext the panel layer needs. Both the WebUI host
  *  and the headless child runtime satisfy this structurally. */
@@ -44,6 +50,7 @@ export interface PanelAppRef {
  *  fleet-types.ts and tests can enumerate without importing the handlers. */
 export const PANEL_OPS = [
   'mcpl',
+  'tool-classes',
   'settings',
   'settings-update',
   'settings-reset',
@@ -92,6 +99,14 @@ export async function runPanelOp(
     switch (op as PanelOp) {
       case 'mcpl':
         return { ok: true, data: buildMcplSnapshot(app) };
+      case 'tool-classes':
+        return {
+          ok: true,
+          data: buildToolClassesSnapshot(
+            app,
+            typeof params.agent === 'string' && params.agent.length > 0 ? params.agent : undefined,
+          ),
+        };
       case 'settings':
         return { ok: true, data: requireSettingsState(app, resolveAgent(app, params.agent)) };
       case 'settings-update': {
@@ -292,6 +307,12 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     }
   } catch { /* live view is best-effort; the file registry still renders */ }
 
+  // Every tool's effective class (all agents), for the panel's tool-class
+  // section. Omitted when the framework build has no listing.
+  let toolClasses: ToolClassRow[] | null = null;
+  try { toolClasses = readToolClasses(app.framework); }
+  catch { /* best-effort, like the live view */ }
+
   return {
     configPath: DEFAULT_CONFIG_PATH,
     servers: Object.entries(servers).map(([id, entry]) => ({
@@ -305,7 +326,36 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
     })),
     live,
+    ...(toolClasses ? { toolClasses } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tool classes (MCPL RFC-008 §6)
+// ---------------------------------------------------------------------------
+
+export interface ToolClassesSnapshot {
+  /** The agent whose surface this is, or null for every tool offered. */
+  agent: string | null;
+  /** Rows per source: override / host / server / none (unclassed). */
+  counts: Record<ToolClassSource, number>;
+  /** Sorted by tool name. */
+  tools: ToolClassRow[];
+}
+
+/**
+ * Each tool with its effective class and the source that decided it. Unlike
+ * the agent-scoped panels, omitting `agent` does not default to the primary
+ * agent: it lists every tool the framework offers to anyone (the shared
+ * board plus agent-only surfaces such as the subconscious's).
+ */
+export function buildToolClassesSnapshot(app: PanelAppRef, agent?: string): ToolClassesSnapshot {
+  if (agent !== undefined) requireAgent(app, agent);
+  const tools = readToolClasses(app.framework, agent);
+  if (tools === null) {
+    throw new PanelError('this agent-framework build does not report tool classes', 501);
+  }
+  return { agent: agent ?? null, counts: countToolClassSources(tools), tools };
 }
 
 // ---------------------------------------------------------------------------

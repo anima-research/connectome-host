@@ -28,6 +28,7 @@ interface StubServer {
     lastFetchedAt: number | null;
     lastNegotiatedAt: number | null;
   };
+  toolClasses?: Array<{ tool: string; serverTool: string; class: string[]; source: string }>;
   command?: string;
   url?: string;
 }
@@ -273,5 +274,28 @@ describe('mcpl_list', () => {
     expect(text).toContain('manifest={revision="unsafe\\n');
     expect(text).not.toContain('unsafe\n');
     expect(text).toContain('...",fetchedAt=none,negotiatedAt=none}');
+  });
+
+  test("groups each server's tools by effective class and source", async () => {
+    const { stub, servers } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'chat', command: 'node' });
+    const mod = makeModule(stub);
+
+    // Older framework: no per-server classes reported.
+    expect(String((await call(mod, 'mcpl_list')).data)).toContain('classes=unknown');
+
+    servers.get('chat')!.toolClasses = [
+      { tool: 'chat--say', serverTool: 'say', class: ['comms'], source: 'server' },
+      { tool: 'chat--send', serverTool: 'send', class: ['comms'], source: 'server' },
+      { tool: 'chat--upload', serverTool: 'upload', class: ['files', 'comms'], source: 'override' },
+      { tool: 'chat--probe', serverTool: 'probe', class: [], source: 'none' },
+    ];
+    expect(String((await call(mod, 'mcpl_list')).data)).toContain(
+      'classes={comms/server: say,send; files+comms/override: upload; unclassed: probe}',
+    );
+
+    servers.get('chat')!.toolClasses = [];
+    expect(String((await call(mod, 'mcpl_list')).data)).toContain('classes={}');
   });
 });

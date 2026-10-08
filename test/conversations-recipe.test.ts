@@ -6,7 +6,7 @@
  * instances from the recipe's own strategy config).
  */
 import { describe, test, expect } from 'bun:test';
-import { validateRecipe, type Recipe } from '../src/recipe.js';
+import { validateRecipe, deprecatedConversationsNotices, type Recipe } from '../src/recipe.js';
 import { buildConversationsConfig } from '../src/framework-strategy.js';
 
 function baseRecipe(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -138,5 +138,20 @@ describe('buildConversationsConfig — recipe → FrameworkConfig mapping', () =
     })) as Recipe;
     const cfg = buildConversationsConfig(passthrough, 'p', 'model-x', 'UTC')!;
     expect(cfg.strategyFactory!().constructor.name).toBe('PassthroughStrategy');
+  });
+});
+
+describe('deprecatedConversationsNotices', () => {
+  test('absent block → no notices', () => {
+    expect(deprecatedConversationsNotices(undefined)).toEqual([]);
+  });
+
+  test('any conversations block (even empty) → one notice citing #235', () => {
+    for (const conv of [{}, { bind: { channel: 'mention' as const }, idleTtlMs: 60_000 }]) {
+      const notices = deprecatedConversationsNotices(conv);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('conversations');
+      expect(notices[0]).toContain('agent-framework#235');
+    }
   });
 });

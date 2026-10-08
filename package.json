@@ -1,7 +1,7 @@
 {
   "name": "@animalabs/connectome-host",
   "version": "0.9.0",
-  "description": "General-purpose agent TUI host with recipe-based configuration",
+  "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
