@@ -430,12 +430,17 @@ export interface McplListMessage {
   configPath: string;
   servers: Array<{
     id: string;
-    /** A stdio entry's command; a network entry has `url` instead. */
-    command?: string;
-    url?: string;
-    /** A stdio entry's protocol family, when the file sets one. */
-    protocol?: 'legacy' | 'modern';
-    args?: string[];
+    /** What the entry connects to, by the framework's binding rules: its
+     *  command line on stdio, its url on a network transport. Empty when
+     *  the entry names neither. */
+    target: string;
+    /** `legacy` or `modern`; absent when the entry can't be resolved. */
+    family?: 'legacy' | 'modern';
+    /** `stdio`, `websocket` or `http`; absent when the entry can't be resolved. */
+    transport?: 'stdio' | 'websocket' | 'http';
+    /** Why the framework refuses the entry, which stops the host's startup;
+     *  absent when it is usable. */
+    problems?: string[];
     env?: Record<string, string>;
     toolPrefix?: string;
     reconnect?: boolean;

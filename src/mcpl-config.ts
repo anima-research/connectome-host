@@ -120,7 +120,11 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
     };
     // A file entry defines a server outright, so it must name a usable one.
-    const problems = serverProblems(loaded);
+    // The entry is checked as written, not as loaded: this loader doesn't
+    // carry some MCPL-only fields (capabilities, `scopes`, `allowHostCommands`,
+    // `autofetch`, `shouldTriggerInference`), and on a modern server the
+    // operator who set one has to learn it can't apply, as on every surface.
+    const problems = serverProblems({ ...entry, id });
     if (problems.length > 0) {
       throw new Error(`mcpl-servers.json: mcplServers.${id}: ${problems.join('; ')}`);
     }
@@ -156,6 +160,46 @@ export function isModernServer(config: { id: string }): boolean {
   } catch {
     return false;
   }
+}
+
+type ServerBinding = ReturnType<typeof resolveServerBinding>;
+
+/**
+ * How the registry views (`/mcp list`, the web panel's registry) show a
+ * mcpl-servers.json entry, by the framework's own binding rules rather than
+ * by which fields happen to be present.
+ */
+export interface RegistryEntryView {
+  /** What it connects to: its command line when the binding is stdio (an
+   *  entry with both `command` and `url` and no `transport` runs the
+   *  command), its url when the binding is a network transport. Empty when
+   *  the entry has neither. */
+  target: string;
+  family?: ServerBinding['family'];
+  transport?: ServerBinding['transport'];
+  /** Why the framework refuses the entry, which stops the host's startup;
+   *  absent when the entry is usable. A refused entry still shows what it
+   *  holds, so one bad entry doesn't make the registry unreadable. */
+  problems?: string[];
+}
+
+export function registryEntryView(id: string, entry: ServerFileEntry): RegistryEntryView {
+  const commandLine = entry.command !== undefined
+    ? [entry.command, ...(entry.args ?? [])].join(' ')
+    : undefined;
+  let binding: ServerBinding | undefined;
+  try {
+    binding = resolveServerBinding({ ...entry, id } as unknown as McplServerConfig);
+  } catch { /* the reason is among the problems below */ }
+  const target = binding
+    ? (binding.transport === 'stdio' ? commandLine : entry.url)
+    : (commandLine ?? entry.url);
+  const problems = serverProblems({ ...entry, id });
+  return {
+    target: target ?? '',
+    ...(binding ? { family: binding.family, transport: binding.transport } : {}),
+    ...(problems.length > 0 ? { problems } : {}),
+  };
 }
 
 function checkedInheritEnv(value: unknown, where: string): boolean {
@@ -202,12 +246,16 @@ export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
   // modern MCP server over Streamable HTTP. Left with the file's command, the
   // merged entry would still resolve to that command (the framework's rule
   // for a config with both and no transport), so the file's stdio launch is
-  // set aside, along with a `transport` the file chose for its own target
-  // (stdio, or websocket for its old URL). A transport the recipe itself
-  // gives stays, to be validated against the URL. A ws(s) URL keeps its
-  // existing meaning: it takes effect with `transport: 'websocket'`.
+  // set aside: always, since a recipe's own `command`/`args` never apply to a
+  // file-defined server (the file supplies the launch). So is a stdio-only
+  // setting or a `transport` the file chose for its own target (stdio, or
+  // websocket for its old URL), unless the recipe gives one itself: those
+  // stay, to be validated against the URL. A ws(s) URL keeps its existing
+  // meaning: it takes effect with `transport: 'websocket'`.
   if (typeof recipeEntry.url === 'string' && /^https?:\/\//i.test(recipeEntry.url)) {
-    for (const fileOnly of ['command', 'args', 'inheritEnv', 'protocol', 'transport']) {
+    delete merged.command;
+    delete merged.args;
+    for (const fileOnly of ['inheritEnv', 'protocol', 'transport']) {
       if (recipeEntry[fileOnly] === undefined) delete merged[fileOnly];
     }
   }

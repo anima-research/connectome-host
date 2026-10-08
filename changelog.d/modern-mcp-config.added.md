@@ -5,4 +5,6 @@
   - Every entry is checked by agent-framework's own rules (`resolveServerBinding`, `serverConfigProblems`): a bad recipe or file entry stops startup, a bad overlay entry is skipped with a logged reason, and `mcpl_deploy` refuses one before saving it.
   - Agent-deployed modern servers carry no MCPL capability mask, since they have no MCPL surface.
   - `mcpl_list`, `mcpl_deploy` and the web panel show each server's family, negotiated revision and transport. Their target is the one its transport actually uses. `mcpl_deploy` reports the connection's actual state, connected or still reconnecting, rather than assuming success.
+  - `/mcp list` and the web panel's registry show each `mcpl-servers.json` entry's target as the framework would bind it, with its family and transport: an entry with both `command` and `url` and no `transport` runs its command. An entry the framework refuses is still listed, with the reasons it would stop startup.
+  - `/mcp add` on an entry with a `url` replaces that network target with the command it names, keeping env and the other settings.
   - Requires an agent-framework release with modern MCP support.

@@ -26,6 +26,7 @@ import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import {
   readMcplServersFile,
+  registryEntryView,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
 import {
@@ -334,10 +335,10 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     configPath: DEFAULT_CONFIG_PATH,
     servers: Object.entries(servers).map(([id, entry]) => ({
       id,
-      ...(entry.command !== undefined ? { command: entry.command } : {}),
-      ...(entry.url !== undefined ? { url: entry.url } : {}),
-      ...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
-      ...(entry.args ? { args: entry.args } : {}),
+      // What the entry connects to, chosen by the framework's binding rules
+      // (target, family, transport), and why the framework refuses it, if
+      // it does. The browser can't apply those rules itself.
+      ...registryEntryView(id, entry),
       ...(entry.env ? { env: entry.env } : {}),
       ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),
       ...(entry.reconnect !== undefined ? { reconnect: entry.reconnect } : {}),

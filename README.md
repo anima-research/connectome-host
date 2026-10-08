@@ -235,7 +235,7 @@ The same rules hold in `mcpl-servers.json`, the agent overlay and `mcpl_deploy`.
 - a bad overlay entry is skipped with a logged reason;
 - `mcpl_deploy` refuses a bad entry before saving it.
 
-`mcpl_list` and the web panel show each server's family, negotiated revision and transport (`modern@2026-07-28/http`).
+`mcpl_list` and the web panel show each server's family, negotiated revision and transport (`modern@2026-07-28/http`). `/mcp list` and the panel's registry show each `mcpl-servers.json` entry's family and transport as the framework would bind it, and the reasons for any entry it would refuse.
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the host's `DISCORD_SUPPRESSED_REACTIONS_BASELINE`, then the entry's `env`, then `AGENT_TIMEZONE`. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 

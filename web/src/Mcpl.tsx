@@ -20,11 +20,13 @@ import { createSignal, For, Show } from 'solid-js';
 
 export interface McplServerRow {
   id: string;
-  /** A stdio entry's command; a network entry has `url` instead. */
-  command?: string;
-  url?: string;
-  protocol?: 'legacy' | 'modern';
-  args?: string[];
+  /** What the entry connects to, as the host resolved it by the framework's
+   *  binding rules: its command line on stdio, its url on a network transport. */
+  target: string;
+  family?: 'legacy' | 'modern';
+  transport?: 'stdio' | 'websocket' | 'http';
+  /** Why the framework refuses the entry (it stops the host's startup). */
+  problems?: string[];
   env?: Record<string, string>;
   toolPrefix?: string;
   reconnect?: boolean;
@@ -276,15 +278,18 @@ function ServerCard(props: {
 }) {
   const [editEnv, setEditEnv] = createSignal(false);
   const [confirmDel, setConfirmDel] = createSignal(false);
-  const cmdLine = (): string =>
-    (props.server.url ?? [props.server.command, ...(props.server.args ?? [])].join(' '))
-    + (props.server.protocol ? ` (protocol: ${props.server.protocol})` : '');
   const envEntries = (): Array<[string, string]> => Object.entries(props.server.env ?? {});
 
   return (
     <div class="border border-neutral-800 rounded px-2 py-1.5 bg-neutral-950">
       <div class="flex items-baseline gap-2 mb-1">
         <span class="font-mono text-cyan-300 truncate">{props.server.id}</span>
+        <Show when={props.server.family}>
+          <span class="text-[10px] text-neutral-500 shrink-0"
+            title={props.server.family === 'modern' ? 'modern MCP (no MCPL surface)' : 'MCP + MCPL'}>
+            {props.server.family}/{props.server.transport}
+          </span>
+        </Show>
         <Show when={props.server.toolPrefix}>
           <span class="text-[10px] text-neutral-600">prefix={props.server.toolPrefix}</span>
         </Show>
@@ -328,8 +333,13 @@ function ServerCard(props: {
         </Show>
       </div>
       <div class="font-mono text-neutral-300 text-[11px] break-all leading-tight">
-        {cmdLine()}
+        {props.server.target}
       </div>
+      <Show when={props.server.problems}>
+        <div class="mt-1 text-[10px] text-rose-300 break-all leading-tight">
+          refused at startup: {props.server.problems!.join('; ')}
+        </div>
+      </Show>
       <Show when={envEntries().length > 0 && !editEnv()}>
         <div class="mt-1 flex flex-wrap gap-1">
           <For each={envEntries()}>{([k]) => (

@@ -7,22 +7,28 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
 
 import { validateRecipe } from '../src/recipe.js';
+import { createBranchState, handleCommand } from '../src/commands.js';
 import {
   AGENT_DEPLOY_DENIED_CAPABILITIES,
+  DEFAULT_CONFIG_PATH,
   applyAgentOverlay,
   isModernServer,
   loadMcplServers,
   mergeRecipeServers,
   readAgentOverlay,
+  readMcplServersFile,
+  registryEntryView,
   resolveOverlayEntry,
   saveAgentOverlay,
+  saveMcplServers,
   serverProblems,
+  type ServerFileEntry,
 } from '../src/mcpl-config.js';
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.js';
 import { buildMcplSnapshot } from '../src/web/panel-data.js';
@@ -123,6 +129,20 @@ describe('recipe mcpServers', () => {
     expect(isModernServer(ws)).toBe(false);
   });
 
+  test("a recipe's own command and args don't keep the file's launch under its http(s) url", () => {
+    // A recipe may carry a full fallback block for an id the file defines
+    // (recipes/SETUP.md's gitlab); its command never applies to that id.
+    const merged = mergeRecipeServers(
+      { srv: { command: 'recipe-fallback', args: ['--r'], url: 'https://tools.example/mcp' } },
+      [{ id: 'srv', command: 'old-server', args: ['--x'] }],
+    )[0]!;
+    expect(merged).toMatchObject({ id: 'srv', url: 'https://tools.example/mcp' });
+    expect(merged.command).toBeUndefined();
+    expect(merged.args).toBeUndefined();
+    expect(isModernServer(merged)).toBe(true);
+    expect(serverProblems(merged)).toEqual([]);
+  });
+
   test("a file's own transport doesn't outlive a recipe's http(s) url; a recipe transport is kept and checked", () => {
     const fromStdio = mergeRecipeServers(
       { srv: { url: 'https://tools.example/mcp' } },
@@ -180,6 +200,109 @@ describe('mcpl-servers.json', () => {
       .toThrow(/mcpl-servers\.json: mcplServers\.bad: .*protocol/);
     expect(() => loadMcplServers(writeFile({ bad: { command: 'node', protocol: 'modern', disabledFeatureSets: ['x'] } })))
       .toThrow(/mcpl-servers\.json: mcplServers\.bad: .*disabledFeatureSets/);
+  });
+
+  test("MCPL-only policy on a modern entry is refused, including fields the loader doesn't carry", () => {
+    const notCarried: Record<string, unknown> = {
+      enabledCapabilities: ['channels'],
+      disabledCapabilities: ['contextHooks'],
+      scopes: { chat: {} },
+      allowHostCommands: true,
+      autofetch: { maxBytes: 1024 },
+      shouldTriggerInference: true,
+    };
+    for (const [field, value] of Object.entries(notCarried)) {
+      for (const target of [{ url: 'https://tools.example/mcp' }, { command: 'node', protocol: 'modern' }]) {
+        expect(() => loadMcplServers(writeFile({ bad: { ...target, [field]: value } })))
+          .toThrow(new RegExp(`mcpl-servers\\.json: mcplServers\\.bad: .*"${field}" is MCPL policy`));
+      }
+    }
+  });
+
+  test('empty or false MCPL-only values on a modern entry, and those fields on a legacy entry, still load', () => {
+    const loaded = loadMcplServers(writeFile({
+      quiet: { url: 'https://tools.example/mcp', allowHostCommands: false, disabledCapabilities: [], scopes: {}, autofetch: {} },
+      legacy: { command: 'node', args: ['./srv.js'], allowHostCommands: true, disabledCapabilities: ['x'] },
+    }));
+    expect(loaded.map((s) => s.id)).toEqual(['quiet', 'legacy']);
+    // Checking the entry as written doesn't change what loads: relative args
+    // still resolve, and the loader carries these fields for neither family.
+    expect(loaded[1]).toMatchObject({ command: 'node', args: [join(dir, 'srv.js')] });
+    expect(loaded[1]).not.toHaveProperty('allowHostCommands');
+    expect(loaded[0]).not.toHaveProperty('allowHostCommands');
+  });
+});
+
+describe('registry views: /mcp list, /mcp add and the panel registry', () => {
+  // The /mcp commands and the panel read DEFAULT_CONFIG_PATH (cwd's
+  // gitignored mcpl-servers.json); restore whatever was there.
+  const original = existsSync(DEFAULT_CONFIG_PATH) ? readFileSync(DEFAULT_CONFIG_PATH, 'utf-8') : null;
+  afterEach(() => {
+    if (original !== null) writeFileSync(DEFAULT_CONFIG_PATH, original);
+    else if (existsSync(DEFAULT_CONFIG_PATH)) unlinkSync(DEFAULT_CONFIG_PATH);
+  });
+  const app = () =>
+    ({ framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() }) as never;
+  const listLines = () => handleCommand('/mcp list', app()).lines.map((l) => l.text);
+
+  test('the target is the one the binding selects, not whichever field is present', () => {
+    expect(registryEntryView('a', { command: 'node', args: ['srv.js'], url: 'https://tools.example/mcp' }))
+      .toEqual({ target: 'node srv.js', family: 'legacy', transport: 'stdio' });
+    expect(registryEntryView('b', { command: 'node', url: 'https://tools.example/mcp', transport: 'http' }))
+      .toEqual({ target: 'https://tools.example/mcp', family: 'modern', transport: 'http' });
+    expect(registryEntryView('c', { command: 'node', url: 'wss://host/mcpl', transport: 'websocket' }))
+      .toEqual({ target: 'wss://host/mcpl', family: 'legacy', transport: 'websocket' });
+    expect(registryEntryView('d', { command: 'node', protocol: 'modern' }))
+      .toEqual({ target: 'node', family: 'modern', transport: 'stdio' });
+  });
+
+  test('a refused entry still shows what it holds, with the reasons', () => {
+    const unresolvable = registryEntryView('x', { command: 'node', transport: 'websocket' });
+    expect(unresolvable.target).toBe('node');
+    expect(unresolvable.family).toBeUndefined();
+    expect(unresolvable.transport).toBeUndefined();
+    expect(unresolvable.problems!.join('; ')).toMatch(/transport "websocket" requires "url"/);
+    const policy = registryEntryView('y', { url: 'https://tools.example/mcp', allowHostCommands: true } as ServerFileEntry);
+    expect(policy).toMatchObject({ target: 'https://tools.example/mcp', family: 'modern', transport: 'http' });
+    expect(policy.problems!.join('; ')).toMatch(/"allowHostCommands" is MCPL policy/);
+  });
+
+  test('/mcp list and the panel registry show that target, and why an entry is refused', () => {
+    saveMcplServers(DEFAULT_CONFIG_PATH, {
+      mixed: { command: 'node', args: ['srv.js'], url: 'https://tools.example/mcp' },
+      moved: { command: 'node', url: 'https://tools.example/mcp', transport: 'http' },
+      broken: { command: 'node', transport: 'websocket' },
+    });
+    const lines = listLines();
+    expect(lines).toContain('  mixed: node srv.js (legacy/stdio)');
+    expect(lines).toContain('  moved: https://tools.example/mcp (modern/http)');
+    const broken = lines.indexOf('  broken: node');
+    expect(broken).toBeGreaterThan(0);
+    expect(lines[broken + 1]).toMatch(/^ {4}refused at startup: .*transport "websocket" requires "url"/);
+
+    const snap = buildMcplSnapshot({ framework: {} } as never) as { servers: Array<Record<string, unknown>> };
+    expect(snap.servers).toEqual([
+      { id: 'mixed', target: 'node srv.js', family: 'legacy', transport: 'stdio' },
+      { id: 'moved', target: 'https://tools.example/mcp', family: 'modern', transport: 'http' },
+      { id: 'broken', target: 'node', problems: [expect.stringMatching(/transport "websocket" requires "url"/)] },
+    ]);
+  });
+
+  test('/mcp add replaces a network target with the command it names, keeping the other settings', () => {
+    saveMcplServers(DEFAULT_CONFIG_PATH, {
+      web: { url: 'https://tools.example/mcp', transport: 'http', token: 't', env: { A: '1' }, toolPrefix: 'w' },
+      sock: { url: 'wss://host/mcpl', transport: 'websocket', access: 'eidoverse', reconnect: true },
+    });
+    const replaced = handleCommand('/mcp add web node srv.js', app()).lines.map((l) => l.text).join('\n');
+    handleCommand('/mcp add sock node', app());
+    const saved = readMcplServersFile(DEFAULT_CONFIG_PATH);
+    expect(saved.web).toEqual({ command: 'node', args: ['srv.js'], token: 't', env: { A: '1' }, toolPrefix: 'w' });
+    expect(saved.sock).toEqual({ command: 'node', access: 'eidoverse', reconnect: true });
+    expect(replaced).toContain('(replaced url: https://tools.example/mcp)');
+    expect(replaced).toContain('(kept env: A)');
+    const lines = listLines();
+    expect(lines).toContain('  web: node srv.js (legacy/stdio)');
+    expect(lines).toContain('  sock: node (legacy/stdio)');
   });
 });
 
