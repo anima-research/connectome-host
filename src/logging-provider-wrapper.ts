@@ -53,7 +53,9 @@ const MAX_CODE_CHARS = 128;
 
 /**
  * `text` when it fits; otherwise its head and tail around a marker stating
- * how many of how many characters were omitted, the whole within `max`.
+ * how many of how many characters were omitted. The whole stays within `max`
+ * whenever `max` fits the marker itself (at most 49 characters), as both
+ * bounds here do; a smaller `max` gets the marker alone, longer than `max`.
  * Cuts move only toward omission, so no surrogate pair is split.
  */
 function boundText(text: string, max: number): string {
