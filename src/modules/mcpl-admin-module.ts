@@ -5,7 +5,7 @@
  * Tools:
  *   - mcpl_list                → configured servers + live connection status
  *   - mcpl_deploy {id, ...}    → add/update a server and hot-connect it
- *   - mcpl_restart {id}        → kill + respawn a server (picks up rebuilt dist)
+ *   - mcpl_restart {id}        → disconnect + connect a server now (picks up rebuilt dist)
  *   - mcpl_unload {id}         → disconnect a server and remove its tools
  *
  * Persistence model (agent overlay):
@@ -158,7 +158,7 @@ export class McplAdminModule implements Module {
             token: { type: 'string', description: 'Bearer token (only when the operator hands you one — prefer `access`).' },
             access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
-            reconnect: { type: 'boolean', description: 'Auto-reconnect when the connection is lost. Default: true for URL servers, ws:// and http(s):// alike (a bounced server comes back on its own); false for command servers. For a legacy command server it does NOT respawn a crashed child (use mcpl_restart for that); a protocol: "modern" command server is relaunched when this is true.' },
+            reconnect: { type: 'boolean', description: 'Reconnect automatically when the connection is lost, with backoff: a URL server is dialed again, and a command server is launched again. Default: true for URL servers, ws:// and http(s):// alike (a bounced server comes back on its own); false for command servers. mcpl_restart is the deliberate restart, now.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
@@ -170,10 +170,10 @@ export class McplAdminModule implements Module {
       {
         name: 'mcpl_restart',
         description:
-          'Restart an MCPL server: kill the process and respawn it with its current ' +
-          'config. Use after rebuilding a server\'s dist, or to recover a crashed ' +
-          'server (for a legacy command server, reconnect:true does not respawn a dead ' +
-          'child — this does). ' +
+          'Restart an MCPL server now: disconnect it and connect again with its current ' +
+          'config (a command server\'s process is stopped and launched again). Use after ' +
+          'rebuilding a server\'s dist, or to recover a server that isn\'t reconnecting ' +
+          'on its own (reconnect is off, or it stopped retrying). ' +
           'CAUTION: restarting the server that carries your active conversation ' +
           '(e.g. discord) briefly interrupts your own message delivery; it reconnects ' +
           'within a few seconds.',

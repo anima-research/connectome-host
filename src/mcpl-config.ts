@@ -383,10 +383,9 @@ export function resolveOverlayEntry(
   // resident is days away (Mythos, eventless in eidoverse after the
   // 2026-08-04 door deploy). URL entries, WebSocket and HTTP alike, now
   // default to reconnect unless the entry explicitly says false. Stdio
-  // entries keep the old default: for a legacy command server reconnect does
-  // not respawn a dead child (mcpl_restart is that path), so `true` there
-  // would promise something it can't do. A modern command server is
-  // relaunched by reconnect, when its entry asks for it.
+  // entries keep their old default (false). With `reconnect: true` a lost
+  // command server is launched again, in either family; mcpl_restart is the
+  // deliberate restart.
   if (entry.url && rec.reconnect === undefined) rec.reconnect = true;
   // A modern MCP server has no MCPL capabilities to mask: its only surface
   // is tools, which is what a self-deployed server is allowed anyway.
