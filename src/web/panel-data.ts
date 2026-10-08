@@ -44,6 +44,10 @@ export interface PanelAppRef {
   callLedger?: CallLedger | null;
   /** Subscription quota windows, when the host runs on a subscription. */
   quotaMeter?: QuotaMeter | null;
+  /** On a subscription without a local meter (openai-codex through an
+   *  inference gateway, which tracks the windows per login): no windows to
+   *  show, but the dollar estimate is still not a bill. */
+  subscriptionUnmetered?: boolean;
 }
 
 /** Panel operations servable by any conhost process. Kept as a const list so
@@ -728,7 +732,7 @@ function hostHoldActive(app: PanelAppRef): boolean | null {
 }
 
 export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
-  if (!app.quotaMeter) return { subscription: false, windows: [] };
+  if (!app.quotaMeter) return { subscription: app.subscriptionUnmetered === true, windows: [] };
   const snapshot = await app.quotaMeter.refresh();
   return {
     subscription: true,

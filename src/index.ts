@@ -32,7 +32,7 @@ import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -127,6 +127,10 @@ interface AppContext {
   /** Subscription quota windows; null on metered (pay-per-token) providers.
    *  Its presence is what flips usage readouts from dollars to percent. */
   quotaMeter: QuotaMeter | null;
+  /** A subscription credential whose windows this host cannot read
+   *  (openai-codex through an inference gateway, which tracks them per
+   *  login): usage readouts still stay off dollars. */
+  subscriptionUnmetered: boolean;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -196,6 +200,7 @@ async function createFramework(
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
   quotaMeter: QuotaMeter | null,
+  subscriptionUnmetered = false,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -409,6 +414,7 @@ async function createFramework(
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
+      ...(subscriptionUnmetered ? { subscriptionUnmetered } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -936,11 +942,14 @@ async function main() {
       })
     : null;
   // The Codex subscription adapter owns ChatGPT login/refresh independently
-  // of the API-key transports below.
+  // of the API-key transports below — unless an inference gate holds the
+  // logins (CODEX_GATE_TOKEN + CODEX_BASE_URL), in which case no Codex CLI runs.
+  const codexGate = provider === 'openai-codex' ? codexGateAuth(process.env) : undefined;
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
+        ...(codexGate ? { authProvider: codexGate } : {}),
       })
     : undefined;
   // Subscription credentials draw down utilization windows instead of being
@@ -950,7 +959,9 @@ async function main() {
         authToken: config.authToken,
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       }))
-    : codexAdapter
+    // through a gate there is no Codex login to read windows from; the gate
+    // tracks them per login (its /gate/status)
+    : codexAdapter && !codexGate
       ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
       : null;
   // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
@@ -1191,7 +1202,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, !!codexGate);
 
   // Build app context
   const app: AppContext = {
@@ -1205,6 +1216,7 @@ async function main() {
     codexAdapter,
     callLedger,
     quotaMeter,
+    subscriptionUnmetered: !!codexGate,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1215,7 +1227,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, !!codexGate);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
