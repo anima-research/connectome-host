@@ -262,8 +262,11 @@ export class NoticesModule implements Module {
   private unsubscribe: (() => void) | null = null;
   private warnedServers = false;
   /** Bumped by every (re)connect-driven flush, so a post that was already in
-   *  flight when a server came back can tell and retry instead of parking. */
+   *  flight when a server came back can tell that the flush was deduplicated
+   *  against it and ask for another. */
   private flushEpoch = 0;
+  /** Set by such a post; consumed by its caller once its claim is released. */
+  private reflushWanted = false;
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
     this.now = config.now ?? Date.now;
@@ -594,6 +597,7 @@ export class NoticesModule implements Module {
     const subject = ep.key || this.config.agentName || 'the agent';
     const ok = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
+    this.reflushIfWanted();
     if (!ok) return;
     const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
     if (live?.seq === k.seq) { heard.add(kind); return; }
@@ -610,6 +614,13 @@ export class NoticesModule implements Module {
     ep.notified.set(channelId, this.now());
     const ok = await this.post(channelId, replyNoticeText(subject, primary), ep, { track: true, kind: primary.kind });
     if (!ok) ep.notified.delete(channelId);
+    this.reflushIfWanted();
+  }
+
+  private reflushIfWanted(): void {
+    if (!this.reflushWanted) return;
+    this.reflushWanted = false;
+    void this.flushPending();
   }
 
   /**
@@ -650,11 +661,13 @@ export class NoticesModule implements Module {
     } catch (err) {
       result = { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-    if (!result.success && /not found/i.test(result.error ?? '') && this.flushEpoch !== epoch && this.episodes.get(ep.key) === ep) {
+    if (!result.success && /not found/i.test(result.error ?? '') && this.flushEpoch !== epoch && opts.track) {
       // A server came back while this attempt was in flight; the flush it
-      // triggered was deduplicated against us. Try once more against the
-      // new state rather than parking behind a flush that already ran.
-      return this.post(channelId, text, ep, opts);
+      // triggered was deduplicated against us. Ask for another flush once
+      // our caller has released its claim — the retry then goes through the
+      // same admission as any delivery (tier, scope, delivery record), not
+      // a blind resend of this text.
+      this.reflushWanted = true;
     }
     if (result.success) {
       ep.pending.delete(channelId);

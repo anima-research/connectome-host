@@ -29,10 +29,13 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
     onTrace: (cb: (e: TraceEvent) => void) => { listener = cb; return () => {}; },
     channels: {
       publishForAgent: async (channelId: string, text: string, agentName: string) => {
+        // Absence is decided at call time, like a real dial; a held post then
+        // fails or succeeds according to the state when it was sent.
+        const server = channelId.slice(0, channelId.indexOf(':'));
+        const absent = broken.has(server);
         const hold = holds.get(channelId);
         if (hold) { holds.delete(channelId); await hold; }
-        const server = channelId.slice(0, channelId.indexOf(':'));
-        if (broken.has(server)) return { success: false, error: `Server not found: ${server}` };
+        if (absent) return { success: false, error: `Server not found: ${server}` };
         if (channelId.includes('grantless')) return { success: false, error: 'channels.publish not in grant' };
         posts.push({ channelId, text, agentName });
         return { success: true };
@@ -585,6 +588,36 @@ describe('absent chat server', () => {
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     await h.settle();
     expect(h.posts).toEqual([]);
+  });
+
+  test('a reply parked mid-reconnect is re-admitted, not resent: a cleared outage posts nothing', async () => {
+    const h = await started({}, { brokenServers: ['zulip'] });
+    h.alert('quota-spent', 'spent');
+    h.alert('context-refusal', 'over budget');
+    const release = h.hold('zulip:dev');
+    void h.incoming('zulip:dev'); // reply attempt in flight, will fail (server absent at call time)
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 }); // flush deduplicated against the in-flight attempt
+    h.alert('quota-spent-clear', 'ok'); // tier drops to status while the attempt is in flight
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts).toEqual([]);
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['context-refusal'], tier: 'status', notified: [], pending: [] });
+  });
+
+  test('a reply parked mid-reconnect is re-admitted and delivered while the outage is on', async () => {
+    const h = await started({}, { brokenServers: ['zulip'] });
+    h.alert('quota-spent', 'spent');
+    const release = h.hold('zulip:dev');
+    void h.incoming('zulip:dev');
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
+    expect(h.module.episodeState()[0]!.pending).toEqual([]);
   });
 
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {
