@@ -66,7 +66,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { SessionManager } from './session-manager.js';
@@ -515,7 +515,10 @@ async function createFramework(
 
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
-  // tombstones suppress recipe/file servers the agent unloaded.
+  // tombstones suppress recipe/file servers the agent unloaded. An overlay
+  // entry that replaces an operator's server and lacks what it provides, or
+  // names a host variable that only a recipe substitutes, is logged.
+  for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
   const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
@@ -658,6 +661,7 @@ agents: [agentConfig],
 
   if (mcplAdminModule) {
     mcplAdminModule.setFramework(framework);
+    mcplAdminModule.setOperatorServers(allServers);
     if (identityModule) mcplAdminModule.setIdentity(identityModule);
   }
 
