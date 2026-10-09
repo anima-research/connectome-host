@@ -699,6 +699,192 @@ describe('FleetModule — unresolved launch artifacts', () => {
       await owner.stop();
     }, 25_000);
   }
+
+  // Owned shutdown reconciliation: only confirmed death of the tracked
+  // generation reuses the existing guarded cleanupStaleChildFiles owner.
+  for (const mode of ['graceful stop', 'forced kill tool', 'forced stop'] as const) {
+    test(`confirmed ${mode} reconciles the tracked generation's stale artifacts`, async () => {
+      const dataDir = mkdtempSync(join(tmpDir, 'owned-stop-'));
+      const owner = await startOwner(dataDir);
+      const child = owner.getChildren().get('guard')!;
+      const pidPath = join(dataDir, 'headless.pid');
+      expect(readFileSync(pidPath, 'utf8')).toBe(String(child.pid));
+      expect(lstatSync(child.socketPath).isSocket()).toBe(true);
+      const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+      const forced = mode !== 'graceful stop';
+      if (forced) process.kill(child.pid!, 'SIGSTOP'); // Cannot answer shutdown or handle SIGTERM.
+      try {
+        if (mode === 'forced kill tool') {
+          expect((await owner.handleToolCall({ id: 'owned-kill', name: 'kill', input: { name: 'guard' } })).success).toBe(true);
+        } else {
+          await owner.stop();
+        }
+        expect(child.exitedAt).not.toBeNull();
+        if (forced) expect(child.process?.signalCode).toBe('SIGKILL');
+        else expect(child.process?.exitCode).toBe(0);
+        expect(cleanup).toHaveBeenCalledWith(child);
+        expect(existsSync(pidPath)).toBe(false);
+        expect(existsSync(child.socketPath)).toBe(false);
+      } finally {
+        cleanup.mockRestore();
+        if (child.process?.exitCode === null && child.process?.signalCode === null) {
+          try { process.kill(child.pid!, 'SIGCONT'); } catch { /* already gone */ }
+        }
+        await owner.stop();
+      }
+    }, 15_000);
+  }
+
+  for (const terminal of ['crashed', 'exited'] as const) {
+    test(`stop reconciles an already ${terminal} tracked generation`, async () => {
+      // Keep Unix socket fixture paths within the native OS path bound.
+      const dataDir = mkdtempSync(join(tmpDir, `t${terminal[0]}-`));
+      const owner = await startOwner(dataDir);
+      const child = owner.getChildren().get('guard')!;
+      if (terminal === 'crashed') {
+        await owner.handleToolCall({ id: 'terminal-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
+      } else {
+        process.kill(child.pid!, 'SIGTERM'); // External exit; the mock leaves its markers behind.
+      }
+      await waitFor(() => child.exitedAt !== null && child.process?.exitCode === (terminal === 'crashed' ? 1 : 0),
+        5_000, `${terminal} child reaped`);
+      expect(child.status).toBe(terminal);
+      const pidPath = join(dataDir, 'headless.pid');
+      expect(readFileSync(pidPath, 'utf8')).toBe(String(child.pid));
+      expect(lstatSync(child.socketPath).isSocket()).toBe(true);
+      const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+      try {
+        await owner.stop();
+        expect(cleanup).toHaveBeenCalledWith(child);
+        expect(existsSync(pidPath)).toBe(false);
+        expect(existsSync(child.socketPath)).toBe(false);
+      } finally { cleanup.mockRestore(); }
+    }, 15_000);
+  }
+
+  test('unconfirmed death preserves artifacts and never enters reconciliation', async () => {
+    const dataDir = mkdtempSync(join(tmpDir, 'unconfirmed-stop-'));
+    const owner = await startOwner(dataDir);
+    const child = owner.getChildren().get('guard')!;
+    const pidPath = join(dataDir, 'headless.pid');
+    const pidBytes = readFileSync(pidPath, 'utf8');
+    const before = lstatSync(child.socketPath, { bigint: true });
+    const wait = spyOn(owner as any, 'waitForExit').mockImplementation(async () => false);
+    const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+    try {
+      const result = await owner.handleToolCall({ id: 'unconfirmed-kill', name: 'kill', input: { name: 'guard' } });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('death unconfirmed');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(readFileSync(pidPath, 'utf8')).toBe(pidBytes);
+      const after = lstatSync(child.socketPath, { bigint: true });
+      expect(after.ino).toBe(before.ino);
+      expect(after.ctimeNs).toBe(before.ctimeNs);
+    } finally { wait.mockRestore(); cleanup.mockRestore(); await owner.stop(); }
+  }, 15_000);
+
+  test('detach stop leaves a live tracked child and its artifacts untouched', async () => {
+    const dataDir = mkdtempSync(join(tmpDir, 'detach-stop-'));
+    const owner = await startOwner(dataDir);
+    const child = owner.getChildren().get('guard')!;
+    const pidPath = join(dataDir, 'headless.pid');
+    const pidBytes = readFileSync(pidPath, 'utf8');
+    const before = lstatSync(child.socketPath, { bigint: true });
+    const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+    owner.setDetachMode(true);
+    try {
+      await owner.stop();
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(child.process?.exitCode).toBeNull();
+      expect(child.process?.signalCode).toBeNull();
+      expect(readFileSync(pidPath, 'utf8')).toBe(pidBytes);
+      const after = lstatSync(child.socketPath, { bigint: true });
+      expect(after.ino).toBe(before.ino);
+      expect(after.ctimeNs).toBe(before.ctimeNs);
+    } finally { cleanup.mockRestore(); owner.setDetachMode(false); await owner.stop(); }
+  }, 15_000);
+
+  test('stop preserves replaced PID metadata after a reaped crash', async () => {
+    const dataDir = mkdtempSync(join(tmpDir, 'stop-replaced-pid-'));
+    const owner = await startOwner(dataDir);
+    const old = owner.getChildren().get('guard')!;
+    await owner.handleToolCall({ id: 'replaced-pid-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
+    await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'old generation exit');
+    const pidPath = join(dataDir, 'headless.pid');
+    // A different live generation's PID replaces our reaped child's metadata.
+    writeFileSync(pidPath, String(process.pid));
+    const before = lstatSync(old.socketPath, { bigint: true });
+    const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+    try {
+      await owner.stop();
+      expect(cleanup).toHaveBeenCalledWith(old);
+      expect(readFileSync(pidPath, 'utf8')).toBe(String(process.pid));
+      const after = lstatSync(old.socketPath, { bigint: true });
+      expect(after.ino).toBe(before.ino);
+      expect(after.ctimeNs).toBe(before.ctimeNs);
+    } finally { cleanup.mockRestore(); }
+  }, 15_000);
+
+  test('stop preserves a replacement live socket even with the old PID file', async () => {
+    const dataDir = mkdtempSync(join(tmpDir, 'stop-replaced-socket-'));
+    const owner = await startOwner(dataDir);
+    const old = owner.getChildren().get('guard')!;
+    await owner.handleToolCall({ id: 'replaced-socket-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
+    await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'old socket owner exit');
+    const pidPath = join(dataDir, 'headless.pid');
+    const pid = readFileSync(pidPath, 'utf8');
+    renameSync(old.socketPath, old.socketPath + '.retained');
+    const server = createServer(socket => socket.end('replacement-owner'));
+    const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
+    try {
+      await new Promise<void>((ok, no) => { server.once('error', no); server.listen(old.socketPath, ok); });
+      const before = lstatSync(old.socketPath, { bigint: true });
+      await owner.stop();
+      expect(cleanup).toHaveBeenCalledWith(old);
+      expect(readFileSync(pidPath, 'utf8')).toBe(pid);
+      const after = lstatSync(old.socketPath, { bigint: true });
+      expect(after.ino).toBe(before.ino);
+      expect(after.ctimeNs).toBe(before.ctimeNs);
+      expect(server.listening).toBe(true);
+    } finally {
+      cleanup.mockRestore();
+      await owner.stop();
+      if (server.listening) await new Promise<void>((ok, no) => server.close(err => err ? no(err) : ok()));
+    }
+  }, 15_000);
+
+  test('confirmed forced death of an adopted generation reconciles its stale artifacts', async () => {
+    let state: any;
+    const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
+      pushEvent: () => {}, getModule: () => null } as unknown as Parameters<FleetModule['start']>[0];
+    const dataDir = mkdtempSync(join(tmpDir, 'adopted-forced-'));
+    const owner = await startOwner(dataDir, false, ctx);
+    const old = owner.getChildren().get('guard')!;
+    owner.setDetachMode(true); await owner.stop();
+    const restored = makeFleet();
+    await restored.start(ctx);
+    const adopted = restored.getChildren().get('guard')!;
+    expect(adopted.process).toBeNull();
+    expect(adopted.pid).toBe(old.pid);
+    const pidPath = join(dataDir, 'headless.pid');
+    const cleanup = spyOn(restored as any, 'cleanupStaleChildFiles');
+    process.kill(old.pid!, 'SIGSTOP'); // Cannot answer shutdown or handle SIGTERM.
+    try {
+      expect((await restored.handleToolCall({ id: 'adopted-forced-kill', name: 'kill', input: { name: 'guard' } })).success).toBe(true);
+      await waitFor(() => old.process?.signalCode === 'SIGKILL', 2_000, 'original handle observes SIGKILL');
+      expect(adopted.status).toBe('exited');
+      expect(adopted.exitReason).toContain('ESRCH');
+      expect(cleanup).toHaveBeenCalledWith(adopted);
+      expect(existsSync(pidPath)).toBe(false);
+      expect(existsSync(adopted.socketPath)).toBe(false);
+    } finally {
+      cleanup.mockRestore();
+      if (old.process?.exitCode === null && old.process?.signalCode === null) {
+        try { process.kill(old.pid!, 'SIGCONT'); } catch { /* already gone */ }
+      }
+      await restored.stop(); owner.setDetachMode(false); await owner.stop();
+    }
+  }, 20_000);
 });
 
 describe('FleetModule — Phase 2', () => {
@@ -803,6 +989,7 @@ describe('FleetModule — Phase 2', () => {
 
     // Socket file should be removed by the child's own cleanup path.
     expect(existsSync(join(dataDir, 'ipc.sock'))).toBe(false);
+    expect(existsSync(join(dataDir, 'headless.pid'))).toBe(false);
   }, 60_000);
 
   test('launch rejects duplicate name while child is running', async () => {
