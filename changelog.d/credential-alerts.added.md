@@ -17,12 +17,5 @@
   `credential-action`, HTTP `GET /credential`) work fleet-wide over the
   panel IPC. The header quota readout now says `quota: unreadable` instead
   of rendering nothing when a subscription meter has never read.
-- **Activity module: jam notices (opt-in) and honest typing.** With
-  `modules.activity.jamNotices: true`, a subscribed channel that receives a
-  message while the host is jammed (spent quota, expired/rejected credential,
-  pending login, hard-down) gets one host-attributed "cannot respond right
-  now" line per episode, with the expected reset time when known, and one
-  "can respond again" line when the jam clears; one chronicle marker per
-  episode tells the agent the host spoke for it. The typing indicator now
-  also stops on `inference:failed` / `inference:exhausted`, not only on a
-  completed turn.
+- **Activity module: honest typing.** The typing indicator now also stops on
+  `inference:failed` / `inference:exhausted`, not only on a completed turn.

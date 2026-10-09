@@ -54,6 +54,7 @@ import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
+import { NoticesModule } from './modules/notices-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
@@ -341,10 +342,26 @@ async function createFramework(
     const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
     activityModule = new ActivityModule({
       initialChannels: activityConfig.channels,
-      jamNotices: activityConfig.jamNotices === true,
-      agentName,
     });
     moduleInstances.push(activityModule);
+  }
+
+  // Outage notices (host speaks in the agent's channels when it cannot) —
+  // opt-in per recipe. Server ids are handed over once the MCPL server list
+  // is final (below), for the one-time "unknown server" warning.
+  let noticesModule: NoticesModule | null = null;
+  if (modules.notices !== undefined && modules.notices !== false) {
+    const noticesConfig = typeof modules.notices === 'object' ? modules.notices : {};
+    noticesModule = new NoticesModule({
+      agentName,
+      statusChannels: noticesConfig.statusChannels,
+      replyIn: noticesConfig.reply?.in,
+      replyNot: noticesConfig.reply?.not,
+      kinds: noticesConfig.kinds,
+      quietMs: noticesConfig.quietMs,
+      renotifyMs: noticesConfig.renotifyMs,
+    });
+    moduleInstances.push(noticesModule);
   }
 
   // Auto-unsubscribe noisy ambient channels — ON by default (opt out with
@@ -610,6 +627,10 @@ agents: [agentConfig],
     subagentModule.setFramework(framework);
   }
 
+  if (noticesModule) {
+    noticesModule.setKnownServers(finalServers.map((server) => server.id));
+    noticesModule.setFramework(framework);
+  }
   if (activityModule) {
     activityModule.setFramework(framework);
   }
