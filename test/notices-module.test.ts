@@ -683,6 +683,74 @@ describe('absent chat server', () => {
     expect(h.module.owedState()).toEqual({});
   });
 
+  test('owed lines keep their order across a reconnect that does not bring the server back', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', 'spent');
+    h.alert('compression-quarantine', '2 chunks');
+    await h.settle();
+    h.broken.add('zulip');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    const expected = [statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent'), statusClearText('clerk', 'quota-spent', 'ok')];
+    expect(h.module.owedState()).toEqual({ 'zulip:ops': expected });
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'discord', attempts: 1 }); // unrelated server
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.module.owedState()).toEqual({ 'zulip:ops': expected }); // same order
+    h.broken.delete('zulip');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.slice(2).map((p) => p.text)).toEqual(expected);
+  });
+
+  test('flushes run one at a time: a line owed while a flush waits is neither lost nor doubled', async () => {
+    const h = await started({ statusChannels: ['slack:ops', 'zulip:ops'] });
+    h.alert('quota-spent', 'spent');
+    h.alert('compression-quarantine', '2 chunks');
+    await h.settle();
+    h.broken.add('slack'); h.broken.add('zulip');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    await h.settle();
+    expect(Object.keys(h.module.owedState()).sort()).toEqual(['slack:ops', 'zulip:ops']);
+    h.broken.clear();
+    const releaseSlack = h.hold('slack:ops');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'slack', attempts: 1 }); // flush #1 waits on slack
+    await h.settle();
+    h.alert('quota-spent-clear', 'ok'); // delivered directly (servers are back), nothing new owed
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 }); // flush #2 queues behind #1
+    await h.settle();
+    releaseSlack();
+    for (let i = 0; i < 6; i++) await h.settle();
+    const texts = h.posts.slice(4).map((p) => [p.channelId, p.text]);
+    const quarantineClear = statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent');
+    expect(texts.filter(([ch, t]) => ch === 'zulip:ops' && t === quarantineClear).length).toBe(1);
+    expect(texts.filter(([ch, t]) => ch === 'slack:ops' && t === quarantineClear).length).toBe(1);
+    expect(h.module.owedState()).toEqual({});
+  });
+
+  test('an owed "back" line is dropped when the agent is down again by the time it could be sent', async () => {
+    const h = await started();
+    h.alert('quota-spent', 'spent');
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(1);
+    h.broken.add('zulip');
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    expect(h.module.owedState()).toEqual({ 'zulip:dev': [replyClearText('clerk')] });
+    h.alert('auth-rejected', 'rejected'); // down again before the server returns
+    h.broken.delete('zulip');
+    await h.incoming('zulip:dev'); // told about the new outage
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toContain('credential was rejected');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.length).toBe(2); // no false "can respond again"
+    expect(h.module.owedState()).toEqual({});
+    h.alert('auth-rejected-clear', 'ok');
+    await h.settle();
+    expect(h.posts[2]!.text).toBe(replyClearText('clerk')); // the live episode's own back line
+  });
+
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {
     const warnings: string[] = [];
     const orig = console.warn;

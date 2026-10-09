@@ -162,6 +162,15 @@ interface Episode {
   markerWritten: boolean;
 }
 
+/** A clear / "back" line owed to a channel whose server was absent. `key`
+ *  names the episode it spoke for; `clearedKind` is the kind it declared
+ *  cleared, or undefined for a reply channel's "can respond again" line. */
+interface OwedLine {
+  text: string;
+  key: string;
+  clearedKind?: string;
+}
+
 const TIER_RANK: Record<NoticeTier, number> = { silent: 0, status: 1, reply: 2 };
 
 /** The episode's tier: the loudest active kind. */
@@ -271,8 +280,12 @@ export class NoticesModule implements Module {
    *  against it and ask for another. Internal re-flushes do not bump it. */
   private reconnectEpoch = 0;
   /** channelId → clear / "back" lines that could not be delivered because the
-   *  channel's server was absent; retried on reconnect, bounded per channel. */
-  private owedLines = new Map<string, string[]>();
+   *  channel's server was absent; retried on reconnect, bounded per channel,
+   *  dropped if the fact they state has since been overtaken. */
+  private owedLines = new Map<string, OwedLine[]>();
+  /** All flushes run one at a time, in order: a flush that waits on one
+   *  channel must not race another flush over the same queues. */
+  private flushChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
     this.now = config.now ?? Date.now;
@@ -337,7 +350,7 @@ export class NoticesModule implements Module {
 
   /** Clear / "back" lines still owed to channels whose server is absent. */
   owedState(): Record<string, string[]> {
-    return Object.fromEntries([...this.owedLines].filter(([, l]) => l.length > 0));
+    return Object.fromEntries([...this.owedLines].filter(([, l]) => l.length > 0).map(([ch, l]) => [ch, l.map((o) => o.text)]));
   }
 
   /** Current episodes, for tests and the panel. */
@@ -504,10 +517,10 @@ export class NoticesModule implements Module {
     const still = open ? primaryKind(ep).kind : undefined;
     for (const [ch, heard] of ep.statusHeard) {
       if (!heard.delete(kind) || opts.superseded) continue;
-      void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false });
+      void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
     }
     if (opts.superseded || open) return;
-    for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false });
+    for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
   }
 
   /**
@@ -617,7 +630,7 @@ export class NoticesModule implements Module {
     // own schedule and needs no clear for this one; a gone kind does.
     if (live) { this.scheduleStatus(ep); return; }
     const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
-    void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false });
+    void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
   }
 
   private async postReply(ep: Episode, channelId: string): Promise<void> {
@@ -642,7 +655,13 @@ export class NoticesModule implements Module {
    * same admission as a fresh delivery — the episode may have closed, changed
    * tier, or already reached the channel another way while we waited.
    */
-  private async flushPending(): Promise<void> {
+  private flushPending(): Promise<void> {
+    const run = this.flushChain.then(() => this.doFlushPending());
+    this.flushChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async doFlushPending(): Promise<void> {
     await this.flushOwed();
     for (const ep of [...this.episodes.values()]) {
       for (const channelId of [...ep.pending]) {
@@ -660,19 +679,40 @@ export class NoticesModule implements Module {
     }
   }
 
-  /** Retry owed clear / "back" lines, oldest first; what still fails stays owed. */
+  /**
+   * Retry owed clear / "back" lines, oldest first, in order. A line whose
+   * fact has been overtaken — the kind it cleared is active again, or the
+   * agent is down again when it says "can respond again" — is dropped: the
+   * live episode's own lines supersede it. What still fails stays owed, in
+   * place, ahead of anything owed meanwhile.
+   */
   private async flushOwed(): Promise<void> {
-    for (const [channelId, lines] of [...this.owedLines]) {
+    for (const channelId of [...this.owedLines.keys()]) {
+      const lines = this.owedLines.get(channelId);
+      if (!lines) continue;
       this.owedLines.delete(channelId);
       for (let i = 0; i < lines.length; i++) {
-        const r = await this.post(channelId, lines[i]!, undefined, { track: false });
+        const line = lines[i]!;
+        if (this.isStale(line)) continue;
+        const r = await this.post(channelId, line.text, undefined, { track: false, owe: false });
         if (r.ok) continue;
-        // Still absent (post() re-owed this line): re-owe the rest ahead of it.
-        const owed = this.owedLines.get(channelId) ?? [];
-        this.owedLines.set(channelId, [...lines.slice(i + 1), ...owed].slice(-OWED_LINES_CAP));
+        const meanwhile = this.owedLines.get(channelId) ?? [];
+        this.owedLines.set(channelId, [...lines.slice(i), ...meanwhile].slice(-OWED_LINES_CAP));
         break;
       }
     }
+  }
+
+  private isStale(line: OwedLine): boolean {
+    const ep = this.episodes.get(line.key);
+    if (!ep) return false;
+    if (line.clearedKind === undefined) return episodeTier(ep) === 'reply';
+    return ep.kinds.has(line.clearedKind);
+  }
+
+  private owe(channelId: string, line: OwedLine): void {
+    const owed = this.owedLines.get(channelId) ?? [];
+    this.owedLines.set(channelId, [...owed, line].slice(-OWED_LINES_CAP));
   }
 
   /**
@@ -688,7 +728,7 @@ export class NoticesModule implements Module {
     channelId: string,
     text: string,
     ep: Episode | undefined,
-    opts: { track: boolean; kind?: string },
+    opts: { track: boolean; kind?: string; owe?: { key: string; clearedKind?: string } | false },
   ): Promise<{ ok: boolean; reflush: boolean }> {
     const registry = this.framework?.channels as Registry | undefined;
     if (!registry?.publishForAgent) return { ok: false, reflush: false };
@@ -720,8 +760,7 @@ export class NoticesModule implements Module {
     // A clear / "back" line is a final statement, so it needs no re-admission:
     // try once more against the state the mid-flight reconnect left, then owe it.
     if (reflush) return this.post(channelId, text, ep, opts);
-    const owed = this.owedLines.get(channelId) ?? [];
-    this.owedLines.set(channelId, [...owed, text].slice(-OWED_LINES_CAP));
+    if (opts.owe) this.owe(channelId, { text, ...opts.owe });
     return { ok: false, reflush: false };
   }
 
