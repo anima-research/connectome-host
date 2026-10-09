@@ -387,6 +387,13 @@ export function serverProvisions(definition: Record<string, unknown>): ServerPro
 /** A text that names a host variable, as substituteEnvVars reads one. */
 const namesHostVariable = (text: unknown): boolean => typeof text === 'string' && namesEnvReference(text);
 
+/** An overlay entry's env when it's a map, else none. The overlay is the
+ *  agent's hand-editable file, so the readers here take its shapes as they
+ *  come and never throw on one: the startup warnings mustn't become a new
+ *  way for a malformed entry to stop a start. */
+const envOf = (entry: AgentOverlayEntry): Record<string, unknown> =>
+  entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env) ? entry.env : {};
+
 /**
  * The parts of an agent overlay entry that name a host variable (`${VAR}`),
  * as labels for a receipt: `command`, `args` and `env NAME` for a command
@@ -398,9 +405,10 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
   const refs: string[] = [];
   if (entry.command) {
     if (namesHostVariable(entry.command)) refs.push('command');
-    if ((entry.args ?? []).some(namesHostVariable)) refs.push('args');
-    for (const name of Object.keys(entry.env ?? {}).sort()) {
-      if (namesHostVariable(entry.env![name])) refs.push(`env ${name}`);
+    if (Array.isArray(entry.args) && entry.args.some(namesHostVariable)) refs.push('args');
+    const env = envOf(entry);
+    for (const name of Object.keys(env).sort()) {
+      if (namesHostVariable(env[name])) refs.push(`env ${name}`);
     }
   } else if (entry.url) {
     if (namesHostVariable(entry.url)) refs.push('url');
@@ -436,7 +444,7 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
   const lost: string[] = [];
   if (entry.command) {
     const declared = new Set(
-      Object.entries(entry.env ?? {}).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
+      Object.entries(envOf(entry)).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
     );
     const missing = operator.env.filter((name) => !declared.has(name) && !hostSetsOverServer(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
@@ -445,7 +453,8 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
     const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
     if (operator.token && !token) lost.push('token');
     // A grant is a name, not a credential: another name is another grant.
-    if (operator.access && entry.access?.trim() !== operator.access) lost.push(`access grant "${operator.access}"`);
+    const access = typeof entry.access === 'string' ? entry.access.trim() : '';
+    if (operator.access && access !== operator.access) lost.push(`access grant "${operator.access}"`);
   }
   return lost.length > 0 ? lost.join('; ') : null;
 }

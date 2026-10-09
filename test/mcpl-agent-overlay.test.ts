@@ -236,6 +236,23 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: ' eidoverse ' })).toBeNull();
   });
 
+  // Nell-1783's review of the fix: the overlay is hand-editable JSON, so a
+  // malformed shape must read as lacking, never throw, since the startup
+  // warnings run before the overlay is applied.
+  test('malformed entry shapes read as lacking and never throw', () => {
+    withTmp((dir) => {
+      const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', access: 'portal' });
+      const malformed = { url: 'wss://w/mcpl', access: 5 } as unknown as AgentOverlayEntry;
+      expect(lostByReplacement(operator, malformed)).toBe('access grant "portal"');
+      const odd = { command: 'node', args: 'not-a-list', env: ['${A}'] } as unknown as AgentOverlayEntry;
+      expect(hostVariableReferences(odd)).toEqual([]);
+      expect(lostByReplacement(serverProvisions(shell), odd)).toBe('env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN');
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { world: malformed, shell: odd } }));
+      expect(() => overlayWarnings([shell, { id: 'world', url: 'wss://w/mcpl', access: 'portal' }], path)).not.toThrow();
+    });
+  });
+
   test('only an entry that puts a server in place replaces one', () => {
     expect(overlayEntryReplaces(undefined)).toBe(false);
     expect(overlayEntryReplaces({ disabled: true })).toBe(false);
