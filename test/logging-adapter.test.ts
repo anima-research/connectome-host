@@ -2,6 +2,13 @@ import { describe, test, expect } from 'bun:test';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
+import type { ModuleContext } from '@animalabs/agent-framework';
+import { SettingsModule } from '../src/modules/settings-module.js';
+import { validateRecipe } from '../src/recipe.js';
+import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 // Regression guard for the reasoning passthrough. `withReasoning` injects
 // adaptive `thinking` into `request.extra`, which the Anthropic adapter
@@ -95,6 +102,82 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
   test('never sends a level outside the known set, whatever the model', () => {
     expect(withEffort('minimal')).toBe(fable);
     expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+  });
+});
+
+describe('LoggingAnthropicAdapter initial recipe effort', () => {
+  test('native index constructs settings with the recipe effort before dispatch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chost-initial-effort-'));
+    const recipePath = join(dir, 'recipe.json');
+    const captured = join(dir, 'settings.json');
+    const preload = join(dir, 'capture-settings.ts');
+    const settingsPath = resolve(import.meta.dir, '../src/modules/settings-module.ts');
+    writeFileSync(recipePath, JSON.stringify({
+      name: 'Initial effort startup',
+      agent: { provider: 'mock', systemPrompt: 'No inference requested', thinking: { enabled: false, effort: 'medium' } },
+      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    }));
+    // Spy on the existing constructor in a separate process. Index must supply
+    // the recipe value; constructing a module in this test would miss that wire.
+    writeFileSync(preload, `
+      import { mock } from 'bun:test';
+      import { writeFileSync } from 'node:fs';
+      import { SettingsModule } from ${JSON.stringify(settingsPath)};
+      class CapturedSettings extends SettingsModule {
+        constructor(...args) {
+          super(...args);
+          writeFileSync(${JSON.stringify(captured)}, JSON.stringify(this.getReasoning()));
+        }
+      }
+      mock.module(${JSON.stringify(settingsPath)}, () => ({ SettingsModule: CapturedSettings }));
+    `);
+    const child = Bun.spawn([process.execPath, '--preload', preload, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
+      cwd: dir, env: { ...process.env, DATA_DIR: join(dir, 'data') },
+      stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+    });
+    try {
+      const [exit, _stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ]);
+      expect(exit, stderr).toBe(0);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).effort).toBe('medium');
+    } finally {
+      child.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test('first stream builds medium effort on the wire without a settings update', async () => {
+    const recipe = validateRecipe({
+      name: 'initial-effort-test',
+      agent: { systemPrompt: 'sys', thinking: { enabled: false, effort: 'medium' } },
+    });
+    const settings = new SettingsModule(recipe.agent.thinking?.effort);
+    await settings.start({ getState: () => undefined } as unknown as ModuleContext);
+    const config = buildFrameworkAgentConfig(recipe, 'agent', baseRequest.model, undefined);
+    let wire: unknown;
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        requests += 1;
+        wire = await request.json();
+        return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+      },
+    });
+    try {
+      const adapter = new LoggingAnthropicAdapter(
+        { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } },
+        '/dev/null', () => settings.getReasoning(),
+      );
+      await expect(adapter.stream(baseRequest, {})).rejects.toThrow(/local request fixture/);
+      expect(requests).toBe(1);
+      expect(wire).toMatchObject({ output_config: { effort: 'medium' }, stream: true });
+      expect(config.thinking).toEqual({ enabled: false });
+      expect((wire as { thinking?: unknown }).thinking).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

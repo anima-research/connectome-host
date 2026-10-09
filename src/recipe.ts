@@ -16,6 +16,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
+import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -332,6 +333,10 @@ export interface RecipeAgent {
      * 'omitted' returns empty text + signature only. Models 4.7+ default
      * to 'omitted' server-side. */
     display?: 'summarized' | 'omitted';
+    /** Anthropic streaming effort baseline, independent of enabled. Explicit agent
+     * settings override it until reset; compression calls are unaffected. Other
+     * providers ignore this field; OpenAI uses responses.reasoningEffort. */
+    effort?: ReasoningEffort;
   };
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
    * compaction and serviceTier are API-key transport settings. */
@@ -1920,6 +1925,11 @@ export function validateRecipe(raw: unknown): Recipe {
     }
     if (thinking.display !== undefined && thinking.display !== 'summarized' && thinking.display !== 'omitted') {
       throw new Error('Recipe agent.thinking.display must be "summarized" or "omitted".');
+    }
+    if (thinking.effort !== undefined && (
+      typeof thinking.effort !== 'string' || !REASONING_EFFORTS.includes(thinking.effort as ReasoningEffort)
+    )) {
+      throw new Error(`Recipe agent.thinking.effort must be one of: ${REASONING_EFFORTS.join(', ')}.`);
     }
     if (thinking.enabled === true && typeof thinking.budgetTokens === 'number' && typeof agent.maxTokens === 'number') {
       if (thinking.budgetTokens >= agent.maxTokens) {

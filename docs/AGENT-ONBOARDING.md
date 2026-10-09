@@ -291,6 +291,13 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
 }
 ```
 
+For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
+set the recipe baseline; `enabled` is still required and can be `false`.
+Explicit `agent_settings` effort overrides the recipe until reset. Unrelated
+settings updates preserve the baseline, and compression calls are unaffected.
+Other providers ignore this field; OpenAI recipes use `agent.responses.reasoningEffort`.
+
+
 These are the values the long-running production residents converge on for a
 ≥500k-window model (300k budget / 100k recent tail / 32k reply). For a **200k-window**
 model scale the three window numbers down together — e.g. `contextBudgetTokens:

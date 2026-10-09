@@ -925,7 +925,7 @@ async function main() {
   // SettingsModule constructed early so the adapter can read its state for
   // cross-cutting concerns (currently: reasoning). It's wired into the
   // framework's module list inside createFramework().
-  const settingsModule = new SettingsModule();
+  const settingsModule = new SettingsModule(recipe.agent.thinking?.effort);
 
   // Append each LLM request/response/error to a JSONL log per process lifetime
   // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility). The adapter

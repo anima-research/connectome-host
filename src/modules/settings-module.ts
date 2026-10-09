@@ -66,17 +66,18 @@ export class SettingsModule implements Module {
 
   private ctx: ModuleContext | null = null;
   private state: SettingsState = clone(DEFAULTS);
+  private effortOverride: ReasoningEffort | undefined;
+
+  constructor(private readonly initialEffort: ReasoningEffort = 'default') {
+    this.state.reasoning.effort = initialEffort;
+  }
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
-    const saved = ctx.getState<Partial<SettingsState>>();
-    if (saved) {
-      // Per field, so fields added later fall back to defaults for state
-      // persisted by older versions, and invalid saved values do too.
-      this.state = {
-        reasoning: restoreReasoning(saved.reasoning),
-      };
-    }
+    const saved = ctx.getState<{ reasoning?: unknown }>();
+    const baseline = { ...DEFAULTS.reasoning, effort: this.initialEffort };
+    this.state = { reasoning: restoreReasoning(saved?.reasoning, baseline) };
+    this.effortOverride = savedEffortOverride(saved?.reasoning);
   }
 
   async stop(): Promise<void> {
@@ -144,7 +145,7 @@ export class SettingsModule implements Module {
           description:
             "How much effort you put into your own turns (thinking depth and overall token spend): " +
             "'low', 'medium', 'high', 'xhigh', 'max', or 'default' (the model's own default). " +
-            'Takes effect on your next inference call and persists across restarts. Changing it ' +
+            'Takes effect on your next inference call and persists across restarts; reset restores the recipe effort. Changing it ' +
             'makes the next call re-read your whole context uncached (one-time cost). Levels your ' +
             'model does not support are not sent. Memory compression is unaffected.',
         },
@@ -179,7 +180,8 @@ export class SettingsModule implements Module {
           next.effort = patch.reasoning_effort as ReasoningEffort;
         }
         this.state.reasoning = next;
-        this.ctx?.setState(this.state);
+        if (patch.reasoning_effort !== undefined) this.effortOverride = next.effort;
+        this.persist();
         return this.reasoningSettingsView();
       },
       reset: (_agentName, keys) => {
@@ -194,12 +196,24 @@ export class SettingsModule implements Module {
           this.state.reasoning.display = DEFAULTS.reasoning.display;
         }
         if (all || keys?.includes('reasoning_effort')) {
-          this.state.reasoning.effort = DEFAULTS.reasoning.effort;
+          this.state.reasoning.effort = this.initialEffort;
+          this.effortOverride = undefined;
         }
-        this.ctx?.setState(this.state);
+        this.persist();
         return this.reasoningSettingsView();
       },
     };
+  }
+
+  /** Persist agent choices, leaving recipe-derived effort out of saved state. */
+  private persist(): void {
+    const { effort: _effort, ...reasoning } = this.state.reasoning;
+    this.ctx?.setState({
+      reasoning: {
+        ...reasoning,
+        ...(this.effortOverride === undefined ? {} : { effort: this.effortOverride, effortExplicit: true }),
+      },
+    });
   }
 
   /** The extension's wire view of reasoning state (flat agent_settings keys). */
@@ -225,8 +239,8 @@ export class SettingsModule implements Module {
  * turn, leaving the agent no turn to fix the setting with. Such a value falls
  * back to its default, and the host says so.
  */
-function restoreReasoning(saved: unknown): ReasoningSettings {
-  const restored = clone(DEFAULTS.reasoning);
+function restoreReasoning(saved: unknown, baseline = DEFAULTS.reasoning): ReasoningSettings {
+  const restored = clone(baseline);
   if (!saved || typeof saved !== 'object') return restored;
   const s = saved as Record<string, unknown>;
   const ignore = (field: string, value: unknown) => console.error(
@@ -245,10 +259,19 @@ function restoreReasoning(saved: unknown): ReasoningSettings {
     else ignore('display', s.display);
   }
   if (s.effort !== undefined) {
-    if (REASONING_EFFORTS.includes(s.effort as ReasoningEffort)) restored.effort = s.effort as ReasoningEffort;
-    else ignore('effort', s.effort);
+    if (REASONING_EFFORTS.includes(s.effort as ReasoningEffort)) {
+      restored.effort = savedEffortOverride(s) ?? baseline.effort;
+    } else ignore('effort', s.effort);
   }
   return restored;
+}
+
+/** Legacy nondefault effort was an agent choice; legacy default means unset. */
+function savedEffortOverride(saved: unknown): ReasoningEffort | undefined {
+  if (!saved || typeof saved !== 'object') return undefined;
+  const s = saved as Record<string, unknown>;
+  if (!REASONING_EFFORTS.includes(s.effort as ReasoningEffort)) return undefined;
+  return s.effort !== 'default' || s.effortExplicit === true ? s.effort as ReasoningEffort : undefined;
 }
 
 function clone<T>(x: T): T {

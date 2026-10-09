@@ -267,7 +267,10 @@ and verification. Claude-Code-specific choices:
 
 - **`agent.model`**: the transcript's model, exactly. Signatures verify only there.
 - **`agent.thinking`**: `{ "enabled": true, "type": "adaptive", "display": "summarized" }`
-  — the resident continues to think the way the session did.
+  — the resident continues to think the way the session did. Optional `"effort": "medium"`
+  sets the Anthropic streaming baseline. Explicit agent effort overrides it until
+  reset; compression calls are unaffected. Other providers ignore this field;
+  OpenAI recipes use `agent.responses.reasoningEffort`.
 - **`systemPrompt`**: minimal or empty. Claude Code's system prompt is not in the
   transcript and re-supplying a different one on top of 300k of history is a seam.
   Put the continuation note in the recipe `description` (operator-visible) rather
