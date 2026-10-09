@@ -682,9 +682,10 @@ export class NoticesModule implements Module {
   /**
    * Retry owed clear / "back" lines, oldest first, in order. A line whose
    * fact has been overtaken — the kind it cleared is active again, or the
-   * agent is down again when it says "can respond again" — is dropped: the
-   * live episode's own lines supersede it. What still fails stays owed, in
-   * place, ahead of anything owed meanwhile.
+   * agent is down again when it says "can respond again" — is not sent;
+   * instead the channel's debt moves into the live episode (it still carries
+   * a warning), whose own clear line will settle it. What still fails stays
+   * owed, in place, ahead of anything owed meanwhile.
    */
   private async flushOwed(): Promise<void> {
     for (const channelId of [...this.owedLines.keys()]) {
@@ -693,7 +694,7 @@ export class NoticesModule implements Module {
       this.owedLines.delete(channelId);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]!;
-        if (this.isStale(line)) continue;
+        if (this.absorbIfOvertaken(channelId, line)) continue;
         const r = await this.post(channelId, line.text, undefined, { track: false, owe: false });
         if (r.ok) continue;
         const meanwhile = this.owedLines.get(channelId) ?? [];
@@ -703,11 +704,20 @@ export class NoticesModule implements Module {
     }
   }
 
-  private isStale(line: OwedLine): boolean {
+  /** True when a live episode has overtaken the line; the channel is then
+   *  recorded in that episode as already warned, so it is owed that
+   *  episode's clear even if the episode never spoke to it itself. */
+  private absorbIfOvertaken(channelId: string, line: OwedLine): boolean {
     const ep = this.episodes.get(line.key);
     if (!ep) return false;
-    if (line.clearedKind === undefined) return episodeTier(ep) === 'reply';
-    return ep.kinds.has(line.clearedKind);
+    if (line.clearedKind === undefined) {
+      if (episodeTier(ep) !== 'reply') return false;
+      if (!ep.notified.has(channelId)) ep.notified.set(channelId, this.now());
+      return true;
+    }
+    if (!ep.kinds.has(line.clearedKind)) return false;
+    getSet(ep.statusHeard, channelId).add(line.clearedKind);
+    return true;
   }
 
   private owe(channelId: string, line: OwedLine): void {

@@ -728,7 +728,7 @@ describe('absent chat server', () => {
     expect(h.module.owedState()).toEqual({});
   });
 
-  test('an owed "back" line is dropped when the agent is down again by the time it could be sent', async () => {
+  test('an owed "back" line overtaken by a new outage is absorbed: no false recovery, and the new episode clears the channel', async () => {
     const h = await started();
     h.alert('quota-spent', 'spent');
     await h.incoming('zulip:dev');
@@ -737,18 +737,39 @@ describe('absent chat server', () => {
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
     expect(h.module.owedState()).toEqual({ 'zulip:dev': [replyClearText('clerk')] });
-    h.alert('auth-rejected', 'rejected'); // down again before the server returns
+    h.alert('auth-rejected', 'rejected'); // down again before the server returns; zulip:dev never hears of it
     h.broken.delete('zulip');
-    await h.incoming('zulip:dev'); // told about the new outage
-    expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('credential was rejected');
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     for (let i = 0; i < 3; i++) await h.settle();
-    expect(h.posts.length).toBe(2); // no false "can respond again"
+    expect(h.posts.length).toBe(1); // no false "can respond again"
     expect(h.module.owedState()).toEqual({});
+    expect(h.module.episodeState()[0]!.notified).toEqual(['zulip:dev']); // debt carried: still warned
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(1); // not warned twice
     h.alert('auth-rejected-clear', 'ok');
     await h.settle();
-    expect(h.posts[2]!.text).toBe(replyClearText('clerk')); // the live episode's own back line
+    expect(h.posts[1]!.text).toBe(replyClearText('clerk')); // the live episode clears the channel
+  });
+
+  test('an owed status clear overtaken by the kind returning is absorbed, and cleared even inside the quiet window', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
+    h.alert('compression-quarantine', '2 chunks');
+    await h.fireTimers();
+    expect(h.posts.length).toBe(1);
+    h.broken.add('zulip');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    await h.settle();
+    expect(h.module.owedState()).toEqual({ 'zulip:ops': [statusClearText('clerk', 'compression-quarantine', 'EMPTY')] });
+    h.alert('compression-quarantine', '5 chunks'); // returns, within its quiet window
+    h.broken.delete('zulip');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.length).toBe(1); // stale clear not sent, new occurrence not yet due
+    expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['compression-quarantine'] });
+    h.alert('compression-quarantine-clear', 'EMPTY again'); // clears inside quietMs
+    await h.settle();
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'compression-quarantine', 'EMPTY again'));
   });
 
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {
