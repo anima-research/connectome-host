@@ -21,6 +21,7 @@ type Post = { channelId: string; text: string; agentName: string };
 function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[] } = {}) {
   const posts: Post[] = [];
   const markers: string[] = [];
+  const calls = { n: 0 };
   const broken = new Set(opts.brokenServers ?? []);
   const holds = new Map<string, Promise<void>>();
   let listener: ((e: TraceEvent) => void) | null = null;
@@ -29,6 +30,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
     onTrace: (cb: (e: TraceEvent) => void) => { listener = cb; return () => {}; },
     channels: {
       publishForAgent: async (channelId: string, text: string, agentName: string) => {
+        calls.n++;
         // Absence is decided at call time, like a real dial; a held post then
         // fails or succeeds according to the state when it was sent.
         const server = channelId.slice(0, channelId.indexOf(':'));
@@ -65,7 +67,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const setTime = (ms: number) => { t = ms; };
   /** Make the next post to a channel wait until the returned release runs. */
   const hold = (channelId: string) => { let release!: () => void; holds.set(channelId, new Promise<void>((r) => { release = r; })); return release; };
-  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken };
+  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken, calls };
 }
 
 async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[] } = {}) {
@@ -618,6 +620,67 @@ describe('absent chat server', () => {
     await h.settle();
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
     expect(h.module.episodeState()[0]!.pending).toEqual([]);
+  });
+
+  test('two posts failing after a reconnect do not chain into an endless retry loop', async () => {
+    const h = await started({ statusChannels: ['zulip:a', 'zulip:b'] }, { brokenServers: ['zulip'] });
+    const releaseA = h.hold('zulip:a');
+    const releaseB = h.hold('zulip:b');
+    h.alert('quota-spent', 'spent'); // both posts in flight, both will fail
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 }); // still absent in truth
+    releaseA();
+    releaseB();
+    for (let i = 0; i < 6; i++) await h.settle();
+    const after = h.calls.n;
+    for (let i = 0; i < 6; i++) await h.settle();
+    expect(h.calls.n).toBe(after); // quiescent
+    expect(after).toBeLessThanOrEqual(6); // 2 attempts + at most 2 re-flushes × 2 channels
+    expect(h.module.episodeState()[0]!.pending.sort()).toEqual(['zulip:a', 'zulip:b']);
+    expect(h.posts).toEqual([]);
+  });
+
+  test('a reflush request belongs to the post that failed, not to whichever caller finishes first', async () => {
+    const h = await started({ statusChannels: ['slack:ops', 'zulip:ops'] }, { brokenServers: ['zulip'] });
+    const releaseSlack = h.hold('slack:ops');
+    const releaseZulip = h.hold('zulip:ops');
+    h.alert('quota-spent', 'spent');
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 }); // deduplicated against both claims
+    releaseSlack(); // succeeds; must not consume zulip's retry
+    await h.settle();
+    releaseZulip(); // fails against the old state, asks for its own re-flush
+    for (let i = 0; i < 4; i++) await h.settle();
+    expect(h.posts.map((p) => p.channelId).sort()).toEqual(['slack:ops', 'zulip:ops']);
+    expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'slack:ops': ['quota-spent'], 'zulip:ops': ['quota-spent'] });
+    expect(h.module.episodeState()[0]!.pending).toEqual([]);
+  });
+
+  test('clear and "back" lines that fail on an absent server are owed and delivered on reconnect', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', 'spent');
+    h.alert('compression-quarantine', '2 chunks');
+    await h.settle();
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(3);
+    h.broken.add('zulip');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    h.alert('quota-spent-clear', 'ok'); // episode closes while the server is down
+    await h.settle();
+    expect(h.posts.length).toBe(3);
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.module.owedState()).toEqual({
+      'zulip:ops': [statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent'), statusClearText('clerk', 'quota-spent', 'ok')],
+      'zulip:dev': [replyClearText('clerk')],
+    });
+    h.broken.delete('zulip');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 4; i++) await h.settle();
+    expect(h.posts.slice(3).map((p) => [p.channelId, p.text])).toEqual([
+      ['zulip:ops', statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent')],
+      ['zulip:ops', statusClearText('clerk', 'quota-spent', 'ok')],
+      ['zulip:dev', replyClearText('clerk')],
+    ]);
+    expect(h.module.owedState()).toEqual({});
   });
 
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {

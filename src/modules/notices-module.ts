@@ -33,9 +33,12 @@
  * what remains. Replies never wait — a human is.
  *
  * The chat MCPL server may itself be down. Channel ids are opaque here and
- * resolved at post time through the ChannelRegistry; a post that fails because
- * the channel or server is absent is parked on the episode and retried when a
- * server (re)connects while the episode is still open, else dropped silently.
+ * resolved at post time through the ChannelRegistry; a notice that fails
+ * because the channel or server is absent is parked on the episode and
+ * re-admitted when a server (re)connects while the episode is still open, else
+ * dropped silently. A clear or "back" line that fails the same way is owed to
+ * the channel and retried on reconnect regardless, so no channel is left
+ * carrying a warning nobody will clear.
  */
 
 import type {
@@ -117,6 +120,8 @@ const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
 
 const DEFAULT_QUIET_MS = 60_000;
+/** Owed clear lines kept per channel whose server stays absent. */
+const OWED_LINES_CAP = 20;
 const DEFAULT_RENOTIFY_MS = 30 * 60_000;
 const DEFAULT_WAKER_WINDOW_MS = 10 * 60_000;
 
@@ -261,12 +266,13 @@ export class NoticesModule implements Module {
   private failedWake: { channelId: string; at: number } | undefined;
   private unsubscribe: (() => void) | null = null;
   private warnedServers = false;
-  /** Bumped by every (re)connect-driven flush, so a post that was already in
+  /** Bumped on every server (re)connect, so a post that was already in
    *  flight when a server came back can tell that the flush was deduplicated
-   *  against it and ask for another. */
-  private flushEpoch = 0;
-  /** Set by such a post; consumed by its caller once its claim is released. */
-  private reflushWanted = false;
+   *  against it and ask for another. Internal re-flushes do not bump it. */
+  private reconnectEpoch = 0;
+  /** channelId → clear / "back" lines that could not be delivered because the
+   *  channel's server was absent; retried on reconnect, bounded per channel. */
+  private owedLines = new Map<string, string[]>();
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
     this.now = config.now ?? Date.now;
@@ -327,6 +333,11 @@ export class NoticesModule implements Module {
   /** Whether a reply notice may be posted in this channel. */
   mayReplyIn(channelId: string): boolean {
     return matchesAny(channelId, this.replyIn) && !matchesAny(channelId, this.replyNot);
+  }
+
+  /** Clear / "back" lines still owed to channels whose server is absent. */
+  owedState(): Record<string, string[]> {
+    return Object.fromEntries([...this.owedLines].filter(([, l]) => l.length > 0));
   }
 
   /** Current episodes, for tests and the panel. */
@@ -406,6 +417,7 @@ export class NoticesModule implements Module {
             }
           }
         }
+        this.reconnectEpoch++;
         void this.flushPending();
         return;
       }
@@ -595,10 +607,10 @@ export class NoticesModule implements Module {
     if (heard.has(kind) || posting.get(kind) === k.seq) return;
     posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
-    const ok = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
+    const r = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
-    this.reflushIfWanted();
-    if (!ok) return;
+    if (r.reflush) this.reflush(ep, channelId);
+    if (!r.ok) return;
     const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
     if (live?.seq === k.seq) { heard.add(kind); return; }
     // Landed stale. A returning occurrence of the same kind is told on its
@@ -612,14 +624,16 @@ export class NoticesModule implements Module {
     const subject = ep.key || this.config.agentName || 'the agent';
     const primary = primaryKind(ep);
     ep.notified.set(channelId, this.now());
-    const ok = await this.post(channelId, replyNoticeText(subject, primary), ep, { track: true, kind: primary.kind });
-    if (!ok) ep.notified.delete(channelId);
-    this.reflushIfWanted();
+    const r = await this.post(channelId, replyNoticeText(subject, primary), ep, { track: true, kind: primary.kind });
+    if (!r.ok) ep.notified.delete(channelId);
+    if (r.reflush) this.reflush(ep, channelId);
   }
 
-  private reflushIfWanted(): void {
-    if (!this.reflushWanted) return;
-    this.reflushWanted = false;
+  /** A reconnect flush was deduplicated against this post's claim, and may
+   *  already have taken the channel off `pending` without being able to post.
+   *  Re-park it and flush again, now that the claim is released. */
+  private reflush(ep: Episode, channelId: string): void {
+    if (this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
     void this.flushPending();
   }
 
@@ -629,7 +643,7 @@ export class NoticesModule implements Module {
    * tier, or already reached the channel another way while we waited.
    */
   private async flushPending(): Promise<void> {
-    this.flushEpoch++;
+    await this.flushOwed();
     for (const ep of [...this.episodes.values()]) {
       for (const channelId of [...ep.pending]) {
         if (this.episodes.get(ep.key) !== ep) break;
@@ -646,41 +660,69 @@ export class NoticesModule implements Module {
     }
   }
 
+  /** Retry owed clear / "back" lines, oldest first; what still fails stays owed. */
+  private async flushOwed(): Promise<void> {
+    for (const [channelId, lines] of [...this.owedLines]) {
+      this.owedLines.delete(channelId);
+      for (let i = 0; i < lines.length; i++) {
+        const r = await this.post(channelId, lines[i]!, undefined, { track: false });
+        if (r.ok) continue;
+        // Still absent (post() re-owed this line): re-owe the rest ahead of it.
+        const owed = this.owedLines.get(channelId) ?? [];
+        this.owedLines.set(channelId, [...lines.slice(i + 1), ...owed].slice(-OWED_LINES_CAP));
+        break;
+      }
+    }
+  }
+
   /**
-   * Publish as the host. `track` parks the channel on the episode when the
-   * failure is "channel/server not found" — the chat server may simply not be
-   * up yet — so a reconnect during the episode can deliver it.
+   * Publish as the host. On a "channel/server not found" failure — the chat
+   * server may simply not be up — a tracked notice parks its channel on the
+   * episode for re-admission on reconnect, and an untracked clear / "back"
+   * line is owed to the channel and retried on reconnect regardless. `reflush`
+   * tells the caller that a reconnect happened during this attempt, so the
+   * flush it triggered was deduplicated against this post's claim and another
+   * flush is needed once the claim is released.
    */
-  private async post(channelId: string, text: string, ep: Episode, opts: { track: boolean; kind?: string }): Promise<boolean> {
+  private async post(
+    channelId: string,
+    text: string,
+    ep: Episode | undefined,
+    opts: { track: boolean; kind?: string },
+  ): Promise<{ ok: boolean; reflush: boolean }> {
     const registry = this.framework?.channels as Registry | undefined;
-    if (!registry?.publishForAgent) return false;
-    const epoch = this.flushEpoch;
+    if (!registry?.publishForAgent) return { ok: false, reflush: false };
+    const epoch = this.reconnectEpoch;
     let result: { success: boolean; error?: string };
     try {
       result = await registry.publishForAgent(channelId, text, this.config.agentName ?? 'host');
     } catch (err) {
       result = { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-    if (!result.success && /not found/i.test(result.error ?? '') && this.flushEpoch !== epoch && opts.track) {
-      // A server came back while this attempt was in flight; the flush it
-      // triggered was deduplicated against us. Ask for another flush once
-      // our caller has released its claim — the retry then goes through the
-      // same admission as any delivery (tier, scope, delivery record), not
-      // a blind resend of this text.
-      this.reflushWanted = true;
-    }
     if (result.success) {
-      ep.pending.delete(channelId);
-      if (opts.track && opts.kind !== undefined && !ep.markerWritten) {
+      ep?.pending.delete(channelId);
+      if (ep && opts.track && opts.kind !== undefined && !ep.markerWritten) {
         ep.markerWritten = true;
         this.writeMarker(ep, channelId, text, opts.kind);
       }
-      return true;
+      return { ok: true, reflush: false };
     }
     const absent = /not found/i.test(result.error ?? '');
-    if (opts.track && absent && this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
-    else console.error(`[notices] post to ${channelId} failed: ${result.error ?? 'unknown error'}`);
-    return false;
+    if (!absent) {
+      console.error(`[notices] post to ${channelId} failed: ${result.error ?? 'unknown error'}`);
+      return { ok: false, reflush: false };
+    }
+    const reflush = this.reconnectEpoch !== epoch;
+    if (opts.track) {
+      if (ep && this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
+      return { ok: false, reflush };
+    }
+    // A clear / "back" line is a final statement, so it needs no re-admission:
+    // try once more against the state the mid-flight reconnect left, then owe it.
+    if (reflush) return this.post(channelId, text, ep, opts);
+    const owed = this.owedLines.get(channelId) ?? [];
+    this.owedLines.set(channelId, [...owed, text].slice(-OWED_LINES_CAP));
+    return { ok: false, reflush: false };
   }
 
   /** One chronicle marker per episode so the agent learns, on recovery,
