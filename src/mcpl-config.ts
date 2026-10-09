@@ -283,6 +283,11 @@ const OVERLAY_LIST_FIELDS = [
  *    AGENT_DEPLOY_DENIED_CAPABILITIES (unioned with anything the entry
  *    already denies): self-deployed servers get channels + tools and
  *    nothing consequential by default.
+ *
+ *  - A string `access` is trimmed, as mcpl_deploy writes it. A grant is a
+ *    name, and the boot asks for the grant as resolved here (index.ts), so
+ *    a hand-edited name is the grant the startup warnings compare
+ *    (lostByReplacement).
  */
 export function resolveOverlayEntry(
   id: string,
@@ -305,6 +310,8 @@ export function resolveOverlayEntry(
   // Full host environment access is an operator grant, not an agent-owned
   // overlay setting. Operators declare it in the recipe or mcpl-servers.json.
   delete rec.inheritEnv;
+  // The grant the boot dials is the grant the warnings compare.
+  if (typeof rec.access === 'string') rec.access = rec.access.trim();
   // A network server the agent deployed should come back when it bounces.
   // reconnect defaulted to false, so an entry that never said `reconnect:
   // true` was severed PERMANENTLY by any server restart — with no signal to
@@ -453,6 +460,7 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
     const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
     if (operator.token && !token) lost.push('token');
     // A grant is a name, not a credential: another name is another grant.
+    // Trimmed, as resolveOverlayEntry resolves it for the dial.
     const access = typeof entry.access === 'string' ? entry.access.trim() : '';
     if (operator.access && access !== operator.access) lost.push(`access grant "${operator.access}"`);
   }

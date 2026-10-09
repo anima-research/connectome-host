@@ -236,6 +236,19 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: ' eidoverse ' })).toBeNull();
   });
 
+  // Greptile's review of #228: the boot asks for the grant as the overlay
+  // resolves it, so a hand-edited name the warnings read as the operator's
+  // must resolve to that name.
+  test('the grant a replacement is read as carrying is the grant the boot dials', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      saveAgentOverlay(path, { world: { url: 'wss://w/mcpl', access: ' eidoverse ' } });
+      const operatorServers = [{ id: 'world', url: 'wss://w/mcpl', access: 'eidoverse' }];
+      expect(overlayWarnings(operatorServers, path)).toEqual([]);
+      expect(applyAgentOverlay(operatorServers, path)[0]?.access).toBe('eidoverse');
+    });
+  });
+
   // Nell-1783's review of the fix: the overlay is hand-editable JSON, so a
   // malformed shape must read as lacking, never throw, since the startup
   // warnings run before the overlay is applied.
