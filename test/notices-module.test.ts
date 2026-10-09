@@ -22,12 +22,15 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const posts: Post[] = [];
   const markers: string[] = [];
   const broken = new Set(opts.brokenServers ?? []);
+  const holds = new Map<string, Promise<void>>();
   let listener: ((e: TraceEvent) => void) | null = null;
   const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
   const framework = {
     onTrace: (cb: (e: TraceEvent) => void) => { listener = cb; return () => {}; },
     channels: {
       publishForAgent: async (channelId: string, text: string, agentName: string) => {
+        const hold = holds.get(channelId);
+        if (hold) { holds.delete(channelId); await hold; }
         const server = channelId.slice(0, channelId.indexOf(':'));
         if (broken.has(server)) return { success: false, error: `Server not found: ${server}` };
         if (channelId.includes('grantless')) return { success: false, error: 'channels.publish not in grant' };
@@ -56,7 +59,9 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const settle = () => new Promise((r) => setTimeout(r, 0));
   const fireTimers = async () => { for (const h of timers.splice(0)) if (!h.cancelled) h.fn(); await settle(); };
   const setTime = (ms: number) => { t = ms; };
-  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, posts, markers, timers, broken };
+  /** Make the next post to a channel wait until the returned release runs. */
+  const hold = (channelId: string) => { let release!: () => void; holds.set(channelId, new Promise<void>((r) => { release = r; })); return release; };
+  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken };
 }
 
 async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[] } = {}) {
@@ -139,6 +144,7 @@ describe('reactive replies', () => {
     h.alert('auth-expiring', 'expires soon');
     await h.incoming('zulip:ops');
     expect(h.posts.length).toBe(0); // status tier, no status channels
+    h.alert('auth-expiring-clear', 'superseded by auth-expired');
     h.alert('auth-expired', 'expired');
     await h.incoming('zulip:grantless');
     await h.incoming('zulip:grantless');
@@ -212,6 +218,55 @@ describe('reactive replies', () => {
     h.alert('auth-expiring', 'expires in 20 min');
     await h.incoming('zulip:ops');
     expect(h.posts.length).toBe(1);
+  });
+});
+
+describe('overlapping kinds', () => {
+  test('a status-tier alert mid-outage neither downgrades the reply tier nor, on its clear, ends the episode', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', 'spent', { until: 3_600_000 });
+    await h.settle();
+    await h.incoming('zulip:dev');
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev']);
+    h.alert('compression-quarantine', '2 chunk(s) in compression quarantine');
+    await h.settle();
+    expect(h.module.episodeState()[0]).toMatchObject({ kind: 'quota-spent', kinds: ['quota-spent', 'compression-quarantine'], tier: 'reply', until: 3_600_000 });
+    expect(h.posts.length).toBe(3); // status channel hears the new kind
+    expect(h.posts[2]!.text).toContain('compression-quarantine');
+    await h.incoming('zulip:other');
+    expect(h.posts.length).toBe(4); // people are still told about the outage
+    expect(h.posts[3]!.text).toContain('subscription quota is spent');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    await h.settle();
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], tier: 'reply' });
+    expect(h.posts.filter((p) => p.text.startsWith('✓'))).toEqual([]); // no false "back"
+    expect(h.posts.length).toBe(5); // status channel hears the still-current reason
+    expect(h.posts[4]!.text).toContain('quota-spent: spent');
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts.filter((p) => p.text.startsWith('✓')).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops', 'zulip:other']);
+  });
+
+  test('the primary kind is the newest among the loudest', async () => {
+    const h = await started();
+    h.alert('context-refusal', 'compile refused');
+    h.setTime(1000);
+    h.alert('hard-down', 'failing');
+    h.setTime(2000);
+    h.alert('auth-expiring', 'soon');
+    expect(h.module.episodeState()[0]).toMatchObject({ kind: 'hard-down', tier: 'reply' });
+    await h.incoming('zulip:dev');
+    expect(h.posts[0]!.text).toContain('model calls keep failing');
+  });
+
+  test('a kind promoted to reply by the recipe gets canned text, never the alert message', async () => {
+    const h = await started({ kinds: { 'quota-unreadable': 'reply' } });
+    h.alert('quota-unreadable', 'usage endpoint answered HTTP 429 (token sk-ant-…)');
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(1);
+    expect(h.posts[0]!.text).toContain('temporarily unavailable (quota-unreadable)');
+    expect(h.posts[0]!.text).not.toContain('HTTP 429');
   });
 });
 
@@ -292,6 +347,23 @@ describe('status channels', () => {
     ]);
   });
 
+  test('a clear that lands while the status post is in flight still produces a clear line', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    const release = h.hold('zulip:ops');
+    h.alert('quota-spent', 'spent');
+    await h.settle();
+    expect(h.posts).toEqual([]);
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts).toEqual([]); // nothing delivered yet ⇒ nothing to clear yet
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.text.slice(0, 1))).toEqual(['⚠', '✓']);
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'quota-spent', 'cleared while posting'));
+  });
+
   test('a kind change within an episode re-posts to status channels after the quiet window', async () => {
     const h = await started({ statusChannels: ['zulip:ops'], quietMs: 1000 });
     h.alert('quota-spent', 'spent');
@@ -343,6 +415,35 @@ describe('absent chat server', () => {
     await h.settle();
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    await h.settle();
+    expect(h.posts).toEqual([]);
+  });
+
+  test('a parked reply delivered another way is not sent twice on reconnect', async () => {
+    const h = await started({}, { brokenServers: ['zulip'] });
+    h.alert('quota-spent', 'spent');
+    await h.incoming('zulip:dev');
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:dev']);
+    h.broken.clear();
+    await h.incoming('zulip:dev'); // the server came back; the next message is answered
+    expect(h.posts.length).toBe(1);
+    expect(h.module.episodeState()[0]!.pending).toEqual([]);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+  });
+
+  test('a parked reply is not replayed once the episode has dropped to status tier', async () => {
+    const h = await started({}, { brokenServers: ['zulip'] });
+    h.alert('quota-spent', 'spent');
+    h.alert('context-refusal', 'over budget');
+    await h.incoming('zulip:dev');
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:dev']);
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['context-refusal'], tier: 'status' });
     h.broken.clear();
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     await h.settle();

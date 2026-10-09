@@ -2133,7 +2133,7 @@ export function validateRecipe(raw: unknown): Recipe {
     // Validate notices if present: channel ids and tiers are the whole
     // contract, and a typo here means an outage nobody is told about.
     if (mods.notices !== undefined && mods.notices !== false && mods.notices !== true) {
-      if (typeof mods.notices !== 'object' || Array.isArray(mods.notices)) {
+      if (mods.notices === null || typeof mods.notices !== 'object' || Array.isArray(mods.notices)) {
         throw new Error('modules.notices must be a boolean or object');
       }
       const n = mods.notices as Record<string, unknown>;
