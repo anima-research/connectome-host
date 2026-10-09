@@ -68,6 +68,10 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/** Membrane error types whose cause is not in the request body: retries
+ *  repeat them, so their records drop the raw request (see errorRawRequest). */
+const REQUEST_NOT_EVIDENCE = new Set(['rate_limit', 'server', 'network', 'timeout', 'abort', 'auth']);
+
 /** Truthy env-flag parse: unset/''/'0'/'false' (any case) are off. */
 function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
   // Fail-closed allowlist, same posture as gate-telemetry's flag (#119):
@@ -296,6 +300,22 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  /** Error records keep the full request only when the request itself is the
+   *  evidence. A rate-limit, overload, network or auth failure says nothing
+   *  about the request's contents, and those are exactly the errors that
+   *  repeat: one OAuth 429 storm wrote a ~4.4MB request per retry and grew a
+   *  single llm-calls file to 687MB. For those, keep a size note instead.
+   *  invalid_request / context_length / unsupported, non-membrane errors, and
+   *  LLM_CALLS_FULL_PAYLOADS=1 keep the request as before. */
+  private errorRawRequest(err: unknown, rawRequest: unknown): unknown {
+    if (this.fullPayloads || rawRequest == null) return rawRequest;
+    const type = (err as { type?: unknown } | null)?.type;
+    if (typeof type !== 'string' || !REQUEST_NOT_EVIDENCE.has(type)) return rawRequest;
+    let bytes: number | null = null;
+    try { bytes = JSON.stringify(rawRequest).length; } catch { /* unserializable: no size */ }
+    return { omitted: `${type} error (set LLM_CALLS_FULL_PAYLOADS=1 to keep the request)`, bytes };
+  }
+
   private refusalRawRequest(response: ProviderResponse, rawRequest: unknown): unknown {
     if (this.fullPayloads) return rawRequest;
     const raw = (response as { raw?: { stop_reason?: string } }).raw;
@@ -346,7 +366,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         type: 'error', kind: 'complete',
         timestamp, durationMs,
         requestSummary: this.requestSummary(request, sink.rawRequest),
-        rawRequest: sink.rawRequest,
+        rawRequest: this.errorRawRequest(err, sink.rawRequest),
         error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : String(err),
       });
       this.observeCall('complete', timestamp, durationMs, request, sink.rawRequest, undefined, err);
@@ -383,7 +403,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         type: 'error', kind: 'stream',
         timestamp, durationMs,
         requestSummary: this.requestSummary(request, sink.rawRequest),
-        rawRequest: sink.rawRequest,
+        rawRequest: this.errorRawRequest(err, sink.rawRequest),
         error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : String(err),
       });
       this.observeCall('stream', timestamp, durationMs, request, sink.rawRequest, undefined, err);
