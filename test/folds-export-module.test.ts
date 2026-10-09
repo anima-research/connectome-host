@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ContextManager } from '@animalabs/context-manager';
@@ -318,6 +318,110 @@ describe('writer safety', () => {
     const kept = readdirSync(dirname(target)).filter((f) => f.startsWith('folds.jsonl.kept-'));
     expect(kept.length).toBe(1);
     expect(readFileSync(join(dirname(target), kept[0]!), 'utf8')).toContain('by another runtime');
+    expect(lines()[0]!.kind).toBe('folds-projection');
+    expect(m.status().state).toBe('exporting');
+  });
+
+  /** A conflicted target: a foreign file found at first use. */
+  async function conflicted(): Promise<{ cm: ContextManager; m: FoldsExportModule; before: string }> {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '{"written":"by another runtime"}\n');
+    const before = sha(target);
+    const { cm } = await openStore();
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    await accept(cm);
+    expect(m.status().state).toBe('conflict');
+    return { cm, m, before };
+  }
+
+  // Directory permissions don't bind root, so these two run unprivileged only.
+  const unprivileged = process.getuid?.() !== 0;
+
+  test.skipIf(!unprivileged)('a takeover that cannot move the file reports a failure instead of throwing, and moves nothing', async () => {
+    const { m, before } = await conflicted();
+    chmodSync(dirname(target), 0o555); // read-only: the kept link can't be made
+    let result: ReturnType<FoldsExportModule['takeOver']>;
+    try {
+      result = m.takeOver('operator');
+    } finally {
+      chmodSync(dirname(target), 0o755);
+    }
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('still at the target');
+      expect(result.error).toContain('the conflict is still recorded');
+      expect(result.keptAs).toBeUndefined();
+    }
+    expect(sha(target)).toBe(before);
+    expect(readdirSync(dirname(target)).filter((f) => f.includes('.kept-'))).toEqual([]);
+    expect(m.status().state).toBe('conflict');
+  });
+
+  test.skipIf(!unprivileged)('a takeover removes the original name only after the kept name is synced, and stops if it cannot be', async () => {
+    const { m, before } = await conflicted();
+    // Writable and searchable but unreadable: the kept link can be made, but
+    // the directory can't be opened to sync it.
+    chmodSync(dirname(target), 0o333);
+    let result: ReturnType<FoldsExportModule['takeOver']>;
+    try {
+      result = m.takeOver('operator');
+    } finally {
+      chmodSync(dirname(target), 0o755);
+    }
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('still at the target');
+      expect(result.keptAs).toBeUndefined();
+    }
+    // The new name was removed again: the file is where it was, under its one
+    // name, and the conflict stands for a later takeover.
+    expect(readdirSync(dirname(target)).filter((f) => f.includes('.kept-'))).toEqual([]);
+    expect(sha(target)).toBe(before);
+    expect(m.status().state).toBe('conflict');
+    // Once the directory can be synced, the takeover goes through.
+    const again = m.takeOver('operator');
+    expect(again.ok).toBe(true);
+    expect(m.status().state).toBe('exporting');
+  });
+
+  test.skipIf(!unprivileged)('a takeover whose ledger write lands but fails its sync says the conflict was cleared', async () => {
+    const { cm, m } = await conflicted();
+    // The data directory is writable and searchable but unreadable: the
+    // ledger's rename lands, then its directory sync fails.
+    chmodSync(dataDir, 0o333);
+    let result: ReturnType<FoldsExportModule['takeOver']>;
+    try {
+      result = m.takeOver('operator');
+    } finally {
+      chmodSync(dataDir, 0o755);
+    }
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.keptAs).toBeDefined();
+      expect(result.error).toContain('the conflict was cleared');
+    }
+    expect(m.status().state).not.toBe('conflict');
+    await accept(cm);
+    expect(lines()[0]!.kind).toBe('folds-projection');
+  });
+
+  test('a projection that fails right after a takeover is reported with its result', async () => {
+    const { cm, m } = await conflicted();
+    const query = cm.listFoldReceipts.bind(cm);
+    cm.listFoldReceipts = () => { throw new Error('no space left on device (simulated)'); };
+    const result = m.takeOver('resident');
+    cm.listFoldReceipts = query;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.keptAs).not.toBeNull();
+      expect(result.writeError).toContain('no space left on device');
+    }
+    expect(existsSync(target)).toBe(false);
+    expect(m.status().state).toBe('error');
+    // The next receipt writes again, now that the target is ours.
+    await accept(cm);
     expect(lines()[0]!.kind).toBe('folds-projection');
     expect(m.status().state).toBe('exporting');
   });

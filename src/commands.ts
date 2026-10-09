@@ -1550,14 +1550,15 @@ function handleFoldsExport(framework: AgentFramework, sub: string | undefined): 
   }
   if (sub === 'takeover') {
     const result = exporter.takeOver('operator');
-    return {
-      lines: [{
-        text: result.ok
-          ? `Took over ${exporter.status().target}${result.keptAs ? `; the existing file is kept as ${result.keptAs}` : ''}.`
-          : result.error,
-        style: 'system',
-      }],
-    };
+    if (!result.ok) return { lines: [{ text: result.error, style: 'system' }] };
+    const lines: Line[] = [{
+      text: `Took over ${exporter.status().target}${result.keptAs ? `; the existing file is kept as ${result.keptAs}` : ''}.`,
+      style: 'system',
+    }];
+    if (result.writeError) {
+      lines.push({ text: `  but writing the projection failed: ${result.writeError}. The next receipt or startup writes again.`, style: 'system' });
+    }
+    return { lines };
   }
   if (sub !== undefined) {
     return { lines: [{ text: 'Usage: /folds [takeover]', style: 'system' }] };

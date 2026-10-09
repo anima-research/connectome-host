@@ -169,9 +169,17 @@ function atomicWrite(path: string, content: string): void {
     try { unlinkSync(temp); } catch { /* best effort */ }
     throw err;
   }
+  syncDirectory(dirname(path));
+}
+
+/**
+ * Make a directory's entries durable (a rename or link in it), where the
+ * platform supports syncing a directory; any other failure throws.
+ */
+function syncDirectory(dir: string): void {
   let dirFd: number | null = null;
   try {
-    dirFd = openSync(dirname(path), 'r');
+    dirFd = openSync(dir, 'r');
     fsyncSync(dirFd);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -184,7 +192,11 @@ function atomicWrite(path: string, content: string): void {
 /**
  * Move `path` aside to `<path>.kept-<stamp>` without ever overwriting an
  * earlier kept file: a hard link fails on an existing name (then a counter
- * is added), and only after the link exists is the original name removed.
+ * is added). The original name is removed only after the kept name is
+ * durable, its directory synced, so a crash can't persist the removal
+ * without the link. If that sync fails, the new name is removed again (best
+ * effort; one left behind is only a second name for the same file) and this
+ * throws, with the file still at `path`: the takeover stops.
  */
 function keepAside(path: string, stamp: string): string {
   for (let n = 0; ; n++) {
@@ -195,10 +207,25 @@ function keepAside(path: string, stamp: string): string {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw err;
     }
+    try {
+      syncDirectory(dirname(path));
+    } catch (err) {
+      try { unlinkSync(candidate); } catch { /* a second name for the same file */ }
+      throw err;
+    }
     unlinkSync(path);
     return candidate;
   }
 }
+
+/**
+ * What a takeover did. `writeError`: the takeover stands (the conflict is
+ * cleared, the existing file kept), but writing the projection then failed;
+ * the next receipt or startup writes again.
+ */
+export type TakeOverResult =
+  | { ok: true; keptAs: string | null; writeError?: string }
+  | { ok: false; error: string; keptAs?: string };
 
 export class FoldsExportModule implements Module {
   readonly name = 'folds';
@@ -301,19 +328,47 @@ export class FoldsExportModule implements Module {
    * found there beside it under a timestamped name, forget the conflict, and
    * write the projection.
    */
-  takeOver(by: 'operator' | 'resident'): { ok: true; keptAs: string | null } | { ok: false; error: string } {
-    const ledger = this.readLedger();
-    const entry = ledger.targets[this.target];
-    if (!entry?.conflict) return { ok: false, error: `No export conflict at ${this.target}; nothing to take over.` };
+  takeOver(by: 'operator' | 'resident'): TakeOverResult {
+    // File errors (a read-only directory, an unreadable ledger, a failed
+    // sync) come back as a failure for the operator's command or the
+    // resident's utility to report, never as a throw out of either.
     let keptAs: string | null = null;
-    if (existsSync(this.target)) {
-      keptAs = keepAside(this.target, this.now().toISOString().replace(/[:.]/g, '-'));
+    try {
+      const ledger = this.readLedger();
+      const entry = ledger.targets[this.target];
+      if (!entry?.conflict) return { ok: false, error: `No export conflict at ${this.target}; nothing to take over.` };
+      if (existsSync(this.target)) {
+        keptAs = keepAside(this.target, this.now().toISOString().replace(/[:.]/g, '-'));
+      }
+      ledger.targets[this.target] = {};
+      this.writeLedger(ledger);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Say where things stand. The ledger write can fail after its rename
+      // landed (its directory sync), and then the conflict is already cleared.
+      let conflict: string;
+      try {
+        conflict = this.readLedger().targets[this.target]?.conflict
+          ? 'the conflict is still recorded'
+          : 'the conflict was cleared, so the next projection writes to the target';
+      } catch {
+        conflict = "the ledger can't be read; /folds shows the export's state";
+      }
+      return {
+        ok: false,
+        error: `Taking over ${this.target} failed: ${message}. ` +
+          (keptAs
+            ? `The existing file was already kept as ${keptAs}`
+            : existsSync(this.target) ? 'The file is still at the target' : 'Nothing is at the target') +
+          `, and ${conflict}.`,
+        ...(keptAs ? { keptAs } : {}),
+      };
     }
-    ledger.targets[this.target] = {};
-    this.writeLedger(ledger);
     console.error(`[folds-export] ${by} took over ${this.target}${keptAs ? `; the existing file is kept as ${keptAs}` : ''}`);
-    this.project();
-    return { ok: true, keptAs };
+    // The takeover stands; a projection that fails now is reported with it,
+    // and the next receipt or startup writes again.
+    const writeError = this.project();
+    return { ok: true, keptAs, ...(writeError ? { writeError } : {}) };
   }
 
   // --------------------------------------------------------------------------
@@ -338,10 +393,13 @@ export class FoldsExportModule implements Module {
     if (`${ref.id}@${ref.created}` !== this.lastBranchKey) this.project();
   }
 
-  /** Rewrite the projection if the target is ours to write. Never throws. */
-  private project(): void {
+  /**
+   * Rewrite the projection if the target is ours to write. Never throws: a
+   * failure is logged, kept for status(), and returned.
+   */
+  private project(): string | null {
     const cm = this.cm;
-    if (!cm) return;
+    if (!cm) return null;
     try {
       // The selected branch, and its newest receipts as one page (newest first,
       // reading only those): the window, written oldest first.
@@ -368,18 +426,21 @@ export class FoldsExportModule implements Module {
       if (this.lastProjection && this.lastBranchKey === `${branch.id}@${branch.created}`
         && this.lastProjection.latestReceiptId === latestReceiptId && this.lastProjection.receipts === receipts.length
         && this.ownsCurrentFile()) {
-        return;
+        return null;
       }
       const content = `${JSON.stringify(header)}\n${body}${body ? '\n' : ''}`;
-      if (!this.write(content)) return;
+      // Not ours to write (an export conflict): status() and stderr report it.
+      if (!this.write(content)) return null;
       this.lastBranchKey = `${branch.id}@${branch.created}`;
       this.lastProjection = {
         at, branch: { id: branch.id, name: branch.name }, latestReceiptId, receipts: receipts.length, more: page.more,
       };
       this.lastError = null;
+      return null;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       console.error(`[folds-export] projection to ${this.target} failed: ${this.lastError}`);
+      return this.lastError;
     }
   }
 
