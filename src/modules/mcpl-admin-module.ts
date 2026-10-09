@@ -41,7 +41,11 @@ import {
   readAgentOverlay,
   saveAgentOverlay,
   resolveOverlayEntry,
+  serverProvisions,
+  lostByReplacement,
+  overlayEntryReplaces,
   type AgentOverlayEntry,
+  type ServerProvisions,
 } from '../mcpl-config.js';
 
 export interface McplAdminModuleConfig {
@@ -95,6 +99,43 @@ export class McplAdminModule implements Module {
   private identity: { accessFor(audience?: string): Promise<string> } | null = null;
   setIdentity(identity: { accessFor(audience?: string): Promise<string> } | null): void {
     this.identity = identity;
+  }
+
+  /** The operator's server definitions (recipe and mcpl-servers.json, before
+   *  the agent overlay), by what an overlay entry replacing one can lose:
+   *  names only, never a credential. index.ts wires it; without it, no
+   *  receipt can say what a replacement lacks. */
+  private operatorServers = new Map<string, ServerProvisions>();
+  setOperatorServers(servers: ReadonlyArray<{ id: string } & Record<string, unknown>>): void {
+    this.operatorServers = new Map(servers.map((server) => [server.id, serverProvisions(server)]));
+  }
+
+  /**
+   * How `id`'s overlay entry stands against the operator's definition it
+   * replaces: null when it replaces none, else what it lacks of it (null
+   * when nothing). An overlay entry replaces the definition whole, and it
+   * can't name host variables, so what it lacks the server runs without.
+   */
+  private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
+    const entry = overlay[id];
+    const operator = this.operatorServers.get(id);
+    if (!operator || !overlayEntryReplaces(entry)) return null;
+    return { lost: lostByReplacement(operator, entry) };
+  }
+
+  /** A receipt's sentence for a server whose overlay entry replaces the
+   *  operator's definition: always on deploy, which makes the replacement;
+   *  on restart only when the entry lacks something. */
+  private replacementNote(id: string, overlay: Record<string, AgentOverlayEntry>, always: boolean): string {
+    const replacement = this.replacement(id, overlay);
+    if (!replacement || (!replacement.lost && !always)) return '';
+    if (!replacement.lost) return ` Your overlay entry replaces the operator's definition of "${id}".`;
+    return (
+      ` Your overlay entry replaces the operator's definition of "${id}" and lacks its ${replacement.lost}, ` +
+      'so the server runs without them. An overlay entry can\'t name host variables; to go back to the ' +
+      `operator's definition, mcpl_unload "${id}": that removes your entry, and the operator's loads again ` +
+      'at the next host start.'
+    );
   }
 
   async start(_ctx: ModuleContext): Promise<void> {}
@@ -262,8 +303,14 @@ export class McplAdminModule implements Module {
 
     const lines: string[] = [];
     for (const s of live) {
-      const source = overlay[s.id] && !overlay[s.id]!.disabled
-        ? 'agent-overlay'
+      // The overlay is the source only for an entry that put a server in
+      // place, the same test the boot's applyAgentOverlay makes.
+      const replacement = this.replacement(s.id, overlay);
+      const overlaySource = replacement
+        ? `agent-overlay (replaces the operator's definition${replacement.lost ? `; lacks its ${replacement.lost}` : ''})`
+        : 'agent-overlay';
+      const source = overlayEntryReplaces(overlay[s.id])
+        ? overlaySource
         : s.id in fileServers ? 'file/recipe' : 'recipe';
       const target = s.command ?? s.url ?? '?';
       const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
@@ -362,6 +409,7 @@ export class McplAdminModule implements Module {
     }
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
+    const note = this.replacementNote(id, overlay, true);
     try {
       if (alreadyLoaded) {
         await framework.restartMcplServer(id, config);
@@ -372,15 +420,23 @@ export class McplAdminModule implements Module {
       const err = error instanceof Error ? error : new Error(String(error));
       return fail(
         `Server "${id}" was saved to your overlay but failed to connect: ${err.message}. ` +
-        'Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.',
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
       );
     }
 
+    // A server with reconnect whose first dial failed comes back as a stub
+    // that keeps retrying, without throwing: report what the status says.
     const status = framework.listMcplServers().find(s => s.id === id);
+    if (!status?.connected) {
+      return fail(
+        `Server "${id}" was saved to your overlay but isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}. ` +
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+      );
+    }
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
-      `${status?.toolCount ?? 0} tools under prefix ${status?.toolPrefix ?? `mcpl--${id}`}. ` +
-      'Persisted to your agent overlay (survives host restarts).',
+      `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
+      `Persisted to your agent overlay (survives host restarts).${note}`,
     );
   }
 
@@ -391,10 +447,11 @@ export class McplAdminModule implements Module {
 
     await framework.restartMcplServer(id);
     const status = framework.listMcplServers().find(s => s.id === id);
-    return ok(
-      `Restarted server "${id}" — ${status?.connected ? 'connected' : 'NOT connected'}, ` +
-      `${status?.toolCount ?? 0} tools.`,
-    );
+    const note = this.replacementNote(id, readAgentOverlay(this.overlayPath), false);
+    if (!status?.connected) {
+      return fail(`Restarted server "${id}", but it isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}.${note}`);
+    }
+    return ok(`Restarted server "${id}" — connected, ${status.toolCount} tools.${note}`);
   }
 
   private async handleUnload(input: Record<string, unknown>): Promise<ToolResult> {
@@ -414,9 +471,13 @@ export class McplAdminModule implements Module {
     let persistNote = 'Session-only: it will load again on the next host restart.';
     if (persist) {
       if (overlay[id] && !overlay[id]!.disabled) {
-        // Agent-deployed server: forget it entirely.
+        // Agent-deployed server: forget it entirely. If it replaced the
+        // operator's definition, that definition is what the next start loads.
+        const replaced = this.replacement(id, overlay) !== null;
         delete overlay[id];
-        persistNote = 'Removed from your agent overlay.';
+        persistNote = replaced
+          ? `Removed from your agent overlay; the operator's definition of "${id}" loads again at the next host start.`
+          : 'Removed from your agent overlay.';
       } else {
         // Recipe/file server: tombstone it so it stays unloaded across restarts.
         overlay[id] = { disabled: true };

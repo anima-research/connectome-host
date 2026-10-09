@@ -299,3 +299,142 @@ describe('mcpl_list', () => {
     expect(String((await call(mod, 'mcpl_list')).data)).toContain('classes={}');
   });
 });
+
+// Since agent-framework scrubs a stdio child's environment, an overlay entry
+// that replaces the operator's definition runs without whatever of it the
+// entry lacks: a resident's shell came back from mcpl_restart without
+// SESSION_SERVER_TOKEN (2026-10-08), the restart reported success, and the
+// first call said only "Connection lost". The receipts now say what the host
+// knows, by name only.
+describe('an overlay entry that replaces the operator definition', () => {
+  const operatorShell = {
+    id: 'shell',
+    command: 'node',
+    args: ['/abs/terminal-sessions/mcp-stdio-server.js'],
+    env: { SESSION_SERVER_TOKEN: 's3cret-token', SESSION_SERVER_PORT: '3101' },
+  };
+
+  /** A host as it boots with the resident's 09-04-style entry: the overlay's
+   *  shell is what loaded, in place of the operator's. */
+  async function bootWithReplacement(entry: Record<string, unknown> = { command: 'node', args: ['mine.js'], env: { SESSION_SERVER_PORT: '3101' } }) {
+    const fw = makeStubFramework();
+    saveAgentOverlay(overlayPath, { shell: entry });
+    await (fw.stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'shell', command: 'node' });
+    const mod = makeModule(fw.stub);
+    mod.setOperatorServers([operatorShell, { id: 'discord', command: 'node', env: { DISCORD_TOKEN: 'real' } }]);
+    return { ...fw, mod };
+  }
+
+  test('mcpl_restart names what it lacks, never a value, and the way back', async () => {
+    const { mod } = await bootWithReplacement();
+
+    const result = await call(mod, 'mcpl_restart', { id: 'shell' });
+
+    expect(result.success).toBe(true);
+    const text = String(result.data);
+    expect(text).toContain('Restarted server "shell" — connected');
+    expect(text).toContain('replaces the operator\'s definition of "shell" and lacks its env SESSION_SERVER_TOKEN');
+    expect(text).not.toContain('SESSION_SERVER_PORT');
+    expect(text).not.toContain('s3cret-token');
+    expect(text).toContain('mcpl_unload "shell"');
+    expect(text).toContain('the operator\'s loads again at the next host start');
+  });
+
+  test('mcpl_restart says nothing more when the entry lacks nothing, or replaces nothing', async () => {
+    const { mod } = await bootWithReplacement({
+      command: 'node',
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: 'its-own' },
+    });
+    expect(String((await call(mod, 'mcpl_restart', { id: 'shell' })).data)).toBe('Restarted server "shell" — connected, 1 tools.');
+
+    // No operator definitions wired (an older embedding): no claim either way.
+    const bare = makeStubFramework();
+    await (bare.stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'shell', command: 'node' });
+    expect(String((await call(makeModule(bare.stub), 'mcpl_restart', { id: 'shell' })).data))
+      .toBe('Restarted server "shell" — connected, 1 tools.');
+  });
+
+  test('mcpl_deploy over an operator id says it replaces the definition, and what it lacks', async () => {
+    const { mod } = await bootWithReplacement({ command: 'node' });
+
+    const lacking = await call(mod, 'mcpl_deploy', { id: 'shell', command: 'node', args: ['rebuilt.js'] });
+    expect(lacking.success).toBe(true);
+    expect(String(lacking.data)).toContain(
+      'replaces the operator\'s definition of "shell" and lacks its env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN',
+    );
+
+    const carrying = await call(mod, 'mcpl_deploy', { id: 'discord', command: 'node', env: { DISCORD_TOKEN: 'mine' } });
+    expect(carrying.success).toBe(true);
+    expect(String(carrying.data)).toEndWith(' Your overlay entry replaces the operator\'s definition of "discord".');
+
+    const fresh = await call(mod, 'mcpl_deploy', { id: 'mytool', command: 'bun' });
+    expect(String(fresh.data)).not.toContain('operator');
+  });
+
+  test('mcpl_list marks the replacement and what it lacks', async () => {
+    const { mod } = await bootWithReplacement();
+
+    const text = String((await call(mod, 'mcpl_list')).data);
+
+    expect(text).toContain('source=agent-overlay (replaces the operator\'s definition; lacks its env SESSION_SERVER_TOKEN)');
+    expect(text).not.toContain('s3cret-token');
+  });
+
+  test('mcpl_list credits the overlay only with an entry that put a server in place', async () => {
+    // Neither command nor url: the boot skips this entry, so the live
+    // server is the operator's (applyAgentOverlay / resolveOverlayEntry).
+    const { mod } = await bootWithReplacement({ env: { SESSION_SERVER_TOKEN: 'x' } });
+
+    const text = String((await call(mod, 'mcpl_list')).data);
+
+    expect(text).toContain('source=recipe');
+    expect(text).not.toContain('source=agent-overlay');
+  });
+
+  test('mcpl_unload of a replacement says the operator definition loads again at the next start', async () => {
+    const { mod } = await bootWithReplacement();
+
+    const result = await call(mod, 'mcpl_unload', { id: 'shell' });
+
+    expect(result.success).toBe(true);
+    expect(String(result.data)).toContain('the operator\'s definition of "shell" loads again at the next host start');
+    expect(readAgentOverlay(overlayPath).shell).toBeUndefined();
+  });
+});
+
+describe('restart and deploy report the connection they read', () => {
+  test('mcpl_restart fails when the server is not connected afterwards', async () => {
+    const { stub, servers } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; url: string }) => Promise<void> })
+      .connectMcplServer({ id: 'world', url: 'wss://w/mcpl' });
+    const restart = (stub as unknown as { restartMcplServer: (id: string) => Promise<void> }).restartMcplServer;
+    (stub as unknown as { restartMcplServer: (id: string) => Promise<void> }).restartMcplServer = async (id) => {
+      await restart(id);
+      Object.assign(servers.get(id)!, { connected: false, retrying: true });
+    };
+    const mod = makeModule(stub);
+
+    const result = await call(mod, 'mcpl_restart', { id: 'world' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Restarted server "world", but it isn\'t connected (it keeps retrying).');
+  });
+
+  test('mcpl_deploy fails, keeping the entry, when the connect resolves without a connection', async () => {
+    const { stub, servers } = makeStubFramework();
+    const connect = (stub as unknown as { connectMcplServer: (c: { id: string }) => Promise<void> }).connectMcplServer;
+    (stub as unknown as { connectMcplServer: (c: { id: string }) => Promise<void> }).connectMcplServer = async (config) => {
+      await connect(config);
+      Object.assign(servers.get(config.id)!, { connected: false, retrying: true });
+    };
+    const mod = makeModule(stub);
+
+    const result = await call(mod, 'mcpl_deploy', { id: 'world', url: 'wss://down/mcpl' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Server "world" was saved to your overlay but isn\'t connected (it keeps retrying).');
+    expect(readAgentOverlay(overlayPath).world).toEqual({ url: 'wss://down/mcpl', transport: 'websocket' });
+  });
+});

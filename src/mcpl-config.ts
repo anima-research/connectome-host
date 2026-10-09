@@ -361,6 +361,93 @@ export function applyAgentOverlay<T extends { id: string }>(
 }
 
 /**
+ * What a server definition gives its process or connection, by name only:
+ * the env names it maps, and not their values, which are credentials;
+ * whether it carries a token; the access grant it names; and whether it
+ * inherits the host environment.
+ */
+export interface ServerProvisions {
+  env: string[];
+  token: boolean;
+  access: string | null;
+  inheritEnv: boolean;
+}
+
+export function serverProvisions(definition: Record<string, unknown>): ServerProvisions {
+  const env = definition.env && typeof definition.env === 'object' ? Object.keys(definition.env) : [];
+  const access = typeof definition.access === 'string' ? definition.access.trim() : '';
+  return {
+    env: env.sort(),
+    token: typeof definition.token === 'string' && definition.token !== '',
+    access: access || null,
+    inheritEnv: definition.inheritEnv === true,
+  };
+}
+
+/**
+ * What an agent overlay entry that replaces an operator's definition lacks
+ * of it, as a phrase for a receipt or a log line, or null when it lacks
+ * nothing that would reach it.
+ *
+ * The replacement is whole (applyAgentOverlay). Its env is literal, since
+ * `${VAR}` substitution is the recipe's, and it never inherits the host
+ * environment, since resolveOverlayEntry drops `inheritEnv`. agent-framework
+ * gives a stdio child only allowlisted host variables plus its declared env,
+ * so nothing else supplies what the replacement lacks. A server that needs it
+ * starts without it, and can look healthy until its first call: on
+ * 2026-10-08, a resident's shell came back from `mcpl_restart` without the
+ * SESSION_SERVER_TOKEN its daemon wanted, and the restart reported success.
+ *
+ * Env and inheritance count only for a replacement that spawns a process; a
+ * token and an access grant count only for one that dials a URL.
+ */
+export function lostByReplacement(operator: ServerProvisions, entry: AgentOverlayEntry): string | null {
+  const lost: string[] = [];
+  if (entry.command) {
+    const declared = new Set(Object.keys(entry.env ?? {}));
+    const missing = operator.env.filter((name) => !declared.has(name));
+    if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
+    if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
+  } else if (entry.url) {
+    if (operator.token && !entry.token) lost.push('token');
+    if (operator.access && !entry.access) lost.push(`access grant "${operator.access}"`);
+  }
+  return lost.length > 0 ? lost.join('; ') : null;
+}
+
+/** Whether an overlay entry replaces a server rather than tombstoning it or
+ *  being skipped: the entries applyAgentOverlay puts in a server's place. */
+export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entry is AgentOverlayEntry {
+  return entry !== undefined && entry.disabled !== true && Boolean(entry.command || entry.url);
+}
+
+/**
+ * The startup log's lines: one for each agent overlay entry that replaces an
+ * operator's definition and lacks something of it (lostByReplacement). An
+ * operator reading the log learns why a replaced server misbehaves before
+ * anyone calls it.
+ */
+export function overlayReplacementWarnings(
+  operatorServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
+  overlayPath: string,
+): string[] {
+  const overlay = readAgentOverlay(overlayPath);
+  const lines: string[] = [];
+  for (const server of operatorServers) {
+    const entry = overlay[server.id];
+    if (!overlayEntryReplaces(entry)) continue;
+    const lost = lostByReplacement(serverProvisions(server), entry);
+    if (lost) {
+      lines.push(
+        `[mcpl] server "${server.id}": the agent overlay (${overlayPath}) replaces the operator's ` +
+        `definition and lacks its ${lost}, so the server runs without them`,
+      );
+    }
+  }
+  return lines;
+}
+
+/**
  * Read the raw server entries from the config file (for editing).
  * Returns empty object if file doesn't exist.
  */
