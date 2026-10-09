@@ -154,6 +154,11 @@ interface Episode {
   statusHeard: Map<string, Set<string>>;
   /** statusChannel → kind → occurrence with a post in flight (claimed, not yet heard). */
   statusPosting: Map<string, Map<string, number>>;
+  /** statusChannel → kinds it still shows a warning for from an EARLIER
+   *  occurrence whose clear could not be delivered. Owed a clear when the
+   *  kind next clears; independent of whether the current occurrence has
+   *  been told. */
+  statusOwedClear: Map<string, Set<string>>;
   /** Occurrence counter for `ActiveKind.seq`. */
   nextSeq: number;
   /** Pending quiet-deadline timer handle and the time it is aimed at. */
@@ -480,7 +485,7 @@ export class NoticesModule implements Module {
     }
     const ep: Episode = {
       key, kinds: new Map([[kind, { message, tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
-      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), nextSeq: 1, markerWritten: false,
+      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), statusOwedClear: new Map(), nextSeq: 1, markerWritten: false,
     };
     this.episodes.set(key, ep);
     this.scheduleStatus(ep);
@@ -515,9 +520,13 @@ export class NoticesModule implements Module {
     // anew.
     const subject = ep.key || this.config.agentName || 'the agent';
     const still = open ? primaryKind(ep).kind : undefined;
-    for (const [ch, heard] of ep.statusHeard) {
-      if (!heard.delete(kind) || opts.superseded) continue;
-      void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
+    const owedChannels = new Set<string>();
+    for (const [ch, heard] of ep.statusHeard) if (heard.delete(kind)) owedChannels.add(ch);
+    for (const [ch, owed] of ep.statusOwedClear) if (owed.delete(kind)) owedChannels.add(ch);
+    if (!opts.superseded) {
+      for (const ch of owedChannels) {
+        void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
+      }
     }
     if (opts.superseded || open) return;
     for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
@@ -705,8 +714,9 @@ export class NoticesModule implements Module {
   }
 
   /** True when a live episode has overtaken the line; the channel is then
-   *  recorded in that episode as already warned, so it is owed that
-   *  episode's clear even if the episode never spoke to it itself. */
+   *  recorded in that episode as still warned, so it is owed that episode's
+   *  clear even if the episode never spoke to it itself. A returned status
+   *  kind's current occurrence is still told on its own schedule. */
   private absorbIfOvertaken(channelId: string, line: OwedLine): boolean {
     const ep = this.episodes.get(line.key);
     if (!ep) return false;
@@ -716,7 +726,7 @@ export class NoticesModule implements Module {
       return true;
     }
     if (!ep.kinds.has(line.clearedKind)) return false;
-    getSet(ep.statusHeard, channelId).add(line.clearedKind);
+    getSet(ep.statusOwedClear, channelId).add(line.clearedKind);
     return true;
   }
 

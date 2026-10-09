@@ -765,11 +765,31 @@ describe('absent chat server', () => {
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     for (let i = 0; i < 3; i++) await h.settle();
     expect(h.posts.length).toBe(1); // stale clear not sent, new occurrence not yet due
-    expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['compression-quarantine'] });
+    expect(h.module.episodeState()[0]!.statusHeard).toEqual({}); // the debt is not "heard"
     h.alert('compression-quarantine-clear', 'EMPTY again'); // clears inside quietMs
     await h.settle();
     expect(h.posts.length).toBe(2);
     expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'compression-quarantine', 'EMPTY again'));
+  });
+
+  test('a returned status kind whose old clear was absorbed is still told with its new details, then cleared once', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
+    h.alert('compression-quarantine', '2 chunks');
+    await h.fireTimers();
+    h.broken.add('zulip');
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    await h.settle();
+    h.alert('compression-quarantine', '5 chunks');
+    h.broken.delete('zulip');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.length).toBe(1);
+    await h.fireTimers(); // past the new occurrence's quiet deadline
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toContain('compression-quarantine: 5 chunks');
+    h.alert('compression-quarantine-clear', 'EMPTY again');
+    await h.settle();
+    expect(h.posts.slice(2).map((p) => p.text)).toEqual([statusClearText('clerk', 'compression-quarantine', 'EMPTY again')]);
   });
 
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {
