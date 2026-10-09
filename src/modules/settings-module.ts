@@ -5,7 +5,7 @@
  *
  * First domain: **reasoning** (Anthropic extended thinking), surfaced to the
  * agent as `agent_settings` fields (reasoning_enabled /
- * reasoning_budget_tokens) via the framework's settings-extension hook —
+ * reasoning_budget_tokens / reasoning_display / reasoning_effort) via the framework's settings-extension hook —
  * NOT as standalone tools (the former reasoning_status/enable/disable trio
  * was tool bloat for one boolean + number).
  *
@@ -41,14 +41,24 @@ export interface ReasoningSettings {
    * the pre-4.7 behavior (visible reasoning in stores, webui, estimators).
    */
   display: 'summarized' | 'omitted';
+  /**
+   * Reasoning effort for the agent's own turns, sent as Anthropic
+   * `output_config.effort`. 'default' sends nothing, leaving the model's
+   * server-side default in force. Independent of `enabled`: on models where
+   * thinking is always on, effort is the only depth control.
+   */
+  effort: ReasoningEffort;
 }
+
+export const REASONING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 export interface SettingsState {
   reasoning: ReasoningSettings;
 }
 
 const DEFAULTS: SettingsState = {
-  reasoning: { enabled: false, budgetTokens: 8192, display: 'summarized' },
+  reasoning: { enabled: false, budgetTokens: 8192, display: 'summarized', effort: 'default' },
 };
 
 export class SettingsModule implements Module {
@@ -61,10 +71,10 @@ export class SettingsModule implements Module {
     this.ctx = ctx;
     const saved = ctx.getState<Partial<SettingsState>>();
     if (saved) {
-      // Shallow-merge each domain so future-added fields fall back to defaults
-      // for state persisted by older versions.
+      // Per field, so fields added later fall back to defaults for state
+      // persisted by older versions, and invalid saved values do too.
       this.state = {
-        reasoning: { ...DEFAULTS.reasoning, ...(saved.reasoning ?? {}) },
+        reasoning: restoreReasoning(saved.reasoning),
       };
     }
   }
@@ -128,8 +138,18 @@ export class SettingsModule implements Module {
             "is recorded alongside the signature) or 'omitted' (signature only, slightly faster " +
             'first token; your reasoning is not visible to anyone, including you on replay).',
         },
+        reasoning_effort: {
+          type: 'string',
+          enum: [...REASONING_EFFORTS],
+          description:
+            "How much effort you put into your own turns (thinking depth and overall token spend): " +
+            "'low', 'medium', 'high', 'xhigh', 'max', or 'default' (the model's own default). " +
+            'Takes effect on your next inference call and persists across restarts. Changing it ' +
+            'makes the next call re-read your whole context uncached (one-time cost). Levels your ' +
+            'model does not support are not sent. Memory compression is unaffected.',
+        },
       },
-      keys: ['reasoning_enabled', 'reasoning_budget_tokens', 'reasoning_display'],
+      keys: ['reasoning_enabled', 'reasoning_budget_tokens', 'reasoning_display', 'reasoning_effort'],
       get: () => this.reasoningSettingsView(),
       update: (_agentName, patch) => {
         const next = { ...this.state.reasoning };
@@ -152,6 +172,12 @@ export class SettingsModule implements Module {
           }
           next.display = patch.reasoning_display;
         }
+        if (patch.reasoning_effort !== undefined) {
+          if (!REASONING_EFFORTS.includes(patch.reasoning_effort as ReasoningEffort)) {
+            throw new Error(`reasoning_effort must be one of: ${REASONING_EFFORTS.join(', ')}`);
+          }
+          next.effort = patch.reasoning_effort as ReasoningEffort;
+        }
         this.state.reasoning = next;
         this.ctx?.setState(this.state);
         return this.reasoningSettingsView();
@@ -167,6 +193,9 @@ export class SettingsModule implements Module {
         if (all || keys?.includes('reasoning_display')) {
           this.state.reasoning.display = DEFAULTS.reasoning.display;
         }
+        if (all || keys?.includes('reasoning_effort')) {
+          this.state.reasoning.effort = DEFAULTS.reasoning.effort;
+        }
         this.ctx?.setState(this.state);
         return this.reasoningSettingsView();
       },
@@ -179,6 +208,7 @@ export class SettingsModule implements Module {
       reasoning_enabled: this.state.reasoning.enabled,
       reasoning_budget_tokens: this.state.reasoning.budgetTokens,
       reasoning_display: this.state.reasoning.display,
+      reasoning_effort: this.state.reasoning.effort,
     };
   }
 
@@ -186,6 +216,39 @@ export class SettingsModule implements Module {
     return {};
   }
 
+}
+
+/**
+ * Restored reasoning settings, field by field. Saved state is not trusted: an
+ * older version or a hand edit can leave a value the API rejects, and since
+ * display and effort are sent on every turn, one bad value would fail every
+ * turn, leaving the agent no turn to fix the setting with. Such a value falls
+ * back to its default, and the host says so.
+ */
+function restoreReasoning(saved: unknown): ReasoningSettings {
+  const restored = clone(DEFAULTS.reasoning);
+  if (!saved || typeof saved !== 'object') return restored;
+  const s = saved as Record<string, unknown>;
+  const ignore = (field: string, value: unknown) => console.error(
+    `[settings] ignoring saved reasoning.${field}=${JSON.stringify(value)}: not a valid value; using the default`,
+  );
+  if (s.enabled !== undefined) {
+    if (typeof s.enabled === 'boolean') restored.enabled = s.enabled;
+    else ignore('enabled', s.enabled);
+  }
+  if (s.budgetTokens !== undefined) {
+    if (typeof s.budgetTokens === 'number' && Number.isFinite(s.budgetTokens)) restored.budgetTokens = s.budgetTokens;
+    else ignore('budgetTokens', s.budgetTokens);
+  }
+  if (s.display !== undefined) {
+    if (s.display === 'summarized' || s.display === 'omitted') restored.display = s.display;
+    else ignore('display', s.display);
+  }
+  if (s.effort !== undefined) {
+    if (REASONING_EFFORTS.includes(s.effort as ReasoningEffort)) restored.effort = s.effort as ReasoningEffort;
+    else ignore('effort', s.effort);
+  }
+  return restored;
 }
 
 function clone<T>(x: T): T {

@@ -103,6 +103,14 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     return this.inner.requiresNativeResponsesInput;
   }
 
+  // Optional in newer membrane releases; preserve the inner provider's media
+  // policy without imposing it on older adapters that do not advertise one.
+  get toolResultImageMediaTypes(): ReadonlySet<string> | undefined {
+    return (this.inner as ProviderAdapter & {
+      readonly toolResultImageMediaTypes?: ReadonlySet<string>;
+    }).toolResultImageMediaTypes;
+  }
+
   supportsModel(modelId: string): boolean {
     return this.inner.supportsModel(modelId);
   }

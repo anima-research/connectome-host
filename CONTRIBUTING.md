@@ -150,5 +150,6 @@ macos, installing the web app with a strict lockfile (`npm ci`) — if you
 touched `web/` dependencies, regenerate the lock with `npm run relock:web`
 so it carries both platforms' native binaries.
 
-See `docs/DEV-ENVIRONMENT.md` for the full dev setup and `docs/` generally
-for architecture and operations guides.
+See `docs/DEV-ENVIRONMENT.md` for the full dev setup, `ARCHITECTURE.md` for
+how the host is built, and `docs/README.md` for the index of operations and
+workflow guides.

@@ -14,6 +14,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
+import { isLoopbackOrTailnetHost } from './history-semantic.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +36,14 @@ export interface RecipeStrategy {
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
   maxMessageTokens?: number;
+  /** Maximum live image count, newest-first (default 6). Zero disables the count limit. */
+  maxLiveImages?: number;
+  /** Token depth from the tail beyond which images become placeholders (default 30000).
+   * Zero disables depth-based stripping; surrounding text stays verbatim. */
+  imageStripDepthTokens?: number;
+  /** Cumulative base64 byte budget for live images (default 20 MiB).
+   * Zero disables the byte limit. Count and depth limits still apply. */
+  maxLiveImageBytes?: number;
   overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying
   // autobiographical strategy (and frontdesk, which extends it).
@@ -192,6 +202,9 @@ export interface RecipeKvUnifiedConfig {
   labelCeiling: number;
   adoptEpsilon: number;
   treeifyNonContiguousSummaries: boolean;
+  /** Preserve summaries spanning gaps instead of treeifying them. Mutually exclusive
+   * with treeifyNonContiguousSummaries; both flags must be explicit. */
+  preserveGapBearingSummaries: boolean;
 }
 
 export interface RecipeAgent {
@@ -335,15 +348,9 @@ export interface RecipeAgent {
   codex?: {
     fastMode?: boolean;
   };
-  /** Mock-provider settings. Only used with `provider: "mock"`. The default
-   * (no block) echoes the last user message back — the most informative shape
-   * for interactive smoke runs, since you can see your own words complete the
-   * loop. `echoMode: false` returns `defaultResponse` instead, which gives
-   * deterministic output for scripted tests. */
-  mock?: {
-    echoMode?: boolean;
-    defaultResponse?: string;
-  };
+  /** Mock-provider settings. Only used with `provider: "mock"`. See
+   * RecipeMockConfig. */
+  mock?: RecipeMockConfig;
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
    * turn triggers an automatic rewind of the triggering turn + retry (keeping
@@ -356,11 +363,47 @@ export interface RecipeAgent {
   };
 }
 
+/**
+ * Settings for membrane's MockAdapter (`agent.provider: "mock"`). The default
+ * (no block) echoes the last user message back — the most informative shape
+ * for interactive smoke runs, since you can see your own words complete the
+ * loop. `echoMode: false` returns `defaultResponse` instead, which gives
+ * deterministic output for scripted tests. The timing knobs and the queue let
+ * a run reproduce delay-sensitive behavior (event coalescing during a slow
+ * turn, say) offline.
+ *
+ * Each reply is chosen in this order: the next `responseQueue` entry, then
+ * the echo, then `defaultResponse`. Unset numbers keep membrane's defaults.
+ */
+export interface RecipeMockConfig {
+  /** Echo the last user message (`[Echo] …`). Default true in this host. */
+  echoMode?: boolean;
+  /** Reply when not echoing and the queue is empty. */
+  defaultResponse?: string;
+  /** Delay before a non-streamed `complete()` reply, in ms (membrane
+   *  default 10). Agent turns stream; compression and session naming don't. */
+  completeDelayMs?: number;
+  /** Delay between streamed chunks, in ms (membrane default 5). There is no
+   *  delay before the first chunk: a streamed reply of `L` characters takes
+   *  about `(ceil(L / streamChunkSize) - 1) * streamChunkDelayMs`. */
+  streamChunkDelayMs?: number;
+  /** Characters per streamed chunk; a positive integer (membrane default 10). */
+  streamChunkSize?: number;
+  /** Replies returned in order, one per provider call, before falling back
+   *  to the echo / `defaultResponse`. Every call through the adapter takes
+   *  one, auxiliary calls (compression, session naming) included. */
+  responseQueue?: string[];
+}
+
 export interface RecipeMcpServer {
   /** Command to spawn (stdio transport). Mutually exclusive with url. */
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Opt in to the full host environment for stdio servers, including those
+   * defined in mcpl-servers.json. Prefer declaring needed variables in env.
+   * Requires an agent-framework version with inheritEnv support. */
+  inheritEnv?: boolean;
   /**
    * Per-request timeout for this server's outbound JSON-RPC (tools/call,
    * tools/list, channels/*), in milliseconds. Passed through to the
@@ -380,8 +423,18 @@ export interface RecipeMcpServer {
    * credentials per dial; neither the recipe nor the agent holds one.
    */
   access?: string;
+  /** Namespace for this server's model-facing tool names. Default
+   *  `mcpl--<id>`, so tools surface as `mcpl--<id>--<tool>`. */
   toolPrefix?: string;
+  /**
+   * Feature-set allow-list (`*` matches one dot-separated segment). Omitted:
+   * every declared set is a candidate. `[]`: none (deny-all), in a recipe or
+   * mcpl-servers.json alike; only the agent's own overlay file reads `[]` as
+   * unset. A set whose declaration has no valid `uses` stays disabled either
+   * way (MCPL §6.4, fail-closed).
+   */
   enabledFeatureSets?: string[];
+  /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
   /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
@@ -424,6 +477,36 @@ export interface RecipeMcpServer {
    * Like `source`, this is build-tooling metadata.  Ignored at runtime.
    */
   credentialFiles?: RecipeCredentialFile[];
+  /**
+   * MCPL tool lifecycle (RFC-007) policy for this server: whether it may
+   * observe the agent's OTHER tool calls (`observe`) and their requested
+   * argument fields (`inputs`), each with an optional narrowing. Both are
+   * denied by default; stating a block is the operator's grant. `inputs`
+   * needs a `tools` or `classes` term to deliver anything, and never carries
+   * `comms` or unclassed arguments. See src/tool-lifecycle-config.ts.
+   */
+  toolLifecycle?: RecipeToolLifecycle;
+}
+
+/** A narrowing for one tool-lifecycle path (RFC-007 §4.3). Every stated key
+ *  must hold; patterns use the RFC-007 §6.2 grammar (`*` = any run). */
+export interface RecipeToolLifecycleNarrowing {
+  /** Patterns over the model-facing tool name: `mcpl--<serverId>--<tool>`
+   *  for an MCPL server's tools unless its entry sets `toolPrefix`
+   *  (`mcpl--cua--*`), `<module>--<tool>` for host modules. */
+  tools?: string[];
+  /** RFC-008 classes the tool must have one of; `"default"` = computer,
+   *  shell, files, web, media, body. */
+  classes?: string[] | 'default';
+  /** Patterns over the conversation id (the agent name in this host). */
+  conversations?: string[];
+}
+
+export interface RecipeToolLifecycle {
+  observe?: RecipeToolLifecycleNarrowing;
+  inputs?: RecipeToolLifecycleNarrowing;
+  /** Serialized-size bound for argument payloads. Framework default 16 KiB. */
+  maxInputBytes?: number;
 }
 
 /**
@@ -721,8 +804,49 @@ export interface RecipeModules {
    * four tools accept a live or historical channel label/address, not just
    * the raw internal channel id, when MCPL is configured (resolved via the
    * framework's `ChannelRegistry`).
+   *
+   * Object form adds `history--semantic_search`: meaning-based search over the
+   * agent's raw messages (text + its own think/journal/skip_reply notes) and
+   * every compression summary, backed by a shared remote embed-service (one
+   * per fleet; the vector index lives server-side, keyed by `namespace`).
+   * The host keeps that index in sync in the background (default every 60 s)
+   * and catches up before each search. `token` goes through the recipe's
+   * `${ENV}` substitution like every other secret.
+   *
+   * Namespace: always `<prefix>/<session id>`, where `namespace` (default: the
+   * agent name) is only the PREFIX — message ids are sequential per store, so
+   * two stores in one namespace would overwrite each other's entries. A
+   * COPIED data dir (staging restore, a local run off a prod snapshot) keeps
+   * the session id: give the copy a different `namespace` prefix, or no
+   * token, or it will write into the original's index.
+   *
+   * Requires @animalabs/agent-framework >= 0.20.0; startup fails if the
+   * installed HistoryModule does not offer semantic_search.
+   *
+   * Transport: sync ships raw message text and the token. `url` must be https,
+   * or plain http to loopback / the tailnet (100.64.0.0/10, *.ts.net), where
+   * WireGuard is the encryption; any other http needs `allowInsecureHttp: true`.
+   *
+   * What the remote index holds: with `includePrivateTools` at the
+   * framework default (true), the agent's think/journal/skip_reply prose is
+   * indexed too. Search hits are checked against the CURRENT branch, so
+   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * copy stays; `/session delete` removes only the local store, not the
+   * remote namespace (the client has no namespace delete).
    */
-  history?: boolean;
+  history?: boolean | {
+    semantic?: {
+      url: string;
+      token?: string;
+      namespace?: string;
+      syncIntervalMs?: number;
+      maxSyncPerTick?: number;
+      maxSyncBeforeSearch?: number;
+      includePrivateTools?: boolean;
+      /** Allow plaintext http to a host outside loopback/tailnet. Host-side only. */
+      allowInsecureHttp?: boolean;
+    };
+  };
 
   /**
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
@@ -989,6 +1113,12 @@ export interface RecipeSubconscious {
  * recipe can't say: `templateAgent` is always the recipe's own agent, and
  * `strategyFactory` builds a fresh instance of the recipe's `agent.strategy`
  * per fork (strategy instances are stateful and must never be shared).
+ *
+ * @deprecated Per-channel conversation routing is deprecated and will be
+ * removed (agent-framework#235). Its 'mention' bind/trigger rule reads
+ * `metadata.mentioned`, which discord-mcpl does not set, so on Discord
+ * channels an @-mention neither binds a fork nor triggers a bound one. Still
+ * works; the host logs a `[deprecated]` line at startup when it is set.
  */
 export interface RecipeConversations {
   /** When an unbound channel acquires a fork.
@@ -1007,13 +1137,33 @@ export interface RecipeConversations {
     channel?: 'always' | 'mention';
   };
   /** Idle time before a binding expires and the fork runs its closure turn.
-   * Default 12h. */
+   * Default 12h. Expiry is checked at most about once a minute, so the sweep
+   * usually notices an expired binding up to ~60s after the TTL elapses.
+   * That is the usual extra delay, not a deadline for closing the fork: the
+   * closure turn can be delayed further (e.g. while the host is quiesced, it
+   * stays queued until resume). */
   idleTtlMs?: number;
   /** Final system-initiated user message sent to a fork on expiry. */
   closurePrompt?: string;
   /** Prefix for generated fork agent names (default 'conversation'). Also
    * the Chronicle namespace segment, so it is restricted to [A-Za-z0-9_-]. */
   agentPrefix?: string;
+}
+
+/**
+ * Deprecation notices for a recipe's `conversations` block, one
+ * human-readable line each (empty when it is absent). Pure — the host prints
+ * these at startup with a `[deprecated]` prefix.
+ */
+export function deprecatedConversationsNotices(conversations: RecipeConversations | undefined): string[] {
+  if (!conversations) return [];
+  return [
+    'conversations (per-channel conversation routing) is deprecated and not recommended for new ' +
+      'recipes; it will be removed in a later release (agent-framework#235). Its \'mention\' ' +
+      'bind/trigger rule reads metadata.mentioned, which discord-mcpl does not set, so on Discord ' +
+      'channels an @-mention neither binds a fork nor triggers a bound one. Routing still works ' +
+      'as before for now.',
+  ];
 }
 
 export interface Recipe {
@@ -1028,10 +1178,27 @@ export interface Recipe {
   sessionNaming?: { examples?: string[] };
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution?: RecipeCodeExecution;
-  /** Per-channel conversation routing — fork-per-channel from this agent. */
+  /**
+   * Per-channel conversation routing — fork-per-channel from this agent.
+   *
+   * @deprecated Deprecated and will be removed (agent-framework#235); see
+   * `RecipeConversations`. Still works; the host logs a `[deprecated]` line
+   * at startup when it is set.
+   */
   conversations?: RecipeConversations;
   /** Tune-out's subconscious resident (agent-framework#77). */
   subconscious?: RecipeSubconscious;
+  /**
+   * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
+   * highest-precedence source of a tool's class, and the way to class
+   * third-party MCP servers (blender, computer use, …) that will never
+   * declare `_meta["mcpl/class"]`. Replaces, never merges with, what the
+   * server declared. First matching pattern wins. Patterns match the
+   * model-facing name, so an MCPL server's tools are
+   * `mcpl--<serverId>--<tool>` (`"mcpl--blender--*": ["media"]`) unless its
+   * entry sets `toolPrefix`.
+   */
+  toolClassOverrides?: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,11 +1537,134 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.adoptEpsilon must be a finite non-negative number.');
   }
-  if (typeof config.treeifyNonContiguousSummaries !== 'boolean') {
+  // Mirror context-manager 0.11.0: src/adaptive/strategies/kv-unified.ts validateExplicitOptions.
+  for (const key of ['treeifyNonContiguousSummaries', 'preserveGapBearingSummaries'] as const) {
+    if (typeof config[key] !== 'boolean') {
+      throw new Error(`Recipe agent.strategy.kvUnified.${key} must be an explicit boolean.`);
+    }
+  }
+  if (config.treeifyNonContiguousSummaries && config.preserveGapBearingSummaries) {
     throw new Error(
-      'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries must be an explicit boolean.',
+      'Recipe agent.strategy.kvUnified.treeifyNonContiguousSummaries and preserveGapBearingSummaries are mutually exclusive.',
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Unknown keys (#167)
+// ---------------------------------------------------------------------------
+
+/**
+ * The keys each recipe level reads. The type check below keeps these lists in
+ * step with Recipe, RecipeAgent, RecipeModules and RecipeMockConfig: a key
+ * added to an interface and not here (or listed here and gone from the
+ * interface) fails to compile.
+ */
+const RECIPE_KEYS = [
+  'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
+  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'toolClassOverrides',
+] as const;
+const RECIPE_AGENT_KEYS = [
+  'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
+  'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
+  'toolWrapperProseGuard', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'refusalHandling',
+] as const;
+const RECIPE_AGENT_MOCK_KEYS = [
+  'echoMode', 'defaultResponse', 'completeDelayMs', 'streamChunkDelayMs', 'streamChunkSize',
+  'responseQueue',
+] as const;
+const RECIPE_MODULE_KEYS = [
+  'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
+  'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
+  'channelMode',
+] as const;
+type ListsExactly<K extends string, L extends readonly string[]> =
+  [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
+// "Type 'true' is not assignable to type 'false'" here means a key was added
+// to (or removed from) one of the interfaces without the list above following.
+const recipeKeyListsInStep: [
+  ListsExactly<keyof Recipe & string, typeof RECIPE_KEYS>,
+  ListsExactly<keyof RecipeAgent & string, typeof RECIPE_AGENT_KEYS>,
+  ListsExactly<keyof RecipeModules & string, typeof RECIPE_MODULE_KEYS>,
+  ListsExactly<keyof RecipeMockConfig & string, typeof RECIPE_AGENT_MOCK_KEYS>,
+] = [true, true, true, true];
+void recipeKeyListsInStep;
+
+/** Keys that were renamed or removed, with what replaced them. */
+const RETIRED_RECIPE_KEYS: Record<string, string> = {
+  'modules.files': 'modules.workspace',
+};
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const up = prev[j]!;
+      prev[j] = Math.min(up + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = up;
+    }
+  }
+  return prev[b.length]!;
+}
+
+/** The known key a typo most likely meant, when one is close enough to suggest. */
+function nearestRecipeKey(key: string, known: readonly string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of known) {
+    const d = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    if (d < bestDistance) { bestDistance = d; best = candidate; }
+  }
+  return best !== null && bestDistance <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
+}
+
+/**
+ * The keys a recipe carries that the host never reads — at the top level,
+ * under `agent`, `agent.mock` and `modules` — each with what it was probably
+ * meant to be. A misspelled key doesn't fail, it just doesn't happen (#167);
+ * for now they are warned about, not rejected, so recipes carrying leftovers
+ * keep loading (the strict schema is #91's direction).
+ */
+export function unknownRecipeKeys(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const obj = raw as Record<string, unknown>;
+  const found: string[] = [];
+  const check = (prefix: string, value: unknown, known: readonly string[]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    for (const key of Object.keys(value)) {
+      if (known.includes(key)) continue;
+      const path = `${prefix}${key}`;
+      // Own properties only: `constructor` or `__proto__` must not find Object's.
+      const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, path) ? RETIRED_RECIPE_KEYS[path] : undefined;
+      const near = retired ? null : nearestRecipeKey(key, known);
+      found.push(retired ? `${path} (replaced by ${retired})` : near ? `${path} (did you mean ${prefix}${near}?)` : path);
+    }
+  };
+  check('', obj, RECIPE_KEYS);
+  check('agent.', obj.agent, RECIPE_AGENT_KEYS);
+  if (obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)) {
+    check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
+  }
+  check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  return found;
+}
+
+/**
+ * Warnings from recipe validation, kept for the runtime that takes stderr over
+ * later (the TUI's tui-error.log, headless.log): the recipe is validated before
+ * either redirect, so the console line alone would never reach those logs.
+ * Bounded, for a long-running host that keeps loading recipes (fleet, WebUI).
+ */
+const pendingRecipeWarnings: string[] = [];
+const MAX_PENDING_RECIPE_WARNINGS = 50;
+
+/** The recipe warnings not yet taken, oldest first; taking them clears them. */
+export function takeRecipeWarnings(): string[] {
+  return pendingRecipeWarnings.splice(0);
 }
 
 /**
@@ -1389,6 +1679,15 @@ export function validateRecipe(raw: unknown): Recipe {
   }
   if (!obj.agent || typeof obj.agent !== 'object') {
     throw new Error('Recipe must have an "agent" object');
+  }
+
+  // Nothing below reads an unknown key: say so, and what it was probably meant to be.
+  const unknownKeys = unknownRecipeKeys(obj);
+  if (unknownKeys.length > 0) {
+    const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
+    console.warn(warning);
+    pendingRecipeWarnings.push(warning);
+    if (pendingRecipeWarnings.length > MAX_PENDING_RECIPE_WARNINGS) pendingRecipeWarnings.shift();
   }
 
   const agent = obj.agent as Record<string, unknown>;
@@ -1486,6 +1785,24 @@ export function validateRecipe(raw: unknown): Recipe {
     if (mock.defaultResponse !== undefined &&
         (typeof mock.defaultResponse !== 'string' || !mock.defaultResponse.trim())) {
       throw new Error('Recipe agent.mock.defaultResponse must be a non-empty string.');
+    }
+    for (const key of ['completeDelayMs', 'streamChunkDelayMs'] as const) {
+      const v = mock[key];
+      if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
+        throw new Error(`Recipe agent.mock.${key} must be a non-negative finite number (milliseconds).`);
+      }
+    }
+    // MockAdapter advances by streamChunkSize per chunk: 0 never advances (an
+    // endless loop) and a fraction makes uneven or empty chunks.
+    if (mock.streamChunkSize !== undefined &&
+        (typeof mock.streamChunkSize !== 'number' || !Number.isSafeInteger(mock.streamChunkSize) ||
+          mock.streamChunkSize < 1)) {
+      throw new Error('Recipe agent.mock.streamChunkSize must be a positive integer (characters per chunk).');
+    }
+    if (mock.responseQueue !== undefined &&
+        (!Array.isArray(mock.responseQueue) ||
+          !mock.responseQueue.every((r) => typeof r === 'string' && r.trim() !== ''))) {
+      throw new Error('Recipe agent.mock.responseQueue must be an array of non-empty strings.');
     }
   }
 
@@ -1717,6 +2034,18 @@ export function validateRecipe(raw: unknown): Recipe {
       );
     }
     validateKvUnifiedConfig(strategy);
+    // These controls belong to the built-in memory strategies. Extensions
+    // receive their own config verbatim and may use different conventions.
+    const strategyType = strategy.type ?? 'autobiographical';
+    if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
+      // Context Manager uses zero to disable each image limit independently.
+      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
+        const value = strategy[key];
+        if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
+          throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);
+        }
+      }
+    }
     if (
       strategy.compressionRefusalCurveFallbacks !== undefined
       && (
@@ -1813,13 +2142,21 @@ export function validateRecipe(raw: unknown): Recipe {
         throw new Error(`mcpServers.${id} must be an object`);
       }
       const server = entry as Record<string, unknown>;
-      const hasCommand = typeof server.command === 'string' && server.command;
-      const hasUrl = typeof server.url === 'string' && server.url;
-      if (!hasCommand && !hasUrl) {
-        throw new Error(`mcpServers.${id} must have a "command" string (stdio) or "url" string (websocket)`);
+      // An entry with neither command nor url names a server defined in
+      // mcpl-servers.json and sets only policy fields on it; it is resolved
+      // (or rejected, if the file has no such id) at startup by
+      // mergeRecipeServers. When present, each must be a non-empty string.
+      if (server.command !== undefined && !(typeof server.command === 'string' && server.command)) {
+        throw new Error(`mcpServers.${id}.command must be a non-empty string`);
+      }
+      if (server.url !== undefined && !(typeof server.url === 'string' && server.url)) {
+        throw new Error(`mcpServers.${id}.url must be a non-empty string`);
       }
       if (server.args !== undefined && !Array.isArray(server.args)) {
         throw new Error(`mcpServers.${id}.args must be an array`);
+      }
+      if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
+        throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
       }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
@@ -1892,6 +2229,9 @@ export function validateRecipe(raw: unknown): Recipe {
         if (!Array.isArray(server[field]) || !(server[field] as unknown[]).every((p) => typeof p === 'string' && p)) {
           throw new Error(`mcpServers.${id}.${field} must be an array of non-empty strings`);
         }
+      }
+      if (server.toolLifecycle !== undefined) {
+        validateToolLifecycle(server.toolLifecycle, `mcpServers.${id}.toolLifecycle`);
       }
       if (server.credentialFiles !== undefined) {
         if (!Array.isArray(server.credentialFiles)) {
@@ -2093,6 +2433,80 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
+    // History: boolean, or { semantic: { url, ... } } for embedding search.
+    // Unknown keys are rejected at both levels: `{ sematic: … }` or
+    // `syncIntervalMS` would otherwise validate clean and silently do nothing.
+    const history = mods.history;
+    if (history !== undefined && typeof history !== 'boolean') {
+      if (!history || typeof history !== 'object' || Array.isArray(history)) {
+        throw new Error('Recipe modules.history must be a boolean or object.');
+      }
+      const HISTORY_KEYS = ['semantic'];
+      for (const key of Object.keys(history)) {
+        if (!HISTORY_KEYS.includes(key)) {
+          throw new Error(`Recipe modules.history has unknown key ${JSON.stringify(key)} (known: ${HISTORY_KEYS.join(', ')}).`);
+        }
+      }
+      const sem = (history as Record<string, unknown>).semantic;
+      if (sem !== undefined) {
+        if (!sem || typeof sem !== 'object' || Array.isArray(sem)) {
+          throw new Error('Recipe modules.history.semantic must be an object.');
+        }
+        const semCfg = sem as Record<string, unknown>;
+        const SEMANTIC_KEYS = ['url', 'token', 'namespace', 'syncIntervalMs', 'maxSyncPerTick', 'maxSyncBeforeSearch', 'includePrivateTools', 'allowInsecureHttp'];
+        for (const key of Object.keys(semCfg)) {
+          if (!SEMANTIC_KEYS.includes(key)) {
+            throw new Error(`Recipe modules.history.semantic has unknown key ${JSON.stringify(key)} (known: ${SEMANTIC_KEYS.join(', ')}).`);
+          }
+        }
+        if (semCfg.allowInsecureHttp !== undefined && typeof semCfg.allowInsecureHttp !== 'boolean') {
+          throw new Error('modules.history.semantic.allowInsecureHttp must be a boolean when set.');
+        }
+        // Parse, don't regex: `http://` has no host (the client would build
+        // `http:///v1/…`, which WHATWG reads as host `v1`), and a query or
+        // fragment in the base swallows the appended API path.
+        let parsed: URL | null = null;
+        if (typeof semCfg.url === 'string') { try { parsed = new URL(semCfg.url); } catch { parsed = null; } }
+        if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname
+            || typeof semCfg.url !== 'string' || /^https?:\/\/\//i.test(semCfg.url)) {
+          throw new Error('modules.history.semantic.url must be an http(s) URL with a host (the embed-service base URL).');
+        }
+        if (parsed.username || parsed.password || parsed.search || parsed.hash || semCfg.url.includes('?') || semCfg.url.includes('#')) {
+          throw new Error('modules.history.semantic.url must not carry credentials, a query or a fragment (use `token` for auth).');
+        }
+        // Sync ships raw messages (incl. private notes by default) and the
+        // bearer token. Plain http is fine where the network is the
+        // encryption (loopback, the tailnet's WireGuard); anywhere else it
+        // takes an explicit opt-in.
+        if (parsed.protocol === 'http:' && !isLoopbackOrTailnetHost(parsed.hostname) && semCfg.allowInsecureHttp !== true) {
+          throw new Error(
+            `modules.history.semantic.url ${JSON.stringify(semCfg.url)} is plaintext http to a host that is neither loopback nor tailnet ` +
+            '(100.64.0.0/10, *.ts.net): history and the token would cross the network unencrypted. ' +
+            'Use https, or set allowInsecureHttp: true if the path is otherwise private.',
+          );
+        }
+        for (const k of ['token', 'namespace'] as const) {
+          if (semCfg[k] !== undefined && (typeof semCfg[k] !== 'string' || !(semCfg[k] as string).trim())) {
+            throw new Error(`modules.history.semantic.${k} must be a non-empty string when set.`);
+          }
+        }
+        for (const k of ['maxSyncPerTick', 'maxSyncBeforeSearch'] as const) {
+          if (semCfg[k] !== undefined && (!Number.isInteger(semCfg[k]) || (semCfg[k] as number) < 1)) {
+            throw new Error(`modules.history.semantic.${k} must be an integer >= 1 when set.`);
+          }
+        }
+        // 0 = no background sync (search still catches up); otherwise a floor,
+        // so a typo can't become a 1 ms setInterval against a shared service.
+        const si = semCfg.syncIntervalMs;
+        if (si !== undefined && (!Number.isInteger(si) || ((si as number) !== 0 && (si as number) < 5000))) {
+          throw new Error('modules.history.semantic.syncIntervalMs must be 0 (no background sync) or an integer >= 5000 when set.');
+        }
+        if (semCfg.includePrivateTools !== undefined && typeof semCfg.includePrivateTools !== 'boolean') {
+          throw new Error('modules.history.semantic.includePrivateTools must be a boolean when set.');
+        }
+      }
+    }
+
     // Validate retrieval provider reasoning when configured.
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {
@@ -2270,6 +2684,10 @@ export function validateRecipe(raw: unknown): Recipe {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
       }
     }
+  }
+
+  if (obj.toolClassOverrides !== undefined) {
+    validateToolClassTable(obj.toolClassOverrides, 'Recipe toolClassOverrides');
   }
 
   if (obj.subconscious !== undefined) {

@@ -3,7 +3,7 @@
  * orchestrates `describe` requests at sync points (cold start,
  * lifecycle:ready, post-restart).
  *
- * Lockstep model (see UNIFIED-TREE-PLAN.md §3):
+ * Lockstep model (see docs/history/UNIFIED-TREE-PLAN.md §3):
  *   - Live event stream is the primary path. Each child's events are folded
  *     into its reducer as they arrive.
  *   - `describe` is a *recovery* verb, requested rarely:

@@ -450,6 +450,19 @@ export interface McplListMessage {
     /** command or url — whatever the transport targets. */
     target?: string;
   }>;
+  /** Every tool the scoped process offers, with its effective MCPL class
+   *  (RFC-008) and the source that decided it: `override` (recipe
+   *  toolClassOverrides), `host` (this host's or the framework's own table),
+   *  `server` (the MCPL server's `_meta`), `none` (unclassed). Sorted by tool
+   *  name. Absent on hosts or frameworks that don't report classes. */
+  toolClasses?: Array<{
+    tool: string;
+    /** Empty for an unclassed tool. */
+    class: string[];
+    source: 'override' | 'host' | 'server' | 'none';
+    /** The providing MCPL server, for MCPL tools. */
+    serverId?: string;
+  }>;
 }
 
 /**

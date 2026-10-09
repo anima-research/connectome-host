@@ -120,8 +120,8 @@ export class McplAdminModule implements Module {
         description:
           'List all MCPL servers: connection/retry state, whether policy was established, ' +
           'the effective grant, masked/denied capability paths, host-command authority, ' +
-          'validated manifest revision/fetch/negotiation freshness, tool count, target, ' +
-          'and config source.',
+          'validated manifest revision/fetch/negotiation freshness, tool count, each tool\'s ' +
+          'effective class and where it came from, target, and config source.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
@@ -134,8 +134,10 @@ export class McplAdminModule implements Module {
           '(WebSocket). Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
-          '"unspecified", never deny-all (deny-all is disabledTools/' +
-          'disabledFeatureSets: ["*"]). Self-deployed servers get channels + tools ' +
+          '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
+          'in feature-set patterns `*` matches exactly one dot-separated segment, so ' +
+          'deny every set with disabledFeatureSets: ["*", "*.*", "*.*.*"] (names up ' +
+          'to three segments). Self-deployed servers get channels + tools ' +
           'only — consequential capabilities (context hooks around your inference, ' +
           'server-initiated inference, inference lifecycle) are host-masked; a server ' +
           'that genuinely needs one is an operator conversation, not a deploy flag.',
@@ -252,6 +254,7 @@ export class McplAdminModule implements Module {
           lastFetchedAt: number | null;
           lastNegotiatedAt: number | null;
         };
+        toolClasses?: ServerToolClass[];
       }
     >;
     const overlay = readAgentOverlay(this.overlayPath);
@@ -277,6 +280,7 @@ export class McplAdminModule implements Module {
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +
         `hostCommands=${hostCommands}, ` +
         `manifest=${formatManifestState(s.manifestState)}; ${s.toolCount} tools, ` +
+        `classes=${formatServerToolClasses(s.toolClasses)}, ` +
         `prefix=${s.toolPrefix}, source=${source}, ${target}`,
       );
     }
@@ -330,11 +334,12 @@ export class McplAdminModule implements Module {
     if (typeof input.reconnect === 'boolean') entry.reconnect = input.reconnect;
     // Empty arrays are NOT persisted: OpenAI-style strict function calling
     // forces every schema property, so callers emit `[]` meaning
-    // "unspecified" — and a persisted empty ALLOWLIST is deny-all under the
-    // §5.3 pin (Mica's silently eventless eidoverse, 2026-08-04).
+    // "unspecified" — and a persisted empty enabledFeatureSets is deny-all
+    // under the §5.3 pin (Mica's silently eventless eidoverse, 2026-08-04).
     // resolveOverlayEntry drops them at read time too; this keeps the file
-    // itself from carrying the trap. Deny-all is spelled ["*"] on the
-    // deny-lists.
+    // itself from carrying the trap. Deny-all is disabledTools: ["*"] for
+    // tools; for feature sets `*` matches one dot-separated segment, so it
+    // takes a pattern per depth (see resolveOverlayEntry).
     if (Array.isArray(input.enabledFeatureSets) && input.enabledFeatureSets.length) entry.enabledFeatureSets = input.enabledFeatureSets.map(String);
     if (Array.isArray(input.disabledFeatureSets) && input.disabledFeatureSets.length) entry.disabledFeatureSets = input.disabledFeatureSets.map(String);
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
@@ -422,6 +427,35 @@ export class McplAdminModule implements Module {
 
     return ok(`Unloaded server "${id}" — its tools are gone from your toolset. ${persistNote}`);
   }
+}
+
+/** One of a server's tools with its effective class (RFC-008 §6), as
+ *  listMcplServers() reports it on frameworks with tool classes. */
+interface ServerToolClass {
+  tool: string;
+  serverTool: string;
+  class: string[];
+  source: 'override' | 'host' | 'server' | 'none';
+}
+
+/**
+ * A server's tools grouped by effective class and source, e.g.
+ * `{comms/server: say,send; media/override: render; unclassed: probe}`.
+ * Sources: `server` = the server's own `_meta["mcpl/class"]`, `override` =
+ * the operator's recipe override; unclassed tools never expose their
+ * arguments to lifecycle observers. `unknown` on an older framework.
+ */
+function formatServerToolClasses(rows: ServerToolClass[] | undefined): string {
+  if (rows === undefined) return 'unknown';
+  const groups = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = r.class.length === 0 ? 'unclassed' : `${r.class.join('+')}/${r.source}`;
+    const names = groups.get(key) ?? [];
+    names.push(r.serverTool || r.tool);
+    groups.set(key, names);
+  }
+  const parts = [...groups.entries()].map(([key, names]) => `${key}: ${names.join(',')}`);
+  return `{${parts.join('; ')}}`;
 }
 
 function formatCapabilityList(paths: string[] | undefined): string {

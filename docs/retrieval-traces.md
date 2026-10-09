@@ -34,11 +34,13 @@ Enable lessons, retrieval, and the Web UI in the recipe:
 ```
 
 `reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-or `max`. It is optional, applies to both retrieval calls, and does not inherit
-the primary agent's reasoning setting. This field is supported only when
+or `max`. It is optional, applies to both retrieval calls, does not inherit
+the primary agent's reasoning setting, and requires an explicit
+`modules.retrieval.model`. This field is supported only when
 `agent.provider` is `openai-responses` or `openai-codex`; Anthropic/Claude uses
 separate native thinking controls and is rejected here rather than receiving an
-invalid OpenAI-shaped request.
+invalid OpenAI-shaped request. `modules.retrieval.reasoningContext` is
+rejected: retrieval calls are independent one-shot requests.
 
 Retrieval remains opt-in and requires the lessons module. Depending on the
 candidate count, one turn can use one selector call plus an optional relevance

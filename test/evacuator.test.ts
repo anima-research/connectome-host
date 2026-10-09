@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { SessionMeta } from '../src/session-manager.js';
 import {
   detectModel,
   levenshtein,
@@ -9,6 +10,7 @@ import {
   checkRetirement,
   supportsThinking,
   composeRecipe,
+  selectWarmupSession,
   loadMemoriesBlock,
   MODEL_PROMPT_SOURCES,
   RETIRED_MODELS,
@@ -167,6 +169,21 @@ describe('supportsThinking', () => {
   });
 });
 
+describe('selectWarmupSession', () => {
+  test('ID prefixes must be unique; exact IDs and unique case-insensitive names retain precedence', () => {
+    const session = (id: string, name: string): SessionMeta => ({
+      id, name, manuallyNamed: true, createdAt: '', lastAccessedAt: '',
+    });
+    const choices = [session('abc11111', 'First'), session('abc22222', 'Second')];
+    expect(() => selectWarmupSession(choices, 'abc')).toThrow(/Ambiguous warmup session/);
+    expect(selectWarmupSession(choices, 'abc11111')?.name).toBe('First');
+    expect(selectWarmupSession(choices, 'abc2')?.name).toBe('Second');
+    expect(selectWarmupSession(choices, 'SECOND')?.id).toBe('abc22222');
+    expect(selectWarmupSession([...choices, session('other', 'abc11111')], 'abc11111')?.name).toBe('First');
+  });
+
+});
+
 describe('composeRecipe', () => {
   test('produces the expected top-level recipe shape', () => {
     const recipe = composeRecipe({
@@ -180,7 +197,7 @@ describe('composeRecipe', () => {
     expect(recipe).toHaveProperty('modules');
     expect(recipe).toHaveProperty('mcplServers');
     const agent = recipe.agent as Record<string, unknown>;
-    expect(agent.name).toBe('agent');
+    expect(agent.name).toBe('Claude');
     expect(agent.model).toBe('claude-opus-4-7');
     expect(agent.strategy).toEqual({ type: 'autobiographical', compressionModel: 'claude-opus-4-7' });
   });
