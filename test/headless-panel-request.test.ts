@@ -159,6 +159,30 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(data.live.length).toBe(0); // minimal recipe opts into no MCPLs
   });
 
+  test('op=tool-classes reports effective classes, host table included', async () => {
+    const res = await panel('tool-classes');
+    expect(res.ok).toBe(true);
+    const data = res.data as {
+      agent: string | null;
+      counts: Record<string, number>;
+      tools: Array<{ tool: string; class: string[]; source: string }>;
+    };
+    expect(data.agent).toBeNull();
+    expect(data.tools.length).toBeGreaterThan(0);
+    expect(Object.values(data.counts).reduce((a, b) => a + b, 0)).toBe(data.tools.length);
+    // index.ts hands this host's module table to the framework: the
+    // always-loaded time module is classed by it, not left unclassed.
+    expect(data.tools.find((t) => t.tool === 'time--now')).toMatchObject({ class: ['control'], source: 'host' });
+
+    const scoped = await panel('tool-classes', { agent: 'commander' });
+    expect(scoped.ok).toBe(true);
+    expect((scoped.data as { agent: string }).agent).toBe('commander');
+
+    const unknown = await panel('tool-classes', { agent: 'nonexistent' });
+    expect(unknown.ok).toBe(false);
+    expect(unknown.status).toBe(404);
+  });
+
   test('op=pins returns a snapshot with candidates when asked', async () => {
     const res = await panel('pins', { withCandidates: true });
     expect(res.ok).toBe(true);

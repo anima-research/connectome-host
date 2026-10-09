@@ -200,6 +200,34 @@ Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full h
 
 Check legacy configuration variables before enabling full inheritance. For Discord MCPL, an inherited `DISCORD_SUPPRESS_REACTION_EMOJIS=""` seeds an explicit empty suppression list when its configured filters file does not yet exist; that durable file then overrides the protective baseline. Remove an unintended stale variable before the first startup, or configure the intended suppression in the filters file.
 
+### Feature sets and tool names
+
+An MCPL server declares feature sets, and each server entry chooses which of
+them to enable:
+
+- `enabledFeatureSets` **omitted**: every set the server declares is enabled,
+  subject to the `uses` rule below.
+- `enabledFeatureSets: []` in a recipe or in `mcpl-servers.json`: **no** set is
+  enabled (deny-all). Only the agent's own `mcpl-servers.agent.json` reads an
+  empty list as unset, since strict function calling makes some models send
+  `[]` for "unspecified" (`resolveOverlayEntry` in `src/mcpl-config.ts`).
+- A `*` in a pattern matches exactly one dot-separated segment (`memory.*`
+  matches `memory.retrieval`, not `memory.a.b`). `disabledFeatureSets` wins
+  over `enabledFeatureSets`.
+- A set whose declaration has no `uses`, an empty one or an unrecognized
+  value stays disabled whatever the lists say, as does one whose `uses` names
+  a capability the server was not granted. Each such set is logged on stderr
+  as `[mcpl] <server>/<set> disabled: …`.
+
+The model sees an MCPL server's tools as **`mcpl--<serverId>--<tool>`**:
+that is agent-framework's default prefix, and the host sets none of its own.
+An entry's `toolPrefix` replaces the `mcpl--<serverId>` part. Tool-name
+patterns elsewhere in a recipe match that model-facing form, so
+`toolClassOverrides` keys and `toolLifecycle` `tools` narrowings are written
+`mcpl--blender--*`, not `blender--*`. Host module tools are
+`<module>--<tool>` (`fleet--send`). `enabledTools` and `disabledTools` are
+the exception: they take bare names, as the server exports them.
+
 ### Tool lifecycle and tool classes (MCPL RFC-007 / RFC-008)
 
 An MCPL server can follow the agent's calls to *other* tools: a desktop avatar picking up a prop while a shell command runs, or pointing where the agent clicks. It receives `tools/lifecycle` notifications (`started`, then `completed` / `failed` / `aborted`) and never tool results. Both permissions are **off by default**. A `toolLifecycle` block on the server's entry, in the recipe or in `mcpl-servers.json`, is the grant:
@@ -217,7 +245,7 @@ An MCPL server can follow the agent's calls to *other* tools: a desktop avatar p
 }
 ```
 
-- `observe` sends metadata (tool, class, provider, phase, duration). `{}` means every call. Narrow it with `tools` (name patterns, `*` = any run), `classes`, or `conversations` (agent names).
+- `observe` sends metadata (tool, class, provider, phase, duration). `{}` means every call. Narrow it with `tools` (patterns over model-facing names such as `mcpl--cua--*`, `*` = any run), `classes`, or `conversations` (agent names).
 - `inputs` sends argument fields, but only the fields the server asks for with `tools/observe`. It needs a `tools` or `classes` term to deliver anything (`"default"` = computer, shell, files, web, media, body). It never carries `comms` or unclassed tools' arguments. `maxInputBytes` bounds the payload (default 16 KiB).
 
 A tool's class comes from, in order:
@@ -229,12 +257,14 @@ Third-party MCP servers never declare a class, so class them in the recipe:
 
 ```json
 "toolClassOverrides": {
-  "cua--*": ["computer"],
-  "blender--*": ["media"]
+  "mcpl--cua--*": ["computer"],
+  "mcpl--blender--*": ["media"]
 }
 ```
 
 An unclassed tool is treated as the most restrictive class: observable that it ran, never what it was given.
+
+To check what each tool ended up as, and which of the three sources decided it, run `/tools [agent]`, open the web UI's MCP tab, or `GET /debug/tool-classes`. With `mcplAdmin` enabled, the agent's `mcpl_list` shows the same for each server's tools.
 
 Servers an agent deploys for itself (`mcpl-servers.agent.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
 
@@ -276,6 +306,13 @@ the agent until the window resets instead of retrying; without a reading
 (e.g. the first 429 in a headless run with no viewer, or an unreadable usage
 endpoint) it follows the normal retry path.
 
+A `claude setup-token` credential cannot be rotated by the host: when it
+expires or is rejected, the host raises an `auth-rejected` alert whose only
+action is pasting a new token. A credentials file with a refresh token
+(`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) makes "Refresh token" available and warns
+30 minutes before expiry. See the credential-alerts note under the ChatGPT
+provider and [docs/subscription-transport.md](docs/subscription-transport.md).
+
 ### ChatGPT subscription provider
 
 Install the Codex CLI, sign in with `codex login`, then select the subscription
@@ -299,6 +336,13 @@ warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied. Quota windows are shown
 the same way as for the Claude subscription. See
 [`docs/subscription-transport.md`](docs/subscription-transport.md).
+
+On any subscription credential (Anthropic OAuth or Codex) the host names what
+is wrong with it — spent quota, unreadable quota, expiring/expired/rejected
+token, pending login — as an ops alert with the actions it can run, shown on
+the TUI status bar / `/auth`, the WebUI alert strip and Health tab, and the
+fleet parent. Nothing rotates without an operator action. See
+[docs/subscription-transport.md](docs/subscription-transport.md).
 
 ### OpenAI-compatible endpoints (Ollama, vLLM, Together, Groq, NanoGPT, ...)
 
@@ -332,11 +376,47 @@ depend on what the endpoint reports.
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `us-west-2`) | Claude on AWS — including models retired from the first-party API. `BEDROCK_BASE_URL` routes through an inference gateway. Prompt caching is enabled per model where Bedrock supports it; `agent.promptCaching` overrides. |
 | `openai-responses` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` optional) | OpenAI Platform, Responses API. |
 | `openrouter` | `OPENROUTER_API_KEY` | |
-| `mock` | none | Echoes the last user message, or returns `agent.mock.defaultResponse` with `echoMode: false`. Calls are still logged. |
+| `mock` | none | Echoes the last user message by default; scripted replies and timing are set under `agent.mock` ([below](#mock-provider)). Calls are still logged. |
 
 Every provider's calls are logged to `$DATA_DIR/llm-calls.<iso>.jsonl`.
 `agent.formatter: "anthropic-xml"` with `agent.prefillUserMessage` reproduces
 classic prefill-style prompting for agents migrated from prefill-era bots.
+
+### Mock provider
+
+`agent.provider: "mock"` runs membrane's `MockAdapter`: the full host loop
+with no credentials and no provider spend. `agent.mock` configures it:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `echoMode` | `true` | Reply `[Echo] <last user message>`. |
+| `defaultResponse` | membrane's canned text | Reply when not echoing and the queue is empty. A non-empty string. |
+| `responseQueue` | none | Replies returned in order, one per provider call, before the echo or `defaultResponse` takes over. Every call through the adapter takes one, including auxiliary calls such as compression and session naming. Non-empty strings. |
+| `completeDelayMs` | `10` | Delay before a non-streamed reply, in ms. Agent turns stream; auxiliary calls take this path. |
+| `streamChunkDelayMs` | `5` | Delay between streamed chunks, in ms. There is none before the first chunk. |
+| `streamChunkSize` | `10` | Characters per streamed chunk. A positive integer. |
+
+A streamed reply of `L` characters takes about
+`(ceil(L / streamChunkSize) - 1) × streamChunkDelayMs`, so a slow agent turn
+is a long reply with small chunks. This one holds the first turn for about
+2 s, which leaves time to send more events while it is in flight and see how
+they coalesce:
+
+```json
+"agent": {
+  "provider": "mock",
+  "mock": {
+    "echoMode": false,
+    "responseQueue": ["first reply", "second reply"],
+    "defaultResponse": "done",
+    "streamChunkSize": 1,
+    "streamChunkDelayMs": 200
+  }
+}
+```
+
+Unknown keys under `agent.mock` are reported in the recipe's
+unknown-key warning, like those at the other levels.
 
 ## What it provides
 
@@ -376,10 +456,17 @@ classic prefill-style prompting for agents migrated from prefill-era bots.
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering
   its context
-- **Conversations** (top-level `conversations`) — per-channel conversation
-  forks spawned from a dormant trunk agent; **subconscious** (top-level
-  `subconscious`) — a secondary agent that can `tune_out` channels;
-  **code execution** (top-level `codeExecution`) — a Python tool runner
+- **Conversations** (top-level `conversations` — **deprecated, not
+  recommended**) — per-channel conversation forks spawned from a dormant trunk
+  agent. Being retired
+  ([agent-framework#235](https://github.com/anima-research/agent-framework/issues/235)):
+  its `'mention'` bind/trigger rule, the default for channels, reads
+  `metadata.mentioned`, which discord-mcpl does not set, so on Discord
+  channels an @-mention never binds or triggers a fork. Still works; the host
+  logs a `[deprecated]` line at startup
+- **Subconscious** (top-level `subconscious`) — a secondary agent that can
+  `tune_out` channels; **code execution** (top-level `codeExecution`) — a
+  Python tool runner
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -388,7 +475,7 @@ classic prefill-style prompting for agents migrated from prefill-era bots.
 **Looking after it**
 
 - **Web UI** (`modules.webui`) — browser operator console, below
-- **TUI + readline modes** — OpenTUI interactive terminal, or `--no-tui` for pipes/CI
+- **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
@@ -460,6 +547,8 @@ bun install      # or npm install; the postinstall step builds the web UI
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required for `anthropic` unless `ANTHROPIC_AUTH_TOKEN` is set) | Anthropic API key |
 | `ANTHROPIC_AUTH_TOKEN` | — | Claude subscription OAuth token (`claude setup-token`); takes precedence over `ANTHROPIC_API_KEY` |
+| `ANTHROPIC_OAUTH_CREDENTIALS_FILE` | — | JSON credentials file (`accessToken` + `refreshToken` + `expiresAt`, Claude Code's shape or flat); a refresh token makes the credential host-rotatable. Use a COPY, never `~/.claude/.credentials.json` itself |
+| `ANTHROPIC_OAUTH_AUTO_REFRESH` | off | `1`/`true`: rotate on a 401 without an operator action |
 | `ANTHROPIC_BASE_URL` | Anthropic API | Route Anthropic calls through a gateway |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
@@ -469,6 +558,7 @@ bun install      # or npm install; the postinstall step builds the web UI
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
+| `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
 | `DATA_DIR` | `./data` | Session, recipe and log storage |
 | `AGENT_TIMEZONE` | process timezone | Agent-facing clock when the recipe sets no `agent.timezone` |
@@ -489,7 +579,7 @@ in the shipped recipes).
 ```bash
 bun src/index.ts                    # Interactive TUI
 bun src/index.ts --no-tui           # Readline mode
-echo "Hello" | bun src/index.ts     # Piped mode
+echo "Hello" | bun src/index.ts     # Batch mode: run each line, then stop
 bun src/index.ts <recipe> --headless                     # Daemon: JSONL IPC over $DATA_DIR/ipc.sock, no terminal
 bun src/index.ts <recipe> --headless --exit-when-idle    # One-shot: exit once the agent goes idle
 bun src/index.ts <recipe> --headless --socket-path <p>   # Custom socket path
@@ -499,6 +589,16 @@ bun --watch src/index.ts            # Dev mode
 Put the recipe before other arguments: the first argument that doesn't start
 with `--` is taken as the recipe. Headless mode, its files and its protocol
 are described in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
+
+Whenever stdin is not a TTY and `--headless` is absent, the host runs in
+**batch mode**, with or without `--no-tui`: it reads stdin to EOF, runs each
+line, then stops the agent and closes its MCPL servers. `reconnect: true` does
+not bring them back, because an explicit close is not a failure. That
+includes a host started by a supervisor or `nohup` with stdin redirected, so
+anything meant to keep serving needs `--headless`. The host prints a
+`[batch]` line at the start and before the teardown. If the recipe enables
+the web UI, its server outlives the agent by design, so the process keeps
+running, with no agent data behind the page, until interrupted.
 
 ## Web UI
 
@@ -521,12 +621,12 @@ postinstall). Deployment behind a reverse proxy, observer access and all
 endpoints are covered in [`docs/webui-deployment.md`](docs/webui-deployment.md).
 
 - Chat with full interiority: thinking blocks, tool calls + results, live streaming, inline images
-- Sidebar: agent/fleet tree, lessons, MCPL servers (live status and registry), workspace files, context makeup + compression coverage, Settings (live context budget with dry runs), Pins (protected ranges), Health (alerts, per-call stats, compression debt) — each can inspect any fleet child via the "inspecting:" selector
+- Sidebar: agent/fleet tree, lessons, MCPL servers (live status, tool classes and registry), workspace files, context makeup + compression coverage, Settings (live context budget with dry runs), Pins (protected ranges), Health (alerts, per-call stats, compression debt) — each can inspect any fleet child via the "inspecting:" selector
 - Live surgery: roll back to a message, suppress messages, quiesce/resume the host; every action is recorded in an operator log ([`docs/webui-live-surgery.md`](docs/webui-live-surgery.md))
 - Header branch chip opens the Chronicle branch lineage tree (checkout from the UI)
 - Ops alerts (compression quarantine, refusal streaks, inference-exhausted) render as persistent banner rows
 - Usage panel: per-agent costs and a billing-grade call ledger with cache verdicts; quota windows on subscriptions
-- `/healthz` (health JSON for doctor/fleet tooling), `/quota`, `/curve` (compression-curve visualization), `/debug/context/*` ([`docs/debug-context-api.md`](docs/debug-context-api.md)) — authenticated like the rest of the surface, and answerable by a fleet child with `?scope=<child>`
+- `/healthz` (health JSON for doctor/fleet tooling), `/quota`, `/curve` (compression-curve visualization), `/debug/context/*` ([`docs/debug-context-api.md`](docs/debug-context-api.md)), `/debug/tool-classes` — authenticated like the rest of the surface, and answerable by a fleet child with `?scope=<child>`
 - `/debug/retrieval/view` — operator-only per-run lesson selection viewer (see `docs/retrieval-traces.md`)
 - Read-only observer access via Ed25519 device keys with per-grant scopes; the agent can grant and revoke observers itself
 
@@ -564,8 +664,10 @@ headless socket.
 | `/mcp add <id> <cmd> [args...]` | Add or overwrite a registry server (keeps its env) |
 | `/mcp remove <id>` | Remove a registry server |
 | `/mcp env <id> KEY=VALUE [...]` | Set env vars on a registry server |
+| `/tools [agent]` | Each tool's effective MCPL class and where it came from (recipe override, host table, server `_meta`, or unclassed) |
 | `/budget [tokens]` | Show/set stream token budget |
 | `/fast [on\|off\|status]` | Toggle Codex subscription Fast mode |
+| `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 

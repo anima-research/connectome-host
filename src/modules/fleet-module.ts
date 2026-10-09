@@ -154,8 +154,8 @@ type ChildStatus = 'starting' | 'ready' | 'exited' | 'crashed';
 
 /**
  * Subset of FleetChild that is serializable to Chronicle.  Live handles
- * (process, socket) and ephemeral state (event buffer, line buffer) are
- * excluded.  Stored under the module's state namespace and re-hydrated
+ * (process, socket), ephemeral state (event buffer, line buffer), and resolved
+ * environment overrides (which may contain secrets) are excluded.  Stored under the module's state namespace and re-hydrated
  * on module start() for adopt-on-restart.
  */
 interface PersistedChild {
@@ -172,7 +172,6 @@ interface PersistedChild {
   exitReason: string | null;
   subscription: string[];
   autoRestart: boolean;
-  env: Record<string, string> | null;
 }
 
 interface PersistedFleetState {
@@ -208,7 +207,7 @@ interface FleetChild {
   restartAttempts: number[];
   /** Pending replacement of this generation, cancelled by manual control. */
   restartTimer?: ReturnType<typeof setTimeout>;
-  /** Env and optional envOverride persisted so autoRestart can respawn with the same config. */
+  /** Runtime-only env overrides for restart. Recovered from current config on adoption. */
   env?: Record<string, string>;
   /**
    * Most recent speech from a non-tool-ending inference round, as reported
@@ -371,7 +370,6 @@ export class FleetModule implements Module {
         exitReason: c.exitReason,
         subscription: [...c.subscription],
         autoRestart: c.autoRestart,
-        env: c.env ?? null,
       };
     }
     this.ctx.setState<PersistedFleetState>({ children: persisted });
@@ -462,7 +460,29 @@ export class FleetModule implements Module {
       restartAttempts: [],
       lastCompletedSpeech: '',  // not persisted; rebuilt on next inference:speech
     };
-    if (p.env) child.env = p.env;
+    // Resolved env values may contain secrets. Chronicle stores historical
+    // snapshots, so env is runtime-only and legacy persisted env is ignored.
+    // Re-read the current configuration for the same child, including entries
+    // with autoStart:false. Name alone must not transfer secrets to a different
+    // recipe or data directory that happens to reuse the name.
+    const recipeIdentity = (recipe: string): string =>
+      /^https?:\/\//.test(recipe) ? recipe : resolve(recipe);
+    const configured = this.autoStartChildren.find((c) =>
+      c.name === p.name &&
+      recipeIdentity(c.recipe) === recipeIdentity(p.recipePath) &&
+      resolve(c.dataDir ?? join('data', c.name)) === resolve(p.dataDir),
+    );
+    if (configured?.env !== undefined) child.env = { ...configured.env };
+    if (!configured) {
+      const sameName = this.autoStartChildren.find((c) => c.name === p.name);
+      if (sameName) {
+        const mismatches = [
+          recipeIdentity(sameName.recipe) !== recipeIdentity(p.recipePath) ? 'recipe' : null,
+          resolve(sameName.dataDir ?? join('data', sameName.name)) !== resolve(p.dataDir) ? 'dataDir' : null,
+        ].filter(Boolean);
+        console.error(`[fleet] child ${JSON.stringify(p.name)}: configured identity mismatch (${mismatches.join(', ')}); environment overrides withheld for restarts. Check child configuration and host working directory.`);
+      }
+    }
     return child;
   }
 
@@ -1055,10 +1075,10 @@ export class FleetModule implements Module {
     }
     if (existing && existing.dataDir === dataDir && existing.socketPath === socketPath &&
         existing.recipePath === recipePath) {
-      if (this.canRetryAdoption(existing) && !existing.process && !existing.socket && await this.probeLiveness({ ...existing, env: existing.env ?? null })) {
+      if (this.canRetryAdoption(existing) && !existing.process && !existing.socket && await this.probeLiveness(existing)) {
         try {
           const adopted = await this.reattachToLivingChild({
-            ...existing, subscription: [...subscription], env: existing.env ?? null,
+            ...existing, subscription: [...subscription],
           });
           if (!launchIsCurrent()) {
             adopted.socket?.destroy();

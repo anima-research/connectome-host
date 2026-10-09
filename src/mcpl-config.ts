@@ -262,9 +262,15 @@ const OVERLAY_LIST_FIELDS = [
  *  - Empty allow/deny lists are treated as absent. OpenAI-style strict
  *    function calling forces every schema property, so GPT-family residents
  *    calling mcpl_deploy emit `[]` where they meant "unspecified" — and for
- *    the allowlists PRESENT-empty is deny-all under the §5.3 pin (Mica's
- *    silently eventless eidoverse, 2026-08-04). An agent that truly wants
- *    deny-all says `disabledTools: ["*"]` / `disabledFeatureSets: ["*"]`.
+ *    enabledFeatureSets PRESENT-empty is deny-all under the §5.3 pin (Mica's
+ *    silently eventless eidoverse, 2026-08-04). (agent-framework already
+ *    reads `enabledTools: []` as "all tools".) Deny-all for tools is
+ *    `disabledTools: ["*"]`: tool patterns are whole-name globs, `*` = any
+ *    run. Feature-set patterns are not: `*` stands for exactly one
+ *    dot-separated segment, and a pattern only matches names with as many
+ *    segments, so `disabledFeatureSets: ["*"]` denies `channels` but not
+ *    `memory.retrieval`. No single pattern denies every set; list one per
+ *    depth (`["*", "*.*", "*.*.*"]` covers names of up to three segments).
  *
  *  - `inheritEnv` is dropped: full host-environment inheritance is granted
  *    only by operator-owned recipe/file configuration, never an overlay.
