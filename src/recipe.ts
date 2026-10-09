@@ -851,8 +851,9 @@ export interface RecipeModules {
   /**
    * The resident's fold record, `folds.jsonl` (CONN-20's per-resident file):
    * a labelled as-of projection of the selected branch's fold receipts,
-   * rewritten after each new receipt, at startup and at shutdown, and checked
-   * for branch changes at roughly one-second intervals. ON by default at
+   * rewritten shortly after each new receipt (the next turn of the event
+   * loop), at startup and at shutdown, and checked for branch changes at
+   * roughly one-second intervals. ON by default at
    * `<dataDir>/memory/folds.jsonl`; `false` turns it off, `{ path }` moves it.
    * The host only overwrites a file it wrote itself (ownership ledger at
    * `<dataDir>/folds-export-ownership.json`); anything else is an export

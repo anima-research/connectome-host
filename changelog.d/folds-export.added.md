@@ -4,7 +4,8 @@
   - It's a labelled as-of projection of the selected branch's fold receipts:
     a header line naming the branch, store, newest receipt and write time,
     then one receipt per line.
-  - It's rewritten after each new receipt, at startup and at shutdown, and the
+  - It's rewritten shortly after each new receipt (the next turn of the event
+    loop, off the round that accepted it), at startup and at shutdown, and the
     branch is checked at roughly one-second intervals. `history--folds` is the
     exact query.
   - The host overwrites only a file it wrote itself. A host-level ownership
@@ -14,4 +15,5 @@
     export to it stops, and the conflict shows in `/folds` and
     `history--folds`. `/folds takeover`, or the resident's `take_over_export`
     utility, keeps the existing file beside the target and resumes.
-  - Receipts name `connectome-host`, the data directory and the agent.
+  - The resident's fold receipts name `connectome-host`, the data directory and
+    the agent.

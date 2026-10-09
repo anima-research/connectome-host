@@ -56,9 +56,14 @@ async function openStore(name = 'store'): Promise<{ cm: ContextManager; strategy
   return { cm, strategy };
 }
 
+/** One turn of the event loop: the projection a receipt schedules has run. */
+const projected = () => new Promise<void>((r) => setImmediate(r));
+
+/** Accept a compile; its receipt's projection runs on the next turn, which this awaits. */
 async function accept(cm: ContextManager): Promise<void> {
   const result = await cm.compile(BUDGET);
   cm.acceptRound({ provenance: result.provenance! });
+  await projected();
 }
 
 function exporter(path = target, checkIntervalMs = 20): FoldsExportModule {
@@ -136,6 +141,23 @@ describe('folds.jsonl projection', () => {
     expect(cm.listFoldReceipts({ branch: 'side' }).branch?.name).toBe('side');
   });
 
+  test('projects off the round that accepted the receipt, once per turn however many receipts arrive', async () => {
+    const { cm, strategy } = await openStore();
+    const ids = ['one', 'two', 'three'].map((t) => cm.addMessage('user', [{ type: 'text', text: t }]));
+    const m = exporter();
+    m.bind(cm);
+    const before = sha(target);
+    const first = await cm.compile(BUDGET);
+    cm.acceptRound({ provenance: first.provenance! }); // baseline
+    strategy.omit.add(ids[0]!);
+    const second = await cm.compile(BUDGET);
+    cm.acceptRound({ provenance: second.provenance! }); // a change, before the loop turns
+    expect(sha(target)).toBe(before);
+    await projected();
+    expect(lines()[0]!.receipts).toBe(2);
+    expect(lines().slice(1).map((r) => r.kind)).toEqual(['baseline', 'change']);
+  });
+
   test('heals a crash between a receipt and its projection at the next startup', async () => {
     const { cm } = await openStore();
     cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
@@ -178,6 +200,7 @@ describe('folds.jsonl projection', () => {
     expect(lines()[0]!.receipts).toBe(0);
     // The stream retries acceptance at its next round: the record is found, and announced.
     cm.acceptRound({ provenance: compiled.provenance! });
+    await projected();
     expect(lines()[0]!.receipts).toBe(1);
     expect(lines()[1]!.kind).toBe('baseline');
   });

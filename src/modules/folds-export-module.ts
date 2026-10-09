@@ -7,7 +7,8 @@
  * receipts to one file, as an as-of snapshot: a header line naming the
  * branch, the store, the newest receipt and when it was written, then one
  * receipt per line, oldest first. It's rewritten (temp file, fsync, rename)
- * after each new receipt, when the module binds (startup), and when it stops
+ * shortly after each new receipt (the next turn of the event loop, off the
+ * round that accepted it), when the module binds (startup), and when it stops
  * (disposal, before the framework's store closes). The selected branch is
  * checked at roughly one-second intervals, so a branch switch reaches the
  * file at the next check, not at the switch itself. `history--folds` reads
@@ -94,7 +95,7 @@ export interface FoldsExportStatus {
 }
 
 const FRESHNESS =
-  'A labelled as-of projection of the selected branch: rewritten after each new receipt, at startup and ' +
+  'A labelled as-of projection of the selected branch: rewritten shortly after each new receipt, at startup and ' +
   'at shutdown, and checked for branch changes at roughly one-second intervals. history--folds reads the ' +
   'journal itself and is the exact query.';
 
@@ -183,6 +184,8 @@ export class FoldsExportModule implements Module {
   private detach: (() => void) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastBranchKey: string | null = null;
+  /** A projection is scheduled for the next turn of the event loop. */
+  private projectionPending = false;
   private lastError: string | null = null;
   private lastProjection: FoldsExportStatus['lastProjection'];
   private readonly target: string;
@@ -200,7 +203,13 @@ export class FoldsExportModule implements Module {
    */
   bind(cm: ContextManager): void {
     this.cm = cm;
-    this.detach = cm.onFoldReceipt(() => this.project());
+    // The journal calls its listeners synchronously inside acceptRound, so a
+    // projection run there would hold the round for a re-read of the branch's
+    // record, a hash of the file and three durable writes. It's scheduled for
+    // the next turn of the event loop instead, and receipts that arrive before
+    // it runs share one projection. A crash in that gap is the case the startup
+    // projection already heals.
+    this.detach = cm.onFoldReceipt(() => this.scheduleProjection());
     this.project();
     this.timer = setInterval(() => this.checkBranch(), this.opts.checkIntervalMs ?? 1_000);
     this.timer.unref?.();
@@ -212,6 +221,9 @@ export class FoldsExportModule implements Module {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // Synchronous, so the last receipt reaches the file before the store
+    // closes; a projection still scheduled finds the module unbound and does
+    // nothing.
     if (this.cm) this.project();
     this.detach?.();
     this.detach = null;
@@ -286,6 +298,16 @@ export class FoldsExportModule implements Module {
 
   private now(): Date {
     return this.opts.now?.() ?? new Date();
+  }
+
+  /** Coalesce: one projection per turn of the event loop, however many receipts arrived. */
+  private scheduleProjection(): void {
+    if (this.projectionPending) return;
+    this.projectionPending = true;
+    setImmediate(() => {
+      this.projectionPending = false;
+      this.project();
+    });
   }
 
   private checkBranch(): void {
