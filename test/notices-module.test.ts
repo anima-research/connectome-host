@@ -24,7 +24,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const broken = new Set(opts.brokenServers ?? []);
   const holds = new Map<string, Promise<void>>();
   let listener: ((e: TraceEvent) => void) | null = null;
-  const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const timers: Array<{ fn: () => void; ms: number; due: number; cancelled: boolean }> = [];
   const framework = {
     onTrace: (cb: (e: TraceEvent) => void) => { listener = cb; return () => {}; },
     channels: {
@@ -46,7 +46,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
     quietMs: 0,
     now: () => t,
     timers: {
-      setTimeout: (fn, ms) => { const h = { fn, ms, cancelled: false }; timers.push(h); return h; },
+      setTimeout: (fn, ms) => { const h = { fn, ms, due: t + ms, cancelled: false }; timers.push(h); return h; },
       clearTimeout: (h) => { (h as { cancelled: boolean }).cancelled = true; },
     },
     ...cfg,
@@ -57,7 +57,8 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const alert = (kind: string, message = kind, data?: Record<string, unknown>, agentName = 'clerk') =>
     emit({ type: 'ops:alert', kind, agentName, message, data });
   const settle = () => new Promise((r) => setTimeout(r, 0));
-  const fireTimers = async () => { for (const h of timers.splice(0)) if (!h.cancelled) h.fn(); await settle(); };
+  /** Fire every armed timer, advancing the fake clock to each one's due time. */
+  const fireTimers = async () => { for (const h of timers.splice(0)) if (!h.cancelled) { t = Math.max(t, h.due); h.fn(); } await settle(); };
   const setTime = (ms: number) => { t = ms; };
   /** Make the next post to a channel wait until the returned release runs. */
   const hold = (channelId: string) => { let release!: () => void; holds.set(channelId, new Promise<void>((r) => { release = r; })); return release; };
@@ -239,13 +240,18 @@ describe('overlapping kinds', () => {
     h.alert('compression-quarantine-clear', 'EMPTY');
     await h.settle();
     expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], tier: 'reply' });
-    expect(h.posts.filter((p) => p.text.startsWith('✓'))).toEqual([]); // no false "back"
-    expect(h.posts.length).toBe(5); // status channel hears the still-current reason
-    expect(h.posts[4]!.text).toContain('quota-spent: spent');
+    // The status channel hears that the lesser kind cleared and what remains;
+    // no reply channel hears a false "back".
+    expect(h.posts.length).toBe(5);
+    expect(h.posts[4]).toMatchObject({ channelId: 'zulip:ops', text: statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent') });
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
     expect(h.module.episodeState()).toEqual([]);
-    expect(h.posts.filter((p) => p.text.startsWith('✓')).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops', 'zulip:other']);
+    expect(h.posts.slice(5).map((p) => [p.channelId, p.text]).sort()).toEqual([
+      ['zulip:dev', replyClearText('clerk')],
+      ['zulip:ops', statusClearText('clerk', 'quota-spent', 'ok')],
+      ['zulip:other', replyClearText('clerk')],
+    ]);
   });
 
   test('the primary kind is the newest among the loudest', async () => {
@@ -341,7 +347,7 @@ describe('status channels', () => {
     expect(h.posts[1]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down', message: 'failing' }));
     h.emit({ type: 'inference:completed', agentName: 'clerk' });
     await h.settle();
-    expect(h.posts.slice(2).map((p) => [p.channelId, p.text])).toEqual([
+    expect(h.posts.slice(2).map((p) => [p.channelId, p.text]).sort()).toEqual([
       ['zulip:dev', replyClearText('clerk')],
       ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed')],
     ]);
@@ -374,6 +380,54 @@ describe('status channels', () => {
     await h.fireTimers();
     expect(h.posts.length).toBe(2);
     expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+  });
+
+  test('a kind joining mid-episode does not delay a kind already due; each kind has its own quiet deadline', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
+    h.alert('quota-spent', 'spent');
+    h.setTime(59_000);
+    h.alert('compression-quarantine', '2 chunks');
+    expect(h.timers.filter((x) => !x.cancelled).length).toBe(1);
+    await h.fireTimers(); // clock → 60 000
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    await h.fireTimers(); // clock → 119 000
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toContain('compression-quarantine: 2 chunks');
+  });
+
+  test('a kind that clears while its status post is in flight is cleared right after it lands', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    const release = h.hold('zulip:ops');
+    h.alert('compression-quarantine', '2 chunks'); // held
+    h.alert('quota-spent', 'spent'); // delivered
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    await h.settle();
+    expect(h.posts.length).toBe(1); // nothing heard yet ⇒ nothing to clear yet
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.slice(1).map((p) => p.text)).toEqual([
+      statusNoticeText('clerk', { kind: 'compression-quarantine', message: '2 chunks' }),
+      statusClearText('clerk', 'compression-quarantine', 'cleared while posting', 'quota-spent'),
+    ]);
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], statusHeard: { 'zulip:ops': ['quota-spent'] } });
+  });
+
+  test('a component post landing after reconnect clears itself and writes no agent marker', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    const release = h.hold('zulip:ops');
+    h.alert('mcpl-down', 'unreachable', undefined, 'discord');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'discord', attempts: 1 });
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([]);
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.text.slice(0, 1))).toEqual(['⚠', '✓']);
+    expect(h.posts[1]!.text).toBe(statusClearText('discord', 'mcpl-down', 'cleared while posting'));
+    expect(h.markers).toEqual([]);
   });
 
   test('component alerts (mcpl-down) are status-only, keyed by server, and close on reconnect', async () => {
@@ -419,6 +473,25 @@ describe('absent chat server', () => {
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     await h.settle();
     expect(h.posts).toEqual([]);
+  });
+
+  test('a status update parked behind an already-heard kind is still delivered on reconnect', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('compression-quarantine', '2 chunks');
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+    h.broken.add('zulip');
+    h.alert('auth-rejected', 'rejected');
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 2 });
+    await h.settle();
+    await h.settle();
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+    expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['compression-quarantine', 'auth-rejected'] });
   });
 
   test('a parked reply delivered another way is not sent twice on reconnect', async () => {

@@ -27,8 +27,10 @@
  * outage nor, on its own clear, announces a false recovery. One notice
  * per (episode, channel); a channel is told again only when the announced end
  * has passed and the outage is still on. Channels that were told get one
- * "back" line on close. Status posts wait `quietMs` for a clear, so a flap
- * that resolves in seconds says nothing; replies never wait — a human is.
+ * "back" line on close. Status channels follow the kind-level timeline
+ * instead: one line when a kind has been active for `quietMs` (so a flap that
+ * resolves in seconds says nothing), one line when a told kind clears, naming
+ * what remains. Replies never wait — a human is.
  *
  * The chat MCPL server may itself be down. Channel ids are opaque here and
  * resolved at post time through the ChannelRegistry; a post that fails because
@@ -138,12 +140,13 @@ interface Episode {
   notified: Map<string, number>;
   /** Channels whose post failed for lack of a channel/server; retried on reconnect. */
   pending: Set<string>;
-  /** Status channels that received a notice for this episode — each is owed
-   *  a clear line. Independent of in-flight or re-scheduled posts. */
-  statusDelivered: Set<string>;
-  /** The kind the status channels last heard about. */
-  statusAbout?: string;
-  /** Pending quiet-window timer handle, if any. */
+  /** statusChannel → kinds it has been told about. Status channels follow
+   *  the kind-level timeline: one line when a kind is told (after its own
+   *  quiet deadline), one line when a told kind clears. */
+  statusHeard: Map<string, Set<string>>;
+  /** statusChannel → kinds with a post in flight (claimed, not yet heard). */
+  statusPosting: Map<string, Set<string>>;
+  /** Pending quiet-deadline timer handle, if any. */
   quietTimer?: unknown;
   markerWritten: boolean;
 }
@@ -173,6 +176,12 @@ function primaryKind(ep: Episode): { kind: string; message: string; until?: numb
 export function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
   return new RegExp(`^${escaped}$`);
+}
+
+function getSet<K, V>(map: Map<K, Set<V>>, key: K): Set<V> {
+  let set = map.get(key);
+  if (!set) { set = new Set(); map.set(key, set); }
+  return set;
 }
 
 function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
@@ -215,9 +224,10 @@ export function statusNoticeText(subject: string, ep: { kind: string; message: s
   return `⚠ [host notice] ${subject} — ${ep.kind}${msg}.${when}`;
 }
 
-export function statusClearText(subject: string, kind: string, message: string): string {
+export function statusClearText(subject: string, kind: string, message: string, still?: string): string {
   const msg = message ? ` (${message.slice(0, 200)})` : '';
-  return `✓ [host notice] ${subject} — ${kind} cleared${msg}.`;
+  const rest = still ? ` Still: ${still}.` : '';
+  return `✓ [host notice] ${subject} — ${kind} cleared${msg}.${rest}`;
 }
 
 interface Registry {
@@ -308,13 +318,15 @@ export class NoticesModule implements Module {
   }
 
   /** Current episodes, for tests and the panel. */
-  episodeState(): Array<{ key: string; kind: string; kinds: string[]; tier: NoticeTier; since: number; until?: number; notified: string[]; pending: string[]; statusDelivered: string[] }> {
+  episodeState(): Array<{ key: string; kind: string; kinds: string[]; tier: NoticeTier; since: number; until?: number; notified: string[]; pending: string[]; statusHeard: Record<string, string[]> }> {
     return [...this.episodes.values()].map((ep) => {
       const primary = primaryKind(ep);
+      const statusHeard: Record<string, string[]> = {};
+      for (const [ch, kinds] of ep.statusHeard) if (kinds.size > 0) statusHeard[ch] = [...kinds];
       return {
         key: ep.key, kind: primary.kind, kinds: [...ep.kinds.keys()], tier: episodeTier(ep), since: ep.since,
         ...(primary.until !== undefined ? { until: primary.until } : {}),
-        notified: [...ep.notified.keys()], pending: [...ep.pending], statusDelivered: [...ep.statusDelivered],
+        notified: [...ep.notified.keys()], pending: [...ep.pending], statusHeard,
       };
     });
   }
@@ -416,21 +428,22 @@ export class NoticesModule implements Module {
     const until = typeof data.until === 'number' && Number.isFinite(data.until) ? data.until : undefined;
 
     const existing = this.episodes.get(key);
-    const active: ActiveKind = { message, tier, until, at: this.now() };
     if (existing) {
-      const refire = existing.kinds.has(kind);
-      existing.kinds.set(kind, active);
-      if (refire) return;
-      // A new kind joins the episode. Channels already told are not told
-      // twice, and still get the "back" line when the whole episode ends.
-      // The status channels learn the new reason (after the quiet window).
-      this.scheduleStatus(existing, kind);
+      const prior = existing.kinds.get(kind);
+      // A re-fire keeps its original arrival: the quiet deadline must not
+      // slide with every repeat of a persisting alert.
+      existing.kinds.set(kind, { message, tier, until, at: prior?.at ?? this.now() });
+      if (prior) return;
+      // A new kind joins the episode. Reply channels already told are not
+      // told twice, and still get the "back" line when the whole episode
+      // ends. Status channels hear the new kind after its own quiet deadline.
+      this.scheduleStatus(existing);
       void this.replyToWaker();
       return;
     }
     const ep: Episode = {
-      key, kinds: new Map([[kind, active]]), since: this.now(),
-      notified: new Map(), pending: new Set(), statusDelivered: new Set(), markerWritten: false,
+      key, kinds: new Map([[kind, { message, tier, until, at: this.now() }]]), since: this.now(),
+      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), markerWritten: false,
     };
     this.episodes.set(key, ep);
     this.scheduleStatus(ep);
@@ -451,40 +464,72 @@ export class NoticesModule implements Module {
   /** One kind cleared. The episode ends only when no kind remains active. */
   private removeKind(ep: Episode, kind: string, opts: { message: string; superseded: boolean }): void {
     ep.kinds.delete(kind);
-    if (ep.kinds.size > 0) {
-      // The outage goes on under its remaining kinds. If the status channels
-      // last heard the kind that just cleared, they hear the current reason
-      // (a quarantine clear mid quota-spent must not read as recovery).
-      if (ep.statusAbout === kind && ep.statusDelivered.size > 0) this.scheduleStatus(ep);
+    const open = ep.kinds.size > 0;
+    if (!open) {
+      this.cancelQuiet(ep);
+      this.episodes.delete(ep.key);
+      ep.pending.clear();
+    }
+    // Superseded (auth-expiring → auth-expired) is not recovery: nothing is
+    // said; the successor alert re-tells. Otherwise every status channel
+    // that heard this kind hears that it cleared (and what remains), and —
+    // when the whole outage ends — every reply channel told gets "back".
+    if (opts.superseded) return;
+    this.clearStatusKind(ep, kind, opts.message);
+    if (!open) {
+      const subject = ep.key || this.config.agentName || 'the agent';
+      for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false });
+    }
+  }
+
+  /** Tell every status channel that heard `kind` that it is gone. */
+  private clearStatusKind(ep: Episode, kind: string, message: string): void {
+    const subject = ep.key || this.config.agentName || 'the agent';
+    const still = ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
+    for (const [ch, heard] of ep.statusHeard) {
+      if (!heard.delete(kind)) continue;
+      void this.post(ch, statusClearText(subject, kind, message, still), ep, { track: false });
+    }
+  }
+
+  /**
+   * Arrange for the status channels to hear every active kind once its own
+   * quiet deadline (arrival + quietMs) has passed. One timer per episode,
+   * aimed at the earliest pending deadline; a kind joining later never
+   * delays one already due.
+   */
+  private scheduleStatus(ep: Episode): void {
+    if (this.statusChannels.length === 0) return;
+    if (this.episodes.get(ep.key) !== ep) return;
+    const now = this.now();
+    let next: number | undefined;
+    for (const [kind, k] of ep.kinds) {
+      if (this.statusChannels.every((ch) => ep.statusHeard.get(ch)?.has(kind) || ep.statusPosting.get(ch)?.has(kind))) continue;
+      const due = k.at + this.quietMs;
+      if (next === undefined || due < next) next = due;
+    }
+    if (next === undefined) return;
+    if (next <= now) {
+      this.cancelQuiet(ep);
+      this.deliverStatus(ep);
       return;
     }
-    this.closeEpisode(ep, kind, opts);
-  }
-
-  private closeEpisode(ep: Episode, lastKind: string, opts: { message: string; superseded: boolean }): void {
-    this.cancelQuiet(ep);
-    this.episodes.delete(ep.key);
-    ep.pending.clear();
-    if (opts.superseded) return;
-    const subject = ep.key || this.config.agentName || 'the agent';
-    for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false });
-    for (const ch of ep.statusDelivered) void this.post(ch, statusClearText(subject, lastKind, opts.message), ep, { track: false });
-    ep.statusDelivered.clear();
-  }
-
-  /** Post to the status channels after the quiet window — about `about`
-   *  (a kind that just joined) if it is still active then, else the primary. */
-  private scheduleStatus(ep: Episode, about?: string): void {
-    if (this.statusChannels.length === 0) return;
-    this.cancelQuiet(ep);
-    const fire = () => {
+    if (ep.quietTimer !== undefined) return;
+    ep.quietTimer = this.timers.setTimeout(() => {
       ep.quietTimer = undefined;
       if (this.episodes.get(ep.key) !== ep) return;
-      const kind = about !== undefined && ep.kinds.has(about) ? about : undefined;
+      this.deliverStatus(ep);
+      this.scheduleStatus(ep);
+    }, next - now);
+  }
+
+  /** Post every due, unheard active kind to every status channel. */
+  private deliverStatus(ep: Episode): void {
+    const now = this.now();
+    for (const [kind, k] of ep.kinds) {
+      if (k.at + this.quietMs > now) continue;
       for (const ch of this.statusChannels) void this.postStatus(ep, ch, kind);
-    };
-    if (this.quietMs <= 0) { fire(); return; }
-    ep.quietTimer = this.timers.setTimeout(fire, this.quietMs);
+    }
   }
 
   private cancelQuiet(ep: Episode): void {
@@ -528,27 +573,30 @@ export class NoticesModule implements Module {
     await this.postReply(ep, fw.channelId);
   }
 
-  private async postStatus(ep: Episode, channelId: string, kind?: string): Promise<void> {
+  /** Tell one status channel about one kind. A post that lands after the
+   *  kind cleared (or the episode closed) is followed by its own clear line
+   *  at once, so no channel is left carrying a warning nobody will clear. */
+  private async postStatus(ep: Episode, channelId: string, kind: string): Promise<void> {
+    const k = ep.kinds.get(kind);
+    if (!k) return;
+    const heard = getSet(ep.statusHeard, channelId);
+    const posting = getSet(ep.statusPosting, channelId);
+    if (heard.has(kind) || posting.has(kind)) return;
+    posting.add(kind);
     const subject = ep.key || this.config.agentName || 'the agent';
-    const active = kind !== undefined ? ep.kinds.get(kind) : undefined;
-    const primary = active ? { kind: kind!, message: active.message, ...(active.until !== undefined ? { until: active.until } : {}) } : primaryKind(ep);
-    const ok = await this.post(channelId, statusNoticeText(subject, primary), ep, { track: true });
+    const ok = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
+    posting.delete(kind);
     if (!ok) return;
-    if (this.episodes.get(ep.key) === ep) {
-      ep.statusDelivered.add(channelId);
-      ep.statusAbout = primary.kind;
-      return;
-    }
-    // The episode closed while this post was in flight: the channel now
-    // carries a warning nobody will clear. Clear it ourselves.
-    void this.post(channelId, statusClearText(subject, primary.kind, 'cleared while posting'), ep, { track: false });
+    if (ep.kinds.has(kind) && this.episodes.get(ep.key) === ep) { heard.add(kind); return; }
+    const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
+    void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false });
   }
 
   private async postReply(ep: Episode, channelId: string): Promise<void> {
     const subject = ep.key || this.config.agentName || 'the agent';
-    const text = replyNoticeText(subject, primaryKind(ep));
+    const primary = primaryKind(ep);
     ep.notified.set(channelId, this.now());
-    const ok = await this.post(channelId, text, ep, { track: true });
+    const ok = await this.post(channelId, replyNoticeText(subject, primary), ep, { track: true, kind: primary.kind });
     if (!ok) ep.notified.delete(channelId);
   }
 
@@ -563,7 +611,10 @@ export class NoticesModule implements Module {
         if (this.episodes.get(ep.key) !== ep) break;
         ep.pending.delete(channelId);
         if (this.statusChannels.includes(channelId)) {
-          if (!ep.statusDelivered.has(channelId)) await this.postStatus(ep, channelId);
+          const now = this.now();
+          for (const [kind, k] of [...ep.kinds]) {
+            if (k.at + this.quietMs <= now) await this.postStatus(ep, channelId, kind);
+          }
         } else {
           await this.replyIfDown(channelId);
         }
@@ -576,7 +627,7 @@ export class NoticesModule implements Module {
    * failure is "channel/server not found" — the chat server may simply not be
    * up yet — so a reconnect during the episode can deliver it.
    */
-  private async post(channelId: string, text: string, ep: Episode, opts: { track: boolean }): Promise<boolean> {
+  private async post(channelId: string, text: string, ep: Episode, opts: { track: boolean; kind?: string }): Promise<boolean> {
     const registry = this.framework?.channels as Registry | undefined;
     if (!registry?.publishForAgent) return false;
     let result: { success: boolean; error?: string };
@@ -587,9 +638,9 @@ export class NoticesModule implements Module {
     }
     if (result.success) {
       ep.pending.delete(channelId);
-      if (opts.track && !ep.markerWritten) {
+      if (opts.track && opts.kind !== undefined && !ep.markerWritten) {
         ep.markerWritten = true;
-        this.writeMarker(ep, channelId, text);
+        this.writeMarker(ep, channelId, text, opts.kind);
       }
       return true;
     }
@@ -602,8 +653,7 @@ export class NoticesModule implements Module {
   /** One chronicle marker per episode so the agent learns, on recovery,
    *  that the host spoke in its channel while it could not. System-flagged:
    *  no inference is requested (same as the framework's own markers). */
-  private writeMarker(ep: Episode, channelId: string, text: string): void {
-    const kind = primaryKind(ep).kind;
+  private writeMarker(ep: Episode, channelId: string, text: string, kind: string): void {
     if (!this.config.agentName || COMPONENT_KINDS.has(kind)) return;
     try {
       const agent = this.framework?.getAgent(this.config.agentName);
