@@ -352,7 +352,8 @@ export function parseAnthropicUsage(body: unknown): QuotaWindow[] {
 }
 
 export interface AnthropicOAuthQuotaSourceConfig {
-  authToken: string;
+  /** The bearer, or a getter so a rotated credential is read fresh. */
+  authToken: string | (() => string);
   /** Same override the inference adapter honors. A gateway that does not
    *  proxy the usage path simply yields "no reading". */
   baseURL?: string;
@@ -367,7 +368,7 @@ export class AnthropicOAuthQuotaSource implements QuotaSource {
     const base = (this.config.baseURL ?? 'https://api.anthropic.com').replace(/\/+$/, '');
     const res = await (this.config.fetchImpl ?? fetch)(`${base}/api/oauth/usage`, {
       headers: {
-        authorization: `Bearer ${this.config.authToken}`,
+        authorization: `Bearer ${typeof this.config.authToken === 'function' ? this.config.authToken() : this.config.authToken}`,
         'anthropic-beta': 'oauth-2025-04-20',
         'content-type': 'application/json',
       },

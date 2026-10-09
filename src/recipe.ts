@@ -751,6 +751,33 @@ export interface RecipeModules {
    */
   activity?: boolean | { channels?: string[] };
   /**
+   * Outage notices: tell the people in the agent's channels, through those
+   * channels, when the host cannot answer them. A sink of the framework's
+   * `ops:alert` stream (hard-down, spent quota, expired/rejected credential,
+   * pending login, provider hold, MCPL server down, …). Off by default:
+   * writing into a channel is a bigger act than showing a typing indicator.
+   *
+   * - `statusChannels` — always get the operator-grade message (kind + error
+   *   text) for `status` and `reply` kinds, after `quietMs` without a clear.
+   * - `reply.in` / `reply.not` — channel-id patterns (`zulip:*`, exact ids)
+   *   where a person who writes to the agent during an outage gets one canned
+   *   "cannot respond right now" line, and where the channel whose message
+   *   triggered the failing turn is told the same. Default `in: ['*']`.
+   * - `kinds` — tier per alert kind (`silent` | `status` | `reply`), `*`
+   *   wildcard allowed (`'auth-*': 'reply'`), merged over the built-in table;
+   *   unknown kinds are silent.
+   * - `quietMs` (default 60000), `renotifyMs` (default 1800000).
+   *
+   * `true` = reply anywhere the agent is subscribed, no status channels.
+   */
+  notices?: boolean | {
+    statusChannels?: string[];
+    reply?: { in?: string[]; not?: string[] };
+    kinds?: Record<string, 'silent' | 'status' | 'reply'>;
+    quietMs?: number;
+    renotifyMs?: number;
+  };
+  /**
    * MCPL self-administration. Off by default. When enabled, the agent gets
    * `mcpl_list` / `mcpl_deploy` / `mcpl_restart` / `mcpl_unload` tools to
    * hot-manage its own MCPL servers without a host restart. Deployments
@@ -1549,7 +1576,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
   'responseQueue',
 ] as const;
 const RECIPE_MODULE_KEYS = [
-  'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity',
+  'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
   'channelMode',
 ] as const;
@@ -2514,6 +2541,54 @@ export function validateRecipe(raw: unknown): Recipe {
           'modules.retrieval.model must be a non-empty string when ' +
           'modules.retrieval.reasoningEffort is configured.',
         );
+      }
+    }
+
+    // Validate notices if present: channel ids and tiers are the whole
+    // contract, and a typo here means an outage nobody is told about.
+    if (mods.notices !== undefined && mods.notices !== false && mods.notices !== true) {
+      if (mods.notices === null || typeof mods.notices !== 'object' || Array.isArray(mods.notices)) {
+        throw new Error('modules.notices must be a boolean or object');
+      }
+      const n = mods.notices as Record<string, unknown>;
+      const strList = (v: unknown, name: string): void => {
+        if (v === undefined) return;
+        if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !x)) {
+          throw new Error(`modules.notices.${name} must be an array of non-empty strings`);
+        }
+      };
+      for (const key of Object.keys(n)) {
+        if (!['statusChannels', 'reply', 'kinds', 'quietMs', 'renotifyMs'].includes(key)) {
+          throw new Error(`modules.notices has unknown field ${JSON.stringify(key)}`);
+        }
+      }
+      strList(n.statusChannels, 'statusChannels');
+      if (n.reply !== undefined) {
+        if (typeof n.reply !== 'object' || n.reply === null || Array.isArray(n.reply)) {
+          throw new Error('modules.notices.reply must be an object ({ in?, not? })');
+        }
+        const r = n.reply as Record<string, unknown>;
+        for (const key of Object.keys(r)) {
+          if (key !== 'in' && key !== 'not') throw new Error(`modules.notices.reply has unknown field ${JSON.stringify(key)}`);
+        }
+        strList(r.in, 'reply.in');
+        strList(r.not, 'reply.not');
+      }
+      if (n.kinds !== undefined) {
+        if (typeof n.kinds !== 'object' || n.kinds === null || Array.isArray(n.kinds)) {
+          throw new Error('modules.notices.kinds must be an object of kind → tier');
+        }
+        for (const [kind, tier] of Object.entries(n.kinds as Record<string, unknown>)) {
+          if (tier !== 'silent' && tier !== 'status' && tier !== 'reply') {
+            throw new Error(`modules.notices.kinds[${JSON.stringify(kind)}] must be 'silent', 'status', or 'reply'`);
+          }
+        }
+      }
+      for (const key of ['quietMs', 'renotifyMs'] as const) {
+        const v = n[key];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
+          throw new Error(`modules.notices.${key} must be a non-negative number`);
+        }
       }
     }
 

@@ -240,6 +240,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     inputTokens: number;
   }) => void;
 
+  /** Credential-monitor taps: every failed call (auth verdicts are what the
+   *  monitor keys on) and every successful one (clears a standing auth
+   *  alarm). Observers never affect provider traffic. */
+  onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
+  onProviderSuccess?: (kind: 'complete' | 'stream') => void;
+
   private observeCall(
     kind: 'complete' | 'stream',
     timestamp: string,
@@ -249,6 +255,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
+    try {
+      if (error !== undefined) this.onProviderError?.(error, kind);
+      else this.onProviderSuccess?.(kind);
+    } catch { /* observers never affect provider traffic */ }
     const raw0 = (response as { raw?: { stop_reason?: string; stop_details?: { category?: string } } } | undefined)?.raw;
     if (kind === 'complete' && raw0?.stop_reason === 'refusal' && this.onRefusal) {
       try {

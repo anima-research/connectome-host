@@ -16,7 +16,10 @@ import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewe
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
-import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
+import {
+  OpsAlertStrip, HealthPanel, CREDENTIAL_ALERT_KINDS,
+  type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
+} from './Health';
 import { BranchPanel } from './Branches';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
@@ -183,7 +186,7 @@ export function App() {
   const alertList = createMemo(() =>
     [...opsAlerts().values()].sort((a, b) => b.at - a.at));
 
-  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true): void => {
+  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true, actions?: CredentialAction[]): void => {
     const key = `${agent}:${kind}`;
     setOpsAlerts((prev) => {
       const next = new Map(prev);
@@ -195,6 +198,10 @@ export function App() {
         message,
         at: Date.now(),
         count: existing ? existing.count + (bump ? 1 : 0) : 1,
+        // The strip is a host-level (local) surface: its actions always
+        // target the local process, whatever the sidebar is inspecting.
+        scope: 'local',
+        ...(actions ? { actions } : existing?.actions ? { actions: existing.actions } : {}),
       });
       return next;
     });
@@ -219,7 +226,75 @@ export function App() {
       removeOpsAlert(`${agent}:${kind.slice(0, -'-clear'.length)}`);
       return;
     }
-    upsertOpsAlert(kind, agent, message);
+    upsertOpsAlert(kind, agent, message, true, readActions((e.data as { actions?: unknown } | undefined)?.actions));
+  };
+
+  /** `data.actions` on a credential alert, defensively typed. */
+  const readActions = (raw: unknown): CredentialAction[] | undefined => {
+    if (!Array.isArray(raw)) return undefined;
+    const out: CredentialAction[] = [];
+    for (const a of raw) {
+      const id = (a as { id?: unknown })?.id;
+      const label = (a as { label?: unknown })?.label;
+      if (typeof id !== 'string' || typeof label !== 'string') continue;
+      const hint = (a as { hint?: unknown })?.hint;
+      out.push({ id, label, ...(typeof hint === 'string' ? { hint } : {}) });
+    }
+    return out.length > 0 ? out : undefined;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Credential state — the host's one named verdict on its provider
+  // credential (spent quota, expired token, pending login) and the actions
+  // it can run. Arrives as `credential-state` frames (after an action) and
+  // inside /healthz; both reconcile the alert strip so a page opened
+  // mid-incident alarms with its buttons.
+  // ---------------------------------------------------------------------------
+  /** Last credential-state frame, tagged with the process it describes; the
+   *  Health tab uses it only while inspecting that same scope. */
+  const [credentialState, setCredentialState] = createSignal<{ scope: string; info: CredentialInfo } | null>(null);
+  const credentialForScope = (): CredentialInfo | null => {
+    const c = credentialState();
+    return c && c.scope === panelScope() ? c.info : null;
+  };
+
+  /** Bumped by every credential-state FRAME (an action's answer); a health
+   *  read that started before the latest frame must not replace it. */
+  let credentialFrameSeq = 0;
+  const applyCredentialState = (c: CredentialInfo | undefined, scope: string, from: 'frame' | 'health' = 'frame'): void => {
+    if (!c || c.subscription === false) return;
+    if (from === 'frame') credentialFrameSeq++;
+    setCredentialState({ scope, info: c });
+    // The alert strip is local-only; a child's state must not key into it.
+    if (scope !== 'local') return;
+    const agent = c.agent ?? '?';
+    const kind = c.kind ?? 'ok';
+    for (const k of CREDENTIAL_ALERT_KINDS) {
+      const key = `${agent}:${k}`;
+      if (k === kind) {
+        if (opsAlerts().get(key)?.message !== c.message) {
+          upsertOpsAlert(kind, agent, c.message ?? kind, false, c.actions);
+        }
+      } else {
+        removeOpsAlert(key);
+      }
+    }
+  };
+
+  /** A button on an alert row / the Health tab. `scope` is the process the
+   *  button belongs to (the alert's, or the Health tab's), never inferred.
+   *  `set-token` asks for the paste here; the token goes to the host once
+   *  and is never echoed. */
+  const runCredentialAction = (actionId: string, scope: string): void => {
+    if (actionId === 'set-token') {
+      const who = scope === 'local' ? 'this host' : `fleet child "${scope}"`;
+      const token = window.prompt(`Paste the replacement token for ${who} (kept in memory; written to the credentials file only when that process loaded one):`);
+      if (!token || !token.trim()) return;
+      wire.send({ type: 'credential-action', scope, action: 'set-token', token: token.trim() });
+      return;
+    }
+    if (actionId !== 'refresh' && actionId !== 'login' && actionId !== 'recheck') return;
+    wire.send({ type: 'credential-action', scope, action: actionId });
   };
 
   /** /healthz snapshot — feeds the Health tab and reconciles durable-state
@@ -230,6 +305,7 @@ export function App() {
   let healthDenied = false;
 
   const reconcileHealthAlerts = (h: HealthSnapshot): void => {
+    applyCredentialState(h.credential, 'local');
     const quarantine = h.compressionQuarantine ?? {};
     for (const [agent, q] of Object.entries(quarantine)) {
       const key = `${agent}:compression-quarantine`;
@@ -271,6 +347,7 @@ export function App() {
     if (healthDenied && !force) return;
     if (force) healthDenied = false;
     const scope = panelScope();
+    const frameSeqAtStart = credentialFrameSeq;
     try {
       const res = await fetch(`/healthz${scopeQuery()}`, { credentials: 'same-origin' });
       if (!res.ok) {
@@ -287,6 +364,12 @@ export function App() {
       setHealth(h);
       setHealthErr(null);
       if (scope === 'local') reconcileHealthAlerts(h);
+      // A child's health read is the freshest word on its credential: it
+      // must replace the frame saved from an earlier child action, or the
+      // Health tab keeps the old state and buttons (an API-key parent's own
+      // polls carry no credential block to displace it) — unless a newer
+      // frame arrived while this read was in flight.
+      else if (h.credential && credentialFrameSeq === frameSeqAtStart) applyCredentialState(h.credential, scope, 'health');
     } catch (e) {
       if (scope !== panelScope()) return;
       setHealthErr(e instanceof Error ? e.message : String(e));
@@ -1189,6 +1272,7 @@ export function App() {
           setFileLoading(false);
         },
         onOpsAlert: applyOpsAlertTrace,
+        onCredentialState: (state, scope) => applyCredentialState(state, scope),
         setBranchesList: (list, currentId) => {
           setBranches(list);
           setBranchesCurrentId(currentId);
@@ -1356,7 +1440,11 @@ export function App() {
         )}
       </Show>
       <ReconnectBanner status={wire.status()} />
-      <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
+      <OpsAlertStrip
+        alerts={alertList()}
+        onDismiss={removeOpsAlert}
+        onAction={(alert, id) => runCredentialAction(id, alert.scope ?? 'local')}
+      />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
           <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
@@ -1673,6 +1761,8 @@ export function App() {
                 error={healthErr()}
                 ledger={callLedger()?.rows}
                 onRefresh={() => void loadHealth(true)}
+                credential={credentialForScope()}
+                onCredentialAction={(id) => runCredentialAction(id, panelScope())}
               />
             </Show>
           </div>
@@ -1725,6 +1815,8 @@ interface HandlerHooks {
   setMcpl: (configPath: string, servers: McplServerRow[], live: McplLiveRow[], toolClasses?: ToolClassRow[]) => void;
   /** Apply a settings-state broadcast. */
   setSettings: (state: SettingsState) => void;
+  /** Apply a credential-state frame (answer to request-credential / an action). */
+  onCredentialState: (state: CredentialInfo, scope: string) => void;
   /** Apply a pins-list broadcast. */
   setPins: (state: PinsState) => void;
   /** Apply a workspace-mounts response. */
@@ -1899,6 +1991,12 @@ function handleServerMessage(
       if (staleScope(msg.scope, hooks.currentScope())) return;
       hooks.setSettings(msg as unknown as SettingsState);
       return;
+    case 'credential-state':
+      // Not scope-filtered here: a local frame must reconcile the (local)
+      // alert strip even while the sidebar inspects a child. The hook keys
+      // the Health tab's copy by scope itself.
+      hooks.onCredentialState(msg as unknown as CredentialInfo, msg.scope ?? 'local');
+      return;
     case 'pins-list':
       if (staleScope(msg.scope, hooks.currentScope())) return;
       hooks.setPins(msg as unknown as PinsState);
@@ -2002,6 +2100,13 @@ function Header(props: {
         <Show when={props.quota?.subscription && props.quota.windows.length > 0}>
           <span class={`ml-3 ${quotaTone(props.quota!)}`} title={quotaTitle(props.quota!)}>
             {quotaReadout(props.quota!)}
+          </span>
+        </Show>
+        {/* A subscription meter that has never read (inference-only token,
+            gateway without the usage path) must say so, not render nothing. */}
+        <Show when={props.quota?.subscription && props.quota.windows.length === 0 && props.quota.error}>
+          <span class="ml-3 text-amber-400" title={`Subscription quota unreadable: ${props.quota!.error}`}>
+            quota: unreadable
           </span>
         </Show>
         <Show when={!props.quota?.subscription && props.usage.cost && props.usage.cost.total > 0}>

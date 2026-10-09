@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import { OpenAIResponsesAPIAdapter, type CredentialResolver } from '@animalabs/membrane';
+import type { CredentialSource } from './credential-state.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -42,6 +43,17 @@ export interface CodexAuthProvider {
   getAccessToken(forceRefresh?: boolean): Promise<string>;
   getAccountId?(): string | undefined;
   readRateLimits?(): Promise<unknown>;
+  /** Drop the stored login so the next getAccessToken() runs a fresh
+   *  device-code flow. Optional: providers without it re-login only when
+   *  the app-server reports no account. */
+  logout?(): Promise<void>;
+  /** Abandon a device-code login in progress so a fresh one can start.
+   *  Resolves true when there was one to cancel. */
+  cancelLogin?(): Promise<boolean>;
+  /** The token is a static credential for a gateway that holds the real
+   *  login: nothing here can refresh, log in or replace it, so the credential
+   *  monitor observes verdicts only and offers no host-side actions. */
+  gateway?: { baseURL: string };
   dispose?(): void;
 }
 
@@ -72,6 +84,8 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private authIsRefresh = false;
   private stderrTail = '';
   private accountId: string | undefined;
+  /** The device-code login being waited on, with its abort. */
+  private pendingLogin: { loginId: string; abort: (error: Error) => void } | null = null;
 
   constructor(config: CodexAppServerAuthConfig = {}) {
     this.codexBinary = config.codexBinary ?? process.env.CODEX_BINARY ?? 'codex';
@@ -109,6 +123,29 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     return this.request('account/rateLimits/read', {});
   }
 
+  /** `account/logout`: forget the stored ChatGPT login so the next token
+   *  request starts a device-code flow (operator "log in again"). */
+  async logout(): Promise<void> {
+    await this.ensureStarted();
+    await this.request('account/logout', {});
+  }
+
+  /** `account/login/cancel` for the device-code login in progress, and
+   *  fail its waiter, so "Restart login" can start a fresh flow instead of
+   *  queuing behind a ten-minute wait. */
+  async cancelLogin(): Promise<boolean> {
+    const pending = this.pendingLogin;
+    if (!pending) return false;
+    this.pendingLogin = null;
+    try {
+      await this.request('account/login/cancel', { loginId: pending.loginId });
+    } catch (err) {
+      console.error('[openai-codex] account/login/cancel failed; abandoning the wait anyway:', err instanceof Error ? err.message : err);
+    }
+    pending.abort(new Error('OpenAI Codex login cancelled by the operator (restart requested)'));
+    return true;
+  }
+
   dispose(): void {
     this.lines?.close();
     this.lines = null;
@@ -141,11 +178,16 @@ export class CodexAppServerAuth implements CodexAuthProvider {
       }
 
       this.onLoginRequired({ verificationUrl, userCode });
-      const completed = await this.waitForNotification(
-        'account/login/completed',
-        (params) => params.loginId === loginId,
-        this.loginTimeoutMs,
-      );
+      // The waiter itself is what a cancel rejects, so its timer and
+      // registration go with it instead of lingering until timeout.
+      const wait = this.makeWaiter('account/login/completed', (params) => params.loginId === loginId, this.loginTimeoutMs);
+      this.pendingLogin = { loginId, abort: wait.reject };
+      let completed: JsonObject;
+      try {
+        completed = await wait.promise;
+      } finally {
+        if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
+      }
       if (completed.success !== true) {
         throw new Error(`OpenAI Codex login failed: ${asString(completed.error) || 'unknown error'}`);
       }
@@ -258,7 +300,18 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     predicate?: (params: JsonObject) => boolean,
     timeoutMs = 30_000,
   ): Promise<JsonObject> {
-    return new Promise<JsonObject>((resolve, reject) => {
+    return this.makeWaiter(method, predicate, timeoutMs).promise;
+  }
+
+  /** A registered notification waiter whose `reject` also unregisters it
+   *  and clears its timer (what a cancel calls). */
+  private makeWaiter(
+    method: string,
+    predicate: ((params: JsonObject) => boolean) | undefined,
+    timeoutMs: number,
+  ): { promise: Promise<JsonObject>; reject: (error: Error) => void } {
+    let waiterRef!: NotificationWaiter;
+    const promise = new Promise<JsonObject>((resolve, reject) => {
       const waiter: NotificationWaiter = {
         method,
         predicate,
@@ -277,8 +330,15 @@ export class CodexAppServerAuth implements CodexAuthProvider {
           reject(new Error(`Timed out waiting for Codex app-server notification: ${method}`));
         }, timeoutMs),
       };
+      waiterRef = waiter;
       this.waiters.add(waiter);
     });
+    return { promise, reject: (error) => waiterRef.reject(error) };
+  }
+
+  /** Registered notification waiters (tests: a cancelled login leaves none). */
+  get waiterCount(): number {
+    return this.waiters.size;
   }
 
   private handleLine(line: string): void {
@@ -344,7 +404,7 @@ export function codexGateAuth(env: NodeJS.ProcessEnv = process.env): CodexAuthPr
       'Point CODEX_BASE_URL at the gate\'s codex leg (e.g. https://gate.animalabs.ai/codex).',
     );
   }
-  return { getAccessToken: async () => token };
+  return { getAccessToken: async () => token, gateway: { baseURL: env.CODEX_BASE_URL.trim() } };
 }
 
 export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig {
@@ -382,6 +442,45 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
    *  such surface (tests inject bare token providers). */
   async readRateLimits(): Promise<unknown> {
     return this.auth.readRateLimits ? this.auth.readRateLimits() : null;
+  }
+
+  /** Operator action: rotate the access token through the app-server now. */
+  async refreshCredentials(): Promise<void> {
+    await this.auth.getAccessToken(true);
+  }
+
+  /** Operator action: forget the login (when the provider can) and run a
+   *  fresh device-code flow. The URL + code reach `onLoginRequired`. */
+  async login(): Promise<void> {
+    if (this.auth.logout) {
+      try {
+        await this.auth.logout();
+      } catch (err) {
+        console.error('[openai-codex] logout before re-login failed; continuing:', err instanceof Error ? err.message : err);
+      }
+    }
+    await this.auth.getAccessToken(true);
+  }
+
+  /** The host's credential-monitor view of this adapter. No probe: the
+   *  app-server owns validity, and its own reads succeed on a stale token.
+   *  Through a gateway the source is observe-only — a 401 there means the
+   *  gate rejected the host's token or lost its own upstream login, and
+   *  neither is fixable from this process. */
+  credentialSource(): CredentialSource {
+    if (this.auth.gateway) {
+      return {
+        provider: `${this.name} via ${this.auth.gateway.baseURL}`,
+        canRefresh: () => false,
+      };
+    }
+    return {
+      provider: this.name,
+      canRefresh: () => true,
+      refresh: () => this.refreshCredentials(),
+      login: () => this.login(),
+      ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
+    };
   }
 
   dispose(): void {
