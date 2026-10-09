@@ -26,7 +26,13 @@
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
 //   timestamp, durationMs, requestSummary, response?, rawRequest?,
-//   rawResponse?, error?, truncated? }
+//   rawResponse?, error?, errorType?, httpStatus?, providerErrorCode?,
+//   retryable?, errorChars?, truncated? }
+//
+// The error text is bounded (MAX_ERROR_CHARS): a provider can echo the whole
+// rejected request in its error body, and that text would otherwise sit in
+// the record beside the request it echoes. The size guard below drops raw
+// bodies, never the error string, so the error string bounds itself.
 
 import type {
   ProviderAdapter,
@@ -39,6 +45,70 @@ import { appendFileSync } from 'node:fs';
 
 /** Above this many serialized bytes, drop raw bodies and keep summaries. */
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
+
+/** Longest error text a record keeps (head and tail, the omission stated). */
+const MAX_ERROR_CHARS = 4_000;
+/** Longest provider error code or type kept; real ones are short tokens. */
+const MAX_CODE_CHARS = 128;
+
+/**
+ * `text` when it fits; otherwise its head and tail around a marker stating
+ * how many of how many characters were omitted. The whole stays within `max`
+ * whenever `max` fits the marker itself (at most 49 characters), as both
+ * bounds here do; a smaller `max` gets the marker alone, longer than `max`.
+ * Cuts move only toward omission, so no surrogate pair is split.
+ */
+function boundText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const isLow = (index: number): boolean => {
+    const code = text.charCodeAt(index);
+    return code >= 0xdc00 && code <= 0xdfff;
+  };
+  const marker = ` …[${text.length} of ${text.length} characters omitted]… `.length;
+  const budget = Math.max(0, max - marker);
+  const tail = Math.floor(budget / 4);
+  let headEnd = budget - tail;
+  if (headEnd > 0 && isLow(headEnd)) headEnd--;
+  let tailStart = text.length - tail;
+  if (tailStart < text.length && isLow(tailStart)) tailStart++;
+  return `${text.slice(0, headEnd)} …[${tailStart - headEnd} of ${text.length} characters omitted]… ${text.slice(tailStart)}`;
+}
+
+/**
+ * The error fields of a record: the bounded text, plus the classification a
+ * membrane error carries, so a reader can tell a request-shaped rejection
+ * from a transient failure without the text. Reading a hostile error never
+ * throws: logging must never break inference.
+ */
+function describeError(error: unknown): Record<string, unknown> {
+  // Each part is read on its own: a field whose getter throws loses only
+  // itself, never the provider's text or the rest of its classification.
+  const read = <T>(get: () => T): T | undefined => {
+    try { return get(); } catch { return undefined; }
+  };
+  const fields: Record<string, unknown> = {};
+  let text: string;
+  // Even the type test is guarded: a revoked Proxy or a throwing
+  // getPrototypeOf trap makes `instanceof` itself throw.
+  if (read(() => error instanceof Error) === true) {
+    const e = error as Error & { type?: unknown; httpStatus?: unknown; providerErrorCode?: unknown; retryable?: unknown };
+    const name = read(() => String(e.name)) ?? 'Error';
+    const message = read(() => String(e.message));
+    text = message === undefined ? `${name}: [message could not be read]` : `${name}: ${message}`;
+    const type = read(() => e.type);
+    if (typeof type === 'string') fields.errorType = boundText(type, MAX_CODE_CHARS);
+    const httpStatus = read(() => e.httpStatus);
+    if (typeof httpStatus === 'number') fields.httpStatus = httpStatus;
+    const code = read(() => e.providerErrorCode);
+    if (typeof code === 'string') fields.providerErrorCode = boundText(code, MAX_CODE_CHARS);
+    const retryable = read(() => e.retryable);
+    if (typeof retryable === 'boolean') fields.retryable = retryable;
+  } else {
+    text = read(() => String(error)) ?? '[error could not be read]';
+  }
+  const bounded = boundText(text, MAX_ERROR_CHARS);
+  return { error: bounded, ...fields, ...(bounded !== text ? { errorChars: text.length } : {}) };
+}
 
 function summarizeRequest(request: ProviderRequest): Record<string, unknown> {
   const msgs = (request.messages ?? []) as Array<{ role?: string; content?: unknown }>;
@@ -142,10 +212,17 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       ...(response !== undefined
         ? { response: summarizeResponse(response, this.usageCacheConvention), rawResponse: response.raw ?? null }
         : {}),
-      ...(error !== undefined
-        ? { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }
-        : {}),
+      ...(error !== undefined ? describeError(error) : {}),
     });
+  }
+
+  /** Log a failed call; nothing here may replace the provider's error. */
+  private recordFailure(kind: 'complete' | 'stream', request: ProviderRequest, started: number, error: unknown): void {
+    try {
+      this.record(kind, request, started, undefined, error);
+    } catch {
+      // Logging must never break inference, nor change what it throws.
+    }
   }
 
   async complete(
@@ -158,7 +235,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       this.record('complete', request, started, response);
       return response;
     } catch (error) {
-      this.record('complete', request, started, undefined, error);
+      this.recordFailure('complete', request, started, error);
       throw error;
     }
   }
@@ -174,7 +251,7 @@ export class LoggingProviderAdapter implements ProviderAdapter {
       this.record('stream', request, started, response);
       return response;
     } catch (error) {
-      this.record('stream', request, started, undefined, error);
+      this.recordFailure('stream', request, started, error);
       throw error;
     }
   }
