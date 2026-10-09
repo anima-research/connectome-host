@@ -124,8 +124,11 @@ interface ActiveKind {
   message: string;
   tier: NoticeTier;
   until?: number;
-  /** When this kind (last) arrived — the newest reply-tier kind names the outage. */
+  /** When this kind (first) arrived — the newest reply-tier kind names the outage. */
   at: number;
+  /** Occurrence number within the episode: a kind that clears and returns is
+   *  a new occurrence, told anew even if the old one's post is still in flight. */
+  seq: number;
 }
 
 interface Episode {
@@ -144,10 +147,13 @@ interface Episode {
    *  the kind-level timeline: one line when a kind is told (after its own
    *  quiet deadline), one line when a told kind clears. */
   statusHeard: Map<string, Set<string>>;
-  /** statusChannel → kinds with a post in flight (claimed, not yet heard). */
-  statusPosting: Map<string, Set<string>>;
-  /** Pending quiet-deadline timer handle, if any. */
+  /** statusChannel → kind → occurrence with a post in flight (claimed, not yet heard). */
+  statusPosting: Map<string, Map<string, number>>;
+  /** Occurrence counter for `ActiveKind.seq`. */
+  nextSeq: number;
+  /** Pending quiet-deadline timer handle and the time it is aimed at. */
   quietTimer?: unknown;
+  quietDue?: number;
   markerWritten: boolean;
 }
 
@@ -255,6 +261,9 @@ export class NoticesModule implements Module {
   private failedWake: { channelId: string; at: number } | undefined;
   private unsubscribe: (() => void) | null = null;
   private warnedServers = false;
+  /** Bumped by every (re)connect-driven flush, so a post that was already in
+   *  flight when a server came back can tell and retry instead of parking. */
+  private flushEpoch = 0;
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
     this.now = config.now ?? Date.now;
@@ -432,7 +441,7 @@ export class NoticesModule implements Module {
       const prior = existing.kinds.get(kind);
       // A re-fire keeps its original arrival: the quiet deadline must not
       // slide with every repeat of a persisting alert.
-      existing.kinds.set(kind, { message, tier, until, at: prior?.at ?? this.now() });
+      existing.kinds.set(kind, { message, tier, until, at: prior?.at ?? this.now(), seq: prior?.seq ?? existing.nextSeq++ });
       if (prior) return;
       // A new kind joins the episode. Reply channels already told are not
       // told twice, and still get the "back" line when the whole episode
@@ -442,8 +451,8 @@ export class NoticesModule implements Module {
       return;
     }
     const ep: Episode = {
-      key, kinds: new Map([[kind, { message, tier, until, at: this.now() }]]), since: this.now(),
-      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), markerWritten: false,
+      key, kinds: new Map([[kind, { message, tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
+      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), nextSeq: 1, markerWritten: false,
     };
     this.episodes.set(key, ep);
     this.scheduleStatus(ep);
@@ -474,22 +483,16 @@ export class NoticesModule implements Module {
     // said; the successor alert re-tells. Otherwise every status channel
     // that heard this kind hears that it cleared (and what remains), and —
     // when the whole outage ends — every reply channel told gets "back".
-    if (opts.superseded) return;
-    this.clearStatusKind(ep, kind, opts.message);
-    if (!open) {
-      const subject = ep.key || this.config.agentName || 'the agent';
-      for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false });
-    }
-  }
-
-  /** Tell every status channel that heard `kind` that it is gone. */
-  private clearStatusKind(ep: Episode, kind: string, message: string): void {
+    // Either way the kind's delivery record goes: if it returns, it is told
+    // anew.
     const subject = ep.key || this.config.agentName || 'the agent';
-    const still = ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
+    const still = open ? primaryKind(ep).kind : undefined;
     for (const [ch, heard] of ep.statusHeard) {
-      if (!heard.delete(kind)) continue;
-      void this.post(ch, statusClearText(subject, kind, message, still), ep, { track: false });
+      if (!heard.delete(kind) || opts.superseded) continue;
+      void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false });
     }
+    if (opts.superseded || open) return;
+    for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false });
   }
 
   /**
@@ -502,23 +505,26 @@ export class NoticesModule implements Module {
     if (this.statusChannels.length === 0) return;
     if (this.episodes.get(ep.key) !== ep) return;
     const now = this.now();
+    // Deliver what is due, then aim the timer at the earliest deadline still
+    // ahead among kinds some channel has yet to hear (or be posting).
+    this.deliverStatus(ep);
     let next: number | undefined;
     for (const [kind, k] of ep.kinds) {
-      if (this.statusChannels.every((ch) => ep.statusHeard.get(ch)?.has(kind) || ep.statusPosting.get(ch)?.has(kind))) continue;
       const due = k.at + this.quietMs;
+      if (due <= now) continue;
+      const settled = this.statusChannels.every((ch) =>
+        ep.statusHeard.get(ch)?.has(kind) || ep.statusPosting.get(ch)?.get(kind) === k.seq);
+      if (settled) continue;
       if (next === undefined || due < next) next = due;
     }
-    if (next === undefined) return;
-    if (next <= now) {
-      this.cancelQuiet(ep);
-      this.deliverStatus(ep);
-      return;
-    }
-    if (ep.quietTimer !== undefined) return;
+    if (next === undefined) { this.cancelQuiet(ep); return; }
+    if (ep.quietTimer !== undefined && ep.quietDue !== undefined && ep.quietDue <= next) return;
+    this.cancelQuiet(ep);
+    ep.quietDue = next;
     ep.quietTimer = this.timers.setTimeout(() => {
       ep.quietTimer = undefined;
+      ep.quietDue = undefined;
       if (this.episodes.get(ep.key) !== ep) return;
-      this.deliverStatus(ep);
       this.scheduleStatus(ep);
     }, next - now);
   }
@@ -536,6 +542,7 @@ export class NoticesModule implements Module {
     if (ep.quietTimer !== undefined) {
       this.timers.clearTimeout(ep.quietTimer);
       ep.quietTimer = undefined;
+      ep.quietDue = undefined;
     }
   }
 
@@ -580,14 +587,19 @@ export class NoticesModule implements Module {
     const k = ep.kinds.get(kind);
     if (!k) return;
     const heard = getSet(ep.statusHeard, channelId);
-    const posting = getSet(ep.statusPosting, channelId);
-    if (heard.has(kind) || posting.has(kind)) return;
-    posting.add(kind);
+    let posting = ep.statusPosting.get(channelId);
+    if (!posting) { posting = new Map(); ep.statusPosting.set(channelId, posting); }
+    if (heard.has(kind) || posting.get(kind) === k.seq) return;
+    posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
     const ok = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
-    posting.delete(kind);
+    if (posting.get(kind) === k.seq) posting.delete(kind);
     if (!ok) return;
-    if (ep.kinds.has(kind) && this.episodes.get(ep.key) === ep) { heard.add(kind); return; }
+    const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
+    if (live?.seq === k.seq) { heard.add(kind); return; }
+    // Landed stale. A returning occurrence of the same kind is told on its
+    // own schedule and needs no clear for this one; a gone kind does.
+    if (live) { this.scheduleStatus(ep); return; }
     const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
     void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false });
   }
@@ -606,6 +618,7 @@ export class NoticesModule implements Module {
    * tier, or already reached the channel another way while we waited.
    */
   private async flushPending(): Promise<void> {
+    this.flushEpoch++;
     for (const ep of [...this.episodes.values()]) {
       for (const channelId of [...ep.pending]) {
         if (this.episodes.get(ep.key) !== ep) break;
@@ -630,11 +643,18 @@ export class NoticesModule implements Module {
   private async post(channelId: string, text: string, ep: Episode, opts: { track: boolean; kind?: string }): Promise<boolean> {
     const registry = this.framework?.channels as Registry | undefined;
     if (!registry?.publishForAgent) return false;
+    const epoch = this.flushEpoch;
     let result: { success: boolean; error?: string };
     try {
       result = await registry.publishForAgent(channelId, text, this.config.agentName ?? 'host');
     } catch (err) {
       result = { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!result.success && /not found/i.test(result.error ?? '') && this.flushEpoch !== epoch && this.episodes.get(ep.key) === ep) {
+      // A server came back while this attempt was in flight; the flush it
+      // triggered was deduplicated against us. Try once more against the
+      // new state rather than parking behind a flush that already ran.
+      return this.post(channelId, text, ep, opts);
     }
     if (result.success) {
       ep.pending.delete(channelId);

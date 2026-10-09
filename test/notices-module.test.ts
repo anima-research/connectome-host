@@ -430,6 +430,70 @@ describe('status channels', () => {
     expect(h.markers).toEqual([]);
   });
 
+  test('an overdue parked kind does not stop a newer kind from getting its deadline', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 }, { brokenServers: ['zulip'] });
+    h.alert('quota-spent', 'spent');
+    await h.fireTimers(); // clock → 60 000; the post fails, the channel is parked
+    expect(h.posts).toEqual([]);
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+    h.setTime(70_000);
+    h.alert('auth-rejected', 'rejected'); // due at 130 000
+    expect(h.timers.filter((x) => !x.cancelled).map((x) => x.due)).toEqual([130_000]);
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    expect(h.module.episodeState()[0]!.pending).toEqual([]);
+    await h.fireTimers(); // clock → 130 000
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+  });
+
+  test('a superseded kind forgets its delivery record, so its return is told again', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('compression-quarantine', '2 chunks');
+    h.alert('auth-rejected', 'rejected');
+    await h.settle();
+    expect(h.posts.length).toBe(2);
+    h.alert('auth-rejected-clear', 'superseded by auth-login-required');
+    h.alert('auth-login-required', 'login');
+    await h.settle();
+    expect(h.posts.length).toBe(3);
+    h.alert('auth-login-required-clear', 'ok');
+    await h.settle();
+    expect(h.posts.length).toBe(4);
+    expect(h.posts[3]!.text).toBe(statusClearText('clerk', 'auth-login-required', 'ok', 'compression-quarantine'));
+    h.alert('auth-rejected', 'rejected again');
+    await h.settle();
+    expect(h.posts.length).toBe(5);
+    expect(h.posts[4]!.text).toContain('auth-rejected: rejected again');
+  });
+
+  test('a kind cleared and re-raised while its post is in flight is told anew with the new message', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', 'spent');
+    await h.settle();
+    const release = h.hold('zulip:ops');
+    h.alert('compression-quarantine', '2 chunks'); // held
+    h.alert('compression-quarantine-clear', 'EMPTY');
+    h.alert('compression-quarantine', '3 chunks');
+    await h.settle();
+    // The new occurrence is not blocked by the old one's in-flight claim.
+    expect(h.posts.map((p) => p.text)).toEqual([
+      statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' }),
+      statusNoticeText('clerk', { kind: 'compression-quarantine', message: '3 chunks' }),
+    ]);
+    release();
+    await h.settle();
+    await h.settle();
+    const texts = h.posts.map((p) => p.text);
+    expect(texts.length).toBe(3); // the old post lands late, says nothing more
+    expect(texts.filter((t) => t.includes('3 chunks')).length).toBe(1);
+    expect(texts.filter((t) => t.startsWith('✓'))).toEqual([]);
+    expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['quota-spent', 'compression-quarantine'] });
+  });
+
   test('component alerts (mcpl-down) are status-only, keyed by server, and close on reconnect', async () => {
     const h = await started({ statusChannels: ['zulip:ops'], kinds: { 'mcpl-down': 'reply' } });
     h.alert('mcpl-down', 'MCPL server unreachable (attempt 5)', undefined, 'discord');
