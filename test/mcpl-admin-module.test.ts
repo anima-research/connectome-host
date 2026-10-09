@@ -4,7 +4,7 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
@@ -412,6 +412,34 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(deployed).not.toContain('operator');
     expect(String((await call(mod, 'mcpl_restart', { id: 'weather' })).data))
       .toContain('Your entry names a host variable in args');
+  });
+
+  // Greptile's review of #227: a restart that throws keeps the note, and an
+  // overlay file that can't be read costs only the note, never the restart's
+  // own outcome or a quote of the file.
+  test('a restart that throws still says what the entry lacks', async () => {
+    const { stub, mod } = await bootWithReplacement();
+    (stub as unknown as { restartMcplServer: () => Promise<void> }).restartMcplServer =
+      async () => { throw new Error('spawn ENOENT'); };
+
+    const result = await call(mod, 'mcpl_restart', { id: 'shell' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('mcpl_restart failed: spawn ENOENT.');
+    expect(result.error).toContain('lacks its env SESSION_SERVER_TOKEN');
+  });
+
+  test('an overlay file that can\'t be read leaves the restart\'s own outcome', async () => {
+    const { mod } = await bootWithReplacement();
+    writeFileSync(overlayPath, '{"mcplServers": {"shell": {"env": {"SECRET": "s3cret-in-file"');
+
+    const result = await call(mod, 'mcpl_restart', { id: 'shell' });
+
+    expect(result.success).toBe(true);
+    expect(String(result.data)).toBe(
+      'Restarted server "shell" — connected, 1 tools. Your overlay file couldn\'t be read, so nothing is said here about your entry.',
+    );
+    expect(String(result.data)).not.toContain('s3cret');
   });
 
   test('mcpl_list marks the replacement and what it lacks', async () => {

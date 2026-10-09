@@ -218,6 +218,24 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(lostByReplacement(operator, { command: 'node', env: { A: '1' } })).toBeNull();
   });
 
+  // Greptile's review of #227: a name the host sets over any mapping
+  // (AGENT_TIMEZONE) can't be lacking, and an access grant is a name, so
+  // another name is another grant.
+  test('a name the host sets over every mapping is never lacking', () => {
+    const operator = serverProvisions({ ...shell, env: { ...shell.env, AGENT_TIMEZONE: 'UTC' } });
+    expect(lostByReplacement(operator, { command: 'node', env: { SESSION_SERVER_PORT: '3101' } })).toBe('env SESSION_SERVER_TOKEN');
+    expect(lostByReplacement(serverProvisions({ id: 'tz', command: 'node', env: { AGENT_TIMEZONE: 'UTC' } }), { command: 'node' })).toBeNull();
+    // The reaction baseline is a default the server's own mapping overrides, so it can be lacking.
+    expect(lostByReplacement(serverProvisions({ id: 'd', command: 'node', env: { DISCORD_SUPPRESSED_REACTIONS_BASELINE: 'x' } }), { command: 'node' }))
+      .toBe('env DISCORD_SUPPRESSED_REACTIONS_BASELINE');
+  });
+
+  test('another access grant name lacks the operator\'s grant', () => {
+    const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', access: 'eidoverse' });
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: 'eidoveres' })).toBe('access grant "eidoverse"');
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: ' eidoverse ' })).toBeNull();
+  });
+
   test('only an entry that puts a server in place replaces one', () => {
     expect(overlayEntryReplaces(undefined)).toBe(false);
     expect(overlayEntryReplaces({ disabled: true })).toBe(false);

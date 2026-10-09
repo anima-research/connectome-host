@@ -425,7 +425,9 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
  * came back from `mcpl_restart` without the SESSION_SERVER_TOKEN its daemon
  * wanted, and the restart reported success. A value that names a host
  * variable supplies nothing (hostVariableReferences), so its name counts as
- * lacking.
+ * lacking. A name the host sets over any server's mapping
+ * (hostSetsOverServer) can't be lacking: no definition's value for it
+ * reaches a child.
  *
  * Env and inheritance count only for a replacement that spawns a process; a
  * token and an access grant count only for one that dials a URL.
@@ -436,15 +438,25 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
     const declared = new Set(
       Object.entries(entry.env ?? {}).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
     );
-    const missing = operator.env.filter((name) => !declared.has(name));
+    const missing = operator.env.filter((name) => !declared.has(name) && !hostSetsOverServer(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
     if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
   } else if (entry.url) {
     const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
     if (operator.token && !token) lost.push('token');
-    if (operator.access && !entry.access) lost.push(`access grant "${operator.access}"`);
+    // A grant is a name, not a credential: another name is another grant.
+    if (operator.access && entry.access?.trim() !== operator.access) lost.push(`access grant "${operator.access}"`);
   }
   return lost.length > 0 ? lost.join('; ') : null;
+}
+
+/** Whether the host sets `name` on every stdio child over whatever a server
+ *  maps for it (composeMcplChildEnv, AGENT_TIMEZONE today), so no
+ *  definition's own value reaches a child and a replacement can't lack it.
+ *  Read from the composition itself, so the two can't drift. */
+function hostSetsOverServer(name: string): boolean {
+  const mapped = '\u0000mapped';
+  return composeMcplChildEnv({ [name]: mapped }, '')[name] !== mapped;
 }
 
 /** Whether an overlay entry replaces a server rather than tombstoning it or

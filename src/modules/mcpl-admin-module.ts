@@ -462,9 +462,22 @@ export class McplAdminModule implements Module {
     const id = typeof input.id === 'string' ? input.id.trim() : '';
     if (!id) return fail('mcpl_restart requires `id`.');
 
-    await framework.restartMcplServer(id);
+    // The note is read before the restart, so a restart that throws still
+    // carries it, and an overlay file that can't be read costs only the
+    // note: the restart's own outcome is what the receipt reports. A parse
+    // error can quote the file, which may hold values, so it isn't repeated.
+    let note: string;
+    try {
+      note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
+    } catch {
+      note = ' Your overlay file couldn\'t be read, so nothing is said here about your entry.';
+    }
+    try {
+      await framework.restartMcplServer(id);
+    } catch (error) {
+      return fail(`mcpl_restart failed: ${error instanceof Error ? error.message : String(error)}.${note}`);
+    }
     const status = framework.listMcplServers().find(s => s.id === id);
-    const note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
     if (!status?.connected) {
       return fail(`Restarted server "${id}", but it isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}.${note}`);
     }
