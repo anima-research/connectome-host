@@ -244,11 +244,95 @@ describe('identity module', () => {
     );
     expect(both.error).toContain('not both');
     const onGet = await mod.handleToolCall(call('request', { service: 'music', path: '/x', fromFile: 'files/music/track.mp3' }));
-    expect(onGet.error).toContain('POST or PUT');
+    expect(onGet.error).toContain('needs a method other than GET');
     const missing = await mod.handleToolCall(
       call('request', { service: 'music', path: '/x', method: 'PUT', fromFile: 'files/nope.mp3' }),
     );
     expect(missing.error).toContain('could not read');
+  });
+
+  it('request: PATCH carries a JSON body or a workspace file, as POST and PUT do', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ident-'));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0x7f]);
+    const sent: Array<{ url: string; method: string; type: string; auth: string; body: unknown }> = [];
+    const workspace = {
+      readBinary: async (path: string) =>
+        path === 'files/artifacts/grid.png' ? { data: png } : { error: `File not found: ${path}` },
+      writeBinary: async () => ({ success: true }),
+    };
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      services: { orrery: 'https://orrery.test' },
+      fetchImpl: (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
+        if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
+        if (u.includes('/services')) return new Response(JSON.stringify({ services: {} }), { status: 200 });
+        if (u === 'https://orrery.test/api/nodes/n1') {
+          sent.push({
+            url: u,
+            method: String(init?.method),
+            type: String(init?.headers?.['content-type'] ?? ''),
+            auth: String(init?.headers?.authorization ?? ''),
+            body: init?.body instanceof Uint8Array ? Buffer.from(init.body) : init?.body,
+          });
+          return new Response(JSON.stringify({ id: 'n1', starred: true, note: 'the open ring' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    (mod as any).ctx = { getModule: (n: string) => (n === 'workspace' ? workspace : null) };
+    await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
+
+    // The framework's `utils run` checks args against the advertised enum
+    // before the handler runs, so the schema has to offer PATCH too.
+    const request = mod.getUtilities().find((u) => u.name === 'request')!;
+    const methods = (request.inputSchema.properties as any).method.enum as string[];
+    expect(methods).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+    // orrery's node update (starred, archived, note) is PATCH-only.
+    const patched = await mod.handleToolCall(call('request', {
+      service: 'orrery', path: '/api/nodes/n1', method: 'PATCH', body: { starred: true, note: 'the open ring' },
+    }));
+    expect(patched.success).toBe(true);
+    expect(patched.data).toEqual({ status: 200, body: { id: 'n1', starred: true, note: 'the open ring' } });
+    expect(sent).toEqual([{
+      url: 'https://orrery.test/api/nodes/n1',
+      method: 'PATCH',
+      type: 'application/json',
+      auth: 'Bearer aid1.fresh.secret',
+      body: JSON.stringify({ starred: true, note: 'the open ring' }),
+    }]);
+    expect(JSON.stringify(patched.data)).not.toContain('aid1.');
+
+    // fromFile sends the file's bytes with PATCH, and still with DELETE.
+    for (const method of ['PATCH', 'DELETE']) {
+      const res = await mod.handleToolCall(call('request', {
+        service: 'orrery', path: '/api/nodes/n1', method, fromFile: 'files/artifacts/grid.png',
+      }));
+      expect(res.success).toBe(true);
+      expect((res.data as any).sent).toEqual({ path: 'files/artifacts/grid.png', size: png.byteLength, contentType: 'image/png' });
+      const last = sent.at(-1)!;
+      expect(last).toMatchObject({ method, type: 'image/png', auth: 'Bearer aid1.fresh.secret' });
+      expect(Buffer.isBuffer(last.body) && last.body.equals(png)).toBe(true);
+      expect(JSON.stringify(res.data)).not.toContain('aid1.');
+    }
+
+    // Still refused before the wire: body with fromFile, and an unlisted verb.
+    const both = await mod.handleToolCall(call('request', {
+      service: 'orrery', path: '/api/nodes/n1', method: 'PATCH', body: { starred: true }, fromFile: 'files/artifacts/grid.png',
+    }));
+    expect(both.success).toBe(false);
+    expect(both.error).toContain('not both');
+    expect(methods).not.toContain('TRACE');
+    const trace = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/nodes/n1', method: 'TRACE' }));
+    expect(trace.success).toBe(false);
+    expect(trace.error).toContain('unsupported method TRACE');
+    expect(sent.length).toBe(3);
   });
 
   it('request: binary responses are described safely or saved byte-exactly to workspace', async () => {
