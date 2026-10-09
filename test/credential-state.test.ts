@@ -289,6 +289,53 @@ describe('CredentialMonitor — actions', () => {
     expect(s.lastAction?.message).toContain('WARNING: credential rotated in memory but not written to /x');
   });
 
+  test('a restart during a pending login is refused when the source cannot cancel, and the queued login is moot once settled', async () => {
+    let release!: () => void;
+    let logins = 0;
+    const { monitor } = harness({ source: { login: async () => { logins++; await new Promise<void>((r) => { release = r; }); } } });
+    monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
+    const first = monitor.runAction('login');
+    await new Promise((r) => setTimeout(r, 0));
+    const refused = await monitor.runAction('login');
+    expect(refused.lastAction).toMatchObject({ id: 'login', ok: false });
+    expect(refused.lastAction!.message).toContain('already in progress');
+    expect(logins).toBe(1);
+    release();
+    const done = await first;
+    expect(done.kind).toBe('ok');
+    const moot = await monitor.runAction('login'); // nothing to log out of
+    expect(moot.lastAction).toMatchObject({ id: 'login', ok: true });
+    expect(moot.lastAction!.message).toContain('no longer needed');
+    expect(logins).toBe(1);
+  });
+
+  test('a restart during a pending login cancels it when the source can, and runs a fresh login', async () => {
+    let abort!: (e: Error) => void;
+    let logins = 0;
+    let cancels = 0;
+    const source: Partial<CredentialSource> = {
+      login: async () => {
+        logins++;
+        if (logins === 1) await new Promise<void>((_, reject) => { abort = reject; });
+      },
+      cancelLogin: async () => { cancels++; abort(new Error('login cancelled by the operator')); return true; },
+    };
+    const { monitor } = harness({ source });
+    monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
+    const first = monitor.runAction('login');
+    await new Promise((r) => setTimeout(r, 0));
+    const second = monitor.runAction('login');
+    const firstOutcome = await first;
+    expect(firstOutcome.lastAction).toMatchObject({ id: 'login', ok: false });
+    expect(firstOutcome.lastAction!.message).toContain('cancelled');
+    expect(firstOutcome.kind).toBe('auth-login-required'); // still pending: the restart is next
+    const secondOutcome = await second;
+    expect(cancels).toBe(1);
+    expect(logins).toBe(2);
+    expect(secondOutcome.kind).toBe('ok');
+    expect(secondOutcome.lastAction).toMatchObject({ id: 'login', ok: true });
+  });
+
   test('recheck does not clear quota-unreadable while the meter still cannot read', async () => {
     const meter = fakeMeter([new Error('x'), new Error('x'), new Error('x'), new Error('x'), []], () => 0);
     const { monitor } = harness({ meter, now: () => 0, source: { probe: async () => {} } });
@@ -357,6 +404,19 @@ describe('CredentialMonitor — precedence', () => {
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear', 'quota-spent', 'quota-spent-clear', 'auth-expiring']);
     meter.dispose();
+    monitor.dispose();
+  });
+
+  test('a rotation that moves the expiry out clears a standing auth-expiring warning', () => {
+    let expiresAt = 5 * 60_000;
+    const { monitor, alerts } = harness({ now: () => 0, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => expiresAt, canRefresh: () => true, refresh: async () => {} } });
+    (monitor as unknown as { checkExpiry(): void }).checkExpiry();
+    expect(monitor.snapshot().kind).toBe('auth-expiring');
+    expiresAt = 3 * HOUR; // rotated inside a provider call; only a success tap follows
+    monitor.observeSuccess();
+    expect(monitor.snapshot().kind).toBe('ok');
+    expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear']);
+    expect(alerts[1]!.message).toContain('credential ok');
     monitor.dispose();
   });
 

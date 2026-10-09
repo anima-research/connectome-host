@@ -146,6 +146,8 @@ interface Episode {
   since: number;
   /** channelId → epoch ms of the last reply notice posted there. */
   notified: Map<string, number>;
+  /** Reply channels with a warning post in flight. */
+  replyPosting: Set<string>;
   /** Channels whose post failed for lack of a channel/server; retried on reconnect. */
   pending: Set<string>;
   /** statusChannel → kinds it has been told about. Status channels follow
@@ -314,19 +316,27 @@ export class NoticesModule implements Module {
     this.warnUnknownServers(this.config.knownServers);
   }
 
+  /**
+   * Detach from the framework. Episodes, pending channels and owed lines are
+   * kept: a session switch rebuilds the framework around the same host, and
+   * a standing outage (the credential monitor announces transitions only)
+   * must still be told, cleared and owed in the new session.
+   */
   async stop(): Promise<void> {
     for (const ep of this.episodes.values()) this.cancelQuiet(ep);
-    this.episodes.clear();
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.framework = null;
   }
 
-  /** Called from the host after framework creation, like ActivityModule. */
+  /** Called from the host after framework creation (and re-creation on a
+   *  session switch), like ActivityModule. */
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
     this.unsubscribe?.();
     this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>));
+    for (const ep of this.episodes.values()) this.scheduleStatus(ep);
+    if (this.episodes.size > 0 || this.owedLines.size > 0) void this.flushPending();
   }
 
   /** Server ids known to the host — call once they are resolved. */
@@ -485,7 +495,7 @@ export class NoticesModule implements Module {
     }
     const ep: Episode = {
       key, kinds: new Map([[kind, { message, tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
-      notified: new Map(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), statusOwedClear: new Map(), nextSeq: 1, markerWritten: false,
+      notified: new Map(), replyPosting: new Set(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), statusOwedClear: new Map(), nextSeq: 1, markerWritten: false,
     };
     this.episodes.set(key, ep);
     this.scheduleStatus(ep);
@@ -505,8 +515,10 @@ export class NoticesModule implements Module {
 
   /** One kind cleared. The episode ends only when no kind remains active. */
   private removeKind(ep: Episode, kind: string, opts: { message: string; superseded: boolean }): void {
+    const wasReply = episodeTier(ep) === 'reply';
     ep.kinds.delete(kind);
     const open = ep.kinds.size > 0;
+    const stillReply = open && episodeTier(ep) === 'reply';
     if (!open) {
       this.cancelQuiet(ep);
       this.episodes.delete(ep.key);
@@ -528,8 +540,16 @@ export class NoticesModule implements Module {
         void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
       }
     }
-    if (opts.superseded || open) return;
-    for (const ch of ep.notified.keys()) void this.post(ch, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
+    // Reply channels are told "back" as soon as no reply-tier kind remains:
+    // a status-only warning (quota-unreadable) left standing does not mean
+    // the agent cannot answer. Channels with a warning still in flight are
+    // settled by that post when it lands (see postReply).
+    if (opts.superseded || !wasReply || stillReply) return;
+    for (const ch of ep.notified.keys()) {
+      if (ep.replyPosting.has(ch)) continue;
+      void this.post(ch, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
+    }
+    ep.notified.clear();
   }
 
   /**
@@ -646,9 +666,23 @@ export class NoticesModule implements Module {
     const subject = ep.key || this.config.agentName || 'the agent';
     const primary = primaryKind(ep);
     ep.notified.set(channelId, this.now());
+    ep.replyPosting.add(channelId);
     const r = await this.post(channelId, replyNoticeText(subject, primary), ep, { track: true, kind: primary.kind });
+    ep.replyPosting.delete(channelId);
     if (!r.ok) ep.notified.delete(channelId);
     if (r.reflush) this.reflush(ep, channelId);
+    if (!r.ok) return;
+    // Landed after the outage ended (or dropped to status tier): the channel
+    // now shows a warning nobody will clear. Settle it ourselves — unless a
+    // newer outage is on, in which case the warning stands for that one.
+    const live = this.agentEpisode();
+    if (live === ep && episodeTier(ep) === 'reply') return;
+    ep.notified.delete(channelId);
+    if (live && episodeTier(live) === 'reply') {
+      if (!live.notified.has(channelId)) live.notified.set(channelId, this.now());
+      return;
+    }
+    void this.post(channelId, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
   }
 
   /** A reconnect flush was deduplicated against this post's claim, and may

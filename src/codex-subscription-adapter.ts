@@ -47,6 +47,9 @@ export interface CodexAuthProvider {
    *  device-code flow. Optional: providers without it re-login only when
    *  the app-server reports no account. */
   logout?(): Promise<void>;
+  /** Abandon a device-code login in progress so a fresh one can start.
+   *  Resolves true when there was one to cancel. */
+  cancelLogin?(): Promise<boolean>;
   dispose?(): void;
 }
 
@@ -77,6 +80,8 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private authIsRefresh = false;
   private stderrTail = '';
   private accountId: string | undefined;
+  /** The device-code login being waited on, with its abort. */
+  private pendingLogin: { loginId: string; abort: (error: Error) => void } | null = null;
 
   constructor(config: CodexAppServerAuthConfig = {}) {
     this.codexBinary = config.codexBinary ?? process.env.CODEX_BINARY ?? 'codex';
@@ -121,6 +126,22 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     await this.request('account/logout', {});
   }
 
+  /** `account/login/cancel` for the device-code login in progress, and
+   *  fail its waiter, so "Restart login" can start a fresh flow instead of
+   *  queuing behind a ten-minute wait. */
+  async cancelLogin(): Promise<boolean> {
+    const pending = this.pendingLogin;
+    if (!pending) return false;
+    this.pendingLogin = null;
+    try {
+      await this.request('account/login/cancel', { loginId: pending.loginId });
+    } catch (err) {
+      console.error('[openai-codex] account/login/cancel failed; abandoning the wait anyway:', err instanceof Error ? err.message : err);
+    }
+    pending.abort(new Error('OpenAI Codex login cancelled by the operator (restart requested)'));
+    return true;
+  }
+
   dispose(): void {
     this.lines?.close();
     this.lines = null;
@@ -153,11 +174,18 @@ export class CodexAppServerAuth implements CodexAuthProvider {
       }
 
       this.onLoginRequired({ verificationUrl, userCode });
-      const completed = await this.waitForNotification(
-        'account/login/completed',
-        (params) => params.loginId === loginId,
-        this.loginTimeoutMs,
-      );
+      let abort!: (error: Error) => void;
+      const aborted = new Promise<never>((_, reject) => { abort = reject; });
+      this.pendingLogin = { loginId, abort };
+      let completed: JsonObject;
+      try {
+        completed = await Promise.race([
+          this.waitForNotification('account/login/completed', (params) => params.loginId === loginId, this.loginTimeoutMs),
+          aborted,
+        ]);
+      } finally {
+        if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
+      }
       if (completed.success !== true) {
         throw new Error(`OpenAI Codex login failed: ${asString(completed.error) || 'unknown error'}`);
       }
@@ -422,6 +450,7 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       canRefresh: () => true,
       refresh: () => this.refreshCredentials(),
       login: () => this.login(),
+      ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
     };
   }
 

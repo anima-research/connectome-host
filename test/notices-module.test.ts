@@ -281,6 +281,85 @@ describe('overlapping kinds', () => {
   });
 });
 
+describe('reply recovery', () => {
+  test('people hear "back" as soon as no reply-tier kind remains, while a status warning stays open for operators', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-unreadable', 'usage endpoint answered HTTP 429');
+    h.alert('hard-down', '3 consecutive inference failures');
+    await h.settle();
+    await h.incoming('zulip:dev');
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:ops', 'zulip:dev']);
+    h.emit({ type: 'inference:completed', agentName: 'clerk' });
+    await h.settle();
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-unreadable'], tier: 'status', notified: [] });
+    const after = h.posts.slice(3).map((p) => [p.channelId, p.text]).sort();
+    expect(after).toEqual([
+      ['zulip:dev', replyClearText('clerk')],
+      ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed', 'quota-unreadable')],
+    ]);
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(5); // status tier: people are not warned
+    h.alert('hard-down', 'failing again'); // reply tier returns: operators and people told anew
+    await h.settle();
+    await h.incoming('zulip:dev');
+    expect(h.posts.slice(5).map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev']);
+    expect(h.posts[6]!.text).toContain('model calls keep failing');
+  });
+
+  test('a warning that lands after the outage ended corrects itself; one that lands under a newer outage stands for it', async () => {
+    const h = await started();
+    h.alert('quota-spent', 'spent');
+    const release = h.hold('zulip:dev');
+    void h.incoming('zulip:dev'); // warning in flight
+    h.alert('quota-spent-clear', 'ok'); // outage ends while it is in flight: no "back" yet (nothing landed)
+    await h.settle();
+    expect(h.posts).toEqual([]);
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'quota-spent' }), replyClearText('clerk')]);
+
+    const h2 = await started();
+    h2.alert('quota-spent', 'spent');
+    const release2 = h2.hold('zulip:dev');
+    void h2.incoming('zulip:dev');
+    h2.alert('quota-spent-clear', 'superseded by auth-rejected');
+    h2.alert('auth-rejected', 'rejected');
+    release2();
+    await h2.settle();
+    await h2.settle();
+    expect(h2.posts.length).toBe(1); // the landed warning stands for the live outage
+    expect(h2.module.episodeState()[0]).toMatchObject({ kinds: ['auth-rejected'], notified: ['zulip:dev'] });
+    await h2.incoming('zulip:dev');
+    expect(h2.posts.length).toBe(1); // not warned twice
+    h2.alert('auth-rejected-clear', 'ok');
+    await h2.settle();
+    expect(h2.posts[1]!.text).toBe(replyClearText('clerk'));
+  });
+
+  test('episodes, parked channels and owed lines survive a framework swap (session switch)', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', 'spent');
+    await h.settle();
+    await h.incoming('zulip:dev');
+    h.broken.add('zulip');
+    await h.incoming('zulip:other'); // parked
+    expect(h.posts.length).toBe(2);
+    await h.module.stop();
+    expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], notified: ['zulip:dev'], pending: ['zulip:other'] });
+    // New framework, same module: the standing outage is still known.
+    h.broken.clear();
+    h.module.setFramework(h.framework as never);
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev', 'zulip:other']); // parked one delivered on attach
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(3); // still told once
+    h.alert('quota-spent-clear', 'ok');
+    await h.settle();
+    expect(h.posts.slice(3).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops', 'zulip:other']);
+  });
+});
+
 describe('waker replies', () => {
   test('the channel whose turn failed is told when the alert lands, even with no further traffic', async () => {
     const h = await started({ replyIn: ['zulip:*'] });

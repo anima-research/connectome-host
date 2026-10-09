@@ -82,6 +82,9 @@ export interface CredentialSource {
   refresh?(): Promise<void>;
   /** Start an interactive login; resolves when it completes. */
   login?(): Promise<void>;
+  /** Abandon the login in progress (its `login()` rejects) so a restart can
+   *  begin at once. Without it, a restart during a pending login is refused. */
+  cancelLogin?(): Promise<boolean>;
   /** Replace the credential with one the operator pasted. */
   setToken?(token: string): Promise<void> | void;
   /** Epoch ms the current credential expires, when known. */
@@ -159,6 +162,7 @@ export class CredentialMonitor {
   private unsubMeter: (() => void) | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private actionChain: Promise<void> = Promise.resolve();
+  private loginInFlight = false;
   private disposed = false;
 
   constructor(options: CredentialMonitorOptions) {
@@ -256,6 +260,7 @@ export class CredentialMonitor {
   observeSuccess(): void {
     if (this.disposed) return;
     if (this.authHasPrecedence()) this.settleAfterAuth();
+    else if (this.state.kind === 'auth-expiring') this.checkExpiry();
   }
 
   /** Leave an auth state for whatever stands beneath it: the meter's verdict,
@@ -333,9 +338,17 @@ export class CredentialMonitor {
     if (this.disposed) return;
     const expiresAt = this.expiry();
     this.armExpiryTimer();
-    if (expiresAt === undefined) return;
+    if (expiresAt === undefined) {
+      if (this.state.kind === 'auth-expiring') this.settleAfterAuth();
+      return;
+    }
     const remaining = expiresAt - this.now();
-    if (remaining > this.expiryWarningMs) return;
+    if (remaining > this.expiryWarningMs) {
+      // The token rotated (a 401 retried inside one provider call shows
+      // here only as a success tap): the old countdown is over.
+      if (this.state.kind === 'auth-expiring') this.settleAfterAuth();
+      return;
+    }
     if (remaining <= 0) {
       // The credential's own expiry passed on an idle host: say so now
       // instead of repeating "expires in ~1 min" until a 401 proves it.
@@ -388,6 +401,19 @@ export class CredentialMonitor {
    * accordingly.
    */
   runAction(id: CredentialActionId, params: { token?: string } = {}): Promise<CredentialState> {
+    // A device-code login is a ceremony with a human in it. "Restart login"
+    // while one is pending cancels it when the source can (the pending
+    // action fails as cancelled, the restart runs next with a fresh code);
+    // otherwise it is refused at once — queued behind the wait it could only
+    // log the freshly signed-in account out again.
+    if (id === 'login' && this.loginInFlight) {
+      if (this.source.cancelLogin) {
+        void this.source.cancelLogin().catch(() => false);
+      } else {
+        this.state = { ...this.state, lastAction: { id, at: this.now(), ok: false, message: 'a login is already in progress — enter the code shown, or wait for it to expire' } };
+        return Promise.resolve(this.snapshot());
+      }
+    }
     const run = this.actionChain.then(() => this.performAction(id, params));
     this.actionChain = run.then(() => undefined, () => undefined);
     return run;
@@ -410,7 +436,15 @@ export class CredentialMonitor {
         }
         case 'login': {
           if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
-          await this.source.login();
+          // Queued behind an action that already settled the credential:
+          // nothing to log out of, nothing to log into.
+          if (!this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
+          this.loginInFlight = true;
+          try {
+            await this.source.login();
+          } finally {
+            this.loginInFlight = false;
+          }
           return done(...(await this.settle('login completed', id)));
         }
         case 'set-token': {

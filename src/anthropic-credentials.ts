@@ -80,6 +80,8 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private refreshing: Promise<void> | null = null;
+  /** Bumped by setToken; a refresh started under an older generation is discarded. */
+  private generation = 0;
   private lastPersistError: string | undefined;
 
   constructor(config: AnthropicCredentialsConfig) {
@@ -158,6 +160,11 @@ export class AnthropicOAuthCredentials implements CredentialSource {
 
   private async doRefresh(): Promise<void> {
     if (!this.canRefresh()) throw new Error('no refresh token on this credential');
+    // A refresh answers for the credential it was asked about. If the
+    // operator replaces the token while the exchange is in flight, the
+    // answer belongs to the old subscription and is dropped, never applied
+    // or written over the replacement.
+    const generation = this.generation;
     const res = await this.fetchImpl(this.tokenEndpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -183,6 +190,9 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     if (typeof accessToken !== 'string' || !accessToken) {
       throw new Error('token endpoint answered without an access_token');
     }
+    if (generation !== this.generation) {
+      throw new Error('credential was replaced while the refresh was in flight; refresh result discarded');
+    }
     this.accessToken = accessToken;
     if (typeof doc.refresh_token === 'string' && doc.refresh_token) this.refreshToken = doc.refresh_token;
     const expiresIn = typeof doc.expires_in === 'number' && Number.isFinite(doc.expires_in) ? doc.expires_in : undefined;
@@ -194,6 +204,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   setToken(token: string): void {
     const trimmed = token.trim();
     if (!trimmed) throw new Error('empty token');
+    this.generation++;
     this.accessToken = trimmed;
     this.refreshToken = undefined;
     this.expiresAtMs = undefined;

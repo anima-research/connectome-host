@@ -208,6 +208,9 @@ function resolveModel(recipe: Recipe): string {
     (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
 }
 
+/** The host's one NoticesModule, kept across session switches (see createFramework). */
+let noticesRef: NoticesModule | null = null;
+
 async function createFramework(
   membrane: Membrane,
   storePath: string,
@@ -361,20 +364,26 @@ async function createFramework(
   }
 
   // Outage notices (host speaks in the agent's channels when it cannot) —
-  // opt-in per recipe. Server ids are handed over once the MCPL server list
+  // opt-in per recipe. ONE instance per host process, reused across session
+  // switches: a standing outage announced before the switch must still be
+  // told, cleared and owed afterwards, and the credential monitor announces
+  // transitions only. Server ids are handed over once the MCPL server list
   // is final (below), for the one-time "unknown server" warning.
   let noticesModule: NoticesModule | null = null;
   if (modules.notices !== undefined && modules.notices !== false) {
-    const noticesConfig = typeof modules.notices === 'object' ? modules.notices : {};
-    noticesModule = new NoticesModule({
-      agentName,
-      statusChannels: noticesConfig.statusChannels,
-      replyIn: noticesConfig.reply?.in,
-      replyNot: noticesConfig.reply?.not,
-      kinds: noticesConfig.kinds,
-      quietMs: noticesConfig.quietMs,
-      renotifyMs: noticesConfig.renotifyMs,
-    });
+    if (!noticesRef) {
+      const noticesConfig = typeof modules.notices === 'object' ? modules.notices : {};
+      noticesRef = new NoticesModule({
+        agentName,
+        statusChannels: noticesConfig.statusChannels,
+        replyIn: noticesConfig.reply?.in,
+        replyNot: noticesConfig.reply?.not,
+        kinds: noticesConfig.kinds,
+        quietMs: noticesConfig.quietMs,
+        renotifyMs: noticesConfig.renotifyMs,
+      });
+    }
+    noticesModule = noticesRef;
     moduleInstances.push(noticesModule);
   }
 

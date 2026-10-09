@@ -359,6 +359,11 @@ export function App() {
       setHealth(h);
       setHealthErr(null);
       if (scope === 'local') reconcileHealthAlerts(h);
+      // A child's health read is the freshest word on its credential: it
+      // must replace the frame saved from an earlier child action, or the
+      // Health tab keeps the old state and buttons (an API-key parent's own
+      // polls carry no credential block to displace it).
+      else if (h.credential) applyCredentialState(h.credential, scope);
     } catch (e) {
       if (scope !== panelScope()) return;
       setHealthErr(e instanceof Error ? e.message : String(e));

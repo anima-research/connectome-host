@@ -79,6 +79,25 @@ describe('credentials file', () => {
     expect(written).toEqual({ accessToken: 'pasted' });
   });
 
+  test('a refresh that lands after the operator pasted a replacement is discarded, in memory and on disk', async () => {
+    const path = tmpFile({ accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: 1_000 });
+    let release!: () => void;
+    const { fetchImpl } = fakeFetch(async () => {
+      await new Promise<void>((r) => { release = r; });
+      return Response.json({ access_token: 'refreshed-old', refresh_token: 'refreshed-old-r', expires_in: 3600 });
+    });
+    const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl, now: () => 50_000 });
+    const refresh = creds.refresh();
+    await new Promise((r) => setTimeout(r, 0));
+    creds.setToken('pasted-new');
+    release();
+    await expect(refresh).rejects.toThrow(/replaced while the refresh was in flight/);
+    expect((await creds.resolver()({} as never)).token).toBe('pasted-new');
+    expect(creds.canRefresh()).toBe(false);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ accessToken: 'pasted-new' });
+    expect(readFileSync(path, 'utf8')).not.toContain('refreshed-old');
+  });
+
   test('a token endpoint failure surfaces its error text and leaves the credential untouched', async () => {
     const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
     const { fetchImpl } = fakeFetch(() => new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'refresh token revoked' }), { status: 400 }));
