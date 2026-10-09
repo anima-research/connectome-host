@@ -448,6 +448,51 @@ describe('FleetModule lifecycle', () => {
     });
   }
 
+  // An adopted generation has no owned process, so a retry that finds it
+  // still alive re-adopts it instead of spawning a duplicate. That adoption
+  // awaits too, and manual control during it must cancel the retry and
+  // close the connection it opened.
+  for (const action of ['kill', 'stop'] as const) {
+    test(action + ' during an automatic retry\'s adoption cancels it and closes the adopted connection', async () => {
+      const { fleet, input } = fixture();
+      const api = internal(fleet) as Internal & {
+        canRetryAdoption: (child: Child) => boolean;
+        probeLiveness: (child: Child) => Promise<boolean>;
+        reattachToLivingChild: (child: Child) => Promise<Child>;
+      };
+      const clock = controlRestarts(fleet);
+      expect((await api.handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true })).success).toBe(true);
+      const child = fleet.getChildren().get('leaf')!;
+      await crash(fleet, child);
+      (child as { process: ChildProcess | null }).process = null; // as for an adopted generation
+      let entered = false;
+      let release!: () => void;
+      const adoption = new Promise<void>(resolve => { release = resolve; });
+      let closed = 0;
+      api.canRetryAdoption = () => true;
+      api.probeLiveness = async () => true;
+      api.reattachToLivingChild = async existing => {
+        entered = true;
+        await adoption;
+        return { ...existing, socket: { destroy: () => { closed++; } } } as unknown as Child;
+      };
+      try {
+        clock.release(0);
+        await until(() => entered, 'adoption started');
+        if (action === 'stop') await fleet.stop();
+        else expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
+      } finally {
+        release();
+      }
+      await until(() => clock.completed.length === 2, 'cancelled adoption settled');
+      expect(clock.completed[1]!.result.success).toBe(false);
+      expect(clock.completed[1]!.result.error).toContain('changed during adoption');
+      expect(closed).toBe(1);
+      expect(fleet.getChildren().get('leaf')).toBe(child);
+      expect(launches(input)).toHaveLength(1);
+    });
+  }
+
   for (const action of ['kill', 'restart', 'stop', 'replace'] as const) {
     test(action + ' during backoff cancels stale automatic replacement', async () => {
       const { fleet, input } = fixture();
