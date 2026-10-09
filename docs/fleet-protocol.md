@@ -277,8 +277,12 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
 
 - **Persistence.** On every status change the module writes each child's
   record (recipe path, dataDir, socket, pid, status, timestamps, exit info,
-  subscription, autoRestart, env) to its module state in the current session's
-  Chronicle store.
+  subscription, autoRestart) to its module state in the current session's
+  Chronicle store. Env overrides are runtime-only and never persisted: an
+  adopted child recovers them from the current configured child with the same
+  name, recipe and dataDir, `autoStart: false` entries included, and a
+  mismatch logs the differing fields and withholds the overrides, without
+  logging their values (#180).
 - **Adopt on start.** For each persisted child whose record allows it (`ready`
   or `starting` with no exit time, or `crashed` by an earlier failed
   adoption): check the pid is alive and the socket path is a socket, connect,
@@ -340,9 +344,10 @@ by a reducer.
 
 Behavior of the code as it stands, worth knowing before relying on it:
 
-- **Resolved `children[].env` values are persisted** in the session's Chronicle
-  module state — unlike the saved recipe snapshot, which keeps `${VAR}`
-  references unresolved.
+- **Snapshots saved before #180 may still hold resolved `children[].env`
+  values** in the session's Chronicle history and in backups. Current
+  snapshots don't, but the old ones remain until they're pruned, so rotate
+  any credentials they carried.
 - **Narrow subscriptions hide things.** `recipes/triumvirate.json` does not
   subscribe its children to `ops:alert`, so child ops alerts don't reach the
   parent's TUI.
