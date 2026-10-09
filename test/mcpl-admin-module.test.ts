@@ -334,7 +334,10 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(result.success).toBe(true);
     const text = String(result.data);
     expect(text).toContain('Restarted server "shell" — connected');
-    expect(text).toContain('replaces the operator\'s definition of "shell" and lacks its env SESSION_SERVER_TOKEN');
+    expect(text).toContain(
+      'replaces the operator\'s definition of "shell" and lacks its env SESSION_SERVER_TOKEN, ' +
+      'so the server runs without the operator\'s values for them. An overlay entry can\'t name host variables.',
+    );
     expect(text).not.toContain('SESSION_SERVER_PORT');
     expect(text).not.toContain('s3cret-token');
     expect(text).toContain('mcpl_unload "shell"');
@@ -371,6 +374,44 @@ describe('an overlay entry that replaces the operator definition', () => {
 
     const fresh = await call(mod, 'mcpl_deploy', { id: 'mytool', command: 'bun' });
     expect(String(fresh.data)).not.toContain('operator');
+  });
+
+  // The likeliest next move after reading that receipt: name the variable in
+  // the entry. Only a recipe substitutes it, so the receipt keeps the name
+  // in what's lacking and says why, without showing the value.
+  test('an entry that names a host variable still lacks it, and is told so', async () => {
+    const { mod } = await bootWithReplacement();
+
+    const result = await call(mod, 'mcpl_deploy', {
+      id: 'shell',
+      command: 'node',
+      args: ['mine.js'],
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: '${SESSION_SERVER_TOKEN}' },
+    });
+
+    const text = String(result.data);
+    expect(text).toContain('lacks its env SESSION_SERVER_TOKEN, so the server runs without the operator\'s values for them.');
+    expect(text).toContain(
+      'In your entry, env SESSION_SERVER_TOKEN names a host variable, and only a recipe substitutes those, ' +
+      'so the server gets that text as written.',
+    );
+    expect(text).not.toContain('${SESSION_SERVER_TOKEN}');
+    expect(String((await call(mod, 'mcpl_restart', { id: 'shell' })).data))
+      .toContain('In your entry, env SESSION_SERVER_TOKEN names a host variable');
+  });
+
+  test('a host-variable reference in an entry that replaces nothing is told on deploy and restart', async () => {
+    const { mod } = await bootWithReplacement();
+
+    const deployed = String((await call(mod, 'mcpl_deploy', {
+      id: 'weather', command: 'node', args: ['--key', '${WEATHER_KEY}'], env: { WEATHER_UNITS: 'metric' },
+    })).data);
+    expect(deployed).toEndWith(
+      'In your entry, args names a host variable, and only a recipe substitutes those, so the server gets that text as written.',
+    );
+    expect(deployed).not.toContain('operator');
+    expect(String((await call(mod, 'mcpl_restart', { id: 'weather' })).data))
+      .toContain('In your entry, args names a host variable');
   });
 
   test('mcpl_list marks the replacement and what it lacks', async () => {

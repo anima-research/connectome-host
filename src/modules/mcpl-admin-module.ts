@@ -44,6 +44,7 @@ import {
   serverProvisions,
   lostByReplacement,
   overlayEntryReplaces,
+  hostVariableReferences,
   type AgentOverlayEntry,
   type ServerProvisions,
 } from '../mcpl-config.js';
@@ -123,19 +124,35 @@ export class McplAdminModule implements Module {
     return { lost: lostByReplacement(operator, entry) };
   }
 
-  /** A receipt's sentence for a server whose overlay entry replaces the
-   *  operator's definition: always on deploy, which makes the replacement;
-   *  on restart only when the entry lacks something. */
-  private replacementNote(id: string, overlay: Record<string, AgentOverlayEntry>, always: boolean): string {
+  /**
+   * A receipt's sentences about `id`'s overlay entry, or nothing: that it
+   * replaces the operator's definition (always on deploy, which makes the
+   * replacement; on restart only when it lacks something), what it lacks
+   * with the way back, and which of its parts name a host variable, which
+   * only a recipe substitutes.
+   */
+  private overlayNote(id: string, overlay: Record<string, AgentOverlayEntry>, onDeploy: boolean): string {
+    const entry = overlay[id];
+    if (!overlayEntryReplaces(entry)) return '';
     const replacement = this.replacement(id, overlay);
-    if (!replacement || (!replacement.lost && !always)) return '';
-    if (!replacement.lost) return ` Your overlay entry replaces the operator's definition of "${id}".`;
-    return (
-      ` Your overlay entry replaces the operator's definition of "${id}" and lacks its ${replacement.lost}, ` +
-      'so the server runs without them. An overlay entry can\'t name host variables; to go back to the ' +
-      `operator's definition, mcpl_unload "${id}": that removes your entry, and the operator's loads again ` +
-      'at the next host start.'
-    );
+    const refs = hostVariableReferences(entry);
+    const literal = refs.length === 0 ? '' :
+      `In your entry, ${refs.join(', ')} ${refs.length === 1 ? 'names a host variable' : 'name host variables'}, ` +
+      'and only a recipe substitutes those, so the server gets that text as written.';
+    const sentences: string[] = [];
+    if (replacement?.lost) {
+      sentences.push(
+        `Your overlay entry replaces the operator's definition of "${id}" and lacks its ${replacement.lost}, ` +
+        'so the server runs without the operator\'s values for them.',
+        literal || 'An overlay entry can\'t name host variables.',
+        `To go back to the operator's definition, mcpl_unload "${id}": that removes your entry, and the ` +
+        'operator\'s loads again at the next host start.',
+      );
+    } else {
+      if (replacement && onDeploy) sentences.push(`Your overlay entry replaces the operator's definition of "${id}".`);
+      if (literal) sentences.push(literal);
+    }
+    return sentences.length > 0 ? ` ${sentences.join(' ')}` : '';
   }
 
   async start(_ctx: ModuleContext): Promise<void> {}
@@ -409,7 +426,7 @@ export class McplAdminModule implements Module {
     }
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
-    const note = this.replacementNote(id, overlay, true);
+    const note = this.overlayNote(id, overlay, true);
     try {
       if (alreadyLoaded) {
         await framework.restartMcplServer(id, config);
@@ -447,7 +464,7 @@ export class McplAdminModule implements Module {
 
     await framework.restartMcplServer(id);
     const status = framework.listMcplServers().find(s => s.id === id);
-    const note = this.replacementNote(id, readAgentOverlay(this.overlayPath), false);
+    const note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
     if (!status?.connected) {
       return fail(`Restarted server "${id}", but it isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}.${note}`);
     }

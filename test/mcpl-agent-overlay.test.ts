@@ -16,7 +16,8 @@ import {
   serverProvisions,
   lostByReplacement,
   overlayEntryReplaces,
-  overlayReplacementWarnings,
+  overlayWarnings,
+  hostVariableReferences,
   AGENT_DEPLOY_DENIED_CAPABILITIES,
   type AgentOverlayEntry,
 } from '../src/mcpl-config.js';
@@ -225,27 +226,53 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(overlayEntryReplaces({ url: 'wss://x' })).toBe(true);
   });
 
-  test('the startup warnings name each replacement that lacks something, and nothing else', () => {
+  test('the startup warnings name each replacement that lacks something, and each host-variable reference', () => {
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');
       saveAgentOverlay(path, {
         shell: { command: 'node', args: ['mine.js'] },                 // lacks the token
         discord: { command: 'node', env: { DISCORD_TOKEN: 'x' } },     // carries everything
         heartbeat: { disabled: true },                                  // a tombstone, not a replacement
-        mytool: { command: 'bun' },                                     // the operator has no "mytool"
+        mytool: { command: 'bun', env: { API_KEY: '${API_KEY}' } },     // the operator has no "mytool"; a literal reference
       });
       const operatorServers = [
         shell,
         { id: 'discord', command: 'node', env: { DISCORD_TOKEN: 'real' } },
         { id: 'heartbeat', command: 'node', env: { HEARTBEAT_CONFIG_FILE: '/x' } },
       ];
-      const lines = overlayReplacementWarnings(operatorServers, path);
+      const lines = overlayWarnings(operatorServers, path);
       expect(lines).toEqual([
         `[mcpl] server "shell": the agent overlay (${path}) replaces the operator's definition and lacks its ` +
-        'env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN, so the server runs without them',
+        'env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN, so the server runs without the operator\'s values for them',
+        `[mcpl] server "mytool": in the agent overlay (${path}), its env API_KEY names a host variable, which only ` +
+        'a recipe substitutes, so the server gets that text as written',
       ]);
       expect(lines.join('\n')).not.toContain('s3cret-token');
-      expect(overlayReplacementWarnings(operatorServers, join(dir, 'none.json'))).toEqual([]);
+      expect(overlayWarnings(operatorServers, join(dir, 'none.json'))).toEqual([]);
     });
+  });
+
+  // The receipt says an overlay entry can't name host variables, but the
+  // likeliest next move is to write one anyway: `${VAR}` there reaches the
+  // child as literal text, so it supplies nothing (Nell-1783's review).
+  test('a value that names a host variable supplies nothing, and is named, never shown', () => {
+    expect(lostByReplacement(serverProvisions(shell), {
+      command: 'node',
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: '${SESSION_SERVER_TOKEN}' },
+    })).toBe('env SESSION_SERVER_TOKEN');
+    expect(lostByReplacement(serverProvisions(shell), {
+      command: 'node',
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: 'prefix-${SESSION_SERVER_TOKEN:-x}' },
+    })).toBe('env SESSION_SERVER_TOKEN');
+    const world = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok' });
+    expect(lostByReplacement(world, { url: 'wss://w/mcpl', token: '${WORLD_TOKEN}' })).toBe('token');
+
+    expect(hostVariableReferences({
+      command: '${TOOLS}/server',
+      args: ['--key', '${KEY}'],
+      env: { B: '${B}', A: '$NOT_A_REFERENCE', C: '${C:-}' },
+    })).toEqual(['command', 'args', 'env B', 'env C']);
+    expect(hostVariableReferences({ url: 'wss://${HOST}/mcpl', token: '${T}', env: { E: '${E}' } })).toEqual(['url', 'token']);
+    expect(hostVariableReferences({ command: 'node', args: ['a.js'], env: { A: 'literal' } })).toEqual([]);
   });
 });

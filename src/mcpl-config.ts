@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { REFUSAL_REACTION_BASELINE } from '@animalabs/agent-framework';
-import type { RecipeToolLifecycle } from './recipe.js';
+import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
 
 /** Default config file path, resolved from cwd. */
@@ -384,19 +384,48 @@ export function serverProvisions(definition: Record<string, unknown>): ServerPro
   };
 }
 
+/** A text that names a host variable, as substituteEnvVars reads one. */
+const namesHostVariable = (text: unknown): boolean => typeof text === 'string' && namesEnvReference(text);
+
+/**
+ * The parts of an agent overlay entry that name a host variable (`${VAR}`),
+ * as labels for a receipt: `command`, `args` and `env NAME` for a command
+ * entry, `url` and `token` for a URL one. Only a recipe substitutes those
+ * (substituteEnvVars); from an overlay entry the server gets the text as
+ * written. Labels only, never values.
+ */
+export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
+  const refs: string[] = [];
+  if (entry.command) {
+    if (namesHostVariable(entry.command)) refs.push('command');
+    if ((entry.args ?? []).some(namesHostVariable)) refs.push('args');
+    for (const name of Object.keys(entry.env ?? {}).sort()) {
+      if (namesHostVariable(entry.env![name])) refs.push(`env ${name}`);
+    }
+  } else if (entry.url) {
+    if (namesHostVariable(entry.url)) refs.push('url');
+    if (namesHostVariable(entry.token)) refs.push('token');
+  }
+  return refs;
+}
+
 /**
  * What an agent overlay entry that replaces an operator's definition lacks
  * of it, as a phrase for a receipt or a log line, or null when it lacks
  * nothing that would reach it.
  *
- * The replacement is whole (applyAgentOverlay). Its env is literal, since
+ * The replacement is whole (applyAgentOverlay). Its text is literal, since
  * `${VAR}` substitution is the recipe's, and it never inherits the host
- * environment, since resolveOverlayEntry drops `inheritEnv`. agent-framework
- * gives a stdio child only allowlisted host variables plus its declared env,
- * so nothing else supplies what the replacement lacks. A server that needs it
- * starts without it, and can look healthy until its first call: on
- * 2026-10-08, a resident's shell came back from `mcpl_restart` without the
- * SESSION_SERVER_TOKEN its daemon wanted, and the restart reported success.
+ * environment, since resolveOverlayEntry drops `inheritEnv`. So the
+ * operator's value for a name the entry doesn't declare never reaches the
+ * server: agent-framework gives a stdio child its declared env, and for a
+ * short allowlist (PATH, HOME, locale, proxies and the like) the host's own
+ * values. A server that needs the operator's value starts without it, and
+ * can look healthy until its first call: on 2026-10-08 a resident's shell
+ * came back from `mcpl_restart` without the SESSION_SERVER_TOKEN its daemon
+ * wanted, and the restart reported success. A value that names a host
+ * variable supplies nothing (hostVariableReferences), so its name counts as
+ * lacking.
  *
  * Env and inheritance count only for a replacement that spawns a process; a
  * token and an access grant count only for one that dials a URL.
@@ -404,12 +433,15 @@ export function serverProvisions(definition: Record<string, unknown>): ServerPro
 export function lostByReplacement(operator: ServerProvisions, entry: AgentOverlayEntry): string | null {
   const lost: string[] = [];
   if (entry.command) {
-    const declared = new Set(Object.keys(entry.env ?? {}));
+    const declared = new Set(
+      Object.entries(entry.env ?? {}).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
+    );
     const missing = operator.env.filter((name) => !declared.has(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
     if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
   } else if (entry.url) {
-    if (operator.token && !entry.token) lost.push('token');
+    const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
+    if (operator.token && !token) lost.push('token');
     if (operator.access && !entry.access) lost.push(`access grant "${operator.access}"`);
   }
   return lost.length > 0 ? lost.join('; ') : null;
@@ -422,25 +454,34 @@ export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entr
 }
 
 /**
- * The startup log's lines: one for each agent overlay entry that replaces an
- * operator's definition and lacks something of it (lostByReplacement). An
- * operator reading the log learns why a replaced server misbehaves before
- * anyone calls it.
+ * The startup log's lines about the agent overlay: one for each entry that
+ * replaces an operator's definition and lacks something of it
+ * (lostByReplacement), and one for each entry with a part that names a host
+ * variable (hostVariableReferences). An operator reading the log learns why
+ * a server misbehaves before anyone calls it.
  */
-export function overlayReplacementWarnings(
+export function overlayWarnings(
   operatorServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
   overlayPath: string,
 ): string[] {
-  const overlay = readAgentOverlay(overlayPath);
+  const operatorById = new Map(operatorServers.map((server) => [server.id, server]));
   const lines: string[] = [];
-  for (const server of operatorServers) {
-    const entry = overlay[server.id];
+  for (const [id, entry] of Object.entries(readAgentOverlay(overlayPath))) {
     if (!overlayEntryReplaces(entry)) continue;
-    const lost = lostByReplacement(serverProvisions(server), entry);
+    const operator = operatorById.get(id);
+    const lost = operator ? lostByReplacement(serverProvisions(operator), entry) : null;
     if (lost) {
       lines.push(
-        `[mcpl] server "${server.id}": the agent overlay (${overlayPath}) replaces the operator's ` +
-        `definition and lacks its ${lost}, so the server runs without them`,
+        `[mcpl] server "${id}": the agent overlay (${overlayPath}) replaces the operator's definition ` +
+        `and lacks its ${lost}, so the server runs without the operator's values for them`,
+      );
+    }
+    const refs = hostVariableReferences(entry);
+    if (refs.length > 0) {
+      lines.push(
+        `[mcpl] server "${id}": in the agent overlay (${overlayPath}), its ${refs.join(', ')} ` +
+        `${refs.length === 1 ? 'names a host variable' : 'name host variables'}, which only a recipe ` +
+        'substitutes, so the server gets that text as written',
       );
     }
   }
