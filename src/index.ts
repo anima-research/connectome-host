@@ -526,6 +526,8 @@ agents: [agentConfig],
     // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
     // passed through verbatim; the framework owns the defaults.
     ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // Focus mode — recipe opt-in, passed through verbatim.
+    ...(recipe.focus ? { focus: recipe.focus } : {}),
     // MCPL RFC-008 tool classes: this host's module table, and the recipe's
     // operator overrides. Spread as an untyped object so an agent-framework
     // older than the tool-lifecycle release (which lacks both fields)
