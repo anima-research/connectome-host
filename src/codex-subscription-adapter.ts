@@ -50,6 +50,10 @@ export interface CodexAuthProvider {
   /** Abandon a device-code login in progress so a fresh one can start.
    *  Resolves true when there was one to cancel. */
   cancelLogin?(): Promise<boolean>;
+  /** The token is a static credential for a gateway that holds the real
+   *  login: nothing here can refresh, log in or replace it, so the credential
+   *  monitor observes verdicts only and offers no host-side actions. */
+  gateway?: { baseURL: string };
   dispose?(): void;
 }
 
@@ -400,7 +404,7 @@ export function codexGateAuth(env: NodeJS.ProcessEnv = process.env): CodexAuthPr
       'Point CODEX_BASE_URL at the gate\'s codex leg (e.g. https://gate.animalabs.ai/codex).',
     );
   }
-  return { getAccessToken: async () => token };
+  return { getAccessToken: async () => token, gateway: { baseURL: env.CODEX_BASE_URL.trim() } };
 }
 
 export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig {
@@ -459,8 +463,17 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   }
 
   /** The host's credential-monitor view of this adapter. No probe: the
-   *  app-server owns validity, and its own reads succeed on a stale token. */
+   *  app-server owns validity, and its own reads succeed on a stale token.
+   *  Through a gateway the source is observe-only — a 401 there means the
+   *  gate rejected the host's token or lost its own upstream login, and
+   *  neither is fixable from this process. */
   credentialSource(): CredentialSource {
+    if (this.auth.gateway) {
+      return {
+        provider: `${this.name} via ${this.auth.gateway.baseURL}`,
+        canRefresh: () => false,
+      };
+    }
     return {
       provider: this.name,
       canRefresh: () => true,

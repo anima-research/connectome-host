@@ -133,6 +133,30 @@ still on, else dropped. The publish path carries no topic, so on Zulip a
 notice lands in the stream's default topic. One chronicle marker per episode
 tells the agent, on recovery, that the host spoke in its channel.
 
+### Behind an inference gateway
+
+When the host reaches the provider through a gateway that holds the real
+login (anima-research/gate or similar), the gate is the only refresher, and
+the host's credential surface narrows to match:
+
+- **Anthropic with a gate token in `ANTHROPIC_API_KEY`** (the knowledge
+  resident's shape): no quota meter and no credential monitor are built at
+  all; `/auth` reports an API-key host. Outage notices still work — they ride
+  the framework's own alerts.
+- **Anthropic with `ANTHROPIC_AUTH_TOKEN` through a gate:** the meter and the
+  `recheck` probe read `/api/oauth/usage` on `ANTHROPIC_BASE_URL`. If the gate
+  does not proxy that path, the meter never reads and `quota-unreadable` is
+  raised once; a 401/403 from the gate on that path during a manual re-check
+  is classified as `auth-rejected`. Never point
+  `ANTHROPIC_OAUTH_CREDENTIALS_FILE` at a gate-pooled account's credentials:
+  a host-side refresh would race the gate's refresher and invalidate the
+  shared refresh token.
+- **Codex with `CODEX_GATE_TOKEN`:** the credential source is observe-only.
+  A 401 from the gate raises `auth-rejected` naming the gate
+  (`openai-codex via <CODEX_BASE_URL>`) with Re-check as the only action;
+  refresh and login are refused rather than pretending to fix a token the
+  host does not own. The alarm clears on the next accepted call.
+
 ## Remaining authentication integration
 
 - The framework's provider hold is still stderr-only and its release is

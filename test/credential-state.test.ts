@@ -79,6 +79,23 @@ describe('CredentialMonitor — auth verdicts', () => {
     expect(Object.keys(alerts[0]!.data)).not.toContain('token');
   });
 
+  test('an observe-only source (a gateway holds the login) alarms with Re-check only, and refresh/login are refused', async () => {
+    const { monitor, alerts } = harness({ source: { provider: 'openai-codex via https://gate.test/codex', canRefresh: () => false } });
+    monitor.observeError(authErr('gate: unknown token'));
+    const s = monitor.snapshot();
+    expect(s.kind).toBe('auth-rejected');
+    expect(s.actions.map((a) => a.id)).toEqual(['recheck']);
+    expect(alerts[0]!.message).toContain('openai-codex via https://gate.test/codex rejected the credential');
+    const refresh = await monitor.runAction('refresh');
+    expect(refresh.lastAction).toMatchObject({ id: 'refresh', ok: false });
+    expect(refresh.kind).toBe('auth-rejected');
+    const login = await monitor.runAction('login');
+    expect(login.lastAction).toMatchObject({ id: 'login', ok: false });
+    expect(login.kind).toBe('auth-rejected'); // nothing clears it but the next accepted call
+    monitor.observeSuccess();
+    expect(monitor.snapshot().kind).toBe('ok');
+  });
+
   test('a rotatable source offers refresh first', () => {
     const { monitor } = harness({ source: { canRefresh: () => true, refresh: async () => {}, setToken: () => {} } });
     monitor.observeError(authErr());

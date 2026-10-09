@@ -16,6 +16,10 @@
   `credential` / `credential-action` (WS `request-credential` /
   `credential-action`, HTTP `GET /credential`) work fleet-wide over the
   panel IPC. The header quota readout now says `quota: unreadable` instead
-  of rendering nothing when a subscription meter has never read.
+  of rendering nothing when a subscription meter has never read. Behind an
+  inference gateway the surface narrows to what the host can actually do: a
+  Codex host on `CODEX_GATE_TOKEN` gets an observe-only credential source
+  (a gate 401 raises `auth-rejected` naming the gate, Re-check only), and an
+  Anthropic host on a gate API key gets no credential monitor at all.
 - **Activity module: honest typing.** The typing indicator now also stops on
   `inference:failed` / `inference:exhausted`, not only on a completed turn.

@@ -77,6 +77,15 @@ describe('Codex host integration', () => {
     expect(seen.every((c) => c.headers.get('authorization') === 'Bearer gt_devops')).toBe(true);
     expect(seen[0]!.headers.get('chatgpt-account-id')).toBeNull();
     expect(await adapter.readRateLimits()).toBeNull();
+    // Observe-only credential source: the gate holds the login, so no
+    // host-side refresh/login/paste is offered — a 401 is reported, not "fixed".
+    const source = adapter.credentialSource();
+    expect(source.provider).toBe('openai-codex via https://gate.test/codex');
+    expect(source.canRefresh()).toBe(false);
+    expect(source.refresh).toBeUndefined();
+    expect(source.login).toBeUndefined();
+    expect(source.setToken).toBeUndefined();
+    expect(source.probe).toBeUndefined();
     adapter.dispose();
   });
 
