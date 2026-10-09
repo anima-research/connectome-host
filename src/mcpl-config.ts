@@ -479,9 +479,8 @@ export function overlayWarnings(
     const refs = hostVariableReferences(entry);
     if (refs.length > 0) {
       lines.push(
-        `[mcpl] server "${id}": in the agent overlay (${overlayPath}), its ${refs.join(', ')} ` +
-        `${refs.length === 1 ? 'names a host variable' : 'name host variables'}, which only a recipe ` +
-        'substitutes, so the server gets that text as written',
+        `[mcpl] server "${id}": the agent overlay (${overlayPath}) names a host variable in its ` +
+        `${refs.join(', ')}, which only a recipe substitutes, so the server gets that text as written`,
       );
     }
   }

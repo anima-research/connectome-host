@@ -392,12 +392,12 @@ describe('an overlay entry that replaces the operator definition', () => {
     const text = String(result.data);
     expect(text).toContain('lacks its env SESSION_SERVER_TOKEN, so the server runs without the operator\'s values for them.');
     expect(text).toContain(
-      'In your entry, env SESSION_SERVER_TOKEN names a host variable, and only a recipe substitutes those, ' +
+      'Your entry names a host variable in env SESSION_SERVER_TOKEN, and only a recipe substitutes those, ' +
       'so the server gets that text as written.',
     );
     expect(text).not.toContain('${SESSION_SERVER_TOKEN}');
     expect(String((await call(mod, 'mcpl_restart', { id: 'shell' })).data))
-      .toContain('In your entry, env SESSION_SERVER_TOKEN names a host variable');
+      .toContain('Your entry names a host variable in env SESSION_SERVER_TOKEN');
   });
 
   test('a host-variable reference in an entry that replaces nothing is told on deploy and restart', async () => {
@@ -407,11 +407,11 @@ describe('an overlay entry that replaces the operator definition', () => {
       id: 'weather', command: 'node', args: ['--key', '${WEATHER_KEY}'], env: { WEATHER_UNITS: 'metric' },
     })).data);
     expect(deployed).toEndWith(
-      'In your entry, args names a host variable, and only a recipe substitutes those, so the server gets that text as written.',
+      'Your entry names a host variable in args, and only a recipe substitutes those, so the server gets that text as written.',
     );
     expect(deployed).not.toContain('operator');
     expect(String((await call(mod, 'mcpl_restart', { id: 'weather' })).data))
-      .toContain('In your entry, args names a host variable');
+      .toContain('Your entry names a host variable in args');
   });
 
   test('mcpl_list marks the replacement and what it lacks', async () => {

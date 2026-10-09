@@ -244,7 +244,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       expect(lines).toEqual([
         `[mcpl] server "shell": the agent overlay (${path}) replaces the operator's definition and lacks its ` +
         'env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN, so the server runs without the operator\'s values for them',
-        `[mcpl] server "mytool": in the agent overlay (${path}), its env API_KEY names a host variable, which only ` +
+        `[mcpl] server "mytool": the agent overlay (${path}) names a host variable in its env API_KEY, which only ` +
         'a recipe substitutes, so the server gets that text as written',
       ]);
       expect(lines.join('\n')).not.toContain('s3cret-token');

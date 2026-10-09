@@ -137,8 +137,8 @@ export class McplAdminModule implements Module {
     const replacement = this.replacement(id, overlay);
     const refs = hostVariableReferences(entry);
     const literal = refs.length === 0 ? '' :
-      `In your entry, ${refs.join(', ')} ${refs.length === 1 ? 'names a host variable' : 'name host variables'}, ` +
-      'and only a recipe substitutes those, so the server gets that text as written.';
+      `Your entry names a host variable in ${refs.join(', ')}, and only a recipe substitutes those, ` +
+      'so the server gets that text as written.';
     const sentences: string[] = [];
     if (replacement?.lost) {
       sentences.push(
