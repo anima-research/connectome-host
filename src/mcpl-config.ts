@@ -401,23 +401,31 @@ const namesHostVariable = (text: unknown): boolean => typeof text === 'string' &
 const envOf = (entry: AgentOverlayEntry): Record<string, unknown> =>
   entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env) ? entry.env : {};
 
+/** Whether agent-framework dials an entry's URL rather than spawning its
+ *  command. This is its isWebSocketTransport (mcpl/transport.ts), which the
+ *  package doesn't export: an explicit `transport` decides, and otherwise a
+ *  `url` with no `command`. The readers here choose their branch by it, so
+ *  what they name is what the connection the framework opens would carry. */
+const dialsUrl = (entry: AgentOverlayEntry): boolean =>
+  entry.transport === 'websocket' || (entry.transport !== 'stdio' && Boolean(entry.url) && !entry.command);
+
 /**
  * The parts of an agent overlay entry that name a host variable (`${VAR}`),
- * as labels for a receipt: `command`, `args` and `env NAME` for a command
- * entry, `url` and `token` for a URL one. Only a recipe substitutes those
- * (substituteEnvVars); from an overlay entry the server gets the text as
- * written. Labels only, never values.
+ * as labels for a receipt: `command`, `args` and `env NAME` for an entry the
+ * framework spawns, `url` and `token` for one it dials (dialsUrl). Only a
+ * recipe substitutes those (substituteEnvVars); from an overlay entry the
+ * server gets the text as written. Labels only, never values.
  */
 export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
   const refs: string[] = [];
-  if (entry.command) {
+  if (entry.command && !dialsUrl(entry)) {
     if (namesHostVariable(entry.command)) refs.push('command');
     if (Array.isArray(entry.args) && entry.args.some(namesHostVariable)) refs.push('args');
     const env = envOf(entry);
     for (const name of Object.keys(env).sort()) {
       if (namesHostVariable(env[name])) refs.push(`env ${name}`);
     }
-  } else if (entry.url) {
+  } else if (dialsUrl(entry) && entry.url) {
     if (namesHostVariable(entry.url)) refs.push('url');
     if (namesHostVariable(entry.token)) refs.push('token');
   }
@@ -445,18 +453,19 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
  * reaches a child.
  *
  * Env and inheritance count only for a replacement that spawns a process; a
- * token and an access grant count only for one that dials a URL.
+ * token and an access grant count only for one that dials a URL, as the
+ * framework chooses between them (dialsUrl).
  */
 export function lostByReplacement(operator: ServerProvisions, entry: AgentOverlayEntry): string | null {
   const lost: string[] = [];
-  if (entry.command) {
+  if (entry.command && !dialsUrl(entry)) {
     const declared = new Set(
       Object.entries(envOf(entry)).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
     );
     const missing = operator.env.filter((name) => !declared.has(name) && !hostSetsOverServer(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
     if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
-  } else if (entry.url) {
+  } else if (dialsUrl(entry) && entry.url) {
     const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
     if (operator.token && !token) lost.push('token');
     // A grant is a name, not a credential: another name is another grant.

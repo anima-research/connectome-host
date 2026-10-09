@@ -249,6 +249,26 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
+  // Nell-1783's review of c1e33ec: agent-framework chooses the connection by
+  // `transport` first (isWebSocketTransport), so a hand-edited entry with a
+  // command and a URL under transport "websocket" dials the URL.
+  test('an entry is read by the connection the framework opens for it', () => {
+    const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok', access: 'eidoverse' });
+    const dialled = { command: 'node', url: 'wss://w/mcpl', transport: 'websocket' as const, env: { A: '${A}' }, token: '${TOKEN}' };
+    expect(lostByReplacement(operator, dialled)).toBe('token; access grant "eidoverse"');
+    expect(hostVariableReferences(dialled)).toEqual(['token']);
+    // An explicit stdio transport spawns the command, as a command alone does.
+    const spawned = { command: 'node', url: 'wss://w/mcpl', transport: 'stdio' as const, env: { A: '${A}' }, token: '${TOKEN}' };
+    expect(lostByReplacement(serverProvisions({ id: 'shell', command: 'node', env: { A: '1' } }), spawned)).toBe('env A');
+    expect(hostVariableReferences(spawned)).toEqual(['env A']);
+    // A stdio transport with no command spawns nothing and dials nothing.
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', transport: 'stdio', token: '${TOKEN}' })).toBeNull();
+    expect(hostVariableReferences({ url: 'wss://w/mcpl', transport: 'stdio', token: '${TOKEN}' })).toEqual([]);
+    // Nor does a websocket transport with no url: the framework refuses to dial.
+    expect(lostByReplacement(operator, { command: 'node', transport: 'websocket', token: '${TOKEN}' })).toBeNull();
+    expect(hostVariableReferences({ command: 'node', transport: 'websocket', token: '${TOKEN}' })).toEqual([]);
+  });
+
   // Nell-1783's review of the fix: the overlay is hand-editable JSON, so a
   // malformed shape must read as lacking, never throw, since the startup
   // warnings run before the overlay is applied.
