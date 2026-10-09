@@ -1572,6 +1572,7 @@ function handleFoldsExport(framework: AgentFramework, sub: string | undefined): 
   if (status.lastProjection) {
     const p = status.lastProjection;
     lines.push({ text: `  last written ${p.at}: branch ${p.branch.name}, ${p.receipts} receipt(s), newest ${p.latestReceiptId ?? 'none'}`, style: 'system' });
+    if (p.more) lines.push({ text: '  older receipts were left out of the file; history--folds reads them from the journal', style: 'system' });
   }
   lines.push({ text: `  ${status.freshness}`, style: 'system' });
   return { lines };

@@ -4,9 +4,15 @@
  *
  * The context manager keeps the canonical journal (every branch, as rendered
  * when each receipt was written). This module projects the SELECTED branch's
- * receipts to one file, as an as-of snapshot: a header line naming the
- * branch, the store, the newest receipt and when it was written, then one
- * receipt per line, oldest first. It's rewritten (temp file, fsync, rename)
+ * newest receipts to one file, as an as-of snapshot: a header line naming the
+ * branch, the store, the newest receipt and the window's first, whether older
+ * receipts were left out and when it was written, then one receipt per line,
+ * oldest first. The file
+ * holds a window of the newest receipts (PROJECTION_WINDOW), read as one page
+ * of the journal's query, which reads only the receipts it returns. So a
+ * projection costs the window, not the branch's whole history, which a
+ * long-lived resident would otherwise rewrite and re-read in full after every
+ * fold. Older receipts stay in the journal, where history--folds reads them. It's rewritten (temp file, fsync, rename)
  * shortly after each new receipt (the next turn of the event loop, off the
  * round that accepted it), when the module binds (startup), and when it stops
  * (disposal, before the framework's store closes). The selected branch is
@@ -59,7 +65,7 @@ import type {
   ToolDefinition,
   ToolResult,
 } from '@animalabs/agent-framework';
-import type { ContextManager, FoldReceipt } from '@animalabs/context-manager';
+import { FOLD_QUERY_MAX_LIMIT, type ContextManager } from '@animalabs/context-manager';
 
 export interface FoldsExportOptions {
   /** The projection's path. */
@@ -90,14 +96,30 @@ export interface FoldsExportStatus {
   state: 'exporting' | 'conflict' | 'error' | 'unbound';
   conflict?: OwnershipEntry['conflict'];
   error?: string;
-  lastProjection?: { at: string; branch: { id: string; name: string }; latestReceiptId: string | null; receipts: number };
+  lastProjection?: {
+    at: string;
+    branch: { id: string; name: string };
+    latestReceiptId: string | null;
+    /** Receipts in the file: at most PROJECTION_WINDOW. */
+    receipts: number;
+    /** Older receipts exist on the branch than the window holds; history--folds reads them. */
+    more: boolean;
+  };
   freshness: string;
 }
 
+/**
+ * How many receipts the file holds: the selected branch's newest, one page of
+ * the journal's query.
+ */
+export const PROJECTION_WINDOW = FOLD_QUERY_MAX_LIMIT;
+
 const FRESHNESS =
-  'A labelled as-of projection of the selected branch: rewritten shortly after each new receipt, at startup and ' +
-  'at shutdown, and checked for branch changes at roughly one-second intervals. history--folds reads the ' +
-  'journal itself and is the exact query.';
+  `A labelled as-of projection of the selected branch's newest ${PROJECTION_WINDOW} fold receipts: rewritten ` +
+  'shortly after each new receipt, at startup and at shutdown, and checked for branch changes at roughly ' +
+  'one-second intervals. When "more" is true, older receipts than firstReceiptId were left out of this file; ' +
+  'they stay in the journal. history--folds reads the journal itself and is the exact query; with afterId "0" ' +
+  'it pages through every receipt from the start.';
 
 const TAKE_OVER_UTILITY: ToolDefinition = {
   name: 'take_over_export',
@@ -321,9 +343,12 @@ export class FoldsExportModule implements Module {
     const cm = this.cm;
     if (!cm) return;
     try {
+      // The selected branch, and its newest receipts as one page (newest first,
+      // reading only those): the window, written oldest first.
       const branch = cm.currentBranchRef();
-      const receipts: FoldReceipt[] = cm.foldReceiptsFor(branch);
-      const latestReceiptId = receipts.length > 0 ? receipts[receipts.length - 1]!.id : null;
+      const page = cm.listFoldReceipts({ limit: PROJECTION_WINDOW });
+      const receipts = [...page.receipts].reverse();
+      const latestReceiptId = page.latestId;
       const at = this.now().toISOString();
       const header = {
         v: 1,
@@ -332,7 +357,9 @@ export class FoldsExportModule implements Module {
         branch: { id: branch.id, name: branch.name, created: branch.created },
         storeId: cm.getStoreId(),
         latestReceiptId,
+        firstReceiptId: receipts.length > 0 ? receipts[0]!.id : null,
         receipts: receipts.length,
+        more: page.more,
         freshness: FRESHNESS,
       };
       const body = receipts.map((r) => JSON.stringify(r)).join('\n');
@@ -346,7 +373,9 @@ export class FoldsExportModule implements Module {
       const content = `${JSON.stringify(header)}\n${body}${body ? '\n' : ''}`;
       if (!this.write(content)) return;
       this.lastBranchKey = `${branch.id}@${branch.created}`;
-      this.lastProjection = { at, branch: { id: branch.id, name: branch.name }, latestReceiptId, receipts: receipts.length };
+      this.lastProjection = {
+        at, branch: { id: branch.id, name: branch.name }, latestReceiptId, receipts: receipts.length, more: page.more,
+      };
       this.lastError = null;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);

@@ -850,7 +850,8 @@ export interface RecipeModules {
 
   /**
    * The resident's fold record, `folds.jsonl` (CONN-20's per-resident file):
-   * a labelled as-of projection of the selected branch's fold receipts,
+   * a labelled as-of projection of the selected branch's newest fold receipts
+   * (one page of the journal's query, 100; older ones stay in the journal),
    * rewritten shortly after each new receipt (the next turn of the event
    * loop), at startup and at shutdown, and checked for branch changes at
    * roughly one-second intervals. ON by default at

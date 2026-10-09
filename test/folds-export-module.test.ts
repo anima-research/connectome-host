@@ -22,7 +22,7 @@ import type {
   RenderedSummaryInfo,
   TokenBudget,
 } from '@animalabs/context-manager';
-import { FoldsExportModule } from '../src/modules/folds-export-module.js';
+import { FoldsExportModule, PROJECTION_WINDOW } from '../src/modules/folds-export-module.js';
 
 const BUDGET: TokenBudget = { maxTokens: 1_000_000, reserveForResponse: 0 };
 
@@ -119,6 +119,8 @@ describe('folds.jsonl projection', () => {
     expect(file[0]!.receipts).toBe(2);
     expect(file.slice(1).map((r) => r.kind)).toEqual(['baseline', 'change']);
     expect(file[0]!.latestReceiptId).toBe(file[2]!.id);
+    expect(file[0]!.firstReceiptId).toBe(file[1]!.id);
+    expect(file[0]!.more).toBe(false);
     const source = file[1]!.source as Record<string, unknown>;
     expect(source.runtime).toBe('connectome-host');
     expect(source.agent).toBe('linn');
@@ -157,6 +159,40 @@ describe('folds.jsonl projection', () => {
     expect(lines()[0]!.receipts).toBe(2);
     expect(lines().slice(1).map((r) => r.kind)).toEqual(['baseline', 'change']);
   });
+
+  test('holds the newest window of receipts, says older ones were left out, and leaves them in the journal', async () => {
+    const { cm, strategy } = await openStore();
+    const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    cm.addMessage('user', [{ type: 'text', text: 'world' }]);
+    const m = exporter();
+    m.bind(cm);
+    // A baseline, then a change on every round: one receipt more than the window.
+    for (let i = 0; i <= PROJECTION_WINDOW; i++) {
+      if (i > 0) {
+        if (strategy.omit.has(id)) strategy.omit.delete(id);
+        else strategy.omit.add(id);
+      }
+      const result = await cm.compile(BUDGET);
+      cm.acceptRound({ provenance: result.provenance! });
+    }
+    await projected();
+    const all: string[] = [];
+    for (let after = '0'; ;) {
+      const page = cm.listFoldReceipts({ afterId: after, limit: 100 });
+      all.push(...page.receipts.map((r) => r.id));
+      if (!page.more) break;
+      after = page.receipts[page.receipts.length - 1]!.id;
+    }
+    expect(all).toHaveLength(PROJECTION_WINDOW + 1);
+    const file = lines();
+    expect(file[0]!.receipts).toBe(PROJECTION_WINDOW);
+    expect(file[0]!.more).toBe(true);
+    expect(file.slice(1).map((r) => r.id)).toEqual(all.slice(1));
+    expect(file[0]!.firstReceiptId).toBe(all[1]);
+    expect(file[0]!.latestReceiptId).toBe(all[all.length - 1]);
+    expect(String(file[0]!.freshness)).toContain('afterId "0"');
+    expect(m.status().lastProjection?.more).toBe(true);
+  }, 60_000); // a hundred and one durable acceptances
 
   test('heals a crash between a receipt and its projection at the next startup', async () => {
     const { cm } = await openStore();

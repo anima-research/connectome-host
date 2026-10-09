@@ -1,9 +1,13 @@
 - `folds.jsonl`, the resident's fold record (CONN-20; shelf-381). It is on by
   default at `<dataDir>/memory/folds.jsonl`; `modules.foldsExport: false` turns
   it off, and `{ path }` moves it.
-  - It's a labelled as-of projection of the selected branch's fold receipts:
-    a header line naming the branch, store, newest receipt and write time,
-    then one receipt per line.
+  - It's a labelled as-of projection of the selected branch's newest 100 fold
+    receipts: a header line naming the branch, store, newest receipt, the
+    window's first receipt, write time and whether older receipts were left
+    out (`more`), then one receipt per line, oldest first. Older receipts stay
+    in the context manager's journal; `history--folds` with `afterId: "0"`
+    pages through every receipt from the start. A projection reads and writes
+    only the window, so its cost doesn't grow with the resident's history.
   - It's rewritten shortly after each new receipt (the next turn of the event
     loop, off the round that accepted it), at startup and at shutdown, and the
     branch is checked at roughly one-second intervals. `history--folds` is the
