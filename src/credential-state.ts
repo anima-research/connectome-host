@@ -401,6 +401,7 @@ export class CredentialMonitor {
    * accordingly.
    */
   runAction(id: CredentialActionId, params: { token?: string } = {}): Promise<CredentialState> {
+    let queued: { token?: string; restart?: boolean } = params;
     // A device-code login is a ceremony with a human in it. "Restart login"
     // while one is pending cancels it when the source can (the pending
     // action fails as cancelled, the restart runs next with a fresh code);
@@ -409,17 +410,18 @@ export class CredentialMonitor {
     if (id === 'login' && this.loginInFlight) {
       if (this.source.cancelLogin) {
         void this.source.cancelLogin().catch(() => false);
+        queued = { ...params, restart: true };
       } else {
         this.state = { ...this.state, lastAction: { id, at: this.now(), ok: false, message: 'a login is already in progress — enter the code shown, or wait for it to expire' } };
         return Promise.resolve(this.snapshot());
       }
     }
-    const run = this.actionChain.then(() => this.performAction(id, params));
+    const run = this.actionChain.then(() => this.performAction(id, queued));
     this.actionChain = run.then(() => undefined, () => undefined);
     return run;
   }
 
-  private async performAction(id: CredentialActionId, params: { token?: string }): Promise<CredentialState> {
+  private async performAction(id: CredentialActionId, params: { token?: string; restart?: boolean }): Promise<CredentialState> {
     const at = this.now();
     const done = (ok: boolean, message: string): CredentialState => {
       this.state = { ...this.state, lastAction: { id, at, ok, message } };
@@ -436,9 +438,11 @@ export class CredentialMonitor {
         }
         case 'login': {
           if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
-          // Queued behind an action that already settled the credential:
-          // nothing to log out of, nothing to log into.
-          if (!this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
+          // A RESTART that reaches the queue after the login it meant to
+          // restart already succeeded has nothing to log out of. A fresh
+          // login request always runs: switching a spent Codex account is a
+          // login from `ok` / `quota-spent`, and Codex has no set-token.
+          if (params.restart && !this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
           this.loginInFlight = true;
           try {
             await this.source.login();

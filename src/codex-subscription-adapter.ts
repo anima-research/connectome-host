@@ -174,15 +174,13 @@ export class CodexAppServerAuth implements CodexAuthProvider {
       }
 
       this.onLoginRequired({ verificationUrl, userCode });
-      let abort!: (error: Error) => void;
-      const aborted = new Promise<never>((_, reject) => { abort = reject; });
-      this.pendingLogin = { loginId, abort };
+      // The waiter itself is what a cancel rejects, so its timer and
+      // registration go with it instead of lingering until timeout.
+      const wait = this.makeWaiter('account/login/completed', (params) => params.loginId === loginId, this.loginTimeoutMs);
+      this.pendingLogin = { loginId, abort: wait.reject };
       let completed: JsonObject;
       try {
-        completed = await Promise.race([
-          this.waitForNotification('account/login/completed', (params) => params.loginId === loginId, this.loginTimeoutMs),
-          aborted,
-        ]);
+        completed = await wait.promise;
       } finally {
         if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
       }
@@ -298,7 +296,18 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     predicate?: (params: JsonObject) => boolean,
     timeoutMs = 30_000,
   ): Promise<JsonObject> {
-    return new Promise<JsonObject>((resolve, reject) => {
+    return this.makeWaiter(method, predicate, timeoutMs).promise;
+  }
+
+  /** A registered notification waiter whose `reject` also unregisters it
+   *  and clears its timer (what a cancel calls). */
+  private makeWaiter(
+    method: string,
+    predicate: ((params: JsonObject) => boolean) | undefined,
+    timeoutMs: number,
+  ): { promise: Promise<JsonObject>; reject: (error: Error) => void } {
+    let waiterRef!: NotificationWaiter;
+    const promise = new Promise<JsonObject>((resolve, reject) => {
       const waiter: NotificationWaiter = {
         method,
         predicate,
@@ -317,8 +326,15 @@ export class CodexAppServerAuth implements CodexAuthProvider {
           reject(new Error(`Timed out waiting for Codex app-server notification: ${method}`));
         }, timeoutMs),
       };
+      waiterRef = waiter;
       this.waiters.add(waiter);
     });
+    return { promise, reject: (error) => waiterRef.reject(error) };
+  }
+
+  /** Registered notification waiters (tests: a cancelled login leaves none). */
+  get waiterCount(): number {
+    return this.waiters.size;
   }
 
   private handleLine(line: string): void {

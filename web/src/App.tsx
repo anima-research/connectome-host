@@ -258,8 +258,12 @@ export function App() {
     return c && c.scope === panelScope() ? c.info : null;
   };
 
-  const applyCredentialState = (c: CredentialInfo | undefined, scope: string): void => {
+  /** Bumped by every credential-state FRAME (an action's answer); a health
+   *  read that started before the latest frame must not replace it. */
+  let credentialFrameSeq = 0;
+  const applyCredentialState = (c: CredentialInfo | undefined, scope: string, from: 'frame' | 'health' = 'frame'): void => {
     if (!c || c.subscription === false) return;
+    if (from === 'frame') credentialFrameSeq++;
     setCredentialState({ scope, info: c });
     // The alert strip is local-only; a child's state must not key into it.
     if (scope !== 'local') return;
@@ -343,6 +347,7 @@ export function App() {
     if (healthDenied && !force) return;
     if (force) healthDenied = false;
     const scope = panelScope();
+    const frameSeqAtStart = credentialFrameSeq;
     try {
       const res = await fetch(`/healthz${scopeQuery()}`, { credentials: 'same-origin' });
       if (!res.ok) {
@@ -362,8 +367,9 @@ export function App() {
       // A child's health read is the freshest word on its credential: it
       // must replace the frame saved from an earlier child action, or the
       // Health tab keeps the old state and buttons (an API-key parent's own
-      // polls carry no credential block to displace it).
-      else if (h.credential) applyCredentialState(h.credential, scope);
+      // polls carry no credential block to displace it) — unless a newer
+      // frame arrived while this read was in flight.
+      else if (h.credential && credentialFrameSeq === frameSeqAtStart) applyCredentialState(h.credential, scope, 'health');
     } catch (e) {
       if (scope !== panelScope()) return;
       setHealthErr(e instanceof Error ? e.message : String(e));

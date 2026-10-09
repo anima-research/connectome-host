@@ -289,10 +289,10 @@ describe('CredentialMonitor — actions', () => {
     expect(s.lastAction?.message).toContain('WARNING: credential rotated in memory but not written to /x');
   });
 
-  test('a restart during a pending login is refused when the source cannot cancel, and the queued login is moot once settled', async () => {
+  test('a restart during a pending login is refused when the source cannot cancel; a later fresh login runs', async () => {
     let release!: () => void;
     let logins = 0;
-    const { monitor } = harness({ source: { login: async () => { logins++; await new Promise<void>((r) => { release = r; }); } } });
+    const { monitor } = harness({ source: { login: async () => { logins++; if (logins === 1) await new Promise<void>((r) => { release = r; }); } } });
     monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
     const first = monitor.runAction('login');
     await new Promise((r) => setTimeout(r, 0));
@@ -303,10 +303,42 @@ describe('CredentialMonitor — actions', () => {
     release();
     const done = await first;
     expect(done.kind).toBe('ok');
-    const moot = await monitor.runAction('login'); // nothing to log out of
+    const fresh = await monitor.runAction('login'); // a new login request from ok is a real login
+    expect(fresh.lastAction).toMatchObject({ id: 'login', ok: true });
+    expect(logins).toBe(2);
+  });
+
+  test('a queued restart that arrives after the login it meant to restart succeeded is moot (no logout)', async () => {
+    let release!: () => void;
+    let logins = 0;
+    const source: Partial<CredentialSource> = {
+      login: async () => { logins++; if (logins === 1) await new Promise<void>((r) => { release = r; }); },
+      cancelLogin: async () => false, // nothing it could cancel (the flow completed on its own)
+    };
+    const { monitor } = harness({ source });
+    monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
+    const first = monitor.runAction('login');
+    await new Promise((r) => setTimeout(r, 0));
+    const restart = monitor.runAction('login');
+    release();
+    expect((await first).kind).toBe('ok');
+    const moot = await restart;
     expect(moot.lastAction).toMatchObject({ id: 'login', ok: true });
     expect(moot.lastAction!.message).toContain('no longer needed');
     expect(logins).toBe(1);
+  });
+
+  test('a fresh login from ok or quota-spent always runs: switching a spent Codex account is a login, not a restart', async () => {
+    let logins = 0;
+    const meter = fakeMeter([[{ key: 'seven_day', label: 'weekly', utilization: 100, resetsAt: 2 * HOUR }]], () => 0);
+    const { monitor } = harness({ meter, now: () => 0, source: { login: async () => { logins++; } } });
+    await meter.refresh();
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    const s = await monitor.runAction('login');
+    expect(logins).toBe(1);
+    expect(s.lastAction).toMatchObject({ id: 'login', ok: true });
+    expect(s.lastAction!.message).not.toContain('no longer needed');
+    meter.dispose();
   });
 
   test('a restart during a pending login cancels it when the source can, and runs a fresh login', async () => {
