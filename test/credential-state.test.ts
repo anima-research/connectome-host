@@ -317,7 +317,47 @@ describe('CredentialMonitor — precedence', () => {
     expect(alerts.map((a) => a.kind)).toEqual([
       'quota-spent', 'quota-spent-clear', 'auth-rejected', 'auth-rejected-clear', 'quota-spent',
     ]);
+    // No intermediate "ok": the clear says what took over, so a channel-side
+    // listener does not announce recovery while quota still blocks.
+    expect(alerts[3]!.message).toBe('superseded by quota-spent');
     meter.dispose();
+  });
+
+  test('a credential action that verifies while quota is spent settles on quota-spent, never on ok', async () => {
+    const meter = fakeMeter([[{ key: 'seven_day', label: 'weekly', utilization: 100, resetsAt: 2 * HOUR }]], () => 0);
+    const { monitor, alerts } = harness({ meter, now: () => 0, source: { canRefresh: () => true, refresh: async () => {}, probe: async () => {} } });
+    await meter.refresh();
+    monitor.observeError(authErr());
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    const s = await monitor.runAction('refresh');
+    expect(s.lastAction).toMatchObject({ id: 'refresh', ok: true });
+    expect(s.kind).toBe('quota-spent');
+    expect(alerts.map((a) => [a.kind, a.message.startsWith('superseded') ? 'superseded' : '']).slice(-2)).toEqual([
+      ['auth-rejected-clear', 'superseded'], ['quota-spent', ''],
+    ]);
+    meter.dispose();
+  });
+
+  test('a clean quota read does not clear an expiry warning; a clearing spent window re-raises it', async () => {
+    let t = 0;
+    const meter = fakeMeter([
+      [{ key: 'seven_day', label: 'weekly', utilization: 10, resetsAt: 2 * HOUR }],
+      [{ key: 'seven_day', label: 'weekly', utilization: 100, resetsAt: 2 * HOUR }],
+      [{ key: 'seven_day', label: 'weekly', utilization: 10, resetsAt: 2 * HOUR }],
+    ], () => t);
+    const { monitor, alerts } = harness({ meter, now: () => t, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => 5 * 60_000, canRefresh: () => true, refresh: async () => {} } });
+    (monitor as unknown as { checkExpiry(): void }).checkExpiry();
+    expect(monitor.snapshot().kind).toBe('auth-expiring');
+    await meter.refresh(); // clean read: not news about the expiry
+    expect(monitor.snapshot().kind).toBe('auth-expiring');
+    expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring']);
+    await meter.refresh(); // spent: outranks the warning
+    expect(monitor.snapshot().kind).toBe('quota-spent');
+    await meter.refresh(); // reset, token still short: the warning is back
+    expect(monitor.snapshot().kind).toBe('auth-expiring');
+    expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear', 'quota-spent', 'quota-spent-clear', 'auth-expiring']);
+    meter.dispose();
+    monitor.dispose();
   });
 
   test('a passed expiry on an idle host becomes auth-expired without waiting for a 401', () => {

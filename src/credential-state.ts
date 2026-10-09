@@ -202,10 +202,19 @@ export class CredentialMonitor {
     return this.state.kind.startsWith('auth-') && this.state.kind !== 'auth-expiring';
   }
 
-  /** Show the meter's verdict, or ok, unless an auth state outranks it. */
+  /** Show the meter's verdict, or ok, unless an auth state outranks it. A
+   *  clean quota read is not news about the credential's expiry: an
+   *  `auth-expiring` warning stands until the token rotates or expires, and
+   *  is re-raised when a spent window clears while the token is still short. */
   private applyMeterVerdict(): void {
     if (this.authHasPrecedence()) return;
-    this.transition(this.meterVerdict ?? this.okState());
+    if (this.meterVerdict) {
+      this.transition(this.meterVerdict);
+      return;
+    }
+    if (this.state.kind === 'auth-expiring') return;
+    this.transition(this.okState());
+    this.checkExpiry();
   }
 
   dispose(): void {
@@ -242,13 +251,22 @@ export class CredentialMonitor {
   }
 
   /** A provider call succeeded: whatever auth state we held is over; the
-   *  meter's standing verdict (if any) shows again. */
+   *  meter's standing verdict (if any) shows again — directly, never via an
+   *  intermediate `ok`, which would read as recovery while quota still blocks. */
   observeSuccess(): void {
     if (this.disposed) return;
-    if (this.authHasPrecedence()) {
-      this.transition(this.okState());
-      this.applyMeterVerdict();
+    if (this.authHasPrecedence()) this.settleAfterAuth();
+  }
+
+  /** Leave an auth state for whatever stands beneath it: the meter's verdict,
+   *  else the expiry warning if the token is short, else ok. One transition. */
+  private settleAfterAuth(): void {
+    if (this.meterVerdict) {
+      this.transition(this.meterVerdict);
+      return;
     }
+    this.transition(this.okState());
+    this.checkExpiry();
   }
 
   /** The Codex app-server needs a human at a browser. */
@@ -434,18 +452,12 @@ export class CredentialMonitor {
       if (id === 'recheck') {
         return [true, `${what}; nothing to verify for ${this.source.provider} (no probe) — state unchanged`];
       }
-      if (this.state.kind.startsWith('auth-')) {
-        this.transition(this.okState());
-        this.applyMeterVerdict();
-      }
+      if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
       return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell${warn}`];
     }
     try {
       await this.source.probe();
-      if (this.state.kind.startsWith('auth-')) {
-        this.transition(this.okState());
-        this.applyMeterVerdict();
-      }
+      if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
       // quota-unreadable lifts only on the meter's own good read (a gateway
       // can answer the probe 200 with a body the meter cannot parse); the
       // awaited recheck refresh has already updated the verdict by now.

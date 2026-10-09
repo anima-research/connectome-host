@@ -27,7 +27,7 @@
  * silent rotation (the operator asked for click-to-act first).
  */
 
-import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync } from 'node:fs';
+import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync, fsyncSync } from 'node:fs';
 import type { CredentialResolver, CredentialContext } from '@animalabs/membrane';
 import type { CredentialSource } from './credential-state.js';
 
@@ -287,10 +287,22 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
     const fd = openSync(tmp, 'wx', 0o600);
     try {
-      writeSync(fd, JSON.stringify(next, null, 2) + '\n');
-    } finally {
+      // writeSync may write fewer bytes than asked; a partial file renamed
+      // into place would be a truncated credential on the next start.
+      const bytes = Buffer.from(JSON.stringify(next, null, 2) + '\n', 'utf8');
+      let written = 0;
+      while (written < bytes.length) {
+        const n = writeSync(fd, bytes, written, bytes.length - written);
+        if (n <= 0) throw new Error(`short write to ${tmp}: ${written}/${bytes.length} bytes`);
+        written += n;
+      }
+      fsyncSync(fd);
+    } catch (err) {
       closeSync(fd);
+      try { unlinkSync(tmp); } catch { /* best effort */ }
+      throw err;
     }
+    closeSync(fd);
     try {
       renameSync(tmp, file);
     } catch (err) {
