@@ -43,7 +43,9 @@ import {
   resolveOverlayEntry,
   serverProvisions,
   lostByReplacement,
+  overlayEntryProblem,
   overlayEntryReplaces,
+  overlayEntryTombstones,
   hostVariableReferences,
   type AgentOverlayEntry,
   type ServerProvisions,
@@ -352,7 +354,10 @@ export class McplAdminModule implements Module {
     // Tombstoned / overlay-only entries that aren't currently loaded
     const liveIds = new Set(live.map(s => s.id));
     for (const [id, entry] of Object.entries(overlay)) {
-      if (entry.disabled) {
+      const problem = overlayEntryProblem(entry);
+      if (problem !== null) {
+        lines.push(`${id}: MALFORMED in your overlay (${problem}), so the boot skips it — redeploy with mcpl_deploy, or mcpl_unload it`);
+      } else if (overlayEntryTombstones(entry)) {
         lines.push(`${id}: UNLOADED (tombstoned in your overlay — redeploy with mcpl_deploy to restore)`);
       } else if (!liveIds.has(id)) {
         lines.push(`${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
@@ -409,6 +414,13 @@ export class McplAdminModule implements Module {
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
     if (Array.isArray(input.disabledTools) && input.disabledTools.length) entry.disabledTools = input.disabledTools.map(String);
 
+    // Never save an entry the boot would skip (overlayEntryProblem): what
+    // loads now must be what loads at the next start. Without this, an env
+    // value such as null was saved, resolveOverlayEntry returned null for it,
+    // and the deploy threw after saving (Nell-1783's reading of abbae35).
+    const problem = overlayEntryProblem(entry);
+    if (problem) return fail(`mcpl_deploy refused: the entry would be malformed (${problem}), so nothing was saved.`);
+
     // Persist to the overlay first — a connect failure still leaves the entry
     // in place so the agent can fix the server and mcpl_restart it.
     const overlay = readAgentOverlay(this.overlayPath);
@@ -462,9 +474,25 @@ export class McplAdminModule implements Module {
     const id = typeof input.id === 'string' ? input.id.trim() : '';
     if (!id) return fail('mcpl_restart requires `id`.');
 
-    await framework.restartMcplServer(id);
+    // The note is read before the restart, so a restart that throws still
+    // carries it, and an overlay file that can't be read costs only the
+    // note: the restart's own outcome is what the receipt reports. A parse
+    // error can quote the file, which may hold values, so it isn't repeated.
+    let note: string;
+    try {
+      note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
+      // The restart reconnects with the configuration of the last connect,
+      // while the note reads the file as it is now (Nell-1783's probe).
+      if (note) note += ' That describes your overlay file as it is now: a hand edit since the last mcpl_deploy takes effect at the next host start, unless a later mcpl_deploy replaces it; not at this restart.';
+    } catch {
+      note = ' Your overlay file couldn\'t be read, so nothing is said here about your entry.';
+    }
+    try {
+      await framework.restartMcplServer(id);
+    } catch (error) {
+      return fail(`mcpl_restart failed: ${error instanceof Error ? error.message : String(error)}.${note}`);
+    }
     const status = framework.listMcplServers().find(s => s.id === id);
-    const note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
     if (!status?.connected) {
       return fail(`Restarted server "${id}", but it isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}.${note}`);
     }
@@ -487,7 +515,7 @@ export class McplAdminModule implements Module {
 
     let persistNote = 'Session-only: it will load again on the next host restart.';
     if (persist) {
-      if (overlay[id] && !overlay[id]!.disabled) {
+      if (overlayEntryReplaces(overlay[id])) {
         // Agent-deployed server: forget it entirely. If it replaced the
         // operator's definition, that definition is what the next start loads.
         const replaced = this.replacement(id, overlay) !== null;

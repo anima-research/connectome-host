@@ -4,7 +4,7 @@
  */
 
 import { test, expect, describe } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -15,7 +15,9 @@ import {
   resolveOverlayEntry,
   serverProvisions,
   lostByReplacement,
+  overlayEntryProblem,
   overlayEntryReplaces,
+  overlayEntryTombstones,
   overlayWarnings,
   hostVariableReferences,
   AGENT_DEPLOY_DENIED_CAPABILITIES,
@@ -216,6 +218,208 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(lostByReplacement(operator, { url: 'wss://other/mcpl', token: 'mine', access: 'eidoverse' })).toBeNull();
     // A command replacement of a URL server: a token or grant can't reach a process.
     expect(lostByReplacement(operator, { command: 'node', env: { A: '1' } })).toBeNull();
+  });
+
+  // Greptile's review of #227: a name the host sets over any mapping
+  // (AGENT_TIMEZONE) can't be lacking, and an access grant is a name, so
+  // another name is another grant.
+  test('a name the host sets over every mapping is never lacking', () => {
+    const operator = serverProvisions({ ...shell, env: { ...shell.env, AGENT_TIMEZONE: 'UTC' } });
+    expect(lostByReplacement(operator, { command: 'node', env: { SESSION_SERVER_PORT: '3101' } })).toBe('env SESSION_SERVER_TOKEN');
+    expect(lostByReplacement(serverProvisions({ id: 'tz', command: 'node', env: { AGENT_TIMEZONE: 'UTC' } }), { command: 'node' })).toBeNull();
+    // The reaction baseline is a default the server's own mapping overrides, so it can be lacking.
+    expect(lostByReplacement(serverProvisions({ id: 'd', command: 'node', env: { DISCORD_SUPPRESSED_REACTIONS_BASELINE: 'x' } }), { command: 'node' }))
+      .toBe('env DISCORD_SUPPRESSED_REACTIONS_BASELINE');
+  });
+
+  test('another access grant name lacks the operator\'s grant', () => {
+    const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', access: 'eidoverse' });
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: 'eidoveres' })).toBe('access grant "eidoverse"');
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', access: ' eidoverse ' })).toBeNull();
+  });
+
+  // Greptile's review of #228: the boot asks for the grant as the overlay
+  // resolves it, so a hand-edited name the warnings read as the operator's
+  // must resolve to that name.
+  test('the grant a replacement is read as carrying is the grant the boot dials', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      saveAgentOverlay(path, { world: { url: 'wss://w/mcpl', access: ' eidoverse ' } });
+      const operatorServers = [{ id: 'world', url: 'wss://w/mcpl', access: 'eidoverse' }];
+      expect(overlayWarnings(operatorServers, path)).toEqual([]);
+      expect(applyAgentOverlay(operatorServers, path)[0]?.access).toBe('eidoverse');
+    });
+  });
+
+  // Nell-1783's review of c1e33ec: agent-framework chooses the connection by
+  // `transport` first (isWebSocketTransport), so a hand-edited entry with a
+  // command and a URL under transport "websocket" dials the URL.
+  test('an entry is read by the connection the framework opens for it', () => {
+    const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok', access: 'eidoverse' });
+    const dialled = { command: 'node', url: 'wss://w/mcpl', transport: 'websocket' as const, env: { A: '${A}' }, token: '${TOKEN}' };
+    expect(lostByReplacement(operator, dialled)).toBe('token; access grant "eidoverse"');
+    expect(hostVariableReferences(dialled)).toEqual(['token']);
+    // An explicit stdio transport spawns the command, as a command alone does.
+    const spawned = { command: 'node', url: 'wss://w/mcpl', transport: 'stdio' as const, env: { A: '${A}' }, token: '${TOKEN}' };
+    expect(lostByReplacement(serverProvisions({ id: 'shell', command: 'node', env: { A: '1' } }), spawned)).toBe('env A');
+    expect(hostVariableReferences(spawned)).toEqual(['env A']);
+    // A stdio transport with no command spawns nothing and dials nothing.
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl', transport: 'stdio', token: '${TOKEN}' })).toBeNull();
+    expect(hostVariableReferences({ url: 'wss://w/mcpl', transport: 'stdio', token: '${TOKEN}' })).toEqual([]);
+    // Nor does a websocket transport with no url: the framework refuses to dial.
+    expect(lostByReplacement(operator, { command: 'node', transport: 'websocket', token: '${TOKEN}' })).toBeNull();
+    expect(hostVariableReferences({ command: 'node', transport: 'websocket', token: '${TOKEN}' })).toEqual([]);
+  });
+
+  // Nell-1783's review of the fix: the overlay is hand-editable JSON, so a
+  // malformed shape must read as lacking, never throw, since the startup
+  // warnings run before the overlay is applied.
+  test('malformed entry shapes read as lacking and never throw', () => {
+    withTmp((dir) => {
+      const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', access: 'portal' });
+      const malformed = { url: 'wss://w/mcpl', access: 5 } as unknown as AgentOverlayEntry;
+      expect(lostByReplacement(operator, malformed)).toBe('access grant "portal"');
+      const odd = { command: 'node', args: 'not-a-list', env: ['${A}'] } as unknown as AgentOverlayEntry;
+      expect(hostVariableReferences(odd)).toEqual([]);
+      expect(lostByReplacement(serverProvisions(shell), odd)).toBe('env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN');
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { world: malformed, shell: odd } }));
+      expect(() => overlayWarnings([shell, { id: 'world', url: 'wss://w/mcpl', access: 'portal' }], path)).not.toThrow();
+    });
+  });
+
+  // Nell-1783's haiku review of #228: the boot's own reader threw on a null
+  // entry and on non-array args, so the host didn't start; and the readers
+  // disagreed on a non-boolean `disabled`. A malformed entry is now skipped
+  // by the boot and by every reader alike.
+  test('a malformed entry is skipped by the boot and every reader alike, and nothing throws', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      const entries: Record<string, unknown> = {
+        nulled: null,
+        stringArgs: { command: 'node', args: 'server.js' },
+        nullArg: { command: 'node', args: [null] },
+        yes: { command: 'node', disabled: 'yes' },
+        envList: { command: 'node', env: ['A=1'] },
+        accessNumber: { url: 'wss://w/mcpl', access: 5 },
+        seven: 7,
+        tombstoneArgs: { disabled: true, args: 'x' }, // malformed, so not a tombstone either
+      };
+      writeFileSync(path, JSON.stringify({ mcplServers: entries }));
+      const operator = Object.keys(entries).map((id) => ({ id, command: 'operator-mcpl' }));
+      // The boot: every operator definition stays, and nothing is added.
+      expect(applyAgentOverlay(operator, path)).toEqual(operator);
+      for (const [id, entry] of Object.entries(entries)) {
+        expect(resolveOverlayEntry(id, entry as AgentOverlayEntry, path)).toBeNull();
+        expect(overlayEntryReplaces(entry)).toBe(false);
+        expect(overlayEntryTombstones(entry)).toBe(false);
+      }
+      expect(overlayWarnings(operator, path)).toEqual([
+        `[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "stringArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "nullArg": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "yes": the agent overlay (${path}) entry is malformed (its disabled is neither true nor false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "envList": the agent overlay (${path}) entry is malformed (its env isn't a map of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "accessNumber": the agent overlay (${path}) entry is malformed (its access isn't text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "seven": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "tombstoneArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
+      ]);
+      // With no operator definition, the line says only that the boot skips it.
+      expect(overlayWarnings([], path)[0]).toBe(`[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it`);
+    });
+  });
+
+  // Nell-1783's reading of abbae35: main's own mcpl_deploy saved env values
+  // as given, so a file it wrote can hold a number. That entry loads today,
+  // and #228 must not make the boot skip it.
+  test("an entry as main's mcpl_deploy wrote it, with a number in its env, loads with the value as text", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      // main's deploy saved args as text (map(String)) and env as given.
+      const written = { command: 'node', args: ['server.js'], env: { PORT: 3101, VERBOSE: true, NAME: 'door' } };
+      writeFileSync(path, JSON.stringify({ mcplServers: { door: written } }));
+      expect(overlayEntryProblem(written)).toBeNull();
+      const loaded = applyAgentOverlay([], path);
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]).toMatchObject({ id: 'door', command: 'node', args: ['server.js'], env: { PORT: '3101', VERBOSE: 'true', NAME: 'door' } });
+      expect(overlayWarnings([], path)).toEqual([]);
+      // The stored entry is read, never rewritten.
+      expect(JSON.parse(readFileSync(path, 'utf8')).mcplServers.door).toEqual(written);
+    });
+  });
+
+  test('a number in args, as a hand edit might write it, is read as its text by the same rule', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { door: { command: 'node', args: ['server.js', 8080, true] } } }));
+      const loaded = applyAgentOverlay([], path);
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]).toMatchObject({ id: 'door', args: ['server.js', '8080', 'true'] });
+    });
+  });
+
+  test('null, a list or an object as an env value stays malformed, with its reason named', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      const entries: Record<string, unknown> = {
+        nullEnv: { command: 'node', env: { A: null } },
+        objectEnv: { command: 'node', env: { A: { b: 1 } } },
+        listEnv: { command: 'node', env: { A: ['x'] } },
+      };
+      writeFileSync(path, JSON.stringify({ mcplServers: entries }));
+      for (const entry of Object.values(entries)) expect(overlayEntryProblem(entry)).toBe("its env isn't a map of text, numbers or true/false");
+      expect(applyAgentOverlay([], path)).toEqual([]);
+      expect(overlayWarnings([], path)).toEqual(Object.keys(entries).map((id) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry is malformed (its env isn't a map of text, numbers or true/false), so the boot skips it`));
+    });
+  });
+
+  test("an entry naming nothing to run or dial is malformed too, and said so, not skipped silently", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { shell: { toolPrefix: 'y' } } }));
+      expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names nothing to run or dial');
+      expect(applyAgentOverlay([shell], path)).toEqual([shell]);
+      expect(overlayWarnings([shell], path)).toEqual([
+        `[mcpl] server "shell": the agent overlay (${path}) entry is malformed (it names nothing to run or dial), so the boot skips it and the operator's definition loads`,
+      ]);
+    });
+  });
+
+  test("a file that isn't JSON, or isn't a map of entries, stops the boot with an error naming it, never quoting it", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      for (const [text, says] of [
+        ['{"mcplServers": {"shell": {"env": {"TOKEN": "s3cret"}},}}', "isn't valid JSON"],
+        ['null', "isn't an object with mcplServers"],
+        ['{"mcplServers": [{"command": "node"}]}', "has an mcplServers that isn't a map of entries by id"],
+      ] as const) {
+        writeFileSync(path, text);
+        expect(() => readAgentOverlay(path)).toThrow(`the agent overlay ${path} ${says}`);
+        expect(() => applyAgentOverlay([shell], path)).toThrow(says);
+        expect(() => overlayWarnings([shell], path)).toThrow(says);
+        try { readAgentOverlay(path); } catch (error) { expect(String(error)).not.toContain('s3cret'); }
+      }
+    });
+  });
+
+  test("a host variable in an env name the host sets itself isn't named: the server never gets that text", () => {
+    expect(hostVariableReferences({ command: 'node', env: { AGENT_TIMEZONE: '${TZ}', OTHER: '${OTHER}' } })).toEqual(['env OTHER']);
+  });
+
+  test('one tombstone rule for every reader: disabled === true', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { gone: { disabled: true } } }));
+      expect(applyAgentOverlay([{ id: 'gone', command: 'operator-mcpl' }], path)).toEqual([]);
+      expect(overlayEntryTombstones({ disabled: true })).toBe(true);
+      expect(overlayEntryTombstones({ disabled: false, command: 'node' })).toBe(false);
+      expect(overlayEntryProblem({ disabled: 1 })).toBe('its disabled is neither true nor false');
+    });
+  });
+
+  test("an access grant naming a host variable is named, as a token's is", () => {
+    expect(hostVariableReferences({ url: 'wss://w/mcpl', access: '${GRANT}' })).toEqual(['access']);
   });
 
   test('only an entry that puts a server in place replaces one', () => {

@@ -202,12 +202,72 @@ export interface AgentOverlayFile {
   mcplServers: Record<string, AgentOverlayEntry>;
 }
 
-/** Read the agent overlay file. Returns empty object if it doesn't exist. */
+/**
+ * Read the agent overlay file. Returns empty object if it doesn't exist.
+ *
+ * A file that can't be parsed, or isn't `{ "mcplServers": { … } }`, throws
+ * an error naming the file, rather than any one entry being skipped: the
+ * file carries the agent's tombstones, so reading past it would load servers
+ * the agent unloaded. The boot stops with that error until the file is fixed
+ * or moved aside (Nell-1783's haiku probe of #228). The error never quotes
+ * the file, which can hold credentials.
+ */
 export function readAgentOverlay(overlayPath: string): Record<string, AgentOverlayEntry> {
   if (!existsSync(overlayPath)) return {};
   const raw = readFileSync(overlayPath, 'utf-8');
-  const parsed = JSON.parse(raw) as AgentOverlayFile;
-  return parsed.mcplServers ?? {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`the agent overlay ${overlayPath} isn't valid JSON: fix it, or move it aside (it holds the agent's tombstones, so it isn't skipped)`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`the agent overlay ${overlayPath} isn't an object with mcplServers: fix it, or move it aside`);
+  }
+  const servers = (parsed as { mcplServers?: unknown }).mcplServers;
+  if (servers === undefined) return {};
+  if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
+    throw new Error(`the agent overlay ${overlayPath} has an mcplServers that isn't a map of entries by id: fix it, or move it aside`);
+  }
+  return servers as Record<string, AgentOverlayEntry>;
+}
+
+/**
+ * Why an agent overlay entry is malformed, or null when it's well-formed.
+ * The overlay is the agent's hand-editable file, so an entry can be any
+ * JSON: one that isn't an object, or has a field of the wrong kind, is
+ * skipped by the boot (applyAgentOverlay, resolveOverlayEntry) and by every
+ * reader that says what the boot loaded (overlayEntryReplaces,
+ * overlayWarnings, mcpl_list), so they all agree, and none throws on it. A
+ * malformed entry is neither a tombstone nor a replacement: the operator's
+ * definition, if any, stays (Nell-1783's haiku review of #228).
+ */
+export function overlayEntryProblem(entry: unknown): string | null {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return 'it isn\'t an object';
+  const e = entry as Record<string, unknown>;
+  const text = (k: string) => e[k] !== undefined && typeof e[k] !== 'string';
+  // An arg or env value is text, or a number or true/false, whose text is
+  // unambiguous and which the boot passes on as that text (resolveOverlayEntry).
+  // main's own mcpl_deploy saved env values as given, so an entry it wrote
+  // with { PORT: 3101 } loads; refusing it would have #228 break files the
+  // house's tool wrote (Nell-1783's reading of abbae35). null, a list or an
+  // object stays refused: main passed them on as "null" or "[object Object]",
+  // which nobody means, so the boot skips the entry with its reason named.
+  const plain = (v: unknown) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+  if (e.disabled !== undefined && typeof e.disabled !== 'boolean') return 'its disabled is neither true nor false';
+  for (const k of ['command', 'url', 'token', 'access', 'toolPrefix']) if (text(k)) return `its ${k} isn't text`;
+  if (e.transport !== undefined && e.transport !== 'stdio' && e.transport !== 'websocket') return 'its transport is neither stdio nor websocket';
+  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every(plain))) return 'its args aren\'t a list of text, numbers or true/false';
+  if (e.env !== undefined && !(e.env !== null && typeof e.env === 'object' && !Array.isArray(e.env)
+    && Object.values(e.env as Record<string, unknown>).every(plain))) return 'its env isn\'t a map of text, numbers or true/false';
+  // Neither a tombstone nor a server: the boot would skip it without a word.
+  if (e.disabled !== true && !e.command && !e.url) return 'it names nothing to run or dial';
+  return null;
+}
+
+/** A well-formed tombstone: `disabled: true`, the one rule every reader uses. */
+export function overlayEntryTombstones(entry: unknown): boolean {
+  return overlayEntryProblem(entry) === null && (entry as AgentOverlayEntry).disabled === true;
 }
 
 /** Write the agent overlay file. */
@@ -283,13 +343,19 @@ const OVERLAY_LIST_FIELDS = [
  *    AGENT_DEPLOY_DENIED_CAPABILITIES (unioned with anything the entry
  *    already denies): self-deployed servers get channels + tools and
  *    nothing consequential by default.
+ *
+ *  - A string `access` is trimmed, as mcpl_deploy writes it. A grant is a
+ *    name, and the boot asks for the grant as resolved here (index.ts), so
+ *    a hand-edited name is the grant the startup warnings compare
+ *    (lostByReplacement).
  */
 export function resolveOverlayEntry(
   id: string,
   entry: AgentOverlayEntry,
   overlayPath: string,
 ): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
-  if (entry.disabled) return null;
+  if (overlayEntryProblem(entry) !== null) return null;
+  if (entry.disabled === true) return null;
   if (!entry.command && !entry.url) return null;
   const overlayDir = dirname(resolve(overlayPath));
   const { disabled: _d, ...fields } = entry;
@@ -298,6 +364,12 @@ export function resolveOverlayEntry(
     if (Array.isArray(rec[k]) && (rec[k] as unknown[]).length === 0) delete rec[k];
   }
   delete rec.enabledCapabilities;
+  // A number or true/false in args or env is passed on as its text (see
+  // overlayEntryProblem).
+  if (Array.isArray(rec.args)) rec.args = (rec.args as unknown[]).map(String);
+  if (rec.env && typeof rec.env === 'object') {
+    rec.env = Object.fromEntries(Object.entries(rec.env as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+  }
   // Same boundary for MCPL tool lifecycle: in the framework a toolLifecycle
   // block IS the grant, so the agent's own file never carries one (the deny
   // above already masks the paths; this keeps the overlay honest too).
@@ -305,6 +377,8 @@ export function resolveOverlayEntry(
   // Full host environment access is an operator grant, not an agent-owned
   // overlay setting. Operators declare it in the recipe or mcpl-servers.json.
   delete rec.inheritEnv;
+  // The grant the boot dials is the grant the warnings compare.
+  if (typeof rec.access === 'string') rec.access = rec.access.trim();
   // A network server the agent deployed should come back when it bounces.
   // reconnect defaulted to false, so an entry that never said `reconnect:
   // true` was severed PERMANENTLY by any server restart — with no signal to
@@ -323,9 +397,9 @@ export function resolveOverlayEntry(
     id,
     ...rec,
     disabledCapabilities: [...denied].sort(),
-    ...(entry.args
+    ...(Array.isArray(rec.args)
       ? {
-          args: entry.args.map(arg =>
+          args: (rec.args as string[]).map(arg =>
             arg.startsWith('./') || arg.startsWith('../') ? resolve(overlayDir, arg) : arg,
           ),
         }
@@ -346,8 +420,9 @@ export function applyAgentOverlay<T extends { id: string }>(
   const overlay = readAgentOverlay(overlayPath);
   if (Object.keys(overlay).length === 0) return servers;
 
+  // A malformed entry is skipped: neither a tombstone nor a replacement.
   const result: Array<T | ({ id: string } & Record<string, unknown>)> =
-    servers.filter(s => overlay[s.id]?.disabled !== true);
+    servers.filter(s => !overlayEntryTombstones(overlay[s.id]));
 
   for (const [id, entry] of Object.entries(overlay)) {
     const loaded = resolveOverlayEntry(id, entry, overlayPath);
@@ -387,24 +462,43 @@ export function serverProvisions(definition: Record<string, unknown>): ServerPro
 /** A text that names a host variable, as substituteEnvVars reads one. */
 const namesHostVariable = (text: unknown): boolean => typeof text === 'string' && namesEnvReference(text);
 
+/** An overlay entry's env when it's a map, else none. The overlay is the
+ *  agent's hand-editable file, so the readers here take its shapes as they
+ *  come and never throw on one: the startup warnings mustn't become a new
+ *  way for a malformed entry to stop a start. */
+const envOf = (entry: AgentOverlayEntry): Record<string, unknown> =>
+  entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env) ? entry.env : {};
+
+/** Whether agent-framework dials an entry's URL rather than spawning its
+ *  command. This is its isWebSocketTransport (mcpl/transport.ts), which the
+ *  package doesn't export: an explicit `transport` decides, and otherwise a
+ *  `url` with no `command`. The readers here choose their branch by it, so
+ *  what they name is what the connection the framework opens would carry. */
+const dialsUrl = (entry: AgentOverlayEntry): boolean =>
+  entry.transport === 'websocket' || (entry.transport !== 'stdio' && Boolean(entry.url) && !entry.command);
+
 /**
  * The parts of an agent overlay entry that name a host variable (`${VAR}`),
- * as labels for a receipt: `command`, `args` and `env NAME` for a command
- * entry, `url` and `token` for a URL one. Only a recipe substitutes those
- * (substituteEnvVars); from an overlay entry the server gets the text as
- * written. Labels only, never values.
+ * as labels for a receipt: `command`, `args` and `env NAME` for an entry the
+ * framework spawns, `url` and `token` for one it dials (dialsUrl). Only a
+ * recipe substitutes those (substituteEnvVars); from an overlay entry the
+ * server gets the text as written. Labels only, never values.
  */
 export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
   const refs: string[] = [];
-  if (entry.command) {
+  if (entry.command && !dialsUrl(entry)) {
     if (namesHostVariable(entry.command)) refs.push('command');
-    if ((entry.args ?? []).some(namesHostVariable)) refs.push('args');
-    for (const name of Object.keys(entry.env ?? {}).sort()) {
-      if (namesHostVariable(entry.env![name])) refs.push(`env ${name}`);
+    if (Array.isArray(entry.args) && entry.args.some(namesHostVariable)) refs.push('args');
+    const env = envOf(entry);
+    for (const name of Object.keys(env).sort()) {
+      // The host sets this one over the entry's value, so the server never
+      // gets the entry's text for it (as lostByReplacement reads it).
+      if (namesHostVariable(env[name]) && !hostSetsOverServer(name)) refs.push(`env ${name}`);
     }
-  } else if (entry.url) {
+  } else if (dialsUrl(entry) && entry.url) {
     if (namesHostVariable(entry.url)) refs.push('url');
     if (namesHostVariable(entry.token)) refs.push('token');
+    if (namesHostVariable(entry.access)) refs.push('access');
   }
   return refs;
 }
@@ -425,32 +519,50 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
  * came back from `mcpl_restart` without the SESSION_SERVER_TOKEN its daemon
  * wanted, and the restart reported success. A value that names a host
  * variable supplies nothing (hostVariableReferences), so its name counts as
- * lacking.
+ * lacking. A name the host sets over any server's mapping
+ * (hostSetsOverServer) can't be lacking: no definition's value for it
+ * reaches a child.
  *
  * Env and inheritance count only for a replacement that spawns a process; a
- * token and an access grant count only for one that dials a URL.
+ * token and an access grant count only for one that dials a URL, as the
+ * framework chooses between them (dialsUrl).
  */
 export function lostByReplacement(operator: ServerProvisions, entry: AgentOverlayEntry): string | null {
   const lost: string[] = [];
-  if (entry.command) {
+  if (entry.command && !dialsUrl(entry)) {
     const declared = new Set(
-      Object.entries(entry.env ?? {}).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
+      Object.entries(envOf(entry)).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
     );
-    const missing = operator.env.filter((name) => !declared.has(name));
+    const missing = operator.env.filter((name) => !declared.has(name) && !hostSetsOverServer(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
     if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
-  } else if (entry.url) {
+  } else if (dialsUrl(entry) && entry.url) {
     const token = typeof entry.token === 'string' && entry.token !== '' && !namesHostVariable(entry.token);
     if (operator.token && !token) lost.push('token');
-    if (operator.access && !entry.access) lost.push(`access grant "${operator.access}"`);
+    // A grant is a name, not a credential: another name is another grant.
+    // Trimmed, as resolveOverlayEntry resolves it for the dial.
+    const access = typeof entry.access === 'string' ? entry.access.trim() : '';
+    if (operator.access && access !== operator.access) lost.push(`access grant "${operator.access}"`);
   }
   return lost.length > 0 ? lost.join('; ') : null;
 }
 
+/** Whether the host sets `name` on every stdio child over whatever a server
+ *  maps for it (composeMcplChildEnv, AGENT_TIMEZONE today), so no
+ *  definition's own value reaches a child and a replacement can't lack it.
+ *  Read from the composition itself, so the two can't drift. */
+function hostSetsOverServer(name: string): boolean {
+  const mapped = '\u0000mapped';
+  return composeMcplChildEnv({ [name]: mapped }, '')[name] !== mapped;
+}
+
 /** Whether an overlay entry replaces a server rather than tombstoning it or
- *  being skipped: the entries applyAgentOverlay puts in a server's place. */
-export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entry is AgentOverlayEntry {
-  return entry !== undefined && entry.disabled !== true && Boolean(entry.command || entry.url);
+ *  being skipped: the entries applyAgentOverlay puts in a server's place. A
+ *  malformed one (overlayEntryProblem) never does. */
+export function overlayEntryReplaces(entry: unknown): entry is AgentOverlayEntry {
+  return entry !== undefined && overlayEntryProblem(entry) === null
+    && (entry as AgentOverlayEntry).disabled !== true
+    && Boolean((entry as AgentOverlayEntry).command || (entry as AgentOverlayEntry).url);
 }
 
 /**
@@ -467,6 +579,14 @@ export function overlayWarnings(
   const operatorById = new Map(operatorServers.map((server) => [server.id, server]));
   const lines: string[] = [];
   for (const [id, entry] of Object.entries(readAgentOverlay(overlayPath))) {
+    const problem = overlayEntryProblem(entry);
+    if (problem !== null) {
+      lines.push(
+        `[mcpl] server "${id}": the agent overlay (${overlayPath}) entry is malformed (${problem}), so the boot skips it` +
+        (operatorById.has(id) ? ' and the operator\'s definition loads' : ''),
+      );
+      continue;
+    }
     if (!overlayEntryReplaces(entry)) continue;
     const operator = operatorById.get(id);
     const lost = operator ? lostByReplacement(serverProvisions(operator), entry) : null;

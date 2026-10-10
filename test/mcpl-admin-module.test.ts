@@ -4,7 +4,7 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
@@ -142,6 +142,27 @@ describe('mcpl_deploy', () => {
     expect(readAgentOverlay(overlayPath).mytool).toEqual({ command: 'bun' });
   });
 
+  // Nell-1783's reading of abbae35: an env value the boot would skip was
+  // saved, then resolveOverlayEntry returned null and the deploy threw.
+  test('an env the boot would skip is refused before anything is saved; a number is deployed as its text', async () => {
+    const { stub } = makeStubFramework();
+    const envs: unknown[] = [];
+    const connect = (stub as unknown as { connectMcplServer: (c: { env?: unknown }) => Promise<void> }).connectMcplServer;
+    (stub as unknown as { connectMcplServer: (c: { env?: unknown }) => Promise<void> }).connectMcplServer =
+      async (config) => { envs.push(config.env); await connect(config); };
+    const mod = makeModule(stub);
+
+    const refused = await call(mod, 'mcpl_deploy', { id: 'nulled', command: 'node', env: { A: null } });
+    expect(refused.success).toBe(false);
+    expect(refused.error).toBe("mcpl_deploy refused: the entry would be malformed (its env isn't a map of text, numbers or true/false), so nothing was saved.");
+    expect(readAgentOverlay(overlayPath).nulled).toBeUndefined();
+    expect(envs).toEqual([]);
+
+    const deployed = await call(mod, 'mcpl_deploy', { id: 'door', command: 'node', env: { PORT: 3101 } });
+    expect(deployed.success).toBe(true);
+    expect(envs).toEqual([expect.objectContaining({ PORT: '3101' })]);
+  });
+
   test('rejects missing command/url, both at once, and bad ids', async () => {
     const { stub } = makeStubFramework();
     const mod = makeModule(stub);
@@ -255,6 +276,27 @@ describe('mcpl_list', () => {
     expect(text).toContain('gone: UNLOADED');
   });
 
+  test("names a malformed overlay entry as one the boot skipped, and the operator's live server as the operator's", async () => {
+    const { stub } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'discord', command: 'node' });
+    writeFileSync(join(dir, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: { command: 'node' } } }));
+    writeFileSync(overlayPath, JSON.stringify({ mcplServers: { discord: { command: 'node', args: 'server.js' }, stray: null } }));
+    const mod = makeModule(stub);
+    const text = String((await call(mod, 'mcpl_list')).data);
+    expect(text).toContain('source=file/recipe');
+    expect(text).not.toContain('source=agent-overlay');
+    expect(text).toContain("discord: MALFORMED in your overlay (its args aren't a list of text, numbers or true/false), so the boot skips it");
+    expect(text).toContain("stray: MALFORMED in your overlay (it isn't an object), so the boot skips it");
+    // A restart reads the same file without throwing, so its receipt carries
+    // no "couldn't be read" note.
+    const restarted = await call(mod, 'mcpl_restart', { id: 'discord' });
+    expect(String(restarted.data ?? restarted.error)).not.toContain("couldn't be read");
+    // Unloading it for good tombstones the operator's server over the malformed entry.
+    await call(mod, 'mcpl_unload', { id: 'discord' });
+    expect(readAgentOverlay(overlayPath).discord).toEqual({ disabled: true });
+  });
+
   test('distinguishes older-framework unknown and bounds untrusted revisions', async () => {
     const { stub, servers } = makeStubFramework();
     await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
@@ -342,6 +384,8 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(text).not.toContain('s3cret-token');
     expect(text).toContain('mcpl_unload "shell"');
     expect(text).toContain('the operator\'s loads again at the next host start');
+    // The restart reconnects with the last connect's configuration; the note reads the file.
+    expect(text).toContain('That describes your overlay file as it is now: a hand edit since the last mcpl_deploy takes effect at the next host start, unless a later mcpl_deploy replaces it; not at this restart.');
   });
 
   test('mcpl_restart says nothing more when the entry lacks nothing, or replaces nothing', async () => {
@@ -412,6 +456,34 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(deployed).not.toContain('operator');
     expect(String((await call(mod, 'mcpl_restart', { id: 'weather' })).data))
       .toContain('Your entry names a host variable in args');
+  });
+
+  // Greptile's review of #227: a restart that throws keeps the note, and an
+  // overlay file that can't be read costs only the note, never the restart's
+  // own outcome or a quote of the file.
+  test('a restart that throws still says what the entry lacks', async () => {
+    const { stub, mod } = await bootWithReplacement();
+    (stub as unknown as { restartMcplServer: () => Promise<void> }).restartMcplServer =
+      async () => { throw new Error('spawn ENOENT'); };
+
+    const result = await call(mod, 'mcpl_restart', { id: 'shell' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('mcpl_restart failed: spawn ENOENT.');
+    expect(result.error).toContain('lacks its env SESSION_SERVER_TOKEN');
+  });
+
+  test('an overlay file that can\'t be read leaves the restart\'s own outcome', async () => {
+    const { mod } = await bootWithReplacement();
+    writeFileSync(overlayPath, '{"mcplServers": {"shell": {"env": {"SECRET": "s3cret-in-file"');
+
+    const result = await call(mod, 'mcpl_restart', { id: 'shell' });
+
+    expect(result.success).toBe(true);
+    expect(String(result.data)).toBe(
+      'Restarted server "shell" — connected, 1 tools. Your overlay file couldn\'t be read, so nothing is said here about your entry.',
+    );
+    expect(String(result.data)).not.toContain('s3cret');
   });
 
   test('mcpl_list marks the replacement and what it lacks', async () => {
