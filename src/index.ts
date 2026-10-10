@@ -12,6 +12,13 @@
  *
  * Environment variables:
  *   ANTHROPIC_API_KEY   - Required (not needed for recipe provider "mock")
+ *   ANTHROPIC_AUTH_TOKEN - Subscription (OAuth) bearer instead of the API key
+ *   ANTHROPIC_OAUTH_CREDENTIALS_FILE - JSON credentials file (accessToken +
+ *                         refreshToken + expiresAt, Claude Code's shape or flat);
+ *                         a refresh token makes the credential host-rotatable.
+ *                         Point it at a COPY, never at ~/.claude/.credentials.json.
+ *   ANTHROPIC_OAUTH_AUTO_REFRESH - 1/true: rotate on a 401 without asking
+ *                         (default: alert + operator action)
  *   MODEL               - Override model (default: from recipe or claude-opus-4-6)
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
@@ -28,11 +35,13 @@ import {
   OpenRouterAdapter,
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { CredentialMonitor } from './credential-state.js';
+import { AnthropicOAuthCredentials } from './anthropic-credentials.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -48,6 +57,7 @@ import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
+import { NoticesModule } from './modules/notices-module.js';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
 import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule } from './modules/web-ui-module.js';
@@ -56,7 +66,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, serverProblems, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, serverProblems, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { SessionManager } from './session-manager.js';
@@ -90,6 +100,9 @@ const config = {
   // OAuth/Bearer token (e.g. a Claude subscription token). When set, it takes
   // precedence over the API key so requests never carry both auth schemes.
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  // Refreshable OAuth credential file (see header). Wins over the bare token.
+  anthropicCredentialsFile: process.env.ANTHROPIC_OAUTH_CREDENTIALS_FILE,
+  anthropicAutoRefresh: ['1', 'true'].includes((process.env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()),
   openaiApiKey: process.env.OPENAI_API_KEY,
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
   // Deliberately NO fallback to OPENAI_API_KEY: agent.baseUrl is
@@ -127,6 +140,13 @@ interface AppContext {
   /** Subscription quota windows; null on metered (pay-per-token) providers.
    *  Its presence is what flips usage readouts from dollars to percent. */
   quotaMeter: QuotaMeter | null;
+  /** Credential state + operator actions (subscription providers). Null on
+   *  API-key hosts, where nothing here is actionable. */
+  credentials: CredentialMonitor | null;
+  /** A subscription credential whose windows this host cannot read
+   *  (openai-codex through an inference gateway, which tracks them per
+   *  login): usage readouts still stay off dollars. */
+  subscriptionUnmetered: boolean;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -188,6 +208,9 @@ function resolveModel(recipe: Recipe): string {
     (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
 }
 
+/** The host's one NoticesModule, kept across session switches (see createFramework). */
+let noticesRef: NoticesModule | null = null;
+
 async function createFramework(
   membrane: Membrane,
   storePath: string,
@@ -196,6 +219,8 @@ async function createFramework(
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
   quotaMeter: QuotaMeter | null,
+  credentials: CredentialMonitor | null,
+  subscriptionUnmetered = false,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -332,8 +357,34 @@ async function createFramework(
   let activityModule: ActivityModule | null = null;
   if (modules.activity !== undefined && modules.activity !== false) {
     const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
-    activityModule = new ActivityModule({ initialChannels: activityConfig.channels });
+    activityModule = new ActivityModule({
+      initialChannels: activityConfig.channels,
+    });
     moduleInstances.push(activityModule);
+  }
+
+  // Outage notices (host speaks in the agent's channels when it cannot) —
+  // opt-in per recipe. ONE instance per host process, reused across session
+  // switches: a standing outage announced before the switch must still be
+  // told, cleared and owed afterwards, and the credential monitor announces
+  // transitions only. Server ids are handed over once the MCPL server list
+  // is final (below), for the one-time "unknown server" warning.
+  let noticesModule: NoticesModule | null = null;
+  if (modules.notices !== undefined && modules.notices !== false) {
+    if (!noticesRef) {
+      const noticesConfig = typeof modules.notices === 'object' ? modules.notices : {};
+      noticesRef = new NoticesModule({
+        agentName,
+        statusChannels: noticesConfig.statusChannels,
+        replyIn: noticesConfig.reply?.in,
+        replyNot: noticesConfig.reply?.not,
+        kinds: noticesConfig.kinds,
+        quietMs: noticesConfig.quietMs,
+        renotifyMs: noticesConfig.renotifyMs,
+      });
+    }
+    noticesModule = noticesRef;
+    moduleInstances.push(noticesModule);
   }
 
   // Auto-unsubscribe noisy ambient channels — ON by default (opt out with
@@ -409,6 +460,8 @@ async function createFramework(
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
+      ...(credentials ? { credentials } : {}),
+      ...(subscriptionUnmetered ? { subscriptionUnmetered } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -474,7 +527,10 @@ async function createFramework(
 
   // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
-  // tombstones suppress recipe/file servers the agent unloaded.
+  // tombstones suppress recipe/file servers the agent unloaded. An overlay
+  // entry that replaces an operator's server and lacks what it provides, or
+  // names a host variable that only a recipe substitutes, is logged.
+  for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
   const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
@@ -596,6 +652,10 @@ agents: [agentConfig],
     subagentModule.setFramework(framework);
   }
 
+  if (noticesModule) {
+    noticesModule.setKnownServers(finalServers.map((server) => server.id));
+    noticesModule.setFramework(framework);
+  }
   if (activityModule) {
     activityModule.setFramework(framework);
   }
@@ -613,6 +673,7 @@ agents: [agentConfig],
 
   if (mcplAdminModule) {
     mcplAdminModule.setFramework(framework);
+    mcplAdminModule.setOperatorServers(allServers);
     if (identityModule) mcplAdminModule.setIdentity(identityModule);
   }
 
@@ -923,8 +984,8 @@ async function main() {
     console.error('Missing AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY for recipe provider "bedrock".');
     process.exit(1);
   }
-  if (provider === 'anthropic' && !config.apiKey && !config.authToken) {
-    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). Set one in .env or environment.');
+  if (provider === 'anthropic' && !config.apiKey && !config.authToken && !config.anthropicCredentialsFile) {
+    console.error('Missing ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN / ANTHROPIC_OAUTH_CREDENTIALS_FILE). Set one in .env or environment.');
     process.exit(1);
   }
 
@@ -947,22 +1008,48 @@ async function main() {
         defaultTtl: recipe.agent.cacheTtl ?? '5m',
       })
     : null;
+  // Credential monitor, bound below once the adapters exist; the Codex
+  // login prompt needs to reach it, and the adapter is built first.
+  let credentialsRef: CredentialMonitor | null = null;
   // The Codex subscription adapter owns ChatGPT login/refresh independently
-  // of the API-key transports below.
+  // of the API-key transports below — unless an inference gate holds the
+  // logins (CODEX_GATE_TOKEN + CODEX_BASE_URL), in which case no Codex CLI runs.
+  const codexGate = provider === 'openai-codex' ? codexGateAuth(process.env) : undefined;
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
+        // stderr for headless logs, the monitor for TUI/WebUI/fleet alerts.
+        onLoginRequired: ({ verificationUrl, userCode }) => {
+          console.error('\nOpenAI Codex subscription login required.');
+          console.error(`Open ${verificationUrl} and enter code: ${userCode}\n`);
+          credentialsRef?.loginRequired({ verificationUrl, userCode });
+        },
+        ...(codexGate ? { authProvider: codexGate } : {}),
       })
     : undefined;
+  // Anthropic subscription credential: a bare token or a refreshable file.
+  // Loaded once here; the adapter and the quota meter read it per request so
+  // an operator rotation (/auth, WebUI) takes effect without a restart.
+  const anthropicCredentials = provider === 'anthropic' && (config.anthropicCredentialsFile || config.authToken)
+    ? new AnthropicOAuthCredentials({
+        ...(config.anthropicCredentialsFile
+          ? { credentialsFile: config.anthropicCredentialsFile }
+          : { token: config.authToken }),
+        autoRefresh: config.anthropicAutoRefresh,
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      })
+    : null;
   // Subscription credentials draw down utilization windows instead of being
   // billed per token; the meter reads them out-of-band (no inference spend).
-  const quotaMeter = provider === 'anthropic' && config.authToken
+  const quotaMeter = anthropicCredentials
     ? new QuotaMeter(new AnthropicOAuthQuotaSource({
-        authToken: config.authToken,
+        authToken: () => anthropicCredentials.currentToken(),
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       }))
-    : codexAdapter
+    // through a gate there is no Codex login to read windows from; the gate
+    // tracks them per login (its /gate/status)
+    : codexAdapter && !codexGate
       ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
       : null;
   // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
@@ -1105,9 +1192,9 @@ async function main() {
           // Subscription tokens additionally require this beta header.
           // Recipe-declared betas (agent.anthropicBetas, e.g. context-1m)
           // are merged into the same anthropic-beta header either way.
-          ...(config.authToken
+          ...(anthropicCredentials
             ? {
-                authToken: config.authToken,
+                authToken: anthropicCredentials.tokenResolver(),
                 defaultHeaders: {
                   'anthropic-beta': ['oauth-2025-04-20', ...(recipe.agent.anthropicBetas ?? [])].join(','),
                 },
@@ -1203,7 +1290,43 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
+  // Credential monitor: one named state for the provider credential (spent
+  // quota, expiring/expired/rejected token, pending device-code login) and
+  // the operator actions that fit it, announced through the ops-alert
+  // pipeline. Alerts raised before the framework exists are queued and
+  // flushed once the app is bound; the sink reads app.framework lazily so
+  // session switches stay wired.
+  let appForAlerts: AppContext | null = null;
+  const queuedAlerts: Array<[string, string, Record<string, unknown>]> = [];
+  const credentialSource = anthropicCredentials ?? codexAdapter?.credentialSource() ?? null;
+  const credentials = credentialSource
+    ? new CredentialMonitor({
+        source: credentialSource,
+        quotaMeter,
+        modelFor: () => resolveModel(recipe),
+        alert: (kind, message, data) => {
+          if (!appForAlerts) {
+            queuedAlerts.push([kind, message, data]);
+            return;
+          }
+          const fw = appForAlerts.framework as unknown as {
+            notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
+          };
+          if (typeof fw.notifyOpsAlert !== 'function') {
+            console.error(`[credential] ${kind}: ${message}`);
+            return;
+          }
+          fw.notifyOpsAlert(kind, appForAlerts.agentName, message, data);
+        },
+      })
+    : null;
+  credentialsRef = credentials;
+  if (credentials && (adapter instanceof LoggingAnthropicAdapter || adapter instanceof LoggingProviderAdapter)) {
+    adapter.onProviderError = (error) => credentials.observeError(error);
+    adapter.onProviderSuccess = () => credentials.observeSuccess();
+  }
+
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
 
   // Build app context
   const app: AppContext = {
@@ -1217,6 +1340,8 @@ async function main() {
     codexAdapter,
     callLedger,
     quotaMeter,
+    credentials,
+    subscriptionUnmetered: !!codexGate,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1227,7 +1352,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
@@ -1238,6 +1363,7 @@ async function main() {
   };
 
   appRefForDebt = app;
+  appForAlerts = app;
 
   // Off-path refusal dragnet → ops alerts (observability M3): refusals on
   // non-streamed calls (compression/summarizer drains, maintenance) never
@@ -1265,6 +1391,10 @@ async function main() {
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);
+  for (const [kind, message, data] of queuedAlerts.splice(0)) {
+    (framework as unknown as { notifyOpsAlert?: (k: string, a: string, m: string, d?: Record<string, unknown>) => void })
+      .notifyOpsAlert?.(kind, agentName, message, data);
+  }
 
   try {
     if (headless) {
@@ -1277,6 +1407,7 @@ async function main() {
       await runTui(app);
     }
   } finally {
+    credentials?.dispose();
     codexAdapter?.dispose();
   }
 }

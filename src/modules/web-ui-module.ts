@@ -37,6 +37,7 @@ import type {
   SessionUsageSnapshot,
 } from '@animalabs/agent-framework';
 import type { ServerWebSocket } from 'bun';
+import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,7 @@ import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -87,6 +89,8 @@ import {
   buildPinsSnapshot,
   buildHealthSnapshot,
   buildQuotaSnapshot,
+  buildCredentialSnapshot,
+  applyCredentialAction,
   buildContextCoverage,
   buildContextMakeup,
   buildContextCurve,
@@ -173,6 +177,10 @@ export interface WebUiModuleConfig {
   callLedger?: CallLedger;
   /** Subscription quota windows (hosts on a subscription credential only). */
   quotaMeter?: QuotaMeter;
+  /** Credential state + operator actions (subscription hosts only). */
+  credentials?: CredentialMonitor;
+  /** A subscription credential with no local quota meter (see PanelAppRef). */
+  subscriptionUnmetered?: boolean;
 }
 
 /** Data stashed on the Bun WS upgrade. */
@@ -226,6 +234,7 @@ const HTTP_PANEL_OPS: Record<string, string> = {
   '/debug/tool-classes': 'tool-classes',
   '/healthz': 'health',
   '/quota': 'quota',
+  '/credential': 'credential',
 };
 
 /** True when a wire `scope` field names a fleet child (vs the local process). */
@@ -481,6 +490,16 @@ export class WebUiModule implements Module {
       state.allowedOrigins = defaultAllowedOrigins(boundPort);
     }
     sharedServer = state;
+    // A missing bundle otherwise shows at run time only as a 503 to whoever
+    // opens the page. Say it once, where the operator starting the host
+    // looks. This also covers a skipped postinstall (e.g. `--ignore-scripts`),
+    // which can't report anything itself.
+    if (!existsSync(join(state.staticRoot, 'index.html'))) {
+      console.warn(
+        `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it is built. ` +
+        `Run \`npm run build:web\` (or postinstall) to produce it.`,
+      );
+    }
 
     // Provider calls include auxiliary compression requests that never emit a
     // framework usage trace, so subscribe at the adapter ledger itself. This
@@ -1044,6 +1063,7 @@ export class WebUiModule implements Module {
       && url.pathname !== '/curve'
       && url.pathname !== '/healthz'
       && url.pathname !== '/quota'
+      && url.pathname !== '/credential'
       && !url.pathname.startsWith('/files/')
       && !url.pathname.startsWith('/media/');
     if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
@@ -1054,7 +1074,7 @@ export class WebUiModule implements Module {
     if ((url.pathname.startsWith('/debug/') || url.pathname === '/curve') && !httpAllowed('debug')) {
       return this.unauthorized(isRetrievalTraceRoute);
     }
-    if ((url.pathname === '/healthz' || url.pathname === '/quota') && !httpAllowed('health')) {
+    if ((url.pathname === '/healthz' || url.pathname === '/quota' || url.pathname === '/credential') && !httpAllowed('health')) {
       return this.unauthorized();
     }
     if (url.pathname.startsWith('/files/') && !basicOk) {
@@ -1160,6 +1180,13 @@ export class WebUiModule implements Module {
       return Response.json(await buildQuotaSnapshot(app));
     }
 
+    // Credential state (health-scoped, like /healthz); no token ever rides here.
+    if (url.pathname === '/credential') {
+      const app = this.panelApp();
+      if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+      return Response.json(buildCredentialSnapshot(app));
+    }
+
     // Workspace file passthrough: /files/<mount>/<path...>
     // Resolves through WorkspaceModule.resolveAbsolutePath, which enforces
     // mount-relative containment and the mount's read-permission. We never
@@ -1194,6 +1221,8 @@ export class WebUiModule implements Module {
       recipe: app.recipe,
       callLedger: this.config.callLedger ?? null,
       quotaMeter: this.config.quotaMeter ?? null,
+      credentials: this.config.credentials ?? null,
+      subscriptionUnmetered: this.config.subscriptionUnmetered === true,
     };
   }
 
@@ -1506,6 +1535,9 @@ export class WebUiModule implements Module {
     if (type === 'request-branches') return client.scopes?.has('messages') ?? false;
     // Host serving state is liveness telemetry; the operator log is ops.
     if (type === 'request-host-mode') return client.scopes?.has('health') ?? false;
+    // Credential state is health-tier telemetry (it can carry a pending
+    // device-code login); the ACTIONS stay operator-only (fall through).
+    if (type === 'request-credential') return client.scopes?.has('health') ?? false;
     if (type === 'request-operator-log') return client.scopes?.has('ops') ?? false;
     return false; // observers are read-only: no user-message/command/mcpl/fleet/surgery
   }
@@ -2118,6 +2150,40 @@ export class WebUiModule implements Module {
         }
         if (parsed.notify === true) notifyAgentOfSettingsChange(app, agentName, 'update');
         this.broadcastSettingsState(agentName);
+        return;
+      }
+
+      case 'request-credential': {
+        if (isChildScope(parsed.scope)) {
+          void this.requestChildPanel(client, parsed.scope!, 'credential', {}).then((data) => {
+            if (data !== null) this.send(client, { type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+          });
+          return;
+        }
+        const app = this.panelApp();
+        if (!app) return;
+        this.send(client, { type: 'credential-state', scope: 'local', ...buildCredentialSnapshot(app) } as WebUiServerMessage);
+        return;
+      }
+
+      // Credential actions change process state (a rotated token serves every
+      // agent), so the outcome BROADCASTS like settings mutations do.
+      case 'credential-action': {
+        const params = { action: parsed.action, ...(parsed.token !== undefined ? { token: parsed.token } : {}) };
+        if (isChildScope(parsed.scope)) {
+          void this.requestChildPanel(client, parsed.scope!, 'credential-action', params).then((data) => {
+            if (data !== null) this.broadcastCredentialState({ type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+          });
+          return;
+        }
+        const app = this.panelApp();
+        if (!app) return;
+        void applyCredentialAction(app, params)
+          .then((data) => this.broadcastCredentialState({ type: 'credential-state', scope: 'local', ...data } as WebUiServerMessage))
+          .catch((err) => this.send(client, {
+            type: 'error',
+            message: `credential-action failed: ${err instanceof Error ? err.message : String(err)}`,
+          }));
         return;
       }
 
@@ -2934,6 +3000,15 @@ export class WebUiModule implements Module {
     const msg = buildSettingsState(app, agentName);
     if (!msg) return;
     this.broadcastToWelcomed({ type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+  }
+
+  /** Credential state goes to operators and to observers holding the
+   *  'health' scope — the same gate as /healthz and the usage frame. */
+  private broadcastCredentialState(msg: WebUiServerMessage): void {
+    if (!sharedServer) return;
+    for (const c of sharedServer.clients.values()) {
+      if (c.welcomed && (c.scopes === null || c.scopes.has('health'))) this.send(c, msg);
+    }
   }
 
   private broadcastToWelcomed(msg: WebUiServerMessage): void {

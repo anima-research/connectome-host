@@ -349,6 +349,13 @@ the agent until the window resets instead of retrying; without a reading
 (e.g. the first 429 in a headless run with no viewer, or an unreadable usage
 endpoint) it follows the normal retry path.
 
+A `claude setup-token` credential cannot be rotated by the host: when it
+expires or is rejected, the host raises an `auth-rejected` alert whose only
+action is pasting a new token. A credentials file with a refresh token
+(`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) makes "Refresh token" available and warns
+30 minutes before expiry. See the credential-alerts note under the ChatGPT
+provider and [docs/subscription-transport.md](docs/subscription-transport.md).
+
 ### ChatGPT subscription provider
 
 Install the Codex CLI, sign in with `codex login`, then select the subscription
@@ -372,6 +379,13 @@ warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied. Quota windows are shown
 the same way as for the Claude subscription. See
 [`docs/subscription-transport.md`](docs/subscription-transport.md).
+
+On any subscription credential (Anthropic OAuth or Codex) the host names what
+is wrong with it — spent quota, unreadable quota, expiring/expired/rejected
+token, pending login — as an ops alert with the actions it can run, shown on
+the TUI status bar / `/auth`, the WebUI alert strip and Health tab, and the
+fleet parent. Nothing rotates without an operator action. See
+[docs/subscription-transport.md](docs/subscription-transport.md).
 
 ### OpenAI-compatible endpoints (Ollama, vLLM, Together, Groq, NanoGPT, ...)
 
@@ -576,6 +590,8 @@ bun install      # or npm install; the postinstall step builds the web UI
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required for `anthropic` unless `ANTHROPIC_AUTH_TOKEN` is set) | Anthropic API key |
 | `ANTHROPIC_AUTH_TOKEN` | — | Claude subscription OAuth token (`claude setup-token`); takes precedence over `ANTHROPIC_API_KEY` |
+| `ANTHROPIC_OAUTH_CREDENTIALS_FILE` | — | JSON credentials file (`accessToken` + `refreshToken` + `expiresAt`, Claude Code's shape or flat); a refresh token makes the credential host-rotatable. Use a COPY, never `~/.claude/.credentials.json` itself |
+| `ANTHROPIC_OAUTH_AUTO_REFRESH` | off | `1`/`true`: rotate on a 401 without an operator action |
 | `ANTHROPIC_BASE_URL` | Anthropic API | Route Anthropic calls through a gateway |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
@@ -585,6 +601,7 @@ bun install      # or npm install; the postinstall step builds the web UI
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
+| `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
 | `DATA_DIR` | `./data` | Session, recipe and log storage |
 | `AGENT_TIMEZONE` | process timezone | Agent-facing clock when the recipe sets no `agent.timezone` |
@@ -693,6 +710,7 @@ headless socket.
 | `/tools [agent]` | Each tool's effective MCPL class and where it came from (recipe override, host table, server `_meta`, or unclassed) |
 | `/budget [tokens]` | Show/set stream token budget |
 | `/fast [on\|off\|status]` | Toggle Codex subscription Fast mode |
+| `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 

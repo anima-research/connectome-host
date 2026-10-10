@@ -13,6 +13,11 @@ import {
   saveAgentOverlay,
   applyAgentOverlay,
   resolveOverlayEntry,
+  serverProvisions,
+  lostByReplacement,
+  overlayEntryReplaces,
+  overlayWarnings,
+  hostVariableReferences,
   AGENT_DEPLOY_DENIED_CAPABILITIES,
   type AgentOverlayEntry,
 } from '../src/mcpl-config.js';
@@ -170,5 +175,104 @@ describe('resolveOverlayEntry', () => {
     const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', enabledCapabilities: ['contextHooks.beforeInference.inject.system'] } as never, '/tmp/o.json');
     expect(r).not.toBeNull();
     expect('enabledCapabilities' in (r as object)).toBe(false);
+  });
+});
+
+// An overlay entry replaces the operator's definition whole: its env is
+// literal and it never inherits the host environment, so what the operator's
+// definition provided and the entry lacks, the server runs without. A
+// resident's shell came back from mcpl_restart without SESSION_SERVER_TOKEN
+// that way (2026-10-08), and nothing said so until its first call.
+describe('what an overlay replacement lacks of the operator definition', () => {
+  const shell = {
+    id: 'shell',
+    command: 'node',
+    args: ['/abs/terminal-sessions/mcp-stdio-server.js'],
+    env: { SESSION_SERVER_TOKEN: 's3cret-token', SESSION_SERVER_PORT: '3101' },
+  };
+
+  test('serverProvisions keeps names, never values', () => {
+    const p = serverProvisions({ ...shell, token: 'tok', access: ' eidoverse ', inheritEnv: true });
+    expect(p).toEqual({ env: ['SESSION_SERVER_PORT', 'SESSION_SERVER_TOKEN'], token: true, access: 'eidoverse', inheritEnv: true });
+    expect(JSON.stringify(p)).not.toContain('s3cret-token');
+    expect(JSON.stringify(p)).not.toContain('tok"');
+    expect(serverProvisions({ id: 'x', command: 'node', token: '', access: '  ' })).toEqual({ env: [], token: false, access: null, inheritEnv: false });
+  });
+
+  test('a command replacement lacks the env names it does not declare, and always the inherited host environment', () => {
+    const operator = serverProvisions({ ...shell, inheritEnv: true });
+    expect(lostByReplacement(operator, { command: 'node', args: ['other.js'] }))
+      .toBe('env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN; inherited host environment (inheritEnv)');
+    expect(lostByReplacement(serverProvisions(shell), { command: 'node', env: { SESSION_SERVER_PORT: '3101' } }))
+      .toBe('env SESSION_SERVER_TOKEN');
+    // Declaring a name carries it, whatever its value.
+    expect(lostByReplacement(serverProvisions(shell), { command: 'node', env: { SESSION_SERVER_PORT: '1', SESSION_SERVER_TOKEN: '' } }))
+      .toBeNull();
+  });
+
+  test('a URL replacement lacks a token and an access grant, and env does not reach it', () => {
+    const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok', access: 'eidoverse', env: { A: '1' } });
+    expect(lostByReplacement(operator, { url: 'wss://other/mcpl' })).toBe('token; access grant "eidoverse"');
+    expect(lostByReplacement(operator, { url: 'wss://other/mcpl', token: 'mine', access: 'eidoverse' })).toBeNull();
+    // A command replacement of a URL server: a token or grant can't reach a process.
+    expect(lostByReplacement(operator, { command: 'node', env: { A: '1' } })).toBeNull();
+  });
+
+  test('only an entry that puts a server in place replaces one', () => {
+    expect(overlayEntryReplaces(undefined)).toBe(false);
+    expect(overlayEntryReplaces({ disabled: true })).toBe(false);
+    expect(overlayEntryReplaces({ env: { A: '1' } })).toBe(false);
+    expect(overlayEntryReplaces({ command: 'node' })).toBe(true);
+    expect(overlayEntryReplaces({ url: 'wss://x' })).toBe(true);
+  });
+
+  test('the startup warnings name each replacement that lacks something, and each host-variable reference', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      saveAgentOverlay(path, {
+        shell: { command: 'node', args: ['mine.js'] },                 // lacks the token
+        discord: { command: 'node', env: { DISCORD_TOKEN: 'x' } },     // carries everything
+        heartbeat: { disabled: true },                                  // a tombstone, not a replacement
+        mytool: { command: 'bun', env: { API_KEY: '${API_KEY}' } },     // the operator has no "mytool"; a literal reference
+      });
+      const operatorServers = [
+        shell,
+        { id: 'discord', command: 'node', env: { DISCORD_TOKEN: 'real' } },
+        { id: 'heartbeat', command: 'node', env: { HEARTBEAT_CONFIG_FILE: '/x' } },
+      ];
+      const lines = overlayWarnings(operatorServers, path);
+      expect(lines).toEqual([
+        `[mcpl] server "shell": the agent overlay (${path}) replaces the operator's definition and lacks its ` +
+        'env SESSION_SERVER_PORT, SESSION_SERVER_TOKEN, so the server runs without the operator\'s values for them',
+        `[mcpl] server "mytool": the agent overlay (${path}) names a host variable in its env API_KEY, which only ` +
+        'a recipe substitutes, so the server gets that text as written',
+      ]);
+      expect(lines.join('\n')).not.toContain('s3cret-token');
+      expect(overlayWarnings(operatorServers, join(dir, 'none.json'))).toEqual([]);
+    });
+  });
+
+  // The receipt says an overlay entry can't name host variables, but the
+  // likeliest next move is to write one anyway: `${VAR}` there reaches the
+  // child as literal text, so it supplies nothing (Nell-1783's review).
+  test('a value that names a host variable supplies nothing, and is named, never shown', () => {
+    expect(lostByReplacement(serverProvisions(shell), {
+      command: 'node',
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: '${SESSION_SERVER_TOKEN}' },
+    })).toBe('env SESSION_SERVER_TOKEN');
+    expect(lostByReplacement(serverProvisions(shell), {
+      command: 'node',
+      env: { SESSION_SERVER_PORT: '3101', SESSION_SERVER_TOKEN: 'prefix-${SESSION_SERVER_TOKEN:-x}' },
+    })).toBe('env SESSION_SERVER_TOKEN');
+    const world = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok' });
+    expect(lostByReplacement(world, { url: 'wss://w/mcpl', token: '${WORLD_TOKEN}' })).toBe('token');
+
+    expect(hostVariableReferences({
+      command: '${TOOLS}/server',
+      args: ['--key', '${KEY}'],
+      env: { B: '${B}', A: '$NOT_A_REFERENCE', C: '${C:-}' },
+    })).toEqual(['command', 'args', 'env B', 'env C']);
+    expect(hostVariableReferences({ url: 'wss://${HOST}/mcpl', token: '${T}', env: { E: '${E}' } })).toEqual(['url', 'token']);
+    expect(hostVariableReferences({ command: 'node', args: ['a.js'], env: { A: 'literal' } })).toEqual([]);
   });
 });

@@ -445,16 +445,15 @@ describe('mcpl_deploy and mcpl_list', () => {
     expect(readAgentOverlay(join(dir, 'mcpl-servers.agent.json')).f).toBeUndefined();
   });
 
-  test("deploy reports the framework's actual disposition and protocol", async () => {
+  test("deploy reports the framework's actual disposition, and a connected server's protocol", async () => {
     const { framework } = makeFramework({ connected: false, retrying: true });
     const mod = makeModule(framework);
     const result = await call(mod, 'mcpl_deploy', { id: 'slow', url: 'https://tools.example/mcp' });
-    expect(result.success).toBe(true);
-    const text = String(result.data ?? '');
-    expect(text).toMatch(/"slow": NOT connected yet; reconnecting in the background, protocol=modern@unestablished\/http/);
-    expect(text).not.toMatch(/: connected,/);
+    expect(result.success).toBe(false);
+    expect(String(result.error ?? '')).toContain('Server "slow" was saved to your overlay but isn\'t connected (it keeps retrying).');
     const live = makeFramework();
     const ok = await call(makeModule(live.framework), 'mcpl_deploy', { id: 'fast', url: 'https://tools.example/mcp' });
-    expect(String(ok.data ?? '')).toMatch(/"fast": connected, protocol=modern@2026-07-28\/http, 2 tools/);
+    expect(ok.success).toBe(true);
+    expect(String(ok.data ?? '')).toMatch(/"fast" — connected, protocol=modern@2026-07-28\/http, 2 tools/);
   });
 });
