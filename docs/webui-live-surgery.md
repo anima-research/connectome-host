@@ -169,9 +169,10 @@ quiesce sends its preview's session and `context.storeId`), `host-resume`,
 `request-host-mode`, `request-operator-log {limit?}`.
 Server → client: `surgery-result` (with `markers` on `marks` hosts),
 `surgery-preview`, `awareness {batches, frameworkInstanceId, …}` (the
-journal; also broadcast to operators after a surgery that queued marks and
-after each action; an action's answer carries `code: 'stale'` when refused
-for another framework's journal), `host-mode`,
+journal; also broadcast to full operators after a surgery whose marks were
+queued or left unresolved, and after each action that succeeds; an action's
+answer carries `code: 'stale'` when refused for another framework's
+journal), `host-mode`,
 `operator-log`; `welcome.features`, `welcome.hostMode`. After a successful
 surgery the server does what `/checkout` does: `branch-changed` + a fresh
 welcome for every client.

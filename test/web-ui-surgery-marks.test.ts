@@ -16,12 +16,14 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
   __resetSharedServerForTests,
 } from '../src/modules/web-ui-module.js';
+import { observerStatement, saveObserversFile } from '../src/modules/web-ui-observers.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -30,6 +32,16 @@ const ref = (messageId: string) => ({ serverId: 'discord', channelId: 'discord:g
 let port: number;
 let tmp: string;
 let webUiModule: WebUiModule;
+
+/** Observer keys: one granted the ops scope, one only health. */
+function makeKeypair() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  return { id: `ed25519:${spki.subarray(spki.length - 32).toString('base64url')}`, privateKey };
+}
+type Keypair = ReturnType<typeof makeKeypair>;
+const opsObserver = makeKeypair();
+const healthObserver = makeKeypair();
 
 /** Calls the fake framework received, for assertions. */
 const received: Array<{ method: string; args: unknown[] }> = [];
@@ -49,7 +61,23 @@ function checkExpected(args: unknown[]): void {
   }
 }
 
-function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
+interface FakeOptions {
+  contract: boolean;
+  /** false: the marks choice without the store-and-branch check (#250 alone). */
+  storeIdentity?: boolean;
+  /** A framework that breaks its own contract: a preview without `context`. */
+  previewContext?: boolean;
+  /** What a surgery with a marks choice reports. */
+  markersStatus?: 'queued' | 'unresolved';
+  /** getStoreIdentity throws, as a store that can't record its identity would. */
+  storeIdentityThrows?: boolean;
+  /** listDiscordAwareness throws. */
+  journalThrows?: boolean;
+  /** No live rollback or suppression at all. */
+  noSurgery?: boolean;
+}
+
+function fakeFramework(opts: FakeOptions) {
   const surgeryResult = (marks: unknown) => ({
     sourceBranch: 'main',
     targetBranch: 'rollback/resident/1',
@@ -58,7 +86,9 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
     ...(opts.contract
       ? {
           markers: marks && marks !== 'none'
-            ? { scope: 'addressed', unmarked: 1, notRemoved: 0, status: 'queued', queued: 2, batchId: 'b1' }
+            ? opts.markersStatus === 'unresolved'
+              ? { scope: 'addressed', unmarked: 1, notRemoved: 0, status: 'unresolved', queued: 0, batchId: 'b1', error: 'journal unreadable' }
+              : { scope: 'addressed', unmarked: 1, notRemoved: 0, status: 'queued', queued: 2, batchId: 'b1' }
             : { scope: 'none', unmarked: 3, notRemoved: 0, status: 'none', queued: 0 },
         }
       : {}),
@@ -89,13 +119,22 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
     resume: async () => { quiesced = false; },
     getHostModeStatus: () => ({ quiesced, drained: true }),
   };
+  if (opts.noSurgery) {
+    delete framework.rollbackToMessage;
+    delete framework.suppressMessages;
+  }
   if (opts.contract) {
     Object.assign(framework, {
-      ...(opts.storeIdentity === false ? {} : { getStoreIdentity: () => storeIdentity.id }),
+      ...(opts.storeIdentity === false ? {} : {
+        getStoreIdentity: () => {
+          if (opts.storeIdentityThrows) throw new Error('store identity unreadable');
+          return storeIdentity.id;
+        },
+      }),
       previewSurgeryMarks: (...args: unknown[]) => {
         received.push({ method: 'previewSurgeryMarks', args });
         return {
-          ...(opts.storeIdentity === false ? {} : { context: { storeId: storeIdentity.id, branch: liveBranch.name } }),
+          ...(opts.storeIdentity === false || opts.previewContext === false ? {} : { context: { storeId: storeIdentity.id, branch: liveBranch.name } }),
           messagesRemoved: 3,
           addressable: 3,
           emoji: '💤',
@@ -105,9 +144,12 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
           },
         };
       },
-      listDiscordAwareness: () => [
-        { kind: 'batch', id: 'b1', status: 'active', scope: 'addressed', refs: 2, adds: { requested: 2 }, removals: {}, unresolvedAttempts: 0 },
-      ],
+      listDiscordAwareness: () => {
+        if (opts.journalThrows) throw new Error('journal file unreadable');
+        return [
+          { kind: 'batch', id: 'b1', status: 'active', scope: 'addressed', refs: 2, adds: { requested: 2 }, removals: {}, unresolvedAttempts: 0 },
+        ];
+      },
       cancelDiscordAwareness: (...args: unknown[]) => {
         received.push({ method: 'cancelDiscordAwareness', args });
         return { target: args[0], kind: 'batch', cancelled: 2, heldDropped: 0, inFlight: 0, unknown: 0, confirmed: 0, unresolvedAttempts: 0, legacyOutcomesUnrecorded: 0 };
@@ -118,28 +160,33 @@ function fakeFramework(opts: { contract: boolean; storeIdentity?: boolean }) {
       },
       releaseDiscordAwareness: (...args: unknown[]) => {
         received.push({ method: 'releaseDiscordAwareness', args });
-        throw new Error('Discord awareness batch b1 is active, not held');
+        // agent-framework wraps every journal action's failure as an
+        // OperatorActionError('invalid', …) (awarenessOperatorAction).
+        throw Object.assign(new Error('Discord awareness batch b1 is active, not held'), { name: 'OperatorActionError', code: 'invalid' });
       },
     });
   }
   return framework;
 }
 
-function bind(contract: boolean, sessionId = 's1', storeIdentityCheck = true): void {
+function bind(contract: boolean, sessionId = 's1', storeIdentityCheck = true, more: Partial<FakeOptions> = {}): void {
   webUiModule.setApp({
-    framework: fakeFramework({ contract, storeIdentity: storeIdentityCheck }),
+    framework: fakeFramework({ contract, storeIdentity: storeIdentityCheck, ...more }),
     recipe: { name: 'r', description: 'd', version: '1', agent: { name: 'resident' } },
     sessionManager: { getActiveSession: () => ({ id: sessionId, name: 's', manuallyNamed: false }) },
   } as never);
 }
 
-/** A connected, welcomed operator client that collects frames. */
-async function connect(): Promise<{
+/** A connected, welcomed client that collects frames: a full operator, or
+ *  an observer signed in with `observer`'s key. */
+async function connect(observer?: Keypair): Promise<{
   ws: WebSocket;
   welcome: Record<string, unknown>;
   /** The next frame of a type (and, when given, with that corrId): the
    *  journal is also broadcast unsolicited after surgeries and actions. */
   next(type: string, corrId?: string): Promise<Record<string, unknown>>;
+  /** Frames of a type received and not yet taken by next(). */
+  waiting(type: string): Array<Record<string, unknown>>;
   send(msg: unknown): void;
 }> {
   const frames: Array<Record<string, unknown>> = [];
@@ -149,7 +196,7 @@ async function connect(): Promise<{
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
     headers: {
       origin: `http://127.0.0.1:${port}`,
-      authorization: `Basic ${Buffer.from(`${USER}:${PASS}`).toString('base64')}`,
+      ...(observer ? {} : { authorization: `Basic ${Buffer.from(`${USER}:${PASS}`).toString('base64')}` }),
     },
   } as unknown as undefined);
   ws.addEventListener('message', (ev) => {
@@ -168,8 +215,20 @@ async function connect(): Promise<{
     ws.addEventListener('open', () => resolve());
     ws.addEventListener('error', (e) => reject(e as unknown as Error));
   });
+  if (observer) {
+    await next('observer-auth-required');
+    const host = `127.0.0.1:${port}`;
+    const timestamp = new Date().toISOString();
+    const proof = cryptoSign(null, Buffer.from(observerStatement(host, timestamp), 'utf8'), observer.privateKey);
+    ws.send(JSON.stringify({ type: 'observer-hello', identity: { scheme: 'ed25519', id: observer.id, proof: proof.toString('base64url'), timestamp } }));
+    await next('observer-ack');
+  }
   const welcome = await next('welcome');
-  return { ws, welcome, next, send: (msg) => ws.send(JSON.stringify(msg)) };
+  return {
+    ws, welcome, next,
+    waiting: (type) => frames.filter((f) => f.type === type),
+    send: (msg) => ws.send(JSON.stringify(msg)),
+  };
 }
 
 beforeAll(async () => {
@@ -177,11 +236,19 @@ beforeAll(async () => {
   const staticRoot = join(tmp, 'web');
   mkdirSync(staticRoot, { recursive: true });
   writeFileSync(join(staticRoot, 'index.html'), '<!doctype html><title>t</title>');
+  const observersPath = join(tmp, 'observers.json');
+  saveObserversFile(observersPath, {
+    observers: [
+      { key: opsObserver.id, label: 'ops-observer', scopes: ['health', 'ops'] },
+      { key: healthObserver.id, label: 'health-observer', scopes: ['health'] },
+    ],
+  });
   webUiModule = new WebUiModule({
     port: 0,
     host: '127.0.0.1',
     basicAuth: { username: USER, password: PASS },
     staticDir: staticRoot,
+    observersPath,
   });
   await webUiModule.start({} as ModuleContext);
   port = __getSharedServerPortForTests()!;
@@ -282,10 +349,14 @@ describe('surgery marks over the WebUI', () => {
       const cancelCall = received.find((r) => r.method === 'cancelDiscordAwareness')!;
       expect(cancelCall.args[0]).toBe('b1');
       expect((cancelCall.args[1] as { requester: { via: string } }).requester.via).toBe('webui');
+      // Every operator sees the journal after an action, as after a surgery.
+      expect((await client.next('awareness')).corrId).toBeUndefined();
 
       client.send({ type: 'awareness-action', action: 'release', target: 'b1', expectedFrameworkInstanceId: instance, corrId: 'a3' });
       const refused = await client.next('awareness', 'a3');
       expect(refused.error).toMatch(/not held/);
+      // The framework's refusal code comes through with its message.
+      expect(refused.code).toBe('invalid');
 
       // An action that names no journal it was chosen from is malformed and
       // never reaches the framework (frames are handled in order, so the
@@ -380,6 +451,15 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
       const preview = await client.next('surgery-preview');
       expect(preview.ok).toBe(false);
+      expect(String(preview.error)).toMatch(/upgrade @animalabs\/agent-framework/);
+
+      // The journal and its controls say what's missing, rather than failing on it.
+      client.send({ type: 'request-awareness', corrId: 'j1' });
+      expect((await client.next('awareness', 'j1')).error).toMatch(/no awareness journal controls/);
+      client.send({ type: 'awareness-action', action: 'cancel', target: 'b1', expectedFrameworkInstanceId: 'fw-x', corrId: 'j2' });
+      const control = await client.next('awareness', 'j2');
+      expect(String(control.error)).toMatch(/no awareness cancel — upgrade @animalabs\/agent-framework/);
+      expect(control.code).toBeUndefined();
     } finally {
       client.ws.close();
     }
@@ -507,6 +587,14 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'host-quiesce', expectedSessionId: 'session-b', expectedStoreId: 'store-a', corrId: 'q3' });
       expect(((await client.next('host-mode', 'q3')).hostMode as { mode: string }).mode).toBe('quiesced');
       expect(received.filter((r) => r.method === 'quiesce').length).toBe(1);
+
+      // A store whose identity can't be read can't be shown to be the
+      // previewed one: refused, and answered.
+      bind(true, 'session-b', true, { storeIdentityThrows: true });
+      await client.next('welcome');
+      client.send({ type: 'host-quiesce', expectedSessionId: 'session-b', expectedStoreId: 'store-a', corrId: 'q4' });
+      expect(String((await client.next('error', 'q4')).message)).toMatch(/nothing was paused/);
+      expect(received.filter((r) => r.method === 'quiesce').length).toBe(1);
     } finally {
       client.ws.close();
     }
@@ -550,8 +638,92 @@ describe('surgery marks over the WebUI', () => {
       expect(logged.length).toBe(3);
       expect(logged.every((entry) => !('result' in entry))).toBe(true);
       expect(received.some((r) => r.method === 'rollbackToMessage' || r.method === 'suppressMessages')).toBe(false);
+
+      // A framework without live surgery at all is recorded the same way.
+      bind(false, 's1', true, { noSurgery: true });
+      await client.next('welcome');
+      client.send({ type: 'suppress', messageIds: ['s3'], corrId: 'x' });
+      const none = await client.next('surgery-result', 'x');
+      expect(String(none.error)).toMatch(/no live suppress — upgrade/);
+      expect(logged.at(-1)).toMatchObject({ kind: 'suppress', params: { messageIds: ['s3'], marks: 'none' }, error: none.error });
+      expect(logged.length).toBe(4);
     } finally {
       client.ws.close();
+    }
+  });
+
+  test('a receipt whose scheduling is unresolved still sends every operator the journal', async () => {
+    bind(true, 's1', true, { markersStatus: 'unresolved' });
+    const client = await connect();
+    try {
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
+      const preview = await client.next('surgery-preview', 'p');
+      const context = (preview.preview as { context: Record<string, string> }).context;
+      client.send({ type: 'rollback', messageId: 's9', marks: { scope: 'addressed', refs: [ref('a1')] }, expectedContext: context, corrId: 'r' });
+      expect(((await client.next('surgery-result', 'r')).markers as { status: string }).status).toBe('unresolved');
+      expect((await client.next('awareness')).corrId).toBeUndefined();
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test("a preview without the framework's own context is refused: nothing could be bound to it", async () => {
+    bind(true, 's1', true, { previewContext: false });
+    const client = await connect();
+    try {
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
+      const preview = await client.next('surgery-preview', 'p');
+      expect(preview.ok).toBe(false);
+      expect(String(preview.error)).toMatch(/without its store and branch/);
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('a journal that throws is answered with the reason', async () => {
+    bind(true, 's1', true, { journalThrows: true });
+    const client = await connect();
+    try {
+      client.send({ type: 'request-awareness', corrId: 'j' });
+      const answer = await client.next('awareness', 'j');
+      expect(answer.batches).toEqual([]);
+      expect(String(answer.error)).toBe('awareness journal unavailable: journal file unreadable');
+    } finally {
+      client.ws.close();
+    }
+  });
+
+  test('the journal is operator state: an observer with the ops scope may ask for it, and no observer is sent it unasked', async () => {
+    bind(true, 's1');
+    const operator = await connect();
+    const ops = await connect(opsObserver);
+    const health = await connect(healthObserver);
+    try {
+      ops.send({ type: 'request-awareness', corrId: 'o' });
+      expect(((await ops.next('awareness', 'o')).batches as unknown[]).length).toBe(1);
+      health.send({ type: 'request-awareness', corrId: 'h' });
+      expect(String((await health.next('error')).message)).toMatch(/forbidden/);
+
+      // A surgery that queues marks: every full operator gets the journal.
+      operator.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
+      const preview = await operator.next('surgery-preview', 'p');
+      const context = (preview.preview as { context: Record<string, string> }).context;
+      operator.send({ type: 'rollback', messageId: 's9', marks: { scope: 'addressed', refs: [ref('a1')] }, expectedContext: context, corrId: 'r' });
+      expect((await operator.next('surgery-result', 'r')).ok).toBe(true);
+      expect((await operator.next('awareness')).corrId).toBeUndefined();
+      // The broadcast is one synchronous pass over the clients, so any copy an
+      // observer was sent is on its socket before the answer to anything it
+      // asks next: once that answer arrives, its buffer holds every copy.
+      ops.send({ type: 'request-awareness', corrId: 'after' });
+      await ops.next('awareness', 'after');
+      health.send({ type: 'request-awareness', corrId: 'after' });
+      await health.next('error');
+      expect(ops.waiting('awareness')).toEqual([]);
+      expect(health.waiting('awareness')).toEqual([]);
+    } finally {
+      operator.ws.close();
+      ops.ws.close();
+      health.ws.close();
     }
   });
 });

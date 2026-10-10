@@ -379,14 +379,12 @@ function describeMarksChoice(marks: MarksChoiceWire | undefined): 'none' | Recor
   return { scope: marks.scope, ...(marks.refs ? { authorizedRefs: marks.refs.length } : {}) };
 }
 
-/** Record a request this host refused before the framework saw it. The log
- *  is observability: it never turns a refusal into another failure. */
+/** Record a request this host refused before the framework saw it, as the
+ *  framework records its own. agent-framework's recordOperatorAction never
+ *  throws (its log's append never does, and it contains trace listeners), so
+ *  the refusal itself always goes back to the operator. */
 function recordOperatorRefusal(fw: SurgeryCapableFramework, entry: Omit<OperatorLogEntryWire, 'at'>): void {
-  try {
-    fw.recordOperatorAction?.(entry);
-  } catch {
-    // swallowed: the refusal itself still goes back to the operator
-  }
+  fw.recordOperatorAction?.(entry);
 }
 
 interface WindowCapableCm {
