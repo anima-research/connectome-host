@@ -7,38 +7,42 @@
  * newest receipts to one file, as an as-of snapshot: a header line naming the
  * branch, the store, the newest receipt and the window's first, whether older
  * receipts were left out and when it was written, then one receipt per line,
- * oldest first. The file
- * holds a window of the newest receipts (PROJECTION_WINDOW), read as one page
- * of the journal's query, which reads only the receipts it returns. So a
- * projection costs the window, not the branch's whole history, which a
- * long-lived resident would otherwise rewrite and re-read in full after every
- * fold. Older receipts stay in the journal, where history--folds reads them. It's rewritten (temp file, fsync, rename)
- * shortly after each new receipt (the next turn of the event loop, off the
- * round that accepted it), when the module binds (startup), and when it stops
- * (disposal, before the framework's store closes). The selected branch is
- * checked at roughly one-second intervals, so a branch switch reaches the
- * file at the next check, not at the switch itself. `history--folds` reads
- * the journal directly and is the exact query; the host never reads this
- * file back as input.
+ * oldest first. The file holds a window of the newest receipts
+ * (PROJECTION_WINDOW), read as one page of the journal's query, which reads
+ * only the receipts it returns. So a projection costs the window, not the
+ * branch's whole history, which a long-lived resident would otherwise
+ * rewrite and re-read in full after every fold. Older receipts stay in the
+ * journal, where history--folds reads them. The file is rewritten (temp
+ * file, fsync, rename) shortly after each new receipt (the next turn of the
+ * event loop, off the round that accepted it), when the module binds
+ * (startup), and when it stops (disposal, before the framework's store
+ * closes). The selected branch is checked at roughly one-second intervals,
+ * so a branch switch reaches the file at the next check, not at the switch
+ * itself. A write that a conflict refuses, or one that fails, is tried again
+ * at the next receipt, startup or takeover. `history--folds` reads the
+ * journal directly and is the exact query; the host never reads this file
+ * back as input.
  *
  * Writer safety. The host overwrites the target only when it is absent, or
- * when it is the host's own unchanged projection. What the host wrote is
- * recorded in a HOST-level ownership ledger keyed by target path (not in the
- * store, because `/session` switches stores and a per-store record would make
- * the host's own projection from another session look foreign). Before every
- * write the file on disk is hashed. The write proceeds only if the file is
- * absent, matches the last committed hash, or matches a hash recorded as
- * pending (the host's own write, interrupted before it committed). The
- * pending hash is recorded durably before the file is replaced, and committed
- * after the rename. At first use nothing is recorded before the check, so a
- * planned hash can never adopt someone else's file. Anything else is an
- * export conflict: the file is preserved untouched, export to that target
- * stops, and the conflict is reported (history--folds, /folds, stderr).
- * Only configuring another target, or an explicit takeover (operator:
- * `/folds takeover`; resident: the `take_over_export` utility), resolves it;
- * a takeover first keeps the existing file beside the target under a
- * timestamped name. The check is not an atomic compare-and-swap: one writer
- * per target is the supported configuration.
+ * when it holds the projection the host last wrote, unchanged. What the host
+ * wrote is recorded in a HOST-level ownership ledger keyed by target path
+ * (not in the store, because `/session` switches stores and a per-store
+ * record would make the host's own projection from another session look
+ * foreign). Before every write the file on disk is hashed. The write
+ * proceeds only if the file is absent, matches the last committed hash, or
+ * matches a hash recorded as pending (the host's own write, interrupted
+ * before it committed). The pending hash is recorded durably before the file
+ * is replaced, and committed after the rename. At first use nothing is
+ * recorded before the check, so a planned hash can never adopt someone
+ * else's file. Anything else, an earlier projection of the host's own put
+ * back included, is an export conflict: the file is preserved untouched,
+ * export to that target stops, and the conflict is reported (history--folds,
+ * /folds, stderr), with how to resolve it. Only configuring another target,
+ * or an explicit takeover (operator: `/folds takeover`; resident: the
+ * `take_over_export` utility), resolves it; a takeover first keeps the
+ * existing file beside the target under a timestamped name. The check is
+ * not an atomic compare-and-swap: one writer per target is the supported
+ * configuration.
  */
 
 import { createHash, randomUUID } from 'node:crypto';

@@ -856,10 +856,12 @@ export interface RecipeModules {
    * loop), at startup and at shutdown, and checked for branch changes at
    * roughly one-second intervals. ON by default at
    * `<dataDir>/memory/folds.jsonl`; `false` turns it off, `{ path }` moves it.
-   * The host only overwrites a file it wrote itself (ownership ledger at
-   * `<dataDir>/folds-export-ownership.json`); anything else is an export
+   * The host only overwrites the projection it last wrote (ownership ledger
+   * at `<dataDir>/folds-export-ownership.json`); anything else is an export
    * conflict that `/folds takeover` (or the resident's `take_over_export`
-   * utility) resolves by keeping the existing file beside the target.
+   * utility) resolves by keeping the existing file beside the target. The
+   * utility rides the `utils` meta-tool, so a recipe with no other utility
+   * gains that tool.
    */
   foldsExport?: boolean | { path?: string };
 

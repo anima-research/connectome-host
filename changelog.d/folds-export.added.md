@@ -11,13 +11,21 @@
   - It's rewritten shortly after each new receipt (the next turn of the event
     loop, off the round that accepted it), at startup and at shutdown, and the
     branch is checked at roughly one-second intervals. `history--folds` is the
-    exact query.
-  - The host overwrites only a file it wrote itself. A host-level ownership
-    ledger (`<dataDir>/folds-export-ownership.json`, shared across sessions)
-    records the hash it committed, and a pending hash before each replace.
-  - A foreign or edited file is an export conflict. The file is preserved,
-    export to it stops, and the conflict shows in `/folds` and
-    `history--folds`. `/folds takeover`, or the resident's `take_over_export`
-    utility, keeps the existing file beside the target and resumes.
+    exact query. A write that fails is logged on stderr and shown in `/folds`,
+    and the next receipt or startup tries again.
+  - The host overwrites only the projection it last wrote. A host-level
+    ownership ledger (`<dataDir>/folds-export-ownership.json`, shared across
+    sessions) records the hash it committed, and a pending hash before each
+    replace.
+  - Any other file at the target, an earlier projection put back included, is
+    an export conflict. The file is preserved, export to it stops, and the
+    conflict shows in `/folds` and `history--folds`, which also tells the
+    resident how to resolve it. `/folds takeover`, or the resident's
+    `take_over_export` utility, keeps the existing file beside the target and
+    resumes.
   - The resident's fold receipts name `connectome-host`, the data directory and
     the agent.
+  - The takeover utility rides the `utils` meta-tool. A recipe with no other
+    utility, as every recipe in `recipes/` is, now sends that tool with each
+    request, so the first request after upgrading misses the prompt cache.
+    With `modules.foldsExport: false`, the request's tools are as before.
