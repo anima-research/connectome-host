@@ -219,11 +219,14 @@ describe('what an overlay replacement lacks of the operator definition', () => {
   });
 
   test('only an entry that puts a server in place replaces one', () => {
-    expect(overlayEntryReplaces(undefined)).toBe(false);
-    expect(overlayEntryReplaces({ disabled: true })).toBe(false);
-    expect(overlayEntryReplaces({ env: { A: '1' } })).toBe(false);
-    expect(overlayEntryReplaces({ command: 'node' })).toBe(true);
-    expect(overlayEntryReplaces({ url: 'wss://x' })).toBe(true);
+    const path = '/agent/mcpl-servers.agent.json';
+    expect(overlayEntryReplaces('s', undefined, path)).toBe(false);
+    expect(overlayEntryReplaces('s', { disabled: true }, path)).toBe(false);
+    expect(overlayEntryReplaces('s', { env: { A: '1' } }, path)).toBe(false);
+    expect(overlayEntryReplaces('s', { command: 'node' }, path)).toBe(true);
+    expect(overlayEntryReplaces('s', { url: 'wss://x' }, path)).toBe(true);
+    // applyAgentOverlay skips an entry the framework would refuse.
+    expect(overlayEntryReplaces('s', { url: 'wss://x', transport: 'http' }, path)).toBe(false);
   });
 
   test('the startup warnings name each replacement that lacks something, and each host-variable reference', () => {

@@ -191,8 +191,11 @@ servers; those are kept in `mcpl-servers.agent.json` and load regardless of
 the recipe.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools, and `agent.retry` passes a Membrane retry policy
-through for flaky gateways.
+by default) for slow tools. It is a number of milliseconds from 0 to
+2147483647 (about 24.8 days, the most a timer holds), and `0` turns a legacy
+server's timeout off; a recipe, `mcpl-servers.json` and the agent overlay hold
+it to the same rule. `agent.retry` passes a Membrane retry
+policy through for flaky gateways.
 
 #### Modern MCP servers
 
@@ -232,8 +235,8 @@ A modern server offers tools only: the model calls its tools, and modules and sc
 
 The same rules hold in `mcpl-servers.json`, the agent overlay and `mcpl_deploy`. The host checks every entry with agent-framework's own validation:
 - a bad recipe or file entry stops startup, as does a recipe override that doesn't fit its file server;
-- a bad overlay entry is skipped with a logged reason;
-- `mcpl_deploy` refuses a bad entry before saving it, and warns when the server's credential would cross the network unencrypted.
+- a bad overlay entry is skipped, and an operator server with its id runs instead; the host's log and `mcpl_list` give the reasons;
+- `mcpl_deploy` refuses a bad entry before saving it, and warns when the server's credential (a token or an `access` grant) would cross the network unencrypted.
 
 `mcpl_list` and the web panel show each server's family, negotiated revision and transport (`modern@2026-07-28/http`). `/mcp list` and the panel's registry show each `mcpl-servers.json` entry's family and transport as the framework would bind it, and the reasons for any entry it would refuse.
 

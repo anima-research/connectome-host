@@ -40,10 +40,9 @@ import {
   readMcplServersFile,
   readAgentOverlay,
   saveAgentOverlay,
-  resolveOverlayEntry,
-  serverProblems,
   serverProvisions,
   lostByReplacement,
+  overlayEntryOutcome,
   overlayEntryReplaces,
   hostVariableReferences,
   type AgentOverlayEntry,
@@ -121,7 +120,7 @@ export class McplAdminModule implements Module {
   private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
     const entry = overlay[id];
     const operator = this.operatorServers.get(id);
-    if (!operator || !overlayEntryReplaces(entry)) return null;
+    if (!operator || !overlayEntryReplaces(id, entry, this.overlayPath)) return null;
     return { lost: lostByReplacement(operator, entry) };
   }
 
@@ -134,7 +133,7 @@ export class McplAdminModule implements Module {
    */
   private overlayNote(id: string, overlay: Record<string, AgentOverlayEntry>, onDeploy: boolean): string {
     const entry = overlay[id];
-    if (!overlayEntryReplaces(entry)) return '';
+    if (!overlayEntryReplaces(id, entry, this.overlayPath)) return '';
     const replacement = this.replacement(id, overlay);
     const refs = hostVariableReferences(entry);
     const literal = refs.length === 0 ? '' :
@@ -154,6 +153,16 @@ export class McplAdminModule implements Module {
       if (literal) sentences.push(literal);
     }
     return sentences.length > 0 ? ` ${sentences.join(' ')}` : '';
+  }
+
+  /**
+   * For a server running from the operator's definition: that the agent's
+   * own overlay entry for it was skipped at startup, and why, or nothing.
+   * Only the host's log says so otherwise, and the overlay is the agent's.
+   */
+  private skippedNote(id: string, overlay: Record<string, AgentOverlayEntry>): string {
+    const problems = overlayEntryOutcome(id, overlay[id], this.overlayPath)?.problems ?? [];
+    return problems.length > 0 ? ` (your overlay entry for it was skipped at startup: ${problems.join('; ')})` : '';
   }
 
   async start(_ctx: ModuleContext): Promise<void> {}
@@ -336,9 +345,9 @@ export class McplAdminModule implements Module {
       const overlaySource = replacement
         ? `agent-overlay (replaces the operator's definition${replacement.lost ? `; lacks its ${replacement.lost}` : ''})`
         : 'agent-overlay';
-      const source = overlayEntryReplaces(overlay[s.id])
+      const source = overlayEntryReplaces(s.id, overlay[s.id], this.overlayPath)
         ? overlaySource
-        : s.id in fileServers ? 'file/recipe' : 'recipe';
+        : `${s.id in fileServers ? 'file/recipe' : 'recipe'}${this.skippedNote(s.id, overlay)}`;
       // What the connection actually targets: a network transport's url,
       // never a command it doesn't run.
       const target = (s.transport === 'http' || s.transport === 'websocket' ? s.url : s.command) ?? s.command ?? s.url ?? '?';
@@ -378,7 +387,10 @@ export class McplAdminModule implements Module {
       if (entry.disabled) {
         lines.push(`${id}: UNLOADED (tombstoned in your overlay — redeploy with mcpl_deploy to restore)`);
       } else if (!liveIds.has(id)) {
-        lines.push(`${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
+        const skipped = overlayEntryOutcome(id, entry, this.overlayPath)?.problems ?? [];
+        lines.push(skipped.length > 0
+          ? `${id}: NOT LOADED (skipped at startup: ${skipped.join('; ')}. Fix it with mcpl_deploy, or remove it with mcpl_unload)`
+          : `${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
       }
     }
 
@@ -446,11 +458,11 @@ export class McplAdminModule implements Module {
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
     if (Array.isArray(input.disabledTools) && input.disabledTools.length) entry.disabledTools = input.disabledTools.map(String);
 
-    // A configuration the framework would refuse is refused here, before it
-    // is written: an overlay entry that can never load helps nobody.
-    const resolved = resolveOverlayEntry(id, entry, this.overlayPath);
-    const problems = resolved ? serverProblems(resolved) : ['nothing to connect'];
-    if (problems.length > 0) {
+    // A configuration the boot would skip is refused here, before it is
+    // written: an overlay entry that can never load helps nobody.
+    const outcome = overlayEntryOutcome(id, entry, this.overlayPath);
+    const problems = outcome ? outcome.problems : ['nothing to connect'];
+    if (!outcome || problems.length > 0) {
       return fail(`mcpl_deploy refused "${id}": ${problems.join('; ')}. Nothing was saved.`);
     }
 
@@ -460,7 +472,7 @@ export class McplAdminModule implements Module {
     overlay[id] = entry;
     saveAgentOverlay(this.overlayPath, overlay);
 
-    const config = resolved as unknown as McplServerConfig;
+    const config = outcome.server as unknown as McplServerConfig;
     config.env = { ...(config.env ?? {}), AGENT_TIMEZONE: this.timeZone };
     if (entry.access && this.identity) {
       const identity = this.identity;
@@ -493,15 +505,19 @@ export class McplAdminModule implements Module {
     // A server with reconnect whose first dial failed comes back as a stub
     // that keeps retrying, without throwing: report what the status says.
     const status = framework.listMcplServers().find(s => s.id === id);
+    // The family, revision and transport the framework bound, as mcpl_list
+    // and the web panel show them. For a server that didn't connect, it's
+    // the agent's clue to what its url made it: an https:// url is modern MCP.
+    const protocol = status
+      ? `${status.family ?? 'unknown'}@${status.protocolVersion ?? 'unestablished'}/${status.transport ?? 'unknown'}`
+      : undefined;
     if (!status?.connected) {
       return fail(
         `Server "${id}" was saved to your overlay but isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}. ` +
-        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${warned}${note}`,
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.` +
+        `${protocol ? ` It is bound as protocol=${protocol}.` : ''}${warned}${note}`,
       );
     }
-    // The family, revision and transport the framework bound, as mcpl_list
-    // and the web panel show them.
-    const protocol = `${status.family ?? 'unknown'}@${status.protocolVersion ?? 'unestablished'}/${status.transport ?? 'unknown'}`;
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, protocol=${protocol}, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +

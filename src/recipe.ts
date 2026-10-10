@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSy
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
-import { serverProblems } from './mcpl-config.js';
+import { REQUEST_TIMEOUT_RULE, isRequestTimeout, serverProblems } from './mcpl-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 
 // ---------------------------------------------------------------------------
@@ -2185,9 +2185,8 @@ export function validateRecipe(raw: unknown): Recipe {
       if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
         throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
       }
-      if (server.requestTimeoutMs !== undefined
-          && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
-        throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
+      if (server.requestTimeoutMs !== undefined && !isRequestTimeout(server.requestTimeoutMs)) {
+        throw new Error(`mcpServers.${id}.requestTimeoutMs ${REQUEST_TIMEOUT_RULE}`);
       }
       if (server.protocol !== undefined && server.protocol !== 'legacy' && server.protocol !== 'modern') {
         throw new Error(`mcpServers.${id}.protocol must be "legacy" or "modern"`);

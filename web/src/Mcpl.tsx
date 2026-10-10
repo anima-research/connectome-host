@@ -345,7 +345,7 @@ function ServerCard(props: {
       </div>
       <Show when={props.server.problems}>
         <div class="mt-1 text-[10px] text-rose-300 break-all leading-tight">
-          refused at startup: {props.server.problems!.join('; ')}
+          stops startup: {props.server.problems!.join('; ')}
         </div>
       </Show>
       <Show when={envEntries().length > 0 && !editEnv()}>

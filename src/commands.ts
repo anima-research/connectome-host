@@ -1327,7 +1327,7 @@ function handleMcpList(): CommandResult {
     const binding = view.family ? ` (${view.family}/${view.transport})` : '';
     lines.push({ text: `  ${id}: ${view.target}${binding}`, style: 'system' });
     if (view.problems) {
-      lines.push({ text: `    refused at startup: ${view.problems.join('; ')}`, style: 'system' });
+      lines.push({ text: `    stops startup: ${view.problems.join('; ')}`, style: 'system' });
     }
     if (entry.env && Object.keys(entry.env).length > 0) {
       const envStr = Object.entries(entry.env).map(([k, v]) => `${k}=${v}`).join(' ');

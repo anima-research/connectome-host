@@ -102,7 +102,7 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       ...(entry.token !== undefined ? { token: entry.token } : {}),
       ...(entry.access !== undefined ? { access: entry.access } : {}),
       ...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
-      ...(entry.requestTimeoutMs !== undefined ? { requestTimeoutMs: entry.requestTimeoutMs } : {}),
+      ...(entry.requestTimeoutMs !== undefined ? { requestTimeoutMs: checkedRequestTimeout(entry.requestTimeoutMs, id) } : {}),
       args,
       env: entry.env,
       ...(entry.inheritEnv !== undefined
@@ -205,6 +205,31 @@ function checkedInheritEnv(value: unknown, where: string): boolean {
 function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
   validateToolLifecycle(value, `mcpl-servers.json: mcplServers.${id}.toolLifecycle`);
   return value as RecipeToolLifecycle;
+}
+
+/** The longest delay a timer keeps: setTimeout sets anything above it to
+ *  1 ms (TimeoutOverflowWarning), in node and in bun alike. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** The host's rule for a server's `requestTimeoutMs`, wherever it is set (a
+ *  recipe, mcpl-servers.json, the agent overlay): a number of milliseconds
+ *  from 0 to MAX_TIMER_MS. agent-framework's legacy engine arms a timer only
+ *  when the value compares above 0, so a negative number or a non-numeric
+ *  string would silently leave the server's calls without one, and it hands
+ *  the value straight to setTimeout, so a larger one would time every call
+ *  out at once. agent-framework adds a modern server's own range
+ *  (serverProblems). */
+export const REQUEST_TIMEOUT_RULE = `must be a number from 0 to ${MAX_TIMER_MS} (ms; 0 disables)`;
+
+export function isRequestTimeout(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TIMER_MS;
+}
+
+function checkedRequestTimeout(value: unknown, id: string): number {
+  if (!isRequestTimeout(value)) {
+    throw new Error(`mcpl-servers.json: mcplServers.${id}.requestTimeoutMs ${REQUEST_TIMEOUT_RULE}`);
+  }
+  return value;
 }
 
 /**
@@ -478,22 +503,49 @@ export function applyAgentOverlay<T extends { id: string }>(
     servers.filter(s => overlay[s.id]?.disabled !== true);
 
   for (const [id, entry] of Object.entries(overlay)) {
-    const loaded = resolveOverlayEntry(id, entry, overlayPath);
-    if (!loaded) continue;
-    // The overlay is the agent's file: an entry the framework would refuse
-    // is skipped, with a reason, rather than failing the host's startup.
-    // mcpl_deploy refuses such an entry before writing it.
-    const problems = serverProblems(loaded);
-    if (problems.length > 0) {
-      console.error(`[mcpl] overlay server "${id}" skipped: ${problems.join('; ')}`);
+    const outcome = overlayEntryOutcome(id, entry, overlayPath);
+    if (!outcome) continue;
+    // The overlay is the agent's file: an entry the host or the framework
+    // would refuse is skipped, with a reason, rather than failing the host's
+    // startup. mcpl_deploy refuses such an entry before writing it, and
+    // mcpl_list names a skipped one with its reasons.
+    if (outcome.problems.length > 0) {
+      console.error(`[mcpl] overlay server "${id}" skipped: ${outcome.problems.join('; ')}`);
       continue;
     }
     const idx = result.findIndex(s => s.id === id);
-    if (idx >= 0) result[idx] = loaded;
-    else result.push(loaded);
+    if (idx >= 0) result[idx] = outcome.server;
+    else result.push(outcome.server);
   }
 
   return result;
+}
+
+/**
+ * What applyAgentOverlay makes of `id`'s overlay entry: null when the entry
+ * puts nothing in a server's place (there is none, it is a tombstone, or it
+ * has nothing to connect); otherwise the server it resolves to, with the
+ * reasons it is skipped, none when it loads. Every reader of the overlay asks
+ * this, so none of them can disagree with the boot about which entries run.
+ */
+export function overlayEntryOutcome(
+  id: string,
+  entry: AgentOverlayEntry | undefined,
+  overlayPath: string,
+): { server: { id: string; command?: string; url?: string } & Record<string, unknown>; problems: string[] } | null {
+  if (entry === undefined) return null;
+  const server = resolveOverlayEntry(id, entry, overlayPath);
+  if (!server) return null;
+  const timeout = server.requestTimeoutMs;
+  return {
+    server,
+    problems: [
+      ...(timeout !== undefined && !isRequestTimeout(timeout)
+        ? [`MCP server "${id}": requestTimeoutMs ${REQUEST_TIMEOUT_RULE}`]
+        : []),
+      ...serverProblems(server),
+    ],
+  };
 }
 
 /**
@@ -583,10 +635,14 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
   return lost.length > 0 ? lost.join('; ') : null;
 }
 
-/** Whether an overlay entry replaces a server rather than tombstoning it or
- *  being skipped: the entries applyAgentOverlay puts in a server's place. */
-export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entry is AgentOverlayEntry {
-  return entry !== undefined && entry.disabled !== true && Boolean(entry.command || entry.url);
+/** Whether `id`'s overlay entry replaces a server rather than tombstoning it
+ *  or being skipped: the entries applyAgentOverlay puts in a server's place. */
+export function overlayEntryReplaces(
+  id: string,
+  entry: AgentOverlayEntry | undefined,
+  overlayPath: string,
+): entry is AgentOverlayEntry {
+  return overlayEntryOutcome(id, entry, overlayPath)?.problems.length === 0;
 }
 
 /**
@@ -603,7 +659,7 @@ export function overlayWarnings(
   const operatorById = new Map(operatorServers.map((server) => [server.id, server]));
   const lines: string[] = [];
   for (const [id, entry] of Object.entries(readAgentOverlay(overlayPath))) {
-    if (!overlayEntryReplaces(entry)) continue;
+    if (!overlayEntryReplaces(id, entry, overlayPath)) continue;
     const operator = operatorById.get(id);
     const lost = operator ? lostByReplacement(serverProvisions(operator), entry) : null;
     if (lost) {

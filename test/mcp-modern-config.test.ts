@@ -21,6 +21,7 @@ import {
   isModernServer,
   loadMcplServers,
   mergeRecipeServers,
+  overlayWarnings,
   readAgentOverlay,
   readMcplServersFile,
   registryEntryView,
@@ -76,9 +77,15 @@ describe('recipe mcpServers', () => {
   });
 
   test('a modern deadline must be an integer from 1 to 2^31-1', () => {
-    for (const requestTimeoutMs of [0, 1.5, 2 ** 31]) {
+    for (const requestTimeoutMs of [0, 1.5]) {
       expect(() => validateRecipe(recipeWith({ url: 'https://tools.example/mcp', requestTimeoutMs })))
         .toThrow(/mcpServers\.srv: .*requestTimeoutMs/);
+    }
+    // Above 2^31-1 the host's own rule refuses it first, for either family:
+    // a timer can't hold it.
+    for (const entry of [{ url: 'https://tools.example/mcp' }, { command: 'node' }]) {
+      expect(() => validateRecipe(recipeWith({ ...entry, requestTimeoutMs: 2 ** 31 })))
+        .toThrow('mcpServers.srv.requestTimeoutMs must be a number from 0 to 2147483647 (ms; 0 disables)');
     }
   });
 
@@ -219,6 +226,24 @@ describe('mcpl-servers.json', () => {
       .toThrow(/mcpl-servers\.json: mcplServers\.bad: .*disabledFeatureSets/);
   });
 
+  test("a requestTimeoutMs the recipe would refuse fails the load; 0 still turns a legacy timeout off", () => {
+    // The loader used to drop the field, so a server got the 60 s default
+    // whatever the file said. Now it applies, so it is held to the recipe's
+    // rule and refused by name. Of these, a negative number or a non-numeric
+    // string would leave a legacy server's calls without a timer, and 2^31 ms
+    // would time each one out at once; null and "120000" aren't numbers.
+    for (const requestTimeoutMs of [-1, 'abc', '120000', null, 2 ** 31]) {
+      expect(() => loadMcplServers(writeFile({ slow: { command: 'node', requestTimeoutMs } })))
+        .toThrow('mcpl-servers.json: mcplServers.slow.requestTimeoutMs must be a number from 0 to 2147483647 (ms; 0 disables)');
+    }
+    const loaded = loadMcplServers(writeFile({
+      off: { command: 'node', requestTimeoutMs: 0 },
+      long: { command: 'node', requestTimeoutMs: 180000 },
+      longest: { command: 'node', requestTimeoutMs: 2 ** 31 - 1 },
+    }));
+    expect(loaded.map((s) => s.requestTimeoutMs)).toEqual([0, 180000, 2 ** 31 - 1]);
+  });
+
   test("MCPL-only policy on a modern entry is refused, including fields the loader doesn't carry", () => {
     const notCarried: Record<string, unknown> = {
       enabledCapabilities: ['channels'],
@@ -284,7 +309,7 @@ describe('registry views: /mcp list, /mcp add and the panel registry', () => {
     expect(policy.problems!.join('; ')).toMatch(/"allowHostCommands" is MCPL policy/);
   });
 
-  test('/mcp list and the panel registry show that target, and why an entry is refused', () => {
+  test('/mcp list and the panel registry show that target, and why an entry stops startup', () => {
     saveMcplServers(DEFAULT_CONFIG_PATH, {
       mixed: { command: 'node', args: ['srv.js'], url: 'https://tools.example/mcp' },
       moved: { command: 'node', url: 'https://tools.example/mcp', transport: 'http' },
@@ -295,7 +320,7 @@ describe('registry views: /mcp list, /mcp add and the panel registry', () => {
     expect(lines).toContain('  moved: https://tools.example/mcp (modern/http)');
     const broken = lines.indexOf('  broken: node');
     expect(broken).toBeGreaterThan(0);
-    expect(lines[broken + 1]).toMatch(/^ {4}refused at startup: .*transport "websocket" requires "url"/);
+    expect(lines[broken + 1]).toMatch(/^ {4}stops startup: .*transport "websocket" requires "url"/);
 
     // Rows keep the entry's own command line for panels older than `target`;
     // a current panel shows `target`.
@@ -351,6 +376,56 @@ describe('agent overlay', () => {
       console.error = original;
     }
     expect(errors.join('\n')).toMatch(/overlay server "bad" skipped: .*enabledFeatureSets/);
+  });
+
+  test("a skipped overlay entry isn't reported as replacing the operator's server", async () => {
+    const overlayPath = join(dir, 'mcpl-servers.agent.json');
+    saveAgentOverlay(overlayPath, { shell: { command: 'node', protocol: 'modern', enabledFeatureSets: ['chat'] } });
+    const operator = [{ id: 'shell', command: 'node', args: ['operator.js'], env: { SESSION_SERVER_TOKEN: 'x' } }];
+    expect(overlayWarnings(operator, overlayPath)).toEqual([]);
+    const live = [{ id: 'shell', connected: true, toolCount: 1, toolPrefix: 'mcpl--shell', command: 'node', transport: 'stdio' }];
+    const framework = { listMcplServers: () => live, restartMcplServer: async () => {} } as unknown as AgentFramework;
+    const mod = new McplAdminModule({ overlayPath, configPath: join(dir, 'mcpl-servers.json') });
+    mod.setFramework(framework);
+    mod.setOperatorServers(operator);
+    const call = (name: string, input: Record<string, unknown>) => mod.handleToolCall({ id: 'c', name, input } as never);
+    expect(String((await call('mcpl_list', {})).data)).toMatch(/source=recipe/);
+    expect(String((await call('mcpl_restart', { id: 'shell' })).data)).toBe('Restarted server "shell" — connected, 1 tools.');
+  });
+
+  test('an overlay requestTimeoutMs the recipe would refuse skips the entry, as the file and recipe refuse it', () => {
+    const overlayPath = join(dir, 'mcpl-servers.agent.json');
+    saveAgentOverlay(overlayPath, {
+      slow: { command: 'node', requestTimeoutMs: -1 },
+      huge: { command: 'node', requestTimeoutMs: 2 ** 31 },
+      off: { command: 'node', requestTimeoutMs: 0 },
+    });
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+    try {
+      expect(applyAgentOverlay([], overlayPath).map((s) => s.id)).toEqual(['off']);
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toEqual(['slow', 'huge'].map((id) =>
+      `[mcpl] overlay server "${id}" skipped: MCP server "${id}": requestTimeoutMs must be a number from 0 to 2147483647 (ms; 0 disables)`));
+  });
+
+  test('mcpl_list tells the agent which of its overlay entries were skipped at startup, and why', async () => {
+    const overlayPath = join(dir, 'mcpl-servers.agent.json');
+    saveAgentOverlay(overlayPath, {
+      // Over a server the operator defines, which runs instead.
+      shell: { command: 'node', protocol: 'modern', enabledFeatureSets: ['chat'] },
+      // Alone: nothing runs.
+      tools: { url: 'https://tools.example/mcp', transport: 'websocket' },
+    });
+    const live = [{ id: 'shell', connected: true, toolCount: 1, toolPrefix: 'mcpl--shell', command: 'node', transport: 'stdio' }];
+    const mod = new McplAdminModule({ overlayPath, configPath: join(dir, 'mcpl-servers.json') });
+    mod.setFramework({ listMcplServers: () => live } as unknown as AgentFramework);
+    const text = String((await mod.handleToolCall({ id: 'c', name: 'mcpl_list', input: {} } as never)).data);
+    expect(text).toMatch(/shell: CONNECTED .*source=recipe \(your overlay entry for it was skipped at startup: MCP server "shell": "enabledFeatureSets" is MCPL policy/);
+    expect(text).toMatch(/tools: NOT LOADED \(skipped at startup: .*transport.*\. Fix it with mcpl_deploy, or remove it with mcpl_unload\)/);
   });
 });
 
@@ -475,6 +550,18 @@ describe('mcpl_deploy and mcpl_list', () => {
     ]) {
       expect(String((await call(mod, 'mcpl_deploy', input)).data ?? '')).not.toMatch(/Warning:/);
     }
+    // An `access` grant is a credential too, attached before the check.
+    mod.setIdentity({ accessFor: async () => 'grant' });
+    const granted = await call(mod, 'mcpl_deploy', { id: 'granted', url: 'http://tools.example/mcp', access: 'eidoverse' });
+    expect(String(granted.data ?? '')).toMatch(/Warning: MCP server "granted": its credential goes to tools\.example unencrypted \(http:\/\/\).*use https:\/\//);
+    // And the deploy says it when the server doesn't connect, or its connect throws.
+    const down = makeModule(makeFramework({ connected: false, retrying: true }).framework);
+    expect(String((await call(down, 'mcpl_deploy', { id: 'down', url: 'ws://tools.example/mcpl', token: 't' })).error ?? ''))
+      .toMatch(/isn't connected \(it keeps retrying\)\..* Warning: MCP server "down": its credential goes to tools\.example unencrypted/);
+    const refusing = makeFramework();
+    (refusing.framework as unknown as { connectMcplServer: () => Promise<void> }).connectMcplServer = async () => { throw new Error('refused'); };
+    expect(String((await call(makeModule(refusing.framework), 'mcpl_deploy', { id: 'thrown', url: 'ws://tools.example/mcpl', token: 't' })).error ?? ''))
+      .toMatch(/failed to connect: refused\..* Warning: MCP server "thrown": its credential goes to tools\.example unencrypted/);
   });
 
   test("deploy reports the framework's actual disposition, and a connected server's protocol", async () => {
@@ -483,6 +570,8 @@ describe('mcpl_deploy and mcpl_list', () => {
     const result = await call(mod, 'mcpl_deploy', { id: 'slow', url: 'https://tools.example/mcp' });
     expect(result.success).toBe(false);
     expect(String(result.error ?? '')).toContain('Server "slow" was saved to your overlay but isn\'t connected (it keeps retrying).');
+    // The binding is the agent's clue that its https:// url made a modern server.
+    expect(String(result.error ?? '')).toContain('It is bound as protocol=modern@unestablished/http.');
     const live = makeFramework();
     const ok = await call(makeModule(live.framework), 'mcpl_deploy', { id: 'fast', url: 'https://tools.example/mcp' });
     expect(ok.success).toBe(true);
