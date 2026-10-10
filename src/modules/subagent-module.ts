@@ -1846,8 +1846,10 @@ export class SubagentModule implements Module {
       systemPrompt = parentAgent.systemPrompt;
       systemPromptSource = 'parent';
     } else {
-      systemPrompt = input.systemPrompt ?? NO_PARENT_SYSTEM_PROMPT;
-      systemPromptSource = input.systemPrompt !== undefined ? 'override' : 'default';
+      // No prompt of its own (any it names differs from a missing
+      // parent's, so it took the override branch) and no parent.
+      systemPrompt = NO_PARENT_SYSTEM_PROMPT;
+      systemPromptSource = 'default';
     }
 
     const requestedTools = kind === 'spawn' ? (input as SpawnInput).tools : undefined;
