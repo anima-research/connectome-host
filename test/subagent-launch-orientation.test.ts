@@ -26,8 +26,11 @@ import { SubagentModule, type SubagentModuleConfig } from '../src/modules/subage
 
 interface Run {
   name: string;
-  /** The prose routing the child agent was created with. */
+  /** The prose routing, output limit and system prompt the child agent
+   *  was created with. */
   proseRouting: string;
+  maxTokens: number;
+  systemPrompt: string;
   /** Text of the child's last message: the fork's tool_result, or the
    *  spawn's / parentless fork's task message. */
   firstContext: string;
@@ -102,7 +105,7 @@ async function makeHarness(opts: {
   const holds: Array<() => void> = [];
   let holdNext: (() => void) | null = null;
   fw.runEphemeralToCompletion = async (agent: unknown, cm: unknown) => {
-    const a = agent as { name: string; proseRouting: string };
+    const a = agent as { name: string; proseRouting: string; maxTokens: number; systemPrompt: string };
     fw.agents.set(a.name, agent); // what the real run does at its start
     try {
       const { messages } = (cm as { queryMessages(q: object): { messages: Array<{ content: unknown }> } })
@@ -110,6 +113,8 @@ async function makeHarness(opts: {
       runs.push({
         name: a.name,
         proseRouting: a.proseRouting,
+        maxTokens: a.maxTokens,
+        systemPrompt: a.systemPrompt,
         firstContext: textOf(messages[messages.length - 1]?.content),
         allText: messages.map((m) => textOf(m.content)).join('\n'),
         surface: framework.listToolClasses(a.name).map((t) => t.tool),
@@ -279,6 +284,15 @@ describe('fork orientation', () => {
       expect(line(block, '- Against the parent at the call')).toContain('Differs in system prompt, strategy type, stream budget and output limit.');
       expect(block).toContain('- System prompt: overridden for this fork.');
       expect(block).toContain("- Output limit: 128 tokens (the parent's: 512 tokens).");
+
+      // Naming the parent's own prompt overrides nothing.
+      const echo = { name: 'echo', task: 'review it too', systemPrompt: 'parent prompt' };
+      seedForkCall(h.framework, 'toolu_fork_4b', echo);
+      const echoed = await h.subagent.handleToolCall(call('fork', 'toolu_fork_4b', echo));
+      await h.asyncPromise('echo');
+      const echoBlock = launchBlock(echoed.data as string);
+      expect(echoBlock).toContain("- System prompt: the parent's.");
+      expect(line(echoBlock, '- Against the parent at the call')).toContain('Differs in strategy type, stream budget and output limit.');
     } finally {
       await h.cleanup();
     }
@@ -352,6 +366,55 @@ describe('fork orientation', () => {
       expect(start).toContain(`- Prose routing: locus, the framework's default: ${ROUTING_EFFECT.locus}.`);
       expect(start).toContain(`- Tools: ${run.surface.length} available to this stream: `);
       for (const name of run.surface) expect(start).toContain(name);
+
+      // Its own prompt overrides the default.
+      const own = await h.subagent.handleToolCall(
+        call('fork', 'toolu_fork_5b', { name: 'stray', task: 'list them again', systemPrompt: 'you list files' }, null),
+      );
+      await h.asyncPromise('stray');
+      expect(launchBlock(own.data as string)).toContain('- System prompt: overridden for this fork.');
+      expect(h.runs.find((r) => r.name.startsWith('stray-'))!.systemPrompt).toBe('you list files');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('a fork call with no id inherits the whole context, and says why', async () => {
+    const h = await makeHarness({});
+    try {
+      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      const input = { name: 'blind', task: 'look around' };
+      const res = await h.subagent.handleToolCall({ name: 'fork', input, callerAgentName: 'parent' } as unknown as ToolCall);
+      expect(res.success).toBe(true);
+      await h.asyncPromise('blind');
+      const run = h.runs[0]!;
+      expect(run.allText).toContain('BEFORE_THE_CALL');
+      expect(startSection(run.firstContext)).toContain(
+        "- Inherited: the parent's whole compiled context as it was when this stream started, because the fork call had no id to cut at. It can include turns that came after the call.",
+      );
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("a parent whose tools can't be read isn't compared, and the stream is told so", async () => {
+    const h = await makeHarness({});
+    try {
+      const fw = h.framework as unknown as { listToolClasses(agent: string): Array<{ tool: string }> };
+      const real = fw.listToolClasses.bind(h.framework);
+      fw.listToolClasses = (agent: string) => {
+        if (agent === 'parent') throw new Error('unreadable');
+        return real(agent);
+      };
+      const input = { name: 'unsure', task: 'carry on' };
+      seedForkCall(h.framework, 'toolu_fork_unread', input);
+      await h.subagent.handleToolCall(call('fork', 'toolu_fork_unread', input));
+      await h.asyncPromise('unsure');
+      const run = h.runs[0]!;
+      const start = startSection(run.firstContext);
+      expect(start).toContain(`- Tools: ${run.surface.length} available to this stream: `);
+      expect(start).toContain(" The parent stream's tools couldn't be read for comparison.");
+      expect(start).not.toContain('Compared with');
     } finally {
       await h.cleanup();
     }
@@ -556,6 +619,39 @@ describe('a queued launch', () => {
     }
   });
 
+  test('a launch that waits is created with what was resolved at its call', async () => {
+    const h = await makeHarness({ parent: { proseRouting: 'hybrid' }, module: { maxConcurrent: 1 } });
+    try {
+      await queueBehindAHeldFork(h);
+      const fork = { name: 'second', task: 'wait your turn' };
+      seedForkCall(h.framework, 'toolu_second', fork);
+      const forkReceipt = (await h.subagent.handleToolCall(call('fork', 'toolu_second', fork))).data as string;
+      const spawn = { name: 'third', systemPrompt: 'spawn prompt', task: 'wait as well' };
+      const spawnReceipt = (await h.subagent.handleToolCall(call('spawn', 'toolu_third', spawn))).data as string;
+
+      // While both wait, the values their launches took from the parent change.
+      const parent = h.framework.getAgent('parent')! as unknown as { maxTokens: number; proseRouting: string; systemPrompt: string };
+      parent.maxTokens = 999;
+      parent.proseRouting = 'disabled';
+      parent.systemPrompt = 'changed prompt';
+
+      h.releaseHeld();
+      await h.asyncPromise('first');
+      await h.asyncPromise('second');
+      await h.asyncPromise('third');
+
+      for (const [prefix, receipt] of [['second-', forkReceipt], ['spawn-third-', spawnReceipt]] as const) {
+        const run = h.runs.find((r) => r.name.startsWith(prefix))!;
+        expect(launchBlock(receipt)).toContain('- Output limit: 256 tokens, the same as ');
+        expect(run.maxTokens).toBe(256);
+        expect(run.proseRouting).toBe('hybrid');
+      }
+      expect(h.runs.find((r) => r.name.startsWith('second-'))!.systemPrompt).toBe('parent prompt');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('a parent that is gone by the start: nothing inherited, and no comparison claimed', async () => {
     const h = await makeHarness({
       extraAgents: [{ name: 'helper', model: 'mock', systemPrompt: 'helper prompt', maxTokens: 256 }],
@@ -581,6 +677,11 @@ describe('a queued launch', () => {
       expect(start).toContain('- Inherited: nothing; the parent stream "helper" was no longer registered when this stream started.');
       expect(start).toContain(`- Tools: ${run.surface.length} available to this stream: `);
       expect(start).not.toContain('Compared with');
+      expect(start).not.toContain("couldn't be read");
+      // Created with the values resolved at the call, not the default
+      // prompt and output limit a missing parent would give now.
+      expect(run.systemPrompt).toBe('helper prompt');
+      expect(run.maxTokens).toBe(256);
     } finally {
       await h.cleanup();
     }
