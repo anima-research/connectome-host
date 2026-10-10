@@ -175,6 +175,14 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   // -- Command dispatch --
   async function dispatchCommand(cmd: IncomingCommand, requester: Socket): Promise<void> {
+    // Only the current client commands the child. A superseded client is
+    // end()ed, but what it sent before it saw that still arrives: its
+    // subscribe would replace the current client's filter, and its text would
+    // reach the agent, though reply() below drops every answer it would get.
+    if (requester !== currentClient) {
+      log(`command dropped: ${String(cmd.type)}, requester superseded/closed`);
+      return;
+    }
     // Responses belong to the connection that requested them. Async work can
     // outlive that connection; a replacement client must not inherit its reply.
     // Framework telemetry still uses emit() directly and follows currentClient.
@@ -433,7 +441,11 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
     });
 
-    socket.on('end', () => {
+    // 'close' follows an 'end' and an error alike. A reset socket (a parent
+    // that died with events still unread) closes with ECONNRESET and no 'end',
+    // and must stop being current too, or every emit goes to it until the next
+    // client connects.
+    socket.on('close', () => {
       if (currentClient === socket) {
         currentClient = null;
         log('client disconnected; child stays up');
