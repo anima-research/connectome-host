@@ -24,10 +24,17 @@ import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
 import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
+import {
+  countToolClassSources,
+  readToolClasses,
+  type ToolClassRow,
+  type ToolClassSource,
+} from '../tool-lifecycle-config.js';
 
 /** Minimal slice of AppContext the panel layer needs. Both the WebUI host
  *  and the headless child runtime satisfy this structurally. */
@@ -38,12 +45,19 @@ export interface PanelAppRef {
   callLedger?: CallLedger | null;
   /** Subscription quota windows, when the host runs on a subscription. */
   quotaMeter?: QuotaMeter | null;
+  /** Credential state + operator actions, when the host runs on a subscription. */
+  credentials?: CredentialMonitor | null;
+  /** On a subscription without a local meter (openai-codex through an
+   *  inference gateway, which tracks the windows per login): no windows to
+   *  show, but the dollar estimate is still not a bill. */
+  subscriptionUnmetered?: boolean;
 }
 
 /** Panel operations servable by any conhost process. Kept as a const list so
  *  fleet-types.ts and tests can enumerate without importing the handlers. */
 export const PANEL_OPS = [
   'mcpl',
+  'tool-classes',
   'settings',
   'settings-update',
   'settings-reset',
@@ -60,6 +74,8 @@ export const PANEL_OPS = [
   'debug-context',
   'media',
   'quota',
+  'credential',
+  'credential-action',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -92,6 +108,14 @@ export async function runPanelOp(
     switch (op as PanelOp) {
       case 'mcpl':
         return { ok: true, data: buildMcplSnapshot(app) };
+      case 'tool-classes':
+        return {
+          ok: true,
+          data: buildToolClassesSnapshot(
+            app,
+            typeof params.agent === 'string' && params.agent.length > 0 ? params.agent : undefined,
+          ),
+        };
       case 'settings':
         return { ok: true, data: requireSettingsState(app, resolveAgent(app, params.agent)) };
       case 'settings-update': {
@@ -135,6 +159,10 @@ export async function runPanelOp(
         return { ok: true, data: buildHealthSnapshot(app) };
       case 'quota':
         return { ok: true, data: await buildQuotaSnapshot(app) };
+      case 'credential':
+        return { ok: true, data: buildCredentialSnapshot(app) };
+      case 'credential-action':
+        return { ok: true, data: await applyCredentialAction(app, params) };
       case 'context-makeup':
         return { ok: true, data: await buildContextMakeup(app, resolveAgent(app, params.agent)) };
       case 'context-coverage':
@@ -292,6 +320,12 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     }
   } catch { /* live view is best-effort; the file registry still renders */ }
 
+  // Every tool's effective class (all agents), for the panel's tool-class
+  // section. Omitted when the framework build has no listing.
+  let toolClasses: ToolClassRow[] | null = null;
+  try { toolClasses = readToolClasses(app.framework); }
+  catch { /* best-effort, like the live view */ }
+
   return {
     configPath: DEFAULT_CONFIG_PATH,
     servers: Object.entries(servers).map(([id, entry]) => ({
@@ -305,7 +339,36 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
     })),
     live,
+    ...(toolClasses ? { toolClasses } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tool classes (MCPL RFC-008 §6)
+// ---------------------------------------------------------------------------
+
+export interface ToolClassesSnapshot {
+  /** The agent whose surface this is, or null for every tool offered. */
+  agent: string | null;
+  /** Rows per source: override / host / server / none (unclassed). */
+  counts: Record<ToolClassSource, number>;
+  /** Sorted by tool name. */
+  tools: ToolClassRow[];
+}
+
+/**
+ * Each tool with its effective class and the source that decided it. Unlike
+ * the agent-scoped panels, omitting `agent` does not default to the primary
+ * agent: it lists every tool the framework offers to anyone (the shared
+ * board plus agent-only surfaces such as the subconscious's).
+ */
+export function buildToolClassesSnapshot(app: PanelAppRef, agent?: string): ToolClassesSnapshot {
+  if (agent !== undefined) requireAgent(app, agent);
+  const tools = readToolClasses(app.framework, agent);
+  if (tools === null) {
+    throw new PanelError('this agent-framework build does not report tool classes', 501);
+  }
+  return { agent: agent ?? null, counts: countToolClassSources(tools), tools };
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +741,7 @@ function hostHoldActive(app: PanelAppRef): boolean | null {
 }
 
 export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
-  if (!app.quotaMeter) return { subscription: false, windows: [] };
+  if (!app.quotaMeter) return { subscription: app.subscriptionUnmetered === true, windows: [] };
   const snapshot = await app.quotaMeter.refresh();
   return {
     subscription: true,
@@ -691,12 +754,43 @@ export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<strin
   };
 }
 
+/** `credential` panel op / health `credential` block: the monitor's state,
+ *  or `{ subscription: false }` on an API-key host. Never carries a token. */
+export function buildCredentialSnapshot(app: PanelAppRef): Record<string, unknown> {
+  if (!app.credentials) return { subscription: false };
+  // `agent` = the name the host's alerts carry, so a UI can key the two the same.
+  return { subscription: true, agent: resolveAgent(app), ...app.credentials.snapshot() };
+}
+
+const CREDENTIAL_ACTIONS: ReadonlySet<string> = new Set(['refresh', 'login', 'set-token', 'recheck']);
+
+/** `credential-action`: run one operator action and answer with the state. */
+export async function applyCredentialAction(app: PanelAppRef, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!app.credentials) throw new PanelError('this host runs on an API key; no credential actions', 404);
+  const action = typeof params.action === 'string' ? params.action : '';
+  if (!CREDENTIAL_ACTIONS.has(action)) throw new PanelError(`unknown credential action: ${action || '(none)'}`, 400);
+  const token = typeof params.token === 'string' ? params.token : undefined;
+  if (action === 'set-token' && !token?.trim()) throw new PanelError('set-token needs a token', 400);
+  const state = await app.credentials.runAction(action as CredentialActionId, token !== undefined ? { token } : {});
+  return { subscription: true, agent: resolveAgent(app), ...state };
+}
+
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
   if (typeof fw.healthSnapshot !== 'function') {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
+  // Credential state rides along so a WebUI opened mid-incident (or the
+  // fleet hub / doctor) sees an expired token or spent quota without waiting
+  // for the next alert transition. Health reads never throw.
+  try {
+    if (app.credentials) {
+      (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
+    }
+  } catch {
+    // Health reads never throw.
+  }
   // Compression quarantine is a guaranteed-eventual-outage state (raw
   // spans accumulate until the picker cannot fit the window). Surface it
   // here so the fleet hub and connectome-doctor can alarm on it — it
@@ -1085,11 +1179,12 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     const res = await fetch(base + '/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
-        // Mirror the main adapter's auth: OAuth Bearer (subscription) when
-        // ANTHROPIC_AUTH_TOKEN is set, x-api-key otherwise.
-        ...(process.env.ANTHROPIC_AUTH_TOKEN
+        // Mirror the main adapter's auth: the LIVE subscription bearer when
+        // the host runs on one (it rotates; the env string does not), else
+        // ANTHROPIC_AUTH_TOKEN, else x-api-key.
+        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
           ? {
-              authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
               'anthropic-beta': 'oauth-2025-04-20',
             }
           : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),

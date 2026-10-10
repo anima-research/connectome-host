@@ -183,7 +183,7 @@ To disable: remove the `gitlab` block from `recipes/knowledge-miner.json`. If yo
 
 ### Notion (optional, off by default)
 
-The recipe ships **without** a Notion server — the adapter it was developed against (`syncntn`) is not publicly available, so a default block would only produce a startup failure. The miner's system prompt still describes the `syncntn--*` tools; the agent simply won't have them until you wire a server in.
+The recipe ships **without** a Notion server — the adapter it was developed against (`syncntn`) is not publicly available, so a default block would only produce a startup failure. The miner's system prompt still describes the `mcpl--syncntn--*` tools; the agent simply won't have them until you wire a server in.
 
 To enable: install a Notion MCP server (any server whose tool names match what the prompt references — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server--not-included-by-default) for selection caveats), then add a block to `recipes/knowledge-miner.json` under `mcpServers`:
 
@@ -247,7 +247,7 @@ then add this block to `recipes/knowledge-miner.json` under `mcpServers`:
   "args": ["../scribe-mcp/src/index.ts"],
   "env": {
     "GEMINI_API_KEY": "${GEMINI_API_KEY}",
-    "NOTION_API_KEY": "${NOTION_API_KEY:-}",           // only scribe--scribe_notion_page needs it
+    "NOTION_API_KEY": "${NOTION_API_KEY:-}",           // only mcpl--scribe--scribe_notion_page needs it
     "SCRIBE_GLOSSARY_PATH": "./input/glossary.txt",
     "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL:-}"  // optional domain glossary
   },

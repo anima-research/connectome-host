@@ -31,6 +31,24 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { worksapce: true } }))).toEqual(['modules.worksapce (did you mean modules.workspace?)']);
   });
 
+  test('names unknown keys under agent.mock', () => {
+    const mock = { echoMode: false, echomode: true, responseQue: ['x'], chunkDelay: 5 };
+    expect(unknownRecipeKeys(base({ modules: { bogusModule: true } }, { provider: 'mock', mock }))).toEqual([
+      'agent.mock.echomode (did you mean agent.mock.echoMode?)',
+      'agent.mock.responseQue (did you mean agent.mock.responseQueue?)',
+      'agent.mock.chunkDelay',
+      'modules.bogusModule',
+    ]);
+    const known = {
+      echoMode: true, defaultResponse: 'x', completeDelayMs: 1, streamChunkDelayMs: 1,
+      streamChunkSize: 1, responseQueue: ['x'],
+    };
+    expect(unknownRecipeKeys(base({}, { mock: known }))).toEqual([]);
+    // A mock that is not an object is the validator's to reject, not this walk's.
+    expect(unknownRecipeKeys(base({}, { mock: 'echo' }))).toEqual([]);
+    expect(unknownRecipeKeys({ name: 'T', agent: ['mock'] })).toEqual([]);
+  });
+
   test('says what replaced a retired key', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
@@ -65,6 +83,15 @@ describe('validateRecipe and unknown keys', () => {
     for (const key of ['bogusTop', 'mcplServers (did you mean mcpServers?)', 'agent.bogusAgentKey', 'modules.files (replaced by modules.workspace)']) {
       expect(message).toContain(key);
     }
+  });
+
+  test('warns about unknown agent.mock keys and still loads the recipe', () => {
+    warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const recipe = validateRecipe(base({}, { provider: 'mock', mock: { streamChunkDelay: 50, streamChunkSize: 2 } }));
+    expect(recipe.agent.mock?.streamChunkSize).toBe(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0]))
+      .toContain('agent.mock.streamChunkDelay (did you mean agent.mock.streamChunkDelayMs?)');
   });
 
   test('says nothing about a recipe of known keys', () => {

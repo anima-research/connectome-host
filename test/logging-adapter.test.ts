@@ -53,6 +53,31 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
       .withReasoning(baseRequest);
     expect(out).toBe(baseRequest);
   });
+
+  // Reasoning is host-wide, but every call through the shared membrane passes
+  // here — including RetrievalModule's Haiku calls. Models without adaptive
+  // thinking 400 on it, so they must go out untouched.
+  test.each([
+    'claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-5',
+    'claude-opus-4-1', 'anthropic.claude-haiku-4-5', 'claude-opus-4-5@20251101',
+  ])('no thinking for %s (rejects adaptive)', (model) => {
+    const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
+    const req = { ...baseRequest, model };
+    const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
+      .withReasoning(req);
+    expect(out).toBe(req);
+  });
+
+  test.each([
+    'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
+    'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1',
+    'claude-mythos-5-1', 'anthropic.claude-opus-5-5',
+  ])('adaptive thinking for %s', (model) => {
+    const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
+    const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
+      .withReasoning({ ...baseRequest, model });
+    expect((out.extra as Record<string, { type?: string }> | undefined)?.thinking?.type).toBe('adaptive');
+  });
 });
 
 describe('LoggingAnthropicAdapter.withEffort', () => {

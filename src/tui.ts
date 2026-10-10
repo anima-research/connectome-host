@@ -153,6 +153,9 @@ interface AppContext {
   branchState: import('./commands.js').BranchState;
   userMessageCount: number;
   quotaMeter?: import('./quota-meter.js').QuotaMeter | null;
+  credentials?: import('./credential-state.js').CredentialMonitor | null;
+  /** Subscription without a local meter (openai-codex through a gateway). */
+  subscriptionUnmetered?: boolean;
   switchSession(id: string): Promise<void>;
 }
 
@@ -309,6 +312,18 @@ export async function runTui(app: AppContext): Promise<void> {
    *  `${agent}:${kind}`. Drives the status-bar ⚠ segment; each firing also
    *  prints a chat line so the alert exists in scrollback. */
   const opsAlerts = new Map<string, OpsAlertEntry>();
+
+  /** A credential alert names the actions the host can run; in a terminal
+   *  the click is a command, so say which. */
+  function credentialActionHint(data: unknown): string {
+    const actions = (data as { actions?: unknown } | undefined)?.actions;
+    if (!Array.isArray(actions) || actions.length === 0) return '';
+    const ids = actions
+      .map((a) => (a as { id?: unknown })?.id)
+      .filter((id): id is string => typeof id === 'string')
+      .map((id) => (id === 'set-token' ? '/auth token <tok>' : `/auth ${id}`));
+    return ids.length > 0 ? ` — ${ids.join(' | ')}` : '';
+  }
 
   function handleOpsAlert(kind: string, agent: string, message: string): void {
     // All-clears travel as a distinct `<kind>-clear` kind (the alarm kind's
@@ -1818,7 +1833,7 @@ export async function runTui(app: AppContext): Promise<void> {
         handleOpsAlert(
           typeof event.kind === 'string' ? event.kind : 'unknown',
           typeof event.agentName === 'string' ? event.agentName : '?',
-          typeof event.message === 'string' ? event.message : '',
+          (typeof event.message === 'string' ? event.message : '') + credentialActionHint(event.data),
         );
         break;
       }
@@ -2264,6 +2279,16 @@ export async function runTui(app: AppContext): Promise<void> {
       updateStatus();
     });
     releaseQuotaWatch = meter.watch();
+  } else if (app.subscriptionUnmetered) {
+    // a subscription whose windows live in the gateway: nothing to read
+    // here, and the dollar estimate is not a bill either
+    state.tokens.quota = '';
+  }
+  // A credential alarm raised before this TUI attached (headless start, or
+  // a session switch) would otherwise be invisible until it re-fires.
+  if (app.credentials) {
+    const state = app.credentials.snapshot();
+    if (state.kind !== 'ok') handleOpsAlert(state.kind, rootAgentName, state.message + credentialActionHint(state));
   }
 
   const pollTimer = setInterval(() => {

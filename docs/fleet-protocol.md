@@ -152,6 +152,7 @@ by the installed libraries). `params.agent` defaults to the primary agent.
 | Op | Params (besides `agent`) |
 |---|---|
 | `mcpl` | — |
+| `tool-classes` | — (`agent` scopes to that agent's tools; omitted = every tool offered, not the primary agent) |
 | `settings` | — |
 | `settings-update` | `contextBudgetTokens`, `tailTokens`, `transitionPaceTokens`, `immediate`, `persist` (default true), `notify` |
 | `settings-reset` | `keys?`, `persist`, `notify` |

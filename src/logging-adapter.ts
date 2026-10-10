@@ -58,6 +58,16 @@ export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
   if (/claude-(opus|sonnet)-4-6/.test(model)) return level !== 'xhigh';
   return /claude-(fable|mythos)-|claude-opus-(4-[7-9]|[5-9])|claude-sonnet-[5-9]/.test(model);
 }
+/** Whether `model` accepts `thinking: { type: 'adaptive' }`. Adaptive
+ *  thinking arrived with the 4.6 pair; Haiku 4.5, Sonnet 4.5, Opus 4.5 and
+ *  older reject it with a 400 ("adaptive thinking is not supported on this
+ *  model"). The reasoning setting is host-wide, so without this gate every
+ *  call through the shared membrane inherits it, including RetrievalModule's
+ *  Haiku calls, which then fail on every compile. Unknown models are not
+ *  sent the parameter, the same fail-safe posture as modelAcceptsEffort. */
+export function modelAcceptsAdaptiveThinking(model: string): boolean {
+  return /claude-(fable|mythos)-|claude-opus-(4-[6-9]|[5-9])|claude-sonnet-(4-6|[5-9])/.test(model);
+}
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
 /** Exact first-system-block identity Anthropic requires on subscription
@@ -140,6 +150,16 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private withReasoning(request: ProviderRequest): ProviderRequest {
     const r = this.getReasoning?.();
     if (!r || !r.enabled) return request;
+    if (!modelAcceptsAdaptiveThinking(request.model)) {
+      if (!this.warnedThinking.has(request.model)) {
+        this.warnedThinking.add(request.model);
+        console.error(
+          `[reasoning] ${request.model} does not accept adaptive thinking — not sent ` +
+            `(reasoning stays enabled for models that do).`,
+        );
+      }
+      return request;
+    }
     // Use ADAPTIVE thinking, not the legacy { type:'enabled', budget_tokens }
     // form. Current Anthropic models (opus-4-6/4-7/4-8, …) reject the legacy
     // form with: `"thinking.type.enabled" is not supported for this model.
@@ -200,6 +220,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   private readonly warnedEffort = new Set<string>();
+  private readonly warnedThinking = new Set<string>();
 
   private log(record: Record<string, unknown>): void {
     try {
@@ -240,6 +261,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     inputTokens: number;
   }) => void;
 
+  /** Credential-monitor taps: every failed call (auth verdicts are what the
+   *  monitor keys on) and every successful one (clears a standing auth
+   *  alarm). Observers never affect provider traffic. */
+  onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
+  onProviderSuccess?: (kind: 'complete' | 'stream') => void;
+
   private observeCall(
     kind: 'complete' | 'stream',
     timestamp: string,
@@ -249,6 +276,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     response?: ProviderResponse,
     error?: unknown,
   ): void {
+    try {
+      if (error !== undefined) this.onProviderError?.(error, kind);
+      else this.onProviderSuccess?.(kind);
+    } catch { /* observers never affect provider traffic */ }
     const raw0 = (response as { raw?: { stop_reason?: string; stop_details?: { category?: string } } } | undefined)?.raw;
     if (kind === 'complete' && raw0?.stop_reason === 'refusal' && this.onRefusal) {
       try {
