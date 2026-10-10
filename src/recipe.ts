@@ -1201,6 +1201,15 @@ export interface Recipe {
   toolClassOverrides?: Record<string, string[]>;
 }
 
+export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
+
+/** The provider transport the host actually builds for this recipe. One
+ *  adapter serves every stream in the process (resident, subconscious,
+ *  forks), so this is also what any subagent stream runs on. */
+export function resolveProvider(recipe: Recipe): RecipeProvider {
+  return recipe.agent.provider ?? 'anthropic';
+}
+
 // ---------------------------------------------------------------------------
 // Default recipe
 // ---------------------------------------------------------------------------

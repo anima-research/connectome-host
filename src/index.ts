@@ -81,6 +81,7 @@ import {
   clearSavedRecipe,
   parseRecipeArg,
   deprecatedConversationsNotices,
+  resolveProvider,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
@@ -243,6 +244,7 @@ async function createFramework(
     const subagentConfig = typeof modules.subagents === 'object' ? modules.subagents : {};
     subagentModule = new SubagentModule({
       parentAgentName: agentName,
+      provider: resolveProvider(recipe),
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
     });
@@ -958,7 +960,7 @@ function countLines(path: string): number {
 
 async function main() {
   const recipe = await resolveRecipe();
-  const provider = recipe.agent.provider ?? 'anthropic';
+  const provider = resolveProvider(recipe);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');

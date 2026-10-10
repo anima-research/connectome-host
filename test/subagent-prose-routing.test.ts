@@ -28,6 +28,7 @@ async function makeHarness(parentProseRouting?: 'locus' | 'explicit' | 'hybrid' 
   const adapter = new MockAdapter({ defaultResponse: 'ok' });
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({
+    provider: 'mock',
     parentAgentName: 'parent',
     defaultModel: 'mock',
     defaultMaxTokens: 256,

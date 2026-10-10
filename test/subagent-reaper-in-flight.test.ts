@@ -115,7 +115,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
     // silentMs > threshold) hold. With the in-flight guard, the agent is left
     // alone.
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     const { entry } = installSubagent(mod, {
       displayName: 'opus-in-flight',
       startedAt: now - 5 * 60_000,
@@ -136,7 +136,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
     // post-fix thresholds, so this test stays valid if the threshold is
     // tuned in either direction.
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     const { entry } = installSubagent(mod, {
       displayName: 'genuinely-stuck',
       startedAt: now - 10 * 60_000,
@@ -159,7 +159,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
     // about dual clocks; F3 is the same shape: a healthy in-flight agent must
     // not report isZombie=true.
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     installSubagent(mod, {
       displayName: 'opus-in-flight',
       startedAt: now - 5 * 60_000,
@@ -172,7 +172,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
 
   test('lifecycle: inference:started sets requestInFlightSince', () => {
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     const { live } = installSubagent(mod, {
       displayName: 'lc',
       frameworkAgentName: 'fw-lc',
@@ -192,7 +192,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
 
   test('lifecycle: first inference:tokens clears requestInFlightSince', () => {
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     const { live } = installSubagent(mod, {
       displayName: 'lc2',
       frameworkAgentName: 'fw-lc2',
@@ -212,7 +212,7 @@ describe('SubagentModule reaper — F3 request-in-flight protection', () => {
     // After a tool round, the framework emits stream_resumed and dispatches a
     // new request. This is the gap the postmortem traced reaps to.
     const now = Date.now();
-    const mod = new SubagentModule();
+    const mod = new SubagentModule({ provider: 'mock' });
     const { live } = installSubagent(mod, {
       displayName: 'lc3',
       frameworkAgentName: 'fw-lc3',
