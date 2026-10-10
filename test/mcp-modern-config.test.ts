@@ -49,6 +49,16 @@ describe('recipe mcpServers', () => {
     expect(() => validateRecipe(recipeWith({ url: 'http://127.0.0.1:8080/mcp', transport: 'http' }))).not.toThrow();
     expect(() => validateRecipe(recipeWith({ command: 'node', args: ['srv.js'], protocol: 'modern' }))).not.toThrow();
     expect(() => validateRecipe(recipeWith({ command: 'node', protocol: 'modern', requestTimeoutMs: 120000, enabledTools: ['read_*'] }))).not.toThrow();
+    // And each is the family its name says; command and ws(s) entries stay legacy.
+    for (const [entry, modern] of [
+      [{ url: 'https://tools.example/mcp' }, true],
+      [{ url: 'http://127.0.0.1:8080/mcp', transport: 'http' }, true],
+      [{ command: 'node', protocol: 'modern' }, true],
+      [{ command: 'node' }, false],
+      [{ url: 'wss://host/mcpl' }, false],
+    ] as const) {
+      expect(isModernServer({ id: 'srv', ...entry })).toBe(modern);
+    }
   });
 
   test('existing stdio and WebSocket entries are unchanged', () => {
@@ -86,6 +96,10 @@ describe('recipe mcpServers', () => {
       .toThrow(/mcpServers\.srv: /);
     expect(() => validateRecipe(recipeWith({ command: 'node', protocol: 'newest' })))
       .toThrow(/protocol must be "legacy" or "modern"/);
+    // An id-only entry is checked against the framework's rules only after the
+    // merge, so an unknown transport on one is refused here, by name.
+    expect(() => validateRecipe(recipeWith({ transport: 'tcp' })))
+      .toThrow(/transport must be "stdio", "websocket" or "http"/);
   });
 
   test('a recipe may set protocol on a file-defined server, and the merged server is checked', () => {
@@ -97,11 +111,10 @@ describe('recipe mcpServers', () => {
     expect(serverProblems(merged[0]!)).toEqual([]);
     expect(isModernServer(merged[0]!)).toBe(true);
 
-    const misapplied = mergeRecipeServers(
+    expect(() => mergeRecipeServers(
       { srv: { protocol: 'modern' } },
       [{ id: 'srv', command: 'node', enabledFeatureSets: ['chat'] }],
-    );
-    expect(serverProblems(misapplied[0]!).join('; ')).toMatch(/enabledFeatureSets/);
+    )).toThrow(/mcpServers\.srv, merged with its mcpl-servers\.json definition: .*enabledFeatureSets/);
   });
 
   test('a recipe deadline override survives the merge and is checked there', () => {
@@ -109,20 +122,26 @@ describe('recipe mcpServers', () => {
     const kept = mergeRecipeServers({ srv: { protocol: 'modern', requestTimeoutMs: 120000 } }, file);
     expect(kept[0]).toMatchObject({ protocol: 'modern', requestTimeoutMs: 120000 });
     expect(serverProblems(kept[0]!)).toEqual([]);
-    const zero = mergeRecipeServers({ srv: { protocol: 'modern', requestTimeoutMs: 0 } }, file);
-    expect(zero[0]).toMatchObject({ requestTimeoutMs: 0 });
-    expect(serverProblems(zero[0]!).join('; ')).toMatch(/requestTimeoutMs/);
+    expect(() => mergeRecipeServers({ srv: { protocol: 'modern', requestTimeoutMs: 0 } }, file))
+      .toThrow(/mcpServers\.srv, merged with its mcpl-servers\.json definition: .*requestTimeoutMs/);
   });
 
   test("a recipe's http(s) url makes a file-defined server modern HTTP; a ws url keeps its old meaning", () => {
-    const file = [{ id: 'srv', command: 'old-server', args: ['--x'], protocol: 'legacy', env: { A: '1' } }];
+    const file = [{ id: 'srv', command: 'old-server', args: ['--x'], protocol: 'legacy', inheritEnv: true, env: { A: '1' } }];
     const http = mergeRecipeServers({ srv: { url: 'https://tools.example/mcp', token: 't' } }, file)[0]!;
     expect(http).toMatchObject({ id: 'srv', url: 'https://tools.example/mcp', token: 't' });
     expect(http.command).toBeUndefined();
     expect(http.args).toBeUndefined();
     expect(http.protocol).toBeUndefined();
+    // Left behind, the file's inheritEnv would read as something an overlay
+    // replacement of this server lacks, though it never applied to a URL.
+    expect(http.inheritEnv).toBeUndefined();
     expect(isModernServer(http)).toBe(true);
     expect(serverProblems(http)).toEqual([]);
+    // Plain http:// counts too.
+    const plain = mergeRecipeServers({ srv: { url: 'http://127.0.0.1:8080/mcp' } }, file)[0]!;
+    expect(plain.command).toBeUndefined();
+    expect(isModernServer(plain)).toBe(true);
     // A ws url without a transport leaves the file's command in charge, as before.
     const ws = mergeRecipeServers({ srv: { url: 'wss://host/mcpl' } }, file)[0]!;
     expect(ws).toMatchObject({ command: 'old-server', url: 'wss://host/mcpl' });
@@ -162,12 +181,10 @@ describe('recipe mcpServers', () => {
     expect(serverProblems(fromWs)).toEqual([]);
     expect(isModernServer(fromWs)).toBe(true);
 
-    const explicit = mergeRecipeServers(
+    expect(() => mergeRecipeServers(
       { srv: { url: 'https://tools.example/mcp', transport: 'websocket' } },
       [{ id: 'srv', command: 'node' }],
-    )[0]!;
-    expect(explicit.transport).toBe('websocket');
-    expect(serverProblems(explicit).length).toBeGreaterThan(0);
+    )).toThrow(/mcpServers\.srv, merged with its mcpl-servers\.json definition: .*transport "websocket" does not match/);
   });
 });
 
@@ -443,6 +460,21 @@ describe('mcpl_deploy and mcpl_list', () => {
     expect(refused.success).toBe(false);
     expect(String(refused.error ?? refused.data)).toMatch(/protocol must be "legacy", "modern" or ""/);
     expect(readAgentOverlay(join(dir, 'mcpl-servers.agent.json')).f).toBeUndefined();
+  });
+
+  test('deploy says when the credential would cross the network unencrypted', async () => {
+    const { framework } = makeFramework();
+    const mod = makeModule(framework);
+    const cleartext = await call(mod, 'mcpl_deploy', { id: 'plain', url: 'ws://tools.example/mcpl', token: 't' });
+    expect(cleartext.success).toBe(true);
+    expect(String(cleartext.data ?? '')).toMatch(/Warning: MCP server "plain": its credential goes to tools\.example unencrypted \(ws:\/\/\).*use wss:\/\//);
+    for (const input of [
+      { id: 'secure', url: 'wss://tools.example/mcpl', token: 't' },
+      { id: 'local', url: 'http://127.0.0.1:8080/mcp', token: 't' },
+      { id: 'open', url: 'ws://tools.example/mcpl' },
+    ]) {
+      expect(String((await call(mod, 'mcpl_deploy', input)).data ?? '')).not.toMatch(/Warning:/);
+    }
   });
 
   test("deploy reports the framework's actual disposition, and a connected server's protocol", async () => {

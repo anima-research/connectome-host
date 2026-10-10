@@ -144,13 +144,8 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
  * - a modern server has a real deadline and no MCPL-only policy.
  */
 export function serverProblems(config: { id: string }): string[] {
-  const asConfig = config as unknown as McplServerConfig;
-  try {
-    resolveServerBinding(asConfig);
-  } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
-  }
-  return serverConfigProblems(asConfig);
+  // serverConfigProblems resolves the binding first and reports its error.
+  return serverConfigProblems(config as unknown as McplServerConfig);
 }
 
 /** Whether a server config resolves to the modern MCP family. */
@@ -284,7 +279,17 @@ export function mergeRecipeServers(
   for (const [id, recipeEntry] of Object.entries(recipeServers)) {
     const fileEntry = fileById.get(id);
     if (fileEntry) {
-      out.push(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer);
+      const merged = applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer;
+      // An id-only recipe entry gets its definition here, from the file, so
+      // this is where its merged settings meet the framework's rules: an
+      // override that doesn't fit the file's server (protocol on a URL, MCPL
+      // policy on a modern server) stops startup, as recipe errors do. A
+      // recipe entry with its own command or url was checked by validateRecipe.
+      const problems = serverProblems(merged);
+      if (problems.length > 0) {
+        throw new Error(`mcpServers.${id}, merged with its mcpl-servers.json definition: ${problems.join('; ')}`);
+      }
+      out.push(merged);
     } else if (recipeEntry.command || recipeEntry.url) {
       out.push({ id, ...recipeEntry } as MergedServer);
     } else {

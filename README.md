@@ -181,7 +181,7 @@ loads only when a recipe names its id. For a named id the registry supplies
 the command, args and env, and the recipe entry may carry only policy fields —
 no `command` or `url` needed: `channelSubscription`, `toolPrefix`, feature-set
 and tool toggles, reconnect settings, a network `url`/`transport`/`token`,
-`access`, `protocol`, `toolLifecycle` and `inheritEnv`
+`access`, `protocol`, `requestTimeoutMs`, `toolLifecycle` and `inheritEnv`
 (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in `src/mcpl-config.ts`).
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
@@ -220,20 +220,20 @@ A server's configuration decides which family it uses:
 
 The family is never guessed by probing the server. A modern server that refuses 2026-07-28 fails its connect with the server's own error. On the legacy side:
 - A server that answers `initialize` with any revision other than 2024-11-05 is refused, and the error names what was offered and what came back.
-- A server that rejects 2024-11-05 outright (error `-32022`) gets an error naming the revisions it supports, with a hint to set `protocol: "modern"`.
+- A server that rejects 2024-11-05 outright (error `-32022`) gets an error naming the revisions it supports, and, when they include the modern revision, a hint to set `protocol: "modern"`.
 
 A modern server offers tools only: the model calls its tools, and modules and scripts can call them directly. Rules that come with that:
 - **Tool policy.** `toolPrefix`, `enabledTools` and `disabledTools` work as for any server.
-- **MCPL-only policy is an error.** On a modern server, feature sets, capabilities, `channelSubscription`, `toolLifecycle`, `allowHostCommands`, `autofetch` and `shouldTriggerInference` are refused. So is `protocol` on any URL server, since the scheme already decides.
+- **MCPL-only policy is an error.** On a modern server, feature sets, capabilities, `scopes`, `channelSubscription`, `toolLifecycle`, `allowHostCommands`, `autofetch` and `shouldTriggerInference` are refused. So is `protocol` on any URL server, since the scheme already decides.
 - **Deadline.** `requestTimeoutMs` is one deadline per tool call, an integer from 1 to 2³¹−1; `0` is refused here.
 - **On timeout.** At the deadline the client requests cancellation, and the outcome is reported as unknown: the server may still complete the call. It is never retried.
 - **Credentials.** `token` and `access` become a bearer `Authorization` header. An `access` credential is cached and fetched fresh when the server answers 401.
 - **Results.** Text and images are shown inline, including an embedded resource's text. Audio and binary payloads (blobs, binary embedded resources) are saved to the workspace under `tool-results/`, with a short note saying where. Links are shown, not fetched. A structured result (`structuredContent`) reaches scripts whole.
 
 The same rules hold in `mcpl-servers.json`, the agent overlay and `mcpl_deploy`. The host checks every entry with agent-framework's own validation:
-- a bad recipe or file entry stops startup;
+- a bad recipe or file entry stops startup, as does a recipe override that doesn't fit its file server;
 - a bad overlay entry is skipped with a logged reason;
-- `mcpl_deploy` refuses a bad entry before saving it.
+- `mcpl_deploy` refuses a bad entry before saving it, and warns when the server's credential would cross the network unencrypted.
 
 `mcpl_list` and the web panel show each server's family, negotiated revision and transport (`modern@2026-07-28/http`). `/mcp list` and the panel's registry show each `mcpl-servers.json` entry's family and transport as the framework would bind it, and the reasons for any entry it would refuse.
 

@@ -1,0 +1,5 @@
+- **Operators with `mcpl-servers.json` entries:** the loader now passes each entry's `url`, `transport`, `token`, `access`, `protocol` and `requestTimeoutMs` to agent-framework, and checks the entry by the framework's rules. Before, it dropped all six. A few entries behave differently:
+  - `command` with `transport: "websocket"`: the command ran, since `transport` was dropped. Now a `ws://` or `wss://` `url` is dialed instead, and no `url`, or one of another scheme, stops startup. Drop the `transport` to keep running the command.
+  - `requestTimeoutMs` now applies, and `0` turns a legacy server's timeout off.
+  - An entry agent-framework can't use (no `command` or `url`, a `url` that isn't `ws`, `wss`, `http` or `https`, or a `transport` the `url` contradicts) now stops startup even when the recipe doesn't use it, as an invalid `inheritEnv` or `toolLifecycle` already does. None of these could connect before.
+  - Unchanged: an entry with `command` and `url` and no `transport` still runs its command.

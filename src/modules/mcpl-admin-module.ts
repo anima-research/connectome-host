@@ -33,7 +33,7 @@ import type {
   AgentFramework,
   McplServerConfig,
 } from '@animalabs/agent-framework';
-import { resolveTimeZone } from '@animalabs/agent-framework';
+import { resolveTimeZone, serverConfigWarnings } from '@animalabs/agent-framework';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
@@ -469,6 +469,10 @@ export class McplAdminModule implements Module {
       // stores only the access NAME. See identity-module.ts header.
       config.accessProvider = () => identity.accessFor(audience);
     }
+    // The framework warns at connect, in the host's log, when a credential
+    // would cross the network unencrypted; the agent deploying it reads that
+    // here, whatever the connection does.
+    const warned = serverConfigWarnings(config).map((w) => ` Warning: ${w}.`).join('');
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
     const note = this.overlayNote(id, overlay, true);
@@ -482,7 +486,7 @@ export class McplAdminModule implements Module {
       const err = error instanceof Error ? error : new Error(String(error));
       return fail(
         `Server "${id}" was saved to your overlay but failed to connect: ${err.message}. ` +
-        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${warned}${note}`,
       );
     }
 
@@ -492,7 +496,7 @@ export class McplAdminModule implements Module {
     if (!status?.connected) {
       return fail(
         `Server "${id}" was saved to your overlay but isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}. ` +
-        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${warned}${note}`,
       );
     }
     // The family, revision and transport the framework bound, as mcpl_list
@@ -501,7 +505,7 @@ export class McplAdminModule implements Module {
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, protocol=${protocol}, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
-      `Persisted to your agent overlay (survives host restarts).${note}`,
+      `Persisted to your agent overlay (survives host restarts).${warned}${note}`,
     );
   }
 
