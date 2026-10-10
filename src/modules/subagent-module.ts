@@ -31,6 +31,7 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import { KnowledgeStrategy } from '@animalabs/agent-framework';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
+import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../state/stream-usage.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -185,6 +186,8 @@ interface LiveSubagentState {
    *  contexts routinely exceed 30s TTFT) get reaped mid-request. Cleared
    *  on first token, completion, failure, or new tool yield. */
   requestInFlightSince?: number;
+  /** The current stream's usage as of its latest sample (see stream-usage.ts). */
+  streamUsage?: UsageCounts;
 }
 
 /** Streaming event pushed to peek subscribers. */
@@ -441,7 +444,7 @@ export class SubagentModule implements Module {
   private frameworkNameIndex = new Map<string, string>();                 // frameworkAgentName → displayName
   private callIdIndex = new Map<string, string>();                        // toolCallId → displayName
   private streamSubscribers = new Map<string, Set<SubagentStreamCallback>>();  // displayName → callbacks
-  private lastInputTokens = new Map<string, number>();  // displayName → last known input token count
+  private lastInputTokens = new Map<string, number>();  // displayName → context size: its latest call's prompt
   private cancellationHandles = new Map<string, { reject: (err: Error) => void }>();  // displayName → cancel
   private agentDepths = new Map<string, number>();  // framework agent name → fork depth
 
@@ -486,8 +489,7 @@ export class SubagentModule implements Module {
 
         // inference:usage is emitted at runtime but not in the TraceEvent union — handle it first
         if ((event as { type: string }).type === 'inference:usage') {
-          const roundUsage = (event as { tokenUsage?: { input?: number } }).tokenUsage;
-          if (roundUsage?.input) this.lastInputTokens.set(displayName, roundUsage.input);
+          this.noteUsageSample(live, (event as { tokenUsage?: UsageSample }).tokenUsage);
           return;
         }
 
@@ -503,6 +505,8 @@ export class SubagentModule implements Module {
             live.pendingToolCalls = [];
             live.activeCallIds.clear();
             live.requestInFlightSince = Date.now();
+            // A new stream: its usage samples count from zero.
+            live.streamUsage = emptyUsage();
             this.emit(displayName, { type: 'inference:started' });
             break;
           case 'inference:tokens': {
@@ -532,8 +536,7 @@ export class SubagentModule implements Module {
             this.emit(displayName, { type: 'stream_resumed' });
             break;
           case 'inference:completed': {
-            const usage = (event as { tokenUsage?: { input?: number } }).tokenUsage;
-            if (usage?.input) this.lastInputTokens.set(displayName, usage.input);
+            this.noteUsageSample(live, (event as { tokenUsage?: UsageSample }).tokenUsage);
             live.requestInFlightSince = undefined;
             this.emit(displayName, { type: 'inference:completed' });
             break;
@@ -1241,6 +1244,16 @@ export class SubagentModule implements Module {
     }
     this.liveSubagents.delete(displayName);
     this.frameworkNameIndex.delete(frameworkAgentName);
+  }
+
+  /** Fold a usage sample into the subagent's context size (`lastInputTokens`).
+   *  A sample is the stream's usage so far, so the context size is the prompt
+   *  of the call it adds (see stream-usage.ts). */
+  private noteUsageSample(live: LiveSubagentState, sample: UsageSample | undefined): void {
+    if (!sample) return;
+    const step = foldUsageSample(live.streamUsage, sample);
+    live.streamUsage = step.total;
+    if (step.prompt !== undefined) this.lastInputTokens.set(live.displayName, step.prompt);
   }
 
   /** Fan out a stream event to all subscribers for this subagent + wildcard. */

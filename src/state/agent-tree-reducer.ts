@@ -10,10 +10,14 @@
  *      `describe` IPC handler returns `reducer.getTree()` over the wire.
  *
  * Mirrors the canonical fold currently scattered across:
- *   - tui.ts:1019-1037     (token aggregation on inference:usage / completed)
- *   - tui.ts:1280-1341     (phase transitions)
- *   - tui.ts:1100-1107     (parent-edge inference from subagent--spawn calls)
- *   - subagent-module.ts:262-340 (callId routing, live state tracking)
+ *   - tui.ts's noteUsageSample (token readouts on inference:usage / completed);
+ *     it, this reducer and subagent-module.ts all count through
+ *     foldUsageSample in stream-usage.ts
+ *   - tui.ts's subscribeSubagentStream (phase transitions)
+ *   - tui.ts's onTrace, at subagent--spawn and subagent--fork calls
+ *     (parent-edge inference)
+ *   - subagent-module.ts's setFramework trace subscription (callId routing,
+ *     live state tracking)
  *
  * The dispatch table EVENT_HANDLERS is the canonical source of truth: each
  * key is an event type the reducer acts on, and `REDUCER_REQUIRED_EVENTS`
@@ -24,6 +28,7 @@
  */
 
 import type { TraceEvent } from '@animalabs/agent-framework';
+import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './stream-usage.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -49,13 +54,14 @@ export type AgentKind = 'framework' | 'subagent';
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface AgentTokens {
-  /** Last-seen input tokens. Represents *current context window size*, not cumulative. */
+  /** The latest provider call's prompt: fresh input plus cache reads and
+   *  writes. Represents *current context window size*, not cumulative. */
   input: number;
-  /** Cumulative output tokens across all rounds. */
+  /** Output tokens across all of the agent's provider calls, each counted once. */
   output: number;
-  /** Cumulative cache-read tokens. */
+  /** Cache-read tokens across all calls, each counted once. */
   cacheRead: number;
-  /** Cumulative cache-write (creation) tokens. */
+  /** Cache-write (creation) tokens across all calls, each counted once. */
   cacheWrite: number;
 }
 
@@ -73,6 +79,12 @@ export interface AgentNode {
   status: AgentStatus;
   phase: AgentPhase;
   tokens: AgentTokens;
+  /** Fold state, not for display: the current stream's usage as of its latest
+   *  sample, which `tokens` already counts. The next sample adds only what it
+   *  adds beyond this. It travels with the node, in snapshots too, so a reducer
+   *  that starts from a copy of this node keeps counting each call once.
+   *  Absent until the node sees a stream start or a sample. */
+  streamUsage?: UsageCounts;
   toolCallsCount: number;
   findingsCount: number;
   startedAt?: number;
@@ -95,6 +107,15 @@ export interface AgentTreeSnapshot {
 
 function freshTokens(): AgentTokens {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+/** A copy that shares no mutable state with `node`. */
+function copyNode(node: AgentNode): AgentNode {
+  return {
+    ...node,
+    tokens: { ...node.tokens },
+    ...(node.streamUsage ? { streamUsage: { ...node.streamUsage } } : {}),
+  };
 }
 
 interface SpawnCallInput {
@@ -129,6 +150,8 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.status = 'running';
     node.lastEventAt = ts;
     if (node.startedAt === undefined) node.startedAt = ts;
+    // A new stream: its usage samples count from zero.
+    node.streamUsage = emptyUsage();
   },
 
   'inference:tokens': (r, e, ts) => {
@@ -172,7 +195,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
   'inference:usage': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
-    const usage = e.tokenUsage as { input?: number; output?: number; cacheRead?: number; cacheCreation?: number } | undefined;
+    const usage = e.tokenUsage as UsageSample | undefined;
     if (usage) r._applyTokenUsage(node, usage);
     node.lastEventAt = ts;
   },
@@ -189,7 +212,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.status = 'completed';
     node.completedAt = ts;
     node.lastEventAt = ts;
-    const usage = e.tokenUsage as { input?: number; output?: number; cacheRead?: number; cacheCreation?: number } | undefined;
+    const usage = e.tokenUsage as UsageSample | undefined;
     if (usage) r._applyTokenUsage(node, usage);
   },
 
@@ -332,10 +355,7 @@ export class AgentTreeReducer {
     this.callIdIndex.clear();
     for (const node of snapshot.nodes) {
       // Defensive copy so subsequent mutations don't escape into caller's data.
-      this.nodes.set(node.name, {
-        ...node,
-        tokens: { ...node.tokens },
-      });
+      this.nodes.set(node.name, copyNode(node));
     }
     for (const [callId, agentName] of Object.entries(snapshot.callIdIndex)) {
       this.callIdIndex.set(callId, agentName);
@@ -359,16 +379,13 @@ export class AgentTreeReducer {
 
   /** Returns a deep copy of all current nodes. */
   getNodes(): AgentNode[] {
-    return [...this.nodes.values()].map(n => ({
-      ...n,
-      tokens: { ...n.tokens },
-    }));
+    return [...this.nodes.values()].map(copyNode);
   }
 
   getNode(name: string): AgentNode | undefined {
     const n = this.nodes.get(name);
     if (!n) return undefined;
-    return { ...n, tokens: { ...n.tokens } };
+    return copyNode(n);
   }
 
   /** Returns the children of a given agent (one level deep).
@@ -376,7 +393,7 @@ export class AgentTreeReducer {
   getChildren(parentName: string): AgentNode[] {
     const out: AgentNode[] = [];
     for (const n of this.nodes.values()) {
-      if (n.parent === parentName) out.push({ ...n, tokens: { ...n.tokens } });
+      if (n.parent === parentName) out.push(copyNode(n));
     }
     return out;
   }
@@ -385,7 +402,7 @@ export class AgentTreeReducer {
   getRoots(): AgentNode[] {
     const out: AgentNode[] = [];
     for (const n of this.nodes.values()) {
-      if (n.parent === undefined) out.push({ ...n, tokens: { ...n.tokens } });
+      if (n.parent === undefined) out.push(copyNode(n));
     }
     return out;
   }
@@ -416,17 +433,16 @@ export class AgentTreeReducer {
   }
 
   /** @internal */
-  _applyTokenUsage(
-    node: AgentNode,
-    usage: { input?: number; output?: number; cacheRead?: number; cacheCreation?: number },
-  ): void {
-    // Input represents context window size at this round; overwrite, don't sum
-    // (summing inputs would double-count history that's already in the next round's input).
-    if (typeof usage.input === 'number') node.tokens.input = usage.input;
-    // Output / cache are per-round costs; accumulate.
-    if (typeof usage.output === 'number') node.tokens.output += usage.output;
-    if (typeof usage.cacheRead === 'number') node.tokens.cacheRead += usage.cacheRead;
-    if (typeof usage.cacheCreation === 'number') node.tokens.cacheWrite += usage.cacheCreation;
+  _applyTokenUsage(node: AgentNode, usage: UsageSample): void {
+    // A sample is the stream's usage so far (see stream-usage.ts), so only
+    // what it adds beyond the stream's previous sample is new. A completion
+    // that repeats the last sample adds nothing.
+    const step = foldUsageSample(node.streamUsage, usage);
+    node.streamUsage = step.total;
+    node.tokens.output += step.added.output;
+    node.tokens.cacheRead += step.added.cacheRead;
+    node.tokens.cacheWrite += step.added.cacheCreation;
+    if (step.prompt !== undefined) node.tokens.input = step.prompt;
   }
 
   // ----- private --------------------------------------------------------

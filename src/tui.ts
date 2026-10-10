@@ -35,6 +35,7 @@ import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
 import type { AgentNode } from './state/agent-tree-reducer.js';
+import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './state/stream-usage.js';
 import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
@@ -203,10 +204,11 @@ interface TuiState {
   viewMode: 'chat' | 'fleet' | 'peek' | 'peek-proc';
   /** Session-cumulative usage (usage:updated totals across all agents). */
   tokens: TokenUsage;
-  /** Root agent's CURRENT context size (per-round input from inference
-   *  usage events). Deliberately separate from tokens.input — conflating
-   *  them made the status line oscillate between two different quantities
-   *  under the same label. */
+  /** Root agent's CURRENT context size: its latest provider call's prompt,
+   *  read from the inference usage samples (see noteUsageSample).
+   *  Deliberately separate from tokens.input — conflating them made the
+   *  status line oscillate between two different quantities under the same
+   *  label. */
   ctxTokens: number;
   peekTarget: string | null;
   /** Name of the child process being peeked at (peek-proc mode). */
@@ -500,8 +502,13 @@ export async function runTui(app: AppContext): Promise<void> {
   /** Parent tracking: child short name → parent full agent name. */
   const agentParent = new Map<string, string>();
 
-  /** Last known input token count per agent (= context window size). */
+  /** Context window size per agent: its latest provider call's prompt
+   *  (fresh input plus cache reads and writes), projected forward while it
+   *  streams. */
   const agentContextTokens = new Map<string, number>();
+  /** Each agent's current stream usage as of its latest sample, so the next
+   *  sample's own call can be told apart from the stream's running total. */
+  const streamUsage = new Map<string, UsageCounts>();
 
   /** Synesthete summary per agent, keyed by full agent name. */
   const summaryCache = new Map<string, string>();
@@ -1696,11 +1703,33 @@ export async function runTui(app: AppContext): Promise<void> {
 
   // ── Trace listener ──────────────────────────────────────────────────
 
+  /** Fold a usage sample from `inference:usage` or `inference:completed`
+   *  into the agent's context size. A sample is the stream's usage so far
+   *  (see stream-usage.ts), so the context size is the prompt of the call
+   *  it adds. Samples must not overwrite the session totals, which
+   *  usage:updated owns. */
+  function noteUsageSample(agent: string, sample: UsageSample | undefined): void {
+    if (!sample) return;
+    const step = foldUsageSample(streamUsage.get(agent), sample);
+    streamUsage.set(agent, step.total);
+    if (step.prompt === undefined) return;
+    agentContextTokens.set(agent, step.prompt);
+    const short = shortAgentName(agent);
+    if (short !== agent) agentContextTokens.set(short, step.prompt);
+    if (state.viewMode === 'fleet') updateFleetView();
+    if (agent === rootAgentName) {
+      state.ctxTokens = step.prompt;
+      updateStatus();
+    }
+  }
+
   function onTrace(event: Record<string, unknown>) {
     const agent = event.agentName as string | undefined;
 
     switch (event.type) {
       case 'inference:started': {
+        // A new stream: its usage samples count from zero.
+        if (agent) streamUsage.set(agent, emptyUsage());
         if (agent === rootAgentName) {
           if (backgrounded) {
             // Root agent is running in background — don't show stream UI
@@ -1768,36 +1797,13 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'inference:usage': {
-        // Per-round usage updates during yielding streams
-        const roundUsage = event.tokenUsage as {
-          input?: number; output?: number; cacheCreation?: number; cacheRead?: number;
-        } | undefined;
-        if (agent && roundUsage?.input) {
-          agentContextTokens.set(agent, roundUsage.input);
-          const short = shortAgentName(agent);
-          if (short !== agent) agentContextTokens.set(short, roundUsage.input);
-          if (state.viewMode === 'fleet') updateFleetView();
-        }
-        // Update the root agent's context-size readout. Only ctxTokens —
-        // per-round numbers must not overwrite the session totals that
-        // usage:updated owns (cache fields included: per-round cacheRead is
-        // this round's hit, not the cumulative the Σ segment displays).
-        if (agent === rootAgentName && roundUsage?.input !== undefined) {
-          state.ctxTokens = roundUsage.input;
-          updateStatus();
-        }
+        // A usage sample after each provider call of a yielding stream.
+        if (agent) noteUsageSample(agent, event.tokenUsage as UsageSample | undefined);
         break;
       }
 
       case 'inference:completed': {
-        const usage = event.tokenUsage as { input?: number; output?: number } | undefined;
-        // Track context size per agent (store by both full and short name)
-        if (usage && agent && usage.input) {
-          agentContextTokens.set(agent, usage.input);
-          const short = shortAgentName(agent);
-          if (short !== agent) agentContextTokens.set(short, usage.input);
-          if (agent === rootAgentName) state.ctxTokens = usage.input;
-        }
+        if (agent) noteUsageSample(agent, event.tokenUsage as UsageSample | undefined);
 
         if (agent === rootAgentName) {
           state.status = 'idle';
@@ -2253,6 +2259,7 @@ export async function runTui(app: AppContext): Promise<void> {
     agentTranscripts.clear();
     transcriptTotalLen.clear();
     agentContextTokens.clear();
+    streamUsage.clear();
     agentParent.clear();
     summaryCache.clear();
     summarySnapshotLen.clear();

@@ -246,47 +246,54 @@ function hasCallIdSideEffect(eventType: string): boolean {
 
 describe('AgentTreeReducer (continued)', () => {
 
-  test('input tokens overwrite (current context size); output/cache accumulate', () => {
+  test('usage samples are running totals: each call counts once, and input is its prompt', () => {
+    // agent-framework forwards membrane's cumulative sample after each call
+    // (see stream-usage.ts); test/stream-usage.test.ts drives a real stream.
     const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({
       type: 'inference:usage',
       agentName: 'a',
       tokenUsage: { input: 1000, output: 50, cacheRead: 200, cacheCreation: 100 },
-      timestamp: ts(0),
+      timestamp: ts(1),
     });
     r.applyEvent({
       type: 'inference:usage',
       agentName: 'a',
-      tokenUsage: { input: 1500, output: 80, cacheRead: 300, cacheCreation: 50 },
-      timestamp: ts(1),
+      tokenUsage: { input: 1500, output: 80, cacheRead: 300, cacheCreation: 150 },
+      timestamp: ts(2),
     });
     const tokens = r.getNode('a')!.tokens;
-    expect(tokens.input).toBe(1500);          // overwrite (current context size)
-    expect(tokens.output).toBe(130);          // accumulated
-    expect(tokens.cacheRead).toBe(500);       // accumulated
-    expect(tokens.cacheWrite).toBe(150);      // accumulated
+    expect(tokens.input).toBe(500 + 100 + 50); // the second call's prompt: fresh + cache read + cache write
+    expect(tokens.output).toBe(80);
+    expect(tokens.cacheRead).toBe(300);
+    expect(tokens.cacheWrite).toBe(150);
   });
 
-  test('inference:completed final tokenUsage applies same accumulation rules', () => {
+  test('inference:completed adds only what its usage holds beyond the last sample', () => {
     const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({
       type: 'inference:usage',
       agentName: 'a',
       tokenUsage: { input: 500, output: 20, cacheRead: 0, cacheCreation: 0 },
-      timestamp: ts(0),
+      timestamp: ts(1),
     });
     r.applyEvent({
       type: 'inference:completed',
       agentName: 'a',
       durationMs: 100,
       tokenUsage: { input: 700, output: 30, cacheRead: 50, cacheCreation: 10 },
-      timestamp: ts(1),
+      timestamp: ts(2),
     });
     const tokens = r.getNode('a')!.tokens;
-    expect(tokens.input).toBe(700);
-    expect(tokens.output).toBe(50);
+    expect(tokens.input).toBe(200 + 50 + 10);
+    expect(tokens.output).toBe(30);
     expect(tokens.cacheRead).toBe(50);
     expect(tokens.cacheWrite).toBe(10);
+    // A completion that repeats the last sample, as agent-framework's does, changes nothing.
+    r.applyEvent({ type: 'inference:completed', agentName: 'a', durationMs: 100, tokenUsage: { input: 700, output: 30, cacheRead: 50, cacheCreation: 10 }, timestamp: ts(3) });
+    expect(r.getNode('a')!.tokens).toEqual(tokens);
   });
 
   test('subagent--spawn tool call creates a child node with parent edge', () => {
@@ -410,8 +417,10 @@ describe('AgentTreeReducer (continued)', () => {
     const snap = r.getSnapshot();
     snap.nodes[0]!.tokens.input = 999;
     snap.nodes[0]!.toolCallsCount = 999;
+    snap.nodes[0]!.streamUsage!.output = 999;
     expect(r.getNode('a')!.tokens.input).toBe(100);
     expect(r.getNode('a')!.toolCallsCount).toBe(0);
+    expect(r.getNode('a')!.streamUsage!.output).toBe(10);
   });
 
   test('reset clears everything', () => {
