@@ -313,6 +313,31 @@ action is pasting a new token. A credentials file with a refresh token
 30 minutes before expiry. See the credential-alerts note under the ChatGPT
 provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 
+### OpenAI reasoning
+
+For `openai-responses` and `openai-codex`, primary-agent reasoning is configured
+under `agent.responses`. Omitted settings default to `reasoningEffort: "high"`
+and `reasoningContext: "all_turns"`. Add the following to an existing recipe to
+request a higher effort:
+
+```json
+{
+  "agent": {
+    "responses": {
+      "reasoningEffort": "xhigh",
+      "reasoningContext": "all_turns"
+    }
+  }
+}
+```
+
+The host accepts `none`, `low`, `medium`, `high`, `xhigh`, or `max` for
+`reasoningEffort`, and `current_turn` or `all_turns` for `reasoningContext`. The
+selected model must support the requested effort. These settings apply to the
+primary agent; `modules.retrieval` has its own reasoning setting described below.
+Memory sizing and compression-model settings are covered in
+`docs/AGENT-ONBOARDING.md`.
+
 ### ChatGPT subscription provider
 
 Install the Codex CLI, sign in with `codex login`, then select the subscription
