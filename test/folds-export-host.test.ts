@@ -105,12 +105,12 @@ describe('/folds', () => {
       status: () => ({
         ...base,
         state: 'conflict',
-        conflict: { reason: 'the file differs from the last projection this host wrote', at: '2026-10-10T03:00:00.000Z', foundHash: 'ab' },
+        conflict: { reason: 'the file differs from the last projection this host wrote, and from the one before it', at: '2026-10-10T03:00:00.000Z', foundHash: 'ab' },
         error: 'EACCES: permission denied',
       }),
     }));
     expect(lines[0]).toBe(`folds.jsonl → ${target} (conflict)`);
-    expect(lines).toContain('  conflict since 2026-10-10T03:00:00.000Z: the file differs from the last projection this host wrote');
+    expect(lines).toContain('  conflict since 2026-10-10T03:00:00.000Z: the file differs from the last projection this host wrote, and from the one before it');
     expect(lines).toContain('  The file is preserved. /folds takeover keeps it beside the target and resumes export.');
     expect(lines).toContain('  last write failed: EACCES: permission denied');
   });
