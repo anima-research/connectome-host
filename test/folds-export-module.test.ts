@@ -423,6 +423,9 @@ describe('writer safety', () => {
     expect(status.state).toBe('conflict');
     expect(status.target).toBe(target);
     expect(status.conflict?.reason).toContain('never written');
+    // What the resident reads in history--folds: how to take it over.
+    expect(status.resolve).toContain('utils with action "run" and name "folds--take_over_export"');
+    expect(status.resolve).toContain("the operator's /folds takeover");
     expect(conflictLog).toHaveLength(1);
     expect(conflictLog[0]).toStartWith(
       `[folds-export] EXPORT CONFLICT at ${target}: a file already exists at the target, and this host has never written it. ` +
@@ -445,6 +448,7 @@ describe('writer safety', () => {
     expect(readFileSync(join(dirname(target), kept[0]!), 'utf8')).toContain('by another runtime');
     expect(lines()[0]!.kind).toBe('folds-projection');
     expect(m.status().state).toBe('exporting');
+    expect(m.status().resolve).toBeUndefined();
   });
 
   /** A conflicted target: a foreign file found at first use. */

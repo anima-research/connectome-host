@@ -112,6 +112,8 @@ export interface FoldsExportStatus {
   target: string;
   state: 'exporting' | 'conflict' | 'error' | 'unbound';
   conflict?: OwnershipEntry['conflict'];
+  /** In a conflict: how the resident, or the operator, takes the target over. */
+  resolve?: string;
   error?: string;
   lastProjection?: {
     at: string;
@@ -333,7 +335,14 @@ export class FoldsExportModule implements Module {
     return {
       target: this.target,
       state,
-      ...(entry?.conflict ? { conflict: entry.conflict } : {}),
+      ...(entry?.conflict
+        ? {
+          conflict: entry.conflict,
+          resolve: 'The file is preserved. To export here again, take the target over, which keeps that file ' +
+            `beside it under a timestamped name: utils with action "run" and name "${this.name}--${TAKE_OVER_UTILITY.name}", ` +
+            "or the operator's /folds takeover. Configuring another target resumes export there instead.",
+        }
+        : {}),
       ...(error ? { error } : {}),
       ...(this.lastProjection ? { lastProjection: this.lastProjection } : {}),
       freshness: FRESHNESS,
