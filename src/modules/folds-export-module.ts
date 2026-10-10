@@ -475,11 +475,6 @@ export class FoldsExportModule implements Module {
       }
     }
     const hash = sha256(content);
-    if (onDisk === hash) {
-      ledger.targets[this.target] = { committed: hash };
-      if (entry?.committed !== hash || entry.pending !== undefined) this.writeLedger(ledger);
-      return true;
-    }
     // The file on disk, when present, has just been recognized as ours (the
     // committed projection, or a pending one whose replace landed): it is the
     // recovery base. Keeping it as `committed` means a further interrupted
@@ -496,7 +491,6 @@ export class FoldsExportModule implements Module {
   private recordConflict(ledger: OwnershipLedger, reason: string, foundHash: string): void {
     const entry = ledger.targets[this.target] ?? {};
     entry.conflict = { reason, at: this.now().toISOString(), foundHash };
-    delete entry.pending;
     ledger.targets[this.target] = entry;
     this.writeLedger(ledger);
     console.error(
