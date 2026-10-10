@@ -246,12 +246,20 @@ export function overlayEntryProblem(entry: unknown): string | null {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return 'it isn\'t an object';
   const e = entry as Record<string, unknown>;
   const text = (k: string) => e[k] !== undefined && typeof e[k] !== 'string';
+  // An arg or env value is text, or a number or true/false, whose text is
+  // unambiguous and which the boot passes on as that text (resolveOverlayEntry).
+  // main's own mcpl_deploy saved env values as given, so an entry it wrote
+  // with { PORT: 3101 } loads; refusing it would have #228 break files the
+  // house's tool wrote (Nell-1783's reading of abbae35). null, a list or an
+  // object stays refused: main passed them on as "null" or "[object Object]",
+  // which nobody means, so the boot skips the entry with its reason named.
+  const plain = (v: unknown) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
   if (e.disabled !== undefined && typeof e.disabled !== 'boolean') return 'its disabled is neither true nor false';
   for (const k of ['command', 'url', 'token', 'access', 'toolPrefix']) if (text(k)) return `its ${k} isn't text`;
   if (e.transport !== undefined && e.transport !== 'stdio' && e.transport !== 'websocket') return 'its transport is neither stdio nor websocket';
-  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every((a) => typeof a === 'string'))) return 'its args aren\'t a list of text';
+  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every(plain))) return 'its args aren\'t a list of text';
   if (e.env !== undefined && !(e.env !== null && typeof e.env === 'object' && !Array.isArray(e.env)
-    && Object.values(e.env as Record<string, unknown>).every((v) => typeof v === 'string'))) return 'its env isn\'t a map of text';
+    && Object.values(e.env as Record<string, unknown>).every(plain))) return 'its env isn\'t a map of text';
   // Neither a tombstone nor a server: the boot would skip it without a word.
   if (e.disabled !== true && !e.command && !e.url) return 'it names nothing to run or dial';
   return null;
@@ -356,6 +364,12 @@ export function resolveOverlayEntry(
     if (Array.isArray(rec[k]) && (rec[k] as unknown[]).length === 0) delete rec[k];
   }
   delete rec.enabledCapabilities;
+  // A number or true/false in args or env is passed on as its text (see
+  // overlayEntryProblem).
+  if (Array.isArray(rec.args)) rec.args = (rec.args as unknown[]).map(String);
+  if (rec.env && typeof rec.env === 'object') {
+    rec.env = Object.fromEntries(Object.entries(rec.env as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+  }
   // Same boundary for MCPL tool lifecycle: in the framework a toolLifecycle
   // block IS the grant, so the agent's own file never carries one (the deny
   // above already masks the paths; this keeps the overlay honest too).
@@ -383,9 +397,9 @@ export function resolveOverlayEntry(
     id,
     ...rec,
     disabledCapabilities: [...denied].sort(),
-    ...(entry.args
+    ...(Array.isArray(rec.args)
       ? {
-          args: entry.args.map(arg =>
+          args: (rec.args as string[]).map(arg =>
             arg.startsWith('./') || arg.startsWith('../') ? resolve(overlayDir, arg) : arg,
           ),
         }

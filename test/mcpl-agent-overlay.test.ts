@@ -4,7 +4,7 @@
  */
 
 import { test, expect, describe } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -298,7 +298,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       const entries: Record<string, unknown> = {
         nulled: null,
         stringArgs: { command: 'node', args: 'server.js' },
-        numberArgs: { command: 'node', args: [1] },
+        nullArg: { command: 'node', args: [null] },
         yes: { command: 'node', disabled: 'yes' },
         envList: { command: 'node', env: ['A=1'] },
         accessNumber: { url: 'wss://w/mcpl', access: 5 },
@@ -317,7 +317,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       expect(overlayWarnings(operator, path)).toEqual([
         `[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "stringArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
-        `[mcpl] server "numberArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "nullArg": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "yes": the agent overlay (${path}) entry is malformed (its disabled is neither true nor false), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "envList": the agent overlay (${path}) entry is malformed (its env isn't a map of text), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "accessNumber": the agent overlay (${path}) entry is malformed (its access isn't text), so the boot skips it and the operator's definition loads`,
@@ -326,6 +326,51 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       ]);
       // With no operator definition, the line says only that the boot skips it.
       expect(overlayWarnings([], path)[0]).toBe(`[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it`);
+    });
+  });
+
+  // Nell-1783's reading of abbae35: main's own mcpl_deploy saved env values
+  // as given, so a file it wrote can hold a number. That entry loads today,
+  // and #228 must not make the boot skip it.
+  test("an entry as main's mcpl_deploy wrote it, with a number in its env, loads with the value as text", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      // main's deploy saved args as text (map(String)) and env as given.
+      const written = { command: 'node', args: ['server.js'], env: { PORT: 3101, VERBOSE: true, NAME: 'door' } };
+      writeFileSync(path, JSON.stringify({ mcplServers: { door: written } }));
+      expect(overlayEntryProblem(written)).toBeNull();
+      const loaded = applyAgentOverlay([], path);
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]).toMatchObject({ id: 'door', command: 'node', args: ['server.js'], env: { PORT: '3101', VERBOSE: 'true', NAME: 'door' } });
+      expect(overlayWarnings([], path)).toEqual([]);
+      // The stored entry is read, never rewritten.
+      expect(JSON.parse(readFileSync(path, 'utf8')).mcplServers.door).toEqual(written);
+    });
+  });
+
+  test('a number in args, as a hand edit might write it, is read as its text by the same rule', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { door: { command: 'node', args: ['server.js', 8080, true] } } }));
+      const loaded = applyAgentOverlay([], path);
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]).toMatchObject({ id: 'door', args: ['server.js', '8080', 'true'] });
+    });
+  });
+
+  test('null, a list or an object as an env value stays malformed, with its reason named', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      const entries: Record<string, unknown> = {
+        nullEnv: { command: 'node', env: { A: null } },
+        objectEnv: { command: 'node', env: { A: { b: 1 } } },
+        listEnv: { command: 'node', env: { A: ['x'] } },
+      };
+      writeFileSync(path, JSON.stringify({ mcplServers: entries }));
+      for (const entry of Object.values(entries)) expect(overlayEntryProblem(entry)).toBe("its env isn't a map of text");
+      expect(applyAgentOverlay([], path)).toEqual([]);
+      expect(overlayWarnings([], path)).toEqual(Object.keys(entries).map((id) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry is malformed (its env isn't a map of text), so the boot skips it`));
     });
   });
 

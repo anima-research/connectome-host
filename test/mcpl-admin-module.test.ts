@@ -142,6 +142,27 @@ describe('mcpl_deploy', () => {
     expect(readAgentOverlay(overlayPath).mytool).toEqual({ command: 'bun' });
   });
 
+  // Nell-1783's reading of abbae35: an env value the boot would skip was
+  // saved, then resolveOverlayEntry returned null and the deploy threw.
+  test('an env the boot would skip is refused before anything is saved; a number is deployed as its text', async () => {
+    const { stub } = makeStubFramework();
+    const envs: unknown[] = [];
+    const connect = (stub as unknown as { connectMcplServer: (c: { env?: unknown }) => Promise<void> }).connectMcplServer;
+    (stub as unknown as { connectMcplServer: (c: { env?: unknown }) => Promise<void> }).connectMcplServer =
+      async (config) => { envs.push(config.env); await connect(config); };
+    const mod = makeModule(stub);
+
+    const refused = await call(mod, 'mcpl_deploy', { id: 'nulled', command: 'node', env: { A: null } });
+    expect(refused.success).toBe(false);
+    expect(refused.error).toBe("mcpl_deploy refused: the entry would be malformed (its env isn't a map of text), so nothing was saved.");
+    expect(readAgentOverlay(overlayPath).nulled).toBeUndefined();
+    expect(envs).toEqual([]);
+
+    const deployed = await call(mod, 'mcpl_deploy', { id: 'door', command: 'node', env: { PORT: 3101 } });
+    expect(deployed.success).toBe(true);
+    expect(envs).toEqual([expect.objectContaining({ PORT: '3101' })]);
+  });
+
   test('rejects missing command/url, both at once, and bad ids', async () => {
     const { stub } = makeStubFramework();
     const mod = makeModule(stub);

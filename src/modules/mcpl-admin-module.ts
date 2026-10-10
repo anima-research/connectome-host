@@ -414,6 +414,13 @@ export class McplAdminModule implements Module {
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
     if (Array.isArray(input.disabledTools) && input.disabledTools.length) entry.disabledTools = input.disabledTools.map(String);
 
+    // Never save an entry the boot would skip (overlayEntryProblem): what
+    // loads now must be what loads at the next start. Without this, an env
+    // value such as null was saved, resolveOverlayEntry returned null for it,
+    // and the deploy threw after saving (Nell-1783's reading of abbae35).
+    const problem = overlayEntryProblem(entry);
+    if (problem) return fail(`mcpl_deploy refused: the entry would be malformed (${problem}), so nothing was saved.`);
+
     // Persist to the overlay first — a connect failure still leaves the entry
     // in place so the agent can fix the server and mcpl_restart it.
     const overlay = readAgentOverlay(this.overlayPath);
