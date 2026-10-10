@@ -202,12 +202,34 @@ export interface AgentOverlayFile {
   mcplServers: Record<string, AgentOverlayEntry>;
 }
 
-/** Read the agent overlay file. Returns empty object if it doesn't exist. */
+/**
+ * Read the agent overlay file. Returns empty object if it doesn't exist.
+ *
+ * A file that can't be parsed, or isn't `{ "mcplServers": { … } }`, throws
+ * an error naming the file, rather than any one entry being skipped: the
+ * file carries the agent's tombstones, so reading past it would load servers
+ * the agent unloaded. The boot stops with that error until the file is fixed
+ * or moved aside (Nell-1783's haiku probe of #228). The error never quotes
+ * the file, which can hold credentials.
+ */
 export function readAgentOverlay(overlayPath: string): Record<string, AgentOverlayEntry> {
   if (!existsSync(overlayPath)) return {};
   const raw = readFileSync(overlayPath, 'utf-8');
-  const parsed = JSON.parse(raw) as AgentOverlayFile;
-  return parsed.mcplServers ?? {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`the agent overlay ${overlayPath} isn't valid JSON: fix it, or move it aside (it holds the agent's tombstones, so it isn't skipped)`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`the agent overlay ${overlayPath} isn't an object with mcplServers: fix it, or move it aside`);
+  }
+  const servers = (parsed as { mcplServers?: unknown }).mcplServers;
+  if (servers === undefined) return {};
+  if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
+    throw new Error(`the agent overlay ${overlayPath} has an mcplServers that isn't a map of entries by id: fix it, or move it aside`);
+  }
+  return servers as Record<string, AgentOverlayEntry>;
 }
 
 /**
@@ -230,6 +252,8 @@ export function overlayEntryProblem(entry: unknown): string | null {
   if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every((a) => typeof a === 'string'))) return 'its args aren\'t a list of text';
   if (e.env !== undefined && !(e.env !== null && typeof e.env === 'object' && !Array.isArray(e.env)
     && Object.values(e.env as Record<string, unknown>).every((v) => typeof v === 'string'))) return 'its env isn\'t a map of text';
+  // Neither a tombstone nor a server: the boot would skip it without a word.
+  if (e.disabled !== true && !e.command && !e.url) return 'it names nothing to run or dial';
   return null;
 }
 
@@ -453,7 +477,9 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
     if (Array.isArray(entry.args) && entry.args.some(namesHostVariable)) refs.push('args');
     const env = envOf(entry);
     for (const name of Object.keys(env).sort()) {
-      if (namesHostVariable(env[name])) refs.push(`env ${name}`);
+      // The host sets this one over the entry's value, so the server never
+      // gets the entry's text for it (as lostByReplacement reads it).
+      if (namesHostVariable(env[name]) && !hostSetsOverServer(name)) refs.push(`env ${name}`);
     }
   } else if (dialsUrl(entry) && entry.url) {
     if (namesHostVariable(entry.url)) refs.push('url');

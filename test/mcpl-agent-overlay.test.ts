@@ -329,6 +329,39 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
+  test("an entry naming nothing to run or dial is malformed too, and said so, not skipped silently", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { shell: { toolPrefix: 'y' } } }));
+      expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names nothing to run or dial');
+      expect(applyAgentOverlay([shell], path)).toEqual([shell]);
+      expect(overlayWarnings([shell], path)).toEqual([
+        `[mcpl] server "shell": the agent overlay (${path}) entry is malformed (it names nothing to run or dial), so the boot skips it and the operator's definition loads`,
+      ]);
+    });
+  });
+
+  test("a file that isn't JSON, or isn't a map of entries, stops the boot with an error naming it, never quoting it", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      for (const [text, says] of [
+        ['{"mcplServers": {"shell": {"env": {"TOKEN": "s3cret"}},}}', "isn't valid JSON"],
+        ['null', "isn't an object with mcplServers"],
+        ['{"mcplServers": [{"command": "node"}]}', "has an mcplServers that isn't a map of entries by id"],
+      ] as const) {
+        writeFileSync(path, text);
+        expect(() => readAgentOverlay(path)).toThrow(`the agent overlay ${path} ${says}`);
+        expect(() => applyAgentOverlay([shell], path)).toThrow(says);
+        expect(() => overlayWarnings([shell], path)).toThrow(says);
+        try { readAgentOverlay(path); } catch (error) { expect(String(error)).not.toContain('s3cret'); }
+      }
+    });
+  });
+
+  test("a host variable in an env name the host sets itself isn't named: the server never gets that text", () => {
+    expect(hostVariableReferences({ command: 'node', env: { AGENT_TIMEZONE: '${TZ}', OTHER: '${OTHER}' } })).toEqual(['env OTHER']);
+  });
+
   test('one tombstone rule for every reader: disabled === true', () => {
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');

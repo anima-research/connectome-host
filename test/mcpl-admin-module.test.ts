@@ -363,6 +363,8 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(text).not.toContain('s3cret-token');
     expect(text).toContain('mcpl_unload "shell"');
     expect(text).toContain('the operator\'s loads again at the next host start');
+    // The restart reconnects with the last connect's configuration; the note reads the file.
+    expect(text).toContain('That describes your overlay file as it is now: a hand edit since the last mcpl_deploy takes effect at the next deploy or host start, not at this restart.');
   });
 
   test('mcpl_restart says nothing more when the entry lacks nothing, or replaces nothing', async () => {
