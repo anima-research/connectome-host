@@ -111,7 +111,7 @@ describe('/folds', () => {
     }));
     expect(lines[0]).toBe(`folds.jsonl → ${target} (conflict)`);
     expect(lines).toContain('  conflict since 2026-10-10T03:00:00.000Z: the file differs from the last projection this host wrote, and from the one before it');
-    expect(lines).toContain('  The file is preserved. /folds takeover keeps it beside the target and resumes export.');
+    expect(lines).toContain('  The file at the target is preserved. /folds takeover keeps it beside the target and resumes export.');
     expect(lines).toContain('  last write failed: EACCES: permission denied');
   });
 

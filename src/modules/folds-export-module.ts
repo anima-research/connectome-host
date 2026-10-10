@@ -499,7 +499,11 @@ export class FoldsExportModule implements Module {
         return false;
       }
       if (onDisk !== entry.latest && onDisk !== entry.previous) {
-        this.recordConflict(ledger, 'the file differs from the last projection this host wrote, and from the one before it', onDisk);
+        this.recordConflict(
+          ledger,
+          `the file differs from the last projection this host wrote${entry.previous ? ', and from the one before it' : ''}`,
+          onDisk,
+        );
         return false;
       }
     }

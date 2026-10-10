@@ -1567,7 +1567,7 @@ function handleFoldsExport(framework: AgentFramework, sub: string | undefined): 
   const lines: Line[] = [{ text: `folds.jsonl → ${status.target} (${status.state})`, style: 'system' }];
   if (status.conflict) {
     lines.push({ text: `  conflict since ${status.conflict.at}: ${status.conflict.reason}`, style: 'system' });
-    lines.push({ text: '  The file is preserved. /folds takeover keeps it beside the target and resumes export.', style: 'system' });
+    lines.push({ text: '  The file at the target is preserved. /folds takeover keeps it beside the target and resumes export.', style: 'system' });
   }
   if (status.error) lines.push({ text: `  last write failed: ${status.error}`, style: 'system' });
   if (status.lastProjection) {

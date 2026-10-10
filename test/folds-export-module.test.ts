@@ -640,9 +640,19 @@ describe('writer safety', () => {
     await m.stop(); // disposal does not write either
     exporter().bind(cm); // nor does startup
     expect(sha(target)).toBe(edited);
-    expect(modules[1]!.status().conflict?.reason).toContain('differs');
+    expect(modules[1]!.status().conflict?.reason).toBe('the file differs from the last projection this host wrote, and from the one before it');
     // A conflict already recorded is found at startup too, so the takeover is offered.
     expect(modules[1]!.getUtilities().map((u) => u.name)).toEqual(['take_over_export']);
+  });
+
+  test('a file changed right after the first projection is compared with that one projection alone', async () => {
+    const { cm } = await openStore();
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm); // the first projection, onto an absent target: nothing it replaced
+    writeFileSync(target, `${readFileSync(target, 'utf8')}{"note":"edited"}\n`);
+    await accept(cm);
+    expect(m.status().conflict?.reason).toBe('the file differs from the last projection this host wrote');
   });
 
   test('a session switch rewrites the projection for the new store without a false conflict', async () => {
