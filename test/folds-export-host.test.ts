@@ -8,7 +8,7 @@
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,45 +133,60 @@ describe('/folds', () => {
   });
 });
 
+/** A batch run on membrane's mock adapter: each stdin line, then the host stops. */
+async function runBatch(input: string, prepare?: (data: string) => void): Promise<{ data: string; code: number | 'still running'; stdout: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'chost-folds-'));
+  tmpDirs.push(dir);
+  const data = join(dir, 'data');
+  prepare?.(data);
+  const recipePath = join(dir, 'recipe.json');
+  writeFileSync(recipePath, JSON.stringify({
+    name: 'Folds Host Test',
+    agent: { name: 'agent', provider: 'mock', systemPrompt: 'folds host test' },
+    modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+  }));
+  const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
+    // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
+    cwd: dir,
+    env: { ...process.env, DATA_DIR: data },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
+  child.stderr!.on('data', () => { /* drain */ });
+  child.stdin!.end(input);
+  const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    exited,
+    new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
+  ]).finally(() => clearTimeout(timer));
+  if (outcome === 'still running') {
+    child.kill('SIGKILL');
+    await exited;
+  }
+  return { data, code: outcome ?? -1, stdout };
+}
+
+/** The tools the run's first model request carried, from the host's llm-calls log. */
+function firstRequestTools(data: string): string[] {
+  const log = readdirSync(data).find((f) => f.startsWith('llm-calls.') && f.endsWith('.jsonl'));
+  expect(log).toBeDefined();
+  const first = JSON.parse(readFileSync(join(data, log!), 'utf8').split('\n')[0]!) as { requestSummary: { toolNames: string[] } };
+  return first.requestSummary.toolNames;
+}
+
 describe('the host writes folds.jsonl', () => {
   test('a batch run leaves the resident\'s first receipt in the file, labelled with the host\'s source facts', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chost-folds-'));
-    tmpDirs.push(dir);
-    const data = join(dir, 'data');
-    const recipePath = join(dir, 'recipe.json');
-    writeFileSync(recipePath, JSON.stringify({
-      name: 'Folds Host Test',
-      agent: { name: 'agent', provider: 'mock', systemPrompt: 'folds host test' },
-      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
-    }));
-    const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
-      // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
-      cwd: dir,
-      env: { ...process.env, DATA_DIR: data },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
-    child.stderr!.on('data', () => { /* drain */ });
-    child.stdin!.end('hello\n/folds\n');
-    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const outcome = await Promise.race([
-      exited,
-      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
-    ]).finally(() => clearTimeout(timer));
-    if (outcome === 'still running') {
-      child.kill('SIGKILL');
-      await exited;
-    }
-    expect(outcome).toBe(0);
+    const { data, code, stdout } = await runBatch('hello\n/folds\n');
+    expect(code).toBe(0);
 
     // On by default, at the default path, and reachable by /folds.
     const target = join(data, 'memory', 'folds.jsonl');
     expect(stdout).toContain(`folds.jsonl → ${target} (exporting)`);
 
-    // The round's compile was accepted, and the final projection (at shutdown,
-    // before the store closed) holds its receipt, which names this host.
+    // The round's compile was accepted, and the file holds its receipt, which
+    // names this host.
     const lines = readFileSync(target, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(lines[0]!.kind).toBe('folds-projection');
     expect(lines[0]!.receipts).toBe(1);
@@ -186,5 +201,22 @@ describe('the host writes folds.jsonl', () => {
     expect(existsSync(ledgerPath)).toBe(true);
     const entry = (JSON.parse(readFileSync(ledgerPath, 'utf8')) as { targets: Record<string, { latest?: string }> }).targets[target]!;
     expect(entry.latest).toBe(createHash('sha256').update(readFileSync(target)).digest('hex'));
+
+    // With no conflict, the resident's takeover isn't offered, so a recipe
+    // with no other utility sends no `utils` tool.
+    expect(firstRequestTools(data)).not.toContain('utils');
+  }, 60_000);
+
+  test('a conflict found at startup preserves the file and offers the takeover from the first request', async () => {
+    const foreign = '{"written":"by the resident itself"}\n';
+    const { data, code, stdout } = await runBatch('hello\n/folds\n', (d) => {
+      mkdirSync(join(d, 'memory'), { recursive: true });
+      writeFileSync(join(d, 'memory', 'folds.jsonl'), foreign);
+    });
+    expect(code).toBe(0);
+    const target = join(data, 'memory', 'folds.jsonl');
+    expect(readFileSync(target, 'utf8')).toBe(foreign);
+    expect(stdout).toContain(`folds.jsonl → ${target} (conflict)`);
+    expect(firstRequestTools(data)).toContain('utils');
   }, 60_000);
 });

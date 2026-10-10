@@ -24,7 +24,8 @@
     existing file beside the target and resumes.
   - The resident's fold receipts name `connectome-host`, the data directory and
     the agent.
-  - The takeover utility rides the `utils` meta-tool. A recipe with no other
-    utility, as every recipe in `recipes/` is, now sends that tool with each
-    request, so the first request after upgrading misses the prompt cache.
-    With `modules.foldsExport: false`, the request's tools are as before.
+  - The resident's `take_over_export` utility is offered only once the host
+    has found the target in conflict, and stays offered until the host
+    restarts. Until then a request carries the same tools as before. From
+    then on, a recipe with no other utility (as every recipe in `recipes/`
+    is) also sends agent-framework's `utils` tool, which holds it.

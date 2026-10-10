@@ -124,6 +124,8 @@ describe('folds.jsonl projection', () => {
     const ids = [cm.addMessage('user', [{ type: 'text', text: 'one' }]), cm.addMessage('user', [{ type: 'text', text: 'two' }])];
     const m = exporter();
     m.bind(cm);
+    // No conflict, so the resident's takeover isn't offered.
+    expect(m.getUtilities()).toEqual([]);
     let file = lines();
     expect(file[0]!.kind).toBe('folds-projection');
     expect(file[0]!.receipts).toBe(0);
@@ -637,6 +639,8 @@ describe('writer safety', () => {
     exporter().bind(cm); // nor does startup
     expect(sha(target)).toBe(edited);
     expect(modules[1]!.status().conflict?.reason).toContain('differs');
+    // A conflict already recorded is found at startup too, so the takeover is offered.
+    expect(modules[1]!.getUtilities().map((u) => u.name)).toEqual(['take_over_export']);
   });
 
   test('a session switch rewrites the projection for the new store without a false conflict', async () => {
@@ -699,7 +703,9 @@ describe('writer safety', () => {
     expect(res.success).toBe(true);
     expect(existsSync(target)).toBe(true);
     expect(lines()[0]!.kind).toBe('folds-projection');
+    // Still offered for the rest of the session, answering in its own words.
+    expect(m.getUtilities().map((u) => u.name)).toEqual(['take_over_export']);
     const again = await m.handleToolCall({ id: 't2', name: 'take_over_export', input: {} } as never);
-    expect(again.success).toBe(false);
+    expect(again).toEqual({ success: false, isError: true, error: `No export conflict at ${target}; nothing to take over.` });
   });
 });

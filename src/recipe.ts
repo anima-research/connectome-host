@@ -860,9 +860,8 @@ export interface RecipeModules {
    * replaced (ownership ledger at `<dataDir>/folds-export-ownership.json`);
    * anything else is an export conflict that `/folds takeover` (or the
    * resident's `take_over_export` utility) resolves by keeping the existing
-   * file beside the target. The
-   * utility rides the `utils` meta-tool, so a recipe with no other utility
-   * gains that tool.
+   * file beside the target. The utility is offered, behind the `utils`
+   * meta-tool, only once a conflict is found, until the host restarts.
    */
   foldsExport?: boolean | { path?: string };
 

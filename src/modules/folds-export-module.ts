@@ -37,12 +37,12 @@
  * planned hash can never adopt someone else's file. Anything else is an
  * export conflict: the file is preserved untouched, export to that target
  * stops, and the conflict is reported (history--folds, /folds, stderr),
- * with how to resolve it. Only configuring another target,
- * or an explicit takeover (operator: `/folds takeover`; resident: the
- * `take_over_export` utility), resolves it; a takeover first keeps the
- * existing file beside the target under a timestamped name. The check is
- * not an atomic compare-and-swap: one writer per target is the supported
- * configuration.
+ * with how to resolve it. Only configuring another target, or an explicit
+ * takeover (operator: `/folds takeover`; resident: the `take_over_export`
+ * utility, offered once a conflict is found), resolves it; a takeover first
+ * keeps the existing file beside the target under a timestamped name. The
+ * check is not an atomic compare-and-swap: one writer per target is the
+ * supported configuration.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -260,6 +260,8 @@ export class FoldsExportModule implements Module {
   private projectionPending = false;
   private lastError: string | null = null;
   private lastProjection: FoldsExportStatus['lastProjection'];
+  /** This session has found the target in conflict; kept until the host restarts. */
+  private conflictFound = false;
   private readonly target: string;
   private readonly ledgerPath: string;
 
@@ -306,8 +308,19 @@ export class FoldsExportModule implements Module {
     return [];
   }
 
+  /**
+   * The resident's takeover, offered once this session has found the target
+   * in conflict. Unlike other modules' utilities, this list depends on the
+   * export's state, not only on config. Agent-framework reads it for each
+   * request (getAllUtilities, behind its `utils` meta-tool), so a recipe with
+   * no other utility sends `utils` only from then on, and a conflict found at
+   * startup is there from the first request. It stays offered after a
+   * takeover, until the host restarts: a resident that saw it gets this
+   * module's own answer ("No export conflict … nothing to take over"), not an
+   * unknown name.
+   */
   getUtilities(): ToolDefinition[] {
-    return [TAKE_OVER_UTILITY];
+    return this.conflictFound ? [TAKE_OVER_UTILITY] : [];
   }
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
@@ -342,7 +355,7 @@ export class FoldsExportModule implements Module {
       ...(entry?.conflict
         ? {
           conflict: entry.conflict,
-          resolve: 'The file is preserved. To export here again, take the target over, which keeps that file ' +
+          resolve: 'The file at the target is preserved. To export here again, take the target over, which keeps that file ' +
             `beside it under a timestamped name: utils with action "run" and name "${this.name}--${TAKE_OVER_UTILITY.name}", ` +
             "or the operator's /folds takeover. Configuring another target resumes export there instead.",
         }
@@ -475,7 +488,10 @@ export class FoldsExportModule implements Module {
   private write(content: string): boolean {
     const ledger = this.readLedger();
     const entry = ledger.targets[this.target];
-    if (entry?.conflict) return false;
+    if (entry?.conflict) {
+      this.conflictFound = true;
+      return false;
+    }
     const onDisk = existsSync(this.target) ? sha256(readFileSync(this.target)) : null;
     if (onDisk !== null) {
       if (!entry) {
@@ -500,6 +516,7 @@ export class FoldsExportModule implements Module {
   private recordConflict(ledger: OwnershipLedger, reason: string, foundHash: string): void {
     const entry = ledger.targets[this.target] ?? {};
     entry.conflict = { reason, at: this.now().toISOString(), foundHash };
+    this.conflictFound = true;
     ledger.targets[this.target] = entry;
     this.writeLedger(ledger);
     console.error(
