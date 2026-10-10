@@ -12,7 +12,13 @@
  *
  * `input` is the calls' fresh input alone: membrane reports usage with cache
  * reads and writes outside it, so one call's prompt is its fresh input plus its
- * cache reads and writes.
+ * cache reads and writes. That holds for an adapter that declares its cache
+ * convention. Membrane passes an `unknown` adapter's counts through unchanged,
+ * and where that input already includes the cached span, the prompt counts the
+ * span twice. Gemini's very likely does: Google defines `promptTokenCount` as
+ * the whole prompt, including explicitly cached content. Membrane's hits would
+ * be implicit, which Google doesn't address, so until membrane declares that
+ * adapter `cache-inclusive`, a Gemini cache hit likely reads high here.
  */
 
 /** A usage sample as the trace events carry it. Membrane leaves a cache count
