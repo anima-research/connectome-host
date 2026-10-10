@@ -316,13 +316,13 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       }
       expect(overlayWarnings(operator, path)).toEqual([
         `[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
-        `[mcpl] server "stringArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
-        `[mcpl] server "nullArg": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "stringArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "nullArg": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "yes": the agent overlay (${path}) entry is malformed (its disabled is neither true nor false), so the boot skips it and the operator's definition loads`,
-        `[mcpl] server "envList": the agent overlay (${path}) entry is malformed (its env isn't a map of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "envList": the agent overlay (${path}) entry is malformed (its env isn't a map of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "accessNumber": the agent overlay (${path}) entry is malformed (its access isn't text), so the boot skips it and the operator's definition loads`,
         `[mcpl] server "seven": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
-        `[mcpl] server "tombstoneArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "tombstoneArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text, numbers or true/false), so the boot skips it and the operator's definition loads`,
       ]);
       // With no operator definition, the line says only that the boot skips it.
       expect(overlayWarnings([], path)[0]).toBe(`[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it`);
@@ -367,10 +367,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
         listEnv: { command: 'node', env: { A: ['x'] } },
       };
       writeFileSync(path, JSON.stringify({ mcplServers: entries }));
-      for (const entry of Object.values(entries)) expect(overlayEntryProblem(entry)).toBe("its env isn't a map of text");
+      for (const entry of Object.values(entries)) expect(overlayEntryProblem(entry)).toBe("its env isn't a map of text, numbers or true/false");
       expect(applyAgentOverlay([], path)).toEqual([]);
       expect(overlayWarnings([], path)).toEqual(Object.keys(entries).map((id) =>
-        `[mcpl] server "${id}": the agent overlay (${path}) entry is malformed (its env isn't a map of text), so the boot skips it`));
+        `[mcpl] server "${id}": the agent overlay (${path}) entry is malformed (its env isn't a map of text, numbers or true/false), so the boot skips it`));
     });
   });
 

@@ -154,7 +154,7 @@ describe('mcpl_deploy', () => {
 
     const refused = await call(mod, 'mcpl_deploy', { id: 'nulled', command: 'node', env: { A: null } });
     expect(refused.success).toBe(false);
-    expect(refused.error).toBe("mcpl_deploy refused: the entry would be malformed (its env isn't a map of text), so nothing was saved.");
+    expect(refused.error).toBe("mcpl_deploy refused: the entry would be malformed (its env isn't a map of text, numbers or true/false), so nothing was saved.");
     expect(readAgentOverlay(overlayPath).nulled).toBeUndefined();
     expect(envs).toEqual([]);
 
@@ -286,7 +286,7 @@ describe('mcpl_list', () => {
     const text = String((await call(mod, 'mcpl_list')).data);
     expect(text).toContain('source=file/recipe');
     expect(text).not.toContain('source=agent-overlay');
-    expect(text).toContain("discord: MALFORMED in your overlay (its args aren't a list of text), so the boot skips it");
+    expect(text).toContain("discord: MALFORMED in your overlay (its args aren't a list of text, numbers or true/false), so the boot skips it");
     expect(text).toContain("stray: MALFORMED in your overlay (it isn't an object), so the boot skips it");
     // A restart reads the same file without throwing, so its receipt carries
     // no "couldn't be read" note.

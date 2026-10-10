@@ -257,9 +257,9 @@ export function overlayEntryProblem(entry: unknown): string | null {
   if (e.disabled !== undefined && typeof e.disabled !== 'boolean') return 'its disabled is neither true nor false';
   for (const k of ['command', 'url', 'token', 'access', 'toolPrefix']) if (text(k)) return `its ${k} isn't text`;
   if (e.transport !== undefined && e.transport !== 'stdio' && e.transport !== 'websocket') return 'its transport is neither stdio nor websocket';
-  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every(plain))) return 'its args aren\'t a list of text';
+  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every(plain))) return 'its args aren\'t a list of text, numbers or true/false';
   if (e.env !== undefined && !(e.env !== null && typeof e.env === 'object' && !Array.isArray(e.env)
-    && Object.values(e.env as Record<string, unknown>).every(plain))) return 'its env isn\'t a map of text';
+    && Object.values(e.env as Record<string, unknown>).every(plain))) return 'its env isn\'t a map of text, numbers or true/false';
   // Neither a tombstone nor a server: the boot would skip it without a word.
   if (e.disabled !== true && !e.command && !e.url) return 'it names nothing to run or dial';
   return null;
