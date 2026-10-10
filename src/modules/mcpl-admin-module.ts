@@ -5,7 +5,7 @@
  * Tools:
  *   - mcpl_list                → configured servers + live connection status
  *   - mcpl_deploy {id, ...}    → add/update a server and hot-connect it
- *   - mcpl_restart {id}        → kill + respawn a server (picks up rebuilt dist)
+ *   - mcpl_restart {id}        → disconnect + connect a server now (picks up rebuilt dist)
  *   - mcpl_unload {id}         → disconnect a server and remove its tools
  *
  * Persistence model (agent overlay):
@@ -33,16 +33,16 @@ import type {
   AgentFramework,
   McplServerConfig,
 } from '@animalabs/agent-framework';
-import { resolveTimeZone } from '@animalabs/agent-framework';
+import { resolveTimeZone, serverConfigWarnings } from '@animalabs/agent-framework';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
   readMcplServersFile,
   readAgentOverlay,
   saveAgentOverlay,
-  resolveOverlayEntry,
   serverProvisions,
   lostByReplacement,
+  overlayEntryOutcome,
   overlayEntryReplaces,
   hostVariableReferences,
   type AgentOverlayEntry,
@@ -120,7 +120,7 @@ export class McplAdminModule implements Module {
   private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
     const entry = overlay[id];
     const operator = this.operatorServers.get(id);
-    if (!operator || !overlayEntryReplaces(entry)) return null;
+    if (!operator || !overlayEntryReplaces(id, entry, this.overlayPath)) return null;
     return { lost: lostByReplacement(operator, entry) };
   }
 
@@ -133,7 +133,7 @@ export class McplAdminModule implements Module {
    */
   private overlayNote(id: string, overlay: Record<string, AgentOverlayEntry>, onDeploy: boolean): string {
     const entry = overlay[id];
-    if (!overlayEntryReplaces(entry)) return '';
+    if (!overlayEntryReplaces(id, entry, this.overlayPath)) return '';
     const replacement = this.replacement(id, overlay);
     const refs = hostVariableReferences(entry);
     const literal = refs.length === 0 ? '' :
@@ -153,6 +153,16 @@ export class McplAdminModule implements Module {
       if (literal) sentences.push(literal);
     }
     return sentences.length > 0 ? ` ${sentences.join(' ')}` : '';
+  }
+
+  /**
+   * For a server running from the operator's definition: that the agent's
+   * own overlay entry for it was skipped at startup, and why, or nothing.
+   * Only the host's log says so otherwise, and the overlay is the agent's.
+   */
+  private skippedNote(id: string, overlay: Record<string, AgentOverlayEntry>): string {
+    const problems = overlayEntryOutcome(id, overlay[id], this.overlayPath)?.problems ?? [];
+    return problems.length > 0 ? ` (your overlay entry for it was skipped at startup: ${problems.join('; ')})` : '';
   }
 
   async start(_ctx: ModuleContext): Promise<void> {}
@@ -188,8 +198,12 @@ export class McplAdminModule implements Module {
           'Deploy an MCPL server: persist it to your agent overlay (survives host ' +
           'restarts) and hot-connect it now — its tools become available immediately. ' +
           'If a server with this id is already running it is restarted with the new ' +
-          'config. Provide either `command` (stdio, spawned as the host user) or `url` ' +
-          '(WebSocket). Relative ./ args resolve against the host working directory. ' +
+          'config. Provide either `command` (stdio, spawned as the host user) or `url`: ' +
+          'ws:// or wss:// for an MCPL server over WebSocket, http:// or https:// for a ' +
+          'modern MCP (2026-07-28) server over Streamable HTTP. A stdio server that speaks ' +
+          'modern MCP takes protocol: "modern". A modern server offers tools only, so the ' +
+          'feature-set fields don\'t apply to it. ' +
+          'Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
           '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
@@ -206,11 +220,12 @@ export class McplAdminModule implements Module {
             command: { type: 'string', description: 'Executable to spawn (stdio transport). Mutually exclusive with url.' },
             args: { type: 'array', items: { type: 'string' }, description: 'Arguments for the command.' },
             env: { type: 'object', description: 'Environment variables for the spawned process.' },
-            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command.' },
-            token: { type: 'string', description: 'Bearer token for WebSocket auth (only when the operator hands you one — prefer `access`).' },
+            url: { type: 'string', description: 'Server URL: ws:// or wss:// (MCPL over WebSocket) or http:// or https:// (modern MCP over Streamable HTTP). Mutually exclusive with command.' },
+            protocol: { type: 'string', enum: ['', 'legacy', 'modern'], description: 'For a `command` server only: "modern" if it speaks MCP 2026-07-28. Omit it, or pass "", for a URL server (the scheme decides) or a legacy (MCP + MCPL) command server.' },
+            token: { type: 'string', description: 'Bearer token (only when the operator hands you one — prefer `access`).' },
             access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
-            reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
+            reconnect: { type: 'boolean', description: 'Reconnect automatically when the connection is lost, with backoff: a URL server is dialed again, and a command server is launched again. Default: true for URL servers, ws:// and http(s):// alike (a bounced server comes back on its own); false for command servers. mcpl_restart is the deliberate restart, now.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
@@ -222,9 +237,10 @@ export class McplAdminModule implements Module {
       {
         name: 'mcpl_restart',
         description:
-          'Restart an MCPL server: kill the process and respawn it with its current ' +
-          'config. Use after rebuilding a server\'s dist, or to recover a crashed ' +
-          'server (reconnect:true does not respawn dead children — this does). ' +
+          'Restart an MCPL server now: disconnect it and connect again with its current ' +
+          'config (a command server\'s process is stopped and launched again). Use after ' +
+          'rebuilding a server\'s dist, or to recover a server that isn\'t reconnecting ' +
+          'on its own (reconnect is off, or it stopped retrying). ' +
           'CAUTION: restarting the server that carries your active conversation ' +
           '(e.g. discord) briefly interrupts your own message delivery; it reconnects ' +
           'within a few seconds.',
@@ -313,6 +329,9 @@ export class McplAdminModule implements Module {
           lastNegotiatedAt: number | null;
         };
         toolClasses?: ServerToolClass[];
+        family?: 'legacy' | 'modern';
+        protocolVersion?: string | null;
+        transport?: string;
       }
     >;
     const overlay = readAgentOverlay(this.overlayPath);
@@ -326,10 +345,12 @@ export class McplAdminModule implements Module {
       const overlaySource = replacement
         ? `agent-overlay (replaces the operator's definition${replacement.lost ? `; lacks its ${replacement.lost}` : ''})`
         : 'agent-overlay';
-      const source = overlayEntryReplaces(overlay[s.id])
+      const source = overlayEntryReplaces(s.id, overlay[s.id], this.overlayPath)
         ? overlaySource
-        : s.id in fileServers ? 'file/recipe' : 'recipe';
-      const target = s.command ?? s.url ?? '?';
+        : `${s.id in fileServers ? 'file/recipe' : 'recipe'}${this.skippedNote(s.id, overlay)}`;
+      // What the connection actually targets: a network transport's url,
+      // never a command it doesn't run.
+      const target = (s.transport === 'http' || s.transport === 'websocket' ? s.url : s.command) ?? s.command ?? s.url ?? '?';
       const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
       const policyState = s.policyEstablished === undefined
         ? 'unknown'
@@ -337,8 +358,19 @@ export class McplAdminModule implements Module {
       const hostCommands = s.allowHostCommands === undefined
         ? 'unknown'
         : s.allowHostCommands ? 'allow' : 'deny';
+      // Which engine serves it, and over what: `modern@2026-07-28/http`.
+      const protocol = `${s.family ?? 'unknown'}@${s.protocolVersion ?? 'unestablished'}/${s.transport ?? 'unknown'}`;
+      if (s.family === 'modern') {
+        // A modern server has no MCPL grant, policy or manifest to report.
+        lines.push(
+          `${s.id}: ${connectionState} — protocol=${protocol}; ${s.toolCount} tools, ` +
+          `classes=${formatServerToolClasses(s.toolClasses)}, ` +
+          `prefix=${s.toolPrefix}, source=${source}, ${target}`,
+        );
+        continue;
+      }
       lines.push(
-        `${s.id}: ${connectionState} — policy=${policyState}, ` +
+        `${s.id}: ${connectionState} — protocol=${protocol}, policy=${policyState}, ` +
         `grant=${formatCapabilityList(s.effectiveGrant)}, ` +
         `masked=${formatCapabilityList(s.maskedCapabilities)}, ` +
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +
@@ -355,7 +387,10 @@ export class McplAdminModule implements Module {
       if (entry.disabled) {
         lines.push(`${id}: UNLOADED (tombstoned in your overlay — redeploy with mcpl_deploy to restore)`);
       } else if (!liveIds.has(id)) {
-        lines.push(`${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
+        const skipped = overlayEntryOutcome(id, entry, this.overlayPath)?.problems ?? [];
+        lines.push(skipped.length > 0
+          ? `${id}: NOT LOADED (skipped at startup: ${skipped.join('; ')}. Fix it with mcpl_deploy, or remove it with mcpl_unload)`
+          : `${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
       }
     }
 
@@ -375,13 +410,27 @@ export class McplAdminModule implements Module {
 
     const command = typeof input.command === 'string' ? input.command : undefined;
     const url = typeof input.url === 'string' ? input.url : undefined;
-    if (!command && !url) return fail('mcpl_deploy requires either `command` (stdio) or `url` (websocket).');
+    if (!command && !url) return fail('mcpl_deploy requires either `command` (stdio) or `url` (ws(s):// or http(s)://).');
     if (command && url) return fail('`command` and `url` are mutually exclusive.');
 
-    // Build the overlay entry from recognized fields only.
+    // Build the overlay entry from recognized fields only. A URL's scheme
+    // decides its transport and family; a WebSocket entry keeps the explicit
+    // `transport` it has always been written with.
     const entry: AgentOverlayEntry = {};
     if (command) entry.command = command;
-    if (url) { entry.url = url; entry.transport = 'websocket'; }
+    if (url) {
+      entry.url = url;
+      if (/^wss?:\/\//i.test(url)) entry.transport = 'websocket';
+    }
+    // Strict function calling sends every property, so "" is the schema's
+    // "unspecified", as an empty list is below. Anything else is refused
+    // rather than saved as a default.
+    if (input.protocol !== undefined && input.protocol !== null && input.protocol !== '') {
+      if (input.protocol !== 'legacy' && input.protocol !== 'modern') {
+        return fail(`mcpl_deploy refused "${id}": protocol must be "legacy", "modern" or "" (unspecified), not ${JSON.stringify(input.protocol)}. Nothing was saved.`);
+      }
+      entry.protocol = input.protocol;
+    }
     if (Array.isArray(input.args)) entry.args = input.args.map(String);
     if (input.env && typeof input.env === 'object') entry.env = input.env as Record<string, string>;
     if (typeof input.token === 'string') entry.token = input.token;
@@ -409,13 +458,21 @@ export class McplAdminModule implements Module {
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
     if (Array.isArray(input.disabledTools) && input.disabledTools.length) entry.disabledTools = input.disabledTools.map(String);
 
+    // A configuration the boot would skip is refused here, before it is
+    // written: an overlay entry that can never load helps nobody.
+    const outcome = overlayEntryOutcome(id, entry, this.overlayPath);
+    const problems = outcome ? outcome.problems : ['nothing to connect'];
+    if (!outcome || problems.length > 0) {
+      return fail(`mcpl_deploy refused "${id}": ${problems.join('; ')}. Nothing was saved.`);
+    }
+
     // Persist to the overlay first — a connect failure still leaves the entry
     // in place so the agent can fix the server and mcpl_restart it.
     const overlay = readAgentOverlay(this.overlayPath);
     overlay[id] = entry;
     saveAgentOverlay(this.overlayPath, overlay);
 
-    const config = resolveOverlayEntry(id, entry, this.overlayPath) as unknown as McplServerConfig;
+    const config = outcome.server as unknown as McplServerConfig;
     config.env = { ...(config.env ?? {}), AGENT_TIMEZONE: this.timeZone };
     if (entry.access && this.identity) {
       const identity = this.identity;
@@ -424,6 +481,10 @@ export class McplAdminModule implements Module {
       // stores only the access NAME. See identity-module.ts header.
       config.accessProvider = () => identity.accessFor(audience);
     }
+    // The framework warns at connect, in the host's log, when a credential
+    // would cross the network unencrypted; the agent deploying it reads that
+    // here, whatever the connection does.
+    const warned = serverConfigWarnings(config).map((w) => ` Warning: ${w}.`).join('');
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
     const note = this.overlayNote(id, overlay, true);
@@ -437,23 +498,30 @@ export class McplAdminModule implements Module {
       const err = error instanceof Error ? error : new Error(String(error));
       return fail(
         `Server "${id}" was saved to your overlay but failed to connect: ${err.message}. ` +
-        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${warned}${note}`,
       );
     }
 
     // A server with reconnect whose first dial failed comes back as a stub
     // that keeps retrying, without throwing: report what the status says.
     const status = framework.listMcplServers().find(s => s.id === id);
+    // The family, revision and transport the framework bound, as mcpl_list
+    // and the web panel show them. For a server that didn't connect, it's
+    // the agent's clue to what its url made it: an https:// url is modern MCP.
+    const protocol = status
+      ? `${status.family ?? 'unknown'}@${status.protocolVersion ?? 'unestablished'}/${status.transport ?? 'unknown'}`
+      : undefined;
     if (!status?.connected) {
       return fail(
         `Server "${id}" was saved to your overlay but isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}. ` +
-        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.` +
+        `${protocol ? ` It is bound as protocol=${protocol}.` : ''}${warned}${note}`,
       );
     }
     return ok(
-      `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
+      `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, protocol=${protocol}, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
-      `Persisted to your agent overlay (survives host restarts).${note}`,
+      `Persisted to your agent overlay (survives host restarts).${warned}${note}`,
     );
   }
 
