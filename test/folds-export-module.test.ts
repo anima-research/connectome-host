@@ -401,6 +401,8 @@ describe('writer safety', () => {
     expect(status.state).toBe('conflict');
     expect(status.target).toBe(target);
     expect(status.conflict?.reason).toContain('never written');
+    // Nothing was written, so status claims no projection.
+    expect(status.lastProjection).toBeUndefined();
     // What the resident reads in history--folds: how to take it over.
     expect(status.resolve).toContain('utils with action "run" and name "folds--take_over_export"');
     expect(status.resolve).toContain("the operator's /folds takeover");
