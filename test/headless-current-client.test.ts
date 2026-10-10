@@ -17,7 +17,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
 async function withChild(body: (h: {
   dir: string;
   log: () => string;
-  open: (options?: { allowHalfOpen?: boolean; read?: boolean }) => Promise<{
+  open: (options?: { allowHalfOpen?: boolean }) => Promise<{
     socket: Socket;
     events: Array<Record<string, unknown>>;
     send: (command: object) => void;
@@ -31,7 +31,7 @@ async function withChild(body: (h: {
   });
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   const log = () => (existsSync(join(dir, 'headless.log')) ? readFileSync(join(dir, 'headless.log'), 'utf8') : '');
-  const open = async (options: { allowHalfOpen?: boolean; read?: boolean } = {}) => {
+  const open = async (options: { allowHalfOpen?: boolean } = {}) => {
     const socket = connect({ path: join(dir, 'ipc.sock'), allowHalfOpen: options.allowHalfOpen ?? false });
     sockets.push(socket);
     const events: Array<Record<string, unknown>> = [];
