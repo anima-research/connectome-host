@@ -24,20 +24,20 @@
  * back as input.
  *
  * Writer safety. The host overwrites the target only when it is absent, or
- * when it holds the projection the host last wrote, unchanged. What the host
- * wrote is recorded in a HOST-level ownership ledger keyed by target path
- * (not in the store, because `/session` switches stores and a per-store
- * record would make the host's own projection from another session look
- * foreign). Before every write the file on disk is hashed. The write
- * proceeds only if the file is absent, matches the last committed hash, or
- * matches a hash recorded as pending (the host's own write, interrupted
- * before it committed). The pending hash is recorded durably before the file
- * is replaced, and committed after the rename. At first use nothing is
- * recorded before the check, so a planned hash can never adopt someone
- * else's file. Anything else, an earlier projection of the host's own put
- * back included, is an export conflict: the file is preserved untouched,
- * export to that target stops, and the conflict is reported (history--folds,
- * /folds, stderr), with how to resolve it. Only configuring another target,
+ * when it holds one of the host's own projections: the one it last began
+ * writing, or the one that write replaced. These are recorded in a
+ * HOST-level ownership ledger keyed by target path (not in the store,
+ * because `/session` switches stores and a per-store record would make the
+ * host's own projection from another session look foreign). Before every
+ * write the file on disk is hashed, and the write proceeds only if it is
+ * absent or matches either recorded hash. Then the new projection's hash
+ * (`latest`) is recorded durably beside the file it replaces (`previous`),
+ * before the replace: a crash before or after the rename leaves a file the
+ * host recognizes. At first use nothing is recorded before the check, so a
+ * planned hash can never adopt someone else's file. Anything else is an
+ * export conflict: the file is preserved untouched, export to that target
+ * stops, and the conflict is reported (history--folds, /folds, stderr),
+ * with how to resolve it. Only configuring another target,
  * or an explicit takeover (operator: `/folds takeover`; resident: the
  * `take_over_export` utility), resolves it; a takeover first keeps the
  * existing file beside the target under a timestamped name. The check is
@@ -99,10 +99,10 @@ export function foldsExportPaths(
 }
 
 interface OwnershipEntry {
-  /** Hash of the last projection the host wrote and committed. */
-  committed?: string;
-  /** Hash of a projection being written: recorded before the replace. */
-  pending?: string;
+  /** Hash of the projection the host last began writing, recorded durably before its replace. */
+  latest?: string;
+  /** Hash of the host's own file that write replaced, if one was there: what stays on disk if the replace didn't land. */
+  previous?: string;
   /** Set when export to this target stopped to preserve a file. */
   conflict?: { reason: string; at: string; foundHash: string };
 }
@@ -164,8 +164,8 @@ const DIR_SYNC_UNSUPPORTED = new Set(['EISDIR', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP
  * Write `content` to `path` durably: temp file written in full and fsynced,
  * renamed over the target, then the directory fsynced. Throws if any step
  * fails, including a directory sync that genuinely failed (only a platform
- * that cannot sync directories is tolerated). A caller that recorded intent
- * before calling must leave it pending on a throw.
+ * that cannot sync directories is tolerated). Its caller records the new
+ * content's hash first, so a throw at any step leaves a file it recognizes.
  */
 function atomicWrite(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -482,22 +482,18 @@ export class FoldsExportModule implements Module {
         this.recordConflict(ledger, 'a file already exists at the target, and this host has never written it', onDisk);
         return false;
       }
-      if (onDisk !== entry.committed && onDisk !== entry.pending) {
+      if (onDisk !== entry.latest && onDisk !== entry.previous) {
         this.recordConflict(ledger, 'the file differs from the last projection this host wrote', onDisk);
         return false;
       }
     }
-    const hash = sha256(content);
-    // The file on disk, when present, has just been recognized as ours (the
-    // committed projection, or a pending one whose replace landed): it is the
-    // recovery base. Keeping it as `committed` means a further interrupted
-    // attempt still leaves the file recognizable, instead of a false conflict.
-    const base = onDisk ?? entry?.committed;
-    ledger.targets[this.target] = { ...(base ? { committed: base } : {}), pending: hash };
+    // Record the new projection before replacing the file, beside the file it
+    // replaces (just recognized as the host's own): whether or not the replace
+    // lands, a crash or a failed rename included, what's on disk is one of the
+    // two. Nothing is recorded after the replace.
+    ledger.targets[this.target] = { latest: sha256(content), ...(onDisk ? { previous: onDisk } : {}) };
     this.writeLedger(ledger);
     atomicWrite(this.target, content);
-    ledger.targets[this.target] = { committed: hash };
-    this.writeLedger(ledger);
     return true;
   }
 

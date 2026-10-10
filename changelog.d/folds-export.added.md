@@ -13,16 +13,15 @@
     branch is checked at roughly one-second intervals. `history--folds` is the
     exact query. A write that fails is logged on stderr and shown in `/folds`,
     and the next receipt or startup tries again.
-  - The host overwrites only the projection it last wrote. A host-level
-    ownership ledger (`<dataDir>/folds-export-ownership.json`, shared across
-    sessions) records the hash it committed, and a pending hash before each
-    replace.
-  - Any other file at the target, an earlier projection put back included, is
-    an export conflict. The file is preserved, export to it stops, and the
-    conflict shows in `/folds` and `history--folds`, which also tells the
-    resident how to resolve it. `/folds takeover`, or the resident's
-    `take_over_export` utility, keeps the existing file beside the target and
-    resumes.
+  - The host overwrites only its own projection: the one it last began
+    writing, or the one that write replaced. A host-level ownership ledger
+    (`<dataDir>/folds-export-ownership.json`, shared across sessions) records
+    both hashes before each replace.
+  - Any other file at the target is an export conflict. The file is
+    preserved, export to it stops, and the conflict shows in `/folds` and
+    `history--folds`, which also tells the resident how to resolve it.
+    `/folds takeover`, or the resident's `take_over_export` utility, keeps the
+    existing file beside the target and resumes.
   - The resident's fold receipts name `connectome-host`, the data directory and
     the agent.
   - The takeover utility rides the `utils` meta-tool. A recipe with no other

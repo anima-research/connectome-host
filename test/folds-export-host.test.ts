@@ -184,8 +184,7 @@ describe('the host writes folds.jsonl', () => {
     // The ownership ledger sits in the data directory and recognizes the file.
     const ledgerPath = join(data, 'folds-export-ownership.json');
     expect(existsSync(ledgerPath)).toBe(true);
-    const entry = (JSON.parse(readFileSync(ledgerPath, 'utf8')) as { targets: Record<string, { committed?: string; pending?: string }> }).targets[target]!;
-    const hash = createHash('sha256').update(readFileSync(target)).digest('hex');
-    expect([entry.committed, entry.pending]).toContain(hash);
+    const entry = (JSON.parse(readFileSync(ledgerPath, 'utf8')) as { targets: Record<string, { latest?: string }> }).targets[target]!;
+    expect(entry.latest).toBe(createHash('sha256').update(readFileSync(target)).digest('hex'));
   }, 60_000);
 });

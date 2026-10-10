@@ -305,18 +305,18 @@ describe('folds.jsonl projection', () => {
     expect(lines()[1]!.kind).toBe('baseline');
   });
 
-  test('adopts its own interrupted write (crash between rename and the ledger commit)', async () => {
+  test('adopts a projection whose replace landed just before a crash', async () => {
     const { cm } = await openStore();
     cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
     const m = exporter();
     m.bind(cm);
     await m.stop();
-    // Simulate: the next projection was renamed into place, but the ledger
-    // still shows it as pending, never committed.
+    // Simulate: the next projection was recorded as `latest`, beside the file
+    // it replaced, and renamed into place; then the host died.
     const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
     const entry = ledger.targets[Object.keys(ledger.targets)[0]!];
     writeFileSync(target, `${readFileSync(target, 'utf8')}{"id":"ours-in-flight"}\n`);
-    ledger.targets[Object.keys(ledger.targets)[0]!] = { committed: entry.committed, pending: sha(target) };
+    ledger.targets[Object.keys(ledger.targets)[0]!] = { latest: sha(target), previous: entry.latest };
     writeFileSync(ledgerPath, JSON.stringify(ledger));
     await accept(cm);
     exporter().bind(cm);
@@ -326,44 +326,20 @@ describe('folds.jsonl projection', () => {
 });
 
 describe('writer safety', () => {
-  test('a crash between the replace and the ledger commit leaves the file recognized at the next startup', async () => {
+  test('the host\'s previous projection, put back, is the host\'s own: it is overwritten without a conflict', async () => {
     const { cm, strategy } = await openStore();
     const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
     const m = exporter();
     m.bind(cm);
     await accept(cm);
-    // From here on the host "dies" after each replace: every commit is
-    // refused, and only what was recorded before the replace is on disk.
-    const internals = m as unknown as { writeLedger(ledger: { targets: Record<string, { pending?: string }> }): void };
-    const writeLedger = internals.writeLedger.bind(m);
-    internals.writeLedger = (ledger) => {
-      if (!ledger.targets[target]?.pending) throw new Error('the host died before the commit (simulated)');
-      writeLedger(ledger);
-    };
+    const previous = readFileSync(target);
     strategy.omit.add(id);
     await accept(cm);
-    expect(lines()[0]!.receipts).toBe(2); // the replace landed
-    await m.stop();
-    const next = exporter();
-    next.bind(cm);
-    expect(next.status().state).toBe('exporting');
-    expect(lines()[0]!.receipts).toBe(2);
-  });
-
-  test('an older projection of the host\'s own, put back, is a conflict: only the last one written is recognized', async () => {
-    const { cm, strategy } = await openStore();
-    const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
-    const m = exporter();
-    m.bind(cm);
-    await accept(cm);
-    const older = readFileSync(target);
-    strategy.omit.add(id);
-    await accept(cm);
-    writeFileSync(target, older); // say, restored from a backup
+    writeFileSync(target, previous); // say, restored from a backup
     strategy.omit.delete(id);
     await accept(cm);
-    expect(readFileSync(target).equals(older)).toBe(true);
-    expect(m.status().state).toBe('conflict');
+    expect(m.status().state).toBe('exporting');
+    expect(lines()[0]!.receipts).toBe(3);
   });
 
   test('an ownership ledger it doesn\'t recognize stops the export, and status reports it instead of throwing', async () => {
@@ -383,12 +359,12 @@ describe('writer safety', () => {
     const ids = [cm.addMessage('user', [{ type: 'text', text: 'one' }]), cm.addMessage('user', [{ type: 'text', text: 'two' }])];
     const m = exporter();
     m.bind(cm);
-    await accept(cm); // committed: A (with the baseline)
-    // First interruption: our replacement B landed on disk, but its commit did not.
+    await accept(cm); // latest: A (with the baseline)
+    // First interruption: our replacement B was recorded and landed on disk, and the host died.
     const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
     const key = Object.keys(ledger.targets)[0]!;
     writeFileSync(target, `${readFileSync(target, 'utf8')}{"id":"ours-b"}\n`);
-    ledger.targets[key] = { committed: ledger.targets[key].committed, pending: sha(target) };
+    ledger.targets[key] = { latest: sha(target), previous: ledger.targets[key].latest };
     writeFileSync(ledgerPath, JSON.stringify(ledger));
     // Second interruption: the next intent is recorded, then the replace fails.
     const { chmodSync } = await import('node:fs');
