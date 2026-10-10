@@ -482,7 +482,7 @@ describe('spawn orientation', () => {
       expect(block).toContain('- Lineage: spawned by stream "parent" as a separate agent with its own system prompt and task; it inherits none of the caller\'s context; depth 1 of 3.');
       expect(block).toContain('- System prompt: supplied by the caller for this spawn.');
       expect(block).toContain(`- Prose routing: disabled, inherited from the caller: ${ROUTING_EFFECT.disabled}.`);
-      expect(block).toContain("- Tool rules: only the 2 the caller's list grants (time--now and subagent--return), subagent--return among them; the caller has no restriction.");
+      expect(block).toContain("- Tool rules: only subagent--return; the caller also listed time--now, which isn't offered to it at the call; the caller has no restriction.");
       expect(input.tools).toEqual(['time--now']); // the caller's array is not mutated
       const run = h.runs[0]!;
       expect(run.proseRouting).toBe('disabled');
@@ -500,7 +500,7 @@ describe('spawn orientation', () => {
 
 describe("a spawn's tool rule says what the list grants (Nell-1783's haiku probe)", () => {
   async function ruleFor(tools: string[], module: Partial<SubagentModuleConfig> = {}) {
-    const h = await makeHarness({ module });
+    const h = await makeHarness({ module, modules: [toolModule('probe', 1)] });
     try {
       const res = await h.subagent.handleToolCall(call('spawn', `toolu_${tools.length}`, { name: 'probe', systemPrompt: 'p', task: 't', tools }));
       expect(res.success).toBe(true);
@@ -512,7 +512,13 @@ describe("a spawn's tool rule says what the list grants (Nell-1783's haiku probe
   }
 
   test('names subagent--return once, even when the caller listed it', async () => {
-    expect(await ruleFor(['time--now', 'subagent--return'])).toStartWith("- Tool rules: only the 2 the caller's list grants (time--now and subagent--return), subagent--return among them");
+    expect(await ruleFor(['probe--t1', 'subagent--return'])).toStartWith("- Tool rules: only these 2 from the caller's list: probe--t1 and subagent--return, subagent--return among them");
+  });
+
+  test("names a listed tool the process doesn't offer as not offered, below the depth limit too", async () => {
+    expect(await ruleFor(['probe--t1', 'no-such-tool'])).toStartWith(
+      "- Tool rules: only these 2 from the caller's list: probe--t1 and subagent--return, subagent--return among them; the caller also listed no-such-tool, which isn't offered to it at the call",
+    );
   });
 
   test('reads an empty list as subagent--return alone', async () => {
@@ -521,7 +527,7 @@ describe("a spawn's tool rule says what the list grants (Nell-1783's haiku probe
 
   test('at the depth limit, names what the process doesn\'t offer there as dropped', async () => {
     expect(await ruleFor(['time--now'], { maxDepth: 1 })).toStartWith(
-      "- Tool rules: only subagent--return; the caller also listed time--now, which isn't offered at this depth, and none of the other subagent tools at this depth",
+      "- Tool rules: only subagent--return; the caller also listed time--now, which isn't offered to it at the call, and none of the other subagent tools at this depth",
     );
   });
 });

@@ -340,9 +340,10 @@ export interface SubagentLaunch {
   tools: {
     /** The spawn caller's own list (subagent--return is always added). */
     requested?: string[];
-    /** What that list grants, as filterToolNames grants it at the call:
-     *  subagent--return once, and at the depth limit only the names the
-     *  process offers that aren't subagent tools. Present with `requested`. */
+    /** What of that list the stream is offered at the call: what
+     *  filterToolNames grants (subagent--return once; at the depth limit no
+     *  other subagent tool), less any name the process doesn't offer then.
+     *  Present with `requested`. */
     granted?: string[];
     /** At the sub-fork depth limit: no subagent tools but subagent--return. */
     depthLimited: boolean;
@@ -526,8 +527,8 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
     const dropped = [...new Set(requested)].filter((name) => !granted.includes(name));
     toolRule = granted.length === 1
       ? `only subagent--return${requested.length === 0 ? ': the caller listed no tools' : ''}`
-      : `only the ${granted.length} the caller's list grants (${joinAll(granted)}), subagent--return among them`;
-    if (dropped.length > 0) toolRule += `; the caller also listed ${joinAll(dropped)}, which ${dropped.length === 1 ? 'isn\'t' : 'aren\'t'} offered at this depth`;
+      : `only these ${granted.length} from the caller's list: ${joinAll(granted)}, subagent--return among them`;
+    if (dropped.length > 0) toolRule += `; the caller also listed ${joinAll(dropped)}, which ${dropped.length === 1 ? 'isn\'t' : 'aren\'t'} offered to it at the call`;
     if (launch.tools.depthLimited) toolRule += ', and none of the other subagent tools at this depth';
   } else if (launch.tools.depthLimited) {
     toolRule = 'every tool the process offers except the subagent tools, keeping subagent--return: no further forks or spawns at this depth';
@@ -1904,7 +1905,7 @@ export class SubagentModule implements Module {
       ...(proseRouting !== undefined ? { proseRouting } : {}),
       tools: {
         ...(requestedTools !== undefined
-          ? { requested: [...requestedTools], granted: this.filterToolNames(requestedTools, callerDepth) as string[] }
+          ? { requested: [...requestedTools], granted: this.offeredOf(this.filterToolNames(requestedTools, callerDepth) as string[]) }
           : {}),
         // filterToolNames' own threshold.
         depthLimited: callerDepth + 1 >= this.maxDepth,
@@ -2653,6 +2654,15 @@ export class SubagentModule implements Module {
       // best-effort
     }
     return '(no text output)';
+  }
+
+  /** The names of a grant the process offers now (subagent--return always):
+   *  what a launch description can truthfully say the stream gets. The
+   *  grant itself keeps every name, so a tool registered later still reaches
+   *  the stream (Nell-1783's review). */
+  private offeredOf(names: string[]): string[] {
+    const offered = new Set(this.getFramework().getAllTools().map((t) => t.name));
+    return names.filter((name) => name === 'subagent--return' || offered.has(name));
   }
 
   /**
