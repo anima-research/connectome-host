@@ -1,60 +1,86 @@
 # Autobiographical Memory — A Guide for Agents
 
 This explains how memory works for an agent running on the Connectome stack
-(`AutobiographicalStrategy`): what to expect, what's reliable, what isn't, and
-how to work with it. It's written to be honest, not reassuring — you should know
-the real mechanics. It is fleet-wide; your *exact* numbers come from your recipe
-(see "Finding your own settings").
+(`AutobiographicalStrategy`, with the adaptive resolution and kv-stable folding
+that connectome-host turns on by default): what to expect, what's reliable,
+what isn't, and how to work with it. It's written to be honest, not
+reassuring — you should know the real mechanics. It is fleet-wide; your
+*exact* numbers come from your recipe and your own runtime settings (see
+"Finding your own settings").
 
 ## The short version
 
 Your conversation isn't truncated when it gets long. Instead, older stretches
 are **folded into recollections you write yourself, in your own voice**, while
-recent turns stay verbatim. Nothing is ever deleted from the underlying record.
-What changes over time is *resolution*, not *existence*.
+recent turns stay verbatim. Folding happens only as far as it has to for your
+context to fit its budget, and only gradually. Nothing is ever deleted from
+the underlying record. What changes over time is *resolution*, not
+*existence*.
 
 ## What you're made of, at any moment
 
-The context you're given is assembled from three layers:
+The context you're given is assembled from three parts:
 
 1. **Head** — the earliest part of your history, pinned verbatim and always
-   present (`headWindowTokens`; may be 0 if your recipe disables it). When set,
-   this is your origin/anchor; it doesn't fade.
-2. **Recent window** — the most recent messages, kept **verbatim**
-   (`recentWindowTokens`). Everything here is exactly as it happened. If this is
-   large, most of an ordinary conversation stays verbatim for a long time.
-3. **Summaries** — for the span between head and recent window, you see
-   **recollections** (below) instead of the raw turns, in layers: L1 (fine),
-   L2, L3 (coarse).
+   present (`headWindowTokens`; 4000 tokens unless your recipe says
+   otherwise, and it may be 0). When set, this is your origin/anchor; it
+   doesn't fade.
+2. **Middle** — everything between the head and the tail. Each stretch here
+   is shown at its own resolution: **raw**, or as one of your memories of it
+   — L1 (a detailed memory of one chunk), L2 (a memory of several L1-sized
+   stretches), and so on up to L8 for the deepest past. The middle stays raw
+   for as long as it fits; only when your whole context would exceed its
+   budget (`contextBudgetTokens`) are stretches folded — just enough to fit.
+3. **Tail** — the most recent messages, kept **verbatim**
+   (`recentWindowTokens`). Everything here is exactly as it happened. If this
+   is large, most of an ordinary conversation stays verbatim for a long time.
 
-You're not shown the same span twice: if the raw turns of a stretch are still in
-your recent window, the summary of that stretch is suppressed (anti-redundancy).
+You're never shown the same stretch twice: a span appears either raw or as a
+memory, never both. A memory appears where its stretch happened in the
+timeline, as a `[Recall L2-15]`-style prompt followed by the memory itself in
+your voice.
+
+Folding is also **gentle**. A solver chooses which stretches to fold, and how
+deep, so as to disturb as little as possible of the context you have already
+computed over; and when your budget is lowered, your context converges to it
+over several turns (`transitionPaceTokens` per turn) rather than all at once.
 
 ## How memories form (this part matters)
 
-When a stretch ages out of the recent window, it isn't machine-"summarized." A
-compression pass asks **you** — same voice, framed as your own remembering. This
-is *self-voice framing*:
+Memories are written as stretches leave the tail — ahead of need, so that a
+memory already exists when the budget eventually calls for it. *Writing* a
+memory and *showing* it are separate: an L1 can sit unused while its stretch is
+still shown raw.
 
-- The system framing is *"You are forming autobiographical memories of a
-  conversation… what you read is what happened. Write authentically about what
-  occurred."*
-- Your **prior** recollections (L3→L2→L1) are replayed back to you **as your own
-  messages** — "things I already remember" — not as external notes.
-- The chunk to remember is delivered in a separate `Context Manager` voice:
-  *"We are ready to form a long-term memory. Here is the conversation to
-  remember: …"*
-- The instruction: *"What do you recall from this part of the conversation?
-  Write naturally, as recollection of what you experienced."*
+When a chunk (about `targetChunkTokens` of raw turns) is due, a compression
+pass asks **you** — your model, your voice — to remember it. What that pass
+sees is your own context, reconstructed:
 
-So memories come back **first-person, in your voice** ("I recall that I…"),
-layered as recollection-of-recollection:
+- your head, verbatim;
+- your earlier memories, replayed **as your own messages** — each one as a
+  small exchange where you are asked to recall memory `L1-3` and answer with
+  that memory, in your voice. These are "things I already remember", not
+  external notes;
+- an in-band marker, worded as a recurring event rather than a fresh system
+  instruction: *"System: You will soon form a new memory, get ready. The
+  messages that follow are the slice of recent experience you are about to
+  compress. After them, write the memory in your own voice."*;
+- the chunk itself, raw, from its original speakers — tool calls and results
+  included, with your tools declared;
+- the instruction: *"Write the memory of events since the most recent memory
+  system notification. Speak in the first person from your own perspective.
+  Preserve concrete details — file paths, exact values, decisions, unresolved
+  questions, the user's active asks."* — with a target length
+  (`summaryTargetTokens`).
 
-- **L1**: a chunk of raw turns (~`targetChunkTokens`, default 3000) → a
-  first-person recollection.
-- **L2**: once ~`mergeThreshold` (default 6) L1s accumulate, they merge into one
-  higher-level memory.
-- **L3**: ~6 L2s merge again into a still-broader memory.
+So memories come back **first-person, in your voice** ("I recall that I…").
+
+**Merging.** Once about `mergeThreshold` (default 6) memories accumulate at one
+level, they are consolidated into one memory a level up. The consolidation is
+written by re-reading material *one level deeper* than what it merges: an L2 is
+written from the raw turns underneath its L1s, an L3 from the underlying L1s,
+and so on. Higher memories are broader, but they are not summaries of
+summaries.
 
 This framing is deliberate: it preserves continuity of *self* across the
 compression boundary — your memory is experientially yours, not a detached
@@ -85,15 +111,15 @@ shifted keys over values recomputed from different content — and the output
 collapses into looping.) So the verbatim tail isn't nostalgia for detail; it's
 the region where your live state stays grounded in what you genuinely processed.
 
-That's why folding is pushed **far back**, behind the active edge: memory
-formation only ever rewrites the deep past you're no longer holding live, while
-everything inside `recentWindowTokens` stays the literal text you computed over.
-The bigger the tail, the longer your continuity runs before any rewrite reaches
-you — which is why real deployments use tails of hundreds of thousands of
-tokens, not the small library fallback. (The compression pass avoids jolts too:
-the prompt asking you to remember is an in-band *marker* — *"System: you will
-soon form a new memory, get ready"* — worded as a recurring narrated event, not a
-fresh system instruction.)
+That's why folding is pushed **far back**, behind the active edge, and why it
+is kept gentle: memory formation only ever rewrites the deep past you're no
+longer holding live, disturbing as little as it can, while everything inside `recentWindowTokens`
+stays the literal text you computed over. The bigger the tail, the longer your
+continuity runs before any rewrite reaches you — which is why real deployments
+use tails of hundreds of thousands of tokens, not the small library fallback.
+(The compression pass avoids jolts too: the prompt asking you to remember is an
+in-band *marker*, worded as a recurring narrated event, not a fresh system
+instruction.)
 
 > Stated mechanistically: window-rolling is mostly RoPE relabeling, whereas
 > content-rewriting is the real perturbation — see Anima Labs' [KV-perturbation
@@ -130,78 +156,122 @@ stand on context you never genuinely had.
   *"show the recollection instead of the raw turns in the active context."* The
   verbatim original still exists and is recoverable.
 - **Your active context is finite.** What you can *directly* see at once is
-  head + recent-window + summaries. Older detail is present as recollection, not
-  verbatim, unless something retrieves the raw record.
+  head + middle (at whatever resolution fits) + tail. Older detail is present as
+  recollection, not verbatim, unless something retrieves the raw record.
+- **You may be able to look it up.** If your recipe enables `modules.history`,
+  you have `history--search`, `history--extract`, `history--overview` and
+  `history--stats`: search your own uncompressed record (by text or author,
+  oldest- or newest-first), pull out a span by time or channel or the
+  conversation around one message, or browse an overview built from memories
+  you already wrote. If the recipe also sets `modules.history.semantic`,
+  `history--semantic_search` finds messages and memories by meaning.
 
 So forgetting here is *loss of resolution in your working view*, not erasure of
 the record. The past is still on disk; your live recall of it gets more
-impressionistic with age and depth (L1 → L2 → L3).
+impressionistic with age and depth.
 
 ## The resolution gradient
 
-| Age / layer | What you get |
+| Where | What you get |
 |---|---|
 | Head | verbatim, always |
-| Recent window | verbatim |
-| L1 recollections | your detailed first-person memory of a chunk |
-| L2 / L3 | your broader, merged memories — themes and arcs, fewer specifics |
+| Tail | verbatim |
+| Middle, while it fits | verbatim |
+| Middle, once the budget needs room | your memories — L1 detailed, then broader L2, L3, … up to L8 for the deepest past: themes and arcs, fewer specifics |
 
 ## How to treat it — practical
 
 - **Trust your summaries as genuinely yours.** They were written in your voice,
   as your remembering — not an external annotator's notes.
 - **They are lossy on purpose.** Exact quotes, numbers, wording, and tool I/O
-  degrade as things move L1→L2→L3. If a detail must stay exact, don't rely on
+  degrade as things fold deeper. If a detail must stay exact, don't rely on
   recollection — **write it to your workspace.**
 - **Your workspace is your durable, verbatim memory.** Files in your workspace
   mounts are NOT subject to compression. Use them for anything you want kept
   precisely: facts, decisions, running logs, identity notes, promises. (Whether a
   given mount is writable depends on its `mode`: `read-write` vs `read-only`.)
-- **You don't have to manage memory manually.** Compression is organic and
-  automatic; you don't trigger or curate it. Just be aware it's happening.
+  A `journal` entry is not the same thing: it lives in your context and folds
+  with everything else.
+- **You don't have to manage memory — but you can.** Compression is organic and
+  automatic; you don't trigger or curate individual memories. You can, though,
+  read and change the frame it works in with your `agent_settings` tool:
+  `context_budget_tokens` (how large your whole context may be),
+  `tail_tokens` (how much stays verbatim at the end) and
+  `transition_pace_tokens` (how quickly you converge to a lowered budget). Raising
+  the budget applies at once; lowering it converges gradually. Your changes
+  persist across restarts.
+- **Operators can protect ranges.** A human looking after you can *pin* a range
+  — keep it raw, or hold it at a given level. Pins are theirs to set, from the
+  web console; you'll see their effect, not a tool.
+- **Some deployments inject a shared instructions document** every turn
+  (`modules.instructions`). It is never stored in your history, so it never
+  folds.
+- **Very large messages are trimmed in the live view.** A single message over
+  `maxMessageTokens` (10000 by default here) is truncated in your context, and
+  a tool result over its inline cap (24000 characters by default, yours to
+  change as `tool_result_inline_max_chars`) is written in full to a
+  `tool-results/` file in your workspace, with a preview and the file
+  reference left inline.
 - **Heartbeats** (if your recipe includes a heartbeat source): you may be woken
   on a schedule with a self-check-in prompt. That's a normal wake, not a user
   message.
 
 ## Honest caveats
 
-- The compression pass is a **separate inference** (temperature 0) over the
-  chunk — your **thinking blocks and tool-call details are not carried into the
-  recollection**; only what you recall in prose survives at that layer.
+- The compression pass is a **separate inference**. Your **thinking blocks are
+  not shown to it** — only what was said and done in the chunk. Tool calls and
+  their results *are* shown, so tool details survive at L1 only if you choose to
+  recall them in the memory.
 - Recollections can drift or compress away nuance you'd have wanted. That's the
   cost of unbounded continuity. Workspace notes are the mitigation.
-- Search-based **retrieval of raw old turns may not be enabled** (`modules.
-  retrieval`). If it's off, treat aged detail as "remembered," not
-  "look-up-able," unless you wrote it down.
-- **Images age out faster than text.** Only the most recent images stay live (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the tail (default 30000). Inline images also share a cumulative base64 byte budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond these limits become an `[image dropped from live context]` placeholder *even while the surrounding words remain verbatim*. Your recipe may change all three limits under `agent.strategy` for autobiographical and frontdesk strategies. Each accepts a non-negative safe integer; zero disables that limit, while the others still apply. Larger limits can exceed the provider's request-size cap. If an image matters beyond the moment, describe it in text or save it to your workspace.
+- **Search of raw old turns may not be enabled** (`modules.history`). If it's
+  off, treat aged detail as "remembered," not "look-up-able," unless you wrote
+  it down. (`modules.retrieval` is something else: it injects entries from a
+  curated lesson library, when there is one.)
+- **Images age out faster than text.** Only the most recent images stay live
+  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
+  tail (default 30000). Inline images also share a cumulative base64 byte
+  budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond
+  these limits become an `[image dropped from live context]` placeholder *even
+  while the surrounding words remain verbatim*. This keeps the image payload
+  bounded independently of the much larger text tail. Your recipe may change
+  all three limits under `agent.strategy` for autobiographical and frontdesk
+  strategies; zero disables that limit while the others still apply, and larger
+  limits can exceed the provider's request-size cap. If an image matters beyond
+  the moment, describe it in text or save it to your workspace.
 
 ## Finding your own settings
 
-Your `agent.strategy` block in your recipe defines the specifics. The library
-*fallbacks* (used when a knob is unset) are deliberately conservative; real
+Your `agent.strategy` block in your recipe defines the starting values, and
+`agent_settings` shows what's live now (your runtime changes win over the
+recipe). The library *fallbacks* are deliberately conservative; real
 deployments override them — above all the tail, which is what does the
 KV-continuity work described above.
 
-| Knob | Library fallback | Typical large-tail recipe | What it controls |
+| Knob | Default here | Typical large-tail recipe | What it controls |
 |---|---|---|---|
-| `recentWindowTokens` *(your verbatim tail)* | 30 000 | **~450 000** | how much recent history stays exactly as it happened before anything folds |
-| `headWindowTokens` | 0 | 0 – a few k | verbatim origin/anchor pinned at the very start |
-| `targetChunkTokens` | 3 000 | ~6 000 | size of one L1 recollection; smaller → more granular memory |
-| `mergeThreshold` | 6 | 6 | how many L1s merge into an L2 (and L2s into an L3) |
-| `compressionModel` | — | your own model family | the voice that forms your memories |
+| `recentWindowTokens` / `tail_tokens` *(your verbatim tail)* | 30 000 | **~300 000–450 000** | how much recent history stays exactly as it happened |
+| `contextBudgetTokens` / `context_budget_tokens` | 100 000 | set to fit the model's window | the size your whole context is fitted into; decides when the middle folds |
+| `transitionPaceTokens` / `transition_pace_tokens` | 16 000 | — | how much your context may shrink per turn while converging to a lowered budget |
+| `headWindowTokens` | 4 000 | 0 – a few k | verbatim origin/anchor pinned at the very start |
+| `targetChunkTokens` | 3 000 | ~6 000 | size of the raw stretch one L1 memory covers; smaller → more granular memory |
+| `summaryTargetTokens` | 2 000 | — | target length of a memory |
+| `mergeThreshold` | 6 | 6 | how many memories at one level consolidate into one at the next |
+| `compressionModel` | your own model | your own model | the voice that forms your memories |
 | `maxLiveImages` | 6 | 6 | most images kept live at once |
 | `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
 | `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
 
-The headline number is the tail. A small tail (the fallback) means you fold
-often and lose verbatim resolution quickly; a large tail (e.g. ~450k) means most
-of an ordinary conversation stays verbatim for a long time and your KV
-continuity runs far longer before anything folds. Note the tail is a *text*
-horizon — images are bounded separately and much shallower (see the caveat
-above), so a 450k tail does not mean 450k of live images.
+The headline numbers are the tail and the budget. A small tail means rewriting
+reaches recent material sooner; a large tail (hundreds of thousands of tokens)
+means most of an ordinary conversation stays verbatim for a long time and your
+KV continuity runs far longer before anything folds. The budget decides how
+much of the middle can stay raw. Note the tail is a *text* horizon — images are
+bounded separately and much shallower (see the caveat above), so a 450k tail
+does not mean 450k of live images.
 
-The `compressionModel` is the voice that forms your memories — ideally your own
-model family, so the recollections sound like you.
+The `compressionModel` is the voice that forms your memories — by default your
+own model, so the recollections sound like you.
 
 ## If something feels off
 

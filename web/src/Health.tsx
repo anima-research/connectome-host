@@ -30,7 +30,43 @@ export interface OpsAlert {
   /** Epoch millis of the latest firing. */
   at: number;
   count: number;
+  /** Operator actions the host offers for this alert (credential alerts
+   *  carry them in the trace's `data.actions`). Rendered as buttons. */
+  actions?: CredentialAction[];
+  /** Process the alert (and its actions) belong to. The strip is a
+   *  host-level surface, so this is 'local' for everything it shows. */
+  scope?: string;
 }
+
+export interface CredentialAction {
+  id: string;
+  label: string;
+  hint?: string;
+}
+
+/** The host's credential state (health `credential` block / credential-state
+ *  frame). Absent on API-key hosts. Never carries a token. */
+export interface CredentialInfo {
+  subscription?: boolean;
+  agent?: string;
+  kind?: string;
+  provider?: string;
+  message?: string;
+  since?: number;
+  until?: number;
+  windows?: string[];
+  rotatable?: boolean;
+  expiresAt?: number;
+  actions?: CredentialAction[];
+  login?: { verificationUrl: string; userCode: string };
+  lastAction?: { id: string; at: number; ok: boolean; message: string };
+}
+
+/** Credential alert kinds — the ones whose row gets action buttons and the
+ *  ones a fresh credential-state frame must reconcile away. */
+export const CREDENTIAL_ALERT_KINDS = [
+  'quota-spent', 'quota-unreadable', 'auth-expiring', 'auth-expired', 'auth-rejected', 'auth-login-required',
+] as const;
 
 /** Shape of GET /healthz — framework healthSnapshot() plus the host's
  *  compressionQuarantine / runtimeSettings extensions. All fields optional
@@ -50,6 +86,7 @@ export type LedgerRow = CallLedgerRow;
 
 export interface HealthSnapshot {
   at?: string;
+  credential?: CredentialInfo;
   contextComposition?: Record<string, ContextComposition>;
   uptimeSec?: number;
   gate?: Record<string, unknown> | null;
@@ -137,14 +174,47 @@ const fmtUptime = (sec: number): string => {
 
 /** Severity → row tone. Quarantine and hard-down are outage-class (rose);
  *  everything else on this channel is at least warning-class (amber). */
+/** Rose = the agent cannot answer right now; amber = degraded / act soon. */
+const HARD_DOWN_KINDS = new Set([
+  'compression-quarantine', 'inference-exhausted', 'hard-down',
+  'quota-spent', 'auth-expired', 'auth-rejected', 'auth-login-required',
+]);
 const alertTone = (kind: string): { row: string; dot: string } =>
-  kind === 'compression-quarantine' || kind === 'inference-exhausted'
+  HARD_DOWN_KINDS.has(kind)
     ? { row: 'bg-rose-950/60 border-rose-900 text-rose-200', dot: 'bg-rose-500 animate-pulse' }
     : { row: 'bg-amber-950/60 border-amber-900 text-amber-200', dot: 'bg-amber-500' };
+
+/** Action buttons on an alert row / the credential section. The host runs
+ *  the action; nothing here is automatic. */
+export function CredentialActionButtons(props: {
+  actions: CredentialAction[] | undefined;
+  onAction(actionId: string): void;
+  disabled?: boolean;
+}) {
+  return (
+    <Show when={props.actions && props.actions.length > 0}>
+      <span class="flex items-center gap-1 shrink-0">
+        <For each={props.actions}>{(act) => (
+          <button
+            type="button"
+            class="px-1.5 py-0.5 rounded border border-current/40 hover:bg-white/10 font-mono text-[10px] disabled:opacity-40"
+            title={act.hint ?? act.label}
+            disabled={props.disabled}
+            onClick={() => props.onAction(act.id)}
+          >
+            {act.label}
+          </button>
+        )}</For>
+      </span>
+    </Show>
+  );
+}
 
 export function OpsAlertStrip(props: {
   alerts: OpsAlert[];
   onDismiss(key: string): void;
+  /** Present when the host can run credential actions for a row. */
+  onAction?(alert: OpsAlert, actionId: string): void;
 }) {
   return (
     <For each={props.alerts}>{(a) => {
@@ -155,6 +225,9 @@ export function OpsAlertStrip(props: {
           <span class="font-mono font-semibold shrink-0">{a.agent}</span>
           <span class="font-mono text-[10px] uppercase tracking-wider opacity-70 shrink-0">{a.kind}</span>
           <span class="truncate" title={a.message}>{a.message}</span>
+          <Show when={props.onAction}>
+            <CredentialActionButtons actions={a.actions} onAction={(id) => props.onAction!(a, id)} />
+          </Show>
           <span class="ml-auto shrink-0 opacity-60 font-mono text-[10px]">
             {a.count > 1 ? `×${a.count} · ` : ''}{fmtAgo(a.at)}
           </span>
@@ -322,6 +395,53 @@ function CompositionBlock(props: { c: ContextComposition }) {
   );
 }
 
+/** Credential block for the Health tab: state, expiry, last action, buttons. */
+export function CredentialSection(props: {
+  credential: CredentialInfo | undefined;
+  onAction(actionId: string): void;
+}) {
+  const c = () => props.credential;
+  const kind = () => c()?.kind ?? 'ok';
+  const tone = () => kind() === 'ok' ? 'text-emerald-400' : HARD_DOWN_KINDS.has(kind()) ? 'text-rose-300' : 'text-amber-300';
+  const iso = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+  return (
+    <Show when={c()?.subscription !== false && c()}>
+      <section class="border border-neutral-800 rounded px-2.5 py-2 space-y-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-neutral-100">credential</span>
+          <span class="text-neutral-500">{c()!.provider ?? '?'}</span>
+          <span class={tone()}>{kind()}</span>
+          <span class="ml-auto">
+            <CredentialActionButtons
+              actions={kind() === 'ok' ? [{ id: 'recheck', label: 'Re-check' }] : c()!.actions}
+              onAction={props.onAction}
+            />
+          </span>
+        </div>
+        <Show when={kind() !== 'ok'}>
+          <div class={`${tone()} break-words`}>{c()!.message}</div>
+        </Show>
+        <div class="text-neutral-500">
+          {c()!.expiresAt !== undefined
+            ? `expires ${iso(c()!.expiresAt!)} · ${c()!.rotatable ? 'host can refresh' : 'no refresh token — paste a new one when it expires'}`
+            : `expiry unknown · ${c()!.rotatable ? 'host can refresh' : 'not host-rotatable'}`}
+        </div>
+        <Show when={c()!.login}>
+          <div class="text-amber-200">
+            login: open <a class="underline" href={c()!.login!.verificationUrl} target="_blank" rel="noreferrer">{c()!.login!.verificationUrl}</a>
+            {' '}and enter code <span class="font-semibold">{c()!.login!.userCode}</span>
+          </div>
+        </Show>
+        <Show when={c()!.lastAction}>
+          <div class={c()!.lastAction!.ok ? 'text-neutral-400' : 'text-rose-300'}>
+            last action: {c()!.lastAction!.id} {c()!.lastAction!.ok ? 'ok' : 'FAILED'} {fmtAgo(c()!.lastAction!.at)} — {c()!.lastAction!.message}
+          </div>
+        </Show>
+      </section>
+    </Show>
+  );
+}
+
 export function HealthPanel(props: {
   health: HealthSnapshot | null;
   /** Recent provider calls. Already on the client via the call-ledger frame. */
@@ -329,6 +449,9 @@ export function HealthPanel(props: {
   /** Non-null when the last /healthz fetch failed; '403' means scope-denied. */
   error: string | null;
   onRefresh(): void;
+  /** Credential state (live frame wins over the health poll) + action sink. */
+  credential?: CredentialInfo | null;
+  onCredentialAction?(actionId: string): void;
 }) {
   const agents = () => props.health?.agents ?? [];
   const quarantine = (name: string) => props.health?.compressionQuarantine?.[name];
@@ -384,6 +507,13 @@ export function HealthPanel(props: {
             <span>{props.health!.activeStreams!.length} streaming</span>
           </Show>
         </div>
+
+        <Show when={props.onCredentialAction}>
+          <CredentialSection
+            credential={props.credential ?? props.health!.credential}
+            onAction={(id) => props.onCredentialAction!(id)}
+          />
+        </Show>
 
         <For each={agents()}>{(a) => (
           <section class="border border-neutral-800 rounded px-2.5 py-2 space-y-1.5">

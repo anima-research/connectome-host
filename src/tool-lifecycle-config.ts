@@ -14,6 +14,11 @@
  *
  * The vocabulary is mirrored rather than imported so recipe validation does
  * not depend on the framework version installed (older ones lack it).
+ *
+ * The read side lives here too: `readToolClasses` / `formatToolClassRows`
+ * turn the framework's effective-class listing (RFC-008 §6) into what the
+ * operator surfaces show (`/tools`, `GET /debug/tool-classes`, the web UI's
+ * MCP tab).
  */
 
 /** RFC-008 §4. Amended only by MCPL spec change, never per deployment. */
@@ -144,4 +149,81 @@ export function toolClassConfig(recipe: { toolClassOverrides?: Record<string, st
     hostToolClasses,
     ...(recipe.toolClassOverrides ? { toolClassOverrides: recipe.toolClassOverrides } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Read side: the effective class of every tool, for operator surfaces
+// ---------------------------------------------------------------------------
+
+/** Where a tool's effective class came from (RFC-008 §5.1), as the framework
+ *  reports it: the recipe's `toolClassOverrides`, the host's own table
+ *  (HOST_TOOL_CLASSES or the framework's built-ins), the MCPL server's
+ *  `_meta["mcpl/class"]`, or nowhere (unclassed). */
+export type ToolClassSource = 'override' | 'host' | 'server' | 'none';
+
+/** One row of AgentFramework.listToolClasses(). `class` is empty for an
+ *  unclassed tool; `serverId` is set for tools an MCPL server provides. */
+export interface ToolClassRow {
+  tool: string;
+  class: string[];
+  source: ToolClassSource;
+  serverId?: string;
+}
+
+export const TOOL_CLASS_SOURCE_LABELS: Readonly<Record<ToolClassSource, string>> = {
+  override: 'operator override',
+  host: 'host table',
+  server: 'server _meta',
+  none: 'unclassed',
+};
+
+/**
+ * The framework's effective-class listing, sorted by tool name. With
+ * `agentName`, exactly the tools that agent is shown; without, every tool
+ * the framework offers to anyone. Returns null when the framework build has
+ * no listing (one older than tool classes). An unknown agent throws the
+ * framework's own error.
+ */
+export function readToolClasses(framework: unknown, agentName?: string): ToolClassRow[] | null {
+  const fw = framework as { listToolClasses?: (agent?: string) => ToolClassRow[] } | null;
+  if (typeof fw?.listToolClasses !== 'function') return null;
+  const rows = agentName === undefined ? fw.listToolClasses() : fw.listToolClasses(agentName);
+  return rows
+    .map((r) => ({
+      tool: r.tool,
+      class: [...r.class],
+      source: r.source,
+      ...(r.serverId !== undefined ? { serverId: r.serverId } : {}),
+    }))
+    .sort((a, b) => (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
+}
+
+/** Rows per source, every source present (zero when none). */
+export function countToolClassSources(rows: readonly ToolClassRow[]): Record<ToolClassSource, number> {
+  const counts: Record<ToolClassSource, number> = { override: 0, host: 0, server: 0, none: 0 };
+  for (const r of rows) counts[r.source] = (counts[r.source] ?? 0) + 1;
+  return counts;
+}
+
+/**
+ * Plain-text listing for line-oriented surfaces: a per-source summary, then
+ * one aligned row per tool (`tool  classes  source`, with the providing
+ * MCPL server in parentheses).
+ */
+export function formatToolClassRows(rows: readonly ToolClassRow[]): string[] {
+  const counts = countToolClassSources(rows);
+  const summary = (Object.keys(TOOL_CLASS_SOURCE_LABELS) as ToolClassSource[])
+    .filter((source) => counts[source] > 0)
+    .map((source) => `${counts[source]} ${TOOL_CLASS_SOURCE_LABELS[source]}`)
+    .join(' · ');
+  const classText = (r: ToolClassRow): string => (r.class.length > 0 ? r.class.join(',') : '-');
+  const toolWidth = Math.min(48, Math.max(0, ...rows.map((r) => r.tool.length)));
+  const classWidth = Math.max(0, ...rows.map((r) => classText(r).length));
+  const lines = [summary];
+  for (const r of rows) {
+    const source = TOOL_CLASS_SOURCE_LABELS[r.source] ?? r.source;
+    const server = r.serverId !== undefined ? ` (${r.serverId})` : '';
+    lines.push(`${r.tool.padEnd(toolWidth)}  ${classText(r).padEnd(classWidth)}  ${source}${server}`);
+  }
+  return lines;
 }

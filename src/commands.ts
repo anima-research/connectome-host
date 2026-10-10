@@ -14,6 +14,7 @@
  *   /status        — Show agent/module status
  *   /clear         — Clear conversation display
  *   /mcp list|add|remove|env — Manage MCPL server config
+ *   /tools [agent] — Each tool's effective class (MCPL RFC-008) and its source
  *   /budget [N]    — Show/set stream token budget (e.g. /budget 1m)
  *   /fast [on|off|status] — Toggle Codex subscription Fast mode
  *   /session       — Session management (list, new, switch, rename, delete)
@@ -29,8 +30,10 @@ import { resolve } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
+import type { CredentialActionId, CredentialState } from './credential-state.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { fmtTokens } from './tui.js';
+import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 
 /** Imported lazily to avoid circular deps — index.ts re-exports the type. */
@@ -47,6 +50,11 @@ interface AppContext {
     isFastMode(): boolean;
     setFastMode(enabled: boolean): void;
   };
+  /** Credential monitor (subscription providers) — see credential-state.ts. */
+  credentials?: {
+    snapshot(): CredentialState;
+    runAction(id: CredentialActionId, params?: { token?: string }): Promise<CredentialState>;
+  } | null;
   switchSession(id: string): Promise<void>;
 }
 
@@ -151,7 +159,10 @@ function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
 }
 
 export function handleCommand(command: string, app: AppContext): CommandResult {
-  const parts = command.slice(1).split(/\s+/);
+  // Trimmed first: a trailing space (common from headless/web senders) would
+  // otherwise leave an empty last token, and name-taking commands that join
+  // the rest of the line would look up "name " instead of "name".
+  const parts = command.slice(1).trim().split(/\s+/);
   const cmd = parts[0]!;
   const args = parts.slice(1);
   const framework = app.framework;
@@ -194,8 +205,10 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /mcp add <id> <cmd>    Add/overwrite server', style: 'system' },
           { text: '  /mcp remove <id>       Remove a server', style: 'system' },
           { text: '  /mcp env <id> K=V ...  Set env vars on server', style: 'system' },
+          { text: '  /tools [agent]         Each tool\'s effective class and where it came from', style: 'system' },
           { text: '  /budget [tokens]       Show/set stream token budget', style: 'system' },
           { text: '  /fast [on|off|status]  Toggle Codex subscription Fast mode', style: 'system' },
+          { text: '  /auth [status|refresh|login|recheck|token <tok>]  Subscription credential state + actions', style: 'system' },
           { text: '  /session               Show current session', style: 'system' },
           { text: '  /session list          List all sessions', style: 'system' },
           { text: '  /session new [name]    Create new session', style: 'system' },
@@ -267,11 +280,17 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
     case 'mcp':
       return handleMcp(args);
 
+    case 'tools':
+      return handleTools(framework, args.join(' ') || undefined);
+
     case 'budget':
       return handleBudget(framework, args[0]);
 
     case 'fast':
       return handleFast(app, args[0]);
+
+    case 'auth':
+      return handleAuth(app, args);
 
     case 'session':
       return handleSession(app, args);
@@ -293,6 +312,73 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
         lines: [{ text: `Unknown command: /${cmd}. Type /help.`, style: 'system' }],
       };
   }
+}
+
+/** Render the credential state the way the TUI wants it: one line per fact. */
+function credentialLines(state: CredentialState): Line[] {
+  const lines: Line[] = [
+    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' ? '' : ` — ${state.message}`}`, style: 'system' },
+  ];
+  if (state.expiresAt !== undefined) {
+    lines.push({ text: `  expires ${new Date(state.expiresAt).toISOString()}${state.rotatable ? ' (host can refresh)' : ' (no refresh token — paste a new one when it expires)'}`, style: 'system' });
+  } else {
+    lines.push({ text: `  expiry unknown; ${state.rotatable ? 'host can refresh' : 'not host-rotatable'}`, style: 'system' });
+  }
+  if (state.until !== undefined && state.kind === 'quota-spent') {
+    lines.push({ text: `  resets ${new Date(state.until).toISOString()}`, style: 'system' });
+  }
+  if (state.login) {
+    lines.push({ text: `  login: open ${state.login.verificationUrl} and enter code ${state.login.userCode}`, style: 'system' });
+  }
+  if (state.actions.length > 0) {
+    lines.push({ text: `  actions: ${state.actions.map((a) => `/auth ${a.id === 'set-token' ? 'token <tok>' : a.id}`).join(', ')}`, style: 'system' });
+  }
+  if (state.lastAction) {
+    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'} — ${state.lastAction.message}`, style: 'system' });
+  }
+  return lines;
+}
+
+function handleAuth(app: AppContext, args: string[]): CommandResult {
+  const monitor = app.credentials;
+  if (!monitor) {
+    return {
+      lines: [{
+        text: '/auth is available only on a subscription credential (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_CREDENTIALS_FILE or provider "openai-codex").',
+        style: 'system',
+      }],
+    };
+  }
+  const sub = (args[0] ?? 'status').toLowerCase();
+  if (sub === 'status') return { lines: credentialLines(monitor.snapshot()) };
+  const usage: CommandResult = { lines: [{ text: 'Usage: /auth [status|refresh|login|recheck|token <tok>]', style: 'system' }] };
+  let id: CredentialActionId;
+  let params: { token?: string } = {};
+  switch (sub) {
+    case 'refresh':
+    case 'login':
+    case 'recheck':
+      id = sub;
+      break;
+    case 'token': {
+      const token = args.slice(1).join(' ').trim();
+      if (!token) return usage;
+      id = 'set-token';
+      params = { token };
+      break;
+    }
+    default:
+      return usage;
+  }
+  return {
+    lines: [{ text: `/auth ${id}: running…`, style: 'system' }],
+    asyncWork: monitor.runAction(id, params).then((state) => ({
+      lines: [
+        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction?.message ?? 'no outcome recorded'}`, style: 'system' },
+        ...credentialLines(state),
+      ],
+    })),
+  };
 }
 
 function handleFast(app: AppContext, mode?: string): CommandResult {
@@ -1163,6 +1249,46 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
       : 'Generating transition summary...', style: 'system' }],
     asyncWork,
   };
+}
+
+// ---------------------------------------------------------------------------
+// /tools — effective tool classes (MCPL RFC-008 §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every tool with its effective class and the source that decided it, so a
+ * surprising class (or a tool left unclassed) is visible before a lifecycle
+ * observer grant depends on it. Without an agent: every tool the framework
+ * offers to anyone; with one: exactly that agent's surface.
+ */
+function handleTools(framework: AgentFramework, agentName?: string): CommandResult {
+  let rows: ReturnType<typeof readToolClasses>;
+  try {
+    rows = readToolClasses(framework, agentName);
+  } catch (err) {
+    return { lines: [{ text: err instanceof Error ? err.message : String(err), style: 'system' }] };
+  }
+  if (rows === null) {
+    return { lines: [{ text: 'This agent-framework build does not report tool classes.', style: 'system' }] };
+  }
+  const scope = agentName === undefined ? 'all agents' : agentName;
+  if (rows.length === 0) {
+    return { lines: [{ text: `No tools offered (${scope}).`, style: 'system' }] };
+  }
+  const [summary, ...table] = formatToolClassRows(rows);
+  const lines: Line[] = [
+    { text: `--- Tool classes: ${rows.length} tool${rows.length === 1 ? '' : 's'} (${scope}) ---`, style: 'system' },
+    { text: `  ${summary}`, style: 'system' },
+    ...table.map((text): Line => ({ text: `  ${text}`, style: 'system' })),
+  ];
+  if (rows.some((r) => r.source === 'none')) {
+    lines.push({
+      text: '  Unclassed tools get the most restrictive handling (observers never see their arguments); ' +
+        'class them with the recipe\'s toolClassOverrides.',
+      style: 'system',
+    });
+  }
+  return { lines };
 }
 
 // ---------------------------------------------------------------------------

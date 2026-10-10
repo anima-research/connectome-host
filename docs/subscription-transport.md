@@ -1,10 +1,14 @@
 # Subscription transport ownership
 
-`CodexSubscriptionAdapter` is a host lifecycle wrapper around Membrane's
-`OpenAIResponsesAPIAdapter` in subscription mode. `CodexAppServerAuth` retains
+`CodexSubscriptionAdapter` is a host subclass of Membrane's
+`OpenAIResponsesAPIAdapter`, constructed in subscription mode, that adds login
+lifecycle on top. `CodexAppServerAuth` retains
 Codex CLI startup, device login, credential-file reading, refresh-token rotation
-via app-server, and disposal. The wrapper passes a fresh token/account snapshot
-to Membrane and forwards Fast mode fallback warnings to the host console.
+via app-server, and disposal. The subclass hands Membrane a credential resolver
+that returns a fresh token/account snapshot, and forwards Fast mode fallback
+warnings to the host console. It also exposes `readRateLimits()` (app-server
+`account/rateLimits/read`, no inference), which feeds the host's quota meter —
+the WebUI's `/quota` windows.
 
 Recipes continue to select `openai-codex`; Fast controls and `CODEX_BASE_URL`
 retain their existing behavior. The host adapter retains the `openai-codex`
@@ -24,7 +28,7 @@ without forcing a token refresh.
 
 The shared transport ships in `@animalabs/membrane` 0.5.85
 ([Membrane #74](https://github.com/antra-tess/membrane/pull/74), released
-2026-09-14). This host depends on `^0.5.85`; agent-framework and
+2026-09-14). This host now depends on `^0.5.86`; agent-framework and
 context-manager resolve the same copy through their own caret ranges, so no
 override is needed and both lockfiles carry the registry package. During review
 the branch temporarily pinned the PR-branch commit as a git dependency; that
@@ -34,12 +38,131 @@ pin never reached a host release.
 Anthropic's rotating-credential seam for issue #69. This OpenAI host migration
 does not require it and does not change Anthropic credential acquisition.
 
+## Credential state, alerts and operator actions
+
+The host keeps ONE named state for its subscription credential
+(`src/credential-state.ts`) and moves every transition through the ops-alert
+pipeline (failures.log, `ops:alert` trace, `CONNECTOME_OPS_WEBHOOK`), so the
+TUI status bar, the WebUI alert strip and a fleet parent all learn about it on
+the wire they already watch. Kinds and what feeds them:
+
+| kind | fed by | lifts when |
+|---|---|---|
+| `quota-spent` | quota meter: a non-advisory window at 100% for this agent's model | the meter reads the window below 100% / past its reset |
+| `quota-unreadable` | quota meter: three consecutive failed reads and never a good one (inference-only tokens answer 429 on the usage path) | the first good read |
+| `auth-expiring` | credential file `expiresAt` within 30 min | a rotation, or supersession by a 401 |
+| `auth-expired` / `auth-rejected` | a 401 (membrane `type: 'auth'`) seen by the logging adapters; `expired` when the file's expiry has passed | the next successful call, or a passing probe after an action |
+| `auth-login-required` | the Codex app-server's device-code prompt (URL + code ride in the alert) | the login completes |
+
+Each alert's `data.actions` lists what the host can run for that state:
+`refresh` (rotate with a refresh token / the app-server), `login` (Codex
+device-code flow; `account/logout` first when supported), `set-token` (an
+operator paste, kept in memory and written to the credentials file when one
+was loaded), `recheck` (usage probe + meter read). The WebUI renders them as
+buttons on the alert row and in the Health tab's credential section (WS
+`credential-action`, broadcast answer `credential-state`; `request-credential`
+and `GET /credential` read the state; both scope to fleet children over the
+panel IPC). The TUI names the matching command in the alert line:
+`/auth [status|refresh|login|recheck|token <tok>]`.
+
+Nothing rotates on its own. Membrane retries a 401 once with `forceRefresh`;
+the Anthropic source answers that with the SAME token unless
+`ANTHROPIC_OAUTH_AUTO_REFRESH=1`, so an expired credential becomes an alert
+with a "Refresh token" button rather than a silent rotation. The Codex adapter
+keeps its existing automatic app-server refresh on that retry.
+
+### Anthropic credential sources
+
+- `ANTHROPIC_AUTH_TOKEN` — a bare bearer (typically `claude setup-token`):
+  no refresh token, no known expiry, not host-rotatable. The only action is
+  `set-token`.
+- `ANTHROPIC_OAUTH_CREDENTIALS_FILE` — a JSON file in Claude Code's shape
+  (`{ "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" } }`) or
+  the same three keys flat. With a refresh token the host rotates at
+  `https://platform.claude.com/v1/oauth/token` (JSON grant, Claude Code's
+  public client id) and writes the new pair back to the same file, mode 0600.
+  Point it at a COPY of `~/.claude/.credentials.json`, never at that file:
+  refresh tokens may be single-use, and two processes refreshing from one file
+  invalidate each other. The refresh exchange follows the CLI's own request
+  shape; it has not yet been exercised against the live endpoint from this
+  host — the first operator "Refresh token" click is that verification.
+
+### Channel-side notices
+
+A jammed host is silent on the channel side: a quota hold parks the request
+before inference starts, so not even the typing indicator appears. The
+`notices` module (`modules.notices`) closes that gap for every outage the
+framework can name, not only credential ones: it is a sink of the `ops:alert`
+stream, and decides where and how loudly each alert kind is told.
+
+```json
+"modules": {
+  "notices": {
+    "statusChannels": ["zulip:ops"],
+    "reply": { "in": ["zulip:*"], "not": ["zulip:general"] },
+    "kinds": { "hard-down": "reply", "auth-*": "reply", "refusal": "silent" },
+    "quietMs": 60000
+  }
+}
+```
+
+- `reply` kinds (by default: `hard-down`, `quota-spent`, `auth-expired`,
+  `auth-rejected`, `auth-login-required`, `provider-hold`) mean the agent
+  cannot answer. A person who writes to it in a channel matching `reply.in`
+  gets one canned host-attributed line per episode ("cannot respond right
+  now: its subscription quota is spent. Expected back after …"), the channel
+  whose message triggered the failing turn is told the same, and every
+  channel that was told gets one "can respond again" line when the outage
+  ends. `reply.in` / `reply.not` are channel-id patterns, so "notify on
+  Zulip, never on Discord" is one line. Public channels never see error text.
+- `status` kinds (`context-refusal`, `mcpl-down`, `quota-unreadable`,
+  `auth-expiring`, …) and all `reply` kinds also go to `statusChannels` with
+  the operator-grade message (kind + error text). Status channels follow the
+  kind-level timeline: one line once a kind has been active for `quietMs`
+  (so a flap that resolves in seconds says nothing), one line when a told
+  kind clears, naming what remains.
+- `silent` kinds (`refusal`, and anything unknown) only reach failures.log
+  and the webhook as before.
+
+Episodes close on the kind's `-clear` alert, or, for framework kinds with no
+clear (`hard-down`, refusals), on the agent's next completed inference; an
+`mcpl-down` episode closes when that server reconnects. Channel ids are opaque
+and resolved at post time: a notice whose chat server is itself down is parked
+on the episode and delivered if the server comes back while the outage is
+still on, else dropped. The publish path carries no topic, so on Zulip a
+notice lands in the stream's default topic. One chronicle marker per episode
+tells the agent, on recovery, that the host spoke in its channel.
+
+### Behind an inference gateway
+
+When the host reaches the provider through a gateway that holds the real
+login (anima-research/gate or similar), the gate is the only refresher, and
+the host's credential surface narrows to match:
+
+- **Anthropic with a gate token in `ANTHROPIC_API_KEY`** (the knowledge
+  resident's shape): no quota meter and no credential monitor are built at
+  all; `/auth` reports an API-key host. Outage notices still work — they ride
+  the framework's own alerts.
+- **Anthropic with `ANTHROPIC_AUTH_TOKEN` through a gate:** the meter and the
+  `recheck` probe read `/api/oauth/usage` on `ANTHROPIC_BASE_URL`. If the gate
+  does not proxy that path, the meter never reads and `quota-unreadable` is
+  raised once; a 401/403 from the gate on that path during a manual re-check
+  is classified as `auth-rejected`. Never point
+  `ANTHROPIC_OAUTH_CREDENTIALS_FILE` at a gate-pooled account's credentials:
+  a host-side refresh would race the gate's refresher and invalidate the
+  shared refresh token.
+- **Codex with `CODEX_GATE_TOKEN`:** the credential source is observe-only.
+  A 401 from the gate raises `auth-rejected` naming the gate
+  (`openai-codex via <CODEX_BASE_URL>`) with Re-check as the only action;
+  refresh and login are refused rather than pretending to fix a token the
+  host does not own. The alarm clears on the next accepted call.
+
 ## Remaining authentication integration
 
-- Anthropic host integration remains tracked alongside Membrane issue #69: the
-  host must supply a live credential source instead of its startup environment
-  string. That source must define storage, refresh serialization and login UI;
-  merely re-reading the environment does not rotate expired credentials.
+- The framework's provider hold is still stderr-only and its release is
+  private (agent-framework): a quota hold is announced here from the host's
+  meter reading, not from the hold itself, and a rotated credential waits for
+  the next hold slice (≤10 min) before the parked agent is retried.
 - Codex acquisition currently shares one app-server login across callers.
   Aborting inference stops waiting and prevents HTTP, but does not stop that
   shared login ceremony. Cancellation must be coordinated across all callers

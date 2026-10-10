@@ -11,23 +11,21 @@ Three agents, three recipes, three roles:
 | Agent | Recipe | Role |
 |-------|--------|------|
 | **Clerk** | `clerk.json` | Sits on a Zulip channel. Answers questions from the library. Files a ticket when the library falls short. |
-| **Miner** | `knowledge-miner.json` | Deep research across Zulip / Notion / GitLab. Produces draft reports with confidence markers. |
+| **Miner** | `knowledge-miner.json` | Deep research across Zulip / GitLab / the public web (Notion and Scribe if you add them). Produces draft reports with confidence markers. |
 | **Reviewer** | `knowledge-reviewer.json` | Critic pass over miner output. Produces SME checklists and review notes. |
+
+The Clerk's recipe uses the `frontdesk` context strategy, a chat-oriented variant of autobiographical memory: each channel message carries a provenance header (channel, topic, author, time), and compression follows Zulip topics and keeps unanswered questions and @mentions.
 
 The three are coupled by **file events**, not by IPC, HTTP, or a message queue. Each agent's output directory is another agent's watched input. A write on one end wakes an inference on the other.
 
 ```
-           ┌────────────────────────── Zulip #tracker-miner-f ──────────────────────────┐
+           ┌────────────────────────── Zulip #${ZULIP_CHANNEL} ─────────────────────────┐
            │                                                                            │
            ▼                                                                            │
        ┌────────┐                    ┌─────────┐                    ┌──────────┐        │
        │ CLERK  │ ── ticket ──▶      │  MINER  │ ── draft ──▶       │ REVIEWER │        │
        │        │  knowledge-        │         │   output/          │          │        │
        │        │  requests/         │         │                    │          │        │
-       │        │                    │         │                    │          │        │
-       │        │  ◀── resolution ── │         │                    │          │        │
-       │        │   knowledge-       │         │                    │          │        │
-       │        │   requests/        │         │                    │          │        │
        │        │                    │         │                    │          │        │
        │        │  ◀─────────────── review ────────────────────────  │          │        │
        │        │     review-output/                                 │          │        │
@@ -36,7 +34,7 @@ The three are coupled by **file events**, not by IPC, HTTP, or a message queue. 
            └────────────────────────── answer posted ──────────────────────────────────┘
 ```
 
-Clerk reads both `output/` (mined drafts) and `review-output/` (reviewed material) as its "library"; writes tickets to `knowledge-requests/`. Miner reads `knowledge-requests/`, writes drafts to `output/`. Reviewer reads `output/`, writes to `review-output/`. Every pair is a one-way wake loop: the producer materializes a file, the consumer's chokidar watcher fires, the consumer's event gate matches a wake policy, the consumer infers.
+Clerk reads both `output/` (mined drafts) and `review-output/` (reviewed material) as its "library"; writes tickets to `knowledge-requests/`. Miner reads `knowledge-requests/`, writes drafts to `output/`. Reviewer reads `output/`, writes to `review-output/`. All three also mount `library-approved/` read-only — human-sanctioned material they treat as ground truth; nothing in the pipeline writes to it. Every pair is a one-way wake loop: the producer materializes a file, the consumer's chokidar watcher fires, the consumer's event gate matches a wake policy, the consumer infers.
 
 ## Why run it this way
 
@@ -51,10 +49,10 @@ Start by reading [`../recipes/SETUP.md`](../recipes/SETUP.md) — it covers the 
 You need all of:
 
 - Bun, Node 20+, an Anthropic API key (from SETUP.md).
-- **Zulip**: a bot account with API credentials, subscribed to the channel you want the Clerk to staff (default: `tracker-miner-f`). `.zuliprc` in the project directory.
-- **Zulip MCP server** built and reachable at the path referenced in each recipe (see SETUP.md Step 2).
-- **Miner data sources** (optional but recommended): a Notion MCP server, GitLab, `gitlab-clone-mcp` for code search without Advanced Search.
-- Three free terminal windows (or tmux panes, or `screen` windows) — one per agent.
+- **Zulip**: a bot account with API credentials, subscribed to the channel you want the Clerk to staff. Name that channel in `.env` as `ZULIP_CHANNEL` (e.g. `tracker-miner-f`) — `clerk.json` won't load without it. `.zuliprc` in the project directory.
+- **Zulip MCP server** built and reachable at `../zulip_mcp/build/index.js`, the path both recipes reference (see SETUP.md Step 2).
+- **Miner data sources**: the shipped miner recipe wires GitLab (set `GITLAB_TOKEN` / `GITLAB_API_URL` in `.env`, or remove the `gitlab` block) and DuckDuckGo web search (a sibling checkout). Notion and Scribe are opt-in — see SETUP.md.
+- Three free terminal windows (or tmux panes, or `screen` windows) — one per agent. Or run all three under one conductor instead; see [the one-terminal alternative](#one-terminal-alternative-the-triumvirate) below.
 
 ## Directory layout
 
@@ -72,13 +70,14 @@ connectome-host/
 ├── knowledge-requests/             # shared mount: tickets
 ├── output/                         # shared mount: mined drafts
 ├── review-output/                  # shared mount: reviewed artifacts
+├── library-approved/               # shared read-only mount: human-approved material (you fill it)
 ├── input/                          # optional: seed material for miner
 ├── data-frontdesk/                 # Clerk's Chronicle, sessions, lessons
 ├── data-miner/                     # Miner's Chronicle, sessions, lessons
 └── data-reviewer/                  # Reviewer's Chronicle, sessions, lessons
 ```
 
-The three `data-*` directories are created on first run; you don't need to precreate them. The three shared-mount directories can be empty — the agents will populate them.
+The three `data-*` directories are created on first run; you don't need to precreate them. The shared-mount directories can be empty — the agents populate all of them except `library-approved/`.
 
 ## The wake loop, concretely
 
@@ -102,13 +101,15 @@ The consumer mount must be watched and must declare which op types trigger a wak
 
 ```json
 {
-  "name": "knowledge-requests",
-  "path": "./knowledge-requests",
+  "name": "library-mined",
+  "path": "./output",
   "mode": "read-only",
   "watch": "always",
   "wakeOnChange": ["created"]
 }
 ```
+
+(That's the Reviewer's view of the Miner's output.)
 
 `wakeOnChange` takes an array of `"created" | "modified" | "deleted"`, or `true` for all three. The WorkspaceModule emits `workspace:created` / `workspace:modified` / `workspace:deleted` events carrying mount-prefixed paths.
 
@@ -118,11 +119,11 @@ An event arriving at the agent still has to pass the EventGate to cause an infer
 
 ```json
 {
-  "name": "ticket-resolutions",
+  "name": "new-reports",
   "match": {
-    "scope": ["workspace:modified"],
-    "mount": "knowledge-requests",
-    "pathGlob": "knowledge-requests/*.md"
+    "scope": ["workspace:created"],
+    "mount": "library-mined",
+    "pathGlob": "library-mined/*.md"
   },
   "behavior": "always"
 }
@@ -130,17 +131,20 @@ An event arriving at the agent still has to pass the EventGate to cause an infer
 
 The `mount` field matches the mount name; `pathGlob` matches any of the event's paths. Both are optional but recommended — without them the policy fires on *every* file event for its scope.
 
-The gate file (`_config/gate.json` inside the data dir) is seeded from the recipe on first start and then reconciled additively on every subsequent start: new policies from the recipe are appended by name, but policies the user added or edited via `workspace--edit _config/gate.json` are preserved. Hot-reloads land in ~1 second.
+The gate file lives on disk at `<DATA_DIR>/sessions/<session-id>/config/gate.json` — one per session. It is seeded from the recipe's `modules.wake` when the session first starts, then reconciled additively on every later start: recipe policies missing from the file are appended by name, while policies already there — including ones you added or edited — are left as they are (so is `default`). The gate re-reads the file when its mtime changes, checked at most once a second.
+
+To change rules at runtime, prefer the framework's `wake_add_rule` / `wake_remove_rule` tools: they validate the rule, apply it immediately and persist it to that file. Recipes with `modules.workspace.configMount: true` (Miner and Clerk) also show the agent the directory as `_config/`, but that mount does not auto-materialize — a `workspace--edit _config/gate.json` stays in Chronicle and doesn't reach the file the gate reads until the mount is materialized.
 
 ### 4. Who wakes whom
 
 | Trigger                                            | Fires in           | Policy name             |
 |----------------------------------------------------|--------------------|-------------------------|
-| Someone posts in Zulip `#tracker-miner-f`          | Clerk              | `tracker-channel`       |
+| Someone posts in Zulip `#${ZULIP_CHANNEL}`         | Clerk              | `tracker-channel`       |
 | Clerk creates `knowledge-requests/*.md`            | Miner              | `new-tickets`           |
-| Miner modifies `knowledge-requests/*.md` (resolves)| Clerk              | `ticket-resolutions`    |
 | Miner creates `output/*.md` (draft report)         | Reviewer           | `new-reports`           |
 | Reviewer creates `review-output/*.md`              | Clerk              | `reviewed-responses`    |
+
+The Clerk also carries a `ticket-resolutions` policy (wake on `workspace:modified` in `knowledge-requests/`), but nothing in the current flow modifies tickets — the Miner is told not to, and the Clerk's own edits don't wake it — so it fires only if a person or future tooling edits a ticket on disk.
 
 Each agent's own wake policies are in its recipe — compare if you need to debug silent failures.
 
@@ -162,36 +166,42 @@ cd connectome-host
 DATA_DIR=./data-reviewer bun src/index.ts recipes/knowledge-reviewer.json
 ```
 
-Order doesn't matter. The gate initial-scan will catch any files that were written while an agent was offline: on startup each `watch: 'always'` mount does a one-shot `syncFromFs` diff against its Chronicle tree, firing `workspace:created` for files that are on disk but new to this session. So if the Miner was offline when the Clerk filed three tickets, the Miner will wake on those three tickets the moment it starts.
+Order doesn't matter. The workspace's initial scan will catch any files that were written while an agent was offline: on startup each `watch: 'always'` mount does a one-shot `syncFromFs` diff against its Chronicle tree, firing `workspace:created` for files that are on disk but new to this session. So if the Miner was offline when the Clerk filed three tickets, the Miner will wake on those three tickets the moment it starts.
 
-If the Clerk is the only one you expect to interact with, keep the Miner and Reviewer in headless mode — their TUI is still useful for watching progress, but they don't need stdin. You can also pass `--no-tui` if you want to tail logs without OpenTUI taking over the terminal.
+Nobody needs to type at the Miner or Reviewer, so you can run them with `--headless`: no TUI at all — the agent serves JSONL over `$DATA_DIR/ipc.sock` and logs to `$DATA_DIR/headless.log`. If you'd rather keep a prompt without OpenTUI taking over the terminal, `--no-tui` gives a plain readline interface instead.
+
+### One-terminal alternative: the Triumvirate
+
+`recipes/triumvirate.json` runs these same three recipes as fleet children under one conductor, from a single terminal: each child is its own process with its own data dir (`./data/miner`, `./data/reviewer`, `./data/clerk`), all launched from the conductor's working directory, so the mounts, wake policies and ticket contract on this page apply unchanged. Setup and day-to-day operation are in [`../recipes/TRIUMVIRATE-SETUP.md`](../recipes/TRIUMVIRATE-SETUP.md).
 
 ## The ticket contract
 
 Agents coordinate through a schema, not a protocol. The ticket format is defined in `clerk.json`'s system prompt; the Miner and Reviewer prompts read from it but do not re-define it. Keep them in sync.
 
-Filename: `YYYY-MM-DD-short-slug.md`, one ticket per file.
+Filename: `YYYY-MM-DD-short-slug.md`, one ticket per file. The filename without `.md` is the ticket's `request_id`.
 
 Frontmatter:
 
 ```yaml
 ---
+request_id: 2026-04-20-retention-policy-for-packet-logs
 filed: 2026-04-20T17:01:45Z
 asker: Anton Kukushkin
 asker_id: 12345
 channel: tracker-miner-f
 topic: general chat
+origin: zulip#tracker-miner-f#general chat
 message_link: <zulip message link or numeric ID>
-status: open        # open | in-progress | resolved
+status: open        # the Clerk only ever writes open
 urgency: normal     # low | normal | high
 ---
 ```
 
 Body sections (required, in order): `## Question`, `## Search Trail`, `## Specific Unknowns`, `## Notes`.
 
-**Ownership:** the Clerk writes tickets at `status: open` and never modifies them again. The Miner flips status to `in-progress` while working, then to `resolved` with a `resolution:` block appended. Only the Miner modifies tickets; that's what makes `workspace:modified` a reliable "resolution-ready" signal for the Clerk.
+**Ownership:** the Clerk files tickets at `status: open` and doesn't change their status afterwards (it may append to `## Notes` when the same question comes up again). The Miner reads tickets but is told not to edit them — neither the frontmatter nor the file. Instead it writes one report per ticket, `products/<request_id>.md` in its view (`output/<request_id>.md` on disk), whose frontmatter copies the ticket's provenance (`request_id`, `asker`, `channel`, `topic`, `origin`, …). The Reviewer copies the same fields into its `review-<doc>.md`. Nothing in the current recipes closes tickets.
 
-**Resolutions reach the asker via Zulip.** The Clerk, on waking from a ticket modification, reads the resolved ticket, reads any newly-created `review-output/` file that covers the topic, and posts back to the channel — citing `library-mined:` / `library-reviewed:` paths inline. The asker gets notified by Zulip's normal mention/reply mechanics.
+**Answers reach the asker via Zulip.** The path is Miner → Reviewer → Clerk: when a new file appears in `review-output/` the Clerk wakes (`reviewed-responses`), reads its frontmatter, and — if it carries a `request_id` and actually answers the question — posts on the original topic, @-mentioning the asker and citing the `library-reviewed:` path. Reviewed files without a `request_id` don't trigger a ping.
 
 ## Confidence markers — end-to-end
 
@@ -199,7 +209,8 @@ Every non-trivial claim in mined or reviewed material carries a marker:
 
 | Marker | Meaning |
 |--------|---------|
-| `[SRC: source]` | Directly sourced. Quote verbatim when citing. |
+| `[SRC: source]` | Directly sourced from an internal system. Quote verbatim when citing. |
+| `[WEB: url]` | Sourced from a public web page via the Miner's DuckDuckGo tools; the URL is the citation. Never overrides an internal `[SRC]` for an org-specific term. |
 | `[INF]` | Inferred across sources. |
 | `[GEN]` | General domain knowledge — no specific source. |
 | `❓` | Knowledge gap — admission of "we don't know." |
@@ -210,10 +221,11 @@ Markers are written by the Miner, audited by the Reviewer (who looks especially 
 
 ### Adding a channel the Clerk listens to
 
-Two layers, both required:
+Three things must line up — the Zulip subscription, the channel being open in the host, and a wake policy:
 
-1. `zulip--listen { channels: ["new-stream"] }` — subscribes the bot to the Zulip stream (server-side state, persists across restarts).
-2. Append a gate policy to `_config/gate.json` via `workspace--edit`:
+1. `mcpl--zulip--listen { channels: ["new-stream"] }` — subscribes the bot to the Zulip stream (server-side state, persists across restarts).
+2. Make sure the channel is open on the host side. The Clerk's `channelSubscription` allow-list only covers `zulip:${ZULIP_CHANNEL}`, so other channels start closed unless the server marks them open. `channel_list` shows each channel's state; `channel_open { channelId: "zulip:new-stream" }` opens it (the id form may differ — use the one `channel_list` shows).
+3. Add a wake policy with `wake_add_rule`:
 
    ```json
    {
@@ -223,30 +235,34 @@ Two layers, both required:
    }
    ```
 
-Subscription without a policy means events arrive but don't wake. Policy without subscription means nothing arrives at all. The EventGate hot-reloads the file in ~1s — no restart.
+An open channel without a policy means messages arrive in context but don't wake the Clerk; a policy without an open, subscribed channel means nothing arrives at all. `wake_add_rule` applies immediately — no restart.
+
+The Clerk's own prompt covers steps 1 and 3 (`mcpl--zulip--listen`, then `wake_add_rule`) but not step 2, so if you ask the Clerk to add a channel, check `channel_list` as well as `gate_status` afterwards. A rule added this way persists in the session's `gate.json` across restarts. A recipe rule (such as `tracker-channel`) removed this way comes back at the next startup, because reconciliation re-appends recipe policies missing from the file.
 
 ### Removing a channel
 
-Reverse order: remove the gate policy first (so the context doesn't fill with messages you'll never react to), then `zulip--unlisten`.
+Reverse order: remove the wake policy first (`wake_remove_rule { name: "new-stream" }`), then `channel_close` the channel so its messages stop reaching context, then `mcpl--zulip--unlisten` if the bot should leave the stream.
 
-**Do not** unsubscribe the Clerk from `tracker-miner-f` or remove the `tracker-channel` policy without explicit confirmation — it silences the only channel the Clerk is supposed to staff.
+**Do not** unsubscribe the Clerk from `#${ZULIP_CHANNEL}` or remove the `tracker-channel` policy without explicit confirmation — it silences the only channel the Clerk is supposed to staff.
 
 ### Channel subscription blast radius
 
-The Zulip MCPL server registers every visible public stream it can see. In a large org that can be 100+ streams, and `ChannelRegistry` will open all of them by default. Quiet channels still accumulate messages in context. Symptoms: the Miner's next wake includes a 100K+ token burst of unrelated chat.
+The Zulip MCPL server can register every public stream the bot can see — in a large org, 100+ streams. Every channel that is *open* feeds its messages into the agent's context, whether or not any policy wakes on them. Symptoms: an agent's next wake includes a 100K+ token burst of unrelated chat.
 
-Fix: set `channelSubscription` on the zulip server in recipes that aren't meant to listen passively:
+What opens channels initially is `channelSubscription` on the server entry:
 
 ```json
 "zulip": {
   "command": "node",
-  "args": ["../zulip-mcp/build/index.js"],
+  "args": ["../zulip_mcp/build/index.js"],
   "env": { "...": "..." },
   "channelSubscription": "manual"
 }
 ```
 
-Values: `"auto"` (default, everything opens), `"manual"` (nothing opens; agent opens channels explicitly), or `string[]` (allow-list). Clerk is intentionally `"auto"` (passive listening). Miner and Reviewer, if they connect to Zulip at all, should be `"manual"` or allow-listed.
+Values: `"auto"` (everything opens), `"manual"` (nothing opens unless the server marks it open; the agent opens channels explicitly), or `string[]` (allow-list of channel ids). If the field is omitted, the framework now defaults to `"manual"`. The Clerk uses an allow-list, `["zulip:${ZULIP_CHANNEL}"]`, so only its own channel opens; the Miner is `"manual"`; the Reviewer has no Zulip server.
+
+In agent-framework 0.21 the field is only a seed. Each channel's open/closed state is persisted in the session's Chronicle store, and after that the agent's `channel_open` / `channel_close` calls decide it — they outrank the recipe. Narrowing `channelSubscription` later won't close a channel an existing session already has open; close it with `channel_close`, or start a fresh session.
 
 ### Lessons don't cross agents
 
@@ -257,10 +273,10 @@ Each data dir has its own `lessons.json`. The Miner's extracted lessons are not 
 | Symptom | Likely cause | Check |
 |---|---|---|
 | Clerk files tickets but Miner never wakes | Producer missing `autoMaterialize`, or consumer missing `watch: 'always'` + `wakeOnChange` | `ls knowledge-requests/` — files on disk? If yes, check Miner's recipe for those two flags. |
-| Miner wakes but never runs | Event reaching the gate but no policy matching it | In the Miner, run `gate:status`. If `defaultDecisions.byEventType["workspace:created"].skipped > 0` and no policy's `matchCount` went up, the policy's `mount` or `pathGlob` doesn't match. |
+| Miner wakes but never runs | Event reaching the gate but no policy matching it | In the Miner, run `gate_status`. If `defaultDecisions.byEventType["workspace:created"].skipped > 0` and no policy's `matchCount` went up, the policy's `mount` or `pathGlob` doesn't match. |
 | Fresh session sees empty directories | Gate initial-scan didn't run, or the mount isn't `watch: 'always'` | Check `workspace--status` — `initialSyncDone: false` means watchers haven't started. |
-| Clerk was silent through a known question | Zulip subscription or `tracker-channel` policy was removed | `zulip--listen` with no args shows subscribed streams; `workspace--read _config/gate.json` shows active policies. |
-| Miner's context is flooded with Zulip chat it doesn't care about | `channelSubscription` defaulted to `"auto"` on a large Zulip | Set `"manual"` or an allow-list on the zulip server in `knowledge-miner.json`. |
+| Clerk was silent through a known question | Zulip subscription, the channel's open state, or the `tracker-channel` policy was removed | `mcpl--zulip--listen` with no args shows subscribed streams; `channel_list` shows whether `zulip:${ZULIP_CHANNEL}` is still open; `gate_status` shows the active policies. |
+| An agent's context is flooded with Zulip chat it doesn't care about | Channels were opened earlier (by the agent, or seeded by an `"auto"` policy) and stay open | `channel_list` to see them, `channel_close` to close them. Changing `channelSubscription` in the recipe won't close channels in an existing session. |
 | Three-agent pipeline works on one machine, breaks on another | Agents launched from different working directories | All three must share `cwd`. `./knowledge-requests` resolves to three different paths otherwise. |
 | Tickets pile up, Miner is "busy" but never writes reports | Miner is context-saturated, or wedged on a long fork | `/status` in the Miner's TUI; `Tab` for fleet view to see if forks are actually progressing. |
 | Clerk posts answers but cites `[GEN]` claims as facts | Prompt drift; retrain or re-read the clerk prompt | The clerk prompt explicitly forbids this — if it happens, regenerate the session with `/session new` and re-verify. |
@@ -271,7 +287,7 @@ Three specific things to check, in order:
 
 1. **Is the file on disk?** `ls` the producer's output directory. If the producer's mount lacks `autoMaterialize`, the file exists only in Chronicle and no event will ever fire.
 2. **Is the watcher running?** In the consumer, `workspace--status` should show `initialSyncDone: true` for the watched mount. If it's `false`, watcher setup didn't complete.
-3. **Is the gate dropping the event?** In the consumer, `gate:status` returns per-policy `matchCount` and an aggregate `defaultDecisions.byEventType`. If `workspace:created`'s `skipped` count is non-zero but the target policy's `matchCount` didn't change, the policy is there but the match fields don't cover the actual event.
+3. **Is the gate dropping the event?** In the consumer, `gate_status` returns per-policy `matchCount` and an aggregate `defaultDecisions.byEventType`. If `workspace:created`'s `skipped` count is non-zero but the target policy's `matchCount` didn't change, the policy is there but the match fields don't cover the actual event.
 
 A non-zero `skipped` without a matching policy is the fingerprint of a mount-name or pathGlob mismatch — the event arrived, the gate looked at it, no policy claimed it.
 
@@ -279,7 +295,7 @@ A non-zero `skipped` without a matching policy is the fingerprint of a mount-nam
 
 The schema-through-files pattern generalizes. A few natural extensions:
 
-- **Miner-manager** — polls `knowledge-requests/` for `status: open`, spawns a bounded number of miner sessions, marks tickets `in-progress`, and writes resolutions. Currently the Miner fills this role itself; splitting it out makes dispatch policy (priority, concurrency, deduplication) explicit.
+- **Miner-manager** — polls `knowledge-requests/` for `status: open`, spawns a bounded number of miner sessions, marks tickets `in-progress`, and writes resolutions. Currently nothing does this: the one Miner wakes on every new ticket and leaves ticket status alone. A manager would make dispatch policy (priority, concurrency, deduplication) explicit and give tickets a real lifecycle.
 - **Specialist miners** — one miner per source (Zulip-only, GitLab-only, Notion-only) with distinct recipes. The manager routes tickets by `topic` or by heuristics in the request body. Each specialist's lesson store accumulates source-specific expertise.
 - **Synthesis reviewer** — a second reviewer that specifically checks cross-document consistency (the current reviewer is intra-document). Would watch `review-output/` and write to `review-output/meta/`.
 

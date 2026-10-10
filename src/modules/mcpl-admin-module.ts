@@ -41,7 +41,12 @@ import {
   readAgentOverlay,
   saveAgentOverlay,
   resolveOverlayEntry,
+  serverProvisions,
+  lostByReplacement,
+  overlayEntryReplaces,
+  hostVariableReferences,
   type AgentOverlayEntry,
+  type ServerProvisions,
 } from '../mcpl-config.js';
 
 export interface McplAdminModuleConfig {
@@ -97,6 +102,59 @@ export class McplAdminModule implements Module {
     this.identity = identity;
   }
 
+  /** The operator's server definitions (recipe and mcpl-servers.json, before
+   *  the agent overlay), by what an overlay entry replacing one can lose:
+   *  names only, never a credential. index.ts wires it; without it, no
+   *  receipt can say what a replacement lacks. */
+  private operatorServers = new Map<string, ServerProvisions>();
+  setOperatorServers(servers: ReadonlyArray<{ id: string } & Record<string, unknown>>): void {
+    this.operatorServers = new Map(servers.map((server) => [server.id, serverProvisions(server)]));
+  }
+
+  /**
+   * How `id`'s overlay entry stands against the operator's definition it
+   * replaces: null when it replaces none, else what it lacks of it (null
+   * when nothing). An overlay entry replaces the definition whole, and it
+   * can't name host variables, so what it lacks the server runs without.
+   */
+  private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
+    const entry = overlay[id];
+    const operator = this.operatorServers.get(id);
+    if (!operator || !overlayEntryReplaces(entry)) return null;
+    return { lost: lostByReplacement(operator, entry) };
+  }
+
+  /**
+   * A receipt's sentences about `id`'s overlay entry, or nothing: that it
+   * replaces the operator's definition (always on deploy, which makes the
+   * replacement; on restart only when it lacks something), what it lacks
+   * with the way back, and which of its parts name a host variable, which
+   * only a recipe substitutes.
+   */
+  private overlayNote(id: string, overlay: Record<string, AgentOverlayEntry>, onDeploy: boolean): string {
+    const entry = overlay[id];
+    if (!overlayEntryReplaces(entry)) return '';
+    const replacement = this.replacement(id, overlay);
+    const refs = hostVariableReferences(entry);
+    const literal = refs.length === 0 ? '' :
+      `Your entry names a host variable in ${refs.join(', ')}, and only a recipe substitutes those, ` +
+      'so the server gets that text as written.';
+    const sentences: string[] = [];
+    if (replacement?.lost) {
+      sentences.push(
+        `Your overlay entry replaces the operator's definition of "${id}" and lacks its ${replacement.lost}, ` +
+        'so the server runs without the operator\'s values for them.',
+        literal || 'An overlay entry can\'t name host variables.',
+        `To go back to the operator's definition, mcpl_unload "${id}": that removes your entry, and the ` +
+        'operator\'s loads again at the next host start.',
+      );
+    } else {
+      if (replacement && onDeploy) sentences.push(`Your overlay entry replaces the operator's definition of "${id}".`);
+      if (literal) sentences.push(literal);
+    }
+    return sentences.length > 0 ? ` ${sentences.join(' ')}` : '';
+  }
+
   async start(_ctx: ModuleContext): Promise<void> {}
 
   async stop(): Promise<void> {
@@ -120,8 +178,8 @@ export class McplAdminModule implements Module {
         description:
           'List all MCPL servers: connection/retry state, whether policy was established, ' +
           'the effective grant, masked/denied capability paths, host-command authority, ' +
-          'validated manifest revision/fetch/negotiation freshness, tool count, target, ' +
-          'and config source.',
+          'validated manifest revision/fetch/negotiation freshness, tool count, each tool\'s ' +
+          'effective class and where it came from, target, and config source.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
@@ -134,8 +192,10 @@ export class McplAdminModule implements Module {
           '(WebSocket). Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
-          '"unspecified", never deny-all (deny-all is disabledTools/' +
-          'disabledFeatureSets: ["*"]). Self-deployed servers get channels + tools ' +
+          '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
+          'in feature-set patterns `*` matches exactly one dot-separated segment, so ' +
+          'deny every set with disabledFeatureSets: ["*", "*.*", "*.*.*"] (names up ' +
+          'to three segments). Self-deployed servers get channels + tools ' +
           'only — consequential capabilities (context hooks around your inference, ' +
           'server-initiated inference, inference lifecycle) are host-masked; a server ' +
           'that genuinely needs one is an operator conversation, not a deploy flag.',
@@ -252,6 +312,7 @@ export class McplAdminModule implements Module {
           lastFetchedAt: number | null;
           lastNegotiatedAt: number | null;
         };
+        toolClasses?: ServerToolClass[];
       }
     >;
     const overlay = readAgentOverlay(this.overlayPath);
@@ -259,8 +320,14 @@ export class McplAdminModule implements Module {
 
     const lines: string[] = [];
     for (const s of live) {
-      const source = overlay[s.id] && !overlay[s.id]!.disabled
-        ? 'agent-overlay'
+      // The overlay is the source only for an entry that put a server in
+      // place, the same test the boot's applyAgentOverlay makes.
+      const replacement = this.replacement(s.id, overlay);
+      const overlaySource = replacement
+        ? `agent-overlay (replaces the operator's definition${replacement.lost ? `; lacks its ${replacement.lost}` : ''})`
+        : 'agent-overlay';
+      const source = overlayEntryReplaces(overlay[s.id])
+        ? overlaySource
         : s.id in fileServers ? 'file/recipe' : 'recipe';
       const target = s.command ?? s.url ?? '?';
       const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
@@ -277,6 +344,7 @@ export class McplAdminModule implements Module {
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +
         `hostCommands=${hostCommands}, ` +
         `manifest=${formatManifestState(s.manifestState)}; ${s.toolCount} tools, ` +
+        `classes=${formatServerToolClasses(s.toolClasses)}, ` +
         `prefix=${s.toolPrefix}, source=${source}, ${target}`,
       );
     }
@@ -330,11 +398,12 @@ export class McplAdminModule implements Module {
     if (typeof input.reconnect === 'boolean') entry.reconnect = input.reconnect;
     // Empty arrays are NOT persisted: OpenAI-style strict function calling
     // forces every schema property, so callers emit `[]` meaning
-    // "unspecified" — and a persisted empty ALLOWLIST is deny-all under the
-    // §5.3 pin (Mica's silently eventless eidoverse, 2026-08-04).
+    // "unspecified" — and a persisted empty enabledFeatureSets is deny-all
+    // under the §5.3 pin (Mica's silently eventless eidoverse, 2026-08-04).
     // resolveOverlayEntry drops them at read time too; this keeps the file
-    // itself from carrying the trap. Deny-all is spelled ["*"] on the
-    // deny-lists.
+    // itself from carrying the trap. Deny-all is disabledTools: ["*"] for
+    // tools; for feature sets `*` matches one dot-separated segment, so it
+    // takes a pattern per depth (see resolveOverlayEntry).
     if (Array.isArray(input.enabledFeatureSets) && input.enabledFeatureSets.length) entry.enabledFeatureSets = input.enabledFeatureSets.map(String);
     if (Array.isArray(input.disabledFeatureSets) && input.disabledFeatureSets.length) entry.disabledFeatureSets = input.disabledFeatureSets.map(String);
     if (Array.isArray(input.enabledTools) && input.enabledTools.length) entry.enabledTools = input.enabledTools.map(String);
@@ -357,6 +426,7 @@ export class McplAdminModule implements Module {
     }
 
     const alreadyLoaded = framework.listMcplServers().some(s => s.id === id);
+    const note = this.overlayNote(id, overlay, true);
     try {
       if (alreadyLoaded) {
         await framework.restartMcplServer(id, config);
@@ -367,15 +437,23 @@ export class McplAdminModule implements Module {
       const err = error instanceof Error ? error : new Error(String(error));
       return fail(
         `Server "${id}" was saved to your overlay but failed to connect: ${err.message}. ` +
-        'Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.',
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
       );
     }
 
+    // A server with reconnect whose first dial failed comes back as a stub
+    // that keeps retrying, without throwing: report what the status says.
     const status = framework.listMcplServers().find(s => s.id === id);
+    if (!status?.connected) {
+      return fail(
+        `Server "${id}" was saved to your overlay but isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}. ` +
+        `Fix the server (check command/path/build) and run mcpl_restart, or mcpl_unload to remove it.${note}`,
+      );
+    }
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
-      `${status?.toolCount ?? 0} tools under prefix ${status?.toolPrefix ?? `mcpl--${id}`}. ` +
-      'Persisted to your agent overlay (survives host restarts).',
+      `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
+      `Persisted to your agent overlay (survives host restarts).${note}`,
     );
   }
 
@@ -386,10 +464,11 @@ export class McplAdminModule implements Module {
 
     await framework.restartMcplServer(id);
     const status = framework.listMcplServers().find(s => s.id === id);
-    return ok(
-      `Restarted server "${id}" — ${status?.connected ? 'connected' : 'NOT connected'}, ` +
-      `${status?.toolCount ?? 0} tools.`,
-    );
+    const note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
+    if (!status?.connected) {
+      return fail(`Restarted server "${id}", but it isn't connected${status?.retrying ? ' (it keeps retrying)' : ''}.${note}`);
+    }
+    return ok(`Restarted server "${id}" — connected, ${status.toolCount} tools.${note}`);
   }
 
   private async handleUnload(input: Record<string, unknown>): Promise<ToolResult> {
@@ -409,9 +488,13 @@ export class McplAdminModule implements Module {
     let persistNote = 'Session-only: it will load again on the next host restart.';
     if (persist) {
       if (overlay[id] && !overlay[id]!.disabled) {
-        // Agent-deployed server: forget it entirely.
+        // Agent-deployed server: forget it entirely. If it replaced the
+        // operator's definition, that definition is what the next start loads.
+        const replaced = this.replacement(id, overlay) !== null;
         delete overlay[id];
-        persistNote = 'Removed from your agent overlay.';
+        persistNote = replaced
+          ? `Removed from your agent overlay; the operator's definition of "${id}" loads again at the next host start.`
+          : 'Removed from your agent overlay.';
       } else {
         // Recipe/file server: tombstone it so it stays unloaded across restarts.
         overlay[id] = { disabled: true };
@@ -422,6 +505,35 @@ export class McplAdminModule implements Module {
 
     return ok(`Unloaded server "${id}" — its tools are gone from your toolset. ${persistNote}`);
   }
+}
+
+/** One of a server's tools with its effective class (RFC-008 §6), as
+ *  listMcplServers() reports it on frameworks with tool classes. */
+interface ServerToolClass {
+  tool: string;
+  serverTool: string;
+  class: string[];
+  source: 'override' | 'host' | 'server' | 'none';
+}
+
+/**
+ * A server's tools grouped by effective class and source, e.g.
+ * `{comms/server: say,send; media/override: render; unclassed: probe}`.
+ * Sources: `server` = the server's own `_meta["mcpl/class"]`, `override` =
+ * the operator's recipe override; unclassed tools never expose their
+ * arguments to lifecycle observers. `unknown` on an older framework.
+ */
+function formatServerToolClasses(rows: ServerToolClass[] | undefined): string {
+  if (rows === undefined) return 'unknown';
+  const groups = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = r.class.length === 0 ? 'unclassed' : `${r.class.join('+')}/${r.source}`;
+    const names = groups.get(key) ?? [];
+    names.push(r.serverTool || r.tool);
+    groups.set(key, names);
+  }
+  const parts = [...groups.entries()].map(([key, names]) => `${key}: ${names.join(',')}`);
+  return `{${parts.join('; ')}}`;
 }
 
 function formatCapabilityList(paths: string[] | undefined): string {

@@ -4,7 +4,7 @@
  * Each child is spawned as a detached subprocess running `bun src/index.ts
  * <recipe> --headless`, with its own DATA_DIR and Chronicle store.  The
  * parent connects to the child's Unix socket at {dataDir}/ipc.sock and
- * exchanges JSONL envelopes (see `fleet-types.ts`, `HEADLESS-FLEET-PLAN.md`).
+ * exchanges JSONL envelopes (see `fleet-types.ts`, `docs/fleet-protocol.md`).
  *
  * Tools: launch / list / status / send / command / peek / kill / restart / relay / await.
  *
@@ -154,8 +154,8 @@ type ChildStatus = 'starting' | 'ready' | 'exited' | 'crashed';
 
 /**
  * Subset of FleetChild that is serializable to Chronicle.  Live handles
- * (process, socket) and ephemeral state (event buffer, line buffer) are
- * excluded.  Stored under the module's state namespace and re-hydrated
+ * (process, socket), ephemeral state (event buffer, line buffer), and resolved
+ * environment overrides (which may contain secrets) are excluded.  Stored under the module's state namespace and re-hydrated
  * on module start() for adopt-on-restart.
  */
 interface PersistedChild {
@@ -172,7 +172,6 @@ interface PersistedChild {
   exitReason: string | null;
   subscription: string[];
   autoRestart: boolean;
-  env: Record<string, string> | null;
 }
 
 interface PersistedFleetState {
@@ -206,7 +205,7 @@ interface FleetChild {
   killRequested: boolean;
   /** Timestamps of recent autoRestart attempts, for flap protection. */
   restartAttempts: number[];
-  /** Env and optional envOverride persisted so autoRestart can respawn with the same config. */
+  /** Runtime-only env overrides for restart. Recovered from current config on adoption. */
   env?: Record<string, string>;
   /**
    * Most recent speech from a non-tool-ending inference round, as reported
@@ -369,7 +368,6 @@ export class FleetModule implements Module {
         exitReason: c.exitReason,
         subscription: [...c.subscription],
         autoRestart: c.autoRestart,
-        env: c.env ?? null,
       };
     }
     this.ctx.setState<PersistedFleetState>({ children: persisted });
@@ -460,7 +458,29 @@ export class FleetModule implements Module {
       restartAttempts: [],
       lastCompletedSpeech: '',  // not persisted; rebuilt on next inference:speech
     };
-    if (p.env) child.env = p.env;
+    // Resolved env values may contain secrets. Chronicle stores historical
+    // snapshots, so env is runtime-only and legacy persisted env is ignored.
+    // Re-read the current configuration for the same child, including entries
+    // with autoStart:false. Name alone must not transfer secrets to a different
+    // recipe or data directory that happens to reuse the name.
+    const recipeIdentity = (recipe: string): string =>
+      /^https?:\/\//.test(recipe) ? recipe : resolve(recipe);
+    const configured = this.autoStartChildren.find((c) =>
+      c.name === p.name &&
+      recipeIdentity(c.recipe) === recipeIdentity(p.recipePath) &&
+      resolve(c.dataDir ?? join('data', c.name)) === resolve(p.dataDir),
+    );
+    if (configured?.env !== undefined) child.env = { ...configured.env };
+    if (!configured) {
+      const sameName = this.autoStartChildren.find((c) => c.name === p.name);
+      if (sameName) {
+        const mismatches = [
+          recipeIdentity(sameName.recipe) !== recipeIdentity(p.recipePath) ? 'recipe' : null,
+          resolve(sameName.dataDir ?? join('data', sameName.name)) !== resolve(p.dataDir) ? 'dataDir' : null,
+        ].filter(Boolean);
+        console.error(`[fleet] child ${JSON.stringify(p.name)}: configured identity mismatch (${mismatches.join(', ')}); environment overrides withheld for restarts. Check child configuration and host working directory.`);
+      }
+    }
     return child;
   }
 
@@ -1002,7 +1022,7 @@ export class FleetModule implements Module {
     // No-subfleets invariant: a fleet child may not itself declare a fleet
     // module. Enforced before subprocess spawn so the failure mode is a clean
     // synchronous tool error rather than a child crashing mid-startup. See
-    // UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
+    // docs/history/UNIFIED-TREE-PLAN.md §6 for the design rationale (depth-1 keeps the
     // unified tree's cross-process visibility tractable).
     //
     // We only fail on a *confirmed* nested-fleet declaration. If the recipe
@@ -1022,7 +1042,7 @@ export class FleetModule implements Module {
           error:
             `fleet child recipe '${input.name}' (${recipePath}) declares its own 'fleet' module; ` +
             `nested fleets are not supported. Remove the 'fleet' entry from that recipe's modules ` +
-            `to launch it as a child. (See UNIFIED-TREE-PLAN.md §6.)`,
+            `to launch it as a child. (See docs/fleet-protocol.md §4.3.)`,
         };
       }
     } catch {
@@ -1040,10 +1060,10 @@ export class FleetModule implements Module {
     }
     if (existing && existing.dataDir === dataDir && existing.socketPath === socketPath &&
         existing.recipePath === recipePath) {
-      if (this.canRetryAdoption(existing) && !existing.process && !existing.socket && await this.probeLiveness({ ...existing, env: existing.env ?? null })) {
+      if (this.canRetryAdoption(existing) && !existing.process && !existing.socket && await this.probeLiveness(existing)) {
         try {
           const adopted = await this.reattachToLivingChild({
-            ...existing, subscription: [...subscription], env: existing.env ?? null,
+            ...existing, subscription: [...subscription],
           });
           if (this.children.get(input.name) !== existing) {
             adopted.socket?.destroy();
@@ -1678,7 +1698,7 @@ export class FleetModule implements Module {
    * Request a state snapshot from a fleet child. The child responds with a
    * single `snapshot` event over its event stream (received via onChildEvent).
    * Used as a recovery verb at sync points — TUI cold start, child reconnect,
-   * after restart. See UNIFIED-TREE-PLAN.md §3.
+   * after restart. See docs/history/UNIFIED-TREE-PLAN.md §3.
    *
    * Returns true if the request was sent, false if the child has no socket
    * (e.g. exited or not yet ready).

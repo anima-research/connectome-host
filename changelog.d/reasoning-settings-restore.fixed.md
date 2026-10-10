@@ -1,0 +1,1 @@
+- A saved reasoning setting the API would reject (for example `effort: "minimal"` or an unknown `display`) no longer fails every turn: invalid values fall back to their defaults when settings are restored, with a log line, and the adapter never sends an effort level outside the known set.
