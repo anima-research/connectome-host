@@ -3077,7 +3077,13 @@ export class WebUiModule implements Module {
     // pending connections get their welcome from handleObserverHello.
     if (client.auth === 'pending') return;
 
-    const welcome = await this.buildWelcome();
+    // The one await comes first. From building the welcome to marking the
+    // client welcomed nothing yields, so no event falls between what the
+    // welcome copies and the client's stream (a client skips live events
+    // until it's welcomed).
+    const childRecipes = await this.loadWelcomeRecipes();
+    if (!sharedServer?.app) return;
+    const welcome = this.buildWelcome(childRecipes);
     this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
     client.welcomed = true;
     // Live trace forwarding is driven by the single fan-out listener
@@ -3125,7 +3131,29 @@ export class WebUiModule implements Module {
     });
   }
 
-  private async buildWelcome(): Promise<WelcomeMessage> {
+  /** Each fleet child's recipe, for its tree in the welcome. sendWelcome
+   *  loads them before the welcome reads anything: state copied before an
+   *  await would miss whatever landed during it, such as a child's usage
+   *  sample, which the client's next sample would then count as part of its
+   *  own call. */
+  private async loadWelcomeRecipes(): Promise<Map<string, Awaited<ReturnType<WebUiModule['loadChildRecipeInfo']>>>> {
+    const recipes = new Map<string, Awaited<ReturnType<WebUiModule['loadChildRecipeInfo']>>>();
+    const aggregator = sharedServer?.treeAggregator;
+    const fleetMod = aggregator
+      ? sharedServer?.app?.framework.getAllModules().find((m) => m.name === 'fleet') as FleetModule | undefined
+      : undefined;
+    if (aggregator && fleetMod) {
+      for (const name of aggregator.getAllChildNames()) {
+        recipes.set(name, await this.loadChildRecipeInfo(fleetMod, name));
+      }
+    }
+    return recipes;
+  }
+
+  /** The welcome, read synchronously (see sendWelcome). */
+  private buildWelcome(
+    childRecipes: Map<string, Awaited<ReturnType<WebUiModule['loadChildRecipeInfo']>>>,
+  ): WelcomeMessage {
     const app = sharedServer?.app!;
     const fw = app.framework;
     const agents = fw.getAllAgents();
@@ -3178,11 +3206,11 @@ export class WebUiModule implements Module {
     // either way the live event stream keeps it current.
     const childTrees: WelcomeMessage['childTrees'] = [];
     if (sharedServer?.treeAggregator) {
-      const fleetMod = sharedServer.app?.framework.getAllModules().find((m) => m.name === 'fleet') as
-        | FleetModule | undefined;
-      for (const name of sharedServer?.treeAggregator.getAllChildNames()) {
-        const nodes = sharedServer?.treeAggregator.getChildNodes(name);
-        const recipeInfo = fleetMod ? await this.loadChildRecipeInfo(fleetMod, name) : undefined;
+      for (const name of sharedServer.treeAggregator.getAllChildNames()) {
+        const nodes = sharedServer.treeAggregator.getChildNodes(name);
+        // A child that registered while the recipes loaded gets its recipe
+        // at the next welcome.
+        const recipeInfo = childRecipes.get(name);
         childTrees.push({
           name,
           asOfTs: Date.now(),
