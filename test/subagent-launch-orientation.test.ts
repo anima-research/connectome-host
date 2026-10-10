@@ -482,7 +482,7 @@ describe('spawn orientation', () => {
       expect(block).toContain('- Lineage: spawned by stream "parent" as a separate agent with its own system prompt and task; it inherits none of the caller\'s context; depth 1 of 3.');
       expect(block).toContain('- System prompt: supplied by the caller for this spawn.');
       expect(block).toContain(`- Prose routing: disabled, inherited from the caller: ${ROUTING_EFFECT.disabled}.`);
-      expect(block).toContain('- Tool rules: only the 1 the caller listed (time--now), plus subagent--return; the caller has no restriction.');
+      expect(block).toContain("- Tool rules: only the 2 the caller's list grants (time--now and subagent--return), subagent--return among them; the caller has no restriction.");
       expect(input.tools).toEqual(['time--now']); // the caller's array is not mutated
       const run = h.runs[0]!;
       expect(run.proseRouting).toBe('disabled');
@@ -495,6 +495,63 @@ describe('spawn orientation', () => {
     } finally {
       await h.cleanup();
     }
+  });
+});
+
+describe("a spawn's tool rule says what the list grants (Nell-1783's haiku probe)", () => {
+  async function ruleFor(tools: string[], module: Partial<SubagentModuleConfig> = {}) {
+    const h = await makeHarness({ module });
+    try {
+      const res = await h.subagent.handleToolCall(call('spawn', `toolu_${tools.length}`, { name: 'probe', systemPrompt: 'p', task: 't', tools }));
+      expect(res.success).toBe(true);
+      await h.asyncPromise('probe');
+      return line(launchBlock(res.data as string), '- Tool rules');
+    } finally {
+      await h.cleanup();
+    }
+  }
+
+  test('names subagent--return once, even when the caller listed it', async () => {
+    expect(await ruleFor(['time--now', 'subagent--return'])).toStartWith("- Tool rules: only the 2 the caller's list grants (time--now and subagent--return), subagent--return among them");
+  });
+
+  test('reads an empty list as subagent--return alone', async () => {
+    expect(await ruleFor([])).toStartWith('- Tool rules: only subagent--return: the caller listed no tools');
+  });
+
+  test('at the depth limit, names what the process doesn\'t offer there as dropped', async () => {
+    expect(await ruleFor(['time--now'], { maxDepth: 1 })).toStartWith(
+      "- Tool rules: only subagent--return; the caller also listed time--now, which isn't offered at this depth, and none of the other subagent tools at this depth",
+    );
+  });
+});
+
+describe('a host that states no provider', () => {
+  for (const parent of [undefined, null] as const) {
+    test(`is described as not stating it, rather than as any provider's (${parent === null ? 'no parent' : 'with a parent'})`, async () => {
+      const h = await makeHarness({ module: { provider: undefined }, ...(parent === null ? { parent: null } : {}) });
+      try {
+        const input = { name: 'probe', systemPrompt: 'p', task: 't' };
+        const res = await h.subagent.handleToolCall(call('spawn', 'toolu_np', input, parent === null ? null : 'parent'));
+        await h.asyncPromise('probe');
+        expect(line(launchBlock(res.data as string), '- Provider')).toBe(
+          parent === null ? '- Provider: not stated by the host.' : "- Provider: not stated by the host, the caller's own connection.",
+        );
+      } finally {
+        await h.cleanup();
+      }
+    });
+  }
+});
+
+describe('a module without its framework yet', () => {
+  test('is built with no config, and answers a launch with an error rather than a throw', async () => {
+    const bare = new SubagentModule();
+    const res = await bare.handleToolCall(call('spawn', 'toolu_bare', { name: 'early', systemPrompt: 'p', task: 't' }));
+    expect(res.success).toBe(false);
+    expect(String(res.error)).toStartWith("Couldn't spawn 'early': ");
+    const forked = await bare.handleToolCall(call('fork', 'toolu_bare_fork', { name: 'early-fork', task: 't' }));
+    expect(String(forked.error)).toStartWith("Couldn't fork 'early-fork': ");
   });
 });
 
@@ -523,7 +580,7 @@ describe('a queued launch', () => {
       seedForkCall(h.framework, 'toolu_second', second);
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_second', second));
       const receipt = res.data as string;
-      expect(receipt).toStartWith("Subagent 'second' forked. Every subagent slot (1) is in use, so it starts when one frees.");
+      expect(receipt).toStartWith("Subagent 'second' forked. Every subagent slot (1) is in use, so it waits for one to free, for up to 120 s; if none does, it ends with an error, delivered as its result would be.");
       const block = launchBlock(receipt);
       expect(line(block, '- Against the parent at the call')).toBe(
         '- Against the parent at the call: Differs in recent window and message cap. ' +

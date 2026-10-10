@@ -39,8 +39,10 @@ import type { ContentBlock } from '@animalabs/membrane';
 export interface SubagentModuleConfig {
   /** The provider transport the host built (recipe.ts resolveProvider).
    *  One adapter serves every stream in the process, so this is what every
-   *  subagent runs on too; launch descriptions state it. */
-  provider: string;
+   *  subagent runs on too; launch descriptions state it. Optional, so the
+   *  module still builds with no config: absent, descriptions say the host
+   *  didn't state it. */
+  provider?: string;
   /** Maximum fork/spawn depth (default: 3) */
   maxDepth?: number;
   /** Current depth (incremented for child subagent modules) */
@@ -228,8 +230,9 @@ export interface SubagentPeekSnapshot {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the tool_result text the fork stream sees in place of the generic
- * "Subagent X forked. Running in background." that the parent stream sees.
+ * Build the tool_result text the fork stream sees in place of the launch
+ * receipt the parent stream sees (launchReceipt: forked, running or waiting
+ * for a slot, then the launch description).
  *
  * The wording frames the fork as a parallel continuation of the same self
  * rather than a separate agent — both streams inherit everything, the fork
@@ -302,6 +305,9 @@ const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
  * were at the call; a value the parent doesn't report stays undefined and
  * is said to be uncompared, never assumed equal.
  */
+/** How long a launch waits for a concurrency slot before it ends with an error. */
+const SLOT_TIMEOUT_MS = 120_000;
+
 export interface SubagentLaunch {
   kind: 'fork' | 'spawn';
   name: string;
@@ -310,7 +316,8 @@ export interface SubagentLaunch {
   maxDepth: number;
   /** The fork call's tool_use id (forks only). */
   forkPoint?: string;
-  provider: string;
+  /** Absent when the host didn't state it (SubagentModuleConfig.provider). */
+  provider?: string;
   model: string;
   systemPrompt: string;
   systemPromptSource: 'parent' | 'override' | 'caller' | 'default';
@@ -333,6 +340,10 @@ export interface SubagentLaunch {
   tools: {
     /** The spawn caller's own list (subagent--return is always added). */
     requested?: string[];
+    /** What that list grants, as filterToolNames grants it at the call:
+     *  subagent--return once, and at the depth limit only the names the
+     *  process offers that aren't subagent tools. Present with `requested`. */
+    granted?: string[];
     /** At the sub-fork depth limit: no subagent tools but subagent--return. */
     depthLimited: boolean;
   };
@@ -436,10 +447,10 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
     const same = launch.model === p.model;
     settings.push({ name: 'model', same, line: `- Model: ${launch.model}${same ? `, the same as ${them}'s` : ` (${them}'s: ${p.model})`}.` });
     // One membrane adapter serves every stream in the process.
-    settings.push({ name: 'provider connection', same: true, line: `- Provider: ${launch.provider}, ${them}'s own connection.` });
+    settings.push({ name: 'provider connection', same: true, line: `- Provider: ${launch.provider ?? 'not stated by the host'}, ${them}'s own connection.` });
   } else {
     settings.push({ name: 'model', line: `- Model: ${launch.model}.` });
-    settings.push({ name: 'provider connection', line: `- Provider: ${launch.provider}.` });
+    settings.push({ name: 'provider connection', line: `- Provider: ${launch.provider ?? 'not stated by the host'}.` });
   }
 
   const promptText: Record<SubagentLaunch['systemPromptSource'], string> = {
@@ -509,8 +520,15 @@ export function describeSubagentLaunch(launch: SubagentLaunch): string {
   const requested = launch.tools.requested;
   let toolRule: string;
   if (requested !== undefined) {
-    toolRule = `only the ${requested.length} the caller listed (${joinAll(requested)}), plus subagent--return` +
-      (launch.tools.depthLimited ? ', and none of the other subagent tools at this depth' : '');
+    // What the list grants, not the list: subagent--return named once, and
+    // a name the process doesn't offer here named as dropped.
+    const granted = launch.tools.granted ?? [...new Set([...requested, 'subagent--return'])];
+    const dropped = [...new Set(requested)].filter((name) => !granted.includes(name));
+    toolRule = granted.length === 1
+      ? `only subagent--return${requested.length === 0 ? ': the caller listed no tools' : ''}`
+      : `only the ${granted.length} the caller's list grants (${joinAll(granted)}), subagent--return among them`;
+    if (dropped.length > 0) toolRule += `; the caller also listed ${joinAll(dropped)}, which ${dropped.length === 1 ? 'isn\'t' : 'aren\'t'} offered at this depth`;
+    if (launch.tools.depthLimited) toolRule += ', and none of the other subagent tools at this depth';
   } else if (launch.tools.depthLimited) {
     toolRule = 'every tool the process offers except the subagent tools, keeping subagent--return: no further forks or spawns at this depth';
   } else {
@@ -810,7 +828,7 @@ export class SubagentModule implements Module {
   private cancellationHandles = new Map<string, { reject: (err: Error) => void }>();  // displayName → cancel
   private agentDepths = new Map<string, number>();  // framework agent name → fork depth
 
-  constructor(config: SubagentModuleConfig) {
+  constructor(config: SubagentModuleConfig = {}) {
     this.config = config;
     this.maxDepth = config.maxDepth ?? 3;
     this.currentDepth = config.currentDepth ?? 0;
@@ -1226,7 +1244,7 @@ export class SubagentModule implements Module {
    * Throws if the slot is not acquired within `slotTimeoutMs`.
    */
   private async acquireSlot(
-    slotTimeoutMs = 120_000,
+    slotTimeoutMs = SLOT_TIMEOUT_MS,
     /** Set synchronously, before the first await, when the caller has to
      *  queue: run*() starts with this call, so handle*() can say in its
      *  receipt whether the launch is starting or waiting for a slot. */
@@ -1876,7 +1894,7 @@ export class SubagentModule implements Module {
       depth: callerDepth + 1,
       maxDepth: this.maxDepth,
       ...(kind === 'fork' && callToolUseId ? { forkPoint: callToolUseId } : {}),
-      provider: this.config.provider,
+      ...(this.config.provider !== undefined ? { provider: this.config.provider } : {}),
       model,
       systemPrompt,
       systemPromptSource,
@@ -1885,7 +1903,9 @@ export class SubagentModule implements Module {
       strategy: { ...SUBAGENT_STRATEGY, compressionModel: model },
       ...(proseRouting !== undefined ? { proseRouting } : {}),
       tools: {
-        ...(requestedTools !== undefined ? { requested: [...requestedTools] } : {}),
+        ...(requestedTools !== undefined
+          ? { requested: [...requestedTools], granted: this.filterToolNames(requestedTools, callerDepth) as string[] }
+          : {}),
         // filterToolNames' own threshold.
         depthLimited: callerDepth + 1 >= this.maxDepth,
       },
@@ -1976,7 +1996,7 @@ export class SubagentModule implements Module {
    *  slot, then the launch description. */
   private launchReceipt(launch: SubagentLaunch, head: string, ticket: { queued: boolean }): string {
     const slot = ticket.queued
-      ? `Every subagent slot (${this.effectiveConcurrent}) is in use, so it starts when one frees.`
+      ? `Every subagent slot (${this.effectiveConcurrent}) is in use, so it waits for one to free, for up to ${Math.round(SLOT_TIMEOUT_MS / 1000)} s; if none does, it ends with an error, delivered as its result would be.`
       : 'Running in background.';
     return `${head} ${slot}\n\n${describeSubagentLaunch(launch)}`;
   }
@@ -1992,7 +2012,14 @@ export class SubagentModule implements Module {
     }
 
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
-    const launch = this.resolveLaunch('spawn', input, callerAgentName, callerDepth);
+    // Resolved before any slot, as the base resolved inside its run's try: a
+    // module with no framework yet answers with an error, never a throw.
+    let launch: SubagentLaunch;
+    try {
+      launch = this.resolveLaunch('spawn', input, callerAgentName, callerDepth);
+    } catch (error) {
+      return { success: false, isError: true, error: `Couldn't spawn '${input.name}': ${error instanceof Error ? error.message : String(error)}` };
+    }
     const ticket = { queued: false };
 
     // Sync mode: block until completion, but detachable mid-flight.
@@ -2029,7 +2056,14 @@ export class SubagentModule implements Module {
     }
 
     const parentAgentName = callerAgentName ?? this.config.parentAgentName ?? 'agent';
-    const launch = this.resolveLaunch('fork', input, callerAgentName, callerDepth, callToolUseId);
+    // Resolved before any slot, as the base resolved inside its run's try: a
+    // module with no framework yet answers with an error, never a throw.
+    let launch: SubagentLaunch;
+    try {
+      launch = this.resolveLaunch('fork', input, callerAgentName, callerDepth, callToolUseId);
+    } catch (error) {
+      return { success: false, isError: true, error: `Couldn't fork '${input.name}': ${error instanceof Error ? error.message : String(error)}` };
+    }
     const ticket = { queued: false };
 
     // Sync mode: block until completion, but detachable mid-flight.
@@ -2293,7 +2327,7 @@ export class SubagentModule implements Module {
           const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
           if (est > this.maxPromptTokens) {
             throw new Error(
-              `Prompt too large for subagent ${input.name}: ~${est} tokens ` +
+              `Prompt too large for subagent ${input.name}: ~${est} tokens, its orientation included ` +
               `(limit: ${this.maxPromptTokens}). Reduce context or task size.`
             );
           }
@@ -2404,7 +2438,10 @@ export class SubagentModule implements Module {
 
       // The parent the launch was resolved against (the caller, which enables
       // recursive forks, else the configured parent agent), looked up again
-      // now because its context is materialised at creation.
+      // now because its context is materialised at creation. A launch that
+      // found no parent at the call stays without one: a parent registered
+      // while it waited for a slot isn't used, since the receipt and the
+      // stream's orientation were resolved at the call and would be false.
       const parentAgent = launch.parent ? framework.getAgent(launch.parent.stream) : null;
       let lastError: Error | null = null;
 
@@ -2514,7 +2551,7 @@ export class SubagentModule implements Module {
           const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
           if (est > this.maxPromptTokens) {
             throw new Error(
-              `Prompt too large for subagent ${input.name}: ~${est} tokens ` +
+              `Prompt too large for subagent ${input.name}: ~${est} tokens, its orientation included ` +
               `(limit: ${this.maxPromptTokens}). Reduce context or task size.`
             );
           }
