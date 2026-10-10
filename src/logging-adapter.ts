@@ -19,7 +19,7 @@
 //
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
-//   { type: 'call'|'error', kind: 'complete'|'stream', timestamp, durationMs,
+//   { type: 'call'|'error', kind: 'complete'|'stream'|'keepalive', timestamp, durationMs,
 //     requestSummary, rawRequest?, rawResponse, error? }
 
 import { AnthropicAdapter } from '@animalabs/membrane';
@@ -28,9 +28,10 @@ import type {
   ProviderResponse,
   ProviderRequestOptions,
   StreamCallbacks,
+  KeepaliveCall,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
-import { summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
+import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 
 /** Live read of the current reasoning setting. The host wires this to
  *  `SettingsModule.getReasoning()` so toggles via the `agent_settings` tool's
@@ -117,7 +118,24 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     getReasoning?: ReasoningGetter,
     onCall?: ProviderCallObserver,
   ) {
-    super(config);
+    // The background replay bypasses complete/stream by design. Observe its
+    // terminal receipt instead of rebuilding or re-sending the cached payload.
+    let observeKeepalive: ((call: KeepaliveCall) => void) | undefined;
+    const callerOnCall = config?.cacheKeepalive?.onCall;
+    super({
+      ...config,
+      cacheKeepalive: {
+        ...config?.cacheKeepalive,
+        onCall(call) {
+          // Log before calling the caller's observer, which owns its copy and
+          // may mutate it. Failure in either observer must not suppress the other.
+          try { observeKeepalive?.(call); } catch { /* observability is isolated */ }
+          // Membrane isolates sync errors and returned promise rejections.
+          return callerOnCall?.(call);
+        },
+      },
+    });
+    observeKeepalive = (call) => this.logKeepaliveCall(call);
     this.logPath = logPath;
     this.getReasoning = getReasoning;
     this.onCall = onCall;
@@ -230,6 +248,54 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  /** One row per timer-driven send, including SDK retries, with terminal usage. */
+  private logKeepaliveCall(call: KeepaliveCall): void {
+    const raw = call.request;
+    const cache = summarizeCacheControls(raw);
+    const response = call.outcome === 'success' ? call.response : undefined;
+    const error = call.outcome === 'error' ? call.error : undefined;
+    const effort = (raw.output_config as { effort?: unknown } | undefined)?.effort;
+    const record: Record<string, unknown> = {
+      type: call.outcome === 'success' ? 'call' : 'error',
+      kind: 'keepalive',
+      timestamp: new Date(call.startedAt + call.durationMs).toISOString(),
+      durationMs: call.durationMs,
+      keepalive: { key: call.key, lane: call.lane, startedAt: call.startedAt },
+      requestSummary: {
+        model: raw.model,
+        maxTokens: raw.max_tokens,
+        messages: Array.isArray(raw.messages) ? raw.messages.length : 0,
+        tools: Array.isArray(raw.tools) ? raw.tools.length : 0,
+        ...(typeof effort === 'string' ? { effort } : {}),
+        cacheBreakpoints: cache.count,
+        cacheTtls: cache.ttls,
+      },
+      rawRequest: this.fullPayloads || call.outcome === 'error' || response?.stop_reason === 'refusal'
+        ? raw : undefined,
+      ...(response ? { rawResponse: response } : {}),
+      ...(call.outcome === 'error' ? {
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : String(error),
+      } : {}),
+    };
+    this.log(record);
+    // A poke spends the same credential as a turn, so the credential monitor
+    // hears it too: an idle resident's rejected credential shows at its next
+    // poke rather than at its next turn, and a poke that succeeds settles an
+    // auth alert as a turn would.
+    try {
+      if (call.outcome === 'error') this.onProviderError?.(call.error, 'keepalive');
+      else this.onProviderSuccess?.('keepalive');
+    } catch { /* observers never affect provider traffic */ }
+    // Share the log decoder so live and rehydrated spend use identical vendor
+    // fields (including cache-write buckets, geography, and service tier).
+    // The ledger comes last, so a throwing ledger observer skips nothing here,
+    // and the guard in the constructor's onCall keeps it from the caller's.
+    const observed = parseLoggedCall(record);
+    if (observed) this.onCall?.(observed);
+  }
+
   private requestSummary(request: ProviderRequest, rawRequest?: unknown): Record<string, unknown> {
     const cache = rawRequest ? summarizeCacheControls(rawRequest) : undefined;
     const effort = (rawRequest as { output_config?: { effort?: unknown } } | null | undefined)?.output_config?.effort;
@@ -264,8 +330,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   /** Credential-monitor taps: every failed call (auth verdicts are what the
    *  monitor keys on) and every successful one (clears a standing auth
    *  alarm). Observers never affect provider traffic. */
-  onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
-  onProviderSuccess?: (kind: 'complete' | 'stream') => void;
+  onProviderError?: (error: unknown, kind: 'complete' | 'stream' | 'keepalive') => void;
+  onProviderSuccess?: (kind: 'complete' | 'stream' | 'keepalive') => void;
 
   private observeCall(
     kind: 'complete' | 'stream',

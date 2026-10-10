@@ -19,7 +19,7 @@ import { ANTHROPIC_PRICING_VERSION, priceAnthropicCall } from './call-pricing.js
 
 export interface ProviderCallRecord {
   timestamp: string;
-  kind: 'complete' | 'stream';
+  kind: 'complete' | 'stream' | 'keepalive';
   durationMs: number;
   model: string;
   messages: number;
@@ -165,7 +165,7 @@ export class CallLedger {
       id: `${call.timestamp}:${++this.sequence}`,
       timestamp: call.timestamp,
       kind: call.kind,
-      originEstimate: call.kind === 'stream' ? 'turn~' : 'aux~',
+      originEstimate: call.kind === 'keepalive' ? 'keepalive' : call.kind === 'stream' ? 'turn~' : 'aux~',
       model: call.model,
       messages: call.messages,
       durationMs: call.durationMs,
@@ -281,11 +281,12 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | null {
+/** Decode the vendor fields shared by live background receipts and log replay. */
+export function parseLoggedCall(record: Record<string, unknown>): ProviderCallRecord | null {
   const kind = record.kind;
   const timestamp = record.timestamp;
   const summary = record.requestSummary as Record<string, unknown> | undefined;
-  if ((kind !== 'complete' && kind !== 'stream') || typeof timestamp !== 'string' || !summary) return null;
+  if ((kind !== 'complete' && kind !== 'stream' && kind !== 'keepalive') || typeof timestamp !== 'string' || !summary) return null;
   const rawResponse = record.rawResponse as Record<string, unknown> | null | undefined;
   const usage = rawResponse?.usage as Record<string, unknown> | undefined;
   const cacheCreation = usage?.cache_creation as Record<string, unknown> | undefined;

@@ -1310,7 +1310,7 @@ async function main() {
     : null;
   credentialsRef = credentials;
   if (credentials && (adapter instanceof LoggingAnthropicAdapter || adapter instanceof LoggingProviderAdapter)) {
-    adapter.onProviderError = (error) => credentials.observeError(error);
+    adapter.onProviderError = (error: unknown) => credentials.observeError(error);
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
