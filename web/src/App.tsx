@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -37,6 +37,11 @@ import {
   type HostModeSnapshot,
   type SurgeryResultMessage,
   type OperatorLogEntryWire,
+  type SurgeryMarksPreviewWire,
+  type SurgeryPreviewResultMessage,
+  type AwarenessEntryWire,
+  type AwarenessMessage,
+  type MarksChoiceWire,
 } from '@conhost/web/protocol';
 import {
   Lightbox,
@@ -44,6 +49,7 @@ import {
   HostModeToggle,
   SurgeryDialog,
   SelectionBar,
+  type MarksChoice,
   type SurgeryRequest,
 } from './Surgery';
 
@@ -135,8 +141,8 @@ export function App() {
   /** session.id + '/' + branch.id of the last welcome; same key → soft
    *  merge (keep paged-in scrollback), changed key → hard reset. */
   let welcomeKey: string | null = null;
-  /** session.id of the last welcome, to tell a session switch apart from a
-   *  first connect or a reconnect. */
+  /** session.id of the last welcome, to tell a session switch (which means
+   *  another framework) apart from a first connect or a reconnect. */
   let welcomeSessionId: string | null = null;
   /** Whether the operator is pinned to the bottom of the scroll pane.
    *  Autoscroll only fires when true, so reading history isn't yanked. */
@@ -429,11 +435,94 @@ export function App() {
   const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
   const [opLogPath, setOpLogPath] = createSignal<string | undefined>(undefined);
   const [opLogLoading, setOpLogLoading] = createSignal(false);
+  /** Awareness marks: the operator's choice for the open surgery, its preview,
+   *  and the framework's journal (marks / awareness features). */
+  const [marksChoice, setMarksChoice] = createSignal<MarksChoice>('none');
+  /** The open dialog's context changed (session or branch): it can't proceed. */
+  const [surgeryStale, setSurgeryStale] = createSignal(false);
+  const [marksPreview, setMarksPreview] = createSignal<SurgeryMarksPreviewWire | null>(null);
+  /** The session and branch the open dialog was opened on: the confirmation
+   *  is bound to them, so the server refuses it if either has changed. */
+  let dialogContext: { sessionId?: string; branchId?: string } | null = null;
+  const [marksPreviewError, setMarksPreviewError] = createSignal<string | null>(null);
+  let marksPreviewCorr: string | null = null;
+  const [awareness, setAwareness] = createSignal<AwarenessEntryWire[]>([]);
+  /** The framework instance the listed journal was read from: every action
+   *  chosen from the list is bound to it (the host refuses it elsewhere). */
+  let awarenessInstance: string | null = null;
+  const [awarenessLoading, setAwarenessLoading] = createSignal(false);
+  const [awarenessResult, setAwarenessResult] = createSignal<{ action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null>(null);
 
   const previewOf = (m: Message): string => {
     const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
     const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
+  };
+
+  /** Ask what the surgery would remove and which Discord messages each marks
+   *  scope covers; the choice resets to none until a scope is picked. */
+  const requestMarksPreview = (req: SurgeryRequest): void => {
+    setMarksChoice('none');
+    setSurgeryStale(false);
+    setMarksPreview(null);
+    setMarksPreviewError(null);
+    marksPreviewCorr = null;
+    const w = welcome();
+    dialogContext = w
+      ? { ...(w.session.id ? { sessionId: w.session.id } : {}), ...(w.branch.id ? { branchId: w.branch.id } : {}) }
+      : null;
+    if (!features().has('marks')) return;
+    sendMarksPreview(req);
+  };
+  /** Ask for the open dialog's preview (again). Read-only, so it is safe to
+   *  repeat: a request or answer lost to a closed socket is asked again on
+   *  the next welcome for the dialog's own session and branch. */
+  const sendMarksPreview = (req: SurgeryRequest): void => {
+    const corrId = `mpv-${Date.now()}`;
+    marksPreviewCorr = corrId;
+    wire.send(req.op === 'rollback'
+      ? { type: 'surgery-preview', op: 'rollback', messageId: req.messageIds[0], corrId }
+      : { type: 'surgery-preview', op: 'suppress', messageIds: req.messageIds, corrId });
+  };
+  /** The open dialog still waits for its preview (nothing else answered it). */
+  const awaitingMarksPreview = (): boolean =>
+    surgery() !== null && marksPreviewCorr !== null && !marksPreview() && !marksPreviewError()
+    && !surgeryStale() && !surgeryPending() && !surgeryResult();
+  const onSurgeryPreview = (msg: SurgeryPreviewResultMessage): void => {
+    if (!msg.corrId || msg.corrId !== marksPreviewCorr) return; // a stale dialog's answer
+    if (msg.ok && msg.preview) {
+      // A preview computed on another context than the dialog's is stale.
+      if ((msg.sessionId && dialogContext?.sessionId && msg.sessionId !== dialogContext.sessionId)
+        || (msg.branchId && dialogContext?.branchId && msg.branchId !== dialogContext.branchId)) {
+        setSurgeryStale(true);
+        return;
+      }
+      setMarksPreview(msg.preview);
+    } else setMarksPreviewError(msg.error ?? 'preview failed');
+  };
+  /** The marks to send: bound to the previewed refs of the chosen scope. */
+  const marksForSend = (): MarksChoiceWire => {
+    const choice = marksChoice();
+    const preview = marksPreview();
+    if (choice === 'none' || !preview) return 'none';
+    return { scope: choice, refs: preview.scopes[choice].refs };
+  };
+  const refreshAwareness = (): void => {
+    if (!features().has('awareness')) return;
+    if (wire.send({ type: 'request-awareness' })) setAwarenessLoading(true);
+  };
+  const onAwareness = (msg: AwarenessMessage): void => {
+    setAwareness(msg.batches);
+    awarenessInstance = msg.frameworkInstanceId ?? null;
+    setAwarenessLoading(false);
+    if (msg.action) setAwarenessResult({ action: msg.action, target: msg.target, receipt: msg.receipt, error: msg.error });
+    else if (msg.error) setAwarenessResult({ error: msg.error });
+  };
+  const awarenessAction = (action: 'cancel' | 'retract' | 'release', target: string): void => {
+    if (!features().has('awareness') || isObserver() || !awarenessInstance) return;
+    if (wire.send({ type: 'awareness-action', action, target, expectedFrameworkInstanceId: awarenessInstance })) {
+      setAwarenessLoading(true);
+    }
   };
 
   /** Rollback so `storeId` becomes the tail. `preview` is used when the
@@ -443,7 +532,7 @@ export function App() {
     const idx = messages.findIndex((m) => m.storeId === storeId);
     const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
     setSurgeryResult(null);
-    setSurgery({
+    const req: SurgeryRequest = {
       op: 'rollback',
       messageIds: [storeId],
       previews: [
@@ -452,7 +541,9 @@ export function App() {
         ...(after.length > 12 ? [`… and ${after.length - 12} more`] : []),
       ],
       ...(idx >= 0 ? { affected: after.length } : {}),
-    });
+    };
+    setSurgery(req);
+    requestMarksPreview(req);
   };
 
   const toggleSelected = (storeId: string): void => {
@@ -473,41 +564,62 @@ export function App() {
     if (ids.length === 0) return;
     const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
     setSurgeryResult(null);
-    setSurgery({
+    const req: SurgeryRequest = {
       op: 'suppress',
       messageIds: ids,
       previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
-    });
+    };
+    setSurgery(req);
+    requestMarksPreview(req);
   };
 
+  /** Send the open dialog's surgery. A mutation is never resent: if nothing
+   *  could be sent the dialog doesn't wait, and a result lost to a closed
+   *  socket settles as an unknown outcome (see the connection effect). */
   const sendSurgery = (req: SurgeryRequest, note: string): void => {
-    setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
-    if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
-    } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
-    }
+    const marks = marksForSend();
+    const preview = marksPreview();
+    const bound = {
+      ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
+      ...(dialogContext?.branchId ? { expectedBranchId: dialogContext.branchId } : {}),
+      // The framework checks the previewed store and branch itself.
+      ...(preview?.context ? { expectedContext: preview.context } : {}),
+    };
+    const sent = req.op === 'rollback'
+      ? wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, ...bound, corrId })
+      : wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), marks, ...bound, corrId });
+    setSurgeryPending(sent);
   };
   const confirmSurgery = (note: string): void => {
     const req = surgery();
-    if (req) sendSurgery(req, note);
+    if (req && !surgeryStale()) sendSurgery(req, note);
   };
-  const quiesceHost = (reason: string): void => {
-    if (!canQuiesce()) return;
-    setHostModeBusy(true);
-    wire.send({ type: 'host-quiesce', ...(reason.trim() ? { reason: reason.trim() } : {}) });
+  /** Quiesce the host; `bound` ties a retry's quiesce to the session and store
+   *  its surgery was previewed on, so the host refuses it once they changed. */
+  const quiesceHost = (reason: string, bound?: { expectedSessionId?: string; expectedStoreId?: string }): boolean => {
+    if (!canQuiesce()) return false;
+    const sent = wire.send({ type: 'host-quiesce', ...(reason.trim() ? { reason: reason.trim() } : {}), ...bound });
+    if (sent) setHostModeBusy(true);
+    return sent;
   };
   const resumeHost = (): void => {
     if (!canQuiesce()) return;
-    setHostModeBusy(true);
-    wire.send({ type: 'host-resume' });
+    if (wire.send({ type: 'host-resume' })) setHostModeBusy(true);
   };
   const quiesceAndRetry = (note: string): void => {
+    // A retry belongs to the dialog's own context: once that changed, neither
+    // the quiesce nor the surgery is sent.
+    if (surgeryStale() || surgeryPending()) return;
+    const storeId = marksPreview()?.context?.storeId;
+    const sent = quiesceHost(note || `${surgery()?.op ?? 'surgery'} via webui`, {
+      ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
+      ...(storeId ? { expectedStoreId: storeId } : {}),
+    });
+    if (!sent) return;
     retryAfterQuiesce = { note };
     setSurgeryResult(null);
     setSurgeryPending(true);
-    quiesceHost(note || `${surgery()?.op ?? 'surgery'} via webui`);
   };
   const onHostMode = (hm: HostModeSnapshot): void => {
     setHostMode(hm);
@@ -516,22 +628,44 @@ export function App() {
       const req = surgery();
       const { note } = retryAfterQuiesce;
       retryAfterQuiesce = null;
-      if (req) sendSurgery(req, note); else setSurgeryPending(false);
+      // The context may have changed while the host drained.
+      if (req && !surgeryStale()) sendSurgery(req, note); else setSurgeryPending(false);
     } else if (retryAfterQuiesce && hm.mode !== 'quiescing') {
       // Quiesce did not land (error frame arrives separately) — stop waiting.
       retryAfterQuiesce = null;
       setSurgeryPending(false);
     }
   };
+  /** Results come back on the socket that sent the request: once it closes, a
+   *  pending surgery's answer can't arrive. Say so rather than wait forever,
+   *  and never resend it — it may have run. */
+  createEffect(on(wire.status, (status) => {
+    if (status === 'open' || !surgeryPending()) return;
+    const req = surgery();
+    const retrying = retryAfterQuiesce !== null;
+    retryAfterQuiesce = null;
+    setSurgeryPending(false);
+    if (!req) return;
+    setSurgeryResult({
+      type: 'surgery-result', op: req.op, ok: false, code: 'connection-lost',
+      // While retrying, the surgery itself is sent only once the host reports
+      // quiesced, so it hasn't been sent yet; only the quiesce is in doubt.
+      error: retrying
+        ? `The connection dropped while the host was quiescing for this retry. The ${req.op} was not sent; this dialog can't tell whether the host quiesced (the header shows its mode once reconnected).`
+        : `The connection dropped before the result arrived, so this dialog can't tell whether the ${req.op} ran. Check the branch panel and the operator log before trying again.`,
+    });
+  }, { defer: true }));
   const onSurgeryResult = (r: SurgeryResultMessage): void => {
     setSurgeryPending(false);
     setSurgeryResult(r);
     if (r.ok) clearSelection();
-    if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); }
+    if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); refreshAwareness(); }
   };
   const closeSurgery = (): void => {
     if (surgeryPending()) return;
     retryAfterQuiesce = null;
+    marksPreviewCorr = null;
+    setSurgeryStale(false);
     setSurgery(null);
     setSurgeryResult(null);
   };
@@ -851,11 +985,19 @@ export function App() {
     if (panelScope() !== 'local' && !msg.childTrees.some((c) => c.name === panelScope())) {
       changePanelScope('local');
     }
-    // A session switch recreates the framework: MCPL servers reconnect and
+    // A session switch recreates the framework. MCPL servers reconnect and
     // may offer other tools or classes, so the MCP tab's snapshot is stale.
+    // And the listed awareness journal (and its receipt) belonged to the old
+    // framework: its actions would be refused now anyway, so don't keep
+    // showing it as if it were this session's. One check for both, made
+    // before welcomeSessionId takes the new session.
     if (welcomeSessionId !== null && msg.session.id !== welcomeSessionId) {
       clearMcpl();
       if (sidebarTab() === 'mcp') refreshMcpl();
+      setAwareness([]);
+      setAwarenessResult(null);
+      awarenessInstance = null;
+      if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); refreshAwareness(); }
     }
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
@@ -863,6 +1005,16 @@ export function App() {
 
     if (key !== welcomeKey) {
       // Session/branch changed (or first connect): hard reset.
+      // An open surgery dialog was previewed against the old context: its
+      // message, preview and refs no longer describe what confirming (or
+      // retrying) would do, so it can do neither, whether it is waiting,
+      // shows a refusal, or is still pending (that one settles with its own
+      // result). Only a successful result stays as it is: after our own
+      // surgery the result arrives before this welcome.
+      if (welcomeKey && surgery() && !surgeryResult()?.ok) {
+        setSurgeryStale(true);
+        marksPreviewCorr = null;
+      }
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
       setMessages(entries);
@@ -891,6 +1043,11 @@ export function App() {
       totalCount: msg.history.totalCount,
     }));
     queueScroll();
+    // The dialog's own context, welcomed again (a reconnect): a preview it
+    // still waits for was lost with the old socket, or never sent. Ask again;
+    // its answer is still checked against the context the dialog opened on.
+    const req = surgery();
+    if (req && awaitingMarksPreview()) sendMarksPreview(req);
   };
 
   const applyAppended = (entry: WelcomeMessageEntry): void => {
@@ -1140,6 +1297,8 @@ export function App() {
     setStreamLines([]);
     streamTokenBuffer = '';
     refreshBranches();
+    refreshOpLog();
+    refreshAwareness();
   };
 
   const toggleExpand = (id: string): void => {
@@ -1291,6 +1450,8 @@ export function App() {
           if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
         },
         onSurgeryResult,
+        onSurgeryPreview,
+        onAwareness,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
       });
@@ -1433,6 +1594,14 @@ export function App() {
             result={surgeryResult()}
             canQuiesce={canQuiesce()}
             hostMode={hostMode()}
+            marksSupported={features().has('marks')}
+            legacyMarking={!features().has('marks')}
+            stale={surgeryStale()}
+            connected={wire.status() === 'open'}
+            preview={marksPreview()}
+            previewError={marksPreviewError()}
+            marks={marksChoice()}
+            onMarks={setMarksChoice}
             onConfirm={confirmSurgery}
             onQuiesceAndRetry={quiesceAndRetry}
             onClose={closeSurgery}
@@ -1644,12 +1813,17 @@ export function App() {
             loading={branchesLoading()}
             readOnly={wire.observerState() === 'observer'}
             onCheckout={checkoutBranch}
-            onRefresh={() => { refreshBranches(); refreshOpLog(); }}
+            onRefresh={() => { refreshBranches(); refreshOpLog(); refreshAwareness(); }}
             onClose={closePanel}
             operatorLog={features().has('operator-log') ? opLog() : null}
             operatorLogPath={opLogPath()}
             operatorLogLoading={opLogLoading()}
             onRefreshLog={refreshOpLog}
+            awareness={features().has('awareness') ? awareness() : null}
+            awarenessLoading={awarenessLoading()}
+            awarenessResult={awarenessResult()}
+            onRefreshAwareness={refreshAwareness}
+            onAwarenessAction={awarenessAction}
           />
         </Show>
         {/* Was w-72 (288px): the context/settings panels have dense numeric
@@ -1838,6 +2012,10 @@ interface HandlerHooks {
   /** A turn ended — refresh host mode if a quiesce was still draining. */
   onTurnSettled: () => void;
   onSurgeryResult: (result: SurgeryResultMessage) => void;
+  /** A marks preview for the open surgery dialog. */
+  onSurgeryPreview: (msg: SurgeryPreviewResultMessage) => void;
+  /** The awareness journal (list, or the answer to an action). */
+  onAwareness: (msg: AwarenessMessage) => void;
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   /** An operator:action trace landed — refresh the log if it is on screen. */
   onOperatorAction: () => void;
@@ -1868,6 +2046,12 @@ function handleServerMessage(
       return;
     case 'surgery-result':
       hooks.onSurgeryResult(msg);
+      return;
+    case 'surgery-preview':
+      hooks.onSurgeryPreview(msg);
+      return;
+    case 'awareness':
+      hooks.onAwareness(msg);
       return;
     case 'operator-log':
       hooks.setOperatorLog(msg.entries, msg.path);

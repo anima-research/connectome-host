@@ -40,8 +40,10 @@ export interface WireClient {
   lastMessage: Accessor<WebUiServerMessage | null>;
   /** Subscribe to all incoming messages. Returns an unsubscribe fn. */
   onMessage(handler: (msg: WebUiServerMessage) => void): () => void;
-  /** Send a message. No-ops with a console warning if the socket is closed. */
-  send(msg: WebUiClientMessage): void;
+  /** Send a message. Returns false (with a console warning) when the socket
+   *  isn't open and nothing was sent; a caller that waits on an answer
+   *  shouldn't start waiting then. */
+  send(msg: WebUiClientMessage): boolean;
   /** Manually close the connection (also cancels reconnects). */
   close(): void;
 }
@@ -160,9 +162,10 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
     send(msg) {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.warn('[wire] dropping message; socket not open', msg.type);
-        return;
+        return false;
       }
       socket.send(JSON.stringify(msg));
+      return true;
     },
     close() {
       stopped = true;

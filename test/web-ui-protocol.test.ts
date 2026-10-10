@@ -183,6 +183,94 @@ describe('isClientMessage', () => {
     });
   });
 
+  describe('surgery marks and the awareness journal', () => {
+    const ref = { serverId: 'discord', channelId: 'discord:g1:c1', messageId: 'm1' };
+
+    test('rollback/suppress take an optional marks choice: none, or a scope with previewed refs', () => {
+      expect(isClientMessage({ type: 'rollback', messageId: 's1' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'none' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'addressed' } })).toBe(true);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], marks: { scope: 'all', refs: [ref] } })).toBe(true);
+      // A publication choice is never guessed: anything else is malformed.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'everyone' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, messageId: '' }] } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', extra: 1 } })).toBe(false);
+      // A suppression's choice is held to the same shape, and so is each ref,
+      // field by field; a malformed value is refused, never thrown on.
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], marks: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: null })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: 'a1' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [null] } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, serverId: '' }] } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, channelId: '' }] } })).toBe(false);
+      // A preview-bound confirmation names the preview's branch.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 's', expectedBranchId: 'b1' })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 7 })).toBe(false);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedSessionId: 7 })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedBranchId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'main' } })).toBe(true);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedContext: { storeId: '' } })).toBe(false);
+      // Both fields are required: an absent one would go unchecked.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: {} })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { branch: 'main' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's', branch: '' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', other: 1 } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'main', other: 1 } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: null })).toBe(false);
+      // Bounded: a store id to 200 characters, a branch name to 500.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's'.repeat(200), branch: 'b'.repeat(500) } })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's'.repeat(201), branch: 'main' } })).toBe(false);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'b'.repeat(501) } })).toBe(false);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedBranchId: '' })).toBe(false);
+      expect(isClientMessage({
+        type: 'rollback', messageId: 's1',
+        marks: { scope: 'all', refs: Array.from({ length: 20_001 }, () => ref) },
+      })).toBe(false);
+    });
+
+    test('surgery-preview names exactly the target of its op', () => {
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageId: 's1' })).toBe(true);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: ['s1', 's2'], corrId: 'c' })).toBe(true);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageIds: ['s1'] })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageId: 's1' })).toBe(false);
+      // Exactly: the other op's target alongside its own is refused too.
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageId: 's1', messageIds: ['s2'] })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: ['s1'], messageId: 's2' })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageId: 's1', agent: '' })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: [] })).toBe(false);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'hide', messageId: 's1' })).toBe(false);
+    });
+
+    test('awareness-action: cancel/retract/release on a target, bound to the journal it was chosen from; only retract takes all', () => {
+      const bound = { expectedFrameworkInstanceId: 'fw-1' };
+      expect(isClientMessage({ type: 'request-awareness' })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'b1', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'b1', ...bound })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: 'all', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'release', target: 'all', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'delete', target: 'b1', ...bound })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'cancel', target: '', ...bound })).toBe(false);
+      // An action names the journal listing it was chosen from.
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: 7 })).toBe(false);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: 'f'.repeat(200) })).toBe(true);
+      expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: 'f'.repeat(201) })).toBe(false);
+    });
+
+    test("host-quiesce may be bound to a retry's previewed session and store", () => {
+      expect(isClientMessage({ type: 'host-quiesce' })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', reason: 'r', expectedSessionId: 's', expectedStoreId: 'store-a' })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', expectedSessionId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 3 })).toBe(false);
+      expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 's'.repeat(200) })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 's'.repeat(201) })).toBe(false);
+    });
+  });
+
   test('mcpl-remove validates id', () => {
     expect(isClientMessage({ type: 'mcpl-remove', id: 'a' })).toBe(true);
     expect(isClientMessage({ type: 'mcpl-remove', id: '../oops' })).toBe(false);
