@@ -10,10 +10,14 @@
  *      `describe` IPC handler returns `reducer.getTree()` over the wire.
  *
  * Mirrors the canonical fold currently scattered across:
- *   - tui.ts:1019-1037     (token aggregation on inference:usage / completed)
- *   - tui.ts:1280-1341     (phase transitions)
- *   - tui.ts:1100-1107     (parent-edge inference from subagent--spawn calls)
- *   - subagent-module.ts:262-340 (callId routing, live state tracking)
+ *   - tui.ts's noteUsageSample (token readouts on inference:usage / completed);
+ *     it, this reducer and subagent-module.ts all count through
+ *     foldUsageSample in stream-usage.ts
+ *   - tui.ts's subscribeSubagentStream (phase transitions)
+ *   - tui.ts's onTrace, at subagent--spawn and subagent--fork calls
+ *     (parent-edge inference)
+ *   - subagent-module.ts's setFramework trace subscription (callId routing,
+ *     live state tracking)
  *
  * The dispatch table EVENT_HANDLERS is the canonical source of truth: each
  * key is an event type the reducer acts on, and `REDUCER_REQUIRED_EVENTS`

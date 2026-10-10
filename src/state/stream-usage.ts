@@ -53,22 +53,30 @@ export function emptyUsage(): UsageCounts {
 
 const count = (v: unknown): number => (typeof v === 'number' && v > 0 ? v : 0);
 
+/** A sample's four counts, each a positive number or 0. */
+function counts(sample: UsageSample): UsageCounts {
+  return {
+    input: count(sample.input),
+    output: count(sample.output),
+    cacheRead: count(sample.cacheRead),
+    cacheCreation: count(sample.cacheCreation),
+  };
+}
+
 /**
  * Fold one sample against `previous`, the stream's last sample: `emptyUsage()`
  * from its `inference:started`, or undefined when the reader joined the stream
  * after it began (a reducer seeded without one, say). Then the whole sample is
  * counted, since none of it was. The counts only grow within a stream, so a
  * sample below `previous` in any count is a new stream's, and counts whole.
- * agent-framework's `cumulativeDelta` treats a counter that went back the same
- * way, count by count.
+ * agent-framework's `cumulativeDelta` also reads a counter that went back as a
+ * restart, but one counter at a time; here the whole sample counts, since a
+ * stream's counts restart together. `previous` is read like a sample, since it
+ * can arrive in a snapshot from another process.
  */
 export function foldUsageSample(previous: UsageCounts | undefined, sample: UsageSample): UsageStep {
-  const total: UsageCounts = {
-    input: count(sample.input),
-    output: count(sample.output),
-    cacheRead: count(sample.cacheRead),
-    cacheCreation: count(sample.cacheCreation),
-  };
+  const total = counts(sample);
+  previous = previous && counts(previous);
   if (
     !previous
     || total.input < previous.input

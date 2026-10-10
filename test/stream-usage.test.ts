@@ -18,7 +18,7 @@ import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderAdapter, ProviderRequest, ProviderResponse, StreamCallbacks } from '@animalabs/membrane';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
-import { emptyUsage, foldUsageSample } from '../src/state/stream-usage.js';
+import { emptyUsage, foldUsageSample, type UsageCounts } from '../src/state/stream-usage.js';
 import { SubagentModule, type SubagentStreamEvent } from '../src/modules/subagent-module.js';
 
 interface CallUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }
@@ -318,6 +318,12 @@ describe('foldUsageSample', () => {
       expect(step.added).toEqual(sample);
       expect(step.prompt).toBeUndefined();
     }
+  });
+
+  test('a previous sample with a count missing, as a malformed snapshot might carry, never makes NaN', () => {
+    const step = foldUsageSample({ input: 40, output: 5 } as UsageCounts, sample);
+    expect(step.added).toEqual({ input: 10, output: 5, cacheRead: 300, cacheCreation: 20 });
+    expect(step.prompt).toBe(330);
   });
 
   test('a count that is absent or not a positive number counts as zero', () => {
