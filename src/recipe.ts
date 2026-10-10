@@ -1246,6 +1246,15 @@ export const DEFAULT_RECIPE: Recipe = {
 // Environment variable substitution
 // ---------------------------------------------------------------------------
 
+/** A `${VAR}` or `${VAR:-default}` reference, as substituteEnvVars reads one. */
+const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`;
+
+/** Whether text holds a `${VAR}` reference: the form a recipe substitutes
+ *  from the environment. An agent overlay entry passes it on as written. */
+export function namesEnvReference(text: string): boolean {
+  return new RegExp(ENV_REFERENCE).test(text);
+}
+
 /**
  * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
  * string values with `process.env.VAR_NAME`.  Applied at recipe-load time,
@@ -1270,7 +1279,7 @@ export const DEFAULT_RECIPE: Recipe = {
 export function substituteEnvVars(value: unknown, source: string): unknown {
   if (typeof value === 'string') {
     return value.replace(
-      /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g,
+      new RegExp(ENV_REFERENCE, 'g'),
       (_match, name: string, defaultValue: string | undefined) => {
         const v = process.env[name];
         if (defaultValue !== undefined) {
