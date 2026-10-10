@@ -344,20 +344,20 @@ describe('writer safety', () => {
   });
 
   /** A conflicted target: a foreign file found at first use. */
-  async function conflicted(): Promise<{ cm: ContextManager; m: FoldsExportModule; before: string }> {
+  async function conflicted(): Promise<{ cm: ContextManager; strategy: PlanStrategy; id: string; m: FoldsExportModule; before: string }> {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, '{"written":"by another runtime"}\n');
     const before = sha(target);
-    const { cm } = await openStore();
-    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const { cm, strategy } = await openStore();
+    const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
     const m = exporter();
     m.bind(cm);
     await accept(cm);
     expect(m.status().state).toBe('conflict');
-    return { cm, m, before };
+    return { cm, strategy, id, m, before };
   }
 
-  // Directory permissions don't bind root, so these two run unprivileged only.
+  // Directory permissions don't bind root, so these run unprivileged only.
   const unprivileged = process.getuid?.() !== 0;
 
   test.skipIf(!unprivileged)('a takeover that cannot move the file reports a failure instead of throwing, and moves nothing', async () => {
@@ -408,7 +408,7 @@ describe('writer safety', () => {
   });
 
   test.skipIf(!unprivileged)('a takeover whose ledger write lands but fails its sync says the conflict was cleared', async () => {
-    const { cm, m } = await conflicted();
+    const { cm, strategy, id, m } = await conflicted();
     // The data directory is writable and searchable but unreadable: the
     // ledger's rename lands, then its directory sync fails.
     chmodSync(dataDir, 0o333);
@@ -424,12 +424,52 @@ describe('writer safety', () => {
       expect(result.error).toContain('the conflict was cleared');
     }
     expect(m.status().state).not.toBe('conflict');
+    // The next receipt writes to the target.
+    strategy.omit.add(id);
     await accept(cm);
     expect(lines()[0]!.kind).toBe('folds-projection');
   });
 
-  test('a projection that fails right after a takeover is reported with its result', async () => {
+  test('a target in conflict is not projected again at every branch check, only at a branch change', async () => {
     const { cm, m } = await conflicted();
+    let projections = 0;
+    const query = cm.listFoldReceipts.bind(cm);
+    cm.listFoldReceipts = (q) => { projections++; return query(q); };
+    await new Promise((r) => setTimeout(r, 200)); // about ten checks at 20 ms
+    expect(projections).toBe(0);
+    expect(m.status().state).toBe('conflict');
+    await cm.fork('side'); // still followed, and still refused
+    await waitFor(() => projections === 1, 'the branch check follows the switch');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(projections).toBe(1);
+    expect(m.status().state).toBe('conflict');
+  });
+
+  test.skipIf(!unprivileged)('a target that cannot be written is tried again at the next receipt, not at every branch check', async () => {
+    const { cm } = await openStore();
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    mkdirSync(dirname(target), { recursive: true });
+    chmodSync(dirname(target), 0o555);
+    const failures: string[] = [];
+    const error = console.error;
+    console.error = (...args: unknown[]) => { failures.push(String(args[0])); };
+    const m = exporter();
+    try {
+      m.bind(cm);
+      await new Promise((r) => setTimeout(r, 200)); // about ten checks at 20 ms
+    } finally {
+      console.error = error;
+      chmodSync(dirname(target), 0o755);
+    }
+    expect(failures.filter((line) => line.includes(`projection to ${target} failed`))).toHaveLength(1);
+    expect(m.status().state).toBe('error');
+    await accept(cm);
+    expect(lines()[0]!.receipts).toBe(1);
+    expect(m.status().state).toBe('exporting');
+  });
+
+  test('a projection that fails right after a takeover is reported with its result', async () => {
+    const { cm, strategy, id, m } = await conflicted();
     const query = cm.listFoldReceipts.bind(cm);
     cm.listFoldReceipts = () => { throw new Error('no space left on device (simulated)'); };
     const result = m.takeOver('resident');
@@ -442,6 +482,7 @@ describe('writer safety', () => {
     expect(existsSync(target)).toBe(false);
     expect(m.status().state).toBe('error');
     // The next receipt writes again, now that the target is ours.
+    strategy.omit.add(id);
     await accept(cm);
     expect(lines()[0]!.kind).toBe('folds-projection');
     expect(m.status().state).toBe('exporting');

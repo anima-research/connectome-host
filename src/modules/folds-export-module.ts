@@ -421,6 +421,11 @@ export class FoldsExportModule implements Module {
       // The selected branch, and its newest receipts as one page (newest first,
       // reading only those): the window, written oldest first.
       const branch = cm.currentBranchRef();
+      // The branch check compares against the branch last projected, whether
+      // or not its write went through: a write refused by a conflict, or one
+      // that failed, is tried again at the next receipt, startup or takeover,
+      // not at every check.
+      this.lastBranchKey = `${branch.id}@${branch.created}`;
       const page = cm.listFoldReceipts({ limit: PROJECTION_WINDOW });
       const receipts = [...page.receipts].reverse();
       const latestReceiptId = page.latestId;
@@ -441,7 +446,6 @@ export class FoldsExportModule implements Module {
       const content = `${JSON.stringify(header)}\n${body}${body ? '\n' : ''}`;
       // Not ours to write (an export conflict): status() and stderr report it.
       if (!this.write(content)) return null;
-      this.lastBranchKey = `${branch.id}@${branch.created}`;
       this.lastProjection = {
         at, branch: { id: branch.id, name: branch.name }, latestReceiptId, receipts: receipts.length, more: page.more,
       };
