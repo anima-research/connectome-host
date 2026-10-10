@@ -1234,7 +1234,12 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     if (typeof live === 'number' && live > 0) maxTokens = live;
   } catch { /* keep the recipe fallback */ }
   const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
-  const compiled = await cm.compile({ maxTokens, reserveForResponse });
+  // A dry run: this compile is shown, never sent. Committing would rewrite
+  // the resident's fold plan and queue compression work on every render,
+  // mid-stream included (context-manager's SelectOptions.dryRun names this
+  // case), and once thinking binding lands it would fence the replies the
+  // resident is streaming (Ada-1017, context-manager #155).
+  const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
 
   // Curve inspection only needs text and source metadata. Resolving every
   // historical blob here re-inlines all base64 media and can expand a
