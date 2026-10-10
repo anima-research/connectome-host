@@ -22,7 +22,12 @@ import type {
   RenderedSummaryInfo,
   TokenBudget,
 } from '@animalabs/context-manager';
-import { FoldsExportModule, PROJECTION_WINDOW } from '../src/modules/folds-export-module.js';
+import {
+  FoldsExportModule,
+  PROJECTION_WINDOW,
+  type FoldsExportStatus,
+  type TakeOverResult,
+} from '../src/modules/folds-export-module.js';
 
 const BUDGET: TokenBudget = { maxTokens: 1_000_000, reserveForResponse: 0 };
 
@@ -77,6 +82,19 @@ function lines(path = target): Array<Record<string, unknown>> {
 }
 
 const sha = (p: string) => createHash('sha256').update(readFileSync(p)).digest('hex');
+
+/** What `fn` writes to stderr (console.error), one entry per call. */
+async function stderrOf(fn: () => unknown): Promise<string[]> {
+  const written: string[] = [];
+  const error = console.error;
+  console.error = (...args: unknown[]) => { written.push(args.map(String).join(' ')); };
+  try {
+    await fn();
+  } finally {
+    console.error = error;
+  }
+  return written;
+}
 
 async function waitFor(cond: () => boolean, what: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -162,6 +180,9 @@ describe('folds.jsonl projection', () => {
     const m = exporter();
     m.bind(cm);
     const before = sha(target);
+    let projections = 0;
+    const query = cm.listFoldReceipts.bind(cm);
+    cm.listFoldReceipts = (q) => { projections++; return query(q); };
     const first = await cm.compile(BUDGET);
     cm.acceptRound({ provenance: first.provenance! }); // baseline
     strategy.omit.add(ids[0]!);
@@ -169,6 +190,7 @@ describe('folds.jsonl projection', () => {
     cm.acceptRound({ provenance: second.provenance! }); // a change, before the loop turns
     expect(sha(target)).toBe(before);
     await projected();
+    expect(projections).toBe(1);
     expect(lines()[0]!.receipts).toBe(2);
     expect(lines().slice(1).map((r) => r.kind)).toEqual(['baseline', 'change']);
   });
@@ -214,6 +236,27 @@ describe('folds.jsonl projection', () => {
     expect(String(file[0]!.freshness)).toContain('afterId "0"');
     expect(m.status().lastProjection?.more).toBe(true);
   }, 60_000); // a hundred and one durable acceptances
+
+  test('stopping writes a receipt accepted in the same turn, before the store closes', async () => {
+    const { cm } = await openStore();
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    const compiled = await cm.compile(BUDGET);
+    cm.acceptRound({ provenance: compiled.provenance! }); // its projection waits for the next turn
+    await m.stop(); // ...which finds the module stopped; stopping wrote it already
+    expect(lines()[0]!.receipts).toBe(1);
+  });
+
+  test('status is unbound before binding and after stopping', async () => {
+    const { cm } = await openStore();
+    const m = exporter();
+    expect(m.status().state).toBe('unbound');
+    m.bind(cm);
+    expect(m.status().state).toBe('exporting');
+    await m.stop();
+    expect(m.status().state).toBe('unbound');
+  });
 
   test('heals a crash between a receipt and its projection at the next startup', async () => {
     const { cm } = await openStore();
@@ -283,6 +326,58 @@ describe('folds.jsonl projection', () => {
 });
 
 describe('writer safety', () => {
+  test('a crash between the replace and the ledger commit leaves the file recognized at the next startup', async () => {
+    const { cm, strategy } = await openStore();
+    const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    await accept(cm);
+    // From here on the host "dies" after each replace: every commit is
+    // refused, and only what was recorded before the replace is on disk.
+    const internals = m as unknown as { writeLedger(ledger: { targets: Record<string, { pending?: string }> }): void };
+    const writeLedger = internals.writeLedger.bind(m);
+    internals.writeLedger = (ledger) => {
+      if (!ledger.targets[target]?.pending) throw new Error('the host died before the commit (simulated)');
+      writeLedger(ledger);
+    };
+    strategy.omit.add(id);
+    await accept(cm);
+    expect(lines()[0]!.receipts).toBe(2); // the replace landed
+    await m.stop();
+    const next = exporter();
+    next.bind(cm);
+    expect(next.status().state).toBe('exporting');
+    expect(lines()[0]!.receipts).toBe(2);
+  });
+
+  test('an older projection of the host\'s own, put back, is a conflict: only the last one written is recognized', async () => {
+    const { cm, strategy } = await openStore();
+    const id = cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    await accept(cm);
+    const older = readFileSync(target);
+    strategy.omit.add(id);
+    await accept(cm);
+    writeFileSync(target, older); // say, restored from a backup
+    strategy.omit.delete(id);
+    await accept(cm);
+    expect(readFileSync(target).equals(older)).toBe(true);
+    expect(m.status().state).toBe('conflict');
+  });
+
+  test('an ownership ledger it doesn\'t recognize stops the export, and status reports it instead of throwing', async () => {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(ledgerPath, JSON.stringify({ v: 2, targets: {} }));
+    const { cm } = await openStore();
+    const m = exporter();
+    m.bind(cm);
+    expect(existsSync(target)).toBe(false);
+    const status = m.status();
+    expect(status.state).toBe('error');
+    expect(status.error).toContain('unrecognized folds export ownership ledger');
+  });
+
   test('recovers its own file across two interrupted replacements without a false conflict', async () => {
     const { cm, strategy } = await openStore();
     const ids = [cm.addMessage('user', [{ type: 'text', text: 'one' }]), cm.addMessage('user', [{ type: 'text', text: 'two' }])];
@@ -319,13 +414,20 @@ describe('writer safety', () => {
     const { cm } = await openStore();
     cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
     const m = exporter();
-    m.bind(cm);
-    await accept(cm);
+    const conflictLog = await stderrOf(async () => {
+      m.bind(cm);
+      await accept(cm);
+    });
     expect(sha(target)).toBe(before);
     const status = m.status();
     expect(status.state).toBe('conflict');
     expect(status.target).toBe(target);
     expect(status.conflict?.reason).toContain('never written');
+    expect(conflictLog).toHaveLength(1);
+    expect(conflictLog[0]).toStartWith(
+      `[folds-export] EXPORT CONFLICT at ${target}: a file already exists at the target, and this host has never written it. ` +
+      'The file is preserved untouched and export to it has stopped.',
+    );
 
     // Another target resumes export there; the conflicted file stays untouched.
     const other = join(dataDir, 'memory', 'folds-elsewhere.jsonl');
@@ -334,10 +436,12 @@ describe('writer safety', () => {
     expect(sha(target)).toBe(before);
 
     // An explicit takeover keeps the existing file beside the target.
-    const result = m.takeOver('operator');
+    let result!: TakeOverResult;
+    const takeoverLog = await stderrOf(() => { result = m.takeOver('operator'); });
     expect(result.ok).toBe(true);
     const kept = readdirSync(dirname(target)).filter((f) => f.startsWith('folds.jsonl.kept-'));
     expect(kept.length).toBe(1);
+    expect(takeoverLog).toEqual([`[folds-export] operator took over ${target}; the existing file is kept as ${join(dirname(target), kept[0]!)}`]);
     expect(readFileSync(join(dirname(target), kept[0]!), 'utf8')).toContain('by another runtime');
     expect(lines()[0]!.kind).toBe('folds-projection');
     expect(m.status().state).toBe('exporting');
@@ -421,6 +525,7 @@ describe('writer safety', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.keptAs).toBeDefined();
+      expect(result.error).toContain(`The existing file was already kept as ${result.keptAs}`);
       expect(result.error).toContain('the conflict was cleared');
     }
     expect(m.status().state).not.toBe('conflict');
@@ -428,6 +533,53 @@ describe('writer safety', () => {
     strategy.omit.add(id);
     await accept(cm);
     expect(lines()[0]!.kind).toBe('folds-projection');
+  });
+
+  test('a takeover after the conflicted file was removed keeps nothing aside and resumes export', async () => {
+    const { m } = await conflicted();
+    rmSync(target);
+    expect(m.takeOver('operator')).toEqual({ ok: true, keptAs: null });
+    expect(readdirSync(dirname(target)).filter((f) => f.includes('.kept-'))).toEqual([]);
+    expect(lines()[0]!.kind).toBe('folds-projection');
+    expect(m.status().state).toBe('exporting');
+  });
+
+  test.skipIf(!unprivileged)('a failed takeover after the conflicted file was removed says nothing is at the target', async () => {
+    const { m } = await conflicted();
+    rmSync(target);
+    chmodSync(dataDir, 0o333); // the ledger's rename lands, then its sync fails
+    let result!: TakeOverResult;
+    try {
+      result = m.takeOver('operator');
+    } finally {
+      chmodSync(dataDir, 0o755);
+    }
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.keptAs).toBeUndefined();
+      expect(result.error).toContain('Nothing is at the target');
+    }
+  });
+
+  test.skipIf(!unprivileged)('a takeover whose ledger can\'t be read fails and points to /folds, and status reports the ledger', async () => {
+    const { m, before } = await conflicted();
+    chmodSync(ledgerPath, 0o000);
+    let result!: TakeOverResult;
+    let status!: FoldsExportStatus;
+    try {
+      result = m.takeOver('operator');
+      status = m.status();
+    } finally {
+      chmodSync(ledgerPath, 0o644);
+    }
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('The file is still at the target');
+      expect(result.error).toContain("the ledger can't be read; /folds shows the export's state");
+    }
+    expect(status.state).toBe('error');
+    expect(status.error).toContain('ownership ledger unreadable');
+    expect(sha(target)).toBe(before);
   });
 
   test('a target in conflict is not projected again at every branch check, only at a branch change', async () => {
@@ -463,6 +615,7 @@ describe('writer safety', () => {
     }
     expect(failures.filter((line) => line.includes(`projection to ${target} failed`))).toHaveLength(1);
     expect(m.status().state).toBe('error');
+    expect(m.status().error).toContain('EACCES');
     await accept(cm);
     expect(lines()[0]!.receipts).toBe(1);
     expect(m.status().state).toBe('exporting');
@@ -559,6 +712,9 @@ describe('writer safety', () => {
     const m = exporter();
     m.bind(cm);
     expect(m.getUtilities().map((u) => u.name)).toEqual(['take_over_export']);
+    const unknown = await m.handleToolCall({ id: 't0', name: 'status', input: {} } as never);
+    expect(unknown).toEqual({ success: false, isError: true, error: 'Unknown tool: status' });
+    expect(m.status().state).toBe('conflict');
     const res = await m.handleToolCall({ id: 't', name: 'take_over_export', input: {} } as never);
     expect(res.success).toBe(true);
     expect(existsSync(target)).toBe(true);
