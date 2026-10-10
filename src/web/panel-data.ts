@@ -1213,9 +1213,13 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
  * token estimate, the raw-history tokens it covers (leaf messages,
  * recursively through the summary tree), date span, and full text.
  *
- * Same side-effect class as previewActivation / makeup: the compile may
- * commit resolution updates, exactly as the agent's own next turn would.
- * No inference, no message writes.
+ * The compile is a dry run: shown, never sent, so it commits no fold
+ * resolutions and queues no compression work. It isn't free of every effect:
+ * context-manager 0.13's adaptive select still records its estimate and arms
+ * calibration on a dry run, so a render between a real compile and its first
+ * usage report replaces that estimate with one at the same live budget. Over
+ * budget, a dry run reports rather than throws, so the panel plots where it
+ * used to fail. No inference, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
