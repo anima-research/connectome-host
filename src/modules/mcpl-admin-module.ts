@@ -476,7 +476,7 @@ export class McplAdminModule implements Module {
       note = this.overlayNote(id, readAgentOverlay(this.overlayPath), false);
       // The restart reconnects with the configuration of the last connect,
       // while the note reads the file as it is now (Nell-1783's probe).
-      if (note) note += ' That describes your overlay file as it is now: a hand edit since the last mcpl_deploy takes effect at the next deploy or host start, not at this restart.';
+      if (note) note += ' That describes your overlay file as it is now: a hand edit since the last mcpl_deploy takes effect at the next host start, unless a later mcpl_deploy replaces it; not at this restart.';
     } catch {
       note = ' Your overlay file couldn\'t be read, so nothing is said here about your entry.';
     }
