@@ -438,13 +438,6 @@ export class FoldsExportModule implements Module {
         freshness: FRESHNESS,
       };
       const body = receipts.map((r) => JSON.stringify(r)).join('\n');
-      // The header's asOf changes every write; ownership is decided on the
-      // whole file, and an unchanged receipt list is not rewritten at all.
-      if (this.lastProjection && this.lastBranchKey === `${branch.id}@${branch.created}`
-        && this.lastProjection.latestReceiptId === latestReceiptId && this.lastProjection.receipts === receipts.length
-        && this.ownsCurrentFile()) {
-        return null;
-      }
       const content = `${JSON.stringify(header)}\n${body}${body ? '\n' : ''}`;
       // Not ours to write (an export conflict): status() and stderr report it.
       if (!this.write(content)) return null;
@@ -459,13 +452,6 @@ export class FoldsExportModule implements Module {
       console.error(`[folds-export] projection to ${this.target} failed: ${this.lastError}`);
       return this.lastError;
     }
-  }
-
-  /** Whether the file on disk is still exactly what the host last committed. */
-  private ownsCurrentFile(): boolean {
-    const entry = this.readLedger().targets[this.target];
-    if (!entry?.committed || !existsSync(this.target)) return false;
-    return sha256(readFileSync(this.target)) === entry.committed;
   }
 
   /** The ownership protocol around one write. Returns false when it did not write. */

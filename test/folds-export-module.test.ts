@@ -143,6 +143,19 @@ describe('folds.jsonl projection', () => {
     expect(cm.listFoldReceipts({ branch: 'side' }).branch?.name).toBe('side');
   });
 
+  test('follows a switch between two branches that have no receipts', async () => {
+    const { cm } = await openStore();
+    cm.addMessage('user', [{ type: 'text', text: 'hello' }]);
+    const m = exporter();
+    m.bind(cm);
+    const first = (lines()[0]!.branch as { name: string }).name;
+    await cm.fork('quiet');
+    await waitFor(() => (lines()[0]!.branch as { name: string }).name === 'quiet', 'projection follows the switch');
+    expect(lines()[0]!.receipts).toBe(0);
+    expect(lines()[0]!.latestReceiptId).toBeNull();
+    expect(first).not.toBe('quiet');
+  });
+
   test('projects off the round that accepted the receipt, once per turn however many receipts arrive', async () => {
     const { cm, strategy } = await openStore();
     const ids = ['one', 'two', 'three'].map((t) => cm.addMessage('user', [{ type: 'text', text: t }]));
@@ -166,15 +179,23 @@ describe('folds.jsonl projection', () => {
     cm.addMessage('user', [{ type: 'text', text: 'world' }]);
     const m = exporter();
     m.bind(cm);
-    // A baseline, then a change on every round: one receipt more than the window.
-    for (let i = 0; i <= PROJECTION_WINDOW; i++) {
+    // A baseline, then a change on every round: a full window first.
+    const round = async (i: number) => {
       if (i > 0) {
         if (strategy.omit.has(id)) strategy.omit.delete(id);
         else strategy.omit.add(id);
       }
       const result = await cm.compile(BUDGET);
       cm.acceptRound({ provenance: result.provenance! });
-    }
+    };
+    for (let i = 0; i < PROJECTION_WINDOW; i++) await round(i);
+    await projected();
+    const full = lines();
+    expect(full[0]!.receipts).toBe(PROJECTION_WINDOW);
+    expect(full[0]!.more).toBe(false);
+    // One receipt more than the window, projected on its own: the count stays
+    // the same, and the file still moves to the newest receipt.
+    await round(PROJECTION_WINDOW);
     await projected();
     const all: string[] = [];
     for (let after = '0'; ;) {
