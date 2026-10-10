@@ -77,6 +77,23 @@ export interface FoldsExportOptions {
   now?: () => Date;
 }
 
+/**
+ * The exporter's paths for a recipe's `modules.foldsExport`, or null when it
+ * is off: on by default at `<dataDir>/memory/folds.jsonl`, `{ path }` moves
+ * the target, and the ownership ledger stays in the data directory.
+ */
+export function foldsExportPaths(
+  config: boolean | { path?: string } | undefined,
+  dataDir: string,
+): Pick<FoldsExportOptions, 'target' | 'ledgerPath'> | null {
+  if (config === false) return null;
+  const path = typeof config === 'object' ? config.path : undefined;
+  return {
+    target: path ? resolve(path) : resolve(dataDir, 'memory', 'folds.jsonl'),
+    ledgerPath: resolve(dataDir, 'folds-export-ownership.json'),
+  };
+}
+
 interface OwnershipEntry {
   /** Hash of the last projection the host wrote and committed. */
   committed?: string;

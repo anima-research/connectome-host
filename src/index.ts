@@ -66,7 +66,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { FoldsExportModule } from './modules/folds-export-module.js';
+import { FoldsExportModule, foldsExportPaths } from './modules/folds-export-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
@@ -316,15 +316,9 @@ async function createFramework(
   // `framework` exists. As a module it stops inside framework.stop(), after
   // the streams settle and before the store closes, so its final projection
   // follows the last accepted round and precedes any session's replacement.
-  let foldsExport: FoldsExportModule | null = null;
-  if (modules.foldsExport !== false) {
-    const exportCfg = typeof modules.foldsExport === 'object' ? modules.foldsExport : {};
-    foldsExport = new FoldsExportModule({
-      target: exportCfg.path ? resolve(exportCfg.path) : resolve(config.dataDir, 'memory', 'folds.jsonl'),
-      ledgerPath: resolve(config.dataDir, 'folds-export-ownership.json'),
-    });
-    moduleInstances.push(foldsExport);
-  }
+  const foldsPaths = foldsExportPaths(modules.foldsExport, config.dataDir);
+  const foldsExport = foldsPaths ? new FoldsExportModule(foldsPaths) : null;
+  if (foldsExport) moduleInstances.push(foldsExport);
 
   // Gate config — core AF EventGate feature.
   // Path is per-session: {storePath}/config/gate.json
@@ -615,20 +609,11 @@ agents: [agentConfig],
 
   // Fold receipts name the host that wrote them, whether or not folds.jsonl
   // is exported: the journal is canonical, the file a projection of it.
-  {
-    const cm = framework.getAgent(agentName)?.getContextManager() as
-      | { setReceiptSource?: (source: { runtime?: string; dataDirectory?: string; agent?: string }) => void }
-      | undefined;
-    cm?.setReceiptSource?.({ runtime: 'connectome-host', dataDirectory: resolve(config.dataDir), agent: agentName });
-  }
-
-  if (foldsExport) {
-    const cm = framework.getAgent(agentName)?.getContextManager();
-    if (cm) {
-      foldsExport.bind(cm);
-      const exporter = foldsExport;
-      historyModule?.setFoldExportStatus(() => exporter.status());
-    }
+  const residentCm = framework.getAgent(agentName)?.getContextManager();
+  residentCm?.setReceiptSource({ runtime: 'connectome-host', dataDirectory: resolve(config.dataDir), agent: agentName });
+  if (foldsExport && residentCm) {
+    foldsExport.bind(residentCm);
+    historyModule?.setFoldExportStatus(() => foldsExport.status());
   }
 
   // Compression-quarantine klaxon → the framework's ops-alert channel
