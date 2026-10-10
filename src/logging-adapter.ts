@@ -280,12 +280,20 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       } : {}),
     };
     this.log(record);
+    // A poke spends the same credential as a turn, so the credential monitor
+    // hears it too: an idle resident's rejected credential shows at its next
+    // poke rather than at its next turn, and a poke that succeeds settles an
+    // auth alert as a turn would.
+    try {
+      if (call.outcome === 'error') this.onProviderError?.(call.error, 'keepalive');
+      else this.onProviderSuccess?.('keepalive');
+    } catch { /* observers never affect provider traffic */ }
     // Share the log decoder so live and rehydrated spend use identical vendor
     // fields (including cache-write buckets, geography, and service tier).
+    // The ledger comes last, so a throwing ledger observer skips nothing here,
+    // and the guard in the constructor's onCall keeps it from the caller's.
     const observed = parseLoggedCall(record);
-    if (observed) {
-      try { this.onCall?.(observed); } catch { /* observability is isolated */ }
-    }
+    if (observed) this.onCall?.(observed);
   }
 
   private requestSummary(request: ProviderRequest, rawRequest?: unknown): Record<string, unknown> {
@@ -322,8 +330,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   /** Credential-monitor taps: every failed call (auth verdicts are what the
    *  monitor keys on) and every successful one (clears a standing auth
    *  alarm). Observers never affect provider traffic. */
-  onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
-  onProviderSuccess?: (kind: 'complete' | 'stream') => void;
+  onProviderError?: (error: unknown, kind: 'complete' | 'stream' | 'keepalive') => void;
+  onProviderSuccess?: (kind: 'complete' | 'stream' | 'keepalive') => void;
 
   private observeCall(
     kind: 'complete' | 'stream',
