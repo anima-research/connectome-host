@@ -15,7 +15,9 @@ import {
   resolveOverlayEntry,
   serverProvisions,
   lostByReplacement,
+  overlayEntryProblem,
   overlayEntryReplaces,
+  overlayEntryTombstones,
   overlayWarnings,
   hostVariableReferences,
   AGENT_DEPLOY_DENIED_CAPABILITIES,
@@ -284,6 +286,62 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       writeFileSync(path, JSON.stringify({ mcplServers: { world: malformed, shell: odd } }));
       expect(() => overlayWarnings([shell, { id: 'world', url: 'wss://w/mcpl', access: 'portal' }], path)).not.toThrow();
     });
+  });
+
+  // Nell-1783's haiku review of #228: the boot's own reader threw on a null
+  // entry and on non-array args, so the host didn't start; and the readers
+  // disagreed on a non-boolean `disabled`. A malformed entry is now skipped
+  // by the boot and by every reader alike.
+  test('a malformed entry is skipped by the boot and every reader alike, and nothing throws', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      const entries: Record<string, unknown> = {
+        nulled: null,
+        stringArgs: { command: 'node', args: 'server.js' },
+        numberArgs: { command: 'node', args: [1] },
+        yes: { command: 'node', disabled: 'yes' },
+        envList: { command: 'node', env: ['A=1'] },
+        accessNumber: { url: 'wss://w/mcpl', access: 5 },
+        seven: 7,
+        tombstoneArgs: { disabled: true, args: 'x' }, // malformed, so not a tombstone either
+      };
+      writeFileSync(path, JSON.stringify({ mcplServers: entries }));
+      const operator = Object.keys(entries).map((id) => ({ id, command: 'operator-mcpl' }));
+      // The boot: every operator definition stays, and nothing is added.
+      expect(applyAgentOverlay(operator, path)).toEqual(operator);
+      for (const [id, entry] of Object.entries(entries)) {
+        expect(resolveOverlayEntry(id, entry as AgentOverlayEntry, path)).toBeNull();
+        expect(overlayEntryReplaces(entry)).toBe(false);
+        expect(overlayEntryTombstones(entry)).toBe(false);
+      }
+      expect(overlayWarnings(operator, path)).toEqual([
+        `[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "stringArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "numberArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "yes": the agent overlay (${path}) entry is malformed (its disabled is neither true nor false), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "envList": the agent overlay (${path}) entry is malformed (its env isn't a map of text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "accessNumber": the agent overlay (${path}) entry is malformed (its access isn't text), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "seven": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "tombstoneArgs": the agent overlay (${path}) entry is malformed (its args aren't a list of text), so the boot skips it and the operator's definition loads`,
+      ]);
+      // With no operator definition, the line says only that the boot skips it.
+      expect(overlayWarnings([], path)[0]).toBe(`[mcpl] server "nulled": the agent overlay (${path}) entry is malformed (it isn't an object), so the boot skips it`);
+    });
+  });
+
+  test('one tombstone rule for every reader: disabled === true', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { gone: { disabled: true } } }));
+      expect(applyAgentOverlay([{ id: 'gone', command: 'operator-mcpl' }], path)).toEqual([]);
+      expect(overlayEntryTombstones({ disabled: true })).toBe(true);
+      expect(overlayEntryTombstones({ disabled: false, command: 'node' })).toBe(false);
+      expect(overlayEntryProblem({ disabled: 1 })).toBe('its disabled is neither true nor false');
+    });
+  });
+
+  test("an access grant naming a host variable is named, as a token's is", () => {
+    expect(hostVariableReferences({ url: 'wss://w/mcpl', access: '${GRANT}' })).toEqual(['access']);
   });
 
   test('only an entry that puts a server in place replaces one', () => {

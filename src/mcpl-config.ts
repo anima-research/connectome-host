@@ -210,6 +210,34 @@ export function readAgentOverlay(overlayPath: string): Record<string, AgentOverl
   return parsed.mcplServers ?? {};
 }
 
+/**
+ * Why an agent overlay entry is malformed, or null when it's well-formed.
+ * The overlay is the agent's hand-editable file, so an entry can be any
+ * JSON: one that isn't an object, or has a field of the wrong kind, is
+ * skipped by the boot (applyAgentOverlay, resolveOverlayEntry) and by every
+ * reader that says what the boot loaded (overlayEntryReplaces,
+ * overlayWarnings, mcpl_list), so they all agree, and none throws on it. A
+ * malformed entry is neither a tombstone nor a replacement: the operator's
+ * definition, if any, stays (Nell-1783's haiku review of #228).
+ */
+export function overlayEntryProblem(entry: unknown): string | null {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return 'it isn\'t an object';
+  const e = entry as Record<string, unknown>;
+  const text = (k: string) => e[k] !== undefined && typeof e[k] !== 'string';
+  if (e.disabled !== undefined && typeof e.disabled !== 'boolean') return 'its disabled is neither true nor false';
+  for (const k of ['command', 'url', 'token', 'access', 'toolPrefix']) if (text(k)) return `its ${k} isn't text`;
+  if (e.transport !== undefined && e.transport !== 'stdio' && e.transport !== 'websocket') return 'its transport is neither stdio nor websocket';
+  if (e.args !== undefined && !(Array.isArray(e.args) && e.args.every((a) => typeof a === 'string'))) return 'its args aren\'t a list of text';
+  if (e.env !== undefined && !(e.env !== null && typeof e.env === 'object' && !Array.isArray(e.env)
+    && Object.values(e.env as Record<string, unknown>).every((v) => typeof v === 'string'))) return 'its env isn\'t a map of text';
+  return null;
+}
+
+/** A well-formed tombstone: `disabled: true`, the one rule every reader uses. */
+export function overlayEntryTombstones(entry: unknown): boolean {
+  return overlayEntryProblem(entry) === null && (entry as AgentOverlayEntry).disabled === true;
+}
+
 /** Write the agent overlay file. */
 export function saveAgentOverlay(
   overlayPath: string,
@@ -294,7 +322,8 @@ export function resolveOverlayEntry(
   entry: AgentOverlayEntry,
   overlayPath: string,
 ): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
-  if (entry.disabled) return null;
+  if (overlayEntryProblem(entry) !== null) return null;
+  if (entry.disabled === true) return null;
   if (!entry.command && !entry.url) return null;
   const overlayDir = dirname(resolve(overlayPath));
   const { disabled: _d, ...fields } = entry;
@@ -353,8 +382,9 @@ export function applyAgentOverlay<T extends { id: string }>(
   const overlay = readAgentOverlay(overlayPath);
   if (Object.keys(overlay).length === 0) return servers;
 
+  // A malformed entry is skipped: neither a tombstone nor a replacement.
   const result: Array<T | ({ id: string } & Record<string, unknown>)> =
-    servers.filter(s => overlay[s.id]?.disabled !== true);
+    servers.filter(s => !overlayEntryTombstones(overlay[s.id]));
 
   for (const [id, entry] of Object.entries(overlay)) {
     const loaded = resolveOverlayEntry(id, entry, overlayPath);
@@ -428,6 +458,7 @@ export function hostVariableReferences(entry: AgentOverlayEntry): string[] {
   } else if (dialsUrl(entry) && entry.url) {
     if (namesHostVariable(entry.url)) refs.push('url');
     if (namesHostVariable(entry.token)) refs.push('token');
+    if (namesHostVariable(entry.access)) refs.push('access');
   }
   return refs;
 }
@@ -486,9 +517,12 @@ function hostSetsOverServer(name: string): boolean {
 }
 
 /** Whether an overlay entry replaces a server rather than tombstoning it or
- *  being skipped: the entries applyAgentOverlay puts in a server's place. */
-export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entry is AgentOverlayEntry {
-  return entry !== undefined && entry.disabled !== true && Boolean(entry.command || entry.url);
+ *  being skipped: the entries applyAgentOverlay puts in a server's place. A
+ *  malformed one (overlayEntryProblem) never does. */
+export function overlayEntryReplaces(entry: unknown): entry is AgentOverlayEntry {
+  return entry !== undefined && overlayEntryProblem(entry) === null
+    && (entry as AgentOverlayEntry).disabled !== true
+    && Boolean((entry as AgentOverlayEntry).command || (entry as AgentOverlayEntry).url);
 }
 
 /**
@@ -505,6 +539,14 @@ export function overlayWarnings(
   const operatorById = new Map(operatorServers.map((server) => [server.id, server]));
   const lines: string[] = [];
   for (const [id, entry] of Object.entries(readAgentOverlay(overlayPath))) {
+    const problem = overlayEntryProblem(entry);
+    if (problem !== null) {
+      lines.push(
+        `[mcpl] server "${id}": the agent overlay (${overlayPath}) entry is malformed (${problem}), so the boot skips it` +
+        (operatorById.has(id) ? ' and the operator\'s definition loads' : ''),
+      );
+      continue;
+    }
     if (!overlayEntryReplaces(entry)) continue;
     const operator = operatorById.get(id);
     const lost = operator ? lostByReplacement(serverProvisions(operator), entry) : null;

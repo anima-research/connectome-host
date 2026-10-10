@@ -43,7 +43,9 @@ import {
   resolveOverlayEntry,
   serverProvisions,
   lostByReplacement,
+  overlayEntryProblem,
   overlayEntryReplaces,
+  overlayEntryTombstones,
   hostVariableReferences,
   type AgentOverlayEntry,
   type ServerProvisions,
@@ -352,7 +354,10 @@ export class McplAdminModule implements Module {
     // Tombstoned / overlay-only entries that aren't currently loaded
     const liveIds = new Set(live.map(s => s.id));
     for (const [id, entry] of Object.entries(overlay)) {
-      if (entry.disabled) {
+      const problem = overlayEntryProblem(entry);
+      if (problem !== null) {
+        lines.push(`${id}: MALFORMED in your overlay (${problem}), so the boot skips it — redeploy with mcpl_deploy, or mcpl_unload it`);
+      } else if (overlayEntryTombstones(entry)) {
         lines.push(`${id}: UNLOADED (tombstoned in your overlay — redeploy with mcpl_deploy to restore)`);
       } else if (!liveIds.has(id)) {
         lines.push(`${id}: NOT LOADED (in your overlay but not connected — try mcpl_deploy again)`);
@@ -500,7 +505,7 @@ export class McplAdminModule implements Module {
 
     let persistNote = 'Session-only: it will load again on the next host restart.';
     if (persist) {
-      if (overlay[id] && !overlay[id]!.disabled) {
+      if (overlayEntryReplaces(overlay[id])) {
         // Agent-deployed server: forget it entirely. If it replaced the
         // operator's definition, that definition is what the next start loads.
         const replaced = this.replacement(id, overlay) !== null;

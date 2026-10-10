@@ -255,6 +255,27 @@ describe('mcpl_list', () => {
     expect(text).toContain('gone: UNLOADED');
   });
 
+  test("names a malformed overlay entry as one the boot skipped, and the operator's live server as the operator's", async () => {
+    const { stub } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
+      .connectMcplServer({ id: 'discord', command: 'node' });
+    writeFileSync(join(dir, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: { command: 'node' } } }));
+    writeFileSync(overlayPath, JSON.stringify({ mcplServers: { discord: { command: 'node', args: 'server.js' }, stray: null } }));
+    const mod = makeModule(stub);
+    const text = String((await call(mod, 'mcpl_list')).data);
+    expect(text).toContain('source=file/recipe');
+    expect(text).not.toContain('source=agent-overlay');
+    expect(text).toContain("discord: MALFORMED in your overlay (its args aren't a list of text), so the boot skips it");
+    expect(text).toContain("stray: MALFORMED in your overlay (it isn't an object), so the boot skips it");
+    // A restart reads the same file without throwing, so its receipt carries
+    // no "couldn't be read" note.
+    const restarted = await call(mod, 'mcpl_restart', { id: 'discord' });
+    expect(String(restarted.data ?? restarted.error)).not.toContain("couldn't be read");
+    // Unloading it for good tombstones the operator's server over the malformed entry.
+    await call(mod, 'mcpl_unload', { id: 'discord' });
+    expect(readAgentOverlay(overlayPath).discord).toEqual({ disabled: true });
+  });
+
   test('distinguishes older-framework unknown and bounds untrusted revisions', async () => {
     const { stub, servers } = makeStubFramework();
     await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> })
