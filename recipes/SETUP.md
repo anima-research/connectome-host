@@ -98,6 +98,20 @@ cd ../connectome-host
 
 The recipe expects the entry-point script at `../duckduckgo-mcp-server/.venv/bin/duckduckgo-mcp-server`. No API key needed. Don't want public-web access? Remove the `ddg` block from the recipe.
 
+### You.com web search (optional, not enabled by default)
+
+If you want a second public source next to DDG — API-backed search rather than a scraped one — add a `you` block to the recipe. It reaches [You.com's MCP server](https://you.com/docs/welcome) through [`mcp-remote`](https://github.com/geelen/mcp-remote), a stdio↔HTTP bridge the host spawns on demand via `npx` (the same shape as the `gitlab` entry — nothing to clone, no venv):
+
+```jsonc
+"you": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote@0.14.3", "https://api.you.com/mcp?profile=free"],
+  "source": { "npm": "mcp-remote@0.14.3" }
+}
+```
+
+The `profile=free` endpoint needs no API key, so the block is drop-in: paste it under `mcpServers` and the agent picks up `mcpl--you--you-search` (plus `mcpl--you--you-discover`) as a second web source. Web-backed claims cite the same `[WEB: <url>]` convention as the DDG hits. For full-page reads (`you-contents`) point at `https://api.you.com/mcp` instead, append `"--header", "Authorization: Bearer ${YDC_API_KEY}"` to `args`, and set `YDC_API_KEY` (from [you.com/platform/api-keys](https://you.com/platform/api-keys)) in `.env` — an unset required `${VAR}` fails recipe loading the same way GitLab's does. Don't want it? Don't add the block — the shipped recipe doesn't include it.
+
 ### Scribe — audio/video transcription (optional, not included by default)
 
 The miner's prompt also knows how to drive [`dariakroshka/scribe-mcp`](https://github.com/dariakroshka/scribe-mcp) for transcribing recordings. It needs a Gemini API key (media is uploaded to Google's Gemini API) and a sibling checkout, so the shipped recipe omits it. To enable: clone scribe-mcp as a sibling of `connectome-host/`, run `bun install` in it, add a `scribe` block under `mcpServers` (see the [Triumvirate guide's Scribe section](./TRIUMVIRATE-SETUP.md#scribe--audiovideo-transcription-optional-off-by-default) for the exact JSON), and set `GEMINI_API_KEY` in `.env`.

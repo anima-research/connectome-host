@@ -160,7 +160,7 @@ Bun auto-loads `.env`, so nothing else to wire. If a recipe references a `${VAR}
 
 ## Step 6: Decide which data sources you want
 
-The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, GitLab, and DuckDuckGo** (public web); **Notion** and **Scribe** (audio/video transcription) connections can be added — see their subsections below. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
+The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, GitLab, and DuckDuckGo** (public web); **Notion**, **Scribe** (audio/video transcription), and **You.com** (web search) connections can be added — see their subsections below. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
 
 You decide which sources are active by whether you **set the matching env vars** and whether you **keep the matching mcpServers block in the recipe**.
 
@@ -261,6 +261,20 @@ then add this block to `recipes/knowledge-miner.json` under `mcpServers`:
 
 and set `GEMINI_API_KEY=...` in `.env`.
 
+### You.com web search (optional, off by default)
+
+A second public-web source next to DDG — API-backed search with no key to set up. Add this block to `recipes/knowledge-miner.json` under `mcpServers`:
+
+```jsonc
+"you": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote@0.14.3", "https://api.you.com/mcp?profile=free"],
+  "source": { "npm": "mcp-remote@0.14.3" }
+}
+```
+
+Nothing to install — the host spawns [`mcp-remote`](https://github.com/geelen/mcp-remote) through `npx` on demand (the same pattern as the GitLab entry). The `profile=free` endpoint is keyless, so there are no env vars to set; an authenticated variant with full-page reads is described in the [SETUP guide's You.com section](./SETUP.md#youcom-web-search-optional-not-enabled-by-default).
+
 ### Summary table
 
 | Source | Block in recipe? | Env vars needed |
@@ -269,6 +283,7 @@ and set `GEMINI_API_KEY=...` in `.env`.
 | GitLab | Yes (default) — remove if not using | `GITLAB_TOKEN`, `GITLAB_API_URL` |
 | Notion | **No** — add a `syncntn` block if using | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
 | DuckDuckGo | Yes (default) — remove if not using | none (no API key) |
+| You.com | **No** — add a `you` block if using | none (keyless free profile) |
 | Scribe | **No** — add a `scribe` block if using | `GEMINI_API_KEY` (+ optional `NOTION_API_KEY`, `SCRIBE_GLOSSARY_URL`) |
 
 ### Tweaks you can still make to the recipe files
@@ -368,7 +383,7 @@ This is the "leave the bots working overnight, come back tomorrow" workflow.
 
 ### Miner
 
-- Uses `recipes/knowledge-miner.json`. Reads whatever data sources you configured in Step 6 (Zulip always; optionally Notion, GitLab, and DuckDuckGo web search).
+- Uses `recipes/knowledge-miner.json`. Reads whatever data sources you configured in Step 6 (Zulip always; optionally Notion, GitLab, DuckDuckGo, and You.com web search).
 - Wakes automatically when the clerk files a new ticket in `knowledge-requests/` — the miner's wake policy watches that directory.
 - Forks sub-agents to read across sources in parallel, extracts decisions / patterns / people / processes.
 - Writes Draft documents into `./output/` — one `<request_id>.md` per ticket — which the reviewer and clerk see as `library-mined/`, and creates structured "lessons" in its own data dir.

@@ -102,7 +102,7 @@ test('shipped prompts name MCPL server tools as the model sees them', () => {
   // the optional ones the setup guides tell operators to add.
   const files = readdirSync(new URL('../recipes/', import.meta.url)).filter((f) => f.endsWith('.json'));
   const recipes = files.map((file) => ({ file, recipe: readRecipe(file) }));
-  const ids = new Set(['syncntn', 'scribe']);
+  const ids = new Set(['syncntn', 'scribe', 'you']);
   for (const { recipe } of recipes) {
     for (const [id, server] of Object.entries(recipe.mcpServers ?? {})) {
       if (!(server as { toolPrefix?: string }).toolPrefix) ids.add(id);
