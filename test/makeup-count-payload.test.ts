@@ -37,11 +37,24 @@ describe('buildCountTokensPayload', () => {
     expect(payload.system).toEqual(reference.systemContent);
   });
 
-  test('prefixes every text block of a named user message in place — no standalone name block', () => {
-    const payload = buildCountTokensPayload({
-      messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] }],
-    }, 'agent');
-    expect(blocksOf(payload.messages[0]).map((b) => b.text)).toEqual(['Lari: one', 'Lari: two']);
+  // The name rides in the message's own text, never as a block of its own,
+  // and the first text block carries it: that much any formatter must keep,
+  // and the test pins it. Which later blocks carry the name too is the
+  // formatter's choice: membrane 0.5.86 prefixes every one, and membrane's
+  // main (f857fff) only the first. So for the rest, the payload must equal
+  // the formatter's own output.
+  test('prefixes a named user message in place, as the formatter does — no standalone name block', () => {
+    const messages: NormalizedMessage[] = [{ participant: 'Lari', content: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] }];
+    const payload = buildCountTokensPayload({ messages }, 'agent');
+    const blocks = blocksOf(payload.messages[0]);
+    expect(blocks.map((b) => b.type)).toEqual(['text', 'text']);
+    expect(blocks[0]!.text).toBe('Lari: one');
+    expect(blocks[1]!.text).toMatch(/^(Lari: )?two$/);
+    const reference = new NativeFormatter().buildMessages(messages, {
+      participantMode: 'multiuser', assistantParticipant: 'agent', toolMode: 'native',
+      promptCaching: false, cacheMarkers: 'membrane-system',
+    });
+    expect(payload.messages).toEqual(reference.messages as unknown[]);
   });
 
   test('a named message with no text gets no name block', () => {
