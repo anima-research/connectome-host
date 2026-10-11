@@ -1217,9 +1217,10 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
  * resolutions and queues no compression work. It isn't free of every effect:
  * context-manager 0.13's adaptive select still records its estimate and arms
  * calibration on a dry run, so a render between a real compile and its first
- * usage report replaces that estimate with one at the same live budget. Over
- * budget, a dry run reports rather than throws, so the panel plots where it
- * used to fail. No inference, no message writes.
+ * usage report replaces that estimate with one at the same live budget. A
+ * plan over budget is reported rather than thrown at the plan check, so the
+ * panel plots where that check used to fail it; a later stage that can't fit
+ * still throws, as for a real compile. No inference, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
