@@ -31,7 +31,7 @@ import type { AgentFramework } from '@animalabs/agent-framework';
 import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import type { CredentialActionId, CredentialState } from './credential-state.js';
-import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
+import { readMcplServersFile, registryEntryView, saveMcplServers, DEFAULT_CONFIG_PATH } from './mcpl-config.js';
 import { fmtTokens } from './tui.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
@@ -1322,8 +1322,13 @@ function handleMcpList(): CommandResult {
 
   const lines: Line[] = [{ text: `--- MCPL Servers (${entries.length}) ---`, style: 'system' }];
   for (const [id, entry] of entries) {
-    const cmdLine = [entry.command, ...(entry.args ?? [])].join(' ');
-    lines.push({ text: `  ${id}: ${cmdLine}`, style: 'system' });
+    // The target the framework would actually use, and over what.
+    const view = registryEntryView(id, entry);
+    const binding = view.family ? ` (${view.family}/${view.transport})` : '';
+    lines.push({ text: `  ${id}: ${view.target}${binding}`, style: 'system' });
+    if (view.problems) {
+      lines.push({ text: `    stops startup: ${view.problems.join('; ')}`, style: 'system' });
+    }
     if (entry.env && Object.keys(entry.env).length > 0) {
       const envStr = Object.entries(entry.env).map(([k, v]) => `${k}=${v}`).join(' ');
       lines.push({ text: `    env: ${envStr}`, style: 'system' });
@@ -1354,12 +1359,20 @@ function handleMcpAdd(args: string[]): CommandResult {
     ...(cmdArgs.length > 0 ? { args: cmdArgs } : {}),
   };
   if (cmdArgs.length === 0) delete servers[id!]!.args;
+  // The command given is the one that runs: a network target the entry had
+  // goes with the old command line. Left in place, a `transport` of http or
+  // websocket would keep the url in charge and this command would never run.
+  delete servers[id!]!.url;
+  delete servers[id!]!.transport;
   saveMcplServers(DEFAULT_CONFIG_PATH, servers);
 
   const keptEnv = prev?.env ? Object.keys(prev.env) : [];
   return {
     lines: [
       { text: `${prev ? 'Updated' : 'Added'} server "${id}". Restart to apply.`, style: 'system' },
+      ...(prev?.url !== undefined
+        ? [{ text: `  (replaced url: ${prev.url})`, style: 'system' as const }]
+        : []),
       ...(keptEnv.length > 0
         ? [{ text: `  (kept env: ${keptEnv.join(', ')})`, style: 'system' as const }]
         : []),

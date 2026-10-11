@@ -6,7 +6,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { REFUSAL_REACTION_BASELINE } from '@animalabs/agent-framework';
+import { REFUSAL_REACTION_BASELINE, resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
+import type { McplServerConfig } from '@animalabs/agent-framework';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
 
@@ -17,7 +18,8 @@ export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
  * Serializable subset of McplServerConfig (everything except callbacks and scopes).
  */
 export interface ServerFileEntry {
-  command: string;
+  /** Executable to spawn (stdio). An entry has either `command` or `url`. */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   /** Opt in to the full host environment for stdio servers. Requires an
@@ -41,6 +43,22 @@ export interface ServerFileEntry {
    * credential — `access` is a name, not a secret.
    */
   access?: string;
+  /**
+   * Network server URL. The scheme decides the protocol family:
+   * `ws://`/`wss://` is an MCPL server over WebSocket, `http://`/`https://`
+   * a modern MCP (2026-07-28) server over Streamable HTTP.
+   */
+  url?: string;
+  transport?: 'stdio' | 'websocket' | 'http';
+  /** Bearer token: a WebSocket server's ?token=, an HTTP server's Authorization. */
+  token?: string;
+  /** A stdio server's protocol family: `legacy` (MCP 2024-11-05 + MCPL,
+   *  the default) or `modern` (MCP 2026-07-28). URL servers take their
+   *  family from the scheme and must not set this. */
+  protocol?: 'legacy' | 'modern';
+  /** Per-request timeout in ms (framework default 60000). For a modern
+   *  server it is one deadline per tool call, an integer from 1 to 2^31−1. */
+  requestTimeoutMs?: number;
   /** MCPL tool lifecycle (RFC-007) policy — see RecipeMcpServer.toolLifecycle. */
   toolLifecycle?: RecipeToolLifecycle;
 }
@@ -76,9 +94,15 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       return arg;
     });
 
-    servers.push({
+    const loaded: LoadedServerConfig = {
       id,
-      command: entry.command,
+      ...(entry.command !== undefined ? { command: entry.command } : {}),
+      ...(entry.url !== undefined ? { url: entry.url } : {}),
+      ...(entry.transport !== undefined ? { transport: entry.transport } : {}),
+      ...(entry.token !== undefined ? { token: entry.token } : {}),
+      ...(entry.access !== undefined ? { access: entry.access } : {}),
+      ...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
+      ...(entry.requestTimeoutMs !== undefined ? { requestTimeoutMs: checkedRequestTimeout(entry.requestTimeoutMs, id) } : {}),
       args,
       env: entry.env,
       ...(entry.inheritEnv !== undefined
@@ -94,10 +118,83 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       disabledTools: entry.disabledTools,
       channelSubscription: entry.channelSubscription,
       ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
-    });
+    };
+    // A file entry defines a server outright, so it must name a usable one.
+    // The entry is checked as written, not as loaded: this loader doesn't
+    // carry some MCPL-only fields (capabilities, `scopes`, `allowHostCommands`,
+    // `autofetch`, `shouldTriggerInference`), and on a modern server the
+    // operator who set one has to learn it can't apply, as on every surface.
+    const problems = serverProblems({ ...entry, id });
+    if (problems.length > 0) {
+      throw new Error(`mcpl-servers.json: mcplServers.${id}: ${problems.join('; ')}`);
+    }
+    servers.push(loaded);
   }
 
   return servers;
+}
+
+/**
+ * What agent-framework would refuse about a server's protocol settings, as
+ * messages; empty when it is usable. The rules are the framework's own
+ * (`resolveServerBinding`, `serverConfigProblems`), so host validation and
+ * the framework can't drift:
+ * - a URL's scheme decides the family, and `protocol` is a stdio-only choice;
+ * - `transport` has to agree with the URL;
+ * - a modern server has a real deadline and no MCPL-only policy.
+ */
+export function serverProblems(config: { id: string }): string[] {
+  // serverConfigProblems resolves the binding first and reports its error.
+  return serverConfigProblems(config as unknown as McplServerConfig);
+}
+
+/** Whether a server config resolves to the modern MCP family. */
+export function isModernServer(config: { id: string }): boolean {
+  try {
+    return resolveServerBinding(config as unknown as McplServerConfig).family === 'modern';
+  } catch {
+    return false;
+  }
+}
+
+type ServerBinding = ReturnType<typeof resolveServerBinding>;
+
+/**
+ * How the registry views (`/mcp list`, the web panel's registry) show a
+ * mcpl-servers.json entry, by the framework's own binding rules rather than
+ * by which fields happen to be present.
+ */
+export interface RegistryEntryView {
+  /** What it connects to: its command line when the binding is stdio (an
+   *  entry with both `command` and `url` and no `transport` runs the
+   *  command), its url when the binding is a network transport. Empty when
+   *  the entry has neither. */
+  target: string;
+  family?: ServerBinding['family'];
+  transport?: ServerBinding['transport'];
+  /** Why the framework refuses the entry, which stops the host's startup;
+   *  absent when the entry is usable. A refused entry still shows what it
+   *  holds, so one bad entry doesn't make the registry unreadable. */
+  problems?: string[];
+}
+
+export function registryEntryView(id: string, entry: ServerFileEntry): RegistryEntryView {
+  const commandLine = entry.command !== undefined
+    ? [entry.command, ...(entry.args ?? [])].join(' ')
+    : undefined;
+  let binding: ServerBinding | undefined;
+  try {
+    binding = resolveServerBinding({ ...entry, id } as unknown as McplServerConfig);
+  } catch { /* the reason is among the problems below */ }
+  const target = binding
+    ? (binding.transport === 'stdio' ? commandLine : entry.url)
+    : (commandLine ?? entry.url);
+  const problems = serverProblems({ ...entry, id });
+  return {
+    target: target ?? '',
+    ...(binding ? { family: binding.family, transport: binding.transport } : {}),
+    ...(problems.length > 0 ? { problems } : {}),
+  };
 }
 
 function checkedInheritEnv(value: unknown, where: string): boolean {
@@ -110,6 +207,31 @@ function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
   return value as RecipeToolLifecycle;
 }
 
+/** The longest delay a timer keeps: setTimeout sets anything above it to
+ *  1 ms (TimeoutOverflowWarning), in node and in bun alike. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** The host's rule for a server's `requestTimeoutMs`, wherever it is set (a
+ *  recipe, mcpl-servers.json, the agent overlay): a number of milliseconds
+ *  from 0 to MAX_TIMER_MS. agent-framework's legacy engine arms a timer only
+ *  when the value compares above 0, so a negative number or a non-numeric
+ *  string would silently leave the server's calls without one, and it hands
+ *  the value straight to setTimeout, so a larger one would time every call
+ *  out at once. agent-framework adds a modern server's own range
+ *  (serverProblems). */
+export const REQUEST_TIMEOUT_RULE = `must be a number from 0 to ${MAX_TIMER_MS} (ms; 0 disables)`;
+
+export function isRequestTimeout(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TIMER_MS;
+}
+
+function checkedRequestTimeout(value: unknown, id: string): number {
+  if (!isRequestTimeout(value)) {
+    throw new Error(`mcpl-servers.json: mcplServers.${id}.requestTimeoutMs ${REQUEST_TIMEOUT_RULE}`);
+  }
+  return value;
+}
+
 /**
  * Policy fields a recipe may set on a server it takes from mcpl-servers.json
  * by id. The file supplies the spawn command and credentials; the recipe
@@ -119,8 +241,13 @@ export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   'channelSubscription', 'toolPrefix', 'enabledFeatureSets', 'disabledFeatureSets',
   'enabledTools', 'disabledTools', 'reconnect', 'reconnectIntervalMs', 'reconnectMaxIntervalMs',
   'inheritEnv',
-  // A recipe may adopt WebSocket transport for a file-defined server.
-  'url', 'transport', 'token', 'access',
+  // A recipe may move a file-defined server onto a network transport
+  // (WebSocket for MCPL, Streamable HTTP for modern MCP), or run its stdio
+  // command as a modern MCP server.
+  'url', 'transport', 'token', 'access', 'protocol',
+  // How long this agent waits on the server's calls is the recipe's call;
+  // the merged value is validated with the rest at startup.
+  'requestTimeoutMs',
   // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
   // policy, like tool toggles — not a property of where the server came from.
   'toolLifecycle',
@@ -134,6 +261,23 @@ export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
   const merged: Record<string, unknown> = { ...fileEntry };
   for (const field of RECIPE_OVERRIDABLE_SERVER_FIELDS) {
     if (recipeEntry[field] !== undefined) merged[field] = recipeEntry[field];
+  }
+  // A recipe that points a file-defined server at an http(s) URL chooses a
+  // modern MCP server over Streamable HTTP. Left with the file's command, the
+  // merged entry would still resolve to that command (the framework's rule
+  // for a config with both and no transport), so the file's stdio launch is
+  // set aside: always, since a recipe's own `command`/`args` never apply to a
+  // file-defined server (the file supplies the launch). So is a stdio-only
+  // setting or a `transport` the file chose for its own target (stdio, or
+  // websocket for its old URL), unless the recipe gives one itself: those
+  // stay, to be validated against the URL. A ws(s) URL keeps its existing
+  // meaning: it takes effect with `transport: 'websocket'`.
+  if (typeof recipeEntry.url === 'string' && /^https?:\/\//i.test(recipeEntry.url)) {
+    delete merged.command;
+    delete merged.args;
+    for (const fileOnly of ['inheritEnv', 'protocol', 'transport']) {
+      if (recipeEntry[fileOnly] === undefined) delete merged[fileOnly];
+    }
   }
   return merged as T & Record<string, unknown>;
 }
@@ -160,7 +304,17 @@ export function mergeRecipeServers(
   for (const [id, recipeEntry] of Object.entries(recipeServers)) {
     const fileEntry = fileById.get(id);
     if (fileEntry) {
-      out.push(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer);
+      const merged = applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer;
+      // An id-only recipe entry gets its definition here, from the file, so
+      // this is where its merged settings meet the framework's rules: an
+      // override that doesn't fit the file's server (protocol on a URL, MCPL
+      // policy on a modern server) stops startup, as recipe errors do. A
+      // recipe entry with its own command or url was checked by validateRecipe.
+      const problems = serverProblems(merged);
+      if (problems.length > 0) {
+        throw new Error(`mcpServers.${id}, merged with its mcpl-servers.json definition: ${problems.join('; ')}`);
+      }
+      out.push(merged);
     } else if (recipeEntry.command || recipeEntry.url) {
       out.push({ id, ...recipeEntry } as MergedServer);
     } else {
@@ -189,11 +343,6 @@ export const DEFAULT_AGENT_OVERLAY_PATH = resolve(process.cwd(), 'mcpl-servers.a
  * a `command` (stdio) or a `url` (WebSocket), and tombstones have neither.
  */
 export interface AgentOverlayEntry extends Partial<ServerFileEntry> {
-  /** WebSocket URL (WebSocket transport). Mutually exclusive with command. */
-  url?: string;
-  transport?: 'stdio' | 'websocket';
-  /** Bearer token for WebSocket auth. */
-  token?: string;
   /** Tombstone: suppress a recipe/file server the agent unloaded. */
   disabled?: boolean;
 }
@@ -310,11 +459,15 @@ export function resolveOverlayEntry(
   // true` was severed PERMANENTLY by any server restart — with no signal to
   // anyone — until the agent's own next restart, which for a long-lived
   // resident is days away (Mythos, eventless in eidoverse after the
-  // 2026-08-04 door deploy). Websocket entries now default to reconnect
-  // unless the entry explicitly says false. Stdio entries keep the old
-  // default: reconnect does not respawn a dead child anyway (mcpl_restart
-  // is that path), so `true` there would promise something it can't do.
+  // 2026-08-04 door deploy). URL entries, WebSocket and HTTP alike, now
+  // default to reconnect unless the entry explicitly says false. Stdio
+  // entries keep their old default (false). With `reconnect: true` a lost
+  // command server is launched again, in either family; mcpl_restart is the
+  // deliberate restart.
   if (entry.url && rec.reconnect === undefined) rec.reconnect = true;
+  // A modern MCP server has no MCPL capabilities to mask: its only surface
+  // is tools, which is what a self-deployed server is allowed anyway.
+  const modern = isModernServer({ id, ...rec });
   const denied = new Set<string>([
     ...AGENT_DEPLOY_DENIED_CAPABILITIES,
     ...(Array.isArray(rec.disabledCapabilities) ? (rec.disabledCapabilities as unknown[]).map(String) : []),
@@ -322,7 +475,7 @@ export function resolveOverlayEntry(
   return {
     id,
     ...rec,
-    disabledCapabilities: [...denied].sort(),
+    ...(modern ? {} : { disabledCapabilities: [...denied].sort() }),
     ...(entry.args
       ? {
           args: entry.args.map(arg =>
@@ -350,14 +503,49 @@ export function applyAgentOverlay<T extends { id: string }>(
     servers.filter(s => overlay[s.id]?.disabled !== true);
 
   for (const [id, entry] of Object.entries(overlay)) {
-    const loaded = resolveOverlayEntry(id, entry, overlayPath);
-    if (!loaded) continue;
+    const outcome = overlayEntryOutcome(id, entry, overlayPath);
+    if (!outcome) continue;
+    // The overlay is the agent's file: an entry the host or the framework
+    // would refuse is skipped, with a reason, rather than failing the host's
+    // startup. mcpl_deploy refuses such an entry before writing it, and
+    // mcpl_list names a skipped one with its reasons.
+    if (outcome.problems.length > 0) {
+      console.error(`[mcpl] overlay server "${id}" skipped: ${outcome.problems.join('; ')}`);
+      continue;
+    }
     const idx = result.findIndex(s => s.id === id);
-    if (idx >= 0) result[idx] = loaded;
-    else result.push(loaded);
+    if (idx >= 0) result[idx] = outcome.server;
+    else result.push(outcome.server);
   }
 
   return result;
+}
+
+/**
+ * What applyAgentOverlay makes of `id`'s overlay entry: null when the entry
+ * puts nothing in a server's place (there is none, it is a tombstone, or it
+ * has nothing to connect); otherwise the server it resolves to, with the
+ * reasons it is skipped, none when it loads. Every reader of the overlay asks
+ * this, so none of them can disagree with the boot about which entries run.
+ */
+export function overlayEntryOutcome(
+  id: string,
+  entry: AgentOverlayEntry | undefined,
+  overlayPath: string,
+): { server: { id: string; command?: string; url?: string } & Record<string, unknown>; problems: string[] } | null {
+  if (entry === undefined) return null;
+  const server = resolveOverlayEntry(id, entry, overlayPath);
+  if (!server) return null;
+  const timeout = server.requestTimeoutMs;
+  return {
+    server,
+    problems: [
+      ...(timeout !== undefined && !isRequestTimeout(timeout)
+        ? [`MCP server "${id}": requestTimeoutMs ${REQUEST_TIMEOUT_RULE}`]
+        : []),
+      ...serverProblems(server),
+    ],
+  };
 }
 
 /**
@@ -447,10 +635,14 @@ export function lostByReplacement(operator: ServerProvisions, entry: AgentOverla
   return lost.length > 0 ? lost.join('; ') : null;
 }
 
-/** Whether an overlay entry replaces a server rather than tombstoning it or
- *  being skipped: the entries applyAgentOverlay puts in a server's place. */
-export function overlayEntryReplaces(entry: AgentOverlayEntry | undefined): entry is AgentOverlayEntry {
-  return entry !== undefined && entry.disabled !== true && Boolean(entry.command || entry.url);
+/** Whether `id`'s overlay entry replaces a server rather than tombstoning it
+ *  or being skipped: the entries applyAgentOverlay puts in a server's place. */
+export function overlayEntryReplaces(
+  id: string,
+  entry: AgentOverlayEntry | undefined,
+  overlayPath: string,
+): entry is AgentOverlayEntry {
+  return overlayEntryOutcome(id, entry, overlayPath)?.problems.length === 0;
 }
 
 /**
@@ -467,7 +659,7 @@ export function overlayWarnings(
   const operatorById = new Map(operatorServers.map((server) => [server.id, server]));
   const lines: string[] = [];
   for (const [id, entry] of Object.entries(readAgentOverlay(overlayPath))) {
-    if (!overlayEntryReplaces(entry)) continue;
+    if (!overlayEntryReplaces(id, entry, overlayPath)) continue;
     const operator = operatorById.get(id);
     const lost = operator ? lostByReplacement(serverProvisions(operator), entry) : null;
     if (lost) {

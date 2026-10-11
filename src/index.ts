@@ -507,7 +507,9 @@ async function createFramework(
   // framework's McplServerConfig carries both as optional. mergeRecipeServers
   // applies the recipe's policy overrides (RECIPE_OVERRIDABLE_SERVER_FIELDS)
   // to file servers it names, passes recipe-defined servers through verbatim,
-  // and rejects an id-only entry the file doesn't define.
+  // and rejects an id-only entry the file doesn't define, or one whose merged
+  // settings agent-framework would refuse. (Overlay entries are the agent's:
+  // applyAgentOverlay skips an unusable one rather than failing the host.)
   const allServers = mergeRecipeServers(
     recipeServers as unknown as Record<string, Record<string, unknown>>,
     fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,

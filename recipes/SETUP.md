@@ -239,6 +239,8 @@ Instead of editing the recipe, you can keep a server's launch command and creden
 
 A file entry is used only when the recipe names the same id under `mcpServers` (the miner recipe does name `gitlab`). For that id the file supplies `command`, `args` and `env`; the recipe entry can still override policy fields such as `channelSubscription`, `toolPrefix`, tool/feature-set filters and reconnect settings. An empty `enabledFeatureSets: []` in either file enables no feature sets rather than all of them; see [Feature sets and tool names](../README.md#feature-sets-and-tool-names). The recipe is still loaded with `${VAR}` substitution first, so while its `gitlab` block references `${GITLAB_TOKEN}`, that variable must be set (or the `env` removed from the recipe's block) even though the file's values are the ones used.
 
+A file entry can also name a network server with `url` (plus `token` or `access`), or run its `command` as a modern MCP server with `"protocol": "modern"`. An `http(s)://` URL is a modern MCP server over Streamable HTTP, and `ws(s)://` is MCPL over WebSocket. [Modern MCP servers](../README.md#modern-mcp-servers) covers what changes for them. An entry the framework would refuse stops startup, with the file and id named in the error.
+
 Changes require a restart to take effect.
 
 ### Read-only GitLab

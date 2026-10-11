@@ -430,7 +430,21 @@ export interface McplListMessage {
   configPath: string;
   servers: Array<{
     id: string;
-    command: string;
+    /** What the entry connects to, by the framework's binding rules: its
+     *  command line on stdio, its url on a network transport. Empty when
+     *  the entry names neither. Absent from a fleet child older than this
+     *  field (one adopted across a parent upgrade). */
+    target?: string;
+    /** `legacy` or `modern`; absent when the entry can't be resolved. */
+    family?: 'legacy' | 'modern';
+    /** `stdio`, `websocket` or `http`; absent when the entry can't be resolved. */
+    transport?: 'stdio' | 'websocket' | 'http';
+    /** Why the framework refuses the entry, which stops the host's startup;
+     *  absent when it is usable. */
+    problems?: string[];
+    /** The entry's own command line, for readers older than `target`; a
+     *  current reader shows `target`, and these only when it is absent. */
+    command?: string;
     args?: string[];
     env?: Record<string, string>;
     toolPrefix?: string;
@@ -449,6 +463,13 @@ export interface McplListMessage {
     toolPrefix?: string;
     /** command or url — whatever the transport targets. */
     target?: string;
+    /** `legacy` (MCP 2024-11-05 + MCPL) or `modern` (MCP 2026-07-28);
+     *  absent from a framework without modern support. */
+    family?: 'legacy' | 'modern';
+    /** The MCP revision its handshake established. */
+    protocolVersion?: string;
+    /** `stdio`, `websocket` or `http`. */
+    transport?: string;
   }>;
   /** Every tool the scoped process offers, with its effective MCPL class
    *  (RFC-008) and the source that decided it: `override` (recipe
