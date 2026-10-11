@@ -1213,9 +1213,14 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
  * token estimate, the raw-history tokens it covers (leaf messages,
  * recursively through the summary tree), date span, and full text.
  *
- * Same side-effect class as previewActivation / makeup: the compile may
- * commit resolution updates, exactly as the agent's own next turn would.
- * No inference, no message writes.
+ * The compile is a dry run: shown, never sent, so it commits no fold
+ * resolutions and queues no compression work. It isn't free of every effect:
+ * context-manager 0.13's adaptive select still records its estimate and arms
+ * calibration on a dry run, so a render between a real compile and its first
+ * usage report replaces that estimate with one at the same live budget. A
+ * plan over budget is reported rather than thrown at the plan check, so the
+ * panel plots where that check used to fail it; a later stage that can't fit
+ * still throws, as for a real compile. No inference, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
@@ -1234,7 +1239,12 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     if (typeof live === 'number' && live > 0) maxTokens = live;
   } catch { /* keep the recipe fallback */ }
   const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
-  const compiled = await cm.compile({ maxTokens, reserveForResponse });
+  // A dry run: this compile is shown, never sent. Committing would rewrite
+  // the resident's fold plan and queue compression work on every render,
+  // mid-stream included (context-manager's SelectOptions.dryRun names this
+  // case), and once thinking binding lands it would fence the replies the
+  // resident is streaming (Ada-1017, context-manager #155).
+  const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
 
   // Curve inspection only needs text and source metadata. Resolving every
   // historical blob here re-inlines all base64 media and can expand a
