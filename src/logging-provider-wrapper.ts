@@ -103,6 +103,15 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     return this.inner.requiresNativeResponsesInput;
   }
 
+  // Optional in newer membrane releases. Membrane's round reports rely on it:
+  // a wrapper that dropped it would make every round's fidelity 'unknown'.
+  // ProviderRequestOptions (with onContentAltered) pass through unchanged.
+  get reportsContentAlterations(): boolean | undefined {
+    return (this.inner as ProviderAdapter & {
+      readonly reportsContentAlterations?: boolean;
+    }).reportsContentAlterations;
+  }
+
   // Optional in newer membrane releases; preserve the inner provider's media
   // policy without imposing it on older adapters that do not advertise one.
   get toolResultImageMediaTypes(): ReadonlySet<string> | undefined {

@@ -66,6 +66,7 @@ import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
+import { FoldsExportModule, foldsExportPaths } from './modules/folds-export-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
@@ -309,6 +310,15 @@ async function createFramework(
     assertSemanticSearchRegistered(historyModule, historyOpts.semantic !== undefined);
     moduleInstances.push(historyModule);
   }
+
+  // The resident's fold record, folds.jsonl (CONN-20). ON by default; see
+  // recipe.ts `foldsExport`. Bound to the agent's ContextManager below, once
+  // `framework` exists. As a module it stops inside framework.stop(), after
+  // the streams settle and before the store closes, so its final projection
+  // follows the last accepted round and precedes any session's replacement.
+  const foldsPaths = foldsExportPaths(modules.foldsExport, config.dataDir);
+  const foldsExport = foldsPaths ? new FoldsExportModule(foldsPaths) : null;
+  if (foldsExport) moduleInstances.push(foldsExport);
 
   // Gate config — core AF EventGate feature.
   // Path is per-session: {storePath}/config/gate.json
@@ -595,6 +605,15 @@ agents: [agentConfig],
     if (cm) {
       historyModule.bind(cm, framework.channels ?? undefined);
     }
+  }
+
+  // Fold receipts name the host that wrote them, whether or not folds.jsonl
+  // is exported: the journal is canonical, the file a projection of it.
+  const residentCm = framework.getAgent(agentName)?.getContextManager();
+  residentCm?.setReceiptSource({ runtime: 'connectome-host', dataDirectory: resolve(config.dataDir), agent: agentName });
+  if (foldsExport && residentCm) {
+    foldsExport.bind(residentCm);
+    historyModule?.setFoldExportStatus(() => foldsExport.status());
   }
 
   // Compression-quarantine klaxon → the framework's ops-alert channel

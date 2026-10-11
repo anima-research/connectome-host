@@ -53,3 +53,22 @@ describe('LoggingProviderAdapter image capability', () => {
     expect(wrapped.toolResultImageMediaTypes).toBe(types);
   });
 });
+
+describe('LoggingProviderAdapter content-alteration reporting', () => {
+  test('forwards the inner adapter\'s declaration and passes onContentAltered through', async () => {
+    let heard = 0;
+    const inner = {
+      ...adapter(),
+      reportsContentAlterations: true,
+      stream: async (_request: ProviderRequest, _callbacks: unknown, options?: { onContentAltered?: () => void }) => {
+        options?.onContentAltered?.();
+        return { content: [], stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } } as ProviderResponse;
+      },
+    } as ProviderAdapter & { readonly reportsContentAlterations?: boolean };
+    const wrapped = new LoggingProviderAdapter(inner, '/dev/null');
+    expect(wrapped.reportsContentAlterations).toBe(true);
+    await wrapped.stream({ model: 'm', messages: [] } as unknown as ProviderRequest, { onChunk: () => {} } as never, { onContentAltered: () => { heard++; } } as never);
+    expect(heard).toBe(1);
+    expect(new LoggingProviderAdapter(adapter(), '/dev/null').reportsContentAlterations).toBeUndefined();
+  });
+});
