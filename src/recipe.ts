@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { isBuiltinStrategyType } from './extensions.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
@@ -1602,7 +1603,10 @@ void recipeKeyListsInStep;
 /** Keys that were renamed or removed, with what replaced them. */
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
-  'agent.strategy.identityReminderSilent': 'a silence sentence at the end of agent.strategy.identityReminder',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -1658,13 +1662,17 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
-  // A strategy's keys are open (an extension strategy takes its own), so only
-  // a retired one is named there.
+  // A strategy's keys are open: an extension strategy's factory gets the whole
+  // strategy config and reads its own keys. So a retired key is named only for
+  // a built-in type, the type buildFrameworkStrategy defaults to included.
   const strategy = obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)
     ? (obj.agent as Record<string, unknown>).strategy
     : undefined;
-  if (strategy && typeof strategy === 'object' && !Array.isArray(strategy)) {
-    for (const key of Object.keys(strategy)) {
+  const strategyType = strategy && typeof strategy === 'object' && !Array.isArray(strategy)
+    ? (strategy as Record<string, unknown>).type ?? 'autobiographical'
+    : undefined;
+  if (typeof strategyType === 'string' && isBuiltinStrategyType(strategyType)) {
+    for (const key of Object.keys(strategy as Record<string, unknown>)) {
       const path = `agent.strategy.${key}`;
       if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
     }
