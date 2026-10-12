@@ -5,20 +5,26 @@
   with counts per channel. A chosen scope is bound to exactly the previewed
   messages. The result shows the framework's marker receipt. The branch
   panel lists the framework's awareness journal (feature `awareness`) with
-  cancel, retract (after confirmation) and release. An agent-framework
-  without the choice marks every removed Discord message itself and moves
-  those marks with branch switches, so against one the web UI refuses live
+  cancel, retract (after confirmation) and release. Live rollback and
+  suppression need preview-bound surgery: the choice, and the framework's
+  own check of the previewed store and branch. An agent-framework without
+  the choice marks every removed Discord message itself and moves those
+  marks with branch switches, and one with the choice alone can't keep the
+  change on what was previewed, so against either the web UI refuses live
   rollback and suppression (`code: 'unsupported'`) and the dialog says the
   framework needs upgrading; previously it ran them and the framework marked
   everything. This follows an incident in which one rollback queued 918
   reactions, mostly on other people's messages. Every live surgery is now
   preview-bound: it runs only against the store and branch its preview
   described, which the framework checks under its own reservation, and an
-  open dialog can't be confirmed once the session or branch changes. A
+  open dialog goes stale, unconfirmable, once it hears that the session or
+  branch changed. A
   journal action reaches only the framework whose journal it was chosen
   from, and "quiesce, then retry" pauses only the store its surgery was
-  previewed on. The host records its own refusals in the operator log as the
-  framework records its own. A scope over 20,000 messages isn't offered
+  previewed on. The host records its own refusals in the bound framework's
+  operator log as the framework records its own, and answers a surgery or a
+  journal action sent while no framework is bound (`code: 'stale'`) instead
+  of leaving its dialog waiting. A scope over 20,000 messages isn't offered
   (never truncated), a preview lost to a reconnect is asked for again, and a
   surgery whose result is lost to a disconnect says its outcome is unknown
   instead of waiting forever. This needs an agent-framework release carrying

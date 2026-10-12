@@ -295,9 +295,9 @@ describe('surgery marks over the WebUI', () => {
       // evaluated when the surgery applies). Each malformed frame is answered
       // with an error frame, in order, and none is run.
       client.send({ type: 'rollback', messageId: 's9', marks: 'none', corrId: 'r0' });
-      const unbound = await client.next('surgery-result', 'r0');
-      expect(unbound.ok).toBe(false);
-      expect(unbound.code).toBe('stale');
+      const unpreviewed = await client.next('surgery-result', 'r0');
+      expect(unpreviewed.ok).toBe(false);
+      expect(unpreviewed.code).toBe('stale');
       for (const partial of [{}, { storeId: 'store-a' }, { branch: 'main' }]) {
         client.send({ type: 'rollback', messageId: 's9', marks: 'none', expectedContext: partial, corrId: 'rp' });
       }
@@ -651,6 +651,23 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
+  test("a preview whose context a confirmation couldn't carry is refused, so no dialog holds one", async () => {
+    bind(true, 's1');
+    const client = await connect();
+    try {
+      liveBranch.name = 'b'.repeat(500);
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p1' });
+      expect((await client.next('surgery-preview', 'p1')).ok).toBe(true);
+      liveBranch.name = 'b'.repeat(501);
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p2' });
+      const refused = await client.next('surgery-preview', 'p2');
+      expect(refused.ok).toBe(false);
+      expect(String(refused.error)).toMatch(/longer than a confirmation can carry/);
+    } finally {
+      client.ws.close();
+    }
+  });
+
   test('a journal that throws is answered with the reason', async () => {
     bind(true, 's1', true, { journalThrows: true });
     const client = await connect();
@@ -664,7 +681,7 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
-  test('while no framework is bound, every surgery, preview and journal request is answered with that reason, and nothing runs', async () => {
+  test('while no framework is bound, every surgery and journal request is answered with that reason, and nothing runs', async () => {
     bind(true, 's1');
     const client = await connect();
     try {
@@ -683,11 +700,15 @@ describe('surgery marks over the WebUI', () => {
       expect(surgery.ok).toBe(false);
       expect(surgery.code).toBe('stale');
       expect(String(surgery.error)).toMatch(/no framework is bound/);
+      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', expectedContext: context, corrId: 's' });
+      const suppression = await client.next('surgery-result', 's');
+      expect(suppression.code).toBe('stale');
+      expect(String(suppression.error)).toMatch(/no framework is bound/);
 
+      // A preview isn't answered in its own frame: its dialog settles on the
+      // welcome that follows the bind, which makes it stale or asks again.
       client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p2' });
-      const preview = await client.next('surgery-preview', 'p2');
-      expect(preview.ok).toBe(false);
-      expect(String(preview.error)).toMatch(/no framework is bound/);
+      expect((await client.next('error')).message).toBe('host not ready');
 
       client.send({ type: 'request-awareness', corrId: 'l2' });
       expect(String((await client.next('awareness', 'l2')).error)).toMatch(/no framework is bound/);

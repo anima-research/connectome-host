@@ -666,10 +666,13 @@ export interface DiscordRefWire {
  * The operator's awareness-marks choice for a surgery: `none` (the default:
  * the surgery is local to the agent), or a publication scope. `addressed`
  * covers removed messages that addressed the agent (mentions, replies to the
- * bot, DMs). `refs` binds the choice to exactly the previewed messages, and a
- * scope always carries them: every surgery here is previewed, so it never
- * asks the framework to evaluate a scope when the surgery applies (which
- * would mark messages that arrived after the preview).
+ * bot, DMs). `refs` names the messages the choice authorizes: the framework
+ * marks only those of them the surgery removes. The SPA sends exactly the
+ * refs the preview listed for the chosen scope; the host checks their shape,
+ * not that the preview listed them. A scope always carries refs: every
+ * surgery here is previewed, so it never asks the framework to evaluate a
+ * scope when the surgery applies (which would mark messages that arrived
+ * after the preview).
  */
 export type MarksChoiceWire = 'none' | {
   scope: 'addressed' | 'all';
@@ -800,10 +803,10 @@ export interface SurgeryResultMessage {
    *  can't run a preview-bound surgery (upgrade it); 'stale' means the
    *  confirmation isn't bound to the live context: it carries no preview
    *  context, the store or branch changed since its preview, or no framework
-   *  is bound right now (preview again). The framework's other codes:
-   *  'unknown-agent', 'unknown-message' and 'invalid' are input problems;
-   *  'failed' and 'unresolved' report an outcome (the change failed, or
-   *  whether it applied is unknown). */
+   *  is bound right now (preview again). agent-framework's other
+   *  OperatorActionError codes: 'unknown-agent', 'unknown-message' and
+   *  'invalid' are input problems; 'failed' and 'unresolved' report an outcome
+   *  (the change failed, or whether it applied is unknown). */
   code?: string;
   agent?: string;
   sourceBranch?: string;
@@ -1535,12 +1538,17 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
  *  this (it never truncates one), so a valid choice always fits. */
 export const MAX_MARKS_REFS = 20_000;
 
+/** The longest store id and branch name a confirmation's `expectedContext`
+ *  may carry. The host refuses a preview whose context exceeds them, so a
+ *  dialog never holds a context its confirmation couldn't send. */
+export const SURGERY_CONTEXT_LIMITS = { storeId: 200, branch: 500 } as const;
+
 function isSurgeryContext(v: unknown): v is SurgeryContextWire {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const c = v as Record<string, unknown>;
   return Object.keys(c).every((k) => k === 'storeId' || k === 'branch')
-    && isNonEmptyString(c.storeId) && c.storeId.length <= 200
-    && isNonEmptyString(c.branch) && c.branch.length <= 500;
+    && isNonEmptyString(c.storeId) && c.storeId.length <= SURGERY_CONTEXT_LIMITS.storeId
+    && isNonEmptyString(c.branch) && c.branch.length <= SURGERY_CONTEXT_LIMITS.branch;
 }
 
 function isMarksChoice(v: unknown): v is MarksChoiceWire {

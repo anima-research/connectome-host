@@ -82,9 +82,10 @@ before preparing or changing anything, and refuses the surgery (`code:
 ordinary arrivals on the same branch don't affect it. Every session has its
 own store, with its own identity, so a session switch changes the store.
 The server refuses a confirmation that carries no context the same way, as
-unpreviewed. If the host rebinds to another session or the branch changes
-while the dialog is open, the dialog says so and can't be confirmed. The
-result shows the framework's receipt: marks queued (and how many removed
+unpreviewed. Separately, when a welcome for another session or branch
+arrives while the dialog is open, the dialog says so and can't be confirmed;
+that check depends on the welcome arriving first, so the framework's is the
+binding. The result shows the framework's receipt: marks queued (and how many removed
 messages stay unmarked), not scheduled, or unresolved. It never claims
 Discord accepted anything; delivery runs in the background without holding
 the agent.
@@ -104,15 +105,21 @@ back, and the server refuses it (`code: 'stale'`, recorded in the bound
 framework's operator log) once another framework is bound, answering with
 the live journal. The session label can't stand in for that id: a host
 restart, or a switch back to the same session, binds a new framework under
-the same label. While the panel is open it lists the journal again with
-every welcome (a reconnect, a restart, a session switch), and it drops the
-old journal after a session switch. A listing that fails shows its error,
-not an empty journal.
+the same label. While the panel is open it lists the branches, the operator
+log and the journal again with every welcome (a reconnect, a restart, a
+session switch), and it drops the old journal after a session switch. A
+listing that fails shows its error, not an empty journal, and the next
+listing that succeeds clears it.
 
-While no framework is bound (during a session switch, between the old
-framework's stop and the new one's bind), the server answers every surgery,
-preview and journal request with that reason and runs nothing; a surgery
-and a journal action are refused with `code: 'stale'`.
+While no framework is bound (before the first bind, during a session
+switch between the old framework's stop and the new one's bind, or while
+the host stops), the server answers every surgery and journal request with
+that reason and runs nothing; a surgery and a journal action are refused
+with `code: 'stale'`. A preview gets the server's generic `host not ready`
+error instead: its dialog settles on the welcome that follows the bind,
+which makes it stale or asks for the preview again. A preview whose store
+id or branch name is longer than a confirmation can carry (200 and 500
+characters) is refused, so no dialog holds a context it couldn't send.
 
 An agent-framework without that contract can't carry out this operation, a
 local change on the previewed store and branch plus an optional bounded
@@ -160,8 +167,9 @@ line per operator mutation:
 Refusals are logged too (with `error`), including those the host makes
 before the framework sees a request (an unpreviewed surgery, one an older
 framework can't carry out, a journal action chosen from another framework's
-journal, a retry's quiesce for another store), in the framework's own entry
-shape. The branch
+journal, a retry's quiesce for another store), in the bound framework's
+log, in the framework's own entry shape. While no framework is bound there
+is no log to record in. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.

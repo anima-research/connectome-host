@@ -561,7 +561,7 @@ export function AwarenessList(props: {
       </div>
       <Show when={props.result}>{(r) => (
         <div class={`px-1 mb-1 text-[10px] font-mono break-all ${r().error ? 'text-rose-300' : 'text-neutral-400'}`}>
-          {r().action} {r().target}: {r().error ?? (() => { try { return JSON.stringify(r().receipt); } catch { return ''; } })()}
+          <Show when={r().action}>{r().action} {r().target}: </Show>{r().error ?? (() => { try { return JSON.stringify(r().receipt); } catch { return ''; } })()}
         </div>
       )}</Show>
       <Show when={newestFirst().length > 0} fallback={

@@ -54,6 +54,7 @@ import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
 import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
+  SURGERY_CONTEXT_LIMITS,
   WEB_PROTOCOL_VERSION,
   isClientMessage,
   type WebUiServerMessage,
@@ -380,11 +381,11 @@ function describeMarksChoice(marks: MarksChoiceWire | undefined): 'none' | Recor
   return { scope: marks.scope, authorizedRefs: marks.refs.length };
 }
 
-/** What every surgery, preview and journal answer says while no framework
- *  is bound: a session switch between the old framework's stop and the new
- *  one's bind, or a host that is stopping. Nothing can run, and no operator
- *  log is bound to record in. */
-const NO_FRAMEWORK_BOUND = 'no framework is bound right now (a session switch or a stop is in progress)';
+/** What every surgery and journal answer says while no framework is bound:
+ *  before the first bind, in a session switch between the old framework's
+ *  stop and the new one's bind, or while the host stops. Nothing can run,
+ *  and no operator log is bound to record in. */
+const NO_FRAMEWORK_BOUND = 'no framework is bound right now (the host is starting, switching sessions or stopping)';
 
 /** Record a request this host refused before the framework saw it, as the
  *  framework records its own. agent-framework's recordOperatorAction never
@@ -1758,9 +1759,8 @@ export class WebUiModule implements Module {
       // Every live surgery here is preview-bound: it carries the preview's
       // context, and the framework refuses it, under its own reservation and
       // before anything is prepared or changed, unless its store identity and
-      // active branch name are still the previewed ones. (Every session has
-      // its own store and identity; and any change of session or branch makes
-      // an open dialog stale in the SPA before it can confirm.)
+      // active branch name are still the previewed ones. Every session has its
+      // own store and identity, so that covers a session switch too.
       refuse(`preview this ${op} first: it runs only against the store and branch its preview described`, { agent: agentName, code: 'stale' });
       return;
     }
@@ -1831,16 +1831,13 @@ export class WebUiModule implements Module {
    * the operator chooses, and binds the choice to the previewed refs.
    */
   private handleSurgeryPreview(client: ClientState, req: SurgeryPreviewMessage): void {
+    const app = sharedServer?.app;
+    const panel = this.panelApp();
+    if (!app || !panel) return;
+    const fw = app.framework as unknown as SurgeryCapableFramework;
     const fail = (error: string): void => {
       this.send(client, { type: 'surgery-preview', corrId: req.corrId, op: req.op, ok: false, error });
     };
-    const app = sharedServer?.app;
-    const panel = this.panelApp();
-    if (!app || !panel) {
-      fail(`${NO_FRAMEWORK_BOUND}. Preview again once the host is back.`);
-      return;
-    }
-    const fw = app.framework as unknown as SurgeryCapableFramework;
     if (!hasPreviewBoundSurgery(fw)) {
       fail(`this host's agent-framework has no preview-bound surgery (marks choice and store identity) — upgrade @animalabs/agent-framework`);
       return;
@@ -1855,6 +1852,14 @@ export class WebUiModule implements Module {
         // Without the framework's context, a confirmation can't be bound to
         // what this preview described.
         fail(`this host's agent-framework returned a preview without its store and branch — upgrade @animalabs/agent-framework`);
+        return;
+      }
+      if (preview.context.storeId.length > SURGERY_CONTEXT_LIMITS.storeId
+        || preview.context.branch.length > SURGERY_CONTEXT_LIMITS.branch) {
+        // The confirmation carries this context back within the wire's bounds,
+        // and one beyond them would be dropped as malformed, leaving its
+        // dialog waiting: refuse it here instead.
+        fail(`the preview's store id or branch name is longer than a confirmation can carry (${SURGERY_CONTEXT_LIMITS.storeId} and ${SURGERY_CONTEXT_LIMITS.branch} characters): live surgery can't run on this branch`);
         return;
       }
       const sessionId = this.liveSessionId();
@@ -2159,17 +2164,16 @@ export class WebUiModule implements Module {
 
     if (!sharedServer?.app) {
       // No framework is bound: at startup, or in a session switch between the
-      // old framework's stop and the new one's bind. A surgery, a preview or
-      // a journal request is waited on for an answer of its own type, which a
-      // generic error isn't (a dialog would stay pending), so each handler
-      // answers it in that type, saying so.
+      // old framework's stop and the new one's bind. A surgery or a journal
+      // request is waited on for an answer of its own type, which a generic
+      // error isn't (a surgery's dialog would stay pending), so each handler
+      // answers it in that type, saying so. A preview isn't among them: its
+      // dialog settles on the welcome that follows the bind, which makes it
+      // stale or asks for its preview again.
       switch (parsed.type) {
         case 'rollback':
         case 'suppress':
           void this.handleSurgery(client, parsed.type, parsed);
-          return;
-        case 'surgery-preview':
-          this.handleSurgeryPreview(client, parsed);
           return;
         case 'request-awareness':
           this.sendAwareness(client, parsed.corrId);

@@ -43,6 +43,7 @@ import {
   type AwarenessMessage,
   type MarksChoiceWire,
 } from '@conhost/web/protocol';
+import { applyAwarenessMessage } from './awareness-state';
 import {
   Lightbox,
   MediaView,
@@ -514,11 +515,11 @@ export function App() {
     if (wire.send({ type: 'request-awareness' })) setAwarenessLoading(true);
   };
   const onAwareness = (msg: AwarenessMessage): void => {
-    setAwareness(msg.batches);
-    setAwarenessInstance(msg.frameworkInstanceId ?? null);
+    const next = applyAwarenessMessage({ entries: awareness(), instance: awarenessInstance(), result: awarenessResult() }, msg);
+    setAwareness(next.entries);
+    setAwarenessInstance(next.instance);
+    setAwarenessResult(next.result);
     setAwarenessLoading(false);
-    if (msg.action) setAwarenessResult({ action: msg.action, target: msg.target, receipt: msg.receipt, error: msg.error });
-    else if (msg.error) setAwarenessResult({ error: msg.error });
   };
   const awarenessAction = (action: 'cancel' | 'retract' | 'release', target: string): void => {
     const instance = awarenessInstance();
@@ -583,8 +584,10 @@ export function App() {
     const corrId = `srg-${Date.now()}`;
     const marks = marksForSend();
     const preview = marksPreview();
-    // The framework checks the previewed store and branch itself.
-    const bound = preview?.context ? { expectedContext: preview.context } : {};
+    // The framework checks the previewed store and branch itself. Exactly
+    // the two fields go back, whatever else a preview's context may carry.
+    const context = preview?.context;
+    const bound = context ? { expectedContext: { storeId: context.storeId, branch: context.branch } } : {};
     const sent = req.op === 'rollback'
       ? wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, ...bound, corrId })
       : wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), marks, ...bound, corrId });
@@ -994,12 +997,14 @@ export function App() {
       setAwarenessResult(null);
       setAwarenessInstance(null);
       if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); refreshAwareness(); }
-    } else if (welcomeSessionId !== null && panelMode() === 'branches') {
+    } else if (panelMode() === 'branches') {
       // Any other welcome may follow a new framework under the same session
-      // label (a host restart, or a switch back to this session), or a
-      // reconnect that missed a broadcast: list the journal again, so the
-      // listing and its framework instance are the live ones.
-      refreshAwareness();
+      // label (a host restart, or a switch back to this session), a reconnect
+      // that missed a broadcast, or a stretch with no framework bound, whose
+      // requests got no answer of their own: list the panel again, so the
+      // journal and its framework instance are the live ones and no loading
+      // flag waits on an answer that won't come.
+      refreshBranches(); refreshOpLog(); refreshAwareness();
     }
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
