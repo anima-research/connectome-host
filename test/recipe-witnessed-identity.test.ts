@@ -73,6 +73,6 @@ describe('witnessed / live identity reminders', () => {
       modules: [],
     };
     buildFrameworkStrategy(recipe, 'm', 'UTC', registry);
-    expect(received?.identityReminderSilent).toBe(true);
+    expect(received).toEqual({ type: 'custom', identityReminderSilent: true });
   });
 });

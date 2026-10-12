@@ -1637,9 +1637,12 @@ function nearestRecipeKey(key: string, known: readonly string[]): string | null 
 /**
  * The keys a recipe carries that the host never reads — at the top level,
  * under `agent`, `agent.mock` and `modules` — each with what it was probably
- * meant to be. A misspelled key doesn't fail, it just doesn't happen (#167);
- * for now they are warned about, not rejected, so recipes carrying leftovers
- * keep loading (the strict schema is #91's direction).
+ * meant to be, or with what replaced it if it was retired. Under
+ * `agent.strategy`, whose keys are open, only a retired key is named, and
+ * only for a built-in strategy type. A misspelled key doesn't fail, it just
+ * doesn't happen (#167); for now they are warned about, not rejected, so
+ * recipes carrying leftovers keep loading (the strict schema is #91's
+ * direction).
  */
 export function unknownRecipeKeys(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
@@ -1708,7 +1711,8 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe must have an "agent" object');
   }
 
-  // Nothing below reads an unknown key: say so, and what it was probably meant to be.
+  // Nothing below reads an unknown key: say so, with what it was probably meant
+  // to be or what replaced it.
   const unknownKeys = unknownRecipeKeys(obj);
   if (unknownKeys.length > 0) {
     const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
