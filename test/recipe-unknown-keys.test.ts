@@ -53,6 +53,15 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
 
+  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+    const strategy = { type: 'autobiographical', identityReminderSilent: true, anExtensionsOwnKey: 1 };
+    expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([
+      'agent.strategy.identityReminderSilent (replaced by a silence sentence at the end of agent.strategy.identityReminder)',
+    ]);
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: 'autobiographical' }))).toEqual([]);
+  });
+
   test('a key named like an inherited property gets no false replacement', () => {
     const raw = JSON.parse('{"name":"T","agent":{"constructor":1},"__proto__":{"x":1},"constructor":1}');
     const found = unknownRecipeKeys(raw);

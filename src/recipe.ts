@@ -174,8 +174,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -1604,6 +1602,7 @@ void recipeKeyListsInStep;
 /** Keys that were renamed or removed, with what replaced them. */
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent': 'a silence sentence at the end of agent.strategy.identityReminder',
 };
 
 function editDistance(a: string, b: string): number {
@@ -1659,6 +1658,17 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  // A strategy's keys are open (an extension strategy takes its own), so only
+  // a retired one is named there.
+  const strategy = obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)
+    ? (obj.agent as Record<string, unknown>).strategy
+    : undefined;
+  if (strategy && typeof strategy === 'object' && !Array.isArray(strategy)) {
+    for (const key of Object.keys(strategy)) {
+      const path = `agent.strategy.${key}`;
+      if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+    }
+  }
   return found;
 }
 
