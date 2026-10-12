@@ -1604,7 +1604,7 @@ void recipeKeyListsInStep;
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
   'agent.strategy.identityReminderSilent':
-    'a sentence asking for silence at the end of each reminder the recipe sets, ' +
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
     'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
     'if it was true; if it was false, nothing',
 };

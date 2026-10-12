@@ -50,7 +50,7 @@ describe('witnessed / live identity reminders', () => {
     });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toContain(
-      'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of each reminder ' +
+      'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of each nonblank reminder ' +
       'the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, if it was true; ' +
       'if it was false, nothing)',
     );

@@ -57,7 +57,7 @@ describe('unknownRecipeKeys', () => {
 
   test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
     const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
-      'each reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+      'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
       'if it was true; if it was false, nothing)';
     for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
       const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
