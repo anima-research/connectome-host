@@ -91,10 +91,11 @@ export interface WelcomeMessage {
   /**
    * Optional host capabilities the SPA feature-detects before showing an
    * affordance: 'rollback' | 'suppress' | 'quiesce' | 'media' |
-   * 'operator-log' | 'marks' (surgeries take an explicit awareness-marks
-   * choice, previewed with `surgery-preview`) | 'awareness' (the marks
-   * journal's list/cancel/retract/release). Absent on older hosts (nothing
-   * shown).
+   * 'operator-log' | 'marks' (live surgery is preview-bound: it takes an
+   * explicit awareness-marks choice, previewed with `surgery-preview`, and
+   * the framework checks the previewed store and branch) | 'awareness'
+   * (the marks journal's list/cancel/retract/release). Absent on older
+   * hosts (nothing shown).
    */
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
@@ -665,11 +666,14 @@ export interface DiscordRefWire {
  * The operator's awareness-marks choice for a surgery: `none` (the default:
  * the surgery is local to the agent), or a publication scope. `addressed`
  * covers removed messages that addressed the agent (mentions, replies to the
- * bot, DMs). `refs` binds the choice to exactly the previewed messages.
+ * bot, DMs). `refs` binds the choice to exactly the previewed messages, and a
+ * scope always carries them: every surgery here is previewed, so it never
+ * asks the framework to evaluate a scope when the surgery applies (which
+ * would mark messages that arrived after the preview).
  */
 export type MarksChoiceWire = 'none' | {
   scope: 'addressed' | 'all';
-  refs?: DiscordRefWire[];
+  refs: DiscordRefWire[];
 };
 
 /** What the framework reports about a surgery's marks: scheduling, never
@@ -703,9 +707,9 @@ export interface SurgeryMarksPreviewWire {
   context?: SurgeryContextWire;
 }
 
-/** A framework's store and branch identity, opaque to the host. Both are
- *  required here: the framework treats an absent field as unchecked, and
- *  this host's operation is bound to both. */
+/** A framework's store identity and active branch name, opaque to the host.
+ *  Both are required here: the framework treats an absent field as
+ *  unchecked, and this host's operation is bound to both. */
 export interface SurgeryContextWire {
   storeId: string;
   branch: string;
@@ -718,9 +722,9 @@ export interface SurgeryPreviewResultMessage {
   ok: boolean;
   error?: string;
   preview?: SurgeryMarksPreviewWire;
-  /** The session and branch the preview was computed on: send them back as
-   *  the surgery's `expectedSessionId`/`expectedBranchId`, so it can't run
-   *  against a different context (ids alone can coincide across stores). */
+  /** The session and branch the preview was computed on, so a dialog can
+   *  tell a preview computed after its own context changed. What binds the
+   *  surgery is the preview's `context`, which the framework checks. */
   sessionId?: string;
   branchId?: string;
 }
@@ -767,16 +771,18 @@ export interface AwarenessMessage {
   corrId?: string;
   batches: AwarenessEntryWire[];
   /** The framework instance these entries were listed from: an opaque id
-   *  the host mints for each framework it binds (a session switch binds a
-   *  new one). An action chosen from this list sends it back as
-   *  `expectedFrameworkInstanceId`. Absent when there is no journal. */
+   *  the host mints for each framework it binds (a session switch, a switch
+   *  back to the same session, or a host restart binds a new one). An action
+   *  chosen from this list sends it back as `expectedFrameworkInstanceId`.
+   *  Absent when there is no journal. */
   frameworkInstanceId?: string;
   action?: 'cancel' | 'retract' | 'release';
   target?: string;
   receipt?: Record<string, unknown>;
   error?: string;
-  /** Refusal code with `error`: 'stale' means the action was chosen from
-   *  another framework instance's journal (this frame lists the live one). */
+  /** Refusal code with `error`: 'stale' means the action was chosen from a
+   *  journal of a framework that is no longer bound (this frame lists the
+   *  live one), or no framework is bound right now; nothing was done. */
   code?: string;
 }
 
@@ -791,9 +797,13 @@ export interface SurgeryResultMessage {
   error?: string;
   /** Refusal code when `ok` is false: 'agent-busy' means quiesce (or wait
    *  for idle) and retry; 'unsupported' means this host's agent-framework
-   *  can't make awareness marks a choice (upgrade it); 'stale' means the live
-   *  session or branch changed since the preview (preview again); others are
-   *  input problems. */
+   *  can't run a preview-bound surgery (upgrade it); 'stale' means the
+   *  confirmation isn't bound to the live context: it carries no preview
+   *  context, the store or branch changed since its preview, or no framework
+   *  is bound right now (preview again). The framework's other codes:
+   *  'unknown-agent', 'unknown-message' and 'invalid' are input problems;
+   *  'failed' and 'unresolved' report an outcome (the change failed, or
+   *  whether it applied is unknown). */
   code?: string;
   agent?: string;
   sourceBranch?: string;
@@ -1211,11 +1221,10 @@ export interface RollbackMessage {
    *  'marks' feature refuses live surgery: that framework would mark every
    *  removed Discord message regardless of any choice. */
   marks?: MarksChoiceWire;
-  /** The preview's session and branch: refused (`code: 'stale'`) if the
-   *  live session or branch is no longer it. */
-  expectedSessionId?: string;
-  expectedBranchId?: string;
-  /** The framework's preview `context`, passed to it as `expected`. */
+  /** The framework's preview `context`, passed to it as `expected`: the
+   *  framework refuses the surgery (`code: 'stale'`) unless its store and
+   *  active branch are still the previewed ones. Required: the host refuses
+   *  a confirmation without it (`code: 'stale'`, preview first). */
   expectedContext?: SurgeryContextWire;
   corrId?: string;
 }
@@ -1229,9 +1238,7 @@ export interface SuppressMessage {
   note?: string;
   /** Awareness marks; absent means none. See RollbackMessage.marks. */
   marks?: MarksChoiceWire;
-  /** See RollbackMessage.expectedSessionId/expectedBranchId/expectedContext. */
-  expectedSessionId?: string;
-  expectedBranchId?: string;
+  /** See RollbackMessage.expectedContext. */
   expectedContext?: SurgeryContextWire;
   corrId?: string;
 }
@@ -1268,7 +1275,7 @@ export interface AwarenessActionMessage {
   target: string;
   /** The `frameworkInstanceId` of the journal listing this action was chosen
    *  from: refused (`code: 'stale'`) unless that framework is still the one
-   *  bound, so an action never reaches another session's journal. */
+   *  bound, so an action never reaches another framework's journal. */
   expectedFrameworkInstanceId: string;
   corrId?: string;
 }
@@ -1278,9 +1285,9 @@ export interface HostQuiesceMessage {
   type: 'host-quiesce';
   reason?: string;
   /** A quiesce for a surgery's retry is bound to that surgery's preview:
-   *  refused unless the live session is still this one and the bound
-   *  framework's store identity is still the preview's `context.storeId`. */
-  expectedSessionId?: string;
+   *  refused unless the bound framework's store identity is still the
+   *  preview's `context.storeId` (every session has its own store, with its
+   *  own identity). Without it, this is an ordinary quiesce. */
   expectedStoreId?: string;
   corrId?: string;
 }
@@ -1369,8 +1376,6 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
-        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
-        && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
         && (v.expectedContext === undefined || isSurgeryContext(v.expectedContext))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'suppress':
@@ -1379,8 +1384,6 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.agent === undefined || isNonEmptyString(v.agent))
         && (v.note === undefined || typeof v.note === 'string')
         && (v.marks === undefined || isMarksChoice(v.marks))
-        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
-        && (v.expectedBranchId === undefined || isNonEmptyString(v.expectedBranchId))
         && (v.expectedContext === undefined || isSurgeryContext(v.expectedContext))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'surgery-preview':
@@ -1403,7 +1406,6 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'host-quiesce':
       return (v.reason === undefined || typeof v.reason === 'string')
-        && (v.expectedSessionId === undefined || isNonEmptyString(v.expectedSessionId))
         && (v.expectedStoreId === undefined || (isNonEmptyString(v.expectedStoreId) && v.expectedStoreId.length <= 200))
         && (v.corrId === undefined || typeof v.corrId === 'string');
     case 'host-resume':
@@ -1549,7 +1551,8 @@ function isMarksChoice(v: unknown): v is MarksChoiceWire {
   for (const key of Object.keys(choice)) {
     if (key !== 'scope' && key !== 'refs') return false;
   }
-  if (choice.refs === undefined) return true;
+  // A scope carries its previewed refs: without them the framework would
+  // evaluate the scope when the surgery applies, unbound to the preview.
   return Array.isArray(choice.refs)
     && choice.refs.length <= MAX_MARKS_REFS
     && choice.refs.every((ref) => {

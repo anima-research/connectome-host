@@ -513,6 +513,9 @@ const countsLine = (label: string, counts?: Record<string, number>): string => {
  */
 export function AwarenessList(props: {
   entries: AwarenessEntryWire[];
+  /** The last listing succeeded. A failed one leaves no entries but doesn't
+   *  mean none are recorded: its error is shown instead. */
+  listed: boolean;
   loading: boolean;
   readOnly: boolean;
   result: { action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null;
@@ -561,7 +564,9 @@ export function AwarenessList(props: {
           {r().action} {r().target}: {r().error ?? (() => { try { return JSON.stringify(r().receipt); } catch { return ''; } })()}
         </div>
       )}</Show>
-      <Show when={newestFirst().length > 0} fallback={<div class="px-1 text-neutral-600 italic text-[11px]">No awareness marks recorded.</div>}>
+      <Show when={newestFirst().length > 0} fallback={
+        <Show when={props.listed}><div class="px-1 text-neutral-600 italic text-[11px]">No awareness marks recorded.</div></Show>
+      }>
         <div class="space-y-1 max-h-72 overflow-y-auto pr-1">
           <For each={newestFirst()}>{(e) => (
             <div class="rounded px-1.5 py-1 border border-neutral-800/60 bg-neutral-900/30">

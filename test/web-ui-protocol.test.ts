@@ -189,8 +189,12 @@ describe('isClientMessage', () => {
     test('rollback/suppress take an optional marks choice: none, or a scope with previewed refs', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1' })).toBe(true);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'none' })).toBe(true);
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'addressed' } })).toBe(true);
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'addressed', refs: [ref] } })).toBe(true);
       expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], marks: { scope: 'all', refs: [ref] } })).toBe(true);
+      // A scope without its previewed refs would be evaluated when the
+      // surgery applies, marking messages nobody previewed: malformed.
+      expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'addressed' } })).toBe(false);
+      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], marks: { scope: 'all' } })).toBe(false);
       // A publication choice is never guessed: anything else is malformed.
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: 'all' })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'everyone' } })).toBe(false);
@@ -204,11 +208,7 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [null] } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, serverId: '' }] } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', marks: { scope: 'all', refs: [{ ...ref, channelId: '' }] } })).toBe(false);
-      // A preview-bound confirmation names the preview's branch.
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 's', expectedBranchId: 'b1' })).toBe(true);
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedSessionId: 7 })).toBe(false);
-      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedSessionId: 7 })).toBe(false);
-      expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedBranchId: '' })).toBe(false);
+      // A preview-bound confirmation carries the preview's context.
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'main' } })).toBe(true);
       expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedContext: { storeId: '' } })).toBe(false);
       // Both fields are required: an absent one would go unchecked.
@@ -223,7 +223,11 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's'.repeat(200), branch: 'b'.repeat(500) } })).toBe(true);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 's'.repeat(201), branch: 'main' } })).toBe(false);
       expect(isClientMessage({ type: 'rollback', messageId: 's1', expectedContext: { storeId: 'a', branch: 'b'.repeat(501) } })).toBe(false);
-      expect(isClientMessage({ type: 'suppress', messageIds: ['s1'], expectedBranchId: '' })).toBe(false);
+      // One choice carries at most 20,000 refs: exactly that many fits.
+      expect(isClientMessage({
+        type: 'rollback', messageId: 's1',
+        marks: { scope: 'all', refs: Array.from({ length: 20_000 }, () => ref) },
+      })).toBe(true);
       expect(isClientMessage({
         type: 'rollback', messageId: 's1',
         marks: { scope: 'all', refs: Array.from({ length: 20_001 }, () => ref) },
@@ -233,6 +237,7 @@ describe('isClientMessage', () => {
     test('surgery-preview names exactly the target of its op', () => {
       expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageId: 's1' })).toBe(true);
       expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageIds: ['s1', 's2'], corrId: 'c' })).toBe(true);
+      expect(isClientMessage({ type: 'surgery-preview', op: 'rollback' })).toBe(false);
       expect(isClientMessage({ type: 'surgery-preview', op: 'rollback', messageIds: ['s1'] })).toBe(false);
       expect(isClientMessage({ type: 'surgery-preview', op: 'suppress', messageId: 's1' })).toBe(false);
       // Exactly: the other op's target alongside its own is refused too.
@@ -261,10 +266,10 @@ describe('isClientMessage', () => {
       expect(isClientMessage({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: 'f'.repeat(201) })).toBe(false);
     });
 
-    test("host-quiesce may be bound to a retry's previewed session and store", () => {
+    test("host-quiesce may be bound to a retry's previewed store", () => {
       expect(isClientMessage({ type: 'host-quiesce' })).toBe(true);
-      expect(isClientMessage({ type: 'host-quiesce', reason: 'r', expectedSessionId: 's', expectedStoreId: 'store-a' })).toBe(true);
-      expect(isClientMessage({ type: 'host-quiesce', expectedSessionId: '' })).toBe(false);
+      expect(isClientMessage({ type: 'host-quiesce', reason: 'r', expectedStoreId: 'store-a' })).toBe(true);
+      expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: '' })).toBe(false);
       expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 3 })).toBe(false);
       expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 's'.repeat(200) })).toBe(true);
       expect(isClientMessage({ type: 'host-quiesce', expectedStoreId: 's'.repeat(201) })).toBe(false);

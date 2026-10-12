@@ -74,6 +74,8 @@ export function BranchPanel(props: {
   onRefreshLog?(): void;
   /** The framework's awareness-marks journal; null when it has none. */
   awareness?: AwarenessEntryWire[] | null;
+  /** The last listing succeeded (an empty one then means nothing is recorded). */
+  awarenessListed?: boolean;
   awarenessLoading?: boolean;
   awarenessResult?: { action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null;
   onRefreshAwareness?(): void;
@@ -177,6 +179,7 @@ export function BranchPanel(props: {
         <Show when={props.awareness}>
           <AwarenessList
             entries={props.awareness!}
+            listed={props.awarenessListed ?? false}
             loading={props.awarenessLoading ?? false}
             readOnly={props.readOnly}
             result={props.awarenessResult ?? null}

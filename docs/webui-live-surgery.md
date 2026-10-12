@@ -5,9 +5,13 @@ restart. Everything here follows the idiom the offline surgeries use: fork
 first, mutate the fork, make the fork the live branch. The parent branch
 keeps everything, so "undo" is always `checkout <parent>`.
 
-The agent-framework this host depends on (^0.21.0) provides all of it. The
-SPA still feature-detects each affordance from `welcome.features`, so a
-bundle against a host without them simply shows none.
+The agent-framework this host depends on (^0.21.0) provides quiesce, images
+and the operator log. Live rollback and suppression need preview-bound
+surgery (the marks choice, and the framework's own check of the previewed
+store and branch), which 0.21.0 lacks: there the server refuses both and the
+dialog says the agent-framework needs upgrading (see [Discord awareness
+marks](#discord-awareness-marks)). The SPA feature-detects each affordance
+from `welcome.features`, so a bundle against a host without them shows none.
 
 ## Rollback to a message
 
@@ -25,10 +29,11 @@ marks](#discord-awareness-marks)); by default they don't.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
 queued. The dialog then offers **Quiesce, then retry**. That quiesce is
-bound to the session and store the surgery was previewed on: if the dialog
-has gone stale it isn't offered, and the server refuses a retry's quiesce
-(nothing is paused) once the live session or the bound framework's store
-is no longer the previewed one.
+bound to the store the surgery was previewed on: if the dialog has gone
+stale it isn't offered, and the server refuses a retry's quiesce (nothing is
+paused) once the bound framework's store is no longer the previewed one.
+The host stays quiesced afterwards, whether or not the retry was sent, until
+it is resumed from the header.
 
 A surgery is never resent. If the connection is down, nothing is sent and
 the dialog waits for it to come back; if it drops while a surgery is
@@ -62,39 +67,52 @@ change would remove (`surgery-preview`, read-only) and offers:
 
 Each scope shows its count and channels. A chosen scope is sent with exactly
 the refs the preview listed, so messages that arrive while the operator is
-deciding are removed but never marked. One choice carries at most 20,000
-refs: a larger scope is shown as unavailable with its size and is never
-cut short, while no marks and any smaller scope stay available. Every live
-surgery here is preview-bound: confirming waits for the preview (asked for
-again when the connection comes back on the same session and branch, since
-a request or answer can be lost with the old socket), and the confirmation
-carries the framework's preview `context` (its store identity and branch),
-which the framework checks under its own reservation before preparing or
-changing anything. The host also checks the session and branch the dialog
-opened on: if the host rebinds to another session or the branch changes,
-the open dialog says so and can't be confirmed, and the server refuses a
-confirmation whose session or branch is no longer the live one. Either
-refusal is `code: 'stale'`. Ordinary arrivals on the same branch don't
-affect it. The result shows the framework's
-receipt: marks queued (and how many removed messages stay unmarked), not
-scheduled, or unresolved. It never claims Discord accepted anything; delivery
-runs in the background without holding the agent.
+deciding are removed but never marked; the server treats a scope without
+its refs as malformed. One choice carries at most 20,000 refs, this host's
+limit: a larger scope is shown as unavailable with its size and is never
+cut short, while no marks and any smaller scope stay available.
+
+Every live surgery here is preview-bound. Confirming waits for the preview
+(asked for again when the connection comes back on the same session and
+branch, since a request or answer can be lost with the old socket), and the
+confirmation carries the framework's preview `context`: its store identity
+and active branch name. The framework checks it under its own reservation,
+before preparing or changing anything, and refuses the surgery (`code:
+'stale'`) once the store or the branch is no longer the previewed one;
+ordinary arrivals on the same branch don't affect it. Every session has its
+own store, with its own identity, so a session switch changes the store.
+The server refuses a confirmation that carries no context the same way, as
+unpreviewed. If the host rebinds to another session or the branch changes
+while the dialog is open, the dialog says so and can't be confirmed. The
+result shows the framework's receipt: marks queued (and how many removed
+messages stay unmarked), not scheduled, or unresolved. It never claims
+Discord accepted anything; delivery runs in the background without holding
+the agent.
 
 The branch panel lists the framework's awareness journal (feature
 `awareness`): each surgery's batch of marks and each retract, with what is
 known about their requests. **cancel** stops all further sends of a batch's
 marks or a retract's removals and never removes anything; **retract** queues
-removal of this bot's marks from a batch's messages (or from every message,
-**retract all**) after asking, since it sends Discord requests; **release**
+removal of this bot's marks from a batch's messages, or from every message
+any batch recorded (**retract all**, which acts on the journal as it stands
+when it runs), after asking, since it sends Discord requests; **release**
 sends a batch the framework held at startup. Receipts are shown as returned:
 requests without an answer may still land. An action reaches only the
 framework whose journal it was chosen from: each listing carries an opaque
 id the host mints for the framework instance it read, the action sends it
-back, and the server refuses it (`code: 'stale'`, recorded in the operator
-log) once another framework is bound, answering with the live journal. The
-session label can't stand in for that id, since a session switch makes the
-new session active before its framework replaces the old one. After a
-session switch the panel drops the old journal and lists the new one.
+back, and the server refuses it (`code: 'stale'`, recorded in the bound
+framework's operator log) once another framework is bound, answering with
+the live journal. The session label can't stand in for that id: a host
+restart, or a switch back to the same session, binds a new framework under
+the same label. While the panel is open it lists the journal again with
+every welcome (a reconnect, a restart, a session switch), and it drops the
+old journal after a session switch. A listing that fails shows its error,
+not an empty journal.
+
+While no framework is bound (during a session switch, between the old
+framework's stop and the new one's bind), the server answers every surgery,
+preview and journal request with that reason and runs nothing; a surgery
+and a journal action are refused with `code: 'stale'`.
 
 An agent-framework without that contract can't carry out this operation, a
 local change on the previewed store and branch plus an optional bounded
@@ -140,10 +158,10 @@ line per operator mutation:
 `quiesce`, `resume`, `awareness-cancel`, `awareness-retract`,
 `awareness-release`. A surgery's `params.marks` records the marks choice.
 Refusals are logged too (with `error`), including those the host makes
-before the framework sees a request (a stale or unpreviewed surgery, one an
-older framework can't carry out, a journal action chosen from another
-framework's journal, a retry's quiesce for another session or store), in
-the framework's own entry shape. The branch
+before the framework sees a request (an unpreviewed surgery, one an older
+framework can't carry out, a journal action chosen from another framework's
+journal, a retry's quiesce for another store), in the framework's own entry
+shape. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -155,24 +173,24 @@ cannot mutate, so they only appear for read requests that fail).
 ## Wire additions
 
 Client → server: `rollback {messageId, agent?, note?, marks?,
-expectedContext, expectedSessionId?, expectedBranchId?}`, `suppress
-{messageIds, agent?, note?, marks?, expectedContext, expectedSessionId?,
-expectedBranchId?}` (`marks`: `'none'` or `{scope: 'addressed' | 'all',
-refs?}`; `expectedContext` is the preview's `context`, required, checked by
-the framework; the expected ids are the session and branch the dialog was
-opened on, checked by the host), `surgery-preview {op, messageId | messageIds,
-agent?}`, `request-awareness`, `awareness-action {action: cancel | retract
-| release, target, expectedFrameworkInstanceId}` (`target: 'all'` for
-retract only; the id is the listing's `frameworkInstanceId`, required),
-`host-quiesce {reason?, expectedSessionId?, expectedStoreId?}` (a retry's
-quiesce sends its preview's session and `context.storeId`), `host-resume`,
-`request-host-mode`, `request-operator-log {limit?}`.
+expectedContext}`, `suppress {messageIds, agent?, note?, marks?,
+expectedContext}` (`marks`: `'none'` or `{scope: 'addressed' | 'all',
+refs}`, the refs the preview listed for that scope; `expectedContext` is the
+preview's `context`, required, checked by the framework), `surgery-preview
+{op, messageId | messageIds, agent?}`, `request-awareness`,
+`awareness-action {action: cancel | retract | release, target,
+expectedFrameworkInstanceId}` (`target: 'all'` for retract only; the id is
+the listing's `frameworkInstanceId`, required), `host-quiesce {reason?,
+expectedStoreId?}` (a retry's quiesce sends its preview's
+`context.storeId`), `host-resume`, `request-host-mode`,
+`request-operator-log {limit?}`.
 Server → client: `surgery-result` (with `markers` on `marks` hosts),
-`surgery-preview`, `awareness {batches, frameworkInstanceId, …}` (the
-journal; also broadcast to full operators after a surgery whose marks were
-queued or left unresolved, and after each action that succeeds; an action's
-answer carries `code: 'stale'` when refused for another framework's
-journal), `host-mode`,
+`surgery-preview` (with the session and branch it was computed on, which
+the dialog compares with its own), `awareness {batches, frameworkInstanceId,
+…}` (the journal; also broadcast to full operators after a surgery whose
+marks were queued or left unresolved, and after each action that succeeds;
+an action's answer carries `code: 'stale'` when it was chosen from another
+framework's journal or no framework is bound), `host-mode`,
 `operator-log`; `welcome.features`, `welcome.hostMode`. After a successful
 surgery the server does what `/checkout` does: `branch-changed` + a fresh
 welcome for every client.

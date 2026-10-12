@@ -441,15 +441,17 @@ export function App() {
   /** The open dialog's context changed (session or branch): it can't proceed. */
   const [surgeryStale, setSurgeryStale] = createSignal(false);
   const [marksPreview, setMarksPreview] = createSignal<SurgeryMarksPreviewWire | null>(null);
-  /** The session and branch the open dialog was opened on: the confirmation
-   *  is bound to them, so the server refuses it if either has changed. */
+  /** The session and branch the open dialog was opened on: a preview computed
+   *  on another makes it stale. What binds the confirmation itself is the
+   *  preview's context, which the framework checks. */
   let dialogContext: { sessionId?: string; branchId?: string } | null = null;
   const [marksPreviewError, setMarksPreviewError] = createSignal<string | null>(null);
   let marksPreviewCorr: string | null = null;
   const [awareness, setAwareness] = createSignal<AwarenessEntryWire[]>([]);
   /** The framework instance the listed journal was read from: every action
-   *  chosen from the list is bound to it (the host refuses it elsewhere). */
-  let awarenessInstance: string | null = null;
+   *  chosen from the list is bound to it (the host refuses it elsewhere).
+   *  Null until a listing succeeds, and after one fails. */
+  const [awarenessInstance, setAwarenessInstance] = createSignal<string | null>(null);
   const [awarenessLoading, setAwarenessLoading] = createSignal(false);
   const [awarenessResult, setAwarenessResult] = createSignal<{ action?: string; target?: string; receipt?: Record<string, unknown>; error?: string } | null>(null);
 
@@ -513,14 +515,15 @@ export function App() {
   };
   const onAwareness = (msg: AwarenessMessage): void => {
     setAwareness(msg.batches);
-    awarenessInstance = msg.frameworkInstanceId ?? null;
+    setAwarenessInstance(msg.frameworkInstanceId ?? null);
     setAwarenessLoading(false);
     if (msg.action) setAwarenessResult({ action: msg.action, target: msg.target, receipt: msg.receipt, error: msg.error });
     else if (msg.error) setAwarenessResult({ error: msg.error });
   };
   const awarenessAction = (action: 'cancel' | 'retract' | 'release', target: string): void => {
-    if (!features().has('awareness') || isObserver() || !awarenessInstance) return;
-    if (wire.send({ type: 'awareness-action', action, target, expectedFrameworkInstanceId: awarenessInstance })) {
+    const instance = awarenessInstance();
+    if (!features().has('awareness') || isObserver() || !instance) return;
+    if (wire.send({ type: 'awareness-action', action, target, expectedFrameworkInstanceId: instance })) {
       setAwarenessLoading(true);
     }
   };
@@ -580,12 +583,8 @@ export function App() {
     const corrId = `srg-${Date.now()}`;
     const marks = marksForSend();
     const preview = marksPreview();
-    const bound = {
-      ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
-      ...(dialogContext?.branchId ? { expectedBranchId: dialogContext.branchId } : {}),
-      // The framework checks the previewed store and branch itself.
-      ...(preview?.context ? { expectedContext: preview.context } : {}),
-    };
+    // The framework checks the previewed store and branch itself.
+    const bound = preview?.context ? { expectedContext: preview.context } : {};
     const sent = req.op === 'rollback'
       ? wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), marks, ...bound, corrId })
       : wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), marks, ...bound, corrId });
@@ -595,9 +594,9 @@ export function App() {
     const req = surgery();
     if (req && !surgeryStale()) sendSurgery(req, note);
   };
-  /** Quiesce the host; `bound` ties a retry's quiesce to the session and store
-   *  its surgery was previewed on, so the host refuses it once they changed. */
-  const quiesceHost = (reason: string, bound?: { expectedSessionId?: string; expectedStoreId?: string }): boolean => {
+  /** Quiesce the host; `bound` ties a retry's quiesce to the store its
+   *  surgery was previewed on, so the host refuses it once another is bound. */
+  const quiesceHost = (reason: string, bound?: { expectedStoreId?: string }): boolean => {
     if (!canQuiesce()) return false;
     const sent = wire.send({ type: 'host-quiesce', ...(reason.trim() ? { reason: reason.trim() } : {}), ...bound });
     if (sent) setHostModeBusy(true);
@@ -612,10 +611,7 @@ export function App() {
     // the quiesce nor the surgery is sent.
     if (surgeryStale() || surgeryPending()) return;
     const storeId = marksPreview()?.context?.storeId;
-    const sent = quiesceHost(note || `${surgery()?.op ?? 'surgery'} via webui`, {
-      ...(dialogContext?.sessionId ? { expectedSessionId: dialogContext.sessionId } : {}),
-      ...(storeId ? { expectedStoreId: storeId } : {}),
-    });
+    const sent = quiesceHost(note || `${surgery()?.op ?? 'surgery'} via webui`, storeId ? { expectedStoreId: storeId } : {});
     if (!sent) return;
     retryAfterQuiesce = { note };
     setSurgeryResult(null);
@@ -996,8 +992,14 @@ export function App() {
       if (sidebarTab() === 'mcp') refreshMcpl();
       setAwareness([]);
       setAwarenessResult(null);
-      awarenessInstance = null;
+      setAwarenessInstance(null);
       if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); refreshAwareness(); }
+    } else if (welcomeSessionId !== null && panelMode() === 'branches') {
+      // Any other welcome may follow a new framework under the same session
+      // label (a host restart, or a switch back to this session), or a
+      // reconnect that missed a broadcast: list the journal again, so the
+      // listing and its framework instance are the live ones.
+      refreshAwareness();
     }
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
@@ -1820,6 +1822,7 @@ export function App() {
             operatorLogLoading={opLogLoading()}
             onRefreshLog={refreshOpLog}
             awareness={features().has('awareness') ? awareness() : null}
+            awarenessListed={awarenessInstance() !== null}
             awarenessLoading={awarenessLoading()}
             awarenessResult={awarenessResult()}
             onRefreshAwareness={refreshAwareness}

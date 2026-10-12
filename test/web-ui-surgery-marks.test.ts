@@ -289,9 +289,11 @@ describe('surgery marks over the WebUI', () => {
       expect(preview.preview).toMatchObject({ context: { storeId: 'store-a', branch: 'main' } });
       const context = (preview.preview as { context: Record<string, string> }).context;
 
-      // Without the preview's whole context, nothing runs: none, an empty
-      // one, or one missing either field (malformed frames are dropped by
-      // validation and answered with an error frame, not run).
+      // Without the preview's whole context, nothing runs: none is refused by
+      // the host as unpreviewed; an empty one, or one missing either field, is
+      // malformed, and so is a scope without its previewed refs (it would be
+      // evaluated when the surgery applies). Each malformed frame is answered
+      // with an error frame, in order, and none is run.
       client.send({ type: 'rollback', messageId: 's9', marks: 'none', corrId: 'r0' });
       const unbound = await client.next('surgery-result', 'r0');
       expect(unbound.ok).toBe(false);
@@ -299,14 +301,12 @@ describe('surgery marks over the WebUI', () => {
       for (const partial of [{}, { storeId: 'store-a' }, { branch: 'main' }]) {
         client.send({ type: 'rollback', messageId: 's9', marks: 'none', expectedContext: partial, corrId: 'rp' });
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      client.send({ type: 'rollback', messageId: 's9', marks: { scope: 'all' }, expectedContext: context, corrId: 'rr' });
+      for (let i = 0; i < 4; i++) expect((await client.next('error')).message).toBe('unknown message shape');
       expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
 
       const marks = { scope: 'addressed', refs: [ref('a1'), ref('a2')] };
-      client.send({
-        type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1',
-        expectedContext: context, corrId: 'r1',
-      });
+      client.send({ type: 'rollback', messageId: 's9', marks, expectedContext: context, corrId: 'r1' });
       const result = await client.next('surgery-result', 'r1');
       // Every operator sees the journal change.
       expect((await client.next('awareness')).corrId).toBeUndefined();
@@ -319,21 +319,26 @@ describe('surgery marks over the WebUI', () => {
       // Without a choice the framework is told none explicitly; a suppression
       // carries the preview's context to the framework just as a rollback does.
       client.send({ type: 'suppress', messageIds: ['s3'], expectedContext: context, corrId: 'r2' });
-      expect((await client.next('surgery-result', 'r2')).ok).toBe(true);
+      const noMarks = await client.next('surgery-result', 'r2');
+      expect(noMarks.ok).toBe(true);
+      expect((noMarks.markers as { status: string }).status).toBe('none');
       const suppress = received.find((r) => r.method === 'suppressMessages')!;
       expect((suppress.args[1] as { marks: unknown }).marks).toBe('none');
       expect((suppress.args[1] as { expected: unknown }).expected).toEqual(context);
+      // Nothing was queued, so no operator is sent the journal: once the next
+      // listing is answered, no unsolicited copy is waiting before it.
+      client.send({ type: 'request-awareness', corrId: 'r2-after' });
+      await client.next('awareness', 'r2-after');
+      expect(client.waiting('awareness')).toEqual([]);
 
-      // A confirmation bound to a preview of another branch is refused
-      // before the framework sees it.
-      liveBranch.id = 'b2';
-      const calls = received.length;
-      client.send({ type: 'rollback', messageId: 's9', marks, expectedSessionId: 's1', expectedBranchId: 'b1', expectedContext: context, corrId: 'r-stale' });
+      // A confirmation bound to a preview of another branch is refused by the
+      // framework's own check of the preview's context, as its 'stale'.
+      liveBranch.name = 'elsewhere';
+      client.send({ type: 'rollback', messageId: 's9', marks, expectedContext: context, corrId: 'r-stale' });
       const stale = await client.next('surgery-result', 'r-stale');
       expect(stale.ok).toBe(false);
       expect(stale.code).toBe('stale');
-      expect(received.length).toBe(calls);
-      liveBranch.id = 'b1';
+      liveBranch.name = 'main';
 
       client.send({ type: 'request-awareness', corrId: 'a1' });
       const listed = await client.next('awareness', 'a1');
@@ -370,7 +375,7 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
-  test('a confirmation bound to one session is refused after the host rebinds to another, even with matching ids', async () => {
+  test('a confirmation previewed on one session is refused after the host rebinds to another, even with matching message ids and branch name', async () => {
     bind(true, 'session-a');
     received.length = 0;
     const client = await connect();
@@ -378,28 +383,22 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'surgery-preview', op: 'rollback', messageId: '2', corrId: 'p' });
       const preview = await client.next('surgery-preview', 'p');
       expect(preview.sessionId).toBe('session-a');
-      // The supported session switch: a new framework on another store, whose
-      // branch and message ids happen to be the same.
+      const context = (preview.preview as { context: Record<string, string> }).context;
+      // The supported session switch: a new framework on another store (every
+      // session has its own, with its own identity), whose message ids and
+      // branch name happen to be the same.
+      storeIdentity.id = 'store-b';
       bind(true, 'session-b');
       await client.next('welcome');
-      const context = (preview.preview as { context: Record<string, string> }).context;
-      client.send({
-        type: 'rollback', messageId: '2', marks: 'none',
-        expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, expectedContext: context, corrId: 'r',
-      });
+      client.send({ type: 'rollback', messageId: '2', marks: 'none', expectedContext: context, corrId: 'r' });
       const result = await client.next('surgery-result', 'r');
       expect(result.ok).toBe(false);
       expect(result.code).toBe('stale');
-      expect(received.some((r) => r.method === 'rollbackToMessage')).toBe(false);
-
-      // Even where the host's own check can't tell (a client that omits its
-      // session and branch), the framework refuses another store's context.
-      storeIdentity.id = 'store-b';
-      client.send({ type: 'rollback', messageId: '2', marks: 'none', expectedContext: context, corrId: 'r2' });
-      const refused = await client.next('surgery-result', 'r2');
-      expect(refused.ok).toBe(false);
-      expect(refused.code).toBe('stale');
-      storeIdentity.id = 'store-a';
+      // The framework refused it under its reservation, with the preview's
+      // context in hand.
+      const calls = received.filter((r) => r.method === 'rollbackToMessage');
+      expect(calls.length).toBe(1);
+      expect((calls[0].args[1] as { expected: unknown }).expected).toEqual(context);
     } finally {
       client.ws.close();
     }
@@ -435,7 +434,7 @@ describe('surgery marks over the WebUI', () => {
       // Every form is refused before anything changes: a scope it can't
       // honor, an omitted choice, and an explicit none alike.
       const attempts: Array<[string, Record<string, unknown>]> = [
-        ['r1', { type: 'rollback', messageId: 's9', marks: { scope: 'all' } }],
+        ['r1', { type: 'rollback', messageId: 's9', marks: { scope: 'all', refs: [ref('a1')] } }],
         ['r2', { type: 'rollback', messageId: 's9' }],
         ['r3', { type: 'suppress', messageIds: ['s3'], marks: 'none' }],
       ];
@@ -465,25 +464,17 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
-  test('a suppression is bound to its preview as a rollback is: another session, branch or store refuses it', async () => {
+  test('a suppression is bound to its preview as a rollback is: another store or branch refuses it', async () => {
     bind(true, 'session-a');
     const client = await connect();
     try {
       client.send({ type: 'surgery-preview', op: 'suppress', messageIds: ['s3'], corrId: 'p' });
       const preview = await client.next('surgery-preview', 'p');
       const context = (preview.preview as { context: Record<string, string> }).context;
-      const bound = { expectedSessionId: preview.sessionId, expectedBranchId: preview.branchId, expectedContext: context };
 
-      // The host's own check: the branch moved since the preview.
-      liveBranch.id = 'b2';
-      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', ...bound, corrId: 's1' });
-      expect((await client.next('surgery-result', 's1')).code).toBe('stale');
-      expect(received.some((r) => r.method === 'suppressMessages')).toBe(false);
-      liveBranch.id = 'b1';
-
-      // The framework's check, which holds where the host's can't tell (a
-      // client that omits its session and branch): another store, then
-      // another branch, each refused with the preview's context in hand.
+      // The framework's check: another store (a session switch since the
+      // preview), then another branch, each refused with the preview's
+      // context in hand.
       storeIdentity.id = 'store-b';
       client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', expectedContext: context, corrId: 's2' });
       const otherStore = await client.next('surgery-result', 's2');
@@ -499,14 +490,6 @@ describe('surgery marks over the WebUI', () => {
       const calls = received.filter((r) => r.method === 'suppressMessages');
       expect(calls.length).toBe(2);
       for (const call of calls) expect((call.args[1] as { expected: unknown }).expected).toEqual(context);
-
-      // After the host rebinds to another session, it refuses before the
-      // framework sees anything.
-      bind(true, 'session-b');
-      await client.next('welcome');
-      client.send({ type: 'suppress', messageIds: ['s3'], marks: 'none', ...bound, corrId: 's4' });
-      expect((await client.next('surgery-result', 's4')).code).toBe('stale');
-      expect(received.filter((r) => r.method === 'suppressMessages').length).toBe(2);
     } finally {
       client.ws.close();
     }
@@ -519,9 +502,9 @@ describe('surgery marks over the WebUI', () => {
       client.send({ type: 'request-awareness', corrId: 'l1' });
       const firstInstance = (await client.next('awareness', 'l1')).frameworkInstanceId as string;
 
-      // Another framework bound under the same session label: what a session
-      // switch looks like from the label while it creates the new framework
-      // (the new session is active before its framework is bound).
+      // Another framework bound under the same session label: what a host
+      // restart, or a switch back to the same session, looks like from the
+      // label.
       bind(true, 'session-a');
       await client.next('welcome');
       client.send({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: firstInstance, corrId: 'x1' });
@@ -555,36 +538,31 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
-  test("a retry's quiesce is bound to the session and store its surgery was previewed on", async () => {
+  test("a retry's quiesce is bound to the store its surgery was previewed on", async () => {
     bind(true, 'session-a');
     const client = await connect();
     try {
       expect(client.welcome.features).toEqual(expect.arrayContaining(['quiesce']));
 
-      // Another store behind the previewed session label: refused before
-      // anything is paused, recorded, and answered with the live host mode
-      // (which settles a client waiting on its quiesce).
+      // Another store bound since the preview (another session's, after a
+      // switch): refused before anything is paused, recorded, and answered
+      // with the live host mode (which settles a client waiting on its
+      // quiesce).
       storeIdentity.id = 'store-b';
-      client.send({ type: 'host-quiesce', reason: 'rollback via webui', expectedSessionId: 'session-a', expectedStoreId: 'store-a', corrId: 'q1' });
+      bind(true, 'session-b');
+      await client.next('welcome');
+      client.send({ type: 'host-quiesce', reason: 'rollback via webui', expectedStoreId: 'store-a', corrId: 'q1' });
       expect(String((await client.next('error', 'q1')).message)).toMatch(/nothing was paused/);
       expect(((await client.next('host-mode', 'q1')).hostMode as { mode: string }).mode).toBe('serving');
       expect(received.some((r) => r.method === 'quiesce')).toBe(false);
       expect(logged).toContainEqual(expect.objectContaining({
         kind: 'quiesce', note: 'rollback via webui',
-        params: { expectedSessionId: 'session-a', expectedStoreId: 'store-a' },
+        params: { expectedStoreId: 'store-a' },
         error: expect.stringMatching(/nothing was paused/),
       }));
-      storeIdentity.id = 'store-a';
 
-      // Another session: refused likewise.
-      bind(true, 'session-b');
-      await client.next('welcome');
-      client.send({ type: 'host-quiesce', expectedSessionId: 'session-a', expectedStoreId: 'store-a', corrId: 'q2' });
-      expect(String((await client.next('error', 'q2')).message)).toMatch(/nothing was paused/);
-      expect(received.some((r) => r.method === 'quiesce')).toBe(false);
-
-      // Still the previewed session and store: it quiesces.
-      client.send({ type: 'host-quiesce', expectedSessionId: 'session-b', expectedStoreId: 'store-a', corrId: 'q3' });
+      // Still the previewed store: it quiesces.
+      client.send({ type: 'host-quiesce', expectedStoreId: 'store-b', corrId: 'q3' });
       expect(((await client.next('host-mode', 'q3')).hostMode as { mode: string }).mode).toBe('quiesced');
       expect(received.filter((r) => r.method === 'quiesce').length).toBe(1);
 
@@ -592,7 +570,7 @@ describe('surgery marks over the WebUI', () => {
       // previewed one: refused, and answered.
       bind(true, 'session-b', true, { storeIdentityThrows: true });
       await client.next('welcome');
-      client.send({ type: 'host-quiesce', expectedSessionId: 'session-b', expectedStoreId: 'store-a', corrId: 'q4' });
+      client.send({ type: 'host-quiesce', expectedStoreId: 'store-b', corrId: 'q4' });
       expect(String((await client.next('error', 'q4')).message)).toMatch(/nothing was paused/);
       expect(received.filter((r) => r.method === 'quiesce').length).toBe(1);
     } finally {
@@ -625,28 +603,21 @@ describe('surgery marks over the WebUI', () => {
         params: { messageIds: ['s3', 's4'], marks: 'none' }, error: unpreviewed.error,
       });
 
-      // Previewed on another session.
-      client.send({
-        type: 'rollback', messageId: 's9', marks: 'none', expectedSessionId: 'session-z',
-        expectedContext: { storeId: 'store-a', branch: 'main' }, corrId: 's',
-      });
-      const stale = await client.next('surgery-result', 's');
-      expect(stale.code).toBe('stale');
-      expect(logged.at(-1)).toMatchObject({ kind: 'rollback', agent: 'resident', params: { messageId: 's9', marks: 'none' }, error: stale.error });
-
       // Each records what was asked and why it didn't run: never a result.
-      expect(logged.length).toBe(3);
+      expect(logged.length).toBe(2);
       expect(logged.every((entry) => !('result' in entry))).toBe(true);
       expect(received.some((r) => r.method === 'rollbackToMessage' || r.method === 'suppressMessages')).toBe(false);
 
-      // A framework without live surgery at all is recorded the same way.
+      // A framework without live surgery at all is refused as unsupported too,
+      // and recorded the same way.
       bind(false, 's1', true, { noSurgery: true });
       await client.next('welcome');
       client.send({ type: 'suppress', messageIds: ['s3'], corrId: 'x' });
       const none = await client.next('surgery-result', 'x');
+      expect(none.code).toBe('unsupported');
       expect(String(none.error)).toMatch(/no live suppress — upgrade/);
       expect(logged.at(-1)).toMatchObject({ kind: 'suppress', params: { messageIds: ['s3'], marks: 'none' }, error: none.error });
-      expect(logged.length).toBe(4);
+      expect(logged.length).toBe(3);
     } finally {
       client.ws.close();
     }
@@ -693,6 +664,46 @@ describe('surgery marks over the WebUI', () => {
     }
   });
 
+  test('while no framework is bound, every surgery, preview and journal request is answered with that reason, and nothing runs', async () => {
+    bind(true, 's1');
+    const client = await connect();
+    try {
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
+      const context = ((await client.next('surgery-preview', 'p')).preview as { context: Record<string, string> }).context;
+      client.send({ type: 'request-awareness', corrId: 'l' });
+      const instance = (await client.next('awareness', 'l')).frameworkInstanceId as string;
+      received.length = 0;
+
+      // A session switch stops the old framework, and with it this module,
+      // which unbinds the app; the new framework binds once it is created.
+      await webUiModule.stop();
+
+      client.send({ type: 'rollback', messageId: 's9', marks: 'none', expectedContext: context, corrId: 'r' });
+      const surgery = await client.next('surgery-result', 'r');
+      expect(surgery.ok).toBe(false);
+      expect(surgery.code).toBe('stale');
+      expect(String(surgery.error)).toMatch(/no framework is bound/);
+
+      client.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p2' });
+      const preview = await client.next('surgery-preview', 'p2');
+      expect(preview.ok).toBe(false);
+      expect(String(preview.error)).toMatch(/no framework is bound/);
+
+      client.send({ type: 'request-awareness', corrId: 'l2' });
+      expect(String((await client.next('awareness', 'l2')).error)).toMatch(/no framework is bound/);
+
+      client.send({ type: 'awareness-action', action: 'retract', target: 'all', expectedFrameworkInstanceId: instance, corrId: 'a' });
+      const action = await client.next('awareness', 'a');
+      expect(action.code).toBe('stale');
+      expect(String(action.error)).toMatch(/no framework is bound/);
+
+      expect(received).toEqual([]);
+    } finally {
+      bind(true, 's1');
+      client.ws.close();
+    }
+  });
+
   test('the journal is operator state: an observer with the ops scope may ask for it, and no observer is sent it unasked', async () => {
     bind(true, 's1');
     const operator = await connect();
@@ -703,6 +714,19 @@ describe('surgery marks over the WebUI', () => {
       expect(((await ops.next('awareness', 'o')).batches as unknown[]).length).toBe(1);
       health.send({ type: 'request-awareness', corrId: 'h' });
       expect(String((await health.next('error')).message)).toMatch(/forbidden/);
+
+      // Whatever its scopes, an observer acts on nothing: the ops observer's
+      // journal action, preview and rollback are each refused, unrun.
+      const calls = received.length;
+      for (const msg of [
+        { type: 'awareness-action', action: 'cancel', target: 'b1', expectedFrameworkInstanceId: 'fw-x' },
+        { type: 'surgery-preview', op: 'rollback', messageId: 's9' },
+        { type: 'rollback', messageId: 's9', marks: 'none', expectedContext: { storeId: 'store-a', branch: 'main' } },
+      ]) {
+        ops.send(msg);
+        expect(String((await ops.next('error')).message)).toMatch(/forbidden/);
+      }
+      expect(received.length).toBe(calls);
 
       // A surgery that queues marks: every full operator gets the journal.
       operator.send({ type: 'surgery-preview', op: 'rollback', messageId: 's9', corrId: 'p' });
