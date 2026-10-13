@@ -40,6 +40,7 @@ export interface ProviderCallRecord {
   /** TTLs found on cache_control blocks. `default` means provider default. */
   cacheTtls?: string[];
   stopReason?: string;
+  /** Present exactly when the call failed: its error text, which can be empty. */
   error?: string;
 }
 
@@ -148,7 +149,8 @@ export class CallLedger {
     const splitMismatch = call.cacheWriteTokens > 0 && (
       !call.cacheWriteBucketsAuthoritative || reportedSplit !== call.cacheWriteTokens
     );
-    const cost = call.error ? undefined : priceAnthropicCall(call.model, call.timestamp, {
+    // A failure is priced at nothing, whatever its text: an empty one too.
+    const cost = call.error !== undefined ? undefined : priceAnthropicCall(call.model, call.timestamp, {
       inputTokens: call.inputTokens,
       outputTokens: call.outputTokens,
       cacheReadTokens: call.cacheReadTokens,
@@ -184,7 +186,7 @@ export class CallLedger {
       verdict,
       cause,
       ...(call.stopReason ? { stopReason: call.stopReason } : {}),
-      ...(call.error ? { error: call.error } : {}),
+      ...(call.error !== undefined ? { error: call.error } : {}),
     };
 
     this.rows.push(row);
@@ -235,7 +237,8 @@ function classifyCall(opts: {
   gapSeconds?: number;
 }): { verdict: CallLedgerVerdict; cause: string } {
   const { call, hasKnownFlags, hasCacheControls, ttlSeconds, gapSeconds } = opts;
-  if (call.error) return { verdict: 'ERROR', cause: call.error };
+  // A call failed exactly when it carries an error, whatever its text.
+  if (call.error !== undefined) return { verdict: 'ERROR', cause: call.error || 'the error carried no text' };
   if (hasKnownFlags && !hasCacheControls) {
     return { verdict: 'uncached', cause: 'no cache_control flags in request' };
   }

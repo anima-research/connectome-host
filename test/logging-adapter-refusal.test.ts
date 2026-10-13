@@ -13,17 +13,20 @@ function makeAdapter() {
   adapter.onRefusal = (info) => fired.push(info);
   const observe = (kind: 'complete' | 'stream', stopReason?: string, category?: string) =>
     (adapter as unknown as {
-      observeCall: (k: string, t: string, d: number, req: unknown, raw: unknown, res?: unknown) => void;
+      observeCall: (k: string, t: string, d: number, req: unknown, raw: unknown, outcome: unknown, errorText?: string) => void;
     }).observeCall(kind, new Date().toISOString(), 100,
       { model: 'claude-fable-5', messages: new Array(37).fill({}) },
       undefined,
       stopReason
         ? {
-            usage: { inputTokens: 64_000, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
-            stopReason,
-            raw: { stop_reason: stopReason, ...(category ? { stop_details: { category } } : {}) },
+            response: {
+              usage: { inputTokens: 64_000, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
+              stopReason,
+              raw: { stop_reason: stopReason, ...(category ? { stop_details: { category } } : {}) },
+            },
           }
-        : undefined,
+        : { error: new Error('overloaded') },
+      stopReason ? undefined : 'overloaded',
     );
   return { adapter, fired, observe };
 }

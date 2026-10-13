@@ -12,6 +12,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
+import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../src/state/stream-usage.js';
 
 type Phase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed' | 'idle';
 
@@ -29,12 +30,24 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
   const toolCountByAgent = new Map<string, number>();
   // Mirror SubagentModule's callIdIndex so tool events route to the correct agent.
   const callIdIndex = new Map<string, string>();
+  // Mirror tui.ts's streamUsage and noteUsageSample: a sample is the stream's
+  // running total, so the context size is the prompt of the call it adds.
+  const streamUsage = new Map<string, UsageCounts>();
+  const noteUsageSample = (agent: string, sample: UsageSample | undefined) => {
+    if (!sample) return;
+    const step = foldUsageSample(streamUsage.get(agent), sample);
+    streamUsage.set(agent, step.total);
+    if (step.prompt !== undefined) inputTokensByAgent.set(agent, step.prompt);
+  };
 
   for (const e of events) {
     const agent = e.agentName as string | undefined;
     switch (e.type) {
       case 'inference:started':
-        if (agent) phaseByAgent.set(agent, 'sending');
+        if (agent) {
+          phaseByAgent.set(agent, 'sending');
+          streamUsage.set(agent, emptyUsage());
+        }
         break;
       case 'inference:tokens':
         if (agent) phaseByAgent.set(agent, 'streaming');
@@ -52,17 +65,13 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
         break;
       }
       case 'inference:usage': {
-        if (agent) {
-          const usage = e.tokenUsage as { input?: number } | undefined;
-          if (usage?.input) inputTokensByAgent.set(agent, usage.input);
-        }
+        if (agent) noteUsageSample(agent, e.tokenUsage as UsageSample | undefined);
         break;
       }
       case 'inference:completed': {
         if (agent) {
           phaseByAgent.set(agent, 'done');
-          const usage = e.tokenUsage as { input?: number } | undefined;
-          if (usage?.input) inputTokensByAgent.set(agent, usage.input);
+          noteUsageSample(agent, e.tokenUsage as UsageSample | undefined);
         }
         break;
       }
@@ -184,11 +193,14 @@ describe('AgentTreeReducer parity with inline fold', () => {
   });
 
   test('multiple usage events accumulate context size correctly', () => {
-    // Last input tokens wins (= current context window).
+    // Each sample is the stream's running total; the context size is the
+    // prompt of the latest call (fresh input plus cache reads and writes).
     assertParity([
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 1000, output: 50 }, timestamp: t(0) },
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 2000, output: 80 }, timestamp: t(1) },
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 3500, output: 120 }, timestamp: t(2) },
+      { type: 'inference:started', agentName: 'a', timestamp: t(0) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 1000, output: 50, cacheCreation: 3000 }, timestamp: t(1) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 2000, output: 80, cacheRead: 3000, cacheCreation: 3200 }, timestamp: t(2) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 3500, output: 120, cacheRead: 6200, cacheCreation: 3300 }, timestamp: t(3) },
+      { type: 'inference:completed', agentName: 'a', durationMs: 100, tokenUsage: { input: 3500, output: 120, cacheRead: 6200, cacheCreation: 3300 }, timestamp: t(4) },
     ]);
   });
 });

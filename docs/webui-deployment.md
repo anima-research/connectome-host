@@ -184,8 +184,9 @@ travel over the WebSocket.
 | `/curve` | the context-curve page (reads `/debug/context/curve`) |
 | `/debug/context` and `/debug/context/{makeup,coverage,curve,preview,maintenance}` | context debugging — see [`debug-context-api.md`](./debug-context-api.md) |
 | `/debug/retrieval[/view]` | retrieval traces — see [`retrieval-traces.md`](./retrieval-traces.md) |
+| `/debug/tool-classes[?agent=]` | each tool's effective MCPL class (RFC-008) and its source: `override`, `host`, `server` or `none` (unclassed) |
 
-`/healthz`, `/quota`, `/media/…` and the `/debug/context*` routes accept
+`/healthz`, `/quota`, `/media/…`, `/debug/tool-classes` and the `/debug/context*` routes accept
 `?scope=<child>` to answer for a fleet child instead (proxied over the fleet
 IPC). Unknown `/debug/*` paths get a JSON `404`.
 

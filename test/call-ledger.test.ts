@@ -80,6 +80,14 @@ describe('CallLedger cache verdicts', () => {
     ledger.record(call({ cacheWriteTokens: 100_000, cacheTtls: ['1h'] }));
     expect(ledger.snapshot().rows[0]!.cost).toBeUndefined();
   });
+
+  test('a call that carries an error is an ERROR, unpriced, even when its text is empty', () => {
+    const ledger = new CallLedger({ hydrate: false });
+    ledger.record(call({ error: '', inputTokens: 1_000, cacheReadTokens: 100_000 }));
+    const [row] = ledger.snapshot().rows;
+    expect(row).toMatchObject({ verdict: 'ERROR', cause: 'the error carried no text', error: '' });
+    expect(row!.cost).toBeUndefined();
+  });
 });
 
 test('summarizeCacheControls inventories markers without retaining content', () => {

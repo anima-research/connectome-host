@@ -244,11 +244,123 @@ describe('identity module', () => {
     );
     expect(both.error).toContain('not both');
     const onGet = await mod.handleToolCall(call('request', { service: 'music', path: '/x', fromFile: 'files/music/track.mp3' }));
-    expect(onGet.error).toContain('POST or PUT');
+    expect(onGet.error).toContain('needs a method that sends a body');
     const missing = await mod.handleToolCall(
       call('request', { service: 'music', path: '/x', method: 'PUT', fromFile: 'files/nope.mp3' }),
     );
     expect(missing.error).toContain('could not read');
+  });
+
+  it('request: every writing method carries a JSON body or a workspace file; GET carries neither', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ident-'));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0x7f]);
+    const sent: Array<{ url: string; method: string; type: string; auth: string; body: unknown }> = [];
+    const workspace = {
+      readBinary: async (path: string) =>
+        path === 'files/artifacts/grid.png' ? { data: png } : { error: `File not found: ${path}` },
+      writeBinary: async () => ({ success: true }),
+    };
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      services: { orrery: 'https://orrery.test' },
+      fetchImpl: (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
+        if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
+        if (u.includes('/services')) return new Response(JSON.stringify({ services: {} }), { status: 200 });
+        if (u.startsWith('https://orrery.test/api/nodes/')) {
+          sent.push({
+            url: u,
+            method: String(init?.method),
+            type: String(init?.headers?.['content-type'] ?? ''),
+            auth: String(init?.headers?.authorization ?? ''),
+            body: init?.body instanceof Uint8Array ? Buffer.from(init.body) : init?.body,
+          });
+          // An empty 204, as PATCH and DELETE routes often answer.
+          if (u.endsWith('/empty')) return new Response(null, { status: 204 });
+          return new Response(JSON.stringify({ id: 'n1', starred: true, note: 'the open ring' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    (mod as any).ctx = { getModule: (n: string) => (n === 'workspace' ? workspace : null) };
+    await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
+
+    // The framework's `utils run` checks args against the advertised enum
+    // before the handler runs, so the schema has to offer every verb.
+    const request = mod.getUtilities().find((u) => u.name === 'request')!;
+    const methods = (request.inputSchema.properties as any).method.enum as string[];
+    expect(methods).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      // A JSON body, as orrery's PATCH-only node update takes one.
+      const withBody = await mod.handleToolCall(call('request', {
+        service: 'orrery', path: '/api/nodes/n1', method, body: { starred: true, note: 'the open ring' },
+      }));
+      expect(withBody.success).toBe(true);
+      expect(withBody.data).toEqual({ status: 200, body: { id: 'n1', starred: true, note: 'the open ring' } });
+      expect(sent.at(-1)).toEqual({
+        url: 'https://orrery.test/api/nodes/n1',
+        method,
+        type: 'application/json',
+        auth: 'Bearer aid1.fresh.secret',
+        body: JSON.stringify({ starred: true, note: 'the open ring' }),
+      });
+      expect(JSON.stringify(withBody.data)).not.toContain('aid1.');
+
+      // A workspace file's bytes, byte-exactly, with the upload receipt.
+      const withFile = await mod.handleToolCall(call('request', {
+        service: 'orrery', path: '/api/nodes/n1', method, fromFile: 'files/artifacts/grid.png',
+      }));
+      expect(withFile.success).toBe(true);
+      expect((withFile.data as any).sent).toEqual({ path: 'files/artifacts/grid.png', size: png.byteLength, contentType: 'image/png' });
+      expect(sent.at(-1)).toMatchObject({ method, type: 'image/png', auth: 'Bearer aid1.fresh.secret' });
+      expect(Buffer.isBuffer(sent.at(-1)!.body) && (sent.at(-1)!.body as Buffer).equals(png)).toBe(true);
+      expect(JSON.stringify(withFile.data)).not.toContain('aid1.');
+    }
+    expect(sent.length).toBe(8);
+
+    // A writing method with neither body nor file sends neither, and no type.
+    const bare = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/nodes/n1', method: 'PATCH' }));
+    expect(bare.success).toBe(true);
+    expect(sent.at(-1)).toEqual({ url: 'https://orrery.test/api/nodes/n1', method: 'PATCH', type: '', auth: 'Bearer aid1.fresh.secret', body: undefined });
+
+    // An empty 204 is an empty success, with no advice to repeat the write.
+    const empty = await mod.handleToolCall(call('request', {
+      service: 'orrery', path: '/api/nodes/empty', method: 'DELETE',
+    }));
+    expect(empty.success).toBe(true);
+    expect(empty.data).toEqual({ status: 204, body: '' });
+    expect(sent.length).toBe(10);
+
+    // Refused before the wire: a body or a file with GET, whether GET was
+    // given or defaulted; body with fromFile; an unlisted verb.
+    for (const input of [
+      { method: 'GET', body: { starred: true } },
+      { body: { starred: true } },
+      { method: 'GET', fromFile: 'files/artifacts/grid.png' },
+      { fromFile: 'files/artifacts/grid.png' },
+    ]) {
+      const refused = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/nodes/n1', ...input }));
+      expect(refused.success).toBe(false);
+      expect(refused.error).toContain('needs a method that sends');
+      expect(refused.error).toContain('POST, PUT, PATCH, DELETE');
+      expect(refused.error).toContain(input.method ? 'method is GET' : 'method is GET by default');
+    }
+    const both = await mod.handleToolCall(call('request', {
+      service: 'orrery', path: '/api/nodes/n1', method: 'PATCH', body: { starred: true }, fromFile: 'files/artifacts/grid.png',
+    }));
+    expect(both.success).toBe(false);
+    expect(both.error).toContain('not both');
+    expect(methods).not.toContain('TRACE');
+    const trace = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/nodes/n1', method: 'TRACE' }));
+    expect(trace.success).toBe(false);
+    expect(trace.error).toContain('unsupported method TRACE');
+    expect(sent.length).toBe(10);
   });
 
   it('request: binary responses are described safely or saved byte-exactly to workspace', async () => {

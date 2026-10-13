@@ -20,14 +20,21 @@
 
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
-import type { ContentBlock, NormalizedMessage, ToolDefinition } from '@animalabs/membrane';
+import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
+import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
 import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
 } from '../mcpl-config.js';
+import {
+  countToolClassSources,
+  readToolClasses,
+  type ToolClassRow,
+  type ToolClassSource,
+} from '../tool-lifecycle-config.js';
 
 /** Minimal slice of AppContext the panel layer needs. Both the WebUI host
  *  and the headless child runtime satisfy this structurally. */
@@ -38,12 +45,19 @@ export interface PanelAppRef {
   callLedger?: CallLedger | null;
   /** Subscription quota windows, when the host runs on a subscription. */
   quotaMeter?: QuotaMeter | null;
+  /** Credential state + operator actions, when the host runs on a subscription. */
+  credentials?: CredentialMonitor | null;
+  /** On a subscription without a local meter (openai-codex through an
+   *  inference gateway, which tracks the windows per login): no windows to
+   *  show, but the dollar estimate is still not a bill. */
+  subscriptionUnmetered?: boolean;
 }
 
 /** Panel operations servable by any conhost process. Kept as a const list so
  *  fleet-types.ts and tests can enumerate without importing the handlers. */
 export const PANEL_OPS = [
   'mcpl',
+  'tool-classes',
   'settings',
   'settings-update',
   'settings-reset',
@@ -60,6 +74,8 @@ export const PANEL_OPS = [
   'debug-context',
   'media',
   'quota',
+  'credential',
+  'credential-action',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -92,6 +108,14 @@ export async function runPanelOp(
     switch (op as PanelOp) {
       case 'mcpl':
         return { ok: true, data: buildMcplSnapshot(app) };
+      case 'tool-classes':
+        return {
+          ok: true,
+          data: buildToolClassesSnapshot(
+            app,
+            typeof params.agent === 'string' && params.agent.length > 0 ? params.agent : undefined,
+          ),
+        };
       case 'settings':
         return { ok: true, data: requireSettingsState(app, resolveAgent(app, params.agent)) };
       case 'settings-update': {
@@ -135,6 +159,10 @@ export async function runPanelOp(
         return { ok: true, data: buildHealthSnapshot(app) };
       case 'quota':
         return { ok: true, data: await buildQuotaSnapshot(app) };
+      case 'credential':
+        return { ok: true, data: buildCredentialSnapshot(app) };
+      case 'credential-action':
+        return { ok: true, data: await applyCredentialAction(app, params) };
       case 'context-makeup':
         return { ok: true, data: await buildContextMakeup(app, resolveAgent(app, params.agent)) };
       case 'context-coverage':
@@ -292,6 +320,12 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     }
   } catch { /* live view is best-effort; the file registry still renders */ }
 
+  // Every tool's effective class (all agents), for the panel's tool-class
+  // section. Omitted when the framework build has no listing.
+  let toolClasses: ToolClassRow[] | null = null;
+  try { toolClasses = readToolClasses(app.framework); }
+  catch { /* best-effort, like the live view */ }
+
   return {
     configPath: DEFAULT_CONFIG_PATH,
     servers: Object.entries(servers).map(([id, entry]) => ({
@@ -305,7 +339,36 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
       ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
     })),
     live,
+    ...(toolClasses ? { toolClasses } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tool classes (MCPL RFC-008 §6)
+// ---------------------------------------------------------------------------
+
+export interface ToolClassesSnapshot {
+  /** The agent whose surface this is, or null for every tool offered. */
+  agent: string | null;
+  /** Rows per source: override / host / server / none (unclassed). */
+  counts: Record<ToolClassSource, number>;
+  /** Sorted by tool name. */
+  tools: ToolClassRow[];
+}
+
+/**
+ * Each tool with its effective class and the source that decided it. Unlike
+ * the agent-scoped panels, omitting `agent` does not default to the primary
+ * agent: it lists every tool the framework offers to anyone (the shared
+ * board plus agent-only surfaces such as the subconscious's).
+ */
+export function buildToolClassesSnapshot(app: PanelAppRef, agent?: string): ToolClassesSnapshot {
+  if (agent !== undefined) requireAgent(app, agent);
+  const tools = readToolClasses(app.framework, agent);
+  if (tools === null) {
+    throw new PanelError('this agent-framework build does not report tool classes', 501);
+  }
+  return { agent: agent ?? null, counts: countToolClassSources(tools), tools };
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +741,7 @@ function hostHoldActive(app: PanelAppRef): boolean | null {
 }
 
 export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
-  if (!app.quotaMeter) return { subscription: false, windows: [] };
+  if (!app.quotaMeter) return { subscription: app.subscriptionUnmetered === true, windows: [] };
   const snapshot = await app.quotaMeter.refresh();
   return {
     subscription: true,
@@ -691,12 +754,43 @@ export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<strin
   };
 }
 
+/** `credential` panel op / health `credential` block: the monitor's state,
+ *  or `{ subscription: false }` on an API-key host. Never carries a token. */
+export function buildCredentialSnapshot(app: PanelAppRef): Record<string, unknown> {
+  if (!app.credentials) return { subscription: false };
+  // `agent` = the name the host's alerts carry, so a UI can key the two the same.
+  return { subscription: true, agent: resolveAgent(app), ...app.credentials.snapshot() };
+}
+
+const CREDENTIAL_ACTIONS: ReadonlySet<string> = new Set(['refresh', 'login', 'set-token', 'recheck']);
+
+/** `credential-action`: run one operator action and answer with the state. */
+export async function applyCredentialAction(app: PanelAppRef, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!app.credentials) throw new PanelError('this host runs on an API key; no credential actions', 404);
+  const action = typeof params.action === 'string' ? params.action : '';
+  if (!CREDENTIAL_ACTIONS.has(action)) throw new PanelError(`unknown credential action: ${action || '(none)'}`, 400);
+  const token = typeof params.token === 'string' ? params.token : undefined;
+  if (action === 'set-token' && !token?.trim()) throw new PanelError('set-token needs a token', 400);
+  const state = await app.credentials.runAction(action as CredentialActionId, token !== undefined ? { token } : {});
+  return { subscription: true, agent: resolveAgent(app), ...state };
+}
+
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
   if (typeof fw.healthSnapshot !== 'function') {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
+  // Credential state rides along so a WebUI opened mid-incident (or the
+  // fleet hub / doctor) sees an expired token or spent quota without waiting
+  // for the next alert transition. Health reads never throw.
+  try {
+    if (app.credentials) {
+      (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
+    }
+  } catch {
+    // Health reads never throw.
+  }
   // Compression quarantine is a guaranteed-eventual-outage state (raw
   // spans accumulate until the picker cannot fit the window). Surface it
   // here so the fleet hub and connectome-doctor can alarm on it — it
@@ -961,6 +1055,10 @@ export interface CountablePreview {
   messages?: NormalizedMessage[];
   tools?: ToolDefinition[];
   config?: { thinking?: { enabled: boolean; budgetTokens?: number } };
+  /** The agent's prefill scaffold message, which the activation request
+   *  carries when the agent has one. Typed by membrane's own request, so a
+   *  rename there fails the build instead of silently dropping it here. */
+  prefillUserMessage?: NormalizedRequest['prefillUserMessage'];
 }
 
 /** Anthropic count_tokens payload (everything but `model`). */
@@ -976,11 +1074,16 @@ export type CountFormatter = Pick<NativeFormatter, 'buildMessages'>;
 /**
  * Build the count_tokens payload by running the previewed activation through
  * the SAME formatter path inference uses (`buildMessages`, multiuser, the
- * agent as assistant, native tools): participant prefixes land per text block
- * exactly as on the wire, non-text-only messages get no name block, tool
- * pairs are normalized and same-role runs merged by the formatter itself, and
- * every block the provider will be sent — signed `thinking` /
- * `redacted_thinking`, `tool_use`, `tool_result`, images — is counted.
+ * agent as assistant, the tool mode the caller passes): participant prefixes
+ * land on the text blocks the formatter prefixes, exactly as on the wire,
+ * non-text-only messages get no name block, and the agent's prefill message
+ * goes where the formatter puts it (anthropic-xml sends it first, in place of
+ * its default opener, whenever its request would otherwise open with the
+ * assistant's turn, as a prefill transcript usually does).
+ * Tool pairs are normalized and same-role runs merged by the formatter
+ * itself, and every block the formatter sends is counted: for the native
+ * formatter that includes signed `thinking` / `redacted_thinking`,
+ * `tool_use`, `tool_result` and images.
  *
  * The previous version flattened each message to its text blocks and sent no
  * tool definitions: on a keep-all model (Opus >= 4.5, Sonnet >= 4.6, Fable)
@@ -1005,13 +1108,19 @@ export function buildCountTokensPayload(
     toolMode,
     thinking: preview.config?.thinking,
     systemPrompt: preview.system,
+    // Inference passes the agent's prefill message to the formatter, which
+    // for anthropic-xml sends it first, in place of its default opener,
+    // whenever the request would otherwise open with the assistant's turn;
+    // without it the count had that default in its place.
+    ...(preview.prefillUserMessage ? { prefillUserMessage: preview.prefillUserMessage } : {}),
     promptCaching: false,
     cacheMarkers: 'membrane-system',
   });
   const tools = Array.isArray(built.nativeTools) ? built.nativeTools : undefined;
+  const system = built.systemContent;
   return {
-    ...(built.systemContent !== undefined && built.systemContent !== null && built.systemContent !== ''
-      ? { system: built.systemContent }
+    ...(system !== undefined && system !== null && system !== '' && !(Array.isArray(system) && system.length === 0)
+      ? { system }
       : {}),
     messages: built.messages as unknown[],
     ...(tools && tools.length > 0 ? { tools } : {}),
@@ -1055,8 +1164,9 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   const cm = (agent as unknown as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
   const stats = cm.getRenderStats();
 
-  // Count through the formatter the agent actually runs on (prefill agents
-  // render the XML scaffold; everyone else the native shape).
+  // Count through the formatter the agent's recipe names: an anthropic-xml
+  // agent's count takes the XML scaffold, prefill or not; everyone else the
+  // native shape.
   const xml = app.recipe.agent.formatter === 'anthropic-xml';
   const payload = buildCountTokensPayload(
     request as unknown as CountablePreview,
@@ -1085,11 +1195,12 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     const res = await fetch(base + '/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
-        // Mirror the main adapter's auth: OAuth Bearer (subscription) when
-        // ANTHROPIC_AUTH_TOKEN is set, x-api-key otherwise.
-        ...(process.env.ANTHROPIC_AUTH_TOKEN
+        // Mirror the main adapter's auth: the LIVE subscription bearer when
+        // the host runs on one (it rotates; the env string does not), else
+        // ANTHROPIC_AUTH_TOKEN, else x-api-key.
+        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
           ? {
-              authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
               'anthropic-beta': 'oauth-2025-04-20',
             }
           : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
@@ -1113,14 +1224,116 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
 }
 
 /**
+ * A feasibility preview's verdict, against the budget an operator asked for.
+ * context-manager's `budgetTokens` is the REJECTION budget, (requested -
+ * reserve) * (1 + overBudgetGraceRatio), the threshold above which a compile
+ * throws; its `fits` therefore means "would not hard-fail", not "fits the
+ * budget you asked for". The settings panel and the context curve both
+ * report this, so they can't disagree.
+ */
+function previewAccounting(result: unknown, budget: number, reserve: number) {
+  const r = result as { finalTokens?: number; budgetTokens?: number; exhausted?: boolean };
+  const effectiveBudget = Math.max(0, budget - reserve);
+  const finalTokens = typeof r.finalTokens === 'number' ? r.finalTokens : NaN;
+  const fitsRequested = Number.isFinite(finalTokens) && finalTokens <= effectiveBudget;
+  const withinGrace = Number.isFinite(finalTokens) && typeof r.budgetTokens === 'number'
+    ? finalTokens <= r.budgetTokens
+    : undefined;
+  return {
+    requestedBudgetTokens: budget,
+    reserveForResponseTokens: reserve,
+    /** The picker's planned total, when the preview reports one. */
+    plannedTokens: Number.isFinite(finalTokens) ? finalTokens : null,
+    /** What the picker actually targets. */
+    effectiveBudgetTokens: effectiveBudget,
+    /** Hard-fail ceiling — requested minus reserve, plus grace. */
+    rejectionBudgetTokens: r.budgetTokens,
+    /** Fits the budget the operator asked for. */
+    fitsRequested,
+    /** Merely tolerated by the grace margin — over budget, but no throw. */
+    withinGrace,
+    /** Exhausted AND over the request => this budget is UNREACHABLE. */
+    unreachable: r.exhausted === true && !fitsRequested,
+  };
+}
+
+/**
+ * Whether the curve's plan fits, from the framework's feasibility preview, with
+ * the settings panel's accounting. A dry compile plots an over-budget plan
+ * instead of throwing, so without this the plot of a context that won't fit
+ * looks like a healthy one. null when the preview is unavailable (no
+ * previewContextSettings, or a strategy without a fold plan) or throws.
+ *
+ * During a paced budget descent (`transition` other than `stable`), the
+ * runtime settings report the descent's target, while compiles run at the
+ * live budget, which no accessor reports yet. The curve and its verdict are
+ * then at the target, `atDescentTarget` says so, and the page doesn't claim
+ * what the next real compile will do.
+ */
+function curveVerdict(
+  app: PanelAppRef,
+  agentName: string,
+  maxTokens: number,
+  reserveForResponse: number,
+  transition: string | undefined,
+): Record<string, unknown> | null {
+  try {
+    const fw = app.framework as unknown as {
+      previewContextSettings?: (name: string, budget: number) => unknown;
+    };
+    const r = fw.previewContextSettings?.(agentName, maxTokens);
+    if (!r) return null;
+    const { plannedTokens, effectiveBudgetTokens, rejectionBudgetTokens, fitsRequested, withinGrace, unreachable } =
+      previewAccounting(r, maxTokens, reserveForResponse);
+    return {
+      plannedTokens,
+      effectiveBudgetTokens,
+      rejectionBudgetTokens: rejectionBudgetTokens ?? null,
+      fitsRequested,
+      withinGrace,
+      unreachable,
+      atDescentTarget: transition !== undefined && transition !== 'stable',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Context curve: compile the agent's window and return one record per
  * compiled entry with its provenance — kind (raw / L1..Ln summary), rendered
  * token estimate, the raw-history tokens it covers (leaf messages,
  * recursively through the summary tree), date span, and full text.
  *
- * Same side-effect class as previewActivation / makeup: the compile may
- * commit resolution updates, exactly as the agent's own next turn would.
- * No inference, no message writes.
+ * The budget is the agent's context budget from its runtime settings (else
+ * the recipe), with the recipe's response reserve. That's close to, but not
+ * exactly, what the agent's next turn compiles at: the framework's compile
+ * budget can also hold back room for a pending tool batch, and during a paced
+ * descent the runtime settings report the descent's target while compiles
+ * run at the live budget (the verdict's atDescentTarget says so).
+ *
+ * A render runs two dry selects, the curve's compile and the verdict's
+ * preview, and each one pauses the agent while it runs. That's the intended
+ * cost of a debug page opened on demand, so the settings preview's cooldown
+ * isn't applied here.
+ *
+ * The compile is a dry run: shown, never sent, so its select commits no fold
+ * resolutions and queues no compression from the plan. Once context-manager's
+ * thinking binding (#160) is released, a committed compile that's never sent
+ * would also fence the replies the resident is streaming; a dry run won't.
+ * With context-manager 0.13 a dry compile isn't free of every effect: the
+ * adaptive select still records its estimate and arms calibration, and
+ * overwrites the frontier, the transition status and the render stats that
+ * the Context panel reads, until the next real compile (context-manager #161
+ * restores them after a dry select). Like any hold query, a dry compile also
+ * releases a compression hold whose deadline has passed, never one that
+ * hasn't: that release, and the work it sets off, was already due.
+ *
+ * A plan over budget at the plan check is plotted rather than thrown, and the
+ * response carries a verdict from the framework's feasibility preview, the
+ * one the settings panel reports, so the plot says it won't fit. The
+ * head/tail reservation check and the emission check still throw on a budget
+ * that can't fit, as for a real compile. No inference, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
@@ -1132,14 +1345,23 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
   // ever been changed at runtime. Fall back to the recipe only if the live
   // read is unavailable.
   let maxTokens = app.recipe.agent.contextBudgetTokens ?? 200_000;
+  let transition: string | undefined;
   try {
-    const live = (app.framework as unknown as {
-      getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
-    }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
+    const settings = (app.framework as unknown as {
+      getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number; transition?: string };
+    }).getAgentRuntimeSettings?.(agentName);
+    const live = settings?.contextBudgetTokens;
     if (typeof live === 'number' && live > 0) maxTokens = live;
+    transition = settings?.transition;
   } catch { /* keep the recipe fallback */ }
   const reserveForResponse = app.recipe.agent.maxTokens ?? 16_384;
-  const compiled = await cm.compile({ maxTokens, reserveForResponse });
+  // A dry run: this compile is shown, never sent. Committing would rewrite
+  // the resident's fold plan and queue compression work on every render,
+  // mid-stream included (context-manager's SelectOptions.dryRun names this
+  // case), and once thinking binding lands it would fence the replies the
+  // resident is streaming (Ada-1017, context-manager #155).
+  const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
+  const verdict = curveVerdict(app, agentName, maxTokens, reserveForResponse, transition);
 
   // Curve inspection only needs text and source metadata. Resolving every
   // historical blob here re-inlines all base64 media and can expand a
@@ -1193,11 +1415,19 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     if (sum) {
       const leafIds = leaves(sum).filter((id) => msgById.has(id));
       const rawCovered = leafIds.reduce((a, id) => a + estimate(msgById.get(id)!), 0);
-      const dates = leafIds.map((id) => msgById.get(id)!.timestamp).filter(Boolean).sort();
+      // The store gives each timestamp as a Date, which the default sort orders
+      // by its text, weekday first. Take the earliest and latest by time, of
+      // the timestamps that are times.
+      const times = leafIds.map((id) => msgById.get(id)!.timestamp)
+        .filter((t) => t !== undefined && t !== null)
+        .map((t) => new Date(t as Date | string | number).getTime())
+        .filter((t) => Number.isFinite(t))
+        .sort((a, b) => a - b);
       entries.push({
         i: i++, kind: `L${sum.level}`, id: sum.id, participant: e.participant,
         rendered, rawCovered, msgCount: leafIds.length, nImages,
-        dateFirst: dates[0] ?? null, dateLast: dates[dates.length - 1] ?? null, text,
+        dateFirst: times.length > 0 ? new Date(times[0]) : null,
+        dateLast: times.length > 0 ? new Date(times[times.length - 1]) : null, text,
       });
     } else {
       const src = e.sourceMessageId ? msgById.get(e.sourceMessageId) : null;
@@ -1213,6 +1443,7 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     generatedAt: new Date().toISOString(),
     branch: cm.currentBranch().name,
     budget: { maxTokens, reserveForResponse },
+    verdict,
     totals: {
       entries: entries.length,
       rendered: entries.reduce((a, e) => a + e.rendered, 0),
@@ -1353,32 +1584,12 @@ export function runContextPreview(
     // REJECTION budget: (requested - reserve) * (1 + overBudgetGraceRatio),
     // i.e. the threshold above which a compile throws. Its `fits` therefore
     // means "would not hard-fail", NOT "fits the budget you asked for".
-    const r = result as { finalTokens?: number; budgetTokens?: number; exhausted?: boolean };
     const reserve = app.recipe.agent.maxTokens ?? 16_384;
-    const effectiveBudget = Math.max(0, budget - reserve);
-    const finalTokens = typeof r.finalTokens === 'number' ? r.finalTokens : NaN;
-    const fitsRequested = Number.isFinite(finalTokens) && finalTokens <= effectiveBudget;
-    const withinGrace = Number.isFinite(finalTokens) && typeof r.budgetTokens === 'number'
-      ? finalTokens <= r.budgetTokens
-      : undefined;
     return {
       agent: agentName,
       budget,
       ...(overrides as object),
-      accounting: {
-        requestedBudgetTokens: budget,
-        reserveForResponseTokens: reserve,
-        /** What the picker actually targets. */
-        effectiveBudgetTokens: effectiveBudget,
-        /** Hard-fail ceiling — requested minus reserve, plus grace. */
-        rejectionBudgetTokens: r.budgetTokens,
-        /** Fits the budget the operator asked for. */
-        fitsRequested,
-        /** Merely tolerated by the grace margin — over budget, but no throw. */
-        withinGrace,
-        /** Exhausted AND over the request => this budget is UNREACHABLE. */
-        unreachable: r.exhausted === true && !fitsRequested,
-      },
+      accounting: previewAccounting(result, budget, reserve),
       /** How long the agent was blocked, so the operator sees the real cost. */
       elapsedMs: Date.now() - startedAt,
       preview: wantRender ? projectDryEntries(result) : result,

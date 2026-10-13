@@ -145,10 +145,14 @@ bunx tsc --noEmit   # typecheck
 bun src/index.ts    # run (generic assistant)
 ```
 
-Push-time CI (`ci.yml`) builds and tests every push and PR on ubuntu and
-macos, installing the web app with a strict lockfile (`npm ci`) — if you
-touched `web/` dependencies, regenerate the lock with `npm run relock:web`
-so it carries both platforms' native binaries.
+CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
+and macOS. Both install the web app with a strict lockfile (`npm ci`) and
+build it; the test suite runs on ubuntu only. If you touched `web/`
+dependencies, regenerate the npm lock with `npm run relock:web`, so it
+carries both platforms' native binaries. It resolves every web dependency
+afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:
+delete `web/bun.lock` and run `bun install --lockfile-only` in `web/`, which
+builds Bun's lock from the npm lock, so both pin the same versions.
 
 See `docs/DEV-ENVIRONMENT.md` for the full dev setup, `ARCHITECTURE.md` for
 how the host is built, and `docs/README.md` for the index of operations and

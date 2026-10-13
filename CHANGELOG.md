@@ -6,18 +6,425 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.10.0 — 2026-10-13
+
+### Added
+
+- Recipes can tune `agent.strategy.maxLiveImages`, `imageStripDepthTokens`, and `maxLiveImageBytes` for autobiographical and frontdesk strategies. Values must be non-negative safe integers; zero disables the corresponding limit. Omitted values keep context-manager's defaults.
+
+- `/bug <what happened>` assembles a bug report for connectome-host's public
+  issues. It shows the report, saves it under `DATA_DIR`, and gives a link
+  that opens GitHub's new-issue form with it filled in. Nothing is sent: the
+  reporter reads it in the form and submits it under their own GitHub
+  account, so it needs no credentials of the host's.
+  - Besides the reporter's own words, the report holds only fields with a
+    known shape: versions and commit, runtime and mode, the setup as
+    structure (provider, a model id only when every word of it is a public
+    model name, built-in modules, budgets, each MCP server by ordinal with
+    its kind, transport and state), this process's provider failures as
+    classifications, and this run's host errors as known class names and
+    code locations in our own packages.
+  - No log line, error message, request, response, prompt or recipe text is
+    copied, into the report or the saved file, and no name a user chose
+    (recipe, servers, custom modules, custom models, other packages), nor
+    commands, arguments, URLs, env values or paths outside our own code.
+    The error logs and provider errors can quote conversation text, so they
+    are read only for these shapes.
+  - Only a person runs it: the fleet's command tool refuses `/bug`.
+  - A new issue form, `.github/ISSUE_TEMPLATE/bug_report.yml`, labels these
+    reports `bug`.
+  - `headless.log` now marks where each run begins, as `tui-error.log`
+    already did, so a report reads only the current run's errors.
+
+- Recipes can set **`agent.strategy.carrierPolicy: "live-strip"`** (context-manager
+  #81, shipped since context-manager 0.8.0, but never reachable from a recipe
+  until now). `'live-strip'` omits a summary's signed reasoning carriers
+  (`responseContent` thinking blocks) from the agent's own live-compiled
+  window only — compression/merge requests still carry them unconditionally,
+  where they're measured load-bearing for some providers. Useful when a
+  provider's classifier treats a compressor-signed reasoning block replayed
+  inside the live window (rather than the request that minted it) as
+  reasoning extraction. Default `'full'` is unchanged/behavior-preserving.
+
+- `openai-codex` can run through an inference gate that holds the ChatGPT
+  logins (the gate's `/codex` leg): set `CODEX_GATE_TOKEN` and point
+  `CODEX_BASE_URL` at the gate. No Codex CLI or login runs on the host, the
+  gate chooses the account, and a gate token is never sent without an
+  explicit `CODEX_BASE_URL`. The subscription quota meter is off in this
+  mode (the gate tracks utilization per login).
+
+- Recipe `agent.strategy.compressionToolProseFallback: { intoTool, fromTools,
+  field?, result?, minChars? }` — validated loudly (a malformed value is an
+  error, never a silently disabled rung) and passed through to Context
+  Manager's tool-prose hoist fallback, which retries a refused L1 compression
+  with long `fromTools` arguments (e.g. a diary kept in `skip_reply.reason`)
+  moved into calls to a note-taking tool the agent really has
+  (agent-framework's `journal`). Requires the context-manager and
+  agent-framework versions that carry the rung and the tool.
+
+- **Subscription credential alerts with operator actions.** A host on a
+  subscription credential (`ANTHROPIC_AUTH_TOKEN`, the new
+  `ANTHROPIC_OAUTH_CREDENTIALS_FILE`, or provider `openai-codex`) now names
+  what is wrong with it — `quota-spent`, `quota-unreadable`, `auth-expiring`,
+  `auth-expired`, `auth-rejected`, `auth-login-required` — through the
+  existing ops-alert pipeline (failures.log, `ops:alert` trace, webhook), so
+  the TUI status bar, the WebUI alert strip and fleet parents all see it. Each
+  alert carries the actions the host can run for it; the WebUI renders them
+  as buttons on the alert row and in a new Health-tab credential section, the
+  TUI names the matching `/auth refresh | login | recheck | token <tok>`
+  command. Nothing rotates on its own: membrane's 401 retry gets the same
+  token unless `ANTHROPIC_OAUTH_AUTO_REFRESH=1`. A credentials file with a
+  refresh token (Claude Code's shape, or flat `accessToken`/`refreshToken`/
+  `expiresAt`) makes the Anthropic credential host-rotatable and warns 30 min
+  before expiry; a bare token offers "paste new token" only. New panel ops
+  `credential` / `credential-action` (WS `request-credential` /
+  `credential-action`, HTTP `GET /credential`) work fleet-wide over the
+  panel IPC. The header quota readout now says `quota: unreadable` instead
+  of rendering nothing when a subscription meter has never read. Behind an
+  inference gateway the surface narrows to what the host can actually do: a
+  Codex host on `CODEX_GATE_TOKEN` gets an observe-only credential source
+  (a gate 401 raises `auth-rejected` naming the gate, Re-check only), and an
+  Anthropic host on a gate API key gets no credential monitor at all.
+- **Activity module: honest typing.** The typing indicator now also stops on
+  `inference:failed` / `inference:exhausted`, not only on a completed turn.
+
+- `modules.history` accepts an object form, `{ semantic: { url, token?, namespace?,
+  syncIntervalMs?, maxSyncPerTick?, maxSyncBeforeSearch?, includePrivateTools?,
+  allowInsecureHttp? } }`, which adds `history--semantic_search`: meaning-based
+  search over the agent's raw messages and compression summaries via a shared
+  remote embed-service (agent-framework#173). **Requires
+  `@animalabs/agent-framework` >= 0.20.0**; startup throws if the installed
+  HistoryModule offers no `semantic_search`. `token` goes through the recipe's
+  `${ENV}` substitution. The index namespace is always `<prefix>/<session id>`;
+  `namespace` sets the prefix (default: the agent name). Validation is loud at
+  load: unknown keys at either level, a URL without a host or with
+  credentials/query/fragment, plaintext http outside loopback/tailnet without
+  `allowInsecureHttp: true`, budgets below 1, and `syncIntervalMs` other than 0
+  or >= 5000 all fail the recipe.
+
+- Recipes can set `agent.thinking.effort` before the first Anthropic streaming request, for example `"thinking": { "enabled": false, "effort": "medium" }`. The recipe remains the effort baseline across unrelated settings updates and restarts. Explicit agent effort overrides it until reset, including an explicit `"default"`; legacy saved `"default"` is treated as unset. A model that doesn't accept the effort level, such as Sonnet 4.5, Haiku 4.5 or a Claude 3 model, gets no effort and its default applies, with a line on stderr. Subagents stream through the same provider adapter, so on a model that accepts the effort they run at the recipe's effort too, as they already did at an effort the agent set. Other providers ignore this field; OpenAI recipes use `agent.responses.reasoningEffort`. Compression calls are unaffected.
+
+- Recipes can set membrane `MockAdapter`'s timing and scripted replies under
+  `agent.mock`: `completeDelayMs`, `streamChunkDelayMs` (non-negative
+  numbers), `streamChunkSize` (positive integer) and `responseQueue` (non-empty
+  strings, returned one per provider call before the echo or
+  `defaultResponse`). Offline runs can now reproduce delay-sensitive behavior
+  such as event coalescing during a slow turn. Unknown keys under
+  `agent.mock` join the recipe's unknown-key warning.
+
+- **Outage notices: the host speaks in the agent's channels when the agent
+  cannot.** New opt-in `modules.notices`, a sink of the framework's
+  `ops:alert` stream. Each alert kind resolves to a tier — `reply` (hard-down,
+  spent quota, expired/rejected credential, pending login, provider hold),
+  `status` (context refusal, MCPL server down, unreadable quota, expiring
+  credential, …) or `silent` (refusals, unknown kinds) — overridable per kind
+  with `*` globs (`"auth-*": "reply"`). For `reply` kinds, a person who writes
+  to the agent during the outage gets one canned host-attributed "cannot
+  respond right now" line per episode in channels matching `reply.in` minus
+  `reply.not` (channel-id patterns: `zulip:*`, exact ids — "notify on Zulip,
+  never on Discord" is one line), the channel whose message triggered the
+  failing turn is told the same, and every channel told gets one "can respond
+  again" line on recovery. `statusChannels` get the operator-grade message
+  (kind + error text) for `status` and `reply` kinds after `quietMs` (default
+  60 s) without a clear. Episodes close on the kind's `-clear`, on the agent's
+  next completed inference for framework kinds that have none, or on
+  reconnect for `mcpl-down`. A notice whose chat server is itself absent is
+  parked and delivered if the server comes back while the outage is on. One
+  chronicle marker per episode tells the agent the host spoke for it. The
+  recipe validates channel lists, tiers and timings at load.
+
+- Operators can see each tool's effective MCPL class (RFC-008) and where it
+  came from: the recipe's `toolClassOverrides`, the host's own table, the
+  server's `_meta["mcpl/class"]`, or nowhere (unclassed). The new
+  `/tools [agent]` command lists them in the TUI, readline, web UI and
+  headless; `GET /debug/tool-classes[?agent=]` (also a `tool-classes` panel
+  op, so `?scope=<child>` works) serves them as JSON; the web UI's MCP tab
+  shows per-source counts and the per-tool list; and the agent's `mcpl_list`
+  groups each server's tools by class and source.
+
+- Recipes and `mcpl-servers.json` can grant an MCPL server MCPL tool-lifecycle
+  observation (RFC-007) with a `toolLifecycle` block on its entry
+  (`observe`, `inputs`, optional `tools` / `classes` / `conversations`
+  narrowing, `maxInputBytes`). The block is validated at load: an
+  "off-looking" value such as `observe: false` is an error, not a grant.
+  `toolLifecycle` is also a recipe-overridable field for servers taken from
+  `mcpl-servers.json`, which previously dropped it.
+- Recipes can set `toolClassOverrides` (tool-name pattern → RFC-008 classes)
+  to class third-party MCP tools. The host now passes the classes of its
+  own module tools (`HOST_TOOL_CLASSES`) to the framework. Both need an
+  agent-framework release that includes tool lifecycle (#199); older
+  frameworks ignore them.
+- Servers an agent deploys for itself (`mcpl-servers.agent.json`) are denied
+  `toolLifecycle`, and any `toolLifecycle` block in the overlay is stripped:
+  observing other tools' calls stays an operator grant.
+- A recipe `mcpServers` entry may now name a server from `mcpl-servers.json`
+  by id with only policy fields, and no `command` / `url`. Validation used to
+  reject this. An id-only entry the file doesn't define is a startup error
+  rather than being silently skipped.
+
+- WebUI: "⤢ all <tool>" on any tool block (and "all thinking" on thinking
+  blocks) expands or collapses every block of that kind across the loaded
+  history; individual blocks can still be toggled against the kind. The
+  older-history control gains bulk loads (200 / 1k / 5k / all, chained in
+  server-sized pages with progress and a stop button) beside scroll-to-load.
+
+### Changed
+
+- Depend on `@animalabs/agent-framework` ^0.21.0 and `@animalabs/context-manager` ^0.13.0. AF 0.21.0 lets stdio MCPL children inherit CA-bundle and proxy variables again (lost in 0.20.0's env allowlist); CM 0.13.0 adds optional compression-hold timeouts and render/diagnostic fixes.
+
+- **The recipe `conversations` block is deprecated** (per-channel conversation
+  routing, agent-framework#235). Its `'mention'` bind/trigger rule, the default
+  for channels, reads `metadata.mentioned`, which discord-mcpl does not set, so
+  on Discord channels an @-mention neither binds a fork nor triggers a bound
+  one. Behavior is unchanged: routing still works, and the host logs one
+  `[deprecated]` line at startup when a recipe sets `conversations`
+  (`deprecatedConversationsNotices()` in `recipe.ts`). `Recipe.conversations`
+  and `RecipeConversations` carry `@deprecated`, and the `idleTtlMs` docs now
+  note that expiry is checked at most about once a minute, so the sweep usually
+  notices an expired binding up to ~60s after the TTL; that is not a deadline
+  for closing the fork, whose closure turn can be delayed further (e.g. while
+  the host is quiesced).
+
+- Depend on released `@animalabs/agent-framework` 0.18.0 and
+  `@animalabs/context-manager` 0.11.0. kv-unified compiles no longer grow with
+  the summary forest once a provider cache is relevant (CM #105/#110): on a
+  production store, turn 2 went from out-of-memory at 6 GB to about 200 ms.
+
+- Depend on released `@animalabs/agent-framework` 0.19.0. MCPL servers that
+  announce a new channel from inside a tool call no longer deadlock against
+  the host (agent-framework #160): in zulip-mcp, a stream the bot joined after
+  startup stayed `Unknown channel` until a restart. Also brings the private
+  `journal` tool beside `think` and `skip_reply`.
+
+- Depend on released `@animalabs/agent-framework` 0.22.0,
+  `@animalabs/context-manager` 0.14.0 and `@animalabs/membrane` 0.5.87.
+  - **Prompt cache, once:** agent-framework 0.22's workspace tools (`ls`,
+    `glob`, `grep`, `sync`, `materialize`, `delete`) have new descriptions and
+    parameters, so the first request after the upgrade misses the cache from
+    its tool block on.
+  - **Workspace:** listings report what is on disk, `sync` without a path no
+    longer replaces a workspace draft, and `materialize` no longer overwrites a
+    file another writer changed (agent-framework 0.22's changelog has the
+    details).
+  - **Stores:** under `kv-unified`, context-manager 0.14 stores its
+    presentation receipt run-length encoded, so `records.log` no longer grows
+    quadratically with session length. Stores written by 0.13 still load.
+  - **Makeup panel:** a native agent's exact count now carries its
+    `prefillUserMessage` as the synthetic leading user turn, because membrane
+    0.5.87's native formatter sends it there (it used to send `[continuing]`).
+
+- docs: documentation brought in line with what the host does today. The
+  README opens with what it is used for (long-lived residents, continued
+  conversations, fleets, knowledge mining) and its reference sections were
+  corrected against the code — MCP servers are recipe opt-in, `"webui": true`
+  alone refuses to start off loopback, no Rust toolchain is needed, and the
+  full provider, environment-variable, slash-command, key-binding and recipe
+  tables. `ARCHITECTURE.md` is rewritten as-built. The original architecture
+  document and the headless-fleet, unified-tree and locus-routing plans move
+  verbatim to [`docs/history/`](docs/history/README.md), with notes on what
+  became of each; the living headless/fleet protocol they contained is now
+  [`docs/fleet-protocol.md`](docs/fleet-protocol.md). New
+  [`docs/README.md`](docs/README.md) indexes every guide. Drift fixed across
+  the memory and gating guides (adaptive resolution, L1…L8, what the
+  compression pass actually sees, `gate_status`, `wake_add_rule`), the
+  deployment, dev-environment, WebUI and debug-API guides, and the recipe
+  setup guides (the TUI's chat ↔ fleet views, the `[y/N/d]` quit prompt).
+  Source comments and the no-subfleets error now point at the new locations.
+
+- docs: new [`docs/claude-code-ingest.md`](docs/claude-code-ingest.md) — continuing a
+  Claude Code session transcript as a resident (active-branch walk, verbatim signed
+  thinking, `tool_result` storage shape, verify-on-a-copy, and a `reasoning_extraction`
+  refusal triage + mitigation section). `AGENT-ONBOARDING.md`: recipe skeleton updated to
+  the tuned production values (300k/100k/32k, chunk 3000, merge 6, recall 40k, tool-prose
+  fallback, `refusalHandling`), new §5b on `kv-stable` vs `kv-unified` with the reference
+  kv-unified configuration and its preconditions, and new gotchas §11.8 (topology audit /
+  open-mutates-store), §11.9 (`reasoning_extraction`), §11.10 (model-bound signed thinking).
+
+- README documents `enabledFeatureSets` (omitted = every declared set; `[]` in
+  a recipe or `mcpl-servers.json` = none, while the agent's overlay file reads
+  `[]` as unset; a set without valid `uses` stays disabled) and model-facing
+  MCPL tool names (`mcpl--<serverId>--<tool>`). The `toolClassOverrides`
+  examples now use that form; `cua--*` and `blender--*` matched nothing.
+- The shipped `knowledge-miner.json` and `clerk.json` prompts, and the setup
+  guides, name the MCPL tools as the model sees them (`mcpl--zulip--listen`,
+  `mcpl--gitlab--get_issue`, `mcpl--ddg--search`, `mcpl--syncntn--*`,
+  `mcpl--scribe--*`) rather than without the `mcpl--` prefix.
+- `mcpl_deploy`'s description and the overlay comments no longer call
+  `disabledFeatureSets: ["*"]` deny-all: in feature-set patterns `*` matches
+  exactly one dot-separated segment, so denying every set takes a pattern per
+  depth (`["*", "*.*", "*.*.*"]`). `disabledTools: ["*"]` is deny-all for
+  tools, as before.
+
 ### Fixed
 
+- Fleet state snapshots no longer persist resolved child environment overrides. Adopted children recover restart overrides from the current matching recipe configuration, including `autoStart: false` entries; legacy persisted env is ignored. A child with no matching configured name, recipe, and data directory gets no overrides. A same-name recipe or data-directory mismatch logs the mismatched fields and withheld restart overrides without logging their values. Existing Chronicle history and backups may still contain previously saved secrets; operators should rotate affected credentials and handle historical copies according to their retention policy. Running child processes keep their existing environment until restarted.
 - Evacuator-generated recipes pin the imported participant before host construction, keeping the live framework and Membrane role anchor aligned through `/session switch`. Name resolution uses `--agent`, then the chosen warmup session's sidecar, then `Claude`; the same name is passed explicitly to warmup. For custom imports without a selected warmup session or sidecar, supply `--agent`. Existing generated recipes need their hardcoded `agent` name corrected. Warmup selection rejects duplicate titles and ambiguous ID prefixes with candidate IDs; the guide and CLI explicitly require selecting the intended imported store before chatting under the revival identity. Replacing an output recipe with a different participant emits a warning, including when a resumed run falls back from a custom name to `Claude`.
 - Headless command replies bypass event subscriptions like other protocol responses. Fleet commands and direct socket clients receive `command-output` even with narrow or empty subscriptions; unrelated telemetry remains filtered. Protocol replies stay with the requesting connection and are discarded if that connection closes or is replaced while work is pending. The headless log reports the dropped response type and reason, without its payload.
 - The WebUI and fleet WebUI smoke-test recipes bind to `127.0.0.1`, so their unauthenticated local servers pass the existing bind-safety check. The fleet parent uses port 8788 and its child uses 8787 to avoid competing for one listener.
 - The clerk recipe's channel-management procedures use `wake_add_rule` and `wake_remove_rule` for live, persisted gate changes, while retaining Zulip subscriptions and protected default policies. They no longer direct the clerk to edit a Chronicle workspace copy or promise a timed reload. The prompt distinguishes recipe-shipped rules restored at startup from runtime-only rules whose removal survives restart.
 - The generic provider logging wrapper forwards an adapter's optional `toolResultImageMediaTypes` capability, preserving its native tool-image policy. Older adapters keep their existing behavior; Gemini HEIC/HEIF history preservation requires a membrane version containing antra-tess/membrane#92.
-### Added
 
-- Recipes can tune `agent.strategy.maxLiveImages`, `imageStripDepthTokens`, and `maxLiveImageBytes` for autobiographical and frontdesk strategies. Values must be non-negative safe integers; zero disables the corresponding limit. Omitted values keep context-manager's defaults.
-### Fixed
+- **`GATE_TELEMETRY` now parses fail-closed** (#119). The env-flag parser
+  treated every non-empty string except `0`/`false` as ON, so `off`, `no` and
+  ordinary typos ENABLED the telemetry headers — with a configured base URL,
+  the exact data-boundary leak the double gate exists to close. Only an
+  allowlisted affirmative (`1` or `true`, trimmed, case-insensitive) enables
+  it now; recognized negatives stay silent and any other value warns once,
+  naming the accepted forms. The same fail-open parser copy guarding
+  `LLM_CALLS_FULL_PAYLOADS` in the llm-calls logger is hardened identically.
 
+- Recipes warn about keys the host never reads, at the top level, under
+  `agent` and under `modules`, naming what each was probably meant to be
+  (`mcplServers` → `mcpServers`; `modules.files` was replaced by
+  `modules.workspace`) (#167). A warning, not an error, so recipes carrying
+  leftovers keep loading. The known-key lists are type-checked against the
+  `Recipe`, `RecipeAgent` and `RecipeModules` interfaces, so a key added to
+  one can't be forgotten in the other.
+- Shipped recipes lose their dead keys: `claude-export-revive.json`'s
+  `mcplServers` (now `mcpServers`), `mcpl-editor-test.json`'s `modules.files`
+  (now `workspace: false`) and its hybrid Sonnet model id (now
+  `claude-sonnet-4-6`); `knowledge-miner.json`'s description no longer
+  advertises the Notion and audio/video sources 0.8.0 removed (#167).
+
+- With reasoning enabled, requests to models that do not support adaptive
+  thinking (Haiku 4.5, Sonnet 4.5, Opus 4.5 and older) no longer carry
+  `thinking: { type: 'adaptive' }` and 400. The setting is host-wide, so
+  RetrievalModule's default Haiku calls were failing on every compile.
+  Those models are logged once and sent without `thinking`.
+
+- Per-agent token counts now count each provider call once. agent-framework's
+  `inference:usage` sample is the stream's running total (membrane sums every
+  call so far), and `inference:completed` carries the total again, but the
+  agent tree added every sample and the completion. So a multi-call stream's
+  earlier calls were counted again with each later sample and once more at
+  completion. This affected the Web UI sidebar's `out` badges, the parent's
+  included, since it sums its agents, and the Usage panel's per-agent and
+  breakdown rows. The session totals (the TUI's `Σ` and the Usage panel's
+  parent row) and the call ledger don't come from these samples, so they don't
+  change.
+- Context-size readouts show the latest call's prompt: its fresh input plus
+  its cache reads and writes. That sum holds for a provider adapter that
+  declares its cache convention; membrane passes an `unknown` adapter's
+  counts through as they come, and where that input already includes the
+  cached span (Gemini's very likely does), a cache hit reads high. They had
+  shown the stream's summed fresh input, which is neither one call's prompt
+  nor the context size. This covers the TUI's `ctx:N/budget` gauge and
+  per-agent `…ctx`, the Web UI sidebar's `…cx`, a finished subagent's context
+  size, and an agent's `input` in the Usage panel. That `input` is the
+  agent's own context, plus its subagents' for an agent that has them, since
+  the panel sums a subtree. While a call streams, a local agent's `…ctx` in
+  the TUI still adds an estimate of the output streamed so far.
+
+- Batch mode (stdin not a TTY, no `--headless`) now says what it is doing: a
+  `[batch]` line at the start says the run ends when stdin closes and names
+  `--headless` as the way to keep serving, and a line before the teardown
+  names the MCPL servers it closes. Each server's `mcpl-stderr` log gets a
+  `[host] closing: batch run complete` line ahead of its `connection closed`.
+  When the web UI is on, a last line says it stays up with the agent stopped.
+- Batch runs exit as soon as they finish. The 120 s cap on waiting for each
+  reply was never cleared, so the process lingered for two minutes after
+  `Done.`.
+
+- llm-calls records from the Anthropic and Bedrock paths bound a failed call's error text as the generic logging wrapper's records do, so a provider error that echoes the whole rejected request no longer writes it into the record a second time beside the raw request. The `error` object keeps its shape: `name`, cut at 128 characters; `message`, cut at 4,000 to its head and tail around a marker stating the omission; and on the Anthropic path `stack`, whose header names the message above instead of repeating it when that header is the error's own "Name: message" line, and which is cut at 4,000 as well. `errorChars` gives the whole message's length when it was cut. For an `Error` carrying them, the provider's classification (`errorType`, `httpStatus`, `providerErrorCode`, `retryable`) sits beside it. On the Anthropic path the call ledger's ERROR cause, live and restored after a restart, reads this same bounded message, and a failure whose message is empty is an ERROR too, where the ledger used to price it as a success. The ledger's live row also takes its model, message count and cache summary from the record's request summary, which a row restored after a restart reads too.
+- Logging on these two paths no longer changes what a call returns or throws. It runs after the provider call, outside its try, and neither reading a hostile error nor summarizing the request can throw into it. As before, the Anthropic writer's capture hook keeps an error thrown by a caller's own `onRequest` hook from failing the call. On the Anthropic path the request summary leaves out only a part it can't read. A record that can't be built even so gets a minimal record (`summaryUnavailable: true`) with its kind and timing, and for a failure its bounded error, so the call still has a record: on the Anthropic path that's a call whose response can't be read, and on the Bedrock path one whose request or response can't be summarized. A rejection with `undefined` is recorded as the failure it is, and on the Anthropic path it reaches the credential monitor and the call ledger as one.
+
+- The web console's context curve panel now compiles the resident's context as a dry run. The compile is only displayed, never sent, so its select no longer commits fold resolutions or queues compression from the plan each time the panel renders, mid-stream included. Once context-manager's thinking binding is released, a committed compile that's never sent would also fence the replies the resident is streaming, and a dry run won't. With context-manager 0.13, a dry compile still records the adaptive estimate, arms calibration and overwrites the render stats until the next real compile; context-manager #161 removes these. Like any hold query, it releases a compression hold whose deadline has passed, never one that hasn't.
+- When the context's plan is over budget at the plan check, the curve now plots it and says it's over budget, with the verdict the settings panel's feasibility preview reports: whether the plan fits, and whether the next real compile would refuse it. During a paced budget descent the curve and its verdict are at the descent's target, and the page says so rather than predicting the next compile. It used to fail to load. A budget too small for the head and tail reservations, or a plan the emission check finds over, still fails the panel, as before.
+- `FrontdeskStrategy` passes its select options through to the autobiographical select, so a dry run (a preview, the context curve) is no longer run as a committing one for frontdesk agents.
+
+- The context curve page gives a summary's first and last dates by time. It used to order them by their text, weekday first, so a summary of a Wednesday's and a Friday's messages showed the Friday as its first date.
+
+- `llm-calls` error records from the generic logging wrapper bound their error text to 4,000 characters. That wrapper serves the `openai-responses`, `openai-compatible`, `openai-codex`, `openrouter` and `mock` providers; `anthropic` and `bedrock` log through their own classes, whose records are bounded by a separate entry. The text is cut to its head and tail around a marker stating how many of how many characters were omitted, and no surrogate pair of well-formed text is split. A provider can echo the whole rejected request in its error body (one OpenAI-compatible 400 echoed ~1.7 MB), and the record already keeps that request as `rawRequest`, except when the record is over the 16 MiB size guard, which drops the raw bodies and keeps the bounded text. When the error is an `Error` carrying them, a record now also carries `errorType`, `httpStatus`, `providerErrorCode` and `retryable`, plus `errorChars` when the text was cut; `errorType` and `providerErrorCode` are cut the same way at 128 characters. A small error's text is recorded byte for byte as before.
+- An error whose fields cannot be read (a throwing getter) no longer makes the wrapper throw the getter's error in place of the provider's. Each field is read on its own: an unreadable `message` is recorded as `[message could not be read]` after the error's name, keeping the classification; an unreadable or wrongly typed classification field is left out, keeping the text; and a value that cannot be read at all, such as a revoked Proxy, is recorded as `[error could not be read]`. The original error is always rethrown.
+- Logging no longer changes what a successful call returns. A record that couldn't be built used to replace the provider's response with the logging error, and to be written as an error. Now a call whose request or response can't be summarized gets a minimal record (`summaryUnavailable: true`) with its provider, kind and timing, and for a failure its bounded error, so no call goes unrecorded. A null block or tool is summarized rather than thrown on. A rejection with `undefined` is recorded as an error, not as a successful call, and a record whose raw bodies can't be serialized (a cycle, a BigInt) is written without them, as for the size guard.
+
+- `postinstall` now reports a failed optional Web UI build. It used to end with `|| true`, so when `npm --prefix web install` or `run build` failed, the install succeeded and the host added nothing to npm's own output: no summary of the failure and no retry command. The install still succeeds (exit 0), but the script now reports the failure on stderr, naming the retry command (`npm run build:web`). It does not claim what the Web UI will do: a bundle from an earlier build may still be in place, so whether one is missing is reported at start. Without a `web/` directory it stays silent, and a working build prints nothing extra.
+- The host also says once at start, on stderr, when an enabled Web UI finds no bundle at its resolved path. That covers a build that was skipped rather than failed (for example `--ignore-scripts`). The page keeps its 503 and its remedy.
+
+- Fleet preserves unresolved launch artifacts and recovers matching tracked children only after confirmed PID death, bounded regular PID metadata, and an absent or refusing Unix socket with artifact identity rechecks. Fresh parents without a record still refuse cleanup. Adopted restart records confirmed death without inventing an exit code, honors SIGKILL wait failure, and failed adoption can be retried on boot, launch, or restart. Refusals name artifact paths and existing recovery operations. Confirmed terminal records are never adopted solely because their old PID is live again. These checks do not provide cross-process locking.
+- Stale Unix socket probes use the existing Node.js prerequisite to retain native errors; Bun versions that normalize resource errors cannot authorize cleanup. Missing Node, timeout, and spawn errors preserve artifacts.
+
+- Fleet manual restarts preserve environment overrides, autoRestart, and subscriptions. Failed socket setup, subscription, or readiness now terminates the owned child before returning failure; unconfirmed termination stays blocked and is reported explicitly. The record's `exitReason` keeps the launch failure beside the exit, whichever came first.
+- Fleet automatic replacements retain crash history, advance the existing backoff, and stop after three retries within 60 seconds, where a crash-looping child used to be replaced forever. `fleet--status` shows the stop as `autoRestartStopped`. A manual restart, or a launch of the same name, resets that retry budget, and kill, restart, launch or shutdown cancels a pending automatic replacement; a manual restart or launch also cancels one under way that hasn't spawned, and one refused later leaves the child down, which `autoRestartStopped` says. A signal exit, including a start the parent has to stop, isn't retried, as before, and `autoRestartStopped` now says so, as it does for a kill; a replacement that exits non-zero on its own is retried up to the cap.
+- Fleet launches, manual and automatic, are refused without spawning when the parent is shutting down, or when, during their awaits, it begins to, a kill is acknowledged on the generation they replace (a restart counts from its own start), or another launch replaces it. The refusal names which. A launch adopting a living child that is interrupted stops that child instead of leaving it unowned, unless the parent is detaching, and a second launch of the name is refused meanwhile. A detaching shutdown no longer kills a child that is still starting.
+- Fleet restarts also work for adopted children after confirmed shutdown. Startup tolerates transient stale-socket refusals while the replacement binds, and reports a child that exits after a refused connect with that refusal. A natural nonzero exit racing failed-launch cleanup retains its automatic retry.
+
+- A headless child stops treating a client as current once its socket ends or
+  closes, including a reset with no `end`, such as a parent that died with
+  events still unread, and writes no telemetry to a socket that has ended or
+  errored. Commands the child reads from a client after a newer client has
+  replaced it are dropped: the first is logged, and the client's disconnect
+  line counts them. A command admitted while its client was current still
+  finishes, with its answers dropped. Both mattered on runtimes with Node's
+  socket semantics, such as Bun 1.4.2. There a reset socket stayed current,
+  so telemetry kept going to it until the next client connected, and only a
+  socket error was logged, never the disconnect. A superseded client's
+  `subscribe` replaced the new client's filter, its `text` reached the agent,
+  whose output then went to the new client, and its other commands ran, with
+  the answers `reply()` sends dropped. Bun 1.3.14 gives a reset socket an
+  `end` and closes a superseded socket whole, so neither happened there.
+- A fleet parent lets go of a child's socket at its `close` as well as its
+  `end`. After a reset with no `end` (on Bun 1.4.2, a child that died with
+  the parent's commands unread), the fleet's requests to that child, such as
+  `requestDescribe`, report it unreachable instead of writing into the dead
+  socket. A spawned child's exit already let go of it; an adopted child has
+  no exit event to.
+
+- `identity--request` sends `PATCH`. Its method list, in both the advertised schema and the handler's check, stopped at GET/POST/PUT/DELETE, so a resident's PATCH was refused before it reached the service, and PATCH-only routes such as orrery's node update (starring, archiving, a curator's note) were out of reach. A PATCH carries a JSON `body` or a `fromFile` upload exactly as POST and PUT do. The service allowlist with host-attached access stays the boundary, and each service still authorizes the request.
+- `identity--request` refuses a `body` or a `fromFile` with GET, naming the methods that send one. `method` defaults to GET, so a write that left out its method used to be sent as a read, its body dropped, while the call reported success.
+- `identity--request` reports an empty response, such as a 204, as `{ status, body: "" }`. It used to describe it as an omitted binary response and advise repeating the request with `saveAs`, which for a write would send it again.
+
+- Makeup panel: an anthropic-xml agent's exact `count_tokens` figure includes the agent's `prefillUserMessage` where inference sends it: first, in place of the formatter's default opener, whenever the request would otherwise open with the assistant's turn, as a prefill transcript usually does. The count used to carry that default instead (`[Start]`, or for an agent with no system prompt, the CLI-simulation system block and its `<cmd>` pair).
+
+- Makeup panel: the exact `count_tokens` figure now counts the request the agent's own formatter would send — built through `buildMessages` (participant prefixes where the formatter places them, tool-pair normalization, same-role merging, native tools) so every block the formatter sends counts, which for the native formatter includes signed `thinking` / `redacted_thinking`, `tool_use`, `tool_result` and images — instead of a text-only flattening that omitted most of a keep-all model's prompt (read up to ~10× below billed). The response also carries `lastBilledInputTokens`: the provider's fresh + cache-read + cache-creation total of the agent's last call, a free exact reading that needs no request.
+
+- A server deployed with `mcpl_deploy` now gets the environment every boot-loaded server gets. That includes the refusal-reaction baseline, `DISCORD_SUPPRESSED_REACTIONS_BASELINE`, as a default its own env can override, which a deployed Discord adapter used to start without.
+- `mcpl_deploy` judges each field as given, and refuses a wrong kind with nothing saved, where it used to drop or coerce it: an `env` given as text, a number or true/false, `args` that weren't a list, a `toolPrefix`, `token` or `access` that wasn't text, a `reconnect` that wasn't true or false, or a tool or feature-set list given as text all vanished, and a `null` arg was saved as `"null"`. A field left out, `null`, `""` (or only spaces) for text, or `[]` for a list is unspecified, as strict function calling sends it, so an empty or blank `toolPrefix` is no longer saved for the framework to keep in place of its default prefix. A tool or feature-set list holding an empty name, an allow-list that matches nothing, is refused. Numbers and true/false in a list are saved as their text. The id `__proto__` is refused: JavaScript reads it as an object's prototype, so its entry was never saved, though the deploy said it was.
+- Saving `mcpl-servers.json` or `mcpl-servers.agent.json` keeps the root's keys besides `mcplServers`, such as an entry under a misspelled key, which every save used to drop, and never overwrites a file that doesn't parse.
+- `mcpl_unload` reads the overlay before it disconnects, so a file the boot would stop on refuses the unload with the server still loaded. It disconnects only a server that's listed. An id the overlay alone names has its entry removed, or its tombstone kept, and an operator's server that isn't loaded is tombstoned, each with a receipt saying it wasn't loaded in this session. A disconnect that fails leaves the overlay as it was, and says so. If the overlay can't be read or saved after a disconnect that succeeded, the receipt says the server is gone and nothing was recorded, and unloading it again records it. Deploys, restarts and unloads of one server run one at a time, in the order they're called, so a deploy made while an unload disconnects runs after it and keeps its entry. A session-only unload says what the next host start loads, read from the overlay: a tombstone, the agent's entry, the operator's definition, or nothing. A tombstone for an id the operator defines says how that definition comes back.
+- `mcpl_list` no longer labels a recipe server named like an inherited key, such as `constructor`, as a file server.
+
+- `mcpl_deploy` refuses a server that would send a credential over unencrypted `ws://` to a host other than this machine, where anyone on the network between could read it. It recognizes four carriers: the `token` field, the credential an `access` grant attaches, a user or password in the url, and a `token` parameter in the url, the one agent-framework's transport sends. No other query parameter is recognized. A blank token is no credential, but a grant counts whatever its name. The refusal says to use `wss://`, or, if that network is private, to ask the operator to add the server to the recipe, and it says when a server already configured under that id is left as it was. A recipe server like that, or an overlay entry deployed before this change, still loads, with a warning at startup; there a grant counts only when the recipe's identity attaches its credential. This machine is `localhost`, 127.0.0.0/8, `::1`, IPv4-mapped 127.0.0.0/8 addresses, and `0.0.0.0`, `::` and `::ffff:0.0.0.0`. Any other name, `localhost.` and names under `.localhost` included, counts as another machine, since a resolver may not answer it with this one. The tool's `url`, `token` and `access` descriptions say what it takes over `ws://`.
+
+- `mcpl_restart` keeps its overlay note when the restart throws, and an `mcpl-servers.agent.json` that can't be read no longer turns a successful restart into "mcpl_restart failed": the receipt reports the restart, says the file couldn't be read as an overlay and that the next host start will stop on it until it's fixed, and doesn't quote it. When the live server's overlay entry is one the boot skips, the restart's note says so and what the next start loads. For a tombstoned id, it says the overlay keeps the server unloaded and how to bring it back: for an id the operator defines, that's removing the tombstone from the file, since `mcpl_deploy` would load the agent's own entry instead. The overlay-replacement receipts no longer report `AGENT_TIMEZONE`, which the host sets over every server's mapping, as lacking, and they do report a replacement that names a different `access` grant as lacking the operator's, comparing each grant as it's dialled, as written. A token counts as present on either side whenever agent-framework would send it.
+- `mcpl-servers.agent.json` entries are read the same way by the boot, the startup warnings, `mcpl_list`, `mcpl_restart` and `mcpl_unload`. The boot passes each entry to agent-framework as it did before, except where the old handling broke, and the startup log names each such place: `args` holding numbers or true/false read as their text, where the start used to stop; a tool or feature-set list given as one name reads as a list of one, where it used to be read character by character, so a one-name deny list denied nothing; a capability list given as one name, which used to be ignored, does too; a `toolPrefix` that's a number or true/false reads as its text, and one that's an object or a list as absent, so calls to the server's tools reach it; and a capability that can't be read as text denies nothing, where the start used to stop. The log also names a `transport` other than `stdio` or `websocket`, which agent-framework ignores, and an entry its transport can't open, a websocket one with no `url` or a stdio one with no `command`, which still replaces any operator definition, as before.
+- `disabled: true` tombstones a server whatever else its entry holds; the agent's unload wins. The boot skips an entry that isn't an object, has `args` that aren't a list of text, numbers or true/false, names neither a `command` nor a `url`, or has a `disabled` that's truthy but not `true`. It logs why, and loads the operator's definition, if any. Two of these used to stop the host from starting: a `null` entry, and `args` that aren't a list of text. The others were skipped without a word. `mcpl_list` names a skipped entry as malformed, and no receipt counts it as replacing anything. For an id the operator defines, the advice says that `mcpl_unload` tombstones the operator's server, which the boot loaded in the entry's place. `mcpl_list` no longer calls a server unloaded while it's still connected under a tombstone written since it started.
+- `mcpl_deploy` refuses an `env` that isn't a map of text, numbers or true/false, saving nothing, where a `null` env value used to be saved before the deploy threw. An empty list as `env`, which strict function calling sends for "unspecified", deploys with no env.
+- A file that isn't valid JSON, or whose root is `null`, still stops the start, now with an error naming the file and advising a fix: moving it aside would load every server the agent unloaded. Every other root and `mcplServers` starts the host as before. A root that isn't an object, or an `mcplServers` that's text, a number or true/false, loads nothing, and an `mcplServers` that's a list holds its items as entries named by position; the startup log names each. It also names keys besides `mcplServers`, since a misspelled key would drop the agent's tombstones. `mcpl_unload` reads the file again after its disconnect, so an entry another call wrote meanwhile for another id isn't lost, and an inherited name such as `constructor` is no longer taken for an entry.
+- A replacement whose `access` names a host variable is named, as one whose `token` does. `mcpl_restart`'s note on a replacing entry says that it describes the file as it is now, since the restart reconnects with the configuration of the server's last connect: a hand edit made since then takes effect at the next host start, unless a later `mcpl_deploy` replaces it. The receipts read an entry by the connection agent-framework opens for it, which an explicit `transport` decides. `mcpl_list`'s source label reads the overlay file as it is now, and its target label is a server's command, else its url, as before, since agent-framework's status doesn't say which of the two it opened.
+
+- **`mcpl_restart` and `mcpl_deploy` no longer report a server as working when it isn't, and the MCPL admin receipts say what an agent-overlay entry doesn't carry.**
+  - Both now fail when the server isn't connected afterwards. Before, a restart reported success while its own text read "NOT connected", and a deploy said "connected" without checking. A WebSocket server whose first dial fails comes back as a stub that keeps retrying, without the call throwing, so either could happen.
+  - An agent-overlay entry under the id of a recipe or `mcpl-servers.json` server replaces that definition whole: its text is literal, and it never inherits the host environment. So the operator's value for anything the entry doesn't declare never reaches the server. A stdio child gets the entry's own env, plus the host's values for a short allowlist such as `PATH` and `HOME`. A server that needs the operator's value can look healthy until its first call. `mcpl_deploy`, `mcpl_restart` and `mcpl_list` now say when a server runs such a replacement, and name what it lacks: env names (never values), a token, an `access` grant, or `inheritEnv`. `mcpl_unload` of a replacement says the operator's definition loads again at the next start.
+  - A `${VAR}` reference in an overlay entry reaches the server as literal text, since only a recipe substitutes it. `mcpl_deploy` and `mcpl_restart` now say which parts of an entry name a host variable, and a replacement's env value that names one counts as lacking.
+  - The host logs both at startup.
+
+- Operator ledger: price `claude-opus-5`, which matched no prefix in the rate
+  table and so showed no cost at all — every call on it, including subagents
+  spawned at the Opus-tier default, priced as nothing.
+- Operator ledger: charge Claude Fable 5.1 and Claude Mythos 5.1 cache reads
+  at 0.025x base input ($0.25/MTok) instead of the 0.1x every other model uses. A long-lived agent
+  that re-reads a large cached prefix on every call spends most of its bill on
+  cache reads, so the flat multiplier overstated its total several-fold. Cache
+  reads on all other models, and input, output, and cache writes on the 5.1
+  pair, are unchanged.
+- Operator ledger: price Claude Sonnet 5 at $2/$10 for every call. The table
+  still switched it to $3/$15 on 2026-09-01, but that scheduled increase was
+  withdrawn and the introductory rate became the standard one, so every
+  Sonnet 5 call since September 1 was overstated by half.
+- `ANTHROPIC_PRICING_VERSION` moves to `anthropic-public-2026-09-21`, so
+  replayed JSONL is re-priced under a version string that says which table
+  produced it.
+
+- A saved reasoning setting the API would reject (for example `effort: "minimal"` or an unknown `display`) no longer fails every turn: invalid values fall back to their defaults when settings are restored, with a log line, and the adapter never sends an effort level outside the known set.
+
+- WebUI: the rollback / suppress row actions now sit inside the message row
+  (top-right, labelled) instead of hanging off its left edge, where the
+  scroll pane's overflow clipping made them nearly invisible; the Context
+  document's "roll back to here" is faintly visible before hover. The static
+  server now sends `Cache-Control: no-cache` for `index.html` and
+  `immutable` for hashed `assets/`, so a stale tab can no longer pin an old
+  index/bundle pair across a bundle swap.
 - **Recipe authors using `kv-unified`:** `agent.strategy.kvUnified.preserveGapBearingSummaries` must now be an explicit boolean, and cannot be `true` together with `treeifyNonContiguousSummaries`. Add the flag to older recipes. Both requirements already apply in context-manager; invalid configurations now fail at recipe load instead of the first solve. Valid explicit policies and other folding strategies are unchanged.
 - MCPL server definitions in `mcpl-servers.json` now preserve `inheritEnv`, and recipes can override it (including explicit `false`) for file-defined servers. Recipes and server files reject non-boolean values. Agent-owned overlays strip `inheritEnv` entirely, including when replacing an operator-defined server; full host-environment access is an operator grant. Full environment inheritance requires an agent-framework version containing its PR #175; the host's locked 0.19.0 predates that control and remains unchanged.
 

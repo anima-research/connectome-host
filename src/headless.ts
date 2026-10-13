@@ -21,10 +21,12 @@
 
 import { createServer, type Socket, type Server } from 'node:net';
 import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
+import { sessionMarker } from './bug-report.js';
 import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
+import { takeRecipeWarnings } from './recipe.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -74,6 +76,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // passing (chunk, cb) or (chunk, encoding, cb) for backpressure /
   // flush confirmation don't have their callbacks silently swallowed.
   const logStream: WriteStream = createWriteStream(logPath, { flags: 'a' });
+  // Where this run's lines begin, as the TUI marks its error log: /bug reads
+  // only the current session's (bug-report.ts).
+  logStream.write(`\n${sessionMarker(new Date())}\n`);
   type StdWrite = typeof process.stdout.write;
   const makeRedirect = (): StdWrite => {
     const redirect = function (
@@ -100,6 +105,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   };
 
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
+  // The recipe was validated before this redirect: its warnings go into this log too.
+  for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
 
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.
@@ -145,7 +152,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   ]);
 
   function emit(event: Record<string, unknown>): void {
-    if (!currentClient) return;
+    // A socket that has ended or errored takes no more writes. It stops being
+    // current at its 'end' or 'close', but an error comes a tick before that.
+    if (!currentClient || currentClient.destroyed || currentClient.writableEnded) return;
     const type = typeof event.type === 'string' ? event.type : '';
     if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
     try {
@@ -174,7 +183,25 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   });
 
   // -- Command dispatch --
+  /** Commands each superseded client sent after its takeover, all dropped. */
+  const droppedCommands = new WeakMap<Socket, number>();
+
   async function dispatchCommand(cmd: IncomingCommand, requester: Socket): Promise<void> {
+    // Only the current client commands the child. A superseded client is
+    // end()ed, but lines it wrote before it learned of that still arrive, and
+    // so do lines it writes afterwards on runtimes where end() only
+    // half-closes the socket, as in Node (Bun 1.4.2). Its subscribe would
+    // replace the current client's filter, and its text would reach the
+    // agent. So whatever the child reads from it after the takeover is
+    // dropped: the first command logged, the rest counted at its disconnect.
+    // The rule applies when a line is read: a command admitted while its
+    // client was current finishes, and reply() below drops its answers.
+    if (requester !== currentClient) {
+      const dropped = (droppedCommands.get(requester) ?? 0) + 1;
+      droppedCommands.set(requester, dropped);
+      if (dropped === 1) log(`command dropped: ${String(cmd.type).slice(0, 80)}; its client was superseded`);
+      return;
+    }
     // Responses belong to the connection that requested them. Async work can
     // outlive that connection; a replacement client must not inherit its reply.
     // Framework telemetry still uses emit() directly and follows currentClient.
@@ -393,7 +420,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
       default: {
         const t = (cmd as { type?: unknown }).type;
-        log(`unknown command type: ${String(t)}`);
+        log(`unknown command type: ${String(t).slice(0, 80)}`);
       }
     }
   }
@@ -434,12 +461,26 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
     });
 
-    socket.on('end', () => {
+    // A client is gone at its 'end' (a clean end) or its 'close', whichever
+    // comes first. 'close' follows an end and an error alike, and is the only
+    // sign of a reset where a reset socket gets no 'end', as in Node (Bun
+    // 1.4.2; Bun 1.3.14 gives it an 'end'): a parent that died with events
+    // still unread. Without it, every emit would go to the dead socket until
+    // the next client connected.
+    let gone = false;
+    const release = (): void => {
+      if (gone) return;
+      gone = true;
       if (currentClient === socket) {
         currentClient = null;
         log('client disconnected; child stays up');
+        return;
       }
-    });
+      const dropped = droppedCommands.get(socket) ?? 0;
+      log(`superseded client disconnected${dropped > 0 ? `; ${dropped} command(s) it sent after the takeover were dropped` : ''}`);
+    };
+    socket.on('end', release);
+    socket.on('close', release);
 
     socket.on('error', (err) => {
       log(`client socket error: ${String(err)}`);

@@ -10,6 +10,11 @@
  * Born 2026-07-12 during the mythos inversion incident: the curve makes a
  * misallocated resolution profile visible at a glance (an inversion reads as
  * a flat shelf right before the tail; depth debt as a too-steep middle).
+ *
+ * This is a template literal, which would take a backslash escape or a ${ in
+ * it before the browser saw it, so it holds neither, and the page is served
+ * as written. test/web-ui-page-scripts.test.ts checks that its text is the
+ * template as written, and parses its script.
  */
 export const CURVE_PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -125,10 +130,19 @@ try {
 const D = payload.entries;
 document.getElementById('title').textContent = payload.agent + ' — compiled context';
 document.title = payload.agent + ' — context curve';
+const V = payload.verdict;
 document.getElementById('meta').textContent =
   'branch ' + payload.branch + ' · compiled ' + payload.generatedAt.slice(0, 16).replace('T', ' ') +
   'Z · budget ' + Math.round(payload.budget.maxTokens / 1000) + 'k (hard ' +
-  Math.round((payload.budget.maxTokens - payload.budget.reserveForResponse) / 1000) + 'k)';
+  Math.round((payload.budget.maxTokens - payload.budget.reserveForResponse) / 1000) + 'k)' +
+  // A dry compile plots a plan that won't fit instead of failing, so say so.
+  (V && V.fitsRequested === false && typeof V.plannedTokens === 'number'
+    ? ' · OVER BUDGET' + (V.atDescentTarget ? " at the descent's target" : '') + ': plan ' +
+      Math.round(V.plannedTokens / 1000) + 'k > ' + Math.round(V.effectiveBudgetTokens / 1000) + 'k' +
+      (V.atDescentTarget ? ' (compiles still run at the live budget)'
+        : V.withinGrace === false ? ', past the grace margin: the next real compile will refuse it'
+        : V.withinGrace === true ? ', within the grace margin' : '')
+    : '');
 
 let cx = 0, cy = 0;
 for (const e of D) { e.x0 = cx; e.y0 = cy; cx += e.rawCovered; cy += e.rendered; e.x1 = cx; e.y1 = cy; }

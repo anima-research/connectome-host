@@ -450,6 +450,19 @@ export interface McplListMessage {
     /** command or url — whatever the transport targets. */
     target?: string;
   }>;
+  /** Every tool the scoped process offers, with its effective MCPL class
+   *  (RFC-008) and the source that decided it: `override` (recipe
+   *  toolClassOverrides), `host` (this host's or the framework's own table),
+   *  `server` (the MCPL server's `_meta`), `none` (unclassed). Sorted by tool
+   *  name. Absent on hosts or frameworks that don't report classes. */
+  toolClasses?: Array<{
+    tool: string;
+    /** Empty for an unclassed tool. */
+    class: string[];
+    source: 'override' | 'host' | 'server' | 'none';
+    /** The providing MCPL server, for MCPL tools. */
+    serverId?: string;
+  }>;
 }
 
 /**
@@ -495,6 +508,27 @@ export interface PinsListMessage {
  * live process state, not a config file, so two operators must not see
  * divergent values.
  */
+/** Credential state of one process (see src/credential-state.ts). The
+ *  `credential` fields are absent on an API-key host (`subscription: false`). */
+export interface CredentialStateMessage {
+  type: 'credential-state';
+  scope?: string;
+  subscription: boolean;
+  /** Agent name the host's credential alerts are keyed on. */
+  agent?: string;
+  kind?: string;
+  provider?: string;
+  message?: string;
+  since?: number;
+  until?: number;
+  windows?: string[];
+  rotatable?: boolean;
+  expiresAt?: number;
+  actions?: Array<{ id: string; label: string; hint?: string }>;
+  login?: { verificationUrl: string; userCode: string };
+  lastAction?: { id: string; at: number; ok: boolean; message: string };
+}
+
 export interface SettingsStateMessage {
   type: 'settings-state';
   /** Process these settings belong to ('local' or fleet-child name). */
@@ -672,6 +706,7 @@ export type WebUiServerMessage =
   | LessonsListMessage
   | McplListMessage
   | SettingsStateMessage
+  | CredentialStateMessage
   | PinsListMessage
   | WorkspaceMountsMessage
   | WorkspaceTreeMessage
@@ -930,6 +965,28 @@ export interface SettingsUpdateMessage {
   notify?: boolean;
 }
 
+/** Ask for the credential state (subscription hosts). Answered with
+ *  `credential-state`; an API-key host answers `subscription: false`. */
+export interface RequestCredentialMessage {
+  type: 'request-credential';
+  scope?: string;
+}
+
+/**
+ * Run one operator credential action — the buttons on a `quota-spent` /
+ * `auth-expired` / `auth-login-required` alert row, or the Health panel.
+ * `token` is only read for `set-token`; it is applied in memory (and to the
+ * credentials file when the host loaded one), never logged or echoed. The
+ * answer is a `credential-state` broadcast: credentials are process state,
+ * every operator sees the same outcome.
+ */
+export interface CredentialActionMessage {
+  type: 'credential-action';
+  scope?: string;
+  action: 'refresh' | 'login' | 'set-token' | 'recheck';
+  token?: string;
+}
+
 /** Revert named settings to their recipe values (all four when omitted). */
 export interface SettingsResetMessage {
   type: 'settings-reset';
@@ -1083,6 +1140,8 @@ export type WebUiClientMessage =
   | SettingsUpdateMessage
   | SettingsResetMessage
   | SettingsCancelTransitionMessage
+  | RequestCredentialMessage
+  | CredentialActionMessage
   | RequestWorkspaceMountsMessage
   | RequestWorkspaceTreeMessage
   | RequestWorkspaceFileMessage
@@ -1214,6 +1273,18 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
         && isOptionalStringArray(v.keys);
     case 'settings-cancel-transition':
       return isOptionalScope(v.scope) && isOptionalNonEmptyString(v.agent) && isOptionalBool(v.persist);
+    case 'request-credential':
+      return isOptionalScope(v.scope);
+    case 'credential-action': {
+      if (!isOptionalScope(v.scope)) return false;
+      if (v.action !== 'refresh' && v.action !== 'login' && v.action !== 'set-token' && v.action !== 'recheck') return false;
+      // A token is meaningful only for set-token, where it is mandatory. Bound
+      // its size: a bearer is a few hundred bytes, not a payload.
+      if (v.action === 'set-token') {
+        return typeof v.token === 'string' && v.token.trim().length > 0 && v.token.length <= 8192;
+      }
+      return v.token === undefined;
+    }
     case 'request-workspace-mounts':
       return v.scope === undefined || typeof v.scope === 'string';
     case 'request-workspace-tree':

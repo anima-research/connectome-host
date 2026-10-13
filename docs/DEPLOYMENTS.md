@@ -66,9 +66,13 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
   `SESSION_SERVER_TOKEN`, `HEARTBEAT_CONFIG_FILE`; the WebUI credentials the
   recipe's `${VAR}`s name (e.g. `WEBUI_USER` / `WEBUI_PASS`); optionally
   `CONNECTOME_OPS_WEBHOOK` (ops alerts, below). The host reads `.env`, but a
-  stdio MCPL server sees only the variables its recipe entry maps in `env`
-  (plus a small system allowlist): an unmapped `DISCORD_GUILD_ID` is unset for
-  discord-mcpl, which then serves every channel the bot is invited to.
+  stdio MCPL server sees only the variables its entry maps in `env` (plus a
+  small system allowlist and the host's `AGENT_TIMEZONE` and
+  `DISCORD_SUPPRESSED_REACTIONS_BASELINE`), unless the entry sets
+  `inheritEnv: true`, which passes the host's whole environment: an unmapped
+  `DISCORD_GUILD_ID` is unset for discord-mcpl, which then serves every
+  channel the bot is invited to. See DEV-ENVIRONMENT for file-defined
+  servers.
 - `data/` — chronicle store + per-session `config/gate.json` (wake policies;
   append-only reconcile, so reorder the **live** file, not just the recipe).
 

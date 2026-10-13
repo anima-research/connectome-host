@@ -55,9 +55,13 @@ export class FrontdeskStrategy extends AutobiographicalStrategy {
     store: MessageStoreView,
     log: ContextLogView,
     budget: TokenBudget,
+    // Passed through whole: without it a dry run (a preview, the context
+    // curve) reached the autobiographical select as a committing one. The
+    // package root doesn't export SelectOptions, so it's named by position.
+    opts?: Parameters<AutobiographicalStrategy['select']>[3],
   ): ContextEntry[] {
     this.updateSalience(store);
-    const entries = super.select(store, log, budget);
+    const entries = super.select(store, log, budget, opts);
     return entries.map((e) => this.wrapProvenance(e, store));
   }
 

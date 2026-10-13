@@ -107,6 +107,9 @@ export class ActivityModule implements Module {
     framework.onTrace((event: TraceEvent) => {
       if (event.type === 'inference:started') this.onInferenceStarted();
       else if (event.type === 'inference:completed') this.onInferenceCompleted();
+      // A failed or exhausted turn ends composition too; leaving the
+      // indicator on would show "typing…" over an agent that produced nothing.
+      else if (event.type === 'inference:failed' || event.type === 'inference:exhausted') this.onInferenceCompleted();
     });
   }
 

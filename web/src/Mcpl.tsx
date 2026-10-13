@@ -10,6 +10,10 @@
  *             scope: the file is one cwd-shared registry for the whole
  *             fleet, so the panel goes read-only on child scopes rather
  *             than pretending a "child-local" edit exists.
+ *
+ * Under the live list, the scoped process's tool classes: every tool it
+ * offers with its effective MCPL class (RFC-008) and the source that decided
+ * it — the same data as `/tools` and `GET /debug/tool-classes`.
  */
 
 import { createSignal, For, Show } from 'solid-js';
@@ -34,6 +38,37 @@ export interface McplLiveRow {
   target?: string;
 }
 
+/** One tool's effective MCPL class (RFC-008) and where it came from. */
+export interface ToolClassRow {
+  tool: string;
+  /** Empty for an unclassed tool. */
+  class: string[];
+  source: 'override' | 'host' | 'server' | 'none';
+  /** The providing MCPL server, for MCPL tools. */
+  serverId?: string;
+}
+
+const SOURCE_LABEL: Record<ToolClassRow['source'], string> = {
+  override: 'operator override',
+  host: 'host table',
+  server: 'server _meta',
+  none: 'unclassed',
+};
+
+const SOURCE_TITLE: Record<ToolClassRow['source'], string> = {
+  override: "the recipe's toolClassOverrides",
+  host: "this host's (or the framework's) table of its own tools",
+  server: 'declared by the MCPL server (_meta["mcpl/class"])',
+  none: 'no class: handled as the most restrictive (observers never see its arguments)',
+};
+
+const SOURCE_TONE: Record<ToolClassRow['source'], string> = {
+  override: 'text-cyan-300',
+  host: 'text-neutral-400',
+  server: 'text-emerald-300',
+  none: 'text-amber-300',
+};
+
 export function McplPanel(props: {
   loaded: boolean;
   configPath: string;
@@ -42,6 +77,9 @@ export function McplPanel(props: {
    *  Empty array is meaningful ("this process runs no MCPLs"); undefined
    *  means an older host that doesn't report it. */
   live?: McplLiveRow[];
+  /** Every tool the scoped process offers, with its effective class.
+   *  Undefined when the host/framework doesn't report classes. */
+  toolClasses?: ToolClassRow[];
   /** True on fleet-child scopes: registry edits stay on the host scope. */
   readOnly?: boolean;
   onRefresh(): void;
@@ -109,6 +147,9 @@ export function McplPanel(props: {
               </div>
             )}</For>
           </div>
+          <Show when={props.toolClasses !== undefined}>
+            <ToolClasses rows={props.toolClasses!} />
+          </Show>
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
             shared registry
           </div>
@@ -155,6 +196,61 @@ export function McplPanel(props: {
             Changes are written to disk; restart the host process to apply.
           </div>
         </Show>
+      </Show>
+    </div>
+  );
+}
+
+/** Per-source counts, always visible; the per-tool list on demand. */
+function ToolClasses(props: { rows: ToolClassRow[] }) {
+  const [open, setOpen] = createSignal(false);
+  const counts = (): Array<[ToolClassRow['source'], number]> =>
+    (['override', 'host', 'server', 'none'] as const)
+      .map((source): [ToolClassRow['source'], number] => [source, props.rows.filter(r => r.source === source).length])
+      .filter(([, n]) => n > 0);
+  return (
+    <div class="mb-3">
+      <div class="flex items-baseline gap-2 mb-1">
+        <span class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold">
+          tool classes
+        </span>
+        <span class="text-neutral-600 text-[10px]">{props.rows.length}</span>
+        <Show when={props.rows.length > 0}>
+          <button
+            type="button"
+            class="ml-auto px-1 py-0.5 text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded font-mono"
+            onClick={() => setOpen(o => !o)}
+          >
+            {open() ? 'hide' : 'show'}
+          </button>
+        </Show>
+      </div>
+      <div class="flex flex-wrap gap-x-2 text-[10px]">
+        <For each={counts()}>{([source, n]) => (
+          <span class={SOURCE_TONE[source]} title={SOURCE_TITLE[source]}>
+            {n} {SOURCE_LABEL[source]}
+          </span>
+        )}</For>
+      </div>
+      <Show when={open()}>
+        <div class="mt-1 border border-neutral-800 rounded bg-neutral-950 divide-y divide-neutral-900">
+          <For each={props.rows}>{(r) => (
+            // Wraps instead of squeezing: when class + source don't fit
+            // beside the name they drop to a second line, so the tool name
+            // always keeps the row's width.
+            <div class="px-2 py-0.5 flex flex-wrap items-baseline gap-x-2">
+              <span class="font-mono text-neutral-200 truncate min-w-0 max-w-full" title={r.tool}>{r.tool}</span>
+              <span class="ml-auto min-w-0 flex flex-wrap justify-end items-baseline gap-x-2 text-[10px]">
+                <span class="font-mono text-neutral-400 break-all">
+                  {r.class.length > 0 ? r.class.join(',') : '—'}
+                </span>
+                <span class={`break-all ${SOURCE_TONE[r.source]}`} title={SOURCE_TITLE[r.source]}>
+                  {SOURCE_LABEL[r.source]}{r.serverId ? ` · ${r.serverId}` : ''}
+                </span>
+              </span>
+            </div>
+          )}</For>
+        </div>
       </Show>
     </div>
   );

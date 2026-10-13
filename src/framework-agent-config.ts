@@ -64,6 +64,12 @@ export function buildFrameworkAgentConfig(
   strategy: FrameworkAgentConfig['strategy'],
 ): FrameworkAgentConfig {
   const promptCaching = resolvePromptCaching(recipe, model);
+  let thinking: FrameworkAgentConfig['thinking'];
+  if (recipe.agent.thinking) {
+    // Effort is a host setting sent as output_config.effort, never as thinking.effort.
+    const { effort: _hostEffort, ...providerThinking } = recipe.agent.thinking;
+    thinking = providerThinking;
+  }
   return {
     name: agentName,
     model,
@@ -105,7 +111,7 @@ export function buildFrameworkAgentConfig(
       },
     }),
     strategy,
-    ...(recipe.agent.thinking && { thinking: recipe.agent.thinking }),
+    ...(thinking && { thinking }),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }

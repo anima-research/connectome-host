@@ -293,8 +293,11 @@ describe('WebUiModule observer flow (e2e)', () => {
 
     // Static app shell now public (carries no data).
     expect((await fetch(`${base()}/`)).status).toBe(200);
-    // But data routes still gated.
+    // But data routes still gated — including the credential state, scoped
+    // to a fleet child or not (it can carry a pending device-code login).
     expect((await fetch(`${base()}/healthz`)).status).toBe(401);
+    expect((await fetch(`${base()}/credential`)).status).toBe(401);
+    expect((await fetch(`${base()}/credential?scope=child-a`)).status).toBe(401);
 
     // Unauthenticated WS: auth-required → signed hello → ack.
     const host = `127.0.0.1:${port}`;
@@ -345,6 +348,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     const cookie = `fkm_obs=${ack.sessionToken}`;
     // 503 means authorization passed but this harness has no bound app.
     expect((await fetch(`${base()}/healthz`, { headers: { cookie } })).status).toBe(503);
+    expect((await fetch(`${base()}/credential`, { headers: { cookie } })).status).toBe(503);
     expect((await fetch(`${base()}/debug/context`, { headers: { cookie } })).status).toBe(503);
     expect((await fetch(`${base()}/debug/retrieval`, { headers: { cookie } })).status).toBe(401);
     expect((await fetch(`${base()}/debug/retrieval/view`, { headers: { cookie } })).status).toBe(401);
