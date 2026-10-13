@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { validateRecipe } from '../src/recipe.js';
+import { resolveProvider, validateRecipe } from '../src/recipe.js';
 
 function recipe(agent: Record<string, unknown> = {}) {
   return { name: 'provider-test', agent: { systemPrompt: 'sys', ...agent } };
@@ -12,6 +12,9 @@ describe('recipe provider validation', () => {
       .toBe('openai-responses');
     expect(validateRecipe(recipe({ provider: 'openai-codex' })).agent.provider)
       .toBe('openai-codex');
+    // What the host builds, and what subagent launches state.
+    expect(resolveProvider(validateRecipe(recipe()))).toBe('anthropic');
+    expect(resolveProvider(validateRecipe(recipe({ provider: 'openai-codex' })))).toBe('openai-codex');
   });
 
   test('accepts the mock provider and its settings', () => {
