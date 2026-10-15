@@ -885,6 +885,46 @@ describe('FleetModule — unresolved launch artifacts', () => {
       await restored.stop(); owner.setDetachMode(false); await owner.stop();
     }
   }, 20_000);
+
+  test('stop retries adopted terminal cleanup after an inconclusive socket probe', async () => {
+    let state: any;
+    const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
+      pushEvent: () => {}, getModule: () => null } as unknown as Parameters<FleetModule['start']>[0];
+    const dataDir = mkdtempSync(join(tmpDir, 'adopted-retry-'));
+    const owner = await startOwner(dataDir, false, ctx);
+    const old = owner.getChildren().get('guard')!;
+    owner.setDetachMode(true); await owner.stop();
+    const restored = makeFleet();
+    await restored.start(ctx);
+    const adopted = restored.getChildren().get('guard')!;
+    expect(adopted.process).toBeNull();
+    expect(adopted.pid).toBe(old.pid);
+    const pidPath = join(dataDir, 'headless.pid');
+    const cleanup = spyOn(restored as any, 'cleanupStaleChildFiles');
+    const probe = spyOn(restored as any, 'socketRefusesConnection').mockResolvedValueOnce(false);
+    process.kill(old.pid!, 'SIGSTOP'); // Cannot answer shutdown or handle SIGTERM.
+    try {
+      expect((await restored.handleToolCall({ id: 'adopted-forced-kill', name: 'kill', input: { name: 'guard' } })).success).toBe(true);
+      await waitFor(() => old.process?.signalCode === 'SIGKILL', 2_000, 'original handle observes SIGKILL');
+      expect(adopted.status).toBe('exited');
+      expect(adopted.exitReason).toContain('ESRCH');
+      expect(cleanup).toHaveBeenCalledWith(adopted);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(existsSync(pidPath)).toBe(true);
+      expect(existsSync(adopted.socketPath)).toBe(true);
+      probe.mockRestore();
+      await restored.stop();
+      expect(existsSync(pidPath)).toBe(false);
+      expect(existsSync(adopted.socketPath)).toBe(false);
+    } finally {
+      probe.mockRestore();
+      cleanup.mockRestore();
+      if (old.process?.exitCode === null && old.process?.signalCode === null) {
+        try { process.kill(old.pid!, 'SIGCONT'); } catch { /* already gone */ }
+      }
+      await restored.stop(); owner.setDetachMode(false); await owner.stop();
+    }
+  }, 20_000);
 });
 
 describe('FleetModule — Phase 2', () => {

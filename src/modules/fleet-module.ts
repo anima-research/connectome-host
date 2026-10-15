@@ -756,8 +756,9 @@ export class FleetModule implements Module {
       }
     } else {
       // Keep the exit safety net and original context while cleanup is pending
-      // or failed. The framework's deadline can expire before our escalation;
-      // its parent error exit must still terminate detached children we own.
+      // or failed, including unconfirmed child death. A caller's explicit
+      // deadline can also expire before escalation; a parent error exit
+      // must still terminate detached children we own.
       // Unvalidated restored records confer no authority to signal their PIDs.
       const owned = [...this.children.values()].filter(child => child.process || child.adopted);
       const results = await Promise.allSettled(owned.map(child => this.killChild(child)));
@@ -2062,9 +2063,9 @@ export class FleetModule implements Module {
 
   private async killChild(child: FleetChild): Promise<void> {
     if (child.status === 'exited' || child.status === 'crashed') {
-      // Reaped spawned handles already confirmed this generation's death.
-      // Reconstructed historical records (process null) keep launch-only reconciliation.
-      if (child.process && existsSync(join(child.dataDir, 'headless.pid'))) await this.cleanupStaleChildFiles(child);
+      // Reaped spawned handles and validated adoptions confirmed this generation's death.
+      // Unvalidated historical records keep launch-only reconciliation.
+      if ((child.process || child.adopted) && existsSync(join(child.dataDir, 'headless.pid'))) await this.cleanupStaleChildFiles(child);
       return;
     }
     const proc = child.process;

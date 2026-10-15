@@ -46,6 +46,11 @@ for (const mode of ['healthy', 'failure', 'delayed-failure', 'ready-window']) {
       expect(result.signal).toBeNull();
       expect(result.code).toBe(mode === 'healthy' || mode === 'ready-window' ? 0 : 1);
       expect(JSON.parse(readFileSync(join(dir, 'stop-calls.json'), 'utf8'))).toEqual({ stopCalls: 1 });
+      if (mode === 'ready-window') {
+        expect(JSON.parse(readFileSync(join(dir, 'stop-order.json'), 'utf8'))).toEqual([
+          'stop-entered', 'listen-callback', 'stop-returning',
+        ]);
+      }
       expect(existsSync(socketPath)).toBe(false);
       expect(existsSync(join(dir, 'headless.pid'))).toBe(false);
       if (mode === 'failure' || mode === 'delayed-failure') expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('injected framework stop failure');

@@ -22,7 +22,7 @@ async function waitFor(check: () => boolean, label: string): Promise<void> {
   }
 }
 
-for (const mode of ['timeout', 'detach']) {
+for (const mode of ['caller-deadline', 'detach']) {
   test(`real headless Fleet shutdown ${mode} preserves child ownership`, async () => {
     // macOS's standard temp path leaves too little Unix socket path capacity.
     const dir = mkdtempSync('/tmp/fleet-stop-');
@@ -63,10 +63,10 @@ for (const mode of ['timeout', 'detach']) {
         throw new Error(`Parent exit timed out: ${log}\n${output}`);
       })]);
       expect(result.signal).toBeNull();
-      expect(result.code).toBe(mode === 'timeout' ? 1 : 0);
-      if (mode === 'timeout') {
+      expect(result.code).toBe(mode === 'caller-deadline' ? 1 : 0);
+      if (mode === 'caller-deadline') {
         await waitFor(() => !alive(pid!), 'owned child actually died');
-        expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('synthetic framework module shutdown deadline');
+        expect(readFileSync(join(dir, 'headless.log'), 'utf8')).toContain('synthetic caller shutdown deadline');
       } else {
         await sleep(100);
         expect(alive(pid!)).toBe(true);

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const dir = process.env.DATA_DIR!;
 const mode = process.argv[2];
-if (mode !== 'timeout' && mode !== 'detach') throw new Error('Unknown fleet shutdown mode');
+if (mode !== 'caller-deadline' && mode !== 'detach') throw new Error('Unknown fleet shutdown mode');
 const fleet = new FleetModule({
   childIndexPath: join(import.meta.dir, 'mock-headless-fleet-shutdown-child.ts'),
   socketWaitTimeoutMs: 3000, readyTimeoutMs: 3000,
@@ -27,12 +27,12 @@ await runHeadless({
     async stop() {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // Isolate Host behavior using the locked Framework API. The shorter
-        // synthetic module budget expires before Fleet's actual 10s/5s waits.
+        // A synthetic caller deadline expires before Fleet's actual 10s/5s waits.
+        // This does not exercise Framework.stop(timeoutMs).
         await Promise.race([
           fleet.stop(),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('synthetic framework module shutdown deadline')), 50);
+            timer = setTimeout(() => reject(new Error('synthetic caller shutdown deadline')), 50);
           }),
         ]);
         const stopped = fleet as any;
