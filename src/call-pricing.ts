@@ -5,23 +5,25 @@
  * authoritative usage buckets. Cache creation MUST remain split by TTL:
  * Anthropic bills 5m writes at 1.25x input and 1h writes at 2x input.
  *
- * Cache READS are 0.1x input on every model but three: Claude Fable 5.1 and
+ * Cache READS are 0.1x input on every model but four: Claude Fable 5.1 and
  * Claude Mythos 5.1 read at 0.025x ($0.25/MTok), a quarter of the 5 pair's
- * rate, and Claude Opus 5.5 at 0.05x ($0.20/MTok). Those exceptions are not
- * cosmetic for long-lived agents — a resident re-reading a 260k prefix on
- * every call spends most of its bill on cache reads, so charging them at
- * 0.1x overstates its total two- to fourfold.
+ * rate, and Claude Opus 5.5 and Claude Sonnet 5.5 at 0.05x ($0.20 and
+ * $0.10/MTok). Those exceptions are not cosmetic for long-lived agents — a
+ * resident re-reading a 260k prefix on every call spends most of its bill on
+ * cache reads, so charging them at 0.1x overstates its total two- to
+ * fourfold.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
- * Snapshot: 2026-10-15 (Opus 5.5 added; it had matched the Opus 5 prefix and
- * was priced at $5/$25 with 0.1x reads). Keep the version string/date
- * auditable; silently changing historical prices would make old JSONL replay
- * disagree with bills.
+ * Snapshot: 2026-10-17 (Sonnet 5.5's 0.05x reads; it had matched the Sonnet 5
+ * prefix and read at 0.1x. 2026-10-15 added Opus 5.5, which had matched the
+ * Opus 5 prefix and was priced at $5/$25 with 0.1x reads). Keep the version
+ * string/date auditable; silently changing historical prices would make old
+ * JSONL replay disagree with bills.
  */
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
-export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-15';
+export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-17';
 
 /** Cache reads bill at this multiple of base input on every model that does
  *  not override it. */
@@ -125,6 +127,9 @@ function anthropicBaseRate(model: string): BaseRate | undefined {
   // Sonnet 5 ... is now the standard price. The previously scheduled increase
   // to $3/$15 ... on September 1, 2026 will not occur." (pricing page, read
   // 2026-09-21.) So there is no cutoff; every call is $2/$10.
+  // Sonnet 5.5 before it, since 'claude-sonnet-5' matches it too: the same
+  // $2/$10, but cache reads at 0.05x ($0.10).
+  if (starts(model, 'claude-sonnet-5-5')) return rate(2, 10, 0.05);
   if (starts(model, 'claude-sonnet-5')) return rate(2, 10);
 
   if (starts(model,

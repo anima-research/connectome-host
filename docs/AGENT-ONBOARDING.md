@@ -449,7 +449,7 @@ dollar figures. The host's standard block matches them to what the provider bill
 
 - **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
   5-minute cache and on Bedrock (5-minute only);
-- **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
+- **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5 and Sonnet 5.5, `0.025` on Claude
   Fable 5.1 / Mythos 5.1;
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
