@@ -223,7 +223,7 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 | `McplAdminModule` | `mcplAdmin` | off | `mcpl_list/deploy/restart/unload`: the agent manages its own MCPL servers. |
 | `IdentityModule` | `identity` | off | The agent's own archipelago identity key; exchanges key-proofs for access tokens so credentials never enter the agent's context. |
 | `WebUiModule` + `ObserversModule` | `webui` | off | Browser console (below); `observers--get/grant/revoke` let the agent manage who may watch. |
-| `TtsRelayModule` | `ttsRelay` | off | Streams live generation to a TTS relay; trims posted messages when a voice client is interrupted. |
+| `TtsRelayModule` | `ttsRelay` | off | Sends each message the agent's prose publishes to a TTS relay as one block, with the turn as the client's activation; trims posted messages when a voice client is interrupted. |
 
 Framework features configured by top-level recipe keys rather than modules:
 `conversations` (per-channel conversation forks from a dormant trunk agent),

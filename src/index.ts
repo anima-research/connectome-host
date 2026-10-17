@@ -477,8 +477,8 @@ async function createFramework(
     }));
   }
 
-  // TTS relay tap — opt-in per recipe. Pure trace-bus consumer: mirrors the
-  // agent's streaming generation to a melodeus-tts-relay /bot endpoint and
+  // TTS relay tap — opt-in per recipe. Pure trace-bus consumer: sends the
+  // agent's published messages to a melodeus-tts-relay /bot endpoint and
   // trims posted messages on voice interruptions. See modules.ttsRelay in
   // recipe.ts for the config contract (url/token validated at recipe load).
   if (modules.ttsRelay) {
