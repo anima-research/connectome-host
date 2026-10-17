@@ -149,6 +149,75 @@ the working directory):
 
 ---
 
+## Updating checkouts
+
+A box that runs the stack from checkouts of `main` (the
+[DEV-ENVIRONMENT](./DEV-ENVIRONMENT.md) layout) takes each change as it
+pulls, with no release in between. agent-framework's and connectome-host's
+releases stop while an issue labelled `release-hold` is open in their
+repository. Such an issue says that `main` as it stands would harm someone
+running it, and what has to happen first. A pull doesn't stop for it, and
+the layout's other repositories have no holds. So:
+
+- **Before pulling,** look at the open holds. The repositories are public,
+  so their issue pages need no login:
+  ```
+  https://github.com/anima-research/agent-framework/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-hold
+  https://github.com/anima-research/connectome-host/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-hold
+  ```
+  With `gh` logged in, `gh issue list --label release-hold` in each
+  repository shows the same. While a hold applies to your box, keep every
+  checkout on the commit it has, since the host and its libraries move
+  together. If you can't read the list, treat a hold as open until you
+  can. Then read what each checkout would take. Where the repository keeps
+  a changelog, this shows its released sections and pending fragments:
+  ```bash
+  git fetch && git diff HEAD origin/main -- CHANGELOG.md changelog.d
+  ```
+  heartbeat-mcpl and mcpl-core-ts keep none, so read their commits with
+  `git log --oneline HEAD..origin/main` after the fetch.
+- **If a hold names a commit you already run,** go back, below, to
+  commits from before it. In a checkout that contains the commit,
+  `git merge-base --is-ancestor <commit> HEAD` exits 0. The commits you
+  noted may already contain it; `git reflog` shows earlier ones.
+- **To update,** note the commit each checkout is on with
+  `git rev-parse HEAD`, and first stop every agent that runs from these
+  checkouts, with the shell daemon if its checkout will move. Stopping an
+  agent stops the fleet children it launched. For one left running, after
+  a TUI quit that detached it or a parent that was killed outright, `kill`
+  the PID in `headless.pid` in its data directory, which shuts it down as
+  a stop does. bun runs the host's `src/` directly and imports some
+  modules only when they're first needed, so files that change under a
+  running agent can mix new code into it. The daemon serves every agent on
+  the box, so stopping it ends their shell sessions too. If the entries
+  say data the newer code writes doesn't read back on the older code, copy
+  what each agent keeps while it's stopped: its data directory
+  (`DATA_DIR`), its fleet children's data directories (`data/<child>`
+  under its working directory, unless a launch named another), the MCPL
+  server settings it saves in its working directory (`mcpl-servers.json`
+  and `mcpl-servers.agent.json`), and the files its `.env` names, such as
+  `HEARTBEAT_CONFIG_FILE` and `DISCORD_SUBSCRIPTIONS_FILE`. Then update
+  the host and the libraries it loads together (`git switch main` first
+  in a checkout left detached), since the host's code expects the library
+  versions beside it. Install and build them bottom-up as
+  [DEV-ENVIRONMENT §2](./DEV-ENVIRONMENT.md#2-install--build-bottom-up)
+  does: each `dist/`, chronicle's native build when chronicle changed, and
+  the host's Web UI. An `npm install` in agent-framework or context-manager
+  brings back their own `@animalabs/*` copies, so relink them as
+  [§3](./DEV-ENVIRONMENT.md#3-wire-single-instance-symlinks-the-crucial-part)
+  says. Then start them.
+- **To go back,** stop the agents again, with any fleet children still
+  running, and the daemon if its checkout moved. Check the noted commits
+  out again (which leaves each checkout detached), rebuild the same way,
+  and put back any recipe or `.env` change you made for the newer code.
+  If you copied the data, restore the copy before starting them. That
+  discards everything the agents recorded since it was made. Then start
+  them.
+  agent-framework 0.22.1's notes, for example, say what going back to
+  0.22.0 does with what 0.22.1 stored.
+
+---
+
 ## Wake gating (loop fix)
 
 Each recipe's `modules.wake` policies, in order (first-match-wins):
