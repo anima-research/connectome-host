@@ -76,6 +76,48 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: npm test
 
+  # The types of the host's source and of the web app. Nothing else here
+  # checks them: bun runs the host's TypeScript without checking its types,
+  # and the web build is `vite build`, which doesn't either, so a type
+  # error, such as a name in a typed list of recipe keys that's no longer a
+  # key, would reach main unseen. The root's tsconfig includes src/ alone,
+  # so test/ and scripts/ aren't checked. The web app's program also checks
+  # the host files src/web/protocol.ts reaches through its type import from
+  # src/commands.ts, src/tui.ts among them, with Node's types but not
+  # Bun's: Bun's globals or bun: modules used in one of those fail the web
+  # step while the host step passes. Types don't depend on the runtime, so
+  # one job at the Node floor does it.
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.12.0'
+
+      # Install scripts aren't needed to check types: the root's postinstall
+      # builds the web app, which the build-and-test job does in a step of
+      # its own. The root's install comes first: the web app's program takes
+      # Node's types, and what the host files it checks import, from the
+      # root's node_modules.
+      - name: Install dependencies (strict lockfile)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix web --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck the host's source
+        run: npx tsc --noEmit
+
+      - name: Typecheck the web app
+        working-directory: web
+        run: npx tsc --noEmit
+
   # The release as npm would pack it, installed on its own and run, as the
   # publish workflow checks before it publishes (see
   # scripts/pack-installs-alone.mjs): a change that leaves a file out of the

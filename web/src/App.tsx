@@ -945,7 +945,7 @@ export function App() {
     setBulkRemaining(want);
     requestOlder(Math.min(want, HISTORY_PAGE_CAP));
   };
-  const stopLoadOlder = (): void => setBulkRemaining(0);
+  const stopLoadOlder = (): void => { setBulkRemaining(0); };
 
   const applyHistoryPage = (msg: HistoryPageMessage): void => {
     if (msg.corrId !== pendingHistoryCorr) return;

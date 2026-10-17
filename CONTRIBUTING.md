@@ -185,7 +185,8 @@ never do.
 ```bash
 bun install
 bun test            # test suite
-bunx tsc --noEmit   # typecheck
+bunx tsc --noEmit   # typecheck the host's source (src/)
+(cd web && bunx tsc --noEmit)   # typecheck the web app
 bun src/index.ts    # run (generic assistant)
 ```
 
@@ -193,7 +194,11 @@ CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
 and macOS. Both install the root and the web app with a strict lockfile
 (`npm ci`), which fails when a lock doesn't match its `package.json` or
 lacks that platform's packages, and build the web app; the test suite runs
-on ubuntu only. If you touched `web/`
+on ubuntu only. A typecheck job checks the types of the host's source
+(`src/`; `test/` and `scripts/` aren't checked) and of the web app
+(`tsc --noEmit`), which nothing else does: bun runs TypeScript without
+checking its types, and `vite build` doesn't check them either. If you
+touched `web/`
 dependencies, regenerate the npm lock with `npm run relock:web`, so it
 carries both platforms' native binaries. It resolves every web dependency
 afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:
