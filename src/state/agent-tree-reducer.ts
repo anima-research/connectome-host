@@ -43,10 +43,13 @@ export type AgentPhase =
   | 'done'
   | 'failed'
   // Terminal-but-benign: user cancel, zombie-reclaim, supersession, agent
-  // reboot, budget-restart. Postmortem 2026-05-28 P1 #3: renderers must
-  // treat this as neutral (not red) and terminal (not 'running'). It is the
-  // result of `inference:aborted` and reboot-induced `inference:exhausted`,
-  // both of which are NOT faults.
+  // reboot, budget-restart, and a turn agent-framework 0.22.2 drops when its
+  // agent is replaced or removed, or the framework is stopping or restarted,
+  // unless another turn of its name has begun (then no end comes for it).
+  // Postmortem 2026-05-28 P1 #3: renderers must treat this as neutral (not
+  // red) and terminal (not 'running'). It is the result of
+  // `inference:aborted` and reboot-induced `inference:exhausted`, both of
+  // which are NOT faults.
   | 'cancelled';
 
 export type AgentKind = 'framework' | 'subagent';
@@ -241,7 +244,12 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.lastEventAt = ts;
   },
 
-  // inference:aborted = user cancel / zombie-reclaim / supersession.
+  // inference:aborted = user cancel / zombie-reclaim / supersession, and,
+  // from agent-framework 0.22.2 (anima-research/agent-framework#338), a
+  // turn the framework dropped after its inference:started because its
+  // agent was replaced or removed, or the framework was stopping or had
+  // been stopped and started again; it sends none when another turn of the
+  // agent's name has already begun.
   // Postmortem 2026-05-28 P1 #3: same as exhausted — terminal, but benign.
   'inference:aborted': (r, e, ts) => {
     if (!e.agentName) return;

@@ -6,7 +6,7 @@
  * A row of either kind whose agent is missing from the snapshot's `agents`
  * list is removed, whatever raised it: the agent was torn down (an ephemeral
  * subagent), and no later snapshot would clear the row. Rows of other kinds
- * are left to the page's own handlers for them. agent-framework 0.22.1 sends
+ * are left to the page's own handlers for them. agent-framework 0.22.2 sends
  * no `hard-down-clear`, so a hard-down row leaves only by a dismissal, for a
  * present agent and a departed one alike.
  */

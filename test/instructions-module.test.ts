@@ -260,7 +260,7 @@ describe('InstructionsModule', () => {
   });
 
   test('cuts at maxBytes a read that gave more, as for a file that grew while it was read', async () => {
-    // agent-framework 0.22.1 reads to its end a file that was within maxBytes
+    // agent-framework 0.22.2 reads to its end a file that was within maxBytes
     // when the read took its size and grew while it was read.
     const grown = { bytes: Buffer.from('€'.repeat(10)), size: 5, truncated: false };
     const asked: Array<{ maxBytes: number }> = [];

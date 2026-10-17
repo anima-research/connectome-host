@@ -235,7 +235,7 @@ describe('the module\'s own failures end the retry loop without their words bein
 });
 
 describe('a framework failure is read without the ephemeral agent\'s name, and numbers as whole numbers', () => {
-  // agent-framework 0.22.1's startup watchdog, which quotes the agent's name.
+  // agent-framework 0.22.2's startup watchdog, which quotes the agent's name.
   const watchdog = (agent: { name: string }) => new Error(
     `Ephemeral agent "${agent.name}" failed to start inference within 15000ms — zombie detected. ` +
     'The event loop may have stalled or the inference request was dropped.',
@@ -357,7 +357,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       await until(() => live().length === 0, 2_000);
       expect(live()).toEqual([]);
       // Once the framework has let the run go, it drops the stream's later
-      // events unread (agent-framework 0.22.1, driveStream's check that the
+      // events unread (agent-framework 0.22.2, driveStream's check that the
       // agent still owns its name), so the count is final. At most a chunk
       // already on its way when the stream was cancelled.
       const stoppedAt = stops[0]!;
@@ -436,7 +436,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
 
   test('a run not started by its deadline is dropped by the framework\'s startup watchdog, and reported as the time limit', async () => {
     const given: Watchdogs[] = [];
-    // As agent-framework 0.22.1 does: a run whose inference hasn't started
+    // As agent-framework 0.22.2 does: a run whose inference hasn't started
     // by its startup watchdog is rejected with the framework's own words.
     // Its timer fires a millisecond early, as Node's can, so it settles the
     // attempt before the module's own limit does.

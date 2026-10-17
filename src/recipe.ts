@@ -754,7 +754,7 @@ export interface RecipeModules {
      * Truncate content beyond this many bytes, appending a
      * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
      * under the cap when a multibyte character straddles it). Reads ask for
-     * no more than this, which agent-framework 0.22.1 exceeds only for a
+     * no more than this, which agent-framework 0.22.2 exceeds only for a
      * file that grows while it's read. Default 32768.
      */
     maxBytes?: number;

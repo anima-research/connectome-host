@@ -23,7 +23,7 @@
  * it's pending waits on it rather than starting another, until its budget,
  * counted from the read's start, runs out; a turn after that injects nothing
  * at once. So a read that never finishes (a FIFO at the path, which
- * agent-framework 0.22.1 opens and waits on) leaves agents without their
+ * agent-framework 0.22.2 opens and waits on) leaves agents without their
  * instructions until it finishes, the session is switched or the host
  * restarts, and no further read starts in that session. A stop can't cancel
  * the read, since readFileFromDisk takes no signal: the module lets go of
@@ -40,7 +40,7 @@
  * recipe's mounts don't), and reads a file only if its canonical path lies
  * inside the mount, which it checks after opening the file.
  *
- * Reads ask readFileFromDisk for at most maxBytes. At 0.22.1 that holds for
+ * Reads ask readFileFromDisk for at most maxBytes. At 0.22.2 that holds for
  * a file larger than maxBytes when the read starts, but a file that grows
  * past it during the read is read to its end, so the module cuts what it is
  * given at maxBytes too (gatherContext).
@@ -234,7 +234,7 @@ export class InstructionsModule implements Module {
       return [];
     }
     const read = outcome.read;
-    // A read cut at the cap is of a file over it. agent-framework 0.22.1
+    // A read cut at the cap is of a file over it. agent-framework 0.22.2
     // reads a file that grows after the read's size check whole, so the cap
     // on what's injected is held here too. Once the host's agent-framework floor includes
     // anima-research/agent-framework#409, readFileFromDisk keeps maxBytes

@@ -120,14 +120,6 @@ interface DetachableHandle {
   detach: () => void;
 }
 
-/** The two endings agent-framework's `statedWaitNotSlept` appends to an
- *  ephemeral run's failure when it ends the run over a provider's stated
- *  wait, each at the end of the message (see isUnsleptProviderWait). */
-const UNSLEPT_PROVIDER_WAIT_ENDINGS: readonly RegExp[] = [
-  /\(the provider asked to wait [^()]*; an ephemeral run doesn't sleep a stated wait longer than \d+ s, so it ends now\)\s*$/,
-  /\(the provider's stated wait is not a number, and an ephemeral run sleeps only a stated wait of \d+ s or less, so it ends now\)\s*$/,
-];
-
 /**
  * Non-retryable termination of a subagent. All abnormal-but-expected exits
  * (user cancel, zombie reclaim, depth limit, etc.) use this so the catch
@@ -1131,18 +1123,19 @@ export class SubagentModule implements Module {
   }
 
   /** Stop a run: cancel its live stream and set its agent idle. At a tool
-   *  boundary the agent reads 'ready', and agent-framework 0.22.1's
+   *  boundary the agent reads 'ready', and agent-framework 0.22.2's
    *  Agent.cancelStream signals a stream only from 'streaming' or
    *  'waiting_for_tools', so the provider stream would stay parked until
    *  the run's 15-minute idle watchdog. That stream is cancelled directly,
    *  the way the framework's own context-budget restart cancels it
-   *  (src/framework.ts, the overBudget branch of the stream driver, about
-   *  line 8265 at v0.22.1); the agent is set idle even if that cancel
-   *  throws. The framework marks its own cancels as its own, in a private
-   *  map, and nothing lets a host do the same, so it records a stopped
-   *  stream as aborted, a failed inference in its log, as it does for a
-   *  user's cancel. A tool call already running isn't stopped: it
-   *  finishes, and the framework drops its result. */
+   *  (agent-framework's src/framework.ts at v0.22.2, the overBudget branch
+   *  of the stream driver from line 9115, which cancels at 9134 and 9136);
+   *  the agent is set idle even if that cancel throws. The framework marks
+   *  its own cancels as its own, in a private map, and nothing lets a host
+   *  do the same, so it records a stopped stream as aborted, a failed
+   *  inference in its log, as it does for a user's cancel. A tool call
+   *  already running isn't stopped: it finishes, and the framework drops
+   *  its result. */
   private stopRun(agent: Agent): void {
     const state = agent.state;
     try {
@@ -1276,10 +1269,10 @@ export class SubagentModule implements Module {
   /** The words the classifiers read: the failure's message without the
    *  ephemeral agent's name, which the framework quotes in its own messages
    *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …") and
-   *  which holds the name the agent chose. agent-framework 0.22.1 gives an
+   *  which holds the name the agent chose. agent-framework 0.22.2 gives an
    *  ephemeral run's failure no other structure to read: it rejects with an
-   *  Error carrying the text, apart from the class agent-framework #343
-   *  adds, which isUnsleptProviderWait reads by name. */
+   *  Error carrying the text, apart from its ProviderWaitNotSleptError,
+   *  which isUnsleptProviderWait reads by name. */
   private classifiedText(err: Error, agentName?: string): string {
     const text = agentName ? err.message.split(agentName).join('') : err.message;
     return text.toLowerCase();
@@ -1300,19 +1293,14 @@ export class SubagentModule implements Module {
   }
 
   /** The framework ended the run rather than sleep the stated wait of a
-   *  retryable failure (agent-framework 0.22.1 on): one longer than an
-   *  ephemeral run sleeps, or one it can't read as a number. Either way the
-   *  provider asked for a wait the run won't sit out, so a restart would
-   *  only call it again too soon. agent-framework 0.22.1 says so only in the
-   *  message, as one of the two endings its `statedWaitNotSlept` appends.
-   *  Each is matched at the end of the message, where the framework puts
-   *  it, so the same words echoed earlier in a provider's text don't count.
-   *  agent-framework #343 rejects with its own error class instead,
-   *  `ProviderWaitNotSleptError`, keeping those words; the class is read
-   *  here by name, since 0.22.1 doesn't export it. */
+   *  retryable failure: one longer than an ephemeral run sleeps, or one it
+   *  can't read as a number. Either way the provider asked for a wait the
+   *  run won't sit out, so a restart would only call it again too soon.
+   *  agent-framework 0.22.2 rejects such a run with its
+   *  `ProviderWaitNotSleptError`, read here by its name, which a second copy
+   *  of the package gives its own class too. */
   private isUnsleptProviderWait(err: Error): boolean {
-    return err.name === 'ProviderWaitNotSleptError' ||
-      UNSLEPT_PROVIDER_WAIT_ENDINGS.some((ending) => ending.test(err.message));
+    return err.name === 'ProviderWaitNotSleptError';
   }
 
   /** Transient = worth retrying the whole subagent from scratch. */
@@ -2175,6 +2163,10 @@ export class SubagentModule implements Module {
 
           // The module's own failures end the loop before any words are read.
           if (lastError instanceof SubagentFailure) break;
+          // So does a provider's stated wait the framework won't sleep: the
+          // run is never tried again, so neither the rate-limit cooldown nor
+          // a halved concurrency would serve it.
+          if (this.isUnsleptProviderWait(lastError)) break;
           if (this.isRateLimitError(lastError, agentName)) {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
             if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs);
@@ -2429,6 +2421,10 @@ export class SubagentModule implements Module {
 
           // The module's own failures end the loop before any words are read.
           if (lastError instanceof SubagentFailure) break;
+          // So does a provider's stated wait the framework won't sleep: the
+          // run is never tried again, so neither the rate-limit cooldown nor
+          // a halved concurrency would serve it.
+          if (this.isUnsleptProviderWait(lastError)) break;
           if (this.isRateLimitError(lastError, agentName)) {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
             if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs);
