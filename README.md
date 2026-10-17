@@ -84,6 +84,8 @@ Values and combinations are validated at load time and fail loudly, naming
 the key. Unrecognized keys, though, are generally *not* rejected — a
 misspelled key (`mcplServers`, a leftover `modules.files`) is silently
 ignored, so check spelling against this README and `src/recipe.ts`.
+`modules.workspace` and each of its mounts do refuse a key they don't have,
+naming it.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
@@ -147,10 +149,10 @@ full semantics of each mode.
 
 | Command | Behavior |
 |---------|----------|
-| `bun src/index.ts` | Reuse last saved recipe, or start with generic default |
+| `bun src/index.ts` | Reuse last saved recipe, or start with generic default when there is none; a saved recipe that can't be used stops startup, naming it |
 | `bun src/index.ts <path>` | Load recipe from local file |
 | `bun src/index.ts <url>` | Fetch recipe from HTTP URL |
-| `bun src/index.ts --no-recipe` | Reset to default generic assistant |
+| `bun src/index.ts --no-recipe` | Reset to default generic assistant (a directory at the saved recipe's path stops it instead) |
 
 The loaded recipe is saved to `$DATA_DIR/.recipe.json` (mode 0600) in its
 **unresolved** form — `${VAR}` references kept, a URL system prompt kept as
@@ -548,9 +550,10 @@ read-write instructions mount. On a read-only mount the flow reverses:
 human/deploy edits to disk reach the injection, but not `workspace--read`
 (which serves Chronicle) — prefer routing human feedback through conversation
 and letting the agent make the edit. The file is read through the
-workspace's `readFileFromDisk`, so a file that is itself a link isn't read on
-a recipe's mounts, which don't follow links, and neither is one whose
-canonical path lies outside its mount: either raises the alert instead.
+workspace's `readFileFromDisk`, so on a mount that doesn't follow links, a
+recipe's default, a file that is itself a link isn't read, and on any mount
+one whose canonical path lies outside it isn't either, a link that leads out
+included: either raises the alert instead.
 
 **Cache note**: at `position: "system"` the block lives in every agent's
 prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next

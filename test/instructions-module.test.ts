@@ -311,8 +311,9 @@ describe('InstructionsModule', () => {
 
     expect(await mod.gatherContext('a')).toEqual([]);
     expect(alerts[0]!.message).toBe(
-      'no instructions injected: "instructions/AGENTS.md" lies outside its mount, through a linked directory on its path: ' +
-      'move the file into the mount, out from behind that link',
+      'no instructions injected: "instructions/AGENTS.md" leads outside its mount through a link, the file itself or a ' +
+      'directory on its path: move the file into the mount, so that neither it nor a directory on its path is a link ' +
+      'that leads out',
     );
   });
 

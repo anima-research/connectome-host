@@ -72,7 +72,10 @@ three, and in practice is how headless residents are operated.
 
 1. **Resolve the recipe** — CLI path or URL, else the saved
    `$DATA_DIR/.recipe.json`, else the built-in default (a plain assistant
-   with the gate and workspace on). `--no-recipe` clears the saved one.
+   with the gate and workspace on). A saved recipe that's there but can't be
+   used stops startup, naming the file. `--no-recipe` clears the saved one,
+   a link included, unless a directory itself is there, which the operator
+   moves or removes.
 2. **Check credentials** for the recipe's provider, fail fast if missing.
 3. **Build cross-cutting services:** the settings module (read per call by
    the adapter), the `llm-calls.<iso>.jsonl` log path, the call ledger
@@ -119,9 +122,9 @@ A recipe is JSON; the full key set is typed and validated in
 - **Validation checks values, not spelling.** Bad values, impossible
   combinations (e.g. an instructions path on a mount that can't be written)
   and partial policies are rejected at load, naming the key. Unrecognized keys
-  are generally not rejected (a few blocks, such as `subconscious` and the
-  object form of `modules.history`, refuse unknown fields), so a misspelled
-  key is silently ignored.
+  are generally not rejected (a few blocks, such as `subconscious`, the
+  object form of `modules.history`, and `modules.workspace` and its mounts,
+  refuse unknown fields), so a misspelled key is silently ignored.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register

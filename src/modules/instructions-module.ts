@@ -335,13 +335,15 @@ export class InstructionsModule implements Module {
   private reasonFor(error: unknown): string {
     const code = (error as { code?: unknown } | null)?.code;
     if (code === 'symlink') return `"${this.path}" is a link, which its mount doesn't follow: put the file itself at that path`;
-    // The read refuses a file that is itself a link before it checks where
-    // the file lies, and a recipe's mounts don't follow links, so an escape
-    // comes from a linked directory on the path that leads out of the mount:
-    // a file put "at that path" would go through it.
+    // On a mount that doesn't follow links, a recipe's default, the read
+    // refuses a file that is itself a link before it checks where the file
+    // lies, so an escape comes from a linked directory on the path. On one
+    // that follows them (`followSymlinks`), the file itself can be the link
+    // that leads out. Either way a file put "at that path" would still go
+    // through the link, so the remedy is to move it.
     if (code === 'escape') {
-      return `"${this.path}" lies outside its mount, through a linked directory on its path: move the file ` +
-        'into the mount, out from behind that link';
+      return `"${this.path}" leads outside its mount through a link, the file itself or a directory on its path: ` +
+        'move the file into the mount, so that neither it nor a directory on its path is a link that leads out';
     }
     return error instanceof Error ? error.message : String(error);
   }

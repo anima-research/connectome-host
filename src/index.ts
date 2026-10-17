@@ -77,6 +77,9 @@ import {
   loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
+  SavedRecipeDirectoryError,
+  savedRecipeDirectory,
+  savedRecipePath,
   clearSavedRecipe,
   parseRecipeArg,
   deprecatedConversationsNotices,
@@ -159,23 +162,33 @@ async function resolveRecipe(): Promise<Recipe> {
   const { source, noRecipe } = parseRecipeArg(process.argv);
 
   if (noRecipe) {
-    clearSavedRecipe(config.dataDir);
+    try {
+      clearSavedRecipe(config.dataDir);
+    } catch (err) {
+      stopAtSavedRecipe('clear the saved recipe', err);
+    }
     console.log('Starting with default recipe.');
     return DEFAULT_RECIPE;
   }
 
   if (source) {
+    let loaded: Awaited<ReturnType<typeof loadRecipeDetailed>>;
     try {
-      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
-      // host-mounted and backed up, so resolved secrets must never land there.
-      const { recipe, persistable } = await loadRecipeDetailed(source);
-      saveRecipe(config.dataDir, persistable);
-      console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
-      return recipe;
+      loaded = await loadRecipeDetailed(source);
     } catch (err) {
       console.error(`Failed to load recipe from ${source}:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
+    try {
+      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
+      // host-mounted and backed up, so resolved secrets must never land there.
+      saveRecipe(config.dataDir, loaded.persistable);
+    } catch (err) {
+      stopAtSavedRecipe('save the recipe to', err);
+    }
+    const { recipe } = loaded;
+    console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
+    return recipe;
   }
 
   // Try saved recipe. Re-resolves ${VAR} references against the CURRENT
@@ -189,13 +202,36 @@ async function resolveRecipe(): Promise<Recipe> {
     }
   } catch (err) {
     console.error(
-      `Failed to resume saved recipe from ${config.dataDir}:`,
+      `Failed to resume the saved recipe ${savedRecipePath(config.dataDir)}:`,
       err instanceof Error ? err.message : err,
     );
+    console.error(err instanceof SavedRecipeDirectoryError
+      ? SAVED_RECIPE_DIRECTORY_LINE
+      : 'Fix what it names (the file, or a variable missing from the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.');
     process.exit(1);
   }
 
   return DEFAULT_RECIPE;
+}
+
+/** What a directory at the saved recipe's path needs; nothing the host does replaces one. */
+const SAVED_RECIPE_DIRECTORY_LINE =
+  'Move or remove it, then start again: the host saves its recipe there as a file, so the source of a bind mount there has to be a file that exists before the container starts.';
+
+/**
+ * Stop startup on a failure to save or clear the saved recipe, naming its
+ * path, and saying so where the cause is a directory there: a save fails with
+ * EISDIR, and a clear with ERR_FS_EISDIR, when a directory there is what
+ * stopped it, itself or (for a save) through a link. Any other failure, such
+ * as a clear of a link in a data directory the host can't write, prints its
+ * own error.
+ */
+function stopAtSavedRecipe(failedTo: string, err: unknown): never {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  const directory = code === 'EISDIR' || code === 'ERR_FS_EISDIR' ? savedRecipeDirectory(config.dataDir) : null;
+  console.error(`Failed to ${failedTo} ${savedRecipePath(config.dataDir)}:`, directory ?? (err instanceof Error ? err.message : err));
+  if (directory !== null) console.error(SAVED_RECIPE_DIRECTORY_LINE);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------

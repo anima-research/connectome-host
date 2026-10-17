@@ -44,6 +44,17 @@ describe('buildWorkspaceMounts', () => {
     expect(mounts[1].autoMaterialize).toBeUndefined();
   });
 
+  test("a mount's walkCap passes through, and a mount that sets none leaves agent-framework's default", () => {
+    const mounts = buildWorkspaceMounts({
+      mounts: [
+        { name: 'corpus', path: './corpus', walkCap: 20_000 },
+        { name: 'refs', path: './refs' },
+      ],
+    }, '/store')!;
+    expect(mounts[0]!.walkCap).toBe(20_000);
+    expect('walkCap' in mounts[1]!).toBe(false);
+  });
+
   test('_config mount (configMount: true) is read-write and NOT auto-materialized', () => {
     // THE contract behind rejecting `_config/...` as an instructions path:
     // the host materializes this mount only after branch-changing commands,

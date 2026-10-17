@@ -20,7 +20,7 @@
  *   - A URL systemPrompt is persisted as the URL and re-fetched on resume.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, chmodSync, symlinkSync, lstatSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -28,6 +28,9 @@ import {
   loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
+  SavedRecipeDirectoryError,
+  savedRecipeDirectory,
+  clearSavedRecipe,
   SAVED_RECIPE_UNRESOLVED_KEY,
 } from '../src/recipe.js';
 
@@ -224,14 +227,139 @@ describe('unresolved recipe persistence', () => {
       expect(resumed!.agent.systemPrompt).toContain('${DEFINITELY_NOT_SET_ANYWHERE}');
     });
 
-    test('corrupt JSON still returns null rather than throwing', async () => {
+    test('one that no longer validates throws, naming why, rather than resuming the default recipe', async () => {
+      // An older host dropped a mount key it didn't read; this one refuses it
+      // (#275). Returning null here would start DEFAULT_RECIPE in its place.
+      const legacy = {
+        name: 'Legacy Mounts',
+        agent: { systemPrompt: 'resolved prompt' },
+        modules: { workspace: { mounts: [{ name: 'notes', path: './notes', readOnly: true }] } },
+      };
       mkdirSync(dataDir, { recursive: true });
-      writeFileSync(join(dataDir, '.recipe.json'), '{not json', 'utf-8');
-      expect(await loadSavedRecipe(dataDir)).toBeNull();
+      writeFileSync(join(dataDir, '.recipe.json'), JSON.stringify(legacy) + '\n', 'utf-8');
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/workspace\.mounts\[0\] has unknown key "readOnly"/);
     });
 
     test('missing snapshot returns null', async () => {
       expect(await loadSavedRecipe(dataDir)).toBeNull();
+    });
+  });
+
+  describe('a saved recipe that can\'t be used', () => {
+    // Each would start DEFAULT_RECIPE in the resumed agent's place if it
+    // returned null, so each throws, saying why.
+    test('a file that is there but is not a JSON object throws, saying what it holds', async () => {
+      const cases: Array<[string, RegExp]> = [
+        // Only that it isn't JSON: the parser's message can quote the text.
+        ['', /^it isn't JSON$/],
+        ['{"name": "Torn", "agent', /^it isn't JSON$/],
+        ['{not json', /^it isn't JSON$/],
+        ['{"apiKey": sk_live_abc}', /^it isn't JSON$/],
+        ['[]', /^it holds an array, not a JSON object$/],
+        ['5', /^it holds a number, not a JSON object$/],
+        ['null', /^it holds null, not a JSON object$/],
+        ['"x"', /^it holds a string, not a JSON object$/],
+      ];
+      mkdirSync(dataDir, { recursive: true });
+      for (const [text, message] of cases) {
+        writeFileSync(join(dataDir, '.recipe.json'), text, 'utf-8');
+        await expect(loadSavedRecipe(dataDir)).rejects.toThrow(message);
+      }
+    });
+
+    test("an entry at the path that can't be read throws, saying what's there or why, where only nothing there is no saved recipe", async () => {
+      const path = join(dataDir, '.recipe.json');
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(path);
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it's a directory$/);
+      await expect(loadSavedRecipe(dataDir)).rejects.toBeInstanceOf(SavedRecipeDirectoryError);
+      rmSync(path, { recursive: true });
+      const elsewhere = join(dataDir, 'elsewhere');
+      mkdirSync(elsewhere);
+      symlinkSync(elsewhere, path);
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it's a link to a directory$/);
+      await expect(loadSavedRecipe(dataDir)).rejects.toBeInstanceOf(SavedRecipeDirectoryError);
+      rmSync(path);
+      symlinkSync(join(dataDir, 'gone.json'), path);
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it can't be read \(ENOENT\)$/);
+      rmSync(path);
+      // A link to itself can't be looked through: no directory is told, and
+      // nothing throws from the look.
+      symlinkSync(path, path);
+      expect(savedRecipeDirectory(dataDir)).toBeNull();
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it can't be read \(ELOOP\)$/);
+      rmSync(path);
+      expect(await loadSavedRecipe(dataDir)).toBeNull();
+    });
+
+    // Root reads any directory, so this case needs another user: for it, the
+    // read fails with EACCES rather than EISDIR.
+    test.skipIf(process.getuid?.() === 0)("a directory at the path that its owner can't read is still a directory", async () => {
+      const path = join(dataDir, '.recipe.json');
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(path, { mode: 0o000 });
+      try {
+        await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it's a directory$/);
+        await expect(loadSavedRecipe(dataDir)).rejects.toBeInstanceOf(SavedRecipeDirectoryError);
+      } finally {
+        chmodSync(path, 0o700);
+      }
+    });
+
+    // Root reads any file, so this case needs another user.
+    test.skipIf(process.getuid?.() === 0)("a file at the path that its owner can't read throws, naming why", async () => {
+      const path = join(dataDir, '.recipe.json');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(path, '{}', 'utf-8');
+      chmodSync(path, 0o000);
+      try {
+        await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/^it can't be read \(EACCES\)$/);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    });
+
+    test("clearSavedRecipe removes a file or a link at the path, one to nothing, to itself or to a directory included, never the link's target, and refuses a directory", () => {
+      const path = join(dataDir, '.recipe.json');
+      const gone = () => lstatSync(path, { throwIfNoEntry: false }) === undefined;
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(path, '{}', 'utf-8');
+      clearSavedRecipe(dataDir);
+      expect(gone()).toBe(true);
+      symlinkSync(join(dataDir, 'gone.json'), path);
+      clearSavedRecipe(dataDir);
+      expect(gone()).toBe(true);
+      symlinkSync(path, path);
+      clearSavedRecipe(dataDir);
+      expect(gone()).toBe(true);
+      const target = join(dataDir, 'kept.json');
+      writeFileSync(target, '{}', 'utf-8');
+      symlinkSync(target, path);
+      clearSavedRecipe(dataDir);
+      expect(gone()).toBe(true);
+      expect(existsSync(target)).toBe(true);
+      const targetDir = join(dataDir, 'kept-dir');
+      mkdirSync(targetDir);
+      symlinkSync(targetDir, path);
+      clearSavedRecipe(dataDir);
+      expect(gone()).toBe(true);
+      expect(lstatSync(targetDir).isDirectory()).toBe(true);
+      clearSavedRecipe(dataDir);   // nothing there
+      mkdirSync(path);
+      expect(() => clearSavedRecipe(dataDir)).toThrow(/directory/);
+      expect(lstatSync(path).isDirectory()).toBe(true);
+    });
+
+    test('a marker snapshot that no longer validates throws, as a legacy one does', async () => {
+      const snapshot = {
+        [SAVED_RECIPE_UNRESOLVED_KEY]: true,
+        name: 'Marked Mounts',
+        agent: { systemPrompt: 'be helpful' },
+        modules: { workspace: { mounts: [{ name: 'notes', path: './notes', readOnly: true }] } },
+      };
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, '.recipe.json'), JSON.stringify(snapshot) + '\n', 'utf-8');
+      await expect(loadSavedRecipe(dataDir)).rejects.toThrow(/workspace\.mounts\[0\] has unknown key "readOnly"/);
     });
   });
 
