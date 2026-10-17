@@ -37,6 +37,9 @@ import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.j
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
 import type { AgentNode } from './state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './state/stream-usage.js';
+import { STREAM_END_TRACES, TURN_RUNNING_TRACES, traceError } from './state/turn-trace.js';
+import { TurnInterrupts, interruptSubagents } from './state/turn-interrupt.js';
+import { switchFollowing, traceFollower } from './piped-turns.js';
 import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
@@ -126,6 +129,128 @@ export function resolveQuitConfirm(raw: string): QuitConfirmAction {
   if (c === 'd' || c === 'detach') return 'detach';
   if (c === '' || c === 'n' || c === 'no' || c === 'cancel') return 'cancel';
   return 'cancel-keep-input';
+}
+
+
+/**
+ * What the status line does when the root agent's stream ends
+ * (state/turn-trace.ts): the status it shows next, whether a backgrounded
+ * turn's output is shown or dropped, and the line it adds. Null for a trace
+ * that isn't a stream end, and for an end while no turn is showing, so an
+ * end that follows an end (`aborted` or `failed`, then `exhausted`) adds
+ * nothing. A failure always shows: agent-framework 0.22.2 sends
+ * `inference:failed` only for an attempt it started, so with no turn
+ * showing it's still the end of a turn, one whose start the TUI didn't
+ * follow, as at startup or around a session switch. The TUI's interrupt
+ * ends a turn the framework aborts as such an
+ * `aborted`; where Escape acts (escapeActs) and finds no turn running to
+ * abort, it shows the turn as ended itself (escapeLine). Pure so the rule is
+ * pinned by tests.
+ */
+export interface RootTurnEnd {
+  status: 'idle' | 'error';
+  background: 'show' | 'drop';
+  line?: { text: string; tone: 'error' | 'note' };
+}
+export function rootTurnEnd(
+  event: { type: string; error?: unknown; reason?: unknown },
+  turnShowing: boolean,
+): RootTurnEnd | null {
+  if (!turnShowing && event.type !== 'inference:failed') return null;
+  switch (event.type) {
+    case 'inference:completed':
+    case 'inference:turn_ended':
+      return { status: 'idle', background: 'show' };
+    case 'inference:failed':
+      return { status: 'error', background: 'drop', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
+    case 'inference:aborted': {
+      const reason = typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : '';
+      return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
+    }
+    case 'inference:exhausted':
+      // Alone, without a `failed` first, it ends a stream that something
+      // other than the framework aborted, with an agent's cancelStream.
+      return { status: 'idle', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'note' } };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The line the peek view shows for one of a subagent stream's ends other than
+ * its completion, which shows none. Pure, so tests read each end's line.
+ */
+export function peekEndLine(
+  event: { type: string; reason?: unknown; error?: unknown },
+): { text: string; tone: 'dim' | 'warn' | 'error' } | null {
+  switch (event.type) {
+    case 'inference:turn_ended':
+      return { text: '── turn ended by a tool ──', tone: 'dim' };
+    case 'inference:aborted':
+      return { text: `✗ turn aborted${typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : ''}`, tone: 'warn' };
+    case 'inference:failed':
+      return { text: `✗ inference failed: ${traceError(event)}`, tone: 'error' };
+    case 'inference:exhausted':
+      return { text: `✗ turn ended: ${traceError(event)}`, tone: 'error' };
+    default:
+      return null;
+  }
+}
+
+/** Whether the TUI's Escape acts, and the status bar offers it. Not when
+ *  the status line reads idle, nor while the host switches sessions, whose
+ *  end sets the status itself; for any other status but an error, whenever
+ *  the status line shows one. On an error, only while the interrupt
+ *  follower (TurnInterrupts) has the root's turn running, whatever set the
+ *  error: as while a failed attempt waits to be tried again, or after the
+ *  framework drops its retry with no trace, which the follower can't tell
+ *  apart (turn-trace.ts). An error shown with no turn running stands. Pure
+ *  so the gate is pinned by tests. */
+export function escapeActs(status: string, rootTurnRunning: boolean): boolean {
+  if (status === 'idle' || status === 'switching') return false;
+  return status !== 'error' || rootTurnRunning;
+}
+
+/** What the TUI's Escape, once it acts (escapeActs), shows for its
+ *  interrupt's outcome (TurnInterrupts), given the subagents it stopped:
+ *  the line it adds, if any, and whether the status line shows the root's
+ *  turn as ended itself, which it does when the follower has no turn of the
+ *  root running though the status line shows one, as after a message is
+ *  sent and before its turn starts: then nothing was interrupted, and the
+ *  line says so. An abort ends the turn
+ *  through its own `inference:aborted` (rootTurnStep), and a kept interrupt
+ *  through the abort when it comes. Pure so the outcomes are pinned by
+ *  tests. */
+export function escapeLine(
+  outcome: 'aborted' | 'deferred' | 'idle',
+  stopped: string,
+): { text: string | null; endsTurn: boolean } {
+  switch (outcome) {
+    case 'aborted':
+      return { text: stopped ? `  (${stopped})` : null, endsTurn: false };
+    case 'deferred':
+      return { text: `  (interrupting: the turn stops as soon as it can be aborted${stopped ? `; ${stopped}` : ''})`, endsTurn: false };
+    case 'idle':
+      return { text: stopped ? `  (no turn interrupted — ${stopped})` : '  (no turn interrupted)', endsTurn: true };
+  }
+}
+
+/**
+ * One of the root agent's traces, applied to whether its turn is showing:
+ * a start shows one, and so do the traces of a running turn that set the
+ * status line (TURN_RUNNING_TRACES), so a turn whose start the TUI didn't
+ * follow, as at startup or around a session switch, still shows its end.
+ * A stream end (STREAM_END_TRACES) ends it, with the
+ * end rootTurnEnd describes, or none when no turn was showing. Every other
+ * trace leaves it as it is. Pure, so tests drive runTui's flag through it.
+ */
+export function rootTurnStep(
+  showing: boolean,
+  event: { type: string; error?: unknown; reason?: unknown },
+): { showing: boolean; end: RootTurnEnd | null } {
+  if (event.type === 'inference:started' || TURN_RUNNING_TRACES.has(event.type)) return { showing: true, end: null };
+  if (!STREAM_END_TRACES.has(event.type)) return { showing, end: null };
+  return { showing: false, end: rootTurnEnd(event, showing) };
 }
 
 /**
@@ -354,6 +479,14 @@ export async function runTui(app: AppContext): Promise<void> {
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;       // researcher pushed to background via Ctrl+B
   let backgroundBuffer = '';      // accumulates tokens while backgrounded
+  /** Whether the status line shows a root turn under way: set at its
+   *  stream's start, cleared at the first end (see rootTurnEnd). */
+  let rootTurnShowing = false;
+  /** Escape's interrupt of the root's turn: at once if its model call is in
+   *  flight, else at the turn's first trace once it can be (TurnInterrupts),
+   *  so a turn that's compiling stops instead of running on behind an idle
+   *  status. Fed every trace by onTrace; reset with the framework. */
+  const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
   let verboseChat = false;
 
@@ -625,7 +758,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
   function updateStatus() {
     const topAlert = pickTopAlert([...opsAlerts.values()].map(a => a.kind));
-    let left = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens, opsAlerts.size, topAlert);
+    let left = formatStatusLeft(state, SPINNER[spinnerFrame], streamOutputTokens, opsAlerts.size, topAlert, interrupts.isRunning(rootAgentName));
     // An active ops alert repaints the whole left segment — a one-cell glyph
     // in default gray is exactly the kind of signal that gets scrolled past.
     statusLeft.fg = opsAlerts.size > 0 ? RED : GRAY;
@@ -1726,8 +1859,37 @@ export async function runTui(app: AppContext): Promise<void> {
     }
   }
 
+  /** The root agent's stream ended: show the end rootTurnStep reported. */
+  function showRootTurnEnd(end: RootTurnEnd): void {
+    state.status = end.status;
+    state.tool = null;
+    state.toolStartedAt = null;
+    if (backgrounded) {
+      if (end.background === 'show') {
+        // Researcher returned from background — show accumulated output as a message
+        if (backgroundBuffer.trim()) addLine(backgroundBuffer, WHITE);
+        addEvent('  (researcher returned from background)', CYAN);
+      }
+      backgrounded = false;
+      backgroundBuffer = '';
+    }
+    if (streaming) endStream();
+    if (end.line) addEvent(end.line.text, end.line.tone === 'error' ? RED : YELLOW);
+    updateStatus();
+  }
+
   function onTrace(event: Record<string, unknown>) {
     const agent = event.agentName as string | undefined;
+    interrupts.onTrace(event as { type: string; agentName?: unknown });
+    // The root's turn flag moves with its traces (rootTurnStep). An end it
+    // reports is shown after the trace's other work below, such as a
+    // completed stream's last usage sample.
+    let rootEnd: RootTurnEnd | null = null;
+    if (agent === rootAgentName) {
+      const step = rootTurnStep(rootTurnShowing, event as { type: string });
+      rootTurnShowing = step.showing;
+      rootEnd = step.end;
+    }
 
     switch (event.type) {
       case 'inference:started': {
@@ -1807,22 +1969,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:completed': {
         if (agent) noteUsageSample(agent, event.tokenUsage as UsageSample | undefined);
-
-        if (agent === rootAgentName) {
-          state.status = 'idle';
-          state.tool = null;
-          state.toolStartedAt = null;
-          if (backgrounded) {
-            // Researcher returned from background — show accumulated output as a message
-            if (backgroundBuffer.trim()) {
-              addLine(backgroundBuffer, WHITE);
-            }
-            addEvent('  (researcher returned from background)', CYAN);
-            backgrounded = false;
-            backgroundBuffer = '';
-          }
-          if (streaming) endStream();
-        }
         updateStatus();
         break;
       }
@@ -1848,21 +1994,13 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'inference:failed': {
-        if (agent === rootAgentName) {
-          state.status = 'error';
-          if (backgrounded) {
-            backgrounded = false;
-            backgroundBuffer = '';
-          }
-          if (streaming) endStream();
-          addEvent(`Error: ${event.error}`, RED);
-          updateStatus();
-        } else {
+        // The root's failure shows as its turn's end (rootEnd).
+        if (agent !== rootAgentName) {
           if (agent) {
             const short = shortAgentName(agent);
             subagentPhase.set(short, 'failed');
           }
-          addEvent(`[${agent}] Error: ${event.error}`, DIM_GRAY);
+          addEvent(`[${agent}] Error: ${traceError(event)}`, DIM_GRAY);
         }
         break;
       }
@@ -2010,7 +2148,15 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
     }
+    if (rootEnd) showRootTurnEnd(rootEnd);
+    // An end after an end shows nothing, but it can settle the turn the
+    // follower held running, and the bar's Escape hint follows that.
+    else if (agent === rootAgentName && STREAM_END_TRACES.has(event.type as string)) updateStatus();
   }
+
+  // The root trace subscription: one framework at a time, as piped mode
+  // follows it, so a session switch moves it with switchFollowing.
+  const rootTraces = traceFollower(onTrace as (e: unknown) => void);
 
   // ── Subagent polling ────────────────────────────────────────────────
 
@@ -2098,7 +2244,7 @@ export async function runTui(app: AppContext): Promise<void> {
       }
       case 'inference:started': return { text: `─ inference started (${get('agentName') ?? '?'}) ─`, color: DIM_GRAY };
       case 'inference:completed': return { text: `─ inference completed ─`, color: DIM_GRAY };
-      case 'inference:failed': return { text: `✗ inference failed: ${get('error') as string}`, color: RED };
+      case 'inference:failed': return { text: `✗ inference failed: ${traceError(evt)}`, color: RED };
       case 'inference:tokens': {
         // Token streams would spam the log; the line-merge needed to show them
         // nicely is in peek-proc's dedicated renderer, not this formatter.
@@ -2204,6 +2350,20 @@ export async function runTui(app: AppContext): Promise<void> {
 
         case 'inference:completed':
           break;
+
+        // The stream's other ends, as the Web UI's panel shows them.
+        case 'inference:turn_ended':
+        case 'inference:aborted':
+        case 'inference:failed':
+        case 'inference:exhausted': {
+          const pending = peekTokenLine.get(name);
+          if (pending?.trim()) appendPeekLog(name, pending, WHITE);
+          peekTokenLine.delete(name);
+          peekCurrentTool.set(name, null);
+          const end = peekEndLine(event);
+          if (end) appendPeekLog(name, end.text, end.tone === 'dim' ? DIM_GRAY : end.tone === 'warn' ? YELLOW : RED);
+          break;
+        }
 
         case 'done': {
           subagentPhase.set(name, 'done');
@@ -2413,23 +2573,47 @@ export async function runTui(app: AppContext): Promise<void> {
 
     // Chat view: Escape interrupts the active agent and all running subagents
     if (key.name === 'escape' && state.viewMode === 'chat') {
-      if (state.status !== 'idle' && state.status !== 'error') {
-        // Cancel all subagents first so their results propagate up
-        const cancelled = subMod?.cancelAll() ?? 0;
+      // On an error only while the root's turn is still running, a failed
+      // attempt waiting to be tried again, which the interrupt stops once
+      // the retry can be aborted, after its stream has started (escapeActs).
+      if (escapeActs(state.status, interrupts.isRunning(rootAgentName))) {
+        // The subagents first, so their results propagate up: their turns
+        // to the follower, then their runs stopped (interruptSubagents).
+        const reason = 'interrupted from the TUI';
+        const cancelled = interruptSubagents(
+          app.framework.getAllAgents().map(a => a.name),
+          name => subMod?.isSubagentAgent(name) ?? false,
+          interrupts,
+          () => subMod?.cancelAll() ?? 0,
+          reason,
+        ).stopped;
         const agent = app.framework.getAgent(rootAgentName);
         if (agent) {
-          agent.cancelStream();
-          if (streaming) endStream();
-          if (backgrounded) {
-            backgrounded = false;
-            backgroundBuffer = '';
+          const stopped = cancelled > 0 ? `${cancelled} subagent${cancelled > 1 ? 's' : ''} stopped` : '';
+          // The abort sends inference:aborted, which ends the turn here as
+          // every root end does (rootTurnStep), and on every other surface.
+          // A turn still compiling, waiting to try a failed attempt again,
+          // or running tools between model calls can't be aborted yet: it's
+          // aborted at the first trace naming the root that comes once it
+          // can be (TurnInterrupts).
+          const shown = escapeLine(interrupts.interrupt(rootAgentName, reason), stopped);
+          if (shown.endsTurn) {
+            // The follower has seen no start, tool call or resumed stream of
+            // the root's since its last end, though the status line showed a
+            // turn, as after a message is sent and before its turn starts, or
+            // while a command's work runs: show the status line idle, which a
+            // turn that starts then sets again. Nothing is reset, and no turn
+            // is showing: the traces that show one mark it running too.
+            if (streaming) endStream();
+            if (backgrounded) {
+              backgrounded = false;
+              backgroundBuffer = '';
+            }
+            state.status = 'idle';
+            state.tool = null;
           }
-          state.status = 'idle';
-          state.tool = null;
-          addLine(cancelled > 0
-            ? `  (interrupted — ${cancelled} subagent${cancelled > 1 ? 's' : ''} stopped)`
-            : '  (interrupted)', YELLOW);
-          updateStatus();
+          if (shown.text) addLine(shown.text, YELLOW);
+          if (shown.endsTurn) updateStatus();
         }
       }
       return;
@@ -2658,16 +2842,25 @@ export async function runTui(app: AppContext): Promise<void> {
       if (result.switchToSessionId) {
         state.status = 'switching';
         updateStatus();
-        app.framework.offTrace(onTrace as (e: unknown) => void);
+        // The old framework's turns are gone with it, so a late end of its
+        // own, which can still come after a failed switch, shows nothing,
+        // but for a failure, which always shows (rootTurnEnd). After a
+        // switch that succeeds, none of the old framework's traces come.
+        interrupts.reset();
+        rootTurnShowing = false;
 
-        app.switchSession(result.switchToSessionId).then(() => {
+        // Follow whichever framework the host holds once the switch ends,
+        // as piped mode does: the new one, after the rebind, or after a
+        // failed switch whatever the host was left with (switchFollowing).
+        const sessionId = result.switchToSessionId;
+        switchFollowing(rootTraces, async () => {
+          await app.switchSession(sessionId);
           // Rebind to new framework
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
           subscribeFleetOps();
           resetObservabilityState();
-          app.framework.onTrace(onTrace as (e: unknown) => void);
-
+        }, () => app.framework).then(() => {
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
           addLine(`Session: ${session?.name ?? 'unknown'}`, GRAY);
@@ -2742,7 +2935,7 @@ export async function runTui(app: AppContext): Promise<void> {
   addLine(`${recipeName}. Type /help for commands.`, GRAY);
   if (session) addLine(`Session: ${session.name}`, DIM_GRAY);
   addLine(`Error log: ${logPath}`, DIM_GRAY);
-  app.framework.onTrace(onTrace as (e: unknown) => void);
+  rootTraces.follow(app.framework);
   loadSessionHistory();
 
   // ── Cleanup ────────────────────────────────────────────────────────
@@ -2757,7 +2950,7 @@ export async function runTui(app: AppContext): Promise<void> {
     treeAggregator?.dispose();
     for (const unsub of subagentStreamUnsubs) unsub();
     clearInterval(pollTimer);
-    app.framework.offTrace(onTrace as (e: unknown) => void);
+    rootTraces.stop();
     renderer.destroy();
     process.stdout.write('\x1b]0;\x07');
     // Restore stderr
@@ -2788,6 +2981,7 @@ function formatStatusLeft(
   outputTokens?: number,
   alertCount = 0,
   topAlertKind: string | null = null,
+  rootTurnRunning = false,
 ): string {
   const sColor = state.status === 'idle' ? '✓' : state.status === 'error' ? '✗' : state.status === 'background' ? '↓' : state.status === 'queued' ? '⏳' : '…';
   let bar = `[${sColor} ${state.status}`;
@@ -2827,8 +3021,11 @@ function formatStatusLeft(
       ? ` | peek: ${state.peekProcTarget}›${state.peekProcAgent}`
       : ` | peek-proc: ${state.peekProcTarget}`;
   } else if (state.viewMode === 'chat') {
-    if (state.status === 'background') bar += ' Esc:stop';
-    else if (state.status !== 'idle' && state.status !== 'error') bar += ' Ctrl+B:bg Esc:stop';
+    // Escape is offered where it acts (escapeActs), and Ctrl+B where a
+    // stream can still be moved to the background.
+    if (escapeActs(state.status, rootTurnRunning)) {
+      bar += state.status === 'background' || state.status === 'error' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
+    }
     if (running > 0) bar += ' Tab:fleet';
   }
   bar += ']';

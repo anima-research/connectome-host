@@ -2,6 +2,7 @@
  * Stream pane — shows live events for a single tree node. The same panel is
  * used regardless of node kind; only the *source* of events differs (handled
  * upstream by App.tsx, which routes server messages through `formatStreamEvent`
+ * (src/web/stream-lines.ts)
  * when they match the node's StreamSource).
  *
  * The pane is intentionally single-instance: clicking another node retargets
@@ -10,15 +11,8 @@
  */
 
 import { For, Show } from 'solid-js';
+import type { StreamLine } from '@conhost/web/stream-lines';
 
-export interface StreamLine {
-  id: number;
-  /** 'token' lines fold consecutive token events into one merged line for
-   *  readable streaming output. Other event types render verbatim. */
-  kind: 'token' | 'event';
-  text: string;
-  color?: string;
-}
 
 export function StreamPanel(props: {
   /** Display label of the focused node. */
@@ -73,47 +67,3 @@ export function StreamPanel(props: {
     </div>
   );
 }
-
-/** Convert a peek/child-event/trace into a renderable line. Returns null
- *  to mean "skip" (e.g. token events that the caller folds elsewhere). */
-export function formatStreamEvent(event: { type: string; [k: string]: unknown }): StreamLine | null {
-  const get = <T,>(k: string): T | undefined => event[k] as T | undefined;
-  const id = nextStreamLineId();
-  switch (event.type) {
-    case 'inference:started':
-    case 'tokens':
-    case 'inference:tokens':
-      return null;
-    case 'tool_calls': {
-      const calls = get<Array<{ name: string }>>('calls') ?? [];
-      return { id, kind: 'event', text: `→ ${calls.map(c => c.name).join(', ')}`, color: 'text-amber-400' };
-    }
-    case 'inference:tool_calls_yielded': {
-      const calls = get<Array<{ name: string }>>('calls') ?? [];
-      return { id, kind: 'event', text: `→ ${calls.map(c => c.name).join(', ')}`, color: 'text-amber-400' };
-    }
-    case 'tool:started':
-      return { id, kind: 'event', text: `  ⟳ ${get('tool') ?? get('name')}`, color: 'text-amber-300' };
-    case 'tool:completed':
-      return { id, kind: 'event', text: `  ✓ ${get('tool') ?? get('name')}`, color: 'text-cyan-400' };
-    case 'tool:failed':
-      return { id, kind: 'event', text: `  ✗ ${get('tool') ?? get('name')}: ${get('error') ?? ''}`, color: 'text-rose-400' };
-    case 'inference:completed':
-      return { id, kind: 'event', text: '── inference completed ──', color: 'text-neutral-500' };
-    case 'inference:failed':
-      return { id, kind: 'event', text: `✗ inference failed: ${get('error') ?? ''}`, color: 'text-rose-400' };
-    case 'lifecycle': {
-      const phase = get<string>('phase');
-      return { id, kind: 'event', text: `◆ lifecycle: ${phase}`, color: phase === 'ready' ? 'text-emerald-400' : 'text-neutral-500' };
-    }
-    case 'done': {
-      const summary = get<string>('summary') ?? '(no summary)';
-      return { id, kind: 'event', text: `✓ done: ${summary.slice(0, 100)}`, color: 'text-emerald-400' };
-    }
-    default:
-      return { id, kind: 'event', text: `· ${event.type}`, color: 'text-neutral-600' };
-  }
-}
-
-let streamIdCounter = 0;
-function nextStreamLineId(): number { return ++streamIdCounter; }

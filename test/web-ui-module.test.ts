@@ -176,6 +176,21 @@ describe('WebUiModule HTTP', () => {
     expect(sessionViewer.headers.get('cache-control')).toBe('no-store');
   });
 
+  // Before the tests below that bind an app: each app a test binds stays
+  // bound for the tests after it, the WebSocket tests' included.
+  test('setApp follows the newest framework alone: it unsubscribes from the one it followed before', () => {
+    const log: string[] = [];
+    const frameworkNamed = (name: string) => ({
+      getAllAgents: () => [],
+      getAllModules: () => [],
+      getSessionUsage: () => { throw new Error('no usage in HTTP harness'); },
+      onTrace: () => { log.push(`follow ${name}`); return () => { log.push(`unfollow ${name}`); }; },
+    });
+    webUiModule.setApp({ framework: frameworkNamed('old') } as never);
+    webUiModule.setApp({ framework: frameworkNamed('new') } as never);
+    expect(log.slice(-3)).toEqual(['follow old', 'unfollow old', 'follow new']);
+  });
+
   test('bound retrieval JSON is no-store, redacted by default, and inputs require exact 1', async () => {
     let observedOptions: { limit?: number; includeInputs?: boolean } | undefined;
     const malicious = '</script><img src=x onerror="globalThis.pwned=true">';

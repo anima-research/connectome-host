@@ -306,6 +306,44 @@ describe('reply recovery', () => {
     expect(h.posts[6]!.text).toContain('model calls keep failing');
   });
 
+  test('a turn a tool ended is a recovery too, as a completed one is', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('hard-down', '3 consecutive inference failures');
+    await h.settle();
+    await h.incoming('zulip:dev');
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev']);
+    // The agent's next turn ends with skip_reply: the model answered.
+    h.emit({ type: 'inference:turn_ended', agentName: 'clerk' });
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts.slice(2).map((p) => [p.channelId, p.text]).sort()).toEqual([
+      ['zulip:dev', replyClearText('clerk')],
+      ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed')],
+    ]);
+  });
+
+  for (const [first, second] of [['inference:completed', 'inference:turn_ended'], ['inference:turn_ended', 'inference:completed']]) {
+    test(`${first} and then ${second} for one turn close the outage once`, async () => {
+      const h = await started({ statusChannels: ['zulip:ops'] });
+      h.alert('hard-down', 'failing');
+      await h.settle();
+      await h.incoming('zulip:dev');
+      h.emit({ type: first, agentName: 'clerk' });
+      h.emit({ type: second, agentName: 'clerk' });
+      await h.settle();
+      expect(h.module.episodeState()).toEqual([]);
+      expect(h.posts.slice(2).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops']);
+    });
+  }
+
+  test("another agent's turn a tool ended closes nothing", async () => {
+    const h = await started();
+    h.alert('hard-down', 'failing');
+    h.emit({ type: 'inference:turn_ended', agentName: 'spawn-research-1' });
+    await h.settle();
+    expect(h.module.episodeState().length).toBe(1);
+  });
+
   test('a warning that lands after the outage ended corrects itself; one that lands under a newer outage stands for it', async () => {
     const h = await started();
     h.alert('quota-spent', 'spent');
@@ -386,6 +424,33 @@ describe('waker replies', () => {
     await h.settle();
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
   });
+
+  test('an aborted turn has not failed: the exhausted after its abort tells no channel', async () => {
+    const h = await started({ replyIn: ['zulip:*'] });
+    h.alert('quota-spent', 'spent');
+    h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+    h.emit({ type: 'inference:aborted', agentName: 'clerk', reason: 'user' });
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk', error: 'Stream aborted: user' });
+    await h.settle();
+    expect(h.posts).toEqual([]);
+    // The next turn's failure still tells its channel.
+    h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk', error: 'boom' });
+    await h.settle();
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
+  });
+
+  for (const success of ['inference:completed', 'inference:turn_ended']) {
+    test(`${success} after the failed turn clears its waker`, async () => {
+      const h = await started({ replyIn: ['zulip:*'] });
+      h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+      h.emit({ type: 'inference:exhausted', agentName: 'clerk', error: 'boom' });
+      h.emit({ type: success, agentName: 'clerk' });
+      h.alert('hard-down', '3 consecutive inference failures');
+      await h.settle();
+      expect(h.posts).toEqual([]);
+    });
+  }
 
   test('a stale failure outside the waker window is not answered', async () => {
     const h = await started();

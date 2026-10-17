@@ -175,6 +175,33 @@ describe('batch mode end to end', () => {
     expect(closed).toBeGreaterThan(note);
   }, 60_000);
 
+  test('after a session switch, a line waits for the new session\'s turn rather than the cap', async () => {
+    const { dir, recipePath } = setup(false);
+    const run = startBatch(dir, recipePath, 'first line\n/session new\nsecond line\n');
+    let exitCode: number | null | undefined;
+    void run.exited.then((code) => { exitCode = code; });
+    try {
+      // Boot and the first line take what they take. Then the second line's
+      // turn is an echo, so its wait ends far inside the 120 s cap, unless it
+      // waits for the cap itself.
+      await waitFor(() => run.out().includes('> second line'), 120_000, '`> second line`');
+      await waitFor(() => run.out().includes('Done.'), 90_000, '`Done.` inside the 120 s cap');
+      await waitFor(() => exitCode !== undefined, 30_000, 'the batch run to exit');
+    } finally {
+      if (exitCode === undefined) {
+        run.child.kill('SIGKILL');
+        await run.exited;
+      }
+    }
+    expect(exitCode).toBe(0);
+    const out = run.out();
+    expect(out).toContain('Session switched.');
+    // The mock answers each line with `[Echo] …`, so the new session's turn
+    // printed its answer after `> second line`, and before `Done.`.
+    const second = out.slice(out.indexOf('> second line'), out.indexOf('Done.'));
+    expect(second).toContain('[Echo]');
+  }, 260_000);
+
   test('says the webui stays up with the agent stopped', async () => {
     const { dir, recipePath } = setup(true);
     const run = startBatch(dir, recipePath, '/help\n');

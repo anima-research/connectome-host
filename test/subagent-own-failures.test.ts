@@ -779,6 +779,20 @@ describe('a cancel reaches the whole run', () => {
     } finally { await h.cleanup(); }
   }, 20_000);
 
+  test("a live attempt's framework agent is the subagent's while its run is live, and not once the run has settled", async () => {
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    try {
+      await h.subagent.handleToolCall(spawn('long'));
+      await until(() => h.running('long'));
+      const long = internal(h.subagent).liveSubagents.get('long')!.frameworkAgentName;
+      expect(h.subagent.isSubagentAgent(long)).toBe(true);
+      expect(h.subagent.isSubagentAgent('main')).toBe(false);
+      expect(h.subagent.cancelAll()).toBe(1);
+      await outcome(h, 'long');
+      expect(h.subagent.isSubagentAgent(long)).toBe(false);
+    } finally { await h.cleanup(); }
+  }, 20_000);
+
   test('cancelling them all reaches a spawn still waiting for a slot', async () => {
     const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
     try {

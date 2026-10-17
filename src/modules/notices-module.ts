@@ -22,7 +22,8 @@
  * Episode semantics (not time debounce): an episode opens on the first
  * qualifying alert and holds every kind active since; a kind leaves on its
  * `-clear` alert — or, for framework kinds that have no clear (`hard-down`,
- * refusals), on the agent's next completed inference — and the episode closes
+ * refusals), on the agent's next turn that completes or that a tool ends
+ * (skip_reply, sleep) — and the episode closes
  * when no kind remains, so a lesser alert landing mid-outage neither mutes the
  * outage nor, on its own clear, announces a false recovery. One notice
  * per (episode, channel); a channel is told again only when the announced end
@@ -110,8 +111,9 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'refusal': 'silent',
 });
 
-/** Framework kinds with no `-clear` producer: a completed inference by the
- *  agent is the recovery signal. Everything else waits for its clear. */
+/** Framework kinds with no `-clear` producer: the agent's next turn that
+ *  completes, or that a tool ends, is the recovery signal, since the model
+ *  answered either way. Everything else waits for its clear. */
 const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
@@ -416,6 +418,12 @@ export class NoticesModule implements Module {
         if (!mine) return;
         this.currentWake = typeof event.channelId === 'string' ? event.channelId : undefined;
         return;
+      case 'inference:aborted':
+        // An aborted turn hasn't failed. The `exhausted` an abort sends after
+        // it finds no wake, so no channel is told this turn died.
+        if (!mine) return;
+        this.currentWake = undefined;
+        return;
       case 'inference:exhausted':
         if (!mine) return;
         if (this.currentWake) {
@@ -426,6 +434,7 @@ export class NoticesModule implements Module {
         }
         return;
       case 'inference:completed':
+      case 'inference:turn_ended':
         if (!mine) return;
         this.failedWake = undefined;
         {

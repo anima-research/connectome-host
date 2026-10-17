@@ -36,6 +36,7 @@ import { KnowledgeStrategy } from '@animalabs/agent-framework';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../state/stream-usage.js';
+import { traceError } from '../state/turn-trace.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -252,7 +253,10 @@ export type SubagentStreamEvent =
   | { type: 'tool:completed'; tool: string; durationMs: number }
   | { type: 'tool:failed'; tool: string; error: string }
   | { type: 'inference:completed' }
+  | { type: 'inference:turn_ended' }
+  | { type: 'inference:aborted'; reason?: string }
   | { type: 'inference:failed'; error: string }
+  | { type: 'inference:exhausted'; error: string }
   | { type: 'stream_resumed' }
   | { type: 'done'; summary: string; lastInputTokens?: number };
 
@@ -620,11 +624,26 @@ export class SubagentModule implements Module {
             break;
           }
           case 'inference:failed': {
-            const error = (event as { error?: string }).error ?? 'Unknown error';
             live.requestInFlightSince = undefined;
-            this.emit(displayName, { type: 'inference:failed', error });
+            this.emit(displayName, { type: 'inference:failed', error: traceError(event) });
             break;
           }
+          // The stream's other ends (state/turn-trace.ts), passed on so the
+          // peek panel shows each. requestInFlightSince stays as it was.
+          case 'inference:turn_ended':
+            this.emit(displayName, { type: 'inference:turn_ended' });
+            break;
+          case 'inference:aborted': {
+            const reason = (event as { reason?: unknown }).reason;
+            this.emit(displayName, {
+              type: 'inference:aborted',
+              ...(typeof reason === 'string' && reason !== '' ? { reason } : {}),
+            });
+            break;
+          }
+          case 'inference:exhausted':
+            this.emit(displayName, { type: 'inference:exhausted', error: traceError(event) });
+            break;
         }
         return;
       }
@@ -1386,6 +1405,13 @@ export class SubagentModule implements Module {
     const found = this.cancellationHandles.has(displayName);
     this.stopTree(displayName);
     return found;
+  }
+
+  /** Whether the framework agent named is a subagent's live attempt: an
+   *  operator's interrupt takes its turn to the follower before cancelAll
+   *  stops its run (interruptSubagents). */
+  isSubagentAgent(frameworkAgentName: string): boolean {
+    return this.frameworkNameIndex.has(frameworkAgentName);
   }
 
   /**

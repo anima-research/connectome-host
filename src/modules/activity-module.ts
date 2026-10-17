@@ -22,24 +22,11 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { STREAM_END_TRACES } from '../state/turn-trace.js';
 
 export interface ActivityModuleConfig {
   initialChannels?: string[];
 }
-
-/** Trace events that end a turn's stream. A turn's tool rounds stay inside
- *  its one stream, so `inference:completed` comes once, at a turn's normal
- *  end; `inference:turn_ended` ends one a tool closed; and an aborted, failed
- *  or exhausted stream ends with its own event. A failed attempt that the
- *  framework retries starts again with `inference:started`, and a failure
- *  can send `failed` and then `exhausted`. */
-const TURN_END_TRACES: ReadonlySet<string> = new Set([
-  'inference:completed',
-  'inference:turn_ended',
-  'inference:aborted',
-  'inference:failed',
-  'inference:exhausted',
-]);
 
 interface ActivityState {
   channels: string[];
@@ -143,7 +130,7 @@ export class ActivityModule implements Module {
         // module shows no typing for one either.
         if ((event as { silent?: unknown }).silent === true) return;
         this.onInferenceStarted();
-      } else if (TURN_END_TRACES.has(event.type)) {
+      } else if (STREAM_END_TRACES.has(event.type)) {
         // Any end, failed or aborted ones included: leaving the flag on
         // would have show_in start "typing…" when no turn is under way.
         this.onInferenceEnded();

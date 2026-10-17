@@ -67,6 +67,7 @@ import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, cleartextCredentialWarning, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
+import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
@@ -810,55 +811,13 @@ async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
   const { handleCommand } = await import('./commands.js');
 
-  let inferenceResolve: (() => void) | null = null;
-
-  app.framework.onTrace((event) => {
-    const e = event as unknown as Record<string, unknown>;
-    switch (event.type) {
-      case 'inference:started':
-        process.stdout.write('\n');
-        break;
-      case 'inference:tokens': {
-        const content = e.content as string;
-        if (content) process.stdout.write(content);
-        break;
-      }
-      case 'inference:completed':
-        process.stdout.write('\n');
-        inferenceResolve?.();
-        inferenceResolve = null;
-        break;
-      case 'inference:failed':
-        console.error(`\nError: ${e.error}`);
-        inferenceResolve?.();
-        inferenceResolve = null;
-        break;
-      case 'inference:tool_calls_yielded': {
-        const calls = e.calls as Array<{ name: string }>;
-        console.log(`\n[tools] ${calls.map(c => c.name).join(', ')}`);
-        break;
-      }
-      case 'tool:started': {
-        const toolInput = e.input ? JSON.stringify(e.input) : '';
-        const truncated = toolInput.length > 120 ? toolInput.slice(0, 120) + '...' : toolInput;
-        console.log(`[tool] ${e.tool}${truncated ? ' ' + truncated : ''}`);
-        break;
-      }
-    }
+  const turns = createPipedTurns(app.agentName, {
+    write: (text) => { process.stdout.write(text); },
+    log: (line) => { console.log(line); },
+    error: (line) => { console.error(line); },
   });
-
-  function waitForInference(): Promise<void> {
-    return new Promise(resolve => {
-      // The timer only caps the wait. Clear it once the inference settles:
-      // a pending 120 s timer held the event loop open, so a batch run sat
-      // for two minutes after `Done.` before the process exited.
-      const timer = setTimeout(() => {
-        if (inferenceResolve === settle) { inferenceResolve = null; resolve(); }
-      }, 120_000);
-      const settle = (): void => { clearTimeout(timer); resolve(); };
-      inferenceResolve = settle;
-    });
-  }
+  const traces = traceFollower((event) => turns.onTrace(event as { type: string; [key: string]: unknown }));
+  traces.follow(app.framework);
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
@@ -874,7 +833,8 @@ async function runPiped(app: AppContext) {
         }
       }
       if (result.switchToSessionId) {
-        await app.switchSession(result.switchToSessionId);
+        const sessionId = result.switchToSessionId;
+        await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
         console.log('Session switched.');
       }
     } else {
@@ -882,7 +842,7 @@ async function runPiped(app: AppContext) {
         type: 'external-message', source: 'cli',
         content: trimmed, metadata: {}, triggerInference: true,
       });
-      await waitForInference();
+      await turns.waitForTurn();
     }
     return false;
   }

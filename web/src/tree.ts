@@ -14,16 +14,11 @@
 import { createSignal, type Accessor } from 'solid-js';
 import { AgentTreeReducer, type AgentNode, type AgentTreeSnapshot } from '@conhost/state/agent-tree-reducer';
 import type { WebUiServerMessage } from '@conhost/web/protocol';
+import { conversationAgentOf, pickStreamSource, type StreamSource } from '@conhost/web/agent-streams';
+
+export type { StreamSource };
 
 export type ScopeId = 'local' | string;
-
-/** Stream subscription strategy for a UI node. Decides what events are
- *  routed into the stream pane when the node is selected. */
-export type StreamSource =
-  | { kind: 'none' }                                                  // parent process / framework agent: main pane already covers it
-  | { kind: 'peek'; scope: string }                                   // local subagent: open subscribe-peek
-  | { kind: 'child-event-all'; childName: string }                    // fleet-child folder: every child-event for this child
-  | { kind: 'child-event-agent'; childName: string; agentName: string }; // agent inside a fleet child: filter child-events by agentName
 
 export type UiNodeKind = 'process' | 'framework' | 'subagent' | 'fleet-child';
 
@@ -59,6 +54,8 @@ export function createTreeStore(): TreeStore {
   const states = new Map<ScopeId, ScopeState>();
   const [version, setVersion] = createSignal(0);
   let parentLabel = 'parent';
+  /** The welcome's first agent, whose stream the main view shows. */
+  let conversationAgent: string | undefined;
 
   const ensureScope = (scope: ScopeId): ScopeState => {
     let s = states.get(scope);
@@ -104,7 +101,7 @@ export function createTreeStore(): TreeStore {
       const allLocal = localState.reducer.getNodes();
       const byName = indexByName(allLocal);
       for (const root of localState.reducer.getRoots()) {
-        localChildren.push(buildAgentSubtree(root, byName, undefined));
+        localChildren.push(buildAgentSubtree(root, byName, undefined, conversationAgent));
       }
     }
 
@@ -113,7 +110,7 @@ export function createTreeStore(): TreeStore {
       const childNodes = s.reducer.getNodes();
       const byName = indexByName(childNodes);
       const roots = s.reducer.getRoots();
-      const subtree = roots.map(r => buildAgentSubtree(r, byName, scope));
+      const subtree = roots.map(r => buildAgentSubtree(r, byName, scope, undefined));
       localChildren.push({
         id: `fleet:${scope}`,
         kind: 'fleet-child',
@@ -139,6 +136,7 @@ export function createTreeStore(): TreeStore {
       case 'welcome': {
         states.clear();
         parentLabel = msg.recipe.name || 'parent';
+        conversationAgent = conversationAgentOf(msg);
         applySnapshot('local', {
           asOfTs: msg.localTree.asOfTs,
           nodes: msg.localTree.nodes as unknown as AgentNode[],
@@ -189,11 +187,12 @@ function buildAgentSubtree(
   node: AgentNode,
   byName: Map<string, AgentNode>,
   fleetChildName: string | undefined,
+  conversationAgent: string | undefined,
 ): UiNode {
   const children: UiNode[] = [];
   for (const candidate of byName.values()) {
     if (candidate.parent === node.name) {
-      children.push(buildAgentSubtree(candidate, byName, fleetChildName));
+      children.push(buildAgentSubtree(candidate, byName, fleetChildName, conversationAgent));
     }
   }
   const kind: UiNodeKind = node.kind === 'subagent' ? 'subagent' : 'framework';
@@ -202,20 +201,9 @@ function buildAgentSubtree(
     kind,
     label: node.name,
     agent: node,
-    streamSource: pickStreamSource(node, fleetChildName),
+    streamSource: pickStreamSource(node, fleetChildName, conversationAgent),
     children,
   };
-}
-
-function pickStreamSource(node: AgentNode, fleetChildName: string | undefined): StreamSource {
-  if (fleetChildName) {
-    return { kind: 'child-event-agent', childName: fleetChildName, agentName: node.name };
-  }
-  if (node.kind === 'subagent') {
-    return { kind: 'peek', scope: node.name };
-  }
-  // Local framework agent: the main pane already shows its activity.
-  return { kind: 'none' };
 }
 
 /** Walk a UiNode tree depth-first, honoring an expanded-id set, and produce a

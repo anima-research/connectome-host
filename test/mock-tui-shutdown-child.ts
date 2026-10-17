@@ -26,7 +26,9 @@ const app = {
     getAllModules: () => [],
     getModule: () => undefined,
     getAgent: () => undefined,
-    onTrace: () => ready(),
+    // As agent-framework's: onTrace returns its listener's unsubscribe, and
+    // offTrace removes a listener too. Either detaches it.
+    onTrace: () => { ready(); return () => { traceDetached++; }; },
     offTrace: () => { traceDetached++; },
     stop: async () => {
       stopCalls++;

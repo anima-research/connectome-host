@@ -54,6 +54,7 @@ import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
+import { TurnInterrupts, interruptAgents, interruptSubagents } from '../state/turn-interrupt.js';
 import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
@@ -352,6 +353,13 @@ const DEFAULT_HOST = '0.0.0.0';
  */
 interface SharedServerState {
   server: ReturnType<typeof Bun.serve>;
+  /** The interrupt's turn follower for the app's framework: fed every trace
+   *  (fanOutTrace), made again with each framework (setApp). */
+  interrupts?: TurnInterrupts;
+  /** Ends the fan-out's subscription to the framework setApp last followed,
+   *  so a switched-away framework's late traces reach no client and no
+   *  follower. */
+  stopFollowing?: () => void;
   port: number;
   host: string;
   staticRoot: string;
@@ -408,6 +416,42 @@ interface SharedServerState {
 }
 
 let sharedServer: SharedServerState | null = null;
+
+/**
+ * The Web UI's interrupt: the subagents' turns, then their runs stopped
+ * (interruptSubagents), then every other agent's turn (interruptAgents), each
+ * aborted at once if it can be, else as soon as it can be. Returns the reply.
+ */
+export function interruptPage(
+  agentNames: readonly string[],
+  isSubagent: (agentName: string) => boolean,
+  interrupts: Pick<TurnInterrupts, 'interrupt'> | undefined,
+  stopRuns: () => number,
+): string {
+  if (!interrupts) return interruptReply(stopRuns(), [], []);
+  const reason = 'interrupted from the Web UI';
+  // Split before the runs stop, which can change what isSubagent answers.
+  const others = agentNames.filter((name) => !isSubagent(name));
+  const subagents = interruptSubagents(agentNames, isSubagent, interrupts, stopRuns, reason);
+  const rest = interruptAgents(others, interrupts, reason);
+  return interruptReply(subagents.stopped, [...subagents.aborted, ...rest.aborted], [...subagents.deferred, ...rest.deferred]);
+}
+
+/** The Web UI interrupt's reply: the subagents it stopped, and the agents
+ *  whose turns stop only once they can be aborted, or, when it aborted,
+ *  kept and stopped nothing, that it interrupted no turn. */
+export function interruptReply(
+  subagentsStopped: number,
+  aborted: readonly string[],
+  deferred: readonly string[],
+): string {
+  const parts = [
+    ...(subagentsStopped > 0 ? [`${subagentsStopped} subagent(s) stopped`] : []),
+    ...(deferred.length > 0 ? [`${deferred.join(', ')} stopping as soon as ${deferred.length === 1 ? 'its turn' : 'their turns'} can be aborted`] : []),
+  ];
+  if (parts.length > 0) return `interrupted — ${parts.join('; ')}`;
+  return aborted.length > 0 ? 'interrupted' : 'no turn interrupted';
+}
 
 /** An openable URL for a bind address: IPv6 literals (the `::1` loopback
  *  bind, say) need brackets, or the port reads as part of the address. */
@@ -575,6 +619,7 @@ export class WebUiModule implements Module {
     if (!sharedServer) return;
     const ss = sharedServer;
     ss.app = app;
+    ss.interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
 
     // Tear down any previous aggregator (session-switch path).
     ss.fleetEventDetacher?.();
@@ -631,11 +676,13 @@ export class WebUiModule implements Module {
     // Only clear if the entire app reference changed in a way that matters —
     // for now, retain across setApp (keeps welcome fast).
 
-    // Single fan-out listener. The framework's `onTrace` does not return a
-    // detacher, so per-client subscriptions would leak across reconnects.
-    // Instead, one listener iterates the live client set and the WS lifecycle
-    // owns membership. Cheap as long as the client count stays small (admin UI).
-    app.framework.onTrace((event: TraceEvent) => this.fanOutTrace(event));
+    // Single fan-out listener, which iterates the live client set while the
+    // WS lifecycle owns membership. Cheap as long as the client count stays
+    // small (admin UI). The framework this module followed before a session
+    // switch is stopped but keeps its listeners, so its subscription ends
+    // here, and the new framework's begins.
+    ss.stopFollowing?.();
+    ss.stopFollowing = app.framework.onTrace((event: TraceEvent) => this.fanOutTrace(event));
 
     // Fleet integration: if FleetModule is mounted, spin up a private
     // FleetTreeAggregator and start forwarding child events to clients. The
@@ -847,6 +894,7 @@ export class WebUiModule implements Module {
   }
 
   private fanOutTrace(event: TraceEvent): void {
+    sharedServer!.interrupts?.onTrace(event as unknown as { type: string; agentName?: unknown });
     // Update cached usage snapshot first so welcomes for late-connecting
     // clients get a current value.
     if (event.type === 'usage:updated') {
@@ -1897,21 +1945,16 @@ export class WebUiModule implements Module {
       case 'interrupt': {
         if (!sharedServer?.app) return;
         const fw = sharedServer.app.framework;
-        // Cancel any in-process subagents so their results propagate.
         const subMod = fw.getAllModules().find((m) => m.name === 'subagent') as
-          | { cancelAll(): number }
+          | { cancelAll(): number; isSubagentAgent(frameworkAgentName: string): boolean }
           | undefined;
-        const cancelled = subMod?.cancelAll() ?? 0;
-        for (const agent of fw.getAllAgents()) {
-          try { agent.cancelStream(); } catch { /* idempotent */ }
-        }
-        this.send(client, {
-          type: 'command-result',
-          lines: [{
-            text: cancelled > 0 ? `interrupted — ${cancelled} subagent(s) stopped` : 'interrupted',
-            style: 'system',
-          }],
-        });
+        const reply = interruptPage(
+          fw.getAllAgents().map((a) => a.name),
+          (name) => subMod?.isSubagentAgent(name) ?? false,
+          sharedServer.interrupts,
+          () => subMod?.cancelAll() ?? 0,
+        );
+        this.send(client, { type: 'command-result', lines: [{ text: reply, style: 'system' }] });
         return;
       }
 
@@ -3816,8 +3859,10 @@ export async function __resetSharedServerForTests(): Promise<void> {
   try { sharedServer.server.stop(true); } catch { /* ignore */ }
   // The grants file's checks, and the sweep that runs after each, end too.
   sharedServer.observers?.stop();
-  // Detach any fleet listener / aggregator so the next start runs clean.
+  // Detach any fleet listener / aggregator, and the framework's trace
+  // subscription, so the next start runs clean.
   sharedServer.fleetEventDetacher?.();
   sharedServer.treeAggregator?.dispose();
+  sharedServer.stopFollowing?.();
   sharedServer = null;
 }
