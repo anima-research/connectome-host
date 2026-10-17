@@ -165,7 +165,10 @@ describe('a failed launch quotes the child\'s own output', () => {
       send(child, command);
     };
     const result = await launch({ stderr: 'FIRST_MARKER\n' });
-    expect(result.error).toStartWith('subscribe failed: injected subscription failure\n');
+    expect(result.error).toStartWith(
+      "Child 'leaf' didn't start (subscribe failed: injected subscription failure) and has exited. " +
+      'Nothing is running, so call fleet--launch again once the cause is fixed.\n',
+    );
     expect(result.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n${quoted(['FIRST_MARKER'])}`);
     expect(readFileSync(log, 'utf8')).toEndWith('LATER_MARKER\n');
   });
@@ -292,11 +295,17 @@ describe('a failed launch quotes the child\'s own output', () => {
       process: { pid: undefined, exitCode: null, signalCode: null, kill: () => { killed = true; return false; } },
     } as unknown as Child;
     const result = await api.failLaunch(child, 'launch failed: socket did not appear', { path: log, offset: 0, dev: 0n, ino: 0n });
-    expect(result.error).toBe('launch failed: socket did not appear; no process started for this launch, so there\'s no output to quote');
+    expect(result.error).toBe(
+      "Child 'leaf' didn't start (launch failed: socket did not appear): no process started for it, as when the " +
+      "child's runtime can't be found, so there's nothing to stop and no output to quote. Nothing is running; if " +
+      'calling fleet--launch again fails the same way, ask whoever runs this host.',
+    );
     expect(killed).toBe(false);
     expect(child.status).toBe('crashed');
     expect(child.exitReason).toBe('launch failed: socket did not appear; no process started for this launch');
-    expect(child.autoRestartStopped).toBe('no process started for its launch, which is not retried; fleet restart or launch starts it again');
+    expect(child.autoRestartStopped).toBe(
+      'no process started for its launch, which is not retried; fleet--restart or fleet--launch starts it again',
+    );
   });
 
   test('a startup.log truncated below where the launch began is quoted from its end, and said to be that', async () => {
@@ -340,7 +349,9 @@ describe('a failed launch quotes the child\'s own output', () => {
   test('a child stopped for a ready timeout has what it wrote quoted', async () => {
     const { fleet, launch, log } = setup({ readyTimeoutMs: 500 });
     const result = await launch({ stderr: 'Open https://example.test/device and enter code: ABCD-1234\n', ready: false });
-    expect(result.error).toStartWith('child did not become ready:');
+    expect(result.error).toStartWith(
+      "Child 'leaf' didn't start (child did not become ready: the child didn't report ready within 500 ms) and has exited.",
+    );
     expect(result.error).toEndWith(
       `\nThe child's output during this launch, from ${log}:\n${quoted(['Open https://example.test/device and enter code: ABCD-1234'])}`,
     );
@@ -484,7 +495,7 @@ describe('a failed launch quotes the child\'s own output', () => {
     api.waitForExit = async () => false;
     try {
       const result = await launch({ stderr: 'started, and never ready\n', ready: false });
-      expect(result.error).toContain('child termination unconfirmed');
+      expect(result.error).toContain("this host couldn't confirm that its process stopped");
       expect(result.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n${quoted(['started, and never ready'])}`);
       // The record stays one line.
       expect(child!.exitReason).not.toContain('\n');

@@ -11,7 +11,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, lstatSync, readFileSync, readlinkSync, symlinkSync, renameSync, chmodSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -91,7 +91,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
         const result = await launch(fleet, dataDir);
         expect(result.success).toBe(false);
         expect(result.isError).toBe(true);
-        expect(result.error).toContain('reconcile');
+        expect(result.error).toContain('this host has no record of a child in');
         expect(fleet.getChildren().size).toBe(0);
         expect(existsSync(join(dataDir, 'startup.log'))).toBe(false);
         const after = lstatSync(path);
@@ -110,7 +110,8 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const fleet = makeFleet();
     const result = await launch(fleet, dataDir);
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Cannot inspect launch artifact');
+    expect(result.error).toContain(`couldn't check ${join(dataDir, 'ipc.sock')} (ENOTDIR)`);
+    expect(result.error).toEndWith('Give fleet--launch another dataDir, or ask whoever runs this host to check that path.');
     expect(fleet.getChildren().size).toBe(0);
     expect(readFileSync(dataDir, 'utf8')).toBe('unchanged');
   });
@@ -333,6 +334,74 @@ describe('FleetModule — unresolved launch artifacts', () => {
     }, 20_000);
   }
 
+  // An earlier version kept an absolute dataDir as it was given. Restored,
+  // such a record still matches a relaunch into its directory, which
+  // reattaches to its own running child.
+  test('a relaunch adopts a restored child whose dataDir an earlier version kept with a trailing slash', async () => {
+    let state: any;
+    const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
+      pushEvent: () => {}, getModule: () => null } as unknown as Parameters<FleetModule['start']>[0];
+    const dataDir = join(tmpDir, 'restored-trailing-slash');
+    const owner = await startOwner(dataDir, false, ctx);
+    const old = owner.getChildren().get('guard')!;
+    let restored: FleetModule | undefined;
+    owner.setDetachMode(true);
+    try {
+      await owner.stop();
+      // An earlier version kept no boot id either.
+      state.children.guard.dataDir = `${dataDir}/`;
+      delete state.children.guard.bootId;
+      restored = makeFleet();
+      spyOn(restored as any, 'bootId').mockReturnValue('this-boot');
+      // Adoption at the start fails once, so the record waits for a relaunch.
+      const connectFailure = spyOn(restored as any, 'connectChildSocket').mockRejectedValueOnce(new Error('temporary connection failure'));
+      try { await restored.start(ctx); } finally { connectFailure.mockRestore(); }
+      expect(restored.getChildren().get('guard')?.socket).toBeNull();
+      expect(restored.getChildren().get('guard')?.dataDir).toBe(dataDir);
+      expect((await launch(restored, dataDir)).success).toBe(true);
+      const adopted = restored.getChildren().get('guard')!;
+      expect(adopted.pid).toBe(old.pid);
+      expect(adopted.status).toBe('ready');
+      expect(adopted.process).toBeNull();
+      // A child that answers runs in this boot, so its record now says so.
+      expect(adopted.bootId).toBe('this-boot');
+      expect(state.children.guard.bootId).toBe('this-boot');
+    } finally {
+      try { await restored?.stop(); } finally { owner.setDetachMode(false); }
+    }
+  }, 20_000);
+
+  // Beside a record of another name this host isn't attached to, a relaunch's
+  // probe of its own record cuts no connection of the host's, so it still
+  // reattaches to its own running child.
+  test('a relaunch adopts its own child beside another record the host is not attached to', async () => {
+    let state: any;
+    const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
+      pushEvent: () => {}, getModule: () => null } as unknown as Parameters<FleetModule['start']>[0];
+    const dataDir = join(tmpDir, 'restored-beside-unattached');
+    const owner = await startOwner(dataDir, false, ctx);
+    const old = owner.getChildren().get('guard')!;
+    const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    let restored: FleetModule | undefined;
+    owner.setDetachMode(true);
+    try {
+      await owner.stop();
+      // A record of another name in the same directory, whose pid is in use.
+      state.children.other = { ...state.children.guard, name: 'other', pid: helper.pid };
+      restored = makeFleet();
+      // Adoption at the start fails once, so the record waits for a relaunch.
+      const connectFailure = spyOn(restored as any, 'connectChildSocket').mockRejectedValueOnce(new Error('temporary connection failure'));
+      try { await restored.start(ctx); } finally { connectFailure.mockRestore(); }
+      expect(restored.getChildren().get('guard')?.socket).toBeNull();
+      expect(restored.getChildren().get('other')?.status).toBe('starting');
+      expect((await launch(restored, dataDir)).success).toBe(true);
+      expect(restored.getChildren().get('guard')!.pid).toBe(old.pid);
+    } finally {
+      helper.kill('SIGKILL');
+      try { await restored?.stop(); } finally { owner.setDetachMode(false); }
+    }
+  }, 20_000);
+
   for (const escalation of [false, true]) {
     test(`adopted-child restart records confirmed death, escalation=${escalation}`, async () => {
       let state: any;
@@ -371,9 +440,10 @@ describe('FleetModule — unresolved launch artifacts', () => {
     }, 20_000);
   }
 
+  // A record from this boot: one from before it has no process to guard.
   function trackedState(dataDir: string, pid: number | null = 2_147_483_647) {
     return { children: { guard: { name: 'guard', recipePath: resolve('mock-recipe'), dataDir,
-      socketPath: join(dataDir, 'ipc.sock'), pid, status: 'ready', startedAt: 1,
+      socketPath: join(dataDir, 'ipc.sock'), pid, status: 'ready', startedAt: Date.now(),
       exitedAt: null, lastEventAt: null, exitCode: null, exitReason: null,
       subscription: ['*'], autoRestart: false, env: null } } };
   }
@@ -426,7 +496,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const result = await launch(fleet, dataDir);
     // Deliberately stop at the existing no-entry-script guard, after reconciliation.
     expect(result.success).toBe(false);
-    expect(result.error).toContain('cannot determine connectome-host script path');
+    expect(result.error).toContain("doesn't know where its own entry script is");
     expect(existsSync(pidPath)).toBe(false);
     expect(existsSync(join(dataDir, 'startup.log'))).toBe(false);
   });
@@ -442,7 +512,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const record = fleet.getChildren().get('guard');
     expect(record?.status).toBe('crashed');
     const result = await launch(fleet, dataDir);
-    expect(result.error).toContain('cannot determine connectome-host script path');
+    expect(result.error).toContain("doesn't know where its own entry script is");
     expect(fleet.getChildren().get('guard')).toBe(record!);
   });
 
@@ -492,20 +562,25 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const kill = spyOn(process, 'kill').mockImplementation(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
     });
+    let child: any;
     try {
       const fleet = await restoreRecord(dataDir, process.pid);
       expect((await launch(fleet, dataDir)).success).toBe(false);
       expect(readFileSync(join(dataDir, 'headless.pid'), 'utf8')).toBe(String(process.pid));
       expect(await (fleet as any).waitForExitByPid(process.pid, 10)).toBe(false);
-      const child = (fleet as any).children.get('guard');
+      child = (fleet as any).children.get('guard');
       child.adopted = true; // Validated adoption is the signal authority under test.
       const result = await fleet.handleToolCall({ id: 'eperm-restart', name: 'restart', input: { name: 'guard' } });
       expect(result.success).toBe(false);
-      expect(result.error).toContain('death unconfirmed');
+      expect(result.error).toContain("couldn't confirm that it stopped");
       expect(child.status).toBe('starting');
       expect(child.exitedAt).toBeNull();
-      child.adopted = false;
-    } finally { kill.mockRestore(); }
+    } finally {
+      // The record carries this runner's own pid: left adopted, the fleet's
+      // stop() would signal it, so a failed assertion above must not skip this.
+      if (child) child.adopted = false;
+      kill.mockRestore();
+    }
   });
 
   test('unvalidated restored record never signals an unknown live PID', async () => {
@@ -516,7 +591,9 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const kill = spyOn(process, 'kill').mockImplementation((_pid, signal) => { signals.push(signal); return true; });
     try {
       (fleet as any).killAllOnExitSync();
-      expect((await fleet.handleToolCall({ id: 'unknown-kill', name: 'kill', input: { name: 'guard' } })).success).toBe(false);
+      const refused = await fleet.handleToolCall({ id: 'unknown-kill', name: 'kill', input: { name: 'guard' } });
+      expect(refused.success).toBe(false);
+      expect(refused.error).toStartWith("Nothing was stopped: this host isn't attached to child 'guard'");
       await fleet.stop();
       expect(signals).toEqual([]);
       expect(readFileSync(join(dataDir, 'headless.pid'), 'utf8')).toBe(String(process.pid));
@@ -663,6 +740,12 @@ describe('FleetModule — unresolved launch artifacts', () => {
         expect(lstatSync(old.socketPath).ino).toBe(inode);
         expect(restored.getChildren().get('guard')?.socket).toBeNull();
         expect(restored.getChildren().get('guard')?.status).toBe(failure === 'dead persisted PID' ? 'crashed' : 'starting');
+        if (failure === 'adoption PID mismatch') {
+          expect(restored.getChildren().get('guard')?.exitReason).toBe(
+            `adopt failed: the process answering on its socket reported pid ${old.pid}, not the recorded pid ` +
+            `${process.pid}, so a process other than the recorded child now serves its data directory`,
+          );
+        }
         const blocked = restored.getChildren().get('guard')!;
         const savedSubscription = [...blocked.subscription];
         const savedStatus = blocked.status;
@@ -789,7 +872,8 @@ describe('FleetModule — unresolved launch artifacts', () => {
     try {
       const result = await owner.handleToolCall({ id: 'unconfirmed-kill', name: 'kill', input: { name: 'guard' } });
       expect(result.success).toBe(false);
-      expect(result.error).toContain('death unconfirmed');
+      expect(result.error).toContain("couldn't confirm that it stopped");
+      expect(result.error).toEndWith(`if it still shows ready or starting, ask whoever runs this host to check pid ${child.pid}.`);
       expect(cleanup).not.toHaveBeenCalled();
       expect(readFileSync(pidPath, 'utf8')).toBe(pidBytes);
       const after = lstatSync(child.socketPath, { bigint: true });
@@ -1103,7 +1187,7 @@ describe('FleetModule — Phase 2', () => {
   test('handlers reject unknown child names', async () => {
     const send = await fleet.handleToolCall({ id: 't-u-send', name: 'send', input: { name: 'ghost', content: 'hi' } });
     expect(send.success).toBe(false);
-    expect(send.error).toMatch(/Unknown child/);
+    expect(send.error).toStartWith("There's no child named 'ghost', so nothing was sent.");
 
     const peek = await fleet.handleToolCall({ id: 't-u-peek', name: 'peek', input: { name: 'ghost' } });
     expect(peek.success).toBe(false);
@@ -1193,7 +1277,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
       input: { name: 'nope', recipe: bogus, dataDir: join(tmpDir, 'nope') },
     });
     expect(res.success).toBe(false);
-    expect(res.error).toMatch(/allowlist/i);
+    expect(res.error).toContain("isn't one this host lets its agent launch");
 
     // Listed path should be accepted.
     const ok = await fleet.handleToolCall({

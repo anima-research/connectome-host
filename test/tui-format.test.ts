@@ -120,7 +120,8 @@ describe('fleetNoticeLine', () => {
   });
 
   test('a first line past 70 characters is cut to 67 and an ellipsis, as the alerts beside it are, with no second mark for the lines after it', () => {
-    const notice = 'restart leaf failed: launch failed: child exited (code=1, signal=null) before socket appeared';
+    const notice = "restart leaf failed: Child 'leaf' didn't start (launch failed: the child exited with code 1 " +
+      'before its socket appeared) and has exited.';
     expect(fleetNoticeLine(notice)).toBe(`  ⚠ ${notice.slice(0, 67)}…`);
     expect(fleetNoticeLine(`${notice}\nThe child's output during this launch, from /data/leaf/startup.log:`))
       .toBe(`  ⚠ ${notice.slice(0, 67)}…`);

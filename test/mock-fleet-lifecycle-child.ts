@@ -12,6 +12,8 @@ import { join } from 'node:path';
 
 const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   ready?: boolean;
+  /** Report idle after ready, as a child that has finished its work does. */
+  idle?: boolean;
   crashBeforeSocket?: boolean;
   noSocket?: boolean;
   crashOnFile?: string;
@@ -29,6 +31,8 @@ const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   lockDataDir?: boolean;
   /** Write to this path, first, whether stderr is a regular file. */
   reportStderr?: string;
+  /** Append a line to this path for each client that connects. */
+  connections?: string;
 };
 const dataDir = process.env.DATA_DIR!;
 const socketPath = join(dataDir, 'ipc.sock');
@@ -68,6 +72,7 @@ process.on('exit', () => {
 let client: Socket | null = null;
 const server = createServer((socket) => {
   client = socket;
+  if (options.connections !== undefined) appendFileSync(options.connections, 'connected\n');
   socket.on('error', () => {});
   let buffer = '';
   socket.on('data', (data) => {
@@ -79,10 +84,13 @@ const server = createServer((socket) => {
       const command = JSON.parse(line);
       if (command.type === 'shutdown') process.exit(0);
       if (command.type === 'command' && command.command === '/crash') process.exit(1);
+      // Close the connection and keep running, as when another client connects.
+      if (command.type === 'command' && command.command === '/drop') socket.destroy();
     }
   });
   if (options.ready !== false) {
     socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: process.pid, ts: Date.now() }) + '\n');
+    if (options.idle) socket.write(JSON.stringify({ type: 'lifecycle', phase: 'idle', ts: Date.now() }) + '\n');
   }
 });
 server.listen(socketPath);

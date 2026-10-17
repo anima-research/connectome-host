@@ -140,7 +140,7 @@ describe('fleet--relay', () => {
       input: { from: 'src', to: 'dst' },
     });
     expect(res.success).toBe(false);
-    expect(res.error).toMatch(/No completed speech/i);
+    expect(res.error).toStartWith("Nothing was relayed: 'src' hasn't finished a reply since this host began tracking it.");
   });
 
   test('relays source speech to target (with prefix)', async () => {
@@ -176,7 +176,10 @@ describe('fleet--relay', () => {
       input: { from: 'src', to: 'src' },
     });
     expect(res.success).toBe(false);
-    expect(res.error).toMatch(/different children/);
+    expect(res.error).toBe(
+      "Nothing was relayed: \"from\" and \"to\" are both 'src', and a relay passes one child's reply to another. " +
+      "Give two different children's names.",
+    );
   });
 
   test('rejects unknown children', async () => {
@@ -184,13 +187,13 @@ describe('fleet--relay', () => {
       id: 'relay-nosrc', name: 'relay', input: { from: 'ghost', to: 'dst' },
     });
     expect(res1.success).toBe(false);
-    expect(res1.error).toMatch(/Unknown source child/);
+    expect(res1.error).toStartWith("There's no child named 'ghost', so nothing was relayed.");
 
     const res2 = await fleet.handleToolCall({
       id: 'relay-nodst', name: 'relay', input: { from: 'src', to: 'ghost' },
     });
     expect(res2.success).toBe(false);
-    expect(res2.error).toMatch(/Unknown child/);
+    expect(res2.error).toStartWith("There's no child named 'ghost', so nothing was relayed.");
   });
 });
 
@@ -340,13 +343,13 @@ describe('fleet--await', () => {
       id: 'await-empty', name: 'await', input: { names: [] },
     });
     expect(empty.success).toBe(false);
-    expect(empty.error).toMatch(/non-empty/);
+    expect(empty.error).toContain('a list of one or more child names; it got an empty list');
 
     const unknown = await fleet.handleToolCall({
       id: 'await-unk', name: 'await', input: { names: ['ghost'] },
     });
     expect(unknown.success).toBe(false);
-    expect(unknown.error).toMatch(/Unknown child/);
+    expect(unknown.error).toStartWith("There's no child named 'ghost', so nothing was waited on.");
 
     await fleet.stop();
   });
