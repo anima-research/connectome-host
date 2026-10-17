@@ -163,6 +163,25 @@ never do.
   both; past it, so do a tag with no changelog section, which neither can
   release, and an open release hold (below), which each checks. Version
   bumps are a maintainer release-time action, not part of feature PRs.
+- **Breaking changes.** A dependent's caret range takes the later
+  versions of its line (0.10.x before 1.0, 1.x from 1.0, and 0.0.z alone),
+  so a breaking change released as a patch reaches each dependent whose
+  range takes it at its next fresh install. Before 1.0, a breaking change
+  goes out in a new minor version (0.10.x to 0.11.0), and from 1.0 in a
+  new major. File it as breaking, as a `breaking` fragment or under a
+  `### Breaking` subsection of `Unreleased`: that is what `npm version`
+  reads. While such an entry is pending, `npm version` refuses a version
+  that doesn't open a line no release has reached, before it bumps or
+  writes anything, and says where each entry is filed and the bump to run
+  instead. A prerelease counts as the release it leads to, so one in the
+  current line is refused too. One that opens the next line (a preminor
+  before 1.0, a premajor from 1.0) isn't, and nor is any later version of
+  that line. A version below the current line is refused as well. bun's
+  `bun pm version` runs this check without giving it either version, so
+  while a breaking entry is pending it refuses every bump there: release
+  with `npm version`. npm's `--ignore-scripts` skips this check, but it
+  also skips the fold, and the publish workflow refuses a tag whose
+  version has no changelog section.
 - **Release holds.** When releasing `main` as it stands would harm
   someone running it, open an issue that says what has to happen first
   and label it `release-hold`, or ask a maintainer to label it. Close it
@@ -178,7 +197,9 @@ never do.
   it skips the changelog fold too, so the tag lands without its changelog
   section and the publish workflow's changelog check fails it. Publishing a
   tarball made earlier with `npm pack` runs no lifecycle script, so no check
-  sees it.
+  sees it. A hold stops releases, not merges, so when the hazard is in an
+  open pull request, say so on that pull request, naming what has to happen
+  first: its comment thread is the gate (see Review process).
 
 ## Building and testing
 
