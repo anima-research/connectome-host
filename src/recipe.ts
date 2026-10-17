@@ -908,13 +908,18 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to the
-   * relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak it.
-   * Also handles the relay's `interruption` events: the just-posted Discord
-   * message is edited down to the words actually voiced, and a note lands in
-   * the agent's context. Pure trace-bus tap — no effect on the agent loop.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the channel of the
+   * turn's typing indicator) and each message its prose publishes (one text
+   * block, on the channel it was published to) to the relay's `/bot`
+   * WebSocket, where voice clients (Melodeus / iOS) speak it. Text the agent
+   * withheld, thinking, tool calls and messages sent by a tool call aren't
+   * sent, nor is anything published while the relay is reconnecting.
+   * Also handles the relay's `interruption` events: the message being voiced
+   * when the user spoke is edited down to the words heard, when the module
+   * can tell which message that was, and a note in the agent's context says
+   * what was heard and what wasn't. Pure trace-bus tap — no effect on the
+   * agent loop.
    * `token` should be `${VAR}`-substituted from .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
@@ -982,17 +987,21 @@ export interface RecipeTtsRelay {
   url: string;
   /** Shared secret for the relay's /bot auth (its BOT_TOKENS). */
   token: string;
-  /** Relay-side bot identifier. Defaults to the agent's name. */
+  /** Relay-side bot identifier, which the voice client keys the bot's voice
+   *  settings on. Defaults to the agent's name. */
   botId?: string;
-  /** Discord user id stamped on stream events (client voice-config key).
+  /** The Discord user id stamped on block and activation messages, as the
+   *  id the blocks carry. The client keys voices on botId, not this.
    *  Defaults to botId. */
   userId?: string;
-  /** Display name stamped on stream events. Defaults to the agent's name. */
+  /** Display name stamped on block and activation messages, a subagent's
+   *  included, which the client may speak before a message. Defaults to the
+   *  agent's name. */
   username?: string;
   /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Drop a context note when an interruption cuts the agent off. Default true. */
   notifyOnInterruption?: boolean;
 }
 
