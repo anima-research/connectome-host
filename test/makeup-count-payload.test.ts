@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
 import type { NormalizedMessage } from '@animalabs/membrane';
-import { buildCountTokensPayload } from '../src/web/panel-data.js';
+import { buildContextMakeup, buildCountTokensPayload } from '../src/web/panel-data.js';
 
 // Regression: the makeup panel's exact count flattened every message to its
 // text blocks and sent no tool definitions, so signed thinking, tool_use and
@@ -196,4 +196,81 @@ describe('buildCountTokensPayload', () => {
       expect('tools' in payload).toBe(false);
     }
   });
+});
+
+// #287: an anthropic-xml agent's tool definitions go into its system block when
+// its recipe has a system prompt and prompt caching, and into the transcript
+// otherwise, and the panel's exact count has to build the request it sends.
+for (const [label, systemPrompt, where] of [
+  ['with a system prompt, in the system block', 'You are agent.', 'system'],
+  ['with none, in the transcript', '', 'messages'],
+] as const) {
+  test(`an anthropic-xml agent's context count carries its tools where its request does: ${label}`, async () => {
+    const tools = [{ name: 'read_file', description: 'Read a file from the workspace', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }];
+    const messages: NormalizedMessage[] = Array.from({ length: 30 }, (_, i) => ({
+      participant: i % 2 === 1 ? 'agent' : 'user', content: [{ type: 'text', text: `message ${i}` }],
+    }));
+    const app = {
+      recipe: { agent: { name: 'agent', formatter: 'anthropic-xml', systemPrompt } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => ({ getRenderStats: () => ({}) }) }),
+        previewActivation: async () => ({ system: systemPrompt, messages, tools }),
+      },
+    };
+    const sent: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    const priorModel = process.env.COUNT_TOKENS_MODEL;
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      sent.push(JSON.parse(init?.body ?? '{}'));
+      return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      await buildContextMakeup(app as never, 'agent');
+    } finally {
+      globalThis.fetch = realFetch;
+      if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
+      else process.env.COUNT_TOKENS_MODEL = priorModel;
+    }
+    expect(sent).toHaveLength(1);
+    expect(JSON.stringify(sent[0]![where])).toContain('Read a file from the workspace');
+    expect(JSON.stringify(sent[0]![where === 'system' ? 'messages' : 'system'] ?? '')).not.toContain('Read a file from the workspace');
+  });
+}
+
+// The host's one Membrane places every agent's tools by the recipe's primary
+// agent and its model, so a subagent's count asks the same, whatever its own
+// model: here the subagent's model is one Bedrock's caching gate turns off, so
+// asking with it would give main's placement.
+test("a subagent's context count places its tools as the primary agent's model decides", async () => {
+  const tools = [{ name: 'read_file', description: 'Read a file from the workspace', inputSchema: { type: 'object', properties: {} } }];
+  const messages: NormalizedMessage[] = Array.from({ length: 30 }, (_, i) => ({
+    participant: i % 2 === 1 ? 'sub' : 'user', content: [{ type: 'text', text: `message ${i}` }],
+  }));
+  const models: Record<string, string> = { agent: 'anthropic.claude-sonnet-4-5-20250929-v1:0', sub: 'anthropic.claude-3-opus-20240229-v1:0' };
+  const app = {
+    recipe: { agent: { name: 'agent', formatter: 'anthropic-xml', provider: 'bedrock', systemPrompt: 'You are agent.' } },
+    framework: {
+      getAgent: (name: string) => ({ model: models[name], getContextManager: () => ({ getRenderStats: () => ({}) }) }),
+      previewActivation: async () => ({ system: 'You are sub.', messages, tools }),
+    },
+  };
+  const sent: Array<Record<string, unknown>> = [];
+  const realFetch = globalThis.fetch;
+  const priorModel = process.env.COUNT_TOKENS_MODEL;
+  process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+  globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+    sent.push(JSON.parse(init?.body ?? '{}'));
+    return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
+  }) as unknown as typeof fetch;
+  try {
+    await buildContextMakeup(app as never, 'sub');
+  } finally {
+    globalThis.fetch = realFetch;
+    if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
+    else process.env.COUNT_TOKENS_MODEL = priorModel;
+  }
+  expect(sent).toHaveLength(1);
+  expect(JSON.stringify(sent[0]!.system)).toContain('Read a file from the workspace');
+  expect(JSON.stringify(sent[0]!.messages)).not.toContain('Read a file from the workspace');
 });
