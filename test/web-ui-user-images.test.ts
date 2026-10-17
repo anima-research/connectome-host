@@ -11,7 +11,7 @@ import {
   __getSharedServerPortForTests,
   __resetSharedServerForTests,
 } from '../src/modules/web-ui-module.js';
-import { USER_IMAGE_LIMITS } from '../src/web/protocol.js';
+import { MAX_WS_FRAME_BYTES, USER_IMAGE_LIMITS, frameLimitNote, wsFrameBytes } from '../src/web/protocol.js';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', import.meta.url), 'utf-8')) as Record<string, string>;
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
@@ -53,20 +53,21 @@ async function connect() {
     ws.addEventListener('open', () => { clearTimeout(t); resolve(); });
     ws.addEventListener('error', (e) => { clearTimeout(t); reject(e as unknown as Error); });
   });
-  const until = async <T>(pick: () => T | undefined, what: string): Promise<T> => {
-    for (let i = 0; i < 200; i++) {
+  const until = async <T>(pick: () => T | undefined, what: string, waitMs = 5000): Promise<T> => {
+    const deadline = performance.now() + waitMs;
+    for (;;) {
       const v = pick();
       if (v !== undefined) return v;
+      if (performance.now() >= deadline) throw new Error(`timed out waiting for ${what}`);
       await new Promise((r) => setTimeout(r, 25));
     }
-    throw new Error(`timed out waiting for ${what}`);
   };
   return { ws, frames, until };
 }
 
 /** Send one user message and return what the framework was handed, or the
  *  error frame the host answered with instead. */
-async function send(msg: Record<string, unknown>) {
+async function send(msg: Record<string, unknown>, waitMs?: number) {
   const c = await connect();
   await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
   const before = pushed.length;
@@ -76,6 +77,7 @@ async function send(msg: Record<string, unknown>) {
       : c.frames.find((f) => f.type === 'error') ? { error: String(c.frames.find((f) => f.type === 'error')!.message) }
       : undefined,
     'the message to be pushed or refused',
+    waitMs,
   );
   c.ws.close();
   return result;
@@ -139,9 +141,67 @@ describe('composer images over the WebSocket', () => {
   });
 
   test('a frame over the per-message total still arrives, and is refused by the host, not the socket', async () => {
-    // 15 MB of images: over the 12 MiB total, under Bun's 16 MiB frame limit.
+    // 15 MB of images: over the 12 MiB total, under the host's 16 MiB frame
+    // limit (MAX_WS_FRAME_BYTES, which its server sets).
     const data = atCap();
     const r = await send({ content: '', images: [data, data, data].map((d) => ({ mediaType: 'image/png', data: d })) });
     expect(r.error).toBe('message not sent: the images come to more than 12.6 MB as base64, the most one message carries');
   });
+});
+
+describe("the host's frame limit, which the composer measures against", () => {
+  /** A user message whose frame is exactly `bytes` long, padded with text. */
+  const frameOf = (bytes: number) => {
+    const base = wsFrameBytes({ type: 'user-message', content: '' });
+    return { type: 'user-message' as const, content: 'x'.repeat(bytes - base) };
+  };
+
+  test('wsFrameBytes counts the frame as UTF-8, as the socket carries it', () => {
+    const msg = { type: 'user-message' as const, content: 'héllo — 日本' };
+    expect(wsFrameBytes(msg)).toBe(Buffer.byteLength(JSON.stringify(msg), 'utf8'));
+    expect(wsFrameBytes(msg)).toBeGreaterThan(JSON.stringify(msg).length);
+    expect(wsFrameBytes(frameOf(1000))).toBe(1000);
+  });
+
+  test('frameLimitNote lets a frame at the limit through and says how far over one past it is', () => {
+    expect(frameLimitNote(frameOf(MAX_WS_FRAME_BYTES))).toBeNull();
+    const over = (bytes: number) => frameLimitNote(frameOf(MAX_WS_FRAME_BYTES + bytes))!.replace(/^not sent: this message is (.+) over the 16 MiB one message can carry; shorten the text$/, '$1');
+    expect(over(1)).toBe('1 byte');
+    expect(over(1_023)).toBe('1023 bytes');
+    expect(over(1_024)).toBe('1.0 KiB');
+    expect(over(2_800)).toBe('2.8 KiB');
+    // The unit follows the rounded figure: just under a MiB reads 1.0 MiB.
+    expect(over(1_048_575)).toBe('1.0 MiB');
+    expect(over(1_048_576)).toBe('1.0 MiB');
+    expect(over(3 * 1_048_576 + 56)).toBe('3.1 MiB');
+    expect(over(MAX_WS_FRAME_BYTES)).toBe('16.0 MiB');
+    // Counted as UTF-8: two bytes a character, though the text's length is
+    // under the limit.
+    const accented = { type: 'user-message' as const, content: 'é'.repeat(MAX_WS_FRAME_BYTES / 2) };
+    expect(accented.content.length).toBeLessThan(MAX_WS_FRAME_BYTES);
+    expect(frameLimitNote(accented)).toMatch(/^not sent: this message is \d+ bytes over the 16 MiB/);
+    // Only a message carrying images is told to remove one; a command or a
+    // route carries none.
+    const withImage = { ...frameOf(MAX_WS_FRAME_BYTES + 3 * 1024 * 1024), images: [{ mediaType: 'image/png', data: 'AAAA' }] };
+    expect(frameLimitNote(withImage)).toMatch(/MiB over the 16 MiB one message can carry; shorten the text or remove an image$/);
+    expect(frameLimitNote({ type: 'command', command: '/' + 'x'.repeat(MAX_WS_FRAME_BYTES) })).toMatch(/; shorten the text$/);
+  });
+
+  test('a frame at the limit reaches the framework', async () => {
+    const r = await send({ content: frameOf(MAX_WS_FRAME_BYTES).content }, 18_000);
+    expect(String(r.pushed!.content).length).toBe(frameOf(MAX_WS_FRAME_BYTES).content.length);
+  }, 20_000);
+
+  test('a frame one byte over the limit closes the socket, and nothing is pushed', async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    const before = pushed.length;
+    const closed = new Promise<number>((resolve) => c.ws.addEventListener('close', (ev) => resolve(ev.code)));
+    c.ws.send(JSON.stringify(frameOf(MAX_WS_FRAME_BYTES + 1)));
+    // 1006: the socket closed without a close frame, before the module's
+    // message handler saw the frame.
+    expect(await closed).toBe(1006);
+    expect(pushed.length).toBe(before);
+    expect(c.frames.some((f) => f.type === 'error')).toBe(false);
+  }, 20_000);
 });

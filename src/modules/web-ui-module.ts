@@ -56,6 +56,7 @@ import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
   WEB_PROTOCOL_VERSION,
+  MAX_WS_FRAME_BYTES,
   isClientMessage,
   type WebUiServerMessage,
   type WelcomeMessage,
@@ -475,6 +476,8 @@ export class WebUiModule implements Module {
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
+        // The module's own frame limit, which the SPA measures against.
+        maxPayloadLength: MAX_WS_FRAME_BYTES,
         open: (ws) => this.onWsOpen(ws as ServerWebSocket<WsData>),
         message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<WsData>, msg),
         close: (ws) => this.onWsClose(ws as ServerWebSocket<WsData>),

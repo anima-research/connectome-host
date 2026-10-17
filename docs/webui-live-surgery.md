@@ -74,11 +74,17 @@ older host ignores the field.
 
 Limits (`USER_IMAGE_LIMITS` in `src/web/protocol.ts`): 8 images, 5,000,000
 base64 characters each (3.75 MB, within both the Anthropic API's and
-Bedrock's per-image limit), 12 MiB per message (under Bun's 16 MiB WebSocket
-frame limit), and 8000 px on a side. The browser fits an image to them
-before sending: one that already fits goes byte for byte; one too big, too
-large on a side, or in a format the model APIs don't take (BMP, SVG, …) is
-redrawn smaller as WebP (JPEG where the browser can't write WebP), and its
+Bedrock's per-image limit), 12 MiB of base64 image data per message
+(about 9 MiB of image files), leaving room for its text, and 8000 px on a
+side. A whole message, text and images, travels in one WebSocket frame of
+at most 16 MiB (`MAX_WS_FRAME_BYTES`, the host's
+`maxPayloadLength`). The host closes a socket that sends a larger frame,
+with no refusal, so the composer measures each message's frame first and
+keeps one that's over, with a note, to shorten. The browser fits an image
+to the image limits before sending: one that already fits goes byte for
+byte; one too big, too large on a side, or in a format the model APIs
+don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG where the
+browser can't write WebP), and its
 thumbnail says so. A PNG, JPEG, GIF or WebP that is cut short or damaged is
 refused rather than redrawn, since the browser would draw only what it has.
 The host checks again for every client, telling the format by the bytes (a
