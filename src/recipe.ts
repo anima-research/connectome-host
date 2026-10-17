@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { isBuiltinStrategyType } from './extensions.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
@@ -179,8 +180,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -1636,6 +1635,10 @@ void recipeKeyListsInStep;
 /** Keys that were renamed or removed, with what replaced them. */
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -1666,9 +1669,12 @@ function nearestRecipeKey(key: string, known: readonly string[]): string | null 
 /**
  * The keys a recipe carries that the host never reads — at the top level,
  * under `agent`, `agent.mock` and `modules` — each with what it was probably
- * meant to be. A misspelled key doesn't fail, it just doesn't happen (#167);
- * for now they are warned about, not rejected, so recipes carrying leftovers
- * keep loading (the strict schema is #91's direction).
+ * meant to be, or with what replaced it if it was retired. Under
+ * `agent.strategy`, whose keys are open, only a retired key is named, and
+ * only for a built-in strategy type. A misspelled key doesn't fail, it just
+ * doesn't happen (#167); for now they are warned about, not rejected, so
+ * recipes carrying leftovers keep loading (the strict schema is #91's
+ * direction).
  */
 export function unknownRecipeKeys(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
@@ -1691,6 +1697,21 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  // A strategy's keys are open: an extension strategy's factory gets the whole
+  // strategy config and reads its own keys. So a retired key is named only for
+  // a built-in type, the type buildFrameworkStrategy defaults to included.
+  const strategy = obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)
+    ? (obj.agent as Record<string, unknown>).strategy
+    : undefined;
+  const strategyType = strategy && typeof strategy === 'object' && !Array.isArray(strategy)
+    ? (strategy as Record<string, unknown>).type ?? 'autobiographical'
+    : undefined;
+  if (typeof strategyType === 'string' && isBuiltinStrategyType(strategyType)) {
+    for (const key of Object.keys(strategy as Record<string, unknown>)) {
+      const path = `agent.strategy.${key}`;
+      if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+    }
+  }
   return found;
 }
 
@@ -1722,7 +1743,8 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error('Recipe must have an "agent" object');
   }
 
-  // Nothing below reads an unknown key: say so, and what it was probably meant to be.
+  // Nothing below reads an unknown key: say so, with what it was probably meant
+  // to be or what replaced it.
   const unknownKeys = unknownRecipeKeys(obj);
   if (unknownKeys.length > 0) {
     const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
