@@ -55,6 +55,7 @@ Three structural facts matter:
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
+| `tool_reference` blocks (left by the CLI's deferred-tool loader inside a `tool_result`) | **No** | the API validates each reference against the request's `tools` and returns 400 `Tool reference '…' not found in available tools` for the **whole** request — every turn, not just the first. Replace them with a short `text` block at build time (step 2b below); they sit in `user` turns, so no signed block changes shape |
 
 ## The pipeline
 
@@ -112,6 +113,16 @@ for (const r of chain) {
   if (last && last.role === r.type) { last.content.push(...content); continue; }
   msgs.push({ role: r.type, content, ts: r.timestamp });
 }
+
+// 2b. `tool_reference` blocks (deferred-tool loading) are request-time state too: the API
+//     checks each against `tools` and 400s the whole request. Replace, don't delete, so the
+//     tool_result keeps saying what happened. They only occur inside user-turn content.
+const deref = (x) => Array.isArray(x) ? x.map(deref)
+  : x && typeof x === 'object'
+    ? (x.type === 'tool_reference' ? { type: 'text', text: `[tool loaded: ${x.tool_name}]` }
+       : Object.fromEntries(Object.entries(x).map(([k, v]) => [k, deref(v)])))
+    : x;
+for (const m of msgs) m.content = deref(m.content);
 
 // 3. Invariants the API will enforce later — fail here instead.
 const open = new Set();
@@ -252,7 +263,10 @@ strategy config chunks its frontier under *that* config):
    the compiled output for `unavailable`, `omitted`, `[tool call`. There should be
    none for a fresh seed.
 2. Compare exact `count_tokens` against the estimate. A real/estimate ratio far from
-   ~1.0–1.3 means blocks are missing or doubled.
+   ~1.0–1.3 means blocks are missing or doubled. This call is also the cheapest proof
+   that the API accepts the seed's *shape* (signed thinking, tool pairing, no stray
+   `tool_reference`): a 400 here is the same 400 the first real turn would get, at zero
+   spend — read its body before booting.
 3. Confirm the last message is the seam you intend and the first message is the
    human's.
 
@@ -436,6 +450,7 @@ that's the cheap moment. After first boot it's a store surgery.
 - [ ] Active branch only; `signed == thinking` in the build report
 - [ ] `tool_result` in CM live shape (`toolUseId`, `toolName`, participant `user`)
 - [ ] `cache_control` stripped; no `isMeta` / command echoes / interrupt markers
+- [ ] `tool_reference` blocks replaced with text (the API 400s the whole request otherwise)
 - [ ] Ingest strategy mirrors recipe; `namespace` = `agents/<agent.name>` exactly
 - [ ] Compiled a **copy**: no `unavailable`/`omitted` stubs; real/estimate tokens sane
 - [ ] Store backed up pre-first-boot
