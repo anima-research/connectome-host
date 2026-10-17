@@ -200,6 +200,7 @@ Two ways to install — pick based on whether the user needs released or unrelea
   its postinstall builds the web UI with npm). That postinstall swallows failures, so if
   `dist/web/` is missing afterwards, run `npm run build:web`. Run with
   `bun src/index.ts <recipe> --headless`. Its `README.md` quick-start documents exactly this.
+  Installed from npm instead, the package carries the web UI built.
 - **Local-checkout / dev (what production boxes actually run):** clone **all** the repos above
   as siblings, build bottom-up (`npm install && npm run build` in each, order: `mcpl-core-ts` →
   `membrane`, `chronicle` → `context-manager` → `agent-framework` → the MCP servers;

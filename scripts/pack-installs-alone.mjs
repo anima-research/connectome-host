@@ -1,11 +1,16 @@
-// Packs connectome-host as `npm publish` packs it, installs the tarball
-// alone into an empty directory with its dependencies from the registry, as
-// `npm install @animalabs/connectome-host` does with the npm on PATH, and
-// runs it there under bun. That npm must run a dependency's install scripts,
-// as npm 10 and 11 do, so the postinstall builds the Web UI: npm 12 and bun skip
-// them by default, so their installs have no Web UI, and under npm 12 this
-// check fails at its Web UI step. It checks:
-//   1. the Web UI built: dist/web/index.html is in the installed package;
+// Packs connectome-host as `npm publish` packs it, with the Web UI this tree
+// has built (package.json's `files` lists dist/web), installs the tarball
+// alone into an empty directory with its dependencies from the registry, and
+// runs it there under bun. The install runs no install scripts, as npm 12
+// and bun install by default, so a dependency that needs its install script
+// to work fails here as it would for them. npm 10 and 11 run install
+// scripts: the package's own postinstall builds the Web UI only in a
+// checkout, where web/ is, and no dependency in package-lock.json has one.
+// Build the Web UI first (`npm run build:web:ci`). It checks:
+//   1. the package carries the Web UI, dist/web/index.html and every local
+//      file its quoted src and href attributes name, as vite writes them,
+//      and tsconfig.json, with which a consumer typechecks the TypeScript
+//      source the package ships, as connectome-smoke's published lane does;
 //   2. `bun build` resolves src/index.ts's static imports, and its dynamic
 //      ones with a literal specifier, in the installed tree, on paths a run
 //      doesn't reach too (a recipe extension, loaded by a computed path, isn't
@@ -20,21 +25,27 @@
 // A file missing from the package, or a dependency only devDependencies
 // supplied, then fails here, before the release is published, and not for
 // whoever installs it. The publish workflow runs it in a job of its own,
-// without the publish credential, since install scripts run here; to check
-// by hand, run it from the repository root, for example before
-// `git push --follow-tags`. npm pack packs the working tree, so it warns when
-// that differs from HEAD, where the publish workflow packs a clean checkout.
+// without the publish credential, since building the Web UI runs its
+// dependencies' install scripts, and publishes the Web UI that job built;
+// to check by hand, build the Web UI and run it from the repository root,
+// for example before `git push --follow-tags`. npm pack packs the working
+// tree, so it warns when that differs from HEAD, where the publish workflow
+// packs a clean checkout; prepack's scripts/pack-contents.mjs stops a pack
+// that would carry a file git ignores.
 // A failed install is tried again, three attempts in all,
 // PACK_INSTALLS_ALONE_RETRY_DELAY_MS apart (default 15000), to get past a
 // registry blip; one that runs out of time isn't.
 // PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS and
 // PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS set the install's and the smoke run's
-// limits in milliseconds (defaults 900000 and 120000).
+// limits in milliseconds (defaults 900000 and 120000); npm pack has the
+// install's. A child that outlives its limit is killed, not asked to stop:
+// one that handles SIGTERM, as a dependency's new release could, would keep
+// running past it.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const ENTRY = "src/index.ts";
 const SMOKE_RECIPE = "recipes/mock-test.json";
@@ -66,13 +77,26 @@ function changesFromHead() {
   return status.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
 }
 
+/** The local files a built index.html names in its quoted src and href
+ *  attributes, as vite writes them, as paths under its own directory:
+ *  URLs with a scheme or a host, and anchors, aside. */
+function webAssets(html) {
+  const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"'#?]*)/gi)].map((match) => match[1]);
+  return [...new Set(refs.filter((ref) => ref !== "" && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)).map((ref) => ref.replace(/^\.?\//, "")))];
+}
+
+/** Up to five paths, for a message. */
+function some(paths) {
+  return `${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ", …" : ""}`;
+}
+
 class TimeoutError extends CheckError {}
 
 /** Runs a command, its output going to ours. A failure throws `message`,
  *  and running out of time says that `what` didn't finish. */
 function run(file, args, options, what, message) {
   try {
-    execFileSync(file, args, { stdio: ["ignore", "inherit", "inherit"], ...options });
+    execFileSync(file, args, { stdio: ["ignore", "inherit", "inherit"], killSignal: "SIGKILL", ...options });
   } catch (error) {
     if (error?.code === "ENOENT") throw new CheckError(`couldn't run ${file}: it isn't on PATH.`);
     if (error?.code === "ETIMEDOUT") throw new TimeoutError(`${what} didn't finish within ${options.timeout / 1000} s.`);
@@ -88,9 +112,14 @@ function main() {
   if (changed.length > 0) {
     console.error(
       `pack-installs-alone: warning: the working tree differs from HEAD in ${changed.length} ` +
-        `${changed.length === 1 ? "path" : "paths"} (${changed.slice(0, 5).join(", ")}${changed.length > 5 ? ", …" : ""}). ` +
+        `${changed.length === 1 ? "path" : "paths"} (${some(changed)}). ` +
         "npm pack packs the working tree, so this run checks whichever of them the package includes, where the " +
         "publish workflow packs a clean checkout.",
+    );
+  }
+  if (!existsSync(WEB_UI)) {
+    throw new CheckError(
+      `${WEB_UI} isn't in this tree: build the Web UI first (npm run build:web:ci), since the package carries it built.`,
     );
   }
   let npmVersion;
@@ -110,10 +139,13 @@ function main() {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "inherit"],
         maxBuffer: MAX_BUFFER,
+        timeout: installTimeoutMs,
+        killSignal: "SIGKILL",
       });
     } catch (error) {
       if (error?.code === "ENOENT") throw new CheckError("couldn't run npm: it isn't on PATH.");
       process.stderr.write(error?.stdout ?? out);
+      if (error?.code === "ETIMEDOUT") throw new CheckError(`npm pack didn't finish within ${installTimeoutMs / 1000} s.`);
       throw new CheckError("npm pack failed (its output is above).");
     }
     // npm 11 prints an array of records, npm 12 an object keyed by name.
@@ -124,11 +156,12 @@ function main() {
     } catch {
       records = [];
     }
-    if (records.length !== 1 || typeof records[0]?.filename !== "string") {
+    if (records.length !== 1 || typeof records[0]?.filename !== "string" || !Array.isArray(records[0]?.files)) {
       process.stderr.write(out);
-      throw new CheckError("npm pack --json didn't print one record with a filename (its output is above).");
+      throw new CheckError("npm pack --json didn't print one record with a filename and its files (its output is above).");
     }
     const packed = records[0];
+    const files = packed.files.map((file) => file.path);
     const tarball = join(work, packed.filename);
     const dir = join(work, "install");
     mkdirSync(dir);
@@ -137,10 +170,7 @@ function main() {
       try {
         run(
           "npm",
-          // In the foreground, so the postinstall's warning reaches this
-          // check's output: a Web UI build that fails warns and exits 0, and
-          // npm 10 doesn't show a script's output when it exits 0.
-          ["install", "--no-audit", "--no-fund", "--no-package-lock", "--foreground-scripts", tarball],
+          ["install", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts", tarball],
           { cwd: dir, timeout: installTimeoutMs },
           `the install of ${packed.filename}`,
           `${packed.filename} didn't install on its own into an empty directory, in ${INSTALL_ATTEMPTS} attempts ` +
@@ -162,9 +192,23 @@ function main() {
 
     if (!existsSync(join(installed, WEB_UI))) {
       throw new CheckError(
-        `the installed ${packed.filename} has no ${WEB_UI}: its postinstall didn't build the Web UI (its warning, if any, ` +
-          "is above). web/ left out of the package does that, a Web UI build that fails, or an npm that skips a " +
-          `dependency's install scripts, as npm 12 does by default (this is npm ${npmVersion}).`,
+        `the installed ${packed.filename} has no ${WEB_UI}, though this tree has it: package.json's files must list ` +
+          `${dirname(WEB_UI)}, so that npm 12 and bun installs, which run no install scripts, get the Web UI.`,
+      );
+    }
+    const unshipped = webAssets(readFileSync(join(installed, WEB_UI), "utf8")).filter(
+      (asset) => !existsSync(join(installed, dirname(WEB_UI), asset)),
+    );
+    if (unshipped.length > 0) {
+      throw new CheckError(
+        `the installed ${packed.filename}'s ${WEB_UI} names ${some(unshipped)}, which ${unshipped.length === 1 ? "isn't" : "aren't"} ` +
+          `in the package: package.json's files must list all of ${dirname(WEB_UI)}, or the Web UI is a blank page.`,
+      );
+    }
+    if (!existsSync(join(installed, "tsconfig.json"))) {
+      throw new CheckError(
+        `the installed ${packed.filename} has no tsconfig.json: package.json's files must list it, since the package ships ` +
+          "its TypeScript source and a consumer typechecks that with it, as connectome-smoke's published lane does.",
       );
     }
 
@@ -209,6 +253,7 @@ function main() {
       input: `${SMOKE_MESSAGE}\n`,
       encoding: "utf8",
       timeout: smokeTimeoutMs,
+      killSignal: "SIGKILL",
       maxBuffer: MAX_BUFFER,
       env: { ...process.env, DATA_DIR: join(work, "data") },
     });
@@ -234,9 +279,9 @@ function main() {
       );
     }
     console.log(
-      `${packed.filename} (${packed.entryCount} files) installs on its own with npm ${npmVersion}; the Web UI built, ` +
-        `${ENTRY}'s imports resolve${native ? `, ${NATIVE} loads` : ""}, and the ` +
-        "offline smoke run answered.",
+      `${packed.filename} (${files.length} files) installs on its own with npm ${npmVersion}, running no install ` +
+        `scripts; it carries the Web UI and tsconfig.json, ${ENTRY}'s imports resolve` +
+        `${native ? `, ${NATIVE} loads` : ""}, and the offline smoke run answered.`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });

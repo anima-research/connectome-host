@@ -151,7 +151,7 @@ export interface WebUiModuleConfig {
    * literal credentials to a recipe.
    */
   basicAuth?: { username: string; password: string };
-  /** Path to the SPA build output. Default: `<cwd>/dist/web`. */
+  /** Path to the SPA build output. Default: this package's own `dist/web`. */
   staticDir?: string;
   /**
    * Origin allowlist for the WebSocket upgrade. Browsers do not enforce
@@ -228,6 +228,11 @@ interface ClientState {
 
 /** Default port — picked to be memorable and unlikely to collide. */
 const DEFAULT_PORT = 7340;
+
+/** What to do about a missing bundle: a checkout builds it, and the npm
+ *  package carries it built, without the web/ sources to build it from. */
+const BUNDLE_REMEDY =
+  'In a checkout, run `npm run build:web` (the postinstall runs it); an installed package carries it built, so reinstall the package.';
 
 /** HTTP route → panel op, for ?scope=<child> proxying. /curve (the HTML
  *  page) is deliberately absent: it is served locally and its own fetch of
@@ -510,12 +515,12 @@ export class WebUiModule implements Module {
     sharedServer = state;
     // A missing bundle otherwise shows at run time only as a 503 to whoever
     // opens the page. Say it once, where the operator starting the host
-    // looks. This also covers a skipped postinstall (e.g. `--ignore-scripts`),
-    // which can't report anything itself.
+    // looks. This also covers a checkout's skipped postinstall (e.g.
+    // `--ignore-scripts`), which can't report anything itself.
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it is built. ` +
-        `Run \`npm run build:web\` (or postinstall) to produce it.`,
+        BUNDLE_REMEDY,
       );
     }
 
@@ -1500,7 +1505,7 @@ export class WebUiModule implements Module {
         return new Response(data, { headers: { 'content-type': 'text/html', 'cache-control': cacheControlFor(indexPath) } });
       } catch {
         return new Response(
-          `WebUI bundle not found at ${sharedServer!.staticRoot}. Run \`npm run build:web\` (or postinstall) to produce it.`,
+          `WebUI bundle not found at ${sharedServer!.staticRoot}. ${BUNDLE_REMEDY}`,
           { status: 503, headers: { 'content-type': 'text/plain' } },
         );
       }

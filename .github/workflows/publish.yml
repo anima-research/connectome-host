@@ -45,11 +45,13 @@ jobs:
         with:
           bun-version: 1.4.3
 
-      # --ignore-scripts, as in ci.yml: the root postinstall's non-strict
+      # npm ci, as in ci.yml: a tag doesn't wait for CI, and npm ci installs
+      # what package-lock.json pins, where `npm install` would re-resolve it.
+      # --ignore-scripts, as in ci.yml too: the root postinstall's non-strict
       # `npm --prefix web install` would heal a broken web/package-lock.json
       # on disk before the strict step below reads it.
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build web assets
         run: npm run build:web:ci
@@ -57,20 +59,24 @@ jobs:
       - name: Test
         run: npm test
 
-  # The tarball npm publish makes from this tree, installed alone into an
-  # empty directory with its dependencies from npm, install scripts
-  # included, then run there (see scripts/pack-installs-alone.mjs): the Web
-  # UI builds, src/index.ts's static and literal dynamic imports resolve
-  # (computed ones, such as recipe extensions, aside), @opentui/core loads,
-  # and a smoke run of the README's offline recipe answers, with the Web UI
-  # off and a queued reply. It certifies the install of node 24's npm, which
-  # runs a dependency's install scripts; npm 12 and bun skip them by
-  # default. A job of its own, so the install scripts it runs never see the
+  # Builds the Web UI, then checks the tarball npm publish makes from this
+  # tree with it, installed alone into an empty directory with its
+  # dependencies from npm and no install scripts run, as npm 12 and bun
+  # install, then run there (see scripts/pack-installs-alone.mjs): the
+  # package carries the Web UI, src/index.ts's static and literal dynamic
+  # imports resolve (computed ones, such as recipe extensions, aside),
+  # @opentui/core loads, and a smoke run of the README's offline recipe
+  # answers, with the Web UI off and a queued reply. Then it hands the Web
+  # UI it checked to the publish job, which packs it with the tree. A job of
+  # its own, so the install scripts the Web UI's build runs never see the
   # publish job's id-token; publish needs it, the GitHub release notes
   # don't. It runs on a dispatch from a branch too, which publishes nothing.
+  # Its limit is above the script's own, which add up to 73 minutes at
+  # most, so a hang outside them ends here, not at GitHub's 6 hours.
   pack-check:
     name: Packed release installs on its own
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -90,8 +96,24 @@ jobs:
         with:
           bun-version: 1.4.3
 
+      # The Web UI's dependencies from web/package-lock.json, their install
+      # scripts included, then its build into dist/web.
+      - name: Build web assets
+        run: npm run build:web:ci
+
       - name: Packed release installs on its own
         run: node scripts/pack-installs-alone.mjs
+
+      # Every file of it, dotfiles too, as npm packed it, and replacing the
+      # one an earlier attempt of this run uploaded, so a re-run can upload.
+      - name: Hand the checked Web UI to publish
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-ui
+          path: dist/web
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
 
   publish:
     name: Publish to npm
@@ -130,14 +152,17 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # --ignore-scripts, as in ci.yml: the root postinstall's non-strict
-      # `npm --prefix web install` would heal a broken web/package-lock.json
-      # on disk before the strict step below reads it.
-      - name: Install dependencies
-        run: npm install --ignore-scripts
-
-      - name: Build web assets
-        run: npm run build:web:ci
+      # The Web UI this run's pack-check job built and checked, which
+      # package.json's files packs with the tree. Nothing is installed or
+      # built here, so no dependency's install script runs where the
+      # id-token is. prepublishOnly checks the release holds, and prepack,
+      # which needs only node and git, refuses a tree without the Web UI or
+      # one that would pack a file git ignores.
+      - name: Take the checked Web UI
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-ui
+          path: dist/web
 
       - name: Publish
         run: npm publish --access public --provenance

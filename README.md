@@ -574,6 +574,11 @@ are one free-form curated document, always present verbatim.
 bun install      # or npm install; the postinstall step builds the web UI
 ```
 
+Installed from npm instead (`npm install @animalabs/connectome-host`), the
+package carries the web UI already built. npm 12 and bun may report its
+`postinstall` as blocked: it builds the web UI only in a checkout, so nothing
+is lost.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -649,8 +654,9 @@ or supply credentials for a remote deployment:
 "modules": { "webui": { "basicAuth": { "username": "${WEBUI_USERNAME}", "password": "${WEBUI_PASSWORD}" } } }
 ```
 
-Build the SPA bundle once with `bun run build:web` (also runs on install via
-postinstall). Deployment behind a reverse proxy, observer access and all
+In a checkout, build the SPA bundle once with `bun run build:web` (also runs
+on install via postinstall); the npm package carries it built. Deployment
+behind a reverse proxy, observer access and all
 endpoints are covered in [`docs/webui-deployment.md`](docs/webui-deployment.md).
 
 - Chat with full interiority: thinking blocks, tool calls + results, live streaming, inline images

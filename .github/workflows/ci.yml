@@ -76,19 +76,23 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: npm test
 
-  # The release as npm would pack it, installed on its own and run, as the
-  # publish workflow checks before it publishes (see
-  # scripts/pack-installs-alone.mjs): a change that leaves a file out of the
-  # package, or imports what only devDependencies supply, fails before it
-  # merges, not after a tag and its release notes are out. Its own job,
-  # with contents: read only, since the install runs install scripts. That
-  # install resolves dependencies from the registry as it stands, not from
-  # this branch's lockfile, so a new upstream release can turn it red on a
-  # change that touched nothing it installs: when it fails, rerunning it on
-  # main tells a change's own break from the registry's drift.
+  # The release as npm would pack it, the Web UI built into it, installed on
+  # its own and run, as the publish workflow checks before it publishes
+  # (see scripts/pack-installs-alone.mjs): a change that leaves a file out of
+  # the package, or imports what only devDependencies supply, fails before
+  # it merges, not after a tag and its release notes are out. Its own job,
+  # with contents: read only, since the Web UI's build runs its
+  # dependencies' install scripts. The install resolves dependencies from
+  # the registry as it stands, not from this branch's lockfile, so a new
+  # upstream release can turn it red on a change that touched nothing it
+  # installs: when it fails, rerunning it on main tells a change's own break
+  # from the registry's drift. Its limit is above the script's own, which
+  # add up to 73 minutes at most, so a hang outside them ends here, not at
+  # GitHub's 6 hours.
   pack-check:
     name: Packed release installs on its own
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -105,6 +109,9 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.3
+
+      - name: Build web assets
+        run: npm run build:web:ci
 
       - name: Packed release installs on its own
         run: node scripts/pack-installs-alone.mjs

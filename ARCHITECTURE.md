@@ -393,7 +393,8 @@ Claude Code transcripts are ingested by the procedure in
 ## Runtime and dependencies
 
 - **Bun** runs the host (OpenTUI's native core requires it; Bun also loads
-  `.env`). **Node/npm** builds the WebUI (`postinstall` / `bun run build:web`).
+  `.env`). **Node/npm** builds the WebUI in a checkout (`postinstall` /
+  `bun run build:web`); the npm package carries it built.
 - `@animalabs/agent-framework`, `context-manager`, `membrane` and
   `chronicle` come from npm; chronicle ships prebuilt native binaries, so no
   Rust toolchain is needed unless you build it from source. For working on the

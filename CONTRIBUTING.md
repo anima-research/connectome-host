@@ -139,22 +139,33 @@ never do.
   `Unreleased` above, and refuses to release when there is nothing to
   release; npm then commits and tags. `git push --follow-tags` triggers the
   publish workflow, which refuses a tag with no matching changelog section,
-  checks in a job of its own that the packed release installs and runs on
-  its own (`node scripts/pack-installs-alone.mjs`: npm installs the tarball
-  alone into an empty directory, install scripts included, so the Web UI
-  builds; bun resolves `src/index.ts`'s static imports there, and its
-  dynamic ones with a literal specifier, though not a recipe extension's,
-  which load by a computed path, and loads `@opentui/core`; and the offline
-  mock-recipe smoke run answers; CI runs it
-  on pull requests too, and by hand it runs from the repository root, for
-  example before `git push --follow-tags`, warning when the working tree
-  differs from `HEAD`, since npm packs the working tree), publishes
-  `@animalabs/connectome-host` to npm once that check has passed, and
-  creates the GitHub release with that section as its notes. The check
-  stands for the npm it runs, node 24's npm 11, which runs a dependency's
-  install scripts: npm 12 and bun skip them by default, so the Web UI
-  isn't built in their installs. When the check fails on a tag, the notes
-  are out and npm isn't. Re-run the failed jobs first: a registry or
+  builds the Web UI and checks in a job of its own that the packed release,
+  which carries it in `dist/web`, installs and runs on its own
+  (`node scripts/pack-installs-alone.mjs`: the package carries the Web UI
+  and `tsconfig.json`, which consumers typecheck its source with; npm
+  installs the tarball alone into an empty directory and runs no install
+  scripts, as npm 12 and bun install by default; bun resolves
+  `src/index.ts`'s static imports there, and its dynamic ones with a
+  literal specifier, though not a recipe extension's, which load by a
+  computed path, and loads `@opentui/core`; and the offline mock-recipe
+  smoke run answers; CI runs it on pull requests
+  too, and by hand it runs from the repository root after
+  `npm run build:web:ci`, for example before `git push --follow-tags`,
+  warning when the working tree differs from `HEAD`, since npm packs the
+  working tree), publishes
+  `@animalabs/connectome-host` to npm with the Web UI that check built once
+  it has passed, and creates the GitHub release with that section as its
+  notes. Nothing is installed or built in the publish job, which can mint
+  the publish credential. `prepack` refuses to pack a tree without the
+  built Web UI, or a pack that would carry a file git ignores outside it,
+  such as a local recipe in `recipes/`, so `npm pack` and `npm publish`,
+  and bun's, stop there, in the publish job and by hand alike, unless
+  scripts are off (`--ignore-scripts`, which skips the release holds
+  too). The
+  root `postinstall` builds the Web UI only in a checkout, where `web/` is:
+  the package doesn't ship `web/`, so on a registry install it does
+  nothing. When the check fails on a tag, the
+  notes are out and npm isn't. Re-run the failed jobs first: a registry or
   network blip, or a timeout, passes then. If it fails the same way again,
   fix the break, which can be a dependency's new release, and release the
   next patch. The two release jobs are independent: some

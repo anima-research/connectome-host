@@ -48,14 +48,17 @@ describe('WebUiModule with a missing bundle', () => {
     const warnings = await startCapturingWarnings(root);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(`bundle not found at ${root}`);
-    expect(warnings[0]).toContain('npm run build:web');
+    expect(warnings[0]).toContain('In a checkout, run `npm run build:web`');
+    expect(warnings[0]).toContain('an installed package carries it built, so reinstall the package');
 
     // The server is a process singleton: a later start reuses it and says nothing more.
     expect(await startCapturingWarnings(root)).toHaveLength(0);
 
     const res = await fetch(`http://127.0.0.1:${__getSharedServerPortForTests()}/`);
     expect(res.status).toBe(503);
-    expect(await res.text()).toContain('npm run build:web');
+    const body = await res.text();
+    expect(body).toContain('In a checkout, run `npm run build:web`');
+    expect(body).toContain('so reinstall the package');
   });
 
   test('says nothing when the bundle is there', async () => {
