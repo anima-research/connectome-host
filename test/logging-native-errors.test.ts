@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AnthropicAdapter, BedrockAdapter, MembraneError } from '@animalabs/membrane';
+import { AnthropicAdapter, BedrockAdapter, MembraneError, cacheLineageKey } from '@animalabs/membrane';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import { LoggingBedrockAdapter } from '../src/logging-bedrock-adapter.js';
@@ -334,7 +334,10 @@ describe('the Anthropic and Bedrock writers\' error records', () => {
       restores.push(() => { proto.complete = complete; proto.stream = stream; });
       await expect(call(kind)).resolves.toBe(response);
       const [record] = records(log);
-      expect(record!.requestSummary).toEqual({ model: 'claude-opus-4-6', maxTokens: 16, messages: 0, tools: 0 });
+      // The lineage reads only the model, system and tools, so it's named still.
+      expect(record!.requestSummary).toEqual({
+        model: 'claude-opus-4-6', maxTokens: 16, messages: 0, tools: 0, lineage: cacheLineageKey({ model: 'claude-opus-4-6' }),
+      });
       expect(calls).toHaveLength(1);
       expect(calls[0]!.cacheBreakpoints).toBeUndefined();
       const { live, restored } = ledgerRows(dir, calls);

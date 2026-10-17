@@ -18,6 +18,7 @@
 
 import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
+import { callOriginLabel, callOriginTone } from './call-origin';
 import { healthEntry } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 
@@ -297,14 +298,13 @@ function CallStats(props: { rows: LedgerRow[] }) {
           <tbody>
             <For each={recent()}>
               {(r) => {
-                const main = r.originEstimate === 'turn~';
                 return (
                   <tr class={`border-b border-neutral-900 ${
                     r.error || r.stopReason === 'refusal' ? 'bg-red-950/30' : ''
                   }`}>
                     <td class="pr-2 text-neutral-500">{clock(r.timestamp)}</td>
-                    <td class={`pr-2 ${main ? 'text-cyan-400' : 'text-orange-400'}`}>
-                      {main ? 'turn' : 'compr'}
+                    <td class={`pr-2 ${callOriginTone(r.originEstimate)}`}>
+                      {callOriginLabel(r.originEstimate)}
                     </td>
                     <td class="pr-2 text-right text-neutral-400">{r.messages}</td>
                     <td class="pr-2 text-right text-neutral-100">{n0(r.tokens.input)}</td>
@@ -335,10 +335,12 @@ function CallStats(props: { rows: LedgerRow[] }) {
         </table>
       </div>
       <div class="text-[9px] text-neutral-600 mt-1 leading-relaxed">
-        <span class="text-cyan-400">turn</span> = main inference,
-        <span class="text-orange-400"> compr</span> = compression/summarizer — inferred from
+        <span class={callOriginTone('turn~')}>{callOriginLabel('turn~')}</span> = main inference,
+        <span class={callOriginTone('aux~')}> {callOriginLabel('aux~')}</span> = compression/summarizer — inferred from
         stream-vs-complete, not a definitive tag (hence <span class="font-mono">~</span> upstream).
         One turn may appear as a turn row plus several compr rows.
+        <span class={callOriginTone('keepalive')}> {callOriginLabel('keepalive')}</span> = a cache keepalive poke, which replays a lineage's
+        last request while the agent is idle; exact, from its receipt.
         <span class="font-mono"> fresh</span> = tokens billed as new input;
         <span class="font-mono"> cached</span> = read from cache;
         <span class="font-mono"> %c</span> = cached ÷ (fresh+cached);

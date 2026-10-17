@@ -31,7 +31,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { CredentialMonitor } from './credential-state.js';
 import { AnthropicOAuthCredentials } from './anthropic-credentials.js';
@@ -1313,7 +1313,7 @@ async function main() {
     : null;
   credentialsRef = credentials;
   if (credentials && (adapter instanceof LoggingAnthropicAdapter || adapter instanceof LoggingProviderAdapter)) {
-    adapter.onProviderError = (error) => credentials.observeError(error);
+    adapter.onProviderError = (error: unknown) => credentials.observeError(error);
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
@@ -1368,13 +1368,8 @@ async function main() {
       const fw = app.framework as unknown as {
         notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
       };
-      fw.notifyOpsAlert?.(
-        'refusal-offpath',
-        app.agentName,
-        `off-path refusal (category=${info.category ?? 'unknown'}) on a ${info.messages}-message ` +
-          `complete() call (~${Math.round(info.inputTokens / 1000)}k tok) — likely compression/summarizer`,
-        { ...info },
-      );
+      const alert = offPathRefusalAlert(info);
+      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
     };
   }
 

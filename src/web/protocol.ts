@@ -199,10 +199,10 @@ export type CallLedgerVerdict =
 export interface CallLedgerRow {
   id: string;
   timestamp: string;
-  kind: 'complete' | 'stream';
+  kind: 'complete' | 'stream' | 'keepalive';
   /** Honest call-class estimate; `~` means the trigger plumbing did not
-   *  provide a definitive origin. */
-  originEstimate: 'turn~' | 'aux~';
+   *  provide a definitive origin. Keepalive receipts identify their origin exactly. */
+  originEstimate: 'turn~' | 'aux~' | 'keepalive';
   model: string;
   messages: number;
   durationMs: number;

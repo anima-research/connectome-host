@@ -387,12 +387,15 @@ describe('the shapes', () => {
       line('2026-10-11T23:10:00.000Z', { type: 'call' }),
       line('2026-10-11T23:20:00.000Z', { type: 'error', provider: 'bedrock', httpStatus: 429, errorType: 'rate_limit', retryable: true, providerErrorCode: 'ThrottlingException' }),
       line('2026-10-11T23:30:00.000Z', { type: 'error', httpStatus: 9999, errorType: 'made-up', providerErrorCode: 'whatever the provider said' }),
+      // A cache keepalive poke the provider rejected.
+      line('2026-10-11T23:35:00.000Z', { type: 'error', kind: 'keepalive', httpStatus: 400 }),
       'not json',
       JSON.stringify({ type: 'error', timestamp: 'yesterday' }),
     ], NOW);
-    expect(summary.calls).toBe(3);
-    expect(summary.failed).toBe(2);
+    expect(summary.calls).toBe(4);
+    expect(summary.failed).toBe(3);
     expect(summary.recent).toEqual([
+      { at: '2026-10-11T23:35:00Z', kind: 'keepalive', provider: null, status: 400, type: null, retryable: null, code: null },
       { at: '2026-10-11T23:30:00Z', kind: 'complete', provider: null, status: null, type: null, retryable: null, code: 'other' },
       { at: '2026-10-11T23:20:00Z', kind: 'complete', provider: 'bedrock', status: 429, type: 'rate_limit', retryable: true, code: 'ThrottlingException' },
     ]);
