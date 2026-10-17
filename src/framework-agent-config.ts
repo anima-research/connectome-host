@@ -83,6 +83,7 @@ export function buildFrameworkAgentConfig(
   }
   return {
     name: agentName,
+    ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
     systemPrompt: recipe.agent.systemPrompt,
     ...(recipe.agent.allowedTools !== undefined
