@@ -33,12 +33,14 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
         calls.n++;
         // Absence is decided at call time, like a real dial; a held post then
         // fails or succeeds according to the state when it was sent.
-        const server = channelId.slice(0, channelId.indexOf(':'));
+        // String(): a malformed push's channel reaches here as whatever it was.
+        const id = String(channelId);
+        const server = id.slice(0, id.indexOf(':'));
         const absent = broken.has(server);
         const hold = holds.get(channelId);
         if (hold) { holds.delete(channelId); await hold; }
         if (absent) return { success: false, error: `Server not found: ${server}` };
-        if (channelId.includes('grantless')) return { success: false, error: 'channels.publish not in grant' };
+        if (id.includes('grantless')) return { success: false, error: 'channels.publish not in grant' };
         posts.push({ channelId, text, agentName });
         return { success: true };
       },
@@ -224,6 +226,71 @@ describe('reactive replies', () => {
     h.alert('auth-expiring', 'expires in 20 min');
     await h.incoming('zulip:ops');
     expect(h.posts.length).toBe(1);
+  });
+});
+
+describe('addressed push events', () => {
+  // A person's mention in a closed channel, or a first DM, reaches the host as
+  // an `mcpl:push-event`, with the framework's expanded tags.
+  const push = (h: { module: NoticesModule }, origin: Record<string, unknown> | undefined, tags = ['chat:mention', 'chat:from-human', 'chat:addressed']) =>
+    h.module.onProcess({
+      type: 'mcpl:push-event', serverId: 'srv', featureSet: 'chat', eventId: 'e1',
+      content: [{ type: 'text', text: 'hello?' }], origin, tags,
+    } as never, {} as never);
+
+  test('a person writing in a closed channel is told once per episode, as incoming traffic is, and hears the clear', async () => {
+    const h = await started();
+    h.alert('hard-down', '3 consecutive inference failures');
+    await push(h, { source: 'zulip', mcplChannelId: 'zulip:general', stream: 'general', topic: 'standup', isMention: true });
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:general']);
+    await push(h, { source: 'zulip', mcplChannelId: 'zulip:general', isMention: true });
+    await h.incoming('zulip:general');
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:general']);
+    expect(h.posts[0]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down', message: '' }));
+    h.alert('hard-down-clear', 'inference ok');
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'hard-down', message: '' }), replyClearText('clerk')]);
+  });
+
+  test("a push that isn't a person's message addressed to the agent, or names no channel, and an event that isn't a push, are told nothing", async () => {
+    const h = await started();
+    h.alert('hard-down', 'down');
+    const general = { source: 'zulip', mcplChannelId: 'zulip:general' };
+    await push(h, general, ['chat:ambient', 'chat:from-human']);
+    // zulip_mcp's catch-up summary of missed messages holding a mention, its
+    // marker for an edited message that mentioned the agent, and a bot's
+    // mention: none of them is a person writing now.
+    await push(h, { ...general, missed: true }, ['zulip:missed', 'chat:mention', 'chat:addressed']);
+    await push(h, { ...general, change: 'edit' }, ['chat:edited', 'chat:mention', 'chat:addressed']);
+    await push(h, { ...general, isMention: true }, ['chat:mention', 'chat:from-bot', 'chat:addressed']);
+    await push(h, undefined);
+    await push(h, { source: 'heartbeat', silent: true });
+    await push(h, { source: 'zulip', mcplChannelId: '' });
+    await push(h, { source: 'zulip', mcplChannelId: 42 });
+    await h.module.onProcess({
+      type: 'mcpl:push-event', serverId: 'srv', featureSet: 'chat', eventId: 'e2',
+      content: [{ type: 'text', text: 'no tags' }], origin: general,
+    } as never, {} as never);
+    // A person's tags and a channel on an event that isn't a push.
+    await h.module.onProcess({
+      type: 'external-message', source: 'zulip', content: 'hello?', metadata: {},
+      origin: general, tags: ['chat:mention', 'chat:from-human', 'chat:addressed'],
+    } as never, {} as never);
+    expect(h.posts).toEqual([]);
+    // None of them reaches the publisher, whatever it would do with the value.
+    expect(h.calls.n).toBe(0);
+    // The episode is on: incoming traffic in the same channel is told.
+    await h.incoming('zulip:general');
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:general']);
+  });
+
+  test('reply.in decides which pushes are answered', async () => {
+    const h = await started({ replyIn: ['zulip:*'] });
+    h.alert('hard-down', 'down');
+    await push(h, { source: 'discord', mcplChannelId: 'discord:dm:111', isDM: true }, ['chat:dm', 'chat:from-human', 'chat:addressed']);
+    expect(h.posts).toEqual([]);
+    await push(h, { source: 'zulip', mcplChannelId: 'zulip:dev', isMention: true });
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
   });
 });
 
