@@ -91,7 +91,7 @@ export interface WelcomeMessage {
   /**
    * Optional host capabilities the SPA feature-detects before showing an
    * affordance: 'rollback' | 'suppress' | 'quiesce' | 'media' |
-   * 'operator-log'. Absent on older hosts (nothing shown).
+   * 'operator-log' | 'user-images'. Absent on older hosts (nothing shown).
    */
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
@@ -753,7 +753,39 @@ export interface ObserverAckMessage {
 export interface UserMessageMessage {
   type: 'user-message';
   content: string;
+  /** Images attached in the composer. Only sent to a host that advertises
+   *  the 'user-images' feature: an older host ignores the field, and the
+   *  images would be dropped without a word. */
+  images?: UserMessageImage[];
+  /** Echoed on the `error` that refuses the message, so the client can
+   *  take back the row it showed for it. */
+  corrId?: string;
 }
+
+/** One composer image: raw base64 (no `data:` prefix) and the type the
+ *  browser gave it. The host goes by the bytes, not the declared type. */
+export interface UserMessageImage {
+  mediaType: string;
+  data: string;
+}
+
+/**
+ * Limits on composer images. The SPA fits images to them before sending, and
+ * the host checks them again (`userImageBlocks`), because an image the model
+ * API refuses would fail every later inference on this branch, not just one.
+ *
+ * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
+ *   both the Anthropic API's 5 MB base64 limit and Bedrock's 3.75 MB.
+ * - `maxTotalBase64Chars`: keeps the whole frame under Bun's default 16 MiB
+ *   WebSocket payload limit, which drops the connection rather than erroring.
+ * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
+ */
+export const USER_IMAGE_LIMITS = {
+  maxCount: 8,
+  maxBase64Chars: 5_000_000,
+  maxTotalBase64Chars: 12 * 1024 * 1024,
+  maxSidePx: 8000,
+} as const;
 
 /** Slash command. Server runs `handleCommand()` and replies with a
  *  `command-result` carrying the same `corrId`. */
@@ -1190,7 +1222,12 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'request-mcpl':
       return isOptionalScope(v.scope);
     case 'user-message':
-      return typeof v.content === 'string';
+      return typeof v.content === 'string'
+        && (v.corrId === undefined || typeof v.corrId === 'string')
+        && (v.images === undefined || (Array.isArray(v.images) && v.images.every((img) => {
+          const i = img as Record<string, unknown> | null;
+          return !!i && typeof i === 'object' && typeof i.mediaType === 'string' && typeof i.data === 'string';
+        })));
     case 'observer-hello': {
       const id = v.identity as Record<string, unknown> | undefined;
       return !!id && id.scheme === 'ed25519'
