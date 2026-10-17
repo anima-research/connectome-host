@@ -661,6 +661,18 @@ export interface RecipeWorkspaceMount {
   /** Maximum file size in bytes (defaults to the framework's 5 MiB limit). */
   maxFileSize?: number;
   /**
+   * Storage backend (default: 'direct').
+   * - 'direct': the workspace tools read and write the directory itself. No
+   *   Chronicle tree state, nothing to materialize or sync, no second copy
+   *   that can drift behind shell-side edits. Edits are not branch-scoped
+   *   or undoable. Right for almost every mount.
+   * - 'chronicle': files live in a Chronicle tree; disk is a projection kept
+   *   current by `materialize`/`sync` (or `autoMaterialize`). Edits follow
+   *   the conversation's branches and undo. Choose it only when that history
+   *   is needed.
+   */
+  backend?: 'chronicle' | 'direct';
+  /**
    * Request inference when files in this mount change. Pair with
    * `watch: 'always'` so chokidar actually observes the mount.
    * - `true` — any of created | modified | deleted
@@ -717,14 +729,13 @@ export interface RecipeModules {
    * named by the path is cross-checked at load time in every configuration
    * (explicit mounts and the implicit "input"+"products" default alike), so
    * a path naming a nonexistent mount is a load error, never a silent
-   * no-injection. A read-write instructions mount must also set
-   * `autoMaterialize: true`: workspace writes are Chronicle-first and the
-   * injection reads disk, so without materialization an agent's own
-   * curation edits would never reach the injection. A read-only mount is
-   * the alternative when the file is maintained outside the agent (edits
-   * then propagate to the injection but not to `workspace--read`, which
-   * serves Chronicle). A missing FILE remains fail-open at runtime: no
-   * injection, warn once.
+   * no-injection. A read-write instructions mount on the chronicle backend
+   * must also set `autoMaterialize: true`: chronicle writes are store-first
+   * and the injection reads disk, so without materialization an agent's own
+   * curation edits would never reach the injection. A direct-backend mount
+   * (the default) writes disk directly and needs nothing more. A read-only
+   * mount is the alternative when the file is maintained outside the agent.
+   * A missing FILE remains fail-open at runtime: no injection, warn once.
    *
    * Cache economics: with position 'system' the injected block sits in the
    * prompt-cache prefix of every agent, so each EDIT to the file is a
@@ -2448,14 +2459,15 @@ export function validateRecipe(raw: unknown): Recipe {
             `instructions mount instead.`,
           );
         }
-        if (match.mode !== 'read-only' && match.autoMaterialize !== true) {
+        const chronicleBacked = (match.backend ?? 'direct') === 'chronicle';
+        if (match.mode !== 'read-only' && chronicleBacked && match.autoMaterialize !== true) {
           throw new Error(
-            `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write mount ` +
-            `${JSON.stringify(mountName)} without autoMaterialize. Workspace writes are ` +
-            `Chronicle-first and reach disk only when the mount materializes, while the ` +
+            `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write chronicle mount ` +
+            `${JSON.stringify(mountName)} without autoMaterialize. Chronicle writes are ` +
+            `store-first and reach disk only when the mount materializes, while the ` +
             `instructions injection reads disk — agent edits to the file would silently never ` +
-            `take effect. Set autoMaterialize: true on the mount` +
-            `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
+            `take effect. Set autoMaterialize: true on the mount, drop backend: "chronicle" ` +
+            `(direct mounts write disk directly), ` +
             `or make the mount read-only if the file is maintained outside the agent.`,
           );
         }

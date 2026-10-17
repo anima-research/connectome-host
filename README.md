@@ -535,10 +535,12 @@ path naming a nonexistent mount fails at recipe load — including on the
 implicit default workspace (`input` + `products`), whose mount set can never
 satisfy the default path, so declare an `instructions` mount explicitly.
 
-**Who edits, and how it propagates**: the module reads *disk*; agent
-`workspace--write`/`edit` land in Chronicle and reach disk only on an
-`autoMaterialize: true` mount — validation therefore requires it on a
-read-write instructions mount. On a read-only mount the flow reverses:
+**Who edits, and how it propagates**: the module reads *disk*. On a
+direct-backend mount (the framework default) agent `workspace--write`/`edit`
+land on disk directly, so nothing more is needed; on a `backend: "chronicle"`
+mount they land in Chronicle and reach disk only with `autoMaterialize: true`
+— validation therefore requires it on a read-write chronicle instructions
+mount. On a read-only mount the flow reverses:
 human/deploy edits to disk reach the injection, but not `workspace--read`
 (which serves Chronicle) — prefer routing human feedback through conversation
 and letting the agent make the edit. Symlinks that lead outside the mount are

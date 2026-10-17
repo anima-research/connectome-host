@@ -137,19 +137,31 @@ describe('recipe modules.instructions validation', () => {
     }))).toThrow(/host-managed "_config"/);
   });
 
-  test('rejects a read-write instructions mount without autoMaterialize (split-brain guard)', () => {
-    // Workspace writes are Chronicle-first; the injection reads disk. A rw
-    // mount that never materializes would silently freeze the injection at
-    // the pre-curation content.
+  test('rejects a read-write chronicle instructions mount without autoMaterialize (split-brain guard)', () => {
+    // Chronicle writes are store-first; the injection reads disk. A rw
+    // chronicle mount that never materializes would silently freeze the
+    // injection at the pre-curation content.
     expect(() => validateRecipe(recipe({
       instructions: { path: 'products/AGENTS.md' },
-      workspace: { mounts: [{ name: 'products', path: './output', mode: 'read-write' }] },
+      workspace: { mounts: [{ name: 'products', path: './output', mode: 'read-write', backend: 'chronicle' }] },
     }))).toThrow(/autoMaterialize/);
-    // Mode defaults to read-write, so an unmoded mount needs it too.
+    // Mode defaults to read-write, so an unmoded chronicle mount needs it too.
+    expect(() => validateRecipe(recipe({
+      instructions: true,
+      workspace: { mounts: [{ name: 'instructions', path: './instructions', backend: 'chronicle' }] },
+    }))).toThrow(/autoMaterialize/);
+  });
+
+  test('accepts a read-write direct-backend instructions mount (the default) without autoMaterialize', () => {
+    // Direct mounts write disk directly, so the injection sees every edit.
     expect(() => validateRecipe(recipe({
       instructions: true,
       workspace: { mounts: [{ name: 'instructions', path: './instructions' }] },
-    }))).toThrow(/autoMaterialize/);
+    }))).not.toThrow();
+    expect(() => validateRecipe(recipe({
+      instructions: true,
+      workspace: { mounts: [{ name: 'instructions', path: './instructions', backend: 'direct' }] },
+    }))).not.toThrow();
   });
 
   test('cross-checks against the implicit default workspace too', () => {
@@ -164,10 +176,10 @@ describe('recipe modules.instructions validation', () => {
     // outside the agent).
     expect(() => validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md' } })))
       .not.toThrow();
-    // The implicit 'products' mount is rw without autoMaterialize — and the
-    // implicit workspace cannot set it, so this directs to explicit mounts.
+    // The implicit 'products' mount is rw on the direct backend (the
+    // framework default): writes land on disk, so the injection sees them.
     expect(() => validateRecipe(recipe({ instructions: { path: 'products/AGENTS.md' } })))
-      .toThrow(/implicit default workspace cannot/);
+      .not.toThrow();
   });
 
   test('allows instructions: false alongside workspace: false', () => {

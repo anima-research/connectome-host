@@ -43,6 +43,7 @@ export function buildWorkspaceMounts(
       if (m.maxFileSize !== undefined) mount.maxFileSize = m.maxFileSize;
       if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
       if (m.autoMaterialize !== undefined) mount.autoMaterialize = m.autoMaterialize;
+      if (m.backend !== undefined) mount.backend = m.backend;
       return mount;
     });
   } else {
@@ -54,11 +55,14 @@ export function buildWorkspaceMounts(
   }
 
   // Config mount: version-controls gate.json (and future config files) via
-  // Chronicle. Opt-in via recipe: workspace.configMount = true. NOTE: this
-  // mount is deliberately NOT autoMaterialize — the host re-materializes it
-  // explicitly after branch-changing commands, and ordinary agent edits stay
-  // Chronicle-side until then. Anything that assumes `_config` disk content
-  // tracks agent edits is wrong (see the instructions-path validation).
+  // Chronicle. Opt-in via recipe: workspace.configMount = true. It is pinned
+  // to the chronicle backend — undo/redo rewind it through materializeMount,
+  // which the direct backend (the framework's default) has no history for.
+  // NOTE: this mount is deliberately NOT autoMaterialize — the host
+  // re-materializes it explicitly after branch-changing commands, and
+  // ordinary agent edits stay Chronicle-side until then. Anything that
+  // assumes `_config` disk content tracks agent edits is wrong (see the
+  // instructions-path validation).
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({
@@ -66,6 +70,7 @@ export function buildWorkspaceMounts(
       path: resolve(join(storePath, 'config')),
       mode: 'read-write',
       watch: 'always',
+      backend: 'chronicle',
     });
   }
 

@@ -329,6 +329,46 @@ skeleton's explicit values anyway: older host checkouts default folding to
 hazard), and explicit values survive host downgrades and copy-paste to other
 deployments.
 
+**Workspace mounts — use the direct backend unless you need history.** A
+mount is a directory the resident reaches through the `workspace--*` tools.
+The framework now defaults every mount to `backend: "direct"`: `read`,
+`write`, `edit`, `delete`, `ls`, `glob`, `grep` and `read_image` act on the
+directory itself, so what a shell command appended a second ago is what the
+next `read` returns, and there is nothing to `materialize` or `sync`. Declare
+mounts explicitly rather than relying on the implicit `input`/`products` pair:
+
+```jsonc
+"workspace": {
+  "mounts": [
+    { "name": "files", "path": "./files", "mode": "read-write" },            // direct (default)
+    { "name": "notes", "path": "./notes", "mode": "read-only" },
+    { "name": "drafts", "path": "./drafts", "mode": "read-write",
+      "backend": "chronicle", "autoMaterialize": true }                       // only if history is needed
+  ],
+  "configMount": true                                                         // host-managed, always chronicle
+}
+```
+
+Reach for `backend: "chronicle"` only when a mount's files must follow the
+conversation's branches and undo (the host's `_config` mount is the canonical
+case). A chronicle mount keeps a second copy of every file in the store;
+`workspace--write` lands there and reaches disk on `materialize` (or at once
+with `autoMaterialize: true`), shell-side edits reach the store on `sync`, and
+either copy can go stale behind the other — a bare `materialize` on a stale
+store has reverted weeks of shell-side appends in the field. If you do use
+one, tell the resident to always name a path in `materialize`/`sync`, and to
+`sync` a file after editing it from the shell. Mixing is fine: one chronicle
+mount beside direct ones.
+
+Two tools worth pointing residents at on day one: `write` with
+`append: true` adds to a file (a journal, a log) without rewriting it, and
+`watch` registers a file, directory or mount so the resident is woken, with a
+line naming the path and op, when something *other than its own tools*
+creates, modifies or deletes under it (a dropbox directory, a shared ticket
+folder, a file a human edits). Watches survive restarts. On a direct mount
+`watch` starts the filesystem watcher on demand; a chronicle mount needs
+`"watch": "always"` in its declaration.
+
 **`.env`** (`chmod 600`). Common vars:
 
 ```

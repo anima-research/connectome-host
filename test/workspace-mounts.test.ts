@@ -29,7 +29,7 @@ describe('buildWorkspaceMounts', () => {
   test('explicit mounts pass through declared fields and default mode/watch', () => {
     const mounts = buildWorkspaceMounts({
       mounts: [
-        { name: 'instructions', path: './instructions', autoMaterialize: true },
+        { name: 'instructions', path: './instructions', autoMaterialize: true, backend: 'chronicle' },
         { name: 'refs', path: './refs', mode: 'read-only', watch: 'always' },
       ],
     }, '/store')!;
@@ -39,9 +39,12 @@ describe('buildWorkspaceMounts', () => {
       mode: 'read-write', // defaulted
       watch: 'never', // defaulted (no chokidar by default)
       autoMaterialize: true,
+      backend: 'chronicle',
     });
     expect(mounts[1]).toMatchObject({ mode: 'read-only', watch: 'always' });
     expect(mounts[1].autoMaterialize).toBeUndefined();
+    // backend is left to the framework's default (direct) unless declared.
+    expect(mounts[1].backend).toBeUndefined();
   });
 
   test('_config mount (configMount: true) is read-write and NOT auto-materialized', () => {
@@ -56,6 +59,9 @@ describe('buildWorkspaceMounts', () => {
     expect(config.autoMaterialize).toBeUndefined();
     expect(config.path).toBe(resolve('/store/config'));
     expect(config.watch).toBe('always');
+    // undo/redo rewind this mount through materializeMount, which only the
+    // chronicle backend supports — the framework defaults mounts to direct.
+    expect(config.backend).toBe('chronicle');
   });
 
   test('configMount composes with the implicit default mounts only in object form', () => {
