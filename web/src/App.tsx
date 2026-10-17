@@ -27,6 +27,8 @@ import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
   WEB_PROTOCOL_VERSION,
   USER_IMAGE_LIMITS,
+  frameLimitNote,
+  type WebUiClientMessage,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -1390,7 +1392,7 @@ export function App() {
         if (attachments().length >= L.maxCount) { overCount++; continue; }
         const total = attachments().reduce((sum, x) => sum + x.data.length, 0) + a.data.length;
         if (total > L.maxTotalBase64Chars) {
-          notes.push(`${a.name} not attached: the images would come to more than ${(L.maxTotalBase64Chars / 1_000_000).toFixed(1)} MB`);
+          notes.push(`${a.name} not attached: the images would come to more than ${(L.maxTotalBase64Chars / 1_000_000).toFixed(1)} MB as base64`);
           continue;
         }
         setAttachments((prev) => [...prev, a]);
@@ -1431,37 +1433,59 @@ export function App() {
       setAttachNotice("images can't be routed to a fleet child: remove them, or drop the @name");
       return;
     }
+    // /clear is display-local (the TUI clears its scrollback the same
+    // way): wipe this client's transcript view without touching the
+    // Chronicle or other clients. Sending it to the host was a no-op
+    // that APPENDED a "(cleared)" line — the opposite of clearing.
+    if (text === '/clear' || text.startsWith('/clear ')) {
+      setDraft('');
+      setAttachments([]);
+      setAttachNotice(null);
+      setMessages(produce((arr) => { arr.length = 0; }));
+      setStreamLines([]);
+      return;
+    }
+    const route = text.startsWith('/') ? null : parseRoute(text);
+    // A user message's row id is its send's corrId: a refusal names it, and
+    // the row comes out (see retractSend). A routed message's row takes an
+    // id the same way, though its frame carries none.
+    const id = nextMessageId();
+    const frame: WebUiClientMessage = text.startsWith('/')
+      ? { type: 'command', command: text }
+      : route
+        ? { type: 'route-to-child', childName: route.childName, content: route.content }
+        : {
+            type: 'user-message',
+            content: text,
+            corrId: id,
+            ...(images.length > 0 ? { images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) } : {}),
+          };
+    // Checked before the composer is cleared: the host closes a socket whose
+    // frame is over MAX_WS_FRAME_BYTES, with no refusal, so the message would
+    // be lost. One that's over stays here to shorten.
+    const overLimit = frameLimitNote(frame);
+    if (overLimit !== null) {
+      setAttachNotice(overLimit);
+      return;
+    }
     setDraft('');
     setAttachments([]);
     setAttachNotice(null);
-    if (text.startsWith('/')) {
-      // /clear is display-local (the TUI clears its scrollback the same
-      // way): wipe this client's transcript view without touching the
-      // Chronicle or other clients. Sending it to the host was a no-op
-      // that APPENDED a "(cleared)" line — the opposite of clearing.
-      if (text === '/clear' || text.startsWith('/clear ')) {
-        setMessages(produce((arr) => { arr.length = 0; }));
-        setStreamLines([]);
-        return;
-      }
-      wire.send({ type: 'command', command: text });
+    if (frame.type === 'command') {
+      wire.send(frame);
       return;
     }
-    const route = parseRoute(text);
     if (route) {
       setMessages(produce((arr) => arr.push({
-        id: nextMessageId(),
+        id,
         participant: 'user',
         text: `→ @${route.childName}: ${route.content}`,
         timestamp: Date.now(),
       })));
       queueScroll();
-      wire.send({ type: 'route-to-child', childName: route.childName, content: route.content });
+      wire.send(frame);
       return;
     }
-    // The row's id is the send's corrId: a refusal names it, and the row
-    // comes out (see retractSend).
-    const id = nextMessageId();
     setMessages(produce((arr) => arr.push({
       id,
       participant: 'user',
@@ -1475,12 +1499,7 @@ export function App() {
         : {}),
     })));
     queueScroll();
-    wire.send({
-      type: 'user-message',
-      content: text,
-      corrId: id,
-      ...(images.length > 0 ? { images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) } : {}),
-    });
+    wire.send(frame);
   };
 
   /** A send the host refused: take its row out of the transcript (the error

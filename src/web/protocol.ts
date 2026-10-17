@@ -776,8 +776,10 @@ export interface UserMessageImage {
  *
  * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
  *   both the Anthropic API's 5 MB base64 limit and Bedrock's 3.75 MB.
- * - `maxTotalBase64Chars`: keeps the whole frame under Bun's default 16 MiB
- *   WebSocket payload limit, which drops the connection rather than erroring.
+ * - `maxTotalBase64Chars`: what one message's images may come to, leaving
+ *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
+ *   bounded by it, so the composer checks the whole frame too
+ *   (`frameLimitNote`).
  * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
  */
 export const USER_IMAGE_LIMITS = {
@@ -786,6 +788,43 @@ export const USER_IMAGE_LIMITS = {
   maxTotalBase64Chars: 12 * 1024 * 1024,
   maxSidePx: 8000,
 } as const;
+
+/**
+ * The most one WebSocket frame from a client can carry, in bytes of its JSON
+ * as UTF-8. The host's server is set to it (`maxPayloadLength`), and Bun
+ * closes a socket that sends a larger frame without an `error` frame, so
+ * the message is lost. The composer checks each message the user sends
+ * from it (`frameLimitNote`) and keeps one that's over, to shorten.
+ */
+export const MAX_WS_FRAME_BYTES = 16 * 1024 * 1024;
+
+/** The bytes a client message takes as a frame: the SPA's wire client sends
+ *  `JSON.stringify(message)`, which the socket carries as UTF-8. */
+export function wsFrameBytes(message: WebUiClientMessage): number {
+  return new TextEncoder().encode(JSON.stringify(message)).length;
+}
+
+/** A size in bytes, KiB or MiB, rounded up to a tenth, so a size over
+ *  nothing never reads as 0. The unit follows the rounded figure, so a size
+ *  just under a MiB reads 1.0 MiB, not 1024.0 KiB. */
+function binarySize(bytes: number): string {
+  if (bytes < 1024) return bytes === 1 ? '1 byte' : `${bytes} bytes`;
+  const tenthsUp = (n: number): number => Math.ceil(n * 10) / 10;
+  const kib = tenthsUp(bytes / 1024);
+  return kib < 1024 ? `${kib.toFixed(1)} KiB` : `${tenthsUp(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/** What the composer says when a message's frame is over
+ *  `MAX_WS_FRAME_BYTES`, or null when it fits. Only a user message carries
+ *  images, so only its note offers removing one. */
+export function frameLimitNote(message: WebUiClientMessage): string | null {
+  const bytes = wsFrameBytes(message);
+  if (bytes <= MAX_WS_FRAME_BYTES) return null;
+  const hasImages = message.type === 'user-message' && (message.images?.length ?? 0) > 0;
+  return `not sent: this message is ${binarySize(bytes - MAX_WS_FRAME_BYTES)} over the ` +
+    `${MAX_WS_FRAME_BYTES / (1024 * 1024)} MiB one message can carry; ` +
+    (hasImages ? 'shorten the text or remove an image' : 'shorten the text');
+}
 
 /** Slash command. Server runs `handleCommand()` and replies with a
  *  `command-result` carrying the same `corrId`. */

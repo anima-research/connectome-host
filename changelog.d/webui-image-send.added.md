@@ -7,4 +7,7 @@
   host checks every image again and refuses a message whose image the API
   would refuse, saying why, so no such image is stored.
   Up to 8 images per message. Images can't be routed to a fleet child.
+  A message whose text and images together are over the 16 MiB one
+  message can carry stays in the composer with a note, rather than being
+  lost when the host closes the connection.
   See `docs/webui-live-surgery.md`.
