@@ -249,7 +249,8 @@ Framework features configured by top-level recipe keys rather than modules:
 - **Agent overlay.** `mcpl-servers.agent.json` holds servers the agent deployed
   for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
   suppress servers the agent unloaded. The overlay can never grant
-  `toolLifecycle` or `inheritEnv`.
+  `enabledCapabilities`, `toolLifecycle`, `inheritEnv` or
+  `allowHostCommands`: the boot leaves them out of every overlay entry.
 - **Child env.** Stdio servers get agent-framework's allowlist of host
   variables (`CHILD_ENV_ALLOWLIST`: path, home, locale, temp dirs, TLS CA and
   proxy settings), then the entry's `env` and the host's `AGENT_TIMEZONE`

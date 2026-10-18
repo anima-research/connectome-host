@@ -332,17 +332,70 @@ const isPlainToWrite = (v: unknown): v is string | number | boolean =>
 export const NAMES_NOTHING = 'it names no command to run and no url to dial';
 
 /**
+ * Fields only the operator's own config grants: the boot reads an agent
+ * overlay entry without them, and the startup warnings name each one an
+ * entry sets, with where the operator grants it (OPERATOR_FIELD_HOME).
+ * enabledCapabilities would lift the deny every self-deployed server gets; a
+ * toolLifecycle block is itself the framework's grant of tool lifecycle;
+ * inheritEnv passes the host's whole environment; allowHostCommands is the
+ * authority for host/command, which agent-framework gives only the
+ * operator's config.
+ */
+export const OPERATOR_ONLY_OVERLAY_FIELDS = ['enabledCapabilities', 'toolLifecycle', 'inheritEnv', 'allowHostCommands'] as const;
+type OperatorOnlyField = (typeof OPERATOR_ONLY_OVERLAY_FIELDS)[number];
+
+/** Where the operator grants each operator-only field. A server in
+ *  mcpl-servers.json loads only when the recipe names it
+ *  (mergeRecipeServers). The file's loader (loadMcplServers) and a recipe's
+ *  override of a server from that file (RECIPE_OVERRIDABLE_SERVER_FIELDS)
+ *  pass on inheritEnv and toolLifecycle, and neither passes on
+ *  enabledCapabilities or allowHostCommands. Those two come only from a
+ *  server the recipe defines itself, whose entry mergeRecipeServers takes
+ *  whole, and only under an id the file doesn't define: for an id it does,
+ *  the file's entry is taken, with the recipe's overrides alone. */
+const OPERATOR_FIELD_HOME: Record<OperatorOnlyField, string> = {
+  enabledCapabilities: "a server the recipe defines itself, with its own command or url and an id mcpl-servers.json doesn't define",
+  toolLifecycle: 'mcpl-servers.json for a server the recipe names, or the recipe',
+  inheritEnv: 'mcpl-servers.json for a server the recipe names, or the recipe',
+  allowHostCommands: "a server the recipe defines itself, with its own command or url and an id mcpl-servers.json doesn't define",
+};
+
+/** What an overlay entry can use where it listed enabledCapabilities to
+ *  narrow what its server may advertise: the overlay keeps its
+ *  disabledCapabilities beside the deploy deny, and agent-framework drops
+ *  every advertised capability a disabled pattern matches, whatever the
+ *  enabled list says (capability-mask.ts). */
+const NARROW_INSTEAD = '; to narrow what the server may advertise, list what to deny in its disabledCapabilities';
+
+/** Whether a field's value sets anything: any value but absent, null,
+ *  false, 0 or empty text, which set nothing, so leaving them out needs no
+ *  warning. A list sets something even when it's empty: agent-framework
+ *  0.22.2 reads any enabledCapabilities list as a mask of what the server
+ *  may advertise, and an empty one lets nothing through. */
+function setsSomething(value: unknown): boolean {
+  return Boolean(value);
+}
+
+/**
  * Read one agent overlay entry as the boot reads it. Every reader takes this
  * reading (the boot, the startup warnings, mcpl_list, mcpl_restart's note,
  * mcpl_unload), so they agree on what the boot loaded, and none throws on a
  * shape.
  *
  * The overlay is the agent's hand-editable file. The boot passes each entry
- * to agent-framework as main passed it, so a file that worked keeps working
- * the same way, nulls, env values and wrong kinds included: the framework
- * starts each server on its own and logs one that fails. The reading differs
- * from main's only where main's own handling
- * broke, and `notes` names each such reading, which the startup warnings log:
+ * to agent-framework as main passed it, nulls, env values and wrong kinds
+ * included: the framework starts each server on its own and logs one that
+ * fails. The reading differs from main's in two ways by design, and
+ * otherwise only where main's own handling broke; `notes` names each such
+ * reading, which the startup warnings log. By design:
+ * - an operator-only field (OPERATOR_ONLY_OVERLAY_FIELDS) is named when it
+ *   sets anything (setsSomething), with where the operator grants it, and
+ *   resolveOverlayEntry leaves it out of what the boot loads, since the
+ *   agent's file narrows what a server may do and never widens it;
+ * - a `reconnect` that isn't true or false reads as its truth, as
+ *   agent-framework 0.22.2 reads it, so the framework is handed true or
+ *   false (null, main's way of saying off, as false, unnamed).
+ * Where main's handling broke:
  * - `args` holding numbers or true/false read as their text, where main
  *   stopped the start (`arg.startsWith`);
  * - a name list given as one non-empty text reads as a list of one, where
@@ -438,6 +491,18 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
       e[k] = [e[k]];
       notes.push(`its ${k} is one name, read as a list of one`);
     }
+  }
+  // agent-framework 0.22.2 reads reconnect by its truth (its connection
+  // retries `if (config.reconnect)`, server-connection.ts:537), so a value
+  // that isn't true or false is read as that truth and handed on as true or
+  // false. null was main's way of saying off, and reads as false unnamed.
+  if (e.reconnect === null) e.reconnect = false;
+  else if (e.reconnect !== undefined && typeof e.reconnect !== 'boolean') {
+    e.reconnect = Boolean(e.reconnect);
+    notes.push(`its reconnect isn't true or false, so it's read as ${e.reconnect}, as the framework read it`);
+  }
+  for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) {
+    if (setsSomething(e[k])) notes.push(`its ${k} is left out, since only the operator's config grants that: set it in ${OPERATOR_FIELD_HOME[k]}${k === 'enabledCapabilities' ? NARROW_INSTEAD : ''}`);
   }
   if (typeof e.toolPrefix === 'number' || typeof e.toolPrefix === 'boolean') {
     notes.push(`its toolPrefix is ${typeof e.toolPrefix === 'number' ? 'a number' : 'true or false'}, read as its text, so calls to its tools reach it`);
@@ -648,12 +713,11 @@ const OVERLAY_LIST_FIELDS = [
  *    `memory.retrieval`. No single pattern denies every set; list one per
  *    depth (`["*", "*.*", "*.*.*"]` covers names of up to three segments).
  *
- *  - `inheritEnv` is dropped: full host-environment inheritance is granted
- *    only by operator-owned recipe/file configuration, never an overlay.
- *
- *  - `enabledCapabilities` is dropped: the agent's file can narrow, never
- *    widen — a hand-written entry here could re-grant §13.4 deny-by-default
- *    paths.
+ *  - The operator-only fields (OPERATOR_ONLY_OVERLAY_FIELDS:
+ *    `enabledCapabilities`, `toolLifecycle`, `inheritEnv`,
+ *    `allowHostCommands`) are dropped: the agent's file can narrow, never
+ *    widen, so what they grant comes only from the operator's own config,
+ *    and the startup warnings name each one an entry sets.
  *
  *  - `disabledCapabilities` always carries at least
  *    AGENT_DEPLOY_DENIED_CAPABILITIES (unioned with anything the entry
@@ -677,14 +741,7 @@ export function resolveOverlayEntry(
   for (const k of OVERLAY_LIST_FIELDS) {
     if (Array.isArray(rec[k]) && (rec[k] as unknown[]).length === 0) delete rec[k];
   }
-  delete rec.enabledCapabilities;
-  // Same boundary for MCPL tool lifecycle: in the framework a toolLifecycle
-  // block IS the grant, so the agent's own file never carries one (the deny
-  // above already masks the paths; this keeps the overlay honest too).
-  delete rec.toolLifecycle;
-  // Full host environment access is an operator grant, not an agent-owned
-  // overlay setting. Operators declare it in the recipe or mcpl-servers.json.
-  delete rec.inheritEnv;
+  for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) delete rec[k];
   // A network server the agent deployed should come back when it bounces.
   // reconnect defaulted to false, so an entry that never said `reconnect:
   // true` was severed PERMANENTLY by any server restart — with no signal to
@@ -692,7 +749,7 @@ export function resolveOverlayEntry(
   // resident is days away (Mythos, eventless in eidoverse after the
   // 2026-08-04 door deploy). An entry that names a url now defaults to
   // reconnect unless it says otherwise; `reconnect: null` says otherwise, as
-  // main read it, since the framework reads it as off. The default keys on a
+  // main read it, and readOverlayEntry has made it false. The default keys on a
   // url's presence, as main keyed it, so an entry that names a url and a
   // command with no transport, which the framework spawns, gets it too: the
   // framework then spawns its child again when it exits, as it did on main.
@@ -772,6 +829,40 @@ export interface ServerProvisions {
   token: boolean;
   access: string | null;
   inheritEnv: boolean;
+  /** The other operator-only fields the definition sets, as agent-framework
+   *  0.22.2 reads each (grantsThrough), in OPERATOR_ONLY_OVERLAY_FIELDS'
+   *  order: an overlay entry can't carry them, so a replacement always lacks
+   *  them. */
+  grants: GrantField[];
+}
+
+/** The operator-only fields a ServerProvisions lists as grants: inheritEnv
+ *  has its own field, since it counts only for a replacement that spawns. */
+type GrantField = Exclude<OperatorOnlyField, 'inheritEnv'>;
+
+/** Whether an operator definition sets a field as agent-framework 0.22.2
+ *  reads it, so that a replacement without it runs differently: host
+ *  commands only for true (framework.ts:17591); capabilities for any list,
+ *  which masks what the server may advertise, an empty one letting nothing
+ *  through, and whose patterns grant the paths denied by default
+ *  (capability-mask.ts, capability-grant.ts:335); and tool lifecycle for an
+ *  `observe` or `inputs` policy object (configGrants, capability-grant.ts:237).
+ *  A recipe checks a toolLifecycle block's shape (recipe.ts) but not the
+ *  other two fields'. So allowHostCommands can hold a value such as "true",
+ *  which grants nothing, and enabledCapabilities a value that isn't a list,
+ *  which the framework can't read (its negotiation calls `.some` on it and
+ *  throws); neither is a setting a replacement lacks. */
+function grantsThrough(field: GrantField, value: unknown): boolean {
+  const isPolicy = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
+  switch (field) {
+    case 'allowHostCommands': return value === true;
+    case 'enabledCapabilities': return Array.isArray(value);
+    case 'toolLifecycle': {
+      if (!isPolicy(value)) return false;
+      const block = value as Record<string, unknown>;
+      return isPolicy(block.observe) || isPolicy(block.inputs);
+    }
+  }
 }
 
 export function serverProvisions(definition: Record<string, unknown>): ServerProvisions {
@@ -787,8 +878,16 @@ export function serverProvisions(definition: Record<string, unknown>): ServerPro
     token: Boolean(definition.token),
     access: access || null,
     inheritEnv: definition.inheritEnv === true,
+    grants: OPERATOR_ONLY_OVERLAY_FIELDS.filter((k): k is GrantField => k !== 'inheritEnv' && grantsThrough(k, definition[k])),
   };
 }
+
+/** How a replacement's warning names an operator grant it lacks. */
+const LACKED_GRANT: Record<GrantField, string> = {
+  enabledCapabilities: 'enabled capabilities (enabledCapabilities)',
+  toolLifecycle: 'tool lifecycle (toolLifecycle)',
+  allowHostCommands: 'host commands (allowHostCommands)',
+};
 
 /** A text that names a host variable, as substituteEnvVars reads one. */
 const namesHostVariable = (text: unknown): boolean => typeof text === 'string' && namesEnvReference(text);
@@ -861,7 +960,9 @@ export function hostVariableReferences(raw: AgentOverlayEntry): string[] {
  *
  * Env and inheritance count only for a replacement that spawns a process; a
  * token and an access grant count only for one that dials a URL, as the
- * framework chooses between them (dialsUrl).
+ * framework chooses between them (dialsUrl). The operator's other grants
+ * (ServerProvisions.grants) count for any replacement, since no overlay
+ * entry can carry them.
  */
 export function lostByReplacement(operator: ServerProvisions, raw: AgentOverlayEntry): string | null {
   const lost: string[] = [];
@@ -885,6 +986,9 @@ export function lostByReplacement(operator: ServerProvisions, raw: AgentOverlayE
     const access = typeof entry.access === 'string' ? entry.access : '';
     if (operator.access && access !== operator.access) lost.push(`access grant "${operator.access}"`);
   }
+  // Whatever its transport, a replacement can't carry these: the boot
+  // leaves them out of every overlay entry.
+  for (const k of operator.grants) lost.push(LACKED_GRANT[k]);
   return lost.length > 0 ? lost.join('; ') : null;
 }
 

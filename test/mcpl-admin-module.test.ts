@@ -1268,6 +1268,17 @@ describe('an overlay entry that replaces the operator definition', () => {
     expect(String(fresh.data)).not.toContain('operator');
   });
 
+  test("mcpl_deploy over an operator server that grants host commands says the entry lacks them", async () => {
+    const fw = makeStubFramework();
+    const mod = makeModule(fw.stub);
+    mod.setOperatorServers([{ id: 'hc', command: 'node', allowHostCommands: true }]);
+    const result = await call(mod, 'mcpl_deploy', { id: 'hc', command: 'node', args: ['mine.js'] });
+    expect(result.success).toBe(true);
+    expect(String(result.data)).toContain(
+      'replaces the operator\'s definition of "hc" and lacks its host commands (allowHostCommands)',
+    );
+  });
+
   // The likeliest next move after reading that receipt: name the variable in
   // the entry. Only a recipe substitutes it, so the receipt keeps the name
   // in what's lacking and says why, without showing the value.
