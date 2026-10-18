@@ -58,7 +58,6 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'witnessedInstruction',
   'identityReminder',
   'witnessedIdentityReminder',
-  'identityReminderSilent',
 ];
 
 /** Verbatim tail for a recipe that omits `strategy.recentWindowTokens`, as a

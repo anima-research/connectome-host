@@ -3,7 +3,9 @@
  * simply not happen. Keys the host never reads at the top level, under `agent`
  * and under `modules` are now named in a warning (with the key they were
  * probably meant to be), and the recipe still loads; the shipped recipes carry
- * none.
+ * none. A retired key is named with what replaced it. Under `agent.strategy`,
+ * whose keys are open, only a retired key is named, and only for a built-in
+ * strategy type.
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -51,6 +53,24 @@ describe('unknownRecipeKeys', () => {
 
   test('says what replaced a retired key', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
+  });
+
+  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+    const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
+      'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+      'if it was true; if it was false, nothing)';
+    for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
+      const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
+      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
+    }
+    // With no type, the strategy is the built-in autobiographical one.
+    expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: 'autobiographical' }))).toEqual([]);
+  });
+
+  test('names no strategy key for an extension strategy, whose factory gets the whole strategy config', () => {
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'custom', identityReminderSilent: true } }))).toEqual([]);
   });
 
   test('a key named like an inherited property gets no false replacement', () => {
