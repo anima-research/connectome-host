@@ -34,6 +34,7 @@ import type {
   McplServerConfig,
 } from '@animalabs/agent-framework';
 import { resolveTimeZone } from '@animalabs/agent-framework';
+import type { McplEndpointAnswer } from './identity-module.js';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
@@ -191,12 +192,42 @@ interface CallProgress {
 }
 
 /** What the identity module lends a deploy: the credential an `access`
- *  grant resolves to, at each dial, and, where the host has one, the MCPL
- *  endpoint the home node publishes for that grant, so a deploy with
- *  `access` and no `url` can dial by name. */
+ *  grant resolves to, at each dial, and, where the host has one, what the
+ *  home node's directory says of that grant's MCPL endpoint, so a deploy
+ *  with `access` and no `url` can dial by name. */
 export interface DeployIdentity {
   accessFor(audience?: string): Promise<string>;
-  mcplEndpointFor?(audience: string): Promise<string | undefined>;
+  mcplEndpointFor?(audience: string): Promise<McplEndpointAnswer>;
+}
+
+/** What the home node's directory says of `access`'s MCPL endpoint, or null
+ *  for an identity that has no directory. One that throws is a directory
+ *  that couldn't be read. */
+async function endpointFor(identity: DeployIdentity | null, access: string): Promise<McplEndpointAnswer | null> {
+  if (!identity?.mcplEndpointFor) return null;
+  try {
+    return await identity.mcplEndpointFor(access);
+  } catch (error) {
+    return { unreadable: reasonText(error) };
+  }
+}
+
+/** Why a deploy with `access` and no `url` found no url: the directory
+ *  couldn't be read, or it publishes no endpoint for the grant, named with
+ *  the grants it publishes one for. With `access`, a url is taken only as
+ *  wss://, or ws:// to this machine. */
+function noEndpointText(access: string, answer: McplEndpointAnswer): string {
+  const name = JSON.stringify(access);
+  const giveUrl = 'give `url`, a wss:// address (or ws:// to this machine)';
+  if (answer.unreadable !== undefined) {
+    // A reason's own full stop is dropped inside the parentheses.
+    return `The home node's directory of MCPL endpoints couldn't be read (${answer.unreadable.replace(/[\s.]+$/, '')}), so no endpoint ` +
+      `was found for the access grant ${name}: call ${DEPLOY} again shortly, or ${giveUrl}.`;
+  }
+  const others = answer.published ?? [];
+  return `The home node's directory publishes no wss:// MCPL endpoint for the access grant ${name}` +
+    (others.length > 0 ? ` (it publishes one for ${others.map((n) => JSON.stringify(n)).join(', ')})` : '') +
+    `: ${giveUrl}, or ask the service's operator to publish its endpoint there.`;
 }
 
 export class McplAdminModule implements Module {
@@ -363,7 +394,8 @@ export class McplAdminModule implements Module {
           'config. A deploy replaces the server\'s entry whole, so give each of its fields ' +
           'every time, not only the one you change. Provide either `command` (stdio, ' +
           'spawned as the host user) or `url` ' +
-          '(WebSocket). Relative ./ args resolve against the host working directory. ' +
+          '(WebSocket), or, with `access`, neither, to dial the endpoint the home node\'s ' +
+          'directory publishes for that grant. Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
           '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
@@ -715,34 +747,43 @@ export class McplAdminModule implements Module {
     const command = givenText(input.command) ? input.command : undefined;
     let url: unknown = givenText(input.url) ? input.url : undefined;
     // A deploy with `access` and neither `url` nor `command` dials the
-    // endpoint the home node publishes for that access: the directory is
-    // the operator's word that the endpoint takes a credential safely (it
-    // publishes wss only), so a resident who is their own operator never
-    // has to be handed an address, or judge a network. The url found is
-    // saved in the entry like a given one, so the next host start dials it
-    // without the directory, and a service that moves is a deploy again. A
-    // directory that can't be read, or publishes nothing for the name, is a
-    // url not given, refused below with the rest.
+    // endpoint the home node's directory publishes for that access: the
+    // directory is the operator's word that the endpoint takes a credential
+    // safely (it publishes wss only), so a resident who is their own operator
+    // never has to be handed an address, or judge a network. The url found
+    // is saved in the entry like a given one, so the next host start dials
+    // it without the directory, and a service that moves is a deploy again.
+    // A directory that publishes nothing for the name, or can't be read, is
+    // a url not given, refused below with the rest, saying which.
     const accessName = typeof input.access === 'string' ? input.access.trim() : '';
-    let fromDirectory = false;
-    if (command === undefined && url === undefined && accessName !== '' && this.identity?.mcplEndpointFor) {
-      try {
-        const found = await this.identity.mcplEndpointFor(accessName);
-        if (typeof found === 'string' && found !== '') { url = found; fromDirectory = true; }
-      } catch {
-        // Not found, for a deploy: the identity module reports the directory's failure itself.
-      }
-    }
+    const directory = command === undefined && url === undefined && accessName !== ''
+      ? await endpointFor(this.identity, accessName)
+      : null;
+    if (directory?.url !== undefined) url = directory.url;
+    // The receipts after the dial, whether it connects, stays unconnected or
+    // fails, name a url found here and where it came from, since a dial that
+    // fails is when the agent most needs to know. A url from the directory is
+    // quoted, unlike one the agent gave: the directory is public and read
+    // with no credential, so its url holds nothing the agent couldn't read.
+    const foundUrl = directory?.url !== undefined
+      ? ` Its url, ${directory.url}, is the endpoint the home node's directory publishes for the access grant ` +
+        `${JSON.stringify(accessName)}, saved with the entry: if the service moves, deploy it again with \`access\` ` +
+        'and no `url`, which dials what the directory publishes then.'
+      : '';
+    // A deploy by access name used the form the tool documents, so where the
+    // directory's answer is its only problem, the refusal is that answer,
+    // which says what to do, with no closing about a call to correct.
+    let directoryAnswer: string | undefined;
     if (command === undefined && url === undefined) {
-      problems.push(
-        'Neither `command` nor `url` was given, or both were empty: give `command`, the executable to spawn for a ' +
-        'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.' +
-        (accessName !== '' && this.identity?.mcplEndpointFor
-          ? ` The home node publishes no MCPL endpoint for the access grant ${JSON.stringify(accessName)}, so there's ` +
-            'no url to find for it: give `url`, or ask the service\'s operator to publish its endpoint in the home ' +
-            'node\'s directory.'
-          : ''),
-      );
+      if (directory) {
+        directoryAnswer = noEndpointText(accessName, directory);
+        problems.push(directoryAnswer);
+      } else {
+        problems.push(
+          'Neither `command` nor `url` was given, or both were empty: give `command`, the executable to spawn for a ' +
+          'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.',
+        );
+      }
     } else if (command !== undefined && url !== undefined) {
       problems.push(
         'Both `command` and `url` were given: give one, since a server is either spawned from a command (stdio) or ' +
@@ -824,6 +865,7 @@ export class McplAdminModule implements Module {
       }
     }
     if (problems.length > 0) {
+      if (problems.length === 1 && problems[0] === directoryAnswer) return fail(`Nothing was deployed or saved: ${directoryAnswer}`);
       return fail(
         `Nothing was deployed or saved: ${problems.join(' ')} Correct ${problems.length === 1 ? 'it' : 'each'}` +
         `${malformed ? ' (or leave out a field the server can do without)' : ''} and call ${DEPLOY} again.`,
@@ -839,15 +881,26 @@ export class McplAdminModule implements Module {
     const cleartext = cleartextCredential(entry);
     if (cleartext) {
       const configured = framework.listMcplServers().some(s => s.id === id);
+      // A url found in the directory is wss://, so this url is one the agent
+      // gave. Where the directory publishes an endpoint for the access
+      // grant, leaving `url` out dials it, and the refusal names it; where
+      // the directory was read and publishes none, the service's operator
+      // can publish one, so the resident needn't judge the network.
+      const forGrant = typeof entry.access === 'string'
+        ? await endpointFor(this.identity, entry.access)
+        : null;
       return fail(
         `Nothing was deployed: ${cleartextCarrierText(cleartext.carrier, entry.access)} would go to ${cleartext.host} ` +
         'over unencrypted ws://, where anyone on the network between can read it, so nothing was saved.' +
         (configured ? ` The server already configured as "${id}" is unchanged.` : '') +
         ' Use a wss:// url, or, if that network is private, ask your operator to add the server to the recipe.' +
-        (cleartext.carrier === 'access' && this.identity?.mcplEndpointFor
-          ? ' Or leave `url` out: with `access` alone, the deploy dials the endpoint the home node publishes for that ' +
-            'access, if it publishes one.'
-          : ''),
+        (forGrant?.url !== undefined
+          ? ` The home node's directory publishes ${forGrant.url} for the access grant ${JSON.stringify(entry.access)}: ` +
+            'leave `url` out, and the deploy dials that.'
+          : forGrant?.published !== undefined
+            ? ' Or ask the service\'s operator to publish a wss:// endpoint for it in the home node\'s directory, which ' +
+              'a deploy with `access` and no `url` then dials.'
+            : ''),
       );
     }
 
@@ -900,7 +953,7 @@ export class McplAdminModule implements Module {
     } catch (error) {
       return fail(
         `Server "${id}" was saved to your overlay, but ${alreadyLoaded ? 'restarting it with that entry' : 'connecting it'} ` +
-        `failed: ${sentence(reasonText(error))} ${this.afterFailure(framework, id, false)}${note}`,
+        `failed: ${sentence(reasonText(error))} ${this.afterFailure(framework, id, false)}${foundUrl}${note}`,
       );
     }
 
@@ -911,18 +964,13 @@ export class McplAdminModule implements Module {
       return fail(
         `Server "${id}" was saved to your overlay, but it isn't connected` +
         `${status?.retrying ? `; it keeps retrying on its own, so it may still connect, which ${LIST} shows` : ''}. ` +
-        `${CONNECT_REMEDY}${note}`,
+        `${CONNECT_REMEDY}${foundUrl}${note}`,
       );
     }
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
-      `Persisted to your agent overlay (survives host restarts).` +
-      (fromDirectory
-        ? ` Its url, ${String(url)}, is the endpoint the home node publishes for the access grant ` +
-          `${JSON.stringify(accessName)}, saved with the entry; if the service moves, deploy it again.`
-        : '') +
-      note,
+      `Persisted to your agent overlay (survives host restarts).${foundUrl}${note}`,
     );
   }
 

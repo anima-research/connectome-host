@@ -914,13 +914,7 @@ export interface RecipeModules {
    * tool slots. `home` defaults to id.animalabs.ai; `audience` is the
    * default for `token` calls.
    */
-  identity?: boolean | {
-    home?: string;
-    audience?: string;
-    /** MCPL endpoints by audience name (wss), over the home node's `mcpl`
-     *  directory, for `mcpl_deploy {access}` with no url. */
-    mcpl?: Record<string, string>;
-  };
+  identity?: boolean | { home?: string; audience?: string };
   /**
    * Cross-process child fleet.  When true (shorthand), FleetModule is attached
    * with no pre-configured children.  When an object, declares children the

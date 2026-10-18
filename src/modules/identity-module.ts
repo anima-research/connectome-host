@@ -136,13 +136,6 @@ export interface IdentityModuleConfig {
    * animalabs services.
    */
   services?: Record<string, string>;
-  /**
-   * MCPL endpoints by audience name, for `mcpl_deploy {access}` with no url:
-   * merged over the home node's `mcpl` directory, as `services` is over its
-   * `services`. Explicit local config wins, for testing and for hosts
-   * anchored elsewhere.
-   */
-  mcpl?: Record<string, string>;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -159,6 +152,25 @@ const DEFAULT_SERVICES: Record<string, string> = {
  *  about a minute, and an unknown name forces a refresh immediately anyway. */
 const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
+
+/** What the home node's directory says of an audience's MCPL endpoint, read
+ *  afresh: the endpoint; or none for it, with the audiences it does publish
+ *  one for; or that the directory couldn't be read, and why. */
+export type McplEndpointAnswer =
+  | { url: string; published?: undefined; unreadable?: undefined }
+  | { url?: undefined; published: string[]; unreadable?: undefined }
+  | { url?: undefined; published?: undefined; unreadable: string };
+
+/** Whether `url` parses as a wss:// url: the only MCPL endpoint the
+ *  directory is taken to publish. */
+function isWssUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'wss:';
+  } catch {
+    return false;
+  }
+}
+
 /** How long a call to the identity service (/token, /enroll) may take before
  *  it counts as no reply: one that hangs would otherwise stall an MCPL dial,
  *  or keep a registration under way and refuse every later one. */
@@ -280,6 +292,9 @@ export class IdentityModule implements Module {
    *  the service directory. */
   private mcplFromHome: Record<string, string> = {};
   private servicesFetchedAt = 0;
+  /** Why the latest directory read failed, or null once one has succeeded
+   *  since: what mcplEndpointFor says when the directory can't be read. */
+  private servicesError: string | null = null;
   private servicesInflight: Promise<void> | null = null;
 
   /** This deployment's registration state in this process: a registration
@@ -709,15 +724,18 @@ export class IdentityModule implements Module {
           }
           // wss only, as the home node publishes it: the resident's
           // credential goes on this dial, and mcpl_deploy refuses to send
-          // one over ws:// to another machine.
+          // one over ws:// to another machine. A value that doesn't parse as
+          // a wss:// url is left out, so the deploy never meets one.
           const mcpl: Record<string, string> = {};
           for (const [name, url] of Object.entries(json.mcpl ?? {})) {
-            if (typeof url === 'string' && /^wss:\/\//.test(url)) mcpl[name] = url;
+            if (typeof url === 'string' && isWssUrl(url)) mcpl[name] = url;
           }
           this.servicesFromHome = map;
           this.mcplFromHome = mcpl;
           this.servicesFetchedAt = Date.now();
+          this.servicesError = null;
         } catch (err) {
+          this.servicesError = errorText(err);
           // Keep whatever we had; note it once per failure for the operator.
           console.error(
             `[identity] service directory refresh failed (${this.config.home}): ${err instanceof Error ? err.message : String(err)}`,
@@ -738,24 +756,18 @@ export class IdentityModule implements Module {
   /** The MCPL endpoint the home node publishes for an audience, so a
    *  resident can dial a service by the name of its access grant and never
    *  hold, or judge, an address: the directory is the operator's word that
-   *  the endpoint is safe to dial with a credential. Resolved from the
-   *  directory at runtime (fetched with the services, same cache), recipe
-   *  `mcpl` over it. A name not in the cached directory re-asks once, as
-   *  `request` does for a service, so a door that opened since the last
-   *  refresh is dialled at once. Undefined when no endpoint is published,
-   *  or when the home node can't be reached and none was cached. */
-  async mcplEndpointFor(audience: string): Promise<string | undefined> {
-    const lookup = (): string | undefined => {
-      const map = { ...this.mcplFromHome, ...this.config.mcpl };
-      return Object.hasOwn(map, audience) ? map[audience] : undefined;
-    };
-    await this.resolveServices();
-    let url = lookup();
-    if (!url) {
-      await this.resolveServices({ force: true });
-      url = lookup();
-    }
-    return url;
+   *  the endpoint is safe to dial with a credential. Each call reads the
+   *  directory afresh, or joins a read already under way (refreshing the
+   *  services' cache too), since a deploy saves what it finds: a service
+   *  that moved is found where it is now, and an old copy is never saved
+   *  when the directory can't be read. The answer is the endpoint; or, when
+   *  the directory publishes none for the audience, the audiences it
+   *  publishes one for; or, when it couldn't be read, why. Never throws. */
+  async mcplEndpointFor(audience: string): Promise<McplEndpointAnswer> {
+    await this.resolveServices({ force: true });
+    if (this.servicesError !== null) return { unreadable: this.servicesError };
+    if (Object.hasOwn(this.mcplFromHome, audience)) return { url: this.mcplFromHome[audience]! };
+    return { published: Object.keys(this.mcplFromHome).sort() };
   }
 
   /** The agent-facing HTTP seam for non-MCPL services (Orrery et al.): the

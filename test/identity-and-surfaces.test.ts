@@ -192,55 +192,74 @@ describe('identity module', () => {
     expect(directoryFetches).toBeGreaterThan(fetchesBefore);
   });
 
-  it('mcplEndpointFor: the home node publishes MCPL endpoints by audience, wss only, and a new one resolves without a restart', async () => {
+  it("mcplEndpointFor reads the home node's directory afresh: a wss:// endpoint, or the audiences it publishes one for", async () => {
     const dir = tempDir('ident-');
-    let mcpl: Record<string, string> = { body: 'wss://body.test:8865/', plain: 'ws://10.0.0.7:8765/', odd: 'https://odd.test' };
+    let mcpl: Record<string, unknown> = {
+      body: 'wss://body.test:8865/', plain: 'ws://10.0.0.7:8765/', odd: 'https://odd.test', broken: 'wss://[x', count: 5,
+      arr: ['wss://arr.test/'],
+    };
     let directoryFetches = 0;
     const mod = new IdentityModule({
       keyPath: join(dir, 'k.pem'),
       home: 'id.test',
-      mcpl: { local: 'wss://local.test/mcpl' },
       fetchImpl: (async (url: any) => {
-        const u = String(url);
-        if (u === 'https://id.test/services') {
+        if (String(url) === 'https://id.test/services') {
           directoryFetches++;
           return new Response(JSON.stringify({ home: 'id.test', services: {}, mcpl }), { status: 200 });
         }
         return new Response('{}', { status: 404 });
       }) as typeof fetch,
     });
-    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test:8865/');
-    // not wss: never handed to a dial that carries a credential
-    expect(await mod.mcplEndpointFor('plain')).toBeUndefined();
-    expect(await mod.mcplEndpointFor('odd')).toBeUndefined();
-    // recipe config over the directory, as for services
-    expect(await mod.mcplEndpointFor('local')).toBe('wss://local.test/mcpl');
-    // a name every object inherits is not an endpoint
-    expect(await mod.mcplEndpointFor('toString')).toBeUndefined();
-
-    // a door that opens after the directory was cached is found at once: an unknown name re-asks
+    expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test:8865/' });
+    // Only a value that parses as a wss:// url is an endpoint, since a credential goes on this dial; a name every
+    // object inherits is none either.
+    for (const name of ['plain', 'odd', 'broken', 'count', 'arr', 'toString']) {
+      expect(await mod.mcplEndpointFor(name)).toEqual({ published: ['body'] });
+    }
+    // Each lookup reads the directory again, so an endpoint that moved, or a new one, is found at once.
     const before = directoryFetches;
-    mcpl = { ...mcpl, games: 'wss://games.test/mcpl' };
-    expect(await mod.mcplEndpointFor('games')).toBe('wss://games.test/mcpl');
-    expect(directoryFetches).toBeGreaterThan(before);
+    mcpl = { games: 'wss://games.test/mcpl', body: 'wss://body.test:9000/' };
+    expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test:9000/' });
+    // The audiences are listed sorted, whatever order the directory gives them in.
+    expect(await mod.mcplEndpointFor('nowhere')).toEqual({ published: ['body', 'games'] });
+    // An audience the directory stops publishing is gone at the next read.
+    mcpl = { games: 'wss://games.test/mcpl' };
+    expect(await mod.mcplEndpointFor('body')).toEqual({ published: ['games'] });
+    expect(directoryFetches).toBe(before + 3);
   });
 
-  it('mcplEndpointFor: a home node that cannot be reached leaves the last directory, or nothing, never a throw', async () => {
+  it("mcplEndpointFor: a directory that can't be read is said so, never thrown, and never answered from an older read", async () => {
     const dir = tempDir('ident-');
-    let up = true;
+    let up = false;
+    let status = 200;
+    let fetches = 0;
     const mod = new IdentityModule({
       keyPath: join(dir, 'k.pem'),
       home: 'id.test',
       fetchImpl: (async (url: any) => {
+        fetches++;
         if (!up) throw new Error('ECONNREFUSED');
-        if (String(url).includes('/services')) return new Response(JSON.stringify({ services: {}, mcpl: { body: 'wss://body.test/' } }), { status: 200 });
+        if (String(url).includes('/services')) {
+          return new Response(JSON.stringify({ services: {}, mcpl: { body: 'wss://body.test/' } }), { status });
+        }
         return new Response('{}', { status: 404 });
       }) as typeof fetch,
     });
-    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test/');
+    // Nothing has been read yet. Each lookup is one read, failed or not.
+    expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'ECONNREFUSED' });
+    expect(fetches).toBe(1);
+    up = true;
+    expect(await mod.mcplEndpointFor('body')).toEqual({ url: 'wss://body.test/' });
+    expect(fetches).toBe(2);
+    // A read that fails after a good one isn't answered from the copy the good one left.
     up = false;
-    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test/');
-    expect(await mod.mcplEndpointFor('nowhere')).toBeUndefined();
+    expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'ECONNREFUSED' });
+    expect(fetches).toBe(3);
+    // An answer that isn't 2xx is a read that failed.
+    up = true;
+    status = 503;
+    expect(await mod.mcplEndpointFor('body')).toEqual({ unreadable: 'status 503' });
+    expect(fetches).toBe(4);
   });
 
   it('request: a home node that cannot be reached degrades to the built-in map, never to an outage', async () => {
