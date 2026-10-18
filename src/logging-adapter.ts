@@ -87,6 +87,10 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/** Membrane error types whose cause is not in the request body: retries
+ *  repeat them, so their records drop the raw request (see errorRawRequest). */
+const REQUEST_NOT_EVIDENCE = new Set(['rate_limit', 'server', 'network', 'timeout', 'abort', 'auth']);
+
 /** Calls `get`, giving undefined where it throws. */
 function guarded<T>(get: () => T): T | undefined {
   try { return get(); } catch { return undefined; }
@@ -361,6 +365,23 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  /** Error records keep the full request only when the request itself is the
+   *  evidence. A rate-limit, overload, network or auth failure says nothing
+   *  about the request's contents, and those are exactly the errors that
+   *  repeat: one OAuth 429 storm wrote a ~4.4MB request per retry and grew a
+   *  single llm-calls file to 687MB. For those, keep a size note instead.
+   *  invalid_request / context_length / unsupported, non-membrane errors, and
+   *  LLM_CALLS_FULL_PAYLOADS=1 keep the request as before. */
+  private errorRawRequest(err: unknown, rawRequest: unknown): unknown {
+    if (this.fullPayloads || rawRequest == null) return rawRequest;
+    const type = guarded(() => (err as { type?: unknown } | null)?.type);
+    if (typeof type !== 'string' || !REQUEST_NOT_EVIDENCE.has(type)) return rawRequest;
+    let bytes: number | null = null;
+    // UTF-8 bytes, not UTF-16 code units: non-ASCII text would read smaller.
+    try { bytes = Buffer.byteLength(JSON.stringify(rawRequest), 'utf8'); } catch { /* unserializable: no size */ }
+    return { omitted: `${type} error (set LLM_CALLS_FULL_PAYLOADS=1 to keep the request)`, bytes };
+  }
+
   private refusalRawRequest(response: ProviderResponse, rawRequest: unknown): unknown {
     if (this.fullPayloads) return rawRequest;
     const raw = (response as { raw?: { stop_reason?: string } }).raw;
@@ -417,7 +438,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
               rawRequest: this.refusalRawRequest(outcome.response, rawRequest),
               rawResponse: (outcome.response as { raw?: unknown }).raw ?? null,
             }
-          : { ...head, requestSummary: summary, rawRequest, ...errorFields };
+          : { ...head, requestSummary: summary, rawRequest: this.errorRawRequest(outcome.error, rawRequest), ...errorFields };
       } catch {
         record = { ...head, summaryUnavailable: true, ...errorFields };
       }
