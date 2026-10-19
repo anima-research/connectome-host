@@ -13,7 +13,7 @@
   marked not sent with the host's reason, and one a reconnect can't confirm
   is marked so until its echo comes. Such a row stays through a change of
   session or branch too, naming the session or branch it was sent in while
-  another is shown; only `/clear` drops it.
+  another is shown; only `/clear`, or a reload, drops it.
   Up to 8 images per message, and no more images or base64 than the recipe
   keeps live (6 images by default); a recipe that can keep more than 20
   live holds them to 2000 px on a side, under the stricter limit the model
