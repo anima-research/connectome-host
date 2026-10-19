@@ -70,11 +70,13 @@ export interface SentRow {
   refusal?: string;
   /** On a row typed here: where it was sent, as the composer knew it then. A
    *  send the host took after switching sessions, before this client's
-   *  welcome for the new one, names the old session: nothing reaches the
-   *  client in between. */
+   *  welcome for the new one, names the old session, and one it took after
+   *  switching branches, before branch-changed reached this client, the old
+   *  branch: the frames carry no place. Its echo replaces the row either
+   *  way. */
   sentIn?: Place;
-  /** On a kept send shown in another place than it was sent in: that place,
-   *  as its mark names it (placeLabel). */
+  /** On a kept send whose recorded place isn't the latest welcome's: that
+   *  place, as its mark names it (placeLabel). */
   earlier?: string;
 }
 
@@ -112,32 +114,34 @@ export function settleRefusal(rows: SentRow[], corrId: string, composerEmpty: bo
  * The sends typed here that a welcome's window doesn't hold, to keep after
  * it: a refused one keeps its mark, and any other is marked unconfirmed,
  * since its frame may not have reached the host. An echo that arrives later
- * still replaces it. Given the place a welcome for another session or branch
- * is for, each names the place it was sent in where that's another one.
+ * still replaces it. Each names the place it was sent in where that isn't
+ * `here`, the welcome's.
  */
-function keptSends<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, here?: Place): R[] {
+function keptSends<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, here: Place): R[] {
   const welcomed = new Set(window.map((m) => m.corrId).filter((c) => c !== undefined));
   return rows
     .filter((m) => isSyntheticId(m.id) && m.corrId !== undefined && !welcomed.has(m.corrId))
     .map((m) => ({
       ...m,
       unsent: m.unsent ?? ('unconfirmed' as const),
-      earlier: here ? placeLabel(m.sentIn, here) : m.earlier,
+      earlier: placeLabel(m.sentIn, here),
     }));
 }
 
 /**
  * The rows a welcome for the same session and branch leaves, as after a
  * reconnect: the paged-in scrollback before its window, the window, and the
- * sends kept after it (keptSends).
+ * sends kept after it (keptSends), each naming the place it was sent in
+ * where that isn't `here`, the welcome's.
  */
 export function rowsAfterWelcome<R extends SentRow & { index?: number }>(
   rows: ReadonlyArray<R>,
   window: ReadonlyArray<R>,
   startIndex: number,
+  here: Place,
 ): R[] {
   const before = rows.filter((m) => typeof m.index === 'number' && m.index < startIndex && !isSyntheticId(m.id));
-  return [...before, ...window, ...keptSends(rows, window)];
+  return [...before, ...window, ...keptSends(rows, window, here)];
 }
 
 /**

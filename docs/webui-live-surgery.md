@@ -112,11 +112,13 @@ while it isn't open, stays in the composer with a note. Whenever a welcome
 replaces the transcript, after a reconnect or a change of session or branch, a
 send typed here that its window doesn't hold stays after it: a refused one
 with its mark, and any other marked not confirmed, since its message may not
-have reached the host, until an echo replaces it. After a change of session or
-branch, the mark names the one it was sent in. Only `/clear` drops them. A
+have reached the host, until an echo replaces it. Shown in another session
+than it was sent in, the mark names that session and its branch, and in
+another branch of the same session, that branch. Only `/clear` drops them. A
 routed message's row gives way, since no echo of it comes here. A host from
 before the `corrId` on entries, as under `bun run dev` against an older
-running host, shows each send twice until a reload.
+running host, shows each send twice until a reload, and after a reconnect
+marks this client's copy not confirmed beside the stored one.
 
 Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's

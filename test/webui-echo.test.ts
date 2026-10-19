@@ -17,8 +17,11 @@ interface Row extends SentRow {
 const sent = (id: string, corrId: string, text = 'hi'): Row => ({ id, participant: 'user', text, corrId });
 const stored = (index: number, corrId?: string, text = 'hi'): Row =>
   ({ id: `stored-${index}`, participant: 'user', text, index, ...(corrId ? { corrId } : {}) });
-/** A session and a branch named by their ids. */
-const at = (session: string, branch: string): Place => ({ session: { id: session, name: session }, branch: { id: branch, name: branch } });
+/** A session and a branch by name, each with an id unlike its name. */
+const at = (session: string, branch: string): Place =>
+  ({ session: { id: `id-of-${session}`, name: session }, branch: { id: `id-of-${branch}`, name: branch } });
+/** The place the welcomes below are for, unless a test says otherwise. */
+const HERE = at('s1', 'main');
 
 describe('newCorrId', () => {
   test('is 32 hex digits, and new for each send', () => {
@@ -104,18 +107,18 @@ describe('rowsAfterWelcome', () => {
   test('keeps the scrollback before the window, then the window', () => {
     const rows = [stored(1), stored(2), stored(5)];
     const window = [stored(5), stored(6)];
-    expect(rowsAfterWelcome(rows, window, 5).map((r) => r.id)).toEqual(['stored-1', 'stored-2', 'stored-5', 'stored-6']);
+    expect(rowsAfterWelcome(rows, window, 5, HERE).map((r) => r.id)).toEqual(['stored-1', 'stored-2', 'stored-5', 'stored-6']);
   });
 
   test('a row whose send the window holds gives way to the stored message', () => {
     const rows = [stored(4), sent('m1', 'a')];
-    expect(rowsAfterWelcome(rows, [stored(5, 'a')], 5).map((r) => r.id)).toEqual(['stored-4', 'stored-5']);
+    expect(rowsAfterWelcome(rows, [stored(5, 'a')], 5, HERE).map((r) => r.id)).toEqual(['stored-4', 'stored-5']);
   });
 
   test('a row the window lacks stays after it, marked unconfirmed, and a refused one keeps its mark', () => {
     const refused = { ...sent('m1', 'a'), unsent: 'refused' as const };
     const rows = [stored(4), refused, sent('m2', 'b')];
-    const after = rowsAfterWelcome(rows, [stored(5)], 5);
+    const after = rowsAfterWelcome(rows, [stored(5)], 5, HERE);
     expect(after.map((r) => [r.id, r.unsent])).toEqual([
       ['stored-4', undefined],
       ['stored-5', undefined],
@@ -128,13 +131,14 @@ describe('rowsAfterWelcome', () => {
 
   test('other rows this client made give way to the window', () => {
     const output: Row = { id: 'm7', participant: 'command', text: '/status output' };
-    expect(rowsAfterWelcome([output], [stored(5)], 5).map((r) => r.id)).toEqual(['stored-5']);
+    expect(rowsAfterWelcome([output], [stored(5)], 5, HERE).map((r) => r.id)).toEqual(['stored-5']);
   });
 
-  test('a kept row keeps the rest of itself, images and the place it names included', () => {
-    const withImage = { ...sent('m1', 'a'), sentImages: ['image'], earlier: 'session s1' };
-    expect(rowsAfterWelcome([withImage], [], 0)[0])
-      .toMatchObject({ id: 'm1', sentImages: ['image'], unsent: 'unconfirmed', earlier: 'session s1' });
+  test('a kept row keeps the rest of itself, images included, and names its place against this welcome', () => {
+    const withImage = { ...sent('m1', 'a'), sentImages: ['image'], sentIn: at('s1', 'side'), earlier: 'a stale label' };
+    expect(rowsAfterWelcome([withImage], [], 0, HERE)[0])
+      .toMatchObject({ id: 'm1', sentImages: ['image'], unsent: 'unconfirmed', earlier: 'branch side' });
+    expect(rowsAfterWelcome([withImage], [], 0, at('s1', 'side'))[0]!.earlier).toBeUndefined();
   });
 });
 
@@ -143,7 +147,7 @@ describe('rowsAfterReset', () => {
     const refused = { ...sent('m1', 'a'), unsent: 'refused' as const, refusal: 'host not ready' };
     const output: Row = { id: 'm3', participant: 'command', text: '/status output' };
     const rows = [stored(0), stored(1), refused, sent('m2', 'b'), output];
-    expect(rowsAfterReset(rows, [stored(0, undefined, 'other')], at('s1', 'main')).map((r) => [r.id, r.unsent, r.refusal])).toEqual([
+    expect(rowsAfterReset(rows, [stored(0, undefined, 'other')], HERE).map((r) => [r.id, r.unsent, r.refusal])).toEqual([
       ['stored-0', undefined, undefined],
       ['m1', 'refused', 'host not ready'],
       ['m2', 'unconfirmed', undefined],
@@ -169,7 +173,7 @@ describe('rowsAfterReset', () => {
   });
 
   test('a send the window holds gives way to it, as on a reconnect', () => {
-    expect(rowsAfterReset([sent('m1', 'a')], [stored(4, 'a')], at('s1', 'main')).map((r) => r.id)).toEqual(['stored-4']);
+    expect(rowsAfterReset([sent('m1', 'a')], [stored(4, 'a')], HERE).map((r) => r.id)).toEqual(['stored-4']);
   });
 });
 
@@ -177,6 +181,15 @@ describe('placeOf and placeLabel', () => {
   test('a place names each part by its name, or its id without one', () => {
     expect(placeOf({ session: { id: 's1', name: '' }, branch: { id: 'b1', name: 'main' } }))
       .toEqual({ session: { id: 's1', name: 's1' }, branch: { id: 'b1', name: 'main' } });
+    expect(placeOf({ session: { id: 's1', name: 'research' }, branch: { id: 'b2', name: '' } }))
+      .toEqual({ session: { id: 's1', name: 'research' }, branch: { id: 'b2', name: 'b2' } });
+  });
+
+  test('places are told apart by id, and named by name', () => {
+    const one = { session: { id: 'a', name: 'research' }, branch: { id: 'b', name: 'main' } };
+    const other = { session: { id: 'c', name: 'research' }, branch: { id: 'b', name: 'main' } };
+    expect(placeLabel(one, other)).toBe('session research, branch main');
+    expect(placeLabel(one, one)).toBeUndefined();
   });
 
   test('a send with no place names none', () => {

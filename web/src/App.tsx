@@ -897,6 +897,14 @@ export function App() {
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
     const entries = msg.messages.map(entryToMessage);
+    // A history page asked for before this welcome is dropped, and paging
+    // starts again from here: after a reconnect, the socket it was asked on
+    // is gone, so no answer would come, and after a change of session or
+    // branch it's the old transcript's.
+    pendingHistoryCorr = null;
+    window.clearTimeout(pendingHistoryTimer);
+    setHistoryLoading(false);
+    setBulkRemaining(0);
 
     if (key !== welcomeKey) {
       // Session/branch changed (or first connect): the welcome's window
@@ -904,14 +912,9 @@ export function App() {
       // hold stay after it, each naming the session or branch it was sent in
       // where that's another (rowsAfterReset), so a refused send's text isn't
       // lost with the old transcript. /clear is the one replacement that
-      // drops them. A history page asked for before is the old transcript's,
-      // so its answer is dropped.
+      // drops them.
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
-      pendingHistoryCorr = null;
-      window.clearTimeout(pendingHistoryTimer);
-      setHistoryLoading(false);
-      setBulkRemaining(0);
       setMessages(produce((arr) => {
         const rows = rowsAfterReset(arr, entries, placeOf(msg));
         arr.length = 0;
@@ -930,7 +933,7 @@ export function App() {
     // (rowsAfterWelcome). Other synthetic rows (command output, triggers,
     // routed messages) give way to the window.
     setMessages(produce((arr) => {
-      const rows = rowsAfterWelcome(arr, entries, msg.history.startIndex);
+      const rows = rowsAfterWelcome(arr, entries, msg.history.startIndex, placeOf(msg));
       arr.length = 0;
       arr.push(...rows);
     }));
