@@ -84,10 +84,13 @@ with no refusal, so the composer measures each message's frame first and
 keeps one that's over, with a note, to shorten. The browser fits an image
 to the image limits before sending: one that already fits goes byte for
 byte; one too big, too large on a side, or in a format the model APIs
-don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG where the
-browser can't write WebP), and its
-thumbnail says so. A PNG, JPEG, GIF or WebP that is cut short or damaged is
-refused rather than redrawn, since the browser would draw only what it has.
+don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG on white, which
+flattens any transparency, where the browser can't write WebP), and its
+thumbnail says so. A size the browser can't draw at is tried smaller. An
+animation sent as it is shows "first frame", since the model APIs use only
+that. A PNG, JPEG, GIF or WebP that is cut short, or a PNG with a chunk that
+fails its checksum, is refused rather than redrawn, since the browser would
+draw only what it has.
 The host checks again for every client, telling the format by the bytes (a
 mislabeled type is corrected) and walking the file to its end marker (PNG
 chunks are checksummed too; a JPEG's, GIF's or WebP's compressed data has no
@@ -96,9 +99,14 @@ message whose image fails with `message not sent: <reason>`. A stored image the
 API refuses would fail every later inference on the branch until it leaves the
 live window, so it is never stored. The limits are the host's own, from its
 recipe, and its welcome advertises them for the composer to fit to. The
-refusal carries the send's `corrId`: the composer takes the message's row
-back out of the transcript and, when the composer is empty, puts the message
-back in it.
+refusal carries the send's `corrId`: when the composer is empty, the
+message goes back into it and its row comes out of the transcript; with
+another draft there, the row stays, marked not sent. The stored message's
+entry carries the `corrId` too, so its echo replaces exactly the row its
+send showed. A message the socket doesn't take, while it isn't open, stays
+in the composer with a note. After a reconnect, a row the welcome's window
+doesn't hold stays after it, marked not confirmed, since its message may
+not have reached the host, until an echo replaces it.
 
 Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's

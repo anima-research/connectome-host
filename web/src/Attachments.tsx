@@ -5,8 +5,8 @@
  */
 import { For, Show } from 'solid-js';
 import type { UserImageLimits } from '@conhost/web/protocol';
-import { imageDamage, sniffImageType } from '@conhost/web/image-bytes';
-import { base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
+import { imageDamage, isAnimated, sniffImageType } from '@conhost/web/image-bytes';
+import { ANIMATED_NOTE, ANIMATED_REDRAWN_NOTE, base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
 
 export interface Attachment {
   id: string;
@@ -18,7 +18,11 @@ export interface Attachment {
   dataUrl: string;
   /** What was done to fit it, when it was not sent as picked. */
   adjusted?: 'shrunk' | 'converted';
-  /** Says what `adjusted` did, in words for the thumbnail's tooltip. */
+  /** An animation sent as picked: the model sees only its first frame,
+   *  though the thumbnail moves. */
+  animated?: boolean;
+  /** Says what `adjusted` or `animated` means, in words for the thumbnail's
+   *  tooltip. */
   note?: string;
 }
 
@@ -92,6 +96,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     const damage = imageDamage(bytes, sniffed);
     if (damage) throw new Error(`${name} ${damage}`);
   }
+  const animated = sniffed !== undefined && isAnimated(bytes, sniffed);
   let img: HTMLImageElement;
   try {
     img = await loadImage(file);
@@ -111,6 +116,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
       mediaType: sniffed,
       data,
       dataUrl: `data:${sniffed};base64,${data}`,
+      ...(animated ? { animated: true, note: ANIMATED_NOTE } : {}),
     };
   }
 
@@ -124,7 +130,9 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     data: dataUrl.slice(dataUrl.indexOf(',') + 1),
     dataUrl,
     adjusted: fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
-    note: fitNote(fit, { width, height, type: file.type, to: fit.blob.type }),
+    note: animated
+      ? `${fitNote(fit, { width, height, type: file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
+      : fitNote(fit, { width, height, type: file.type, to: fit.blob.type }),
   };
 }
 
@@ -160,8 +168,10 @@ export function AttachmentStrip(props: {
               alt={a.name}
               class="block h-16 max-w-[8rem] object-contain rounded border border-neutral-800 bg-neutral-900"
             />
-            <Show when={a.adjusted}>
-              <span class="absolute bottom-0.5 left-0.5 px-1 rounded bg-neutral-950/80 text-[9px] font-mono text-amber-300">{a.adjusted}</span>
+            <Show when={a.adjusted ?? (a.animated ? 'first frame' : undefined)}>
+              {(label) => (
+                <span class="absolute bottom-0.5 left-0.5 px-1 rounded bg-neutral-950/80 text-[9px] font-mono text-amber-300">{label()}</span>
+              )}
             </Show>
             <button
               type="button"

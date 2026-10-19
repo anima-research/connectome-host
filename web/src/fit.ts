@@ -54,6 +54,13 @@ export function fitNote(fit: { w: number; h: number; flattened: boolean }, from:
   return fit.flattened ? `${what}, as a JPEG on white, which flattens any transparency` : what;
 }
 
+/** An animation sent as picked: the model APIs use only its first frame,
+ *  while the thumbnail moves. */
+export const ANIMATED_NOTE = 'animated: the model sees only its first frame';
+
+/** An animation redrawn to fit: the canvas draws one frame of it. */
+export const ANIMATED_REDRAWN_NOTE = 'an animation, redrawn as one still frame';
+
 /** Why an image couldn't be fitted, for the composer's notice. */
 export function noFitReason(name: string, fit: { tooBig: boolean }, limits: UserImageLimits): string {
   return fit.tooBig

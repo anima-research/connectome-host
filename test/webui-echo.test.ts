@@ -32,7 +32,8 @@ describe('sentRowIndex', () => {
   });
 
   test("an echo with no corrId, or another client's, finds no row", () => {
-    const rows = [sent('m1', 'a')];
+    // A routed message's row carries no corrId, and isn't an echo's either.
+    const rows = [sent('m1', 'a'), { id: 'm2', participant: 'user', text: '→ @child: hi' }];
     expect(sentRowIndex(rows, undefined)).toBe(-1);
     expect(sentRowIndex(rows, 'c')).toBe(-1);
   });
