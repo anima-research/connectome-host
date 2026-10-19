@@ -51,8 +51,8 @@ export function imageSize(b: Uint8Array, mediaType: string): { width: number; he
       if (b.length < 10) return null;
       return { width: le16(6), height: le16(8) };
     case 'image/webp': {
-      // Each variant's header ends at its own length: VP8L's at byte 25, the
-      // others' at 30. A short lossless file is still whole.
+      // Each variant's header has its own length: VP8L's is 25 bytes, and the
+      // others' 30. A lossless file shorter than 30 bytes can be whole.
       if (b.length < 16) return null;
       const chunk = tag(12);
       if (chunk === 'VP8 ') {

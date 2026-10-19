@@ -19,6 +19,8 @@ const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 let webUiModule: WebUiModule;
 let port: number;
 const pushed: Array<Record<string, unknown>> = [];
+/** The listener the module gave the framework for its traces. */
+let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
 
 beforeAll(async () => {
   webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' } });
@@ -28,7 +30,7 @@ beforeAll(async () => {
     framework: {
       getAllAgents: () => [],
       getAllModules: () => [],
-      onTrace: () => {},
+      onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
       pushEvent: (e: Record<string, unknown>) => { pushed.push(e); },
     },
     sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
@@ -91,6 +93,21 @@ describe('composer images over the WebSocket', () => {
     // This recipe names no strategy: the autobiographical default keeps 6
     // images live, so a message takes at most 6.
     expect(welcome.userImageLimits).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6 });
+    c.ws.close();
+  });
+
+  test("a process trace reaches clients without its images' base64", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    const image = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: FIX.png } };
+    emitTrace!({ type: 'process:received', processEvent: { type: 'external-message', content: [image] } });
+    const trace = await c.until(() => c.frames.find((f) => f.type === 'trace'), 'the trace');
+    expect(trace.event).toEqual({
+      type: 'process:received',
+      processEvent: { type: 'external-message', content: [
+        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: `[${FIX.png!.length} base64 characters, not sent in traces]` } },
+      ] },
+    });
     c.ws.close();
   });
 

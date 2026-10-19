@@ -103,6 +103,9 @@ describe('image headers', () => {
     expect(imageSize(bytes('png').subarray(0, 20), 'image/png')).toBeNull();
     expect(imageSize(bytes('jpeg').subarray(0, 40), 'image/jpeg')).toBeNull();
     expect(imageSize(bytes('webpLossy').subarray(0, 24), 'image/webp')).toBeNull();
+    // Lossy and extended headers need 30 bytes, one more than these have.
+    expect(imageSize(bytes('webpLossy').subarray(0, 29), 'image/webp')).toBeNull();
+    expect(imageSize(bytes('webpExtended').subarray(0, 29), 'image/webp')).toBeNull();
     expect(sniffImageType(Buffer.from('%PDF-1.7 not an image'))).toBeUndefined();
     expect(sniffImageType(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBeUndefined();
   });
