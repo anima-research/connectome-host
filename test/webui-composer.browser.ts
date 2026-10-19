@@ -305,16 +305,20 @@ const isRed = (rgba: number[]): boolean => rgba[0]! > 150 && rgba[1]! < 100 && r
 const isBlue = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! < 100 && rgba[2]! > 150 && rgba[3]! > 200;
 const isGreen = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! > 150 && rgba[2]! < 100 && rgba[3]! > 200;
 /** Where the fit check reads the red-and-blue picture, as fractions of its
- *  width and height, and the colour it shows there when scaled whole. Along
- *  its middle row: near each end, and on each side of the boundary at a
- *  third. Cropped from the corner, the boundary moves right and 38% reads
+ *  width and height, and the colour it shows there when scaled whole.
+ *  Along its middle row: near each end, and on each side of the boundary at
+ *  a third. Cropped from the corner, the boundary moves right and 38% reads
  *  red; from the centre, it moves left and 28% reads blue; cropped from the
- *  right, 3% reads blue; padded, 97% reads blank. Each holds for a picture
- *  more than about 2,910 px wide, fitted to 2000; this one is 3000. And in
- *  the green band across its bottom quarter, which a draw stretched, cut or
- *  padded down its height leaves off that row. */
+ *  right, 3% reads blue; padded, 3% or 97% reads blank. Each holds for a
+ *  picture more than about 2,910 px wide, fitted to 2000; this one is 3000.
+ *  Down its middle column: near each end, and on each side of the green
+ *  band's edge at three quarters, 10 rows from it at the fitted 200. Drawn
+ *  at its full height and cut from the top, 70% reads green; cut from the
+ *  centre or the bottom, 80% reads blue; stretched, 80% and 97% read blue;
+ *  padded, 3% or 97% reads blank. */
 const RED_BLUE_READS: Array<[number, number, (rgba: number[]) => boolean]> = [
-  [0.03, 0.5, isRed], [0.28, 0.5, isRed], [0.38, 0.5, isBlue], [0.97, 0.5, isBlue], [0.5, 0.9, isGreen],
+  [0.03, 0.5, isRed], [0.28, 0.5, isRed], [0.38, 0.5, isBlue], [0.97, 0.5, isBlue],
+  [0.5, 0.03, isBlue], [0.5, 0.7, isBlue], [0.5, 0.8, isGreen], [0.5, 0.97, isGreen],
 ];
 
 let browser: Browser;
@@ -329,7 +333,7 @@ beforeAll(async () => {
   }
   browser = await chromium.launch();
   const page = await browser.newPage();
-  WIDE_PNG = await canvasPng(page, 3000, 100, 'red-blue');
+  WIDE_PNG = await canvasPng(page, 3000, 300, 'red-blue');
   HALF_CLEAR_PNG = await canvasPng(page, 3000, 100, 'half-clear');
   DOT_PNG = await canvasPng(page, 1, 1);
   NOISE_PNG = await canvasPng(page, 30, 30, 'noise');
@@ -771,20 +775,20 @@ describe('images', () => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
       const tile = c.page.getByTitle(/^wide\.png/);
       await tile.waitFor();
-      expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×100 to 2000×67 to fit');
+      expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×300 to 2000×200 to fit');
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
       // The image itself, not only its note: the whole picture, scaled to
       // its new size, neither cropped nor padded.
       for (const [fx, fy, colour] of RED_BLUE_READS) {
         const shown = await tileImage(tile, fx, fy);
-        expect(shown.size).toEqual([2000, 67]);
+        expect(shown.size).toEqual([2000, 200]);
         expect([fx, fy, colour(shown.rgba)]).toEqual([fx, fy, true]);
       }
       const frame = await send(c, 'a wide picture');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
       for (const [fx, fy, colour] of RED_BLUE_READS) {
         const sent = await sentImage(c.page, frame.images![0]!, fx, fy);
-        expect(sent.size).toEqual([2000, 67]);
+        expect(sent.size).toEqual([2000, 200]);
         expect([fx, fy, colour(sent.rgba)]).toEqual([fx, fy, true]);
       }
     });
