@@ -2083,7 +2083,7 @@ export function validateRecipe(raw: unknown): Recipe {
     };
     if (refreshAfterMinutes !== undefined) {
       if (typeof refreshAfterMinutes !== 'number' || !Number.isFinite(refreshAfterMinutes) || !(refreshAfterMinutes > 0)) {
-        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number (finite), got ${JSON.stringify(refreshAfterMinutes)}.`);
+        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number (finite), got ${String(refreshAfterMinutes)}.`);
       }
       const ttlMinutes = agent.cacheTtl === '1h' ? 60 : 5;
       if (refreshAfterMinutes >= ttlMinutes) {
@@ -2094,7 +2094,7 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
     if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !Number.isFinite(maxIdleHours) || !(maxIdleHours > 0))) {
-      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number (finite), got ${JSON.stringify(maxIdleHours)}.`);
+      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number (finite), got ${String(maxIdleHours)}.`);
     }
   }
 
@@ -2877,9 +2877,17 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error('fleet.defaultSubscription must be an array of strings');
         }
       }
-      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
+      // The first two are compared between attempts; the last two reach
+      // setTimeout (waitForExit), which runs a delay past TIMER_MS_MAX at once.
+      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs'] as const) {
         if (fleet[k] !== undefined && (typeof fleet[k] !== 'number' || !Number.isFinite(fleet[k]) || (fleet[k] as number) < 0)) {
           throw new Error(`fleet.${k} must be a non-negative number (finite)`);
+        }
+      }
+      for (const k of ['gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
+        const v = fleet[k];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > TIMER_MS_MAX)) {
+          throw new Error(`fleet.${k} must be a number of milliseconds from 0 to ${TIMER_MS_MAX}`);
         }
       }
     }
