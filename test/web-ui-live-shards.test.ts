@@ -28,9 +28,12 @@ let port: number;
 let cm: ContextManager;
 let root: string;
 let app: unknown;
-/** Every frame the module sends, with the server-side client it went to,
- *  recorded at the moment it's sent. */
+/** Every frame the module sends, with the server-side client it went to, in
+ *  the order the socket gets them: recorded once the module's own `send` has
+ *  run, since that first sends any long message it was holding. */
 const sends: Array<{ client: unknown; frame: Frame }> = [];
+/** The listener the module gave the framework for its traces. */
+let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'webui-live-shards-'));
@@ -49,14 +52,14 @@ beforeAll(async () => {
   const module = webUiModule as unknown as { send: (client: unknown, frame: Frame) => void };
   const send = module.send.bind(webUiModule);
   module.send = (client, frame) => {
-    sends.push({ client, frame });
     send(client, frame);
+    sends.push({ client, frame });
   };
   app = {
     framework: {
       getAllAgents: () => [{ name: 'agent', getContextManager: () => cm }],
       getAllModules: () => [],
-      onTrace: () => {},
+      onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
       pushEvent: () => {},
     },
     sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
@@ -108,7 +111,7 @@ describe('the live push of a long message', () => {
     const before = cm.getMessageCount();
     expect(before).toBeGreaterThan(0);
     const already = appendedTo(c.client).length;
-    cm.addMessage('user', [{ type: 'text', text: LONG }], { corrId: 'c-long' });
+    cm.addMessage('user', [{ type: 'text', text: LONG }], { webuiCorrId: 'c-long' });
     expect(cm.getMessageCount() - before).toBeGreaterThan(1);
     // Held while context-manager's loop runs: nothing has gone out yet.
     expect(appendedTo(c.client).slice(already)).toEqual([]);
@@ -157,11 +160,66 @@ describe('the live push of a long message', () => {
 
   test('a message stored whole goes out at once', async () => {
     const c = await connect();
-    cm.addMessage('user', [{ type: 'text', text: 'short' }], { corrId: 'c-short' });
+    cm.addMessage('user', [{ type: 'text', text: 'short' }], { webuiCorrId: 'c-short' });
     expect(appendedTo(c.client)).toEqual([
       expect.objectContaining({ blocks: [{ kind: 'text', text: 'short' }], corrId: 'c-short' }),
     ]);
     c.ws.close();
+  });
+
+  test('two sends of the same long text go out as two entries, live and after a reload', async () => {
+    const c = await connect();
+    const before = cm.getMessageCount();
+    const already = appendedTo(c.client).length;
+    // The same text gives the same group id: what tells the bodies apart is
+    // the shard index starting again (context-manager's continuesBody).
+    cm.addMessage('user', [{ type: 'text', text: `twice ${LONG}` }], { webuiCorrId: 'c-one' });
+    const between = cm.getMessageCount();
+    cm.addMessage('user', [{ type: 'text', text: `twice ${LONG}` }], { webuiCorrId: 'c-two' });
+    await Promise.resolve();
+    const live = appendedTo(c.client).slice(already);
+    expect(live.map((e) => [e.index, e.corrId])).toEqual([[before, 'c-one'], [between, 'c-two']]);
+    const again = await connect();
+    expect((again.welcome.messages as Array<Record<string, unknown>>).slice(-2)).toEqual(live);
+    again.ws.close();
+    c.ws.close();
+  });
+
+  test('a trace sent while a run is held goes out after the joined entry', async () => {
+    const c = await connect();
+    // The framework emits inference:completed right after it stores an
+    // assistant turn, with no await between, so before the run's microtask.
+    cm.addMessage('agent', [{ type: 'text', text: LONG }]);
+    emitTrace!({ type: 'inference:completed', agentName: 'agent' });
+    const mine = sends.filter((s) => s.client === c.client).map((s) => s.frame.type);
+    const entry = mine.lastIndexOf('message-appended');
+    const trace = mine.lastIndexOf('trace');
+    expect(entry).toBeGreaterThanOrEqual(0);
+    expect(trace).toBeGreaterThan(entry);
+    await Promise.resolve();
+    expect(sends.filter((s) => s.client === c.client).map((s) => s.frame.type).lastIndexOf('message-appended')).toBe(entry);
+    c.ws.close();
+  });
+
+  test("a scoped connection gets the joined entry as its scopes let it, or not at all", async () => {
+    const c = await connect();
+    // Scopes as an observer's handshake would set them; the push filters them.
+    const client = c.client as { scopes: Set<string> | null };
+    try {
+      client.scopes = new Set(['health']);
+      cm.addMessage('user', [{ type: 'text', text: `health ${LONG}` }]);
+      await Promise.resolve();
+      expect(appendedTo(c.client)).toEqual([]);
+      client.scopes = new Set(['messages']);
+      cm.addMessage('user', [{ type: 'text', text: `messages ${LONG}` }]);
+      await Promise.resolve();
+      const live = appendedTo(c.client);
+      expect(live).toHaveLength(1);
+      expect((live[0]!.blocks as Array<{ text?: string }>)[0]!.text!.startsWith('messages ')).toBe(true);
+    } finally {
+      client.scopes = null;
+      c.ws.close();
+    }
   });
 
   test("a run still held when the session switches isn't pushed into the new session", async () => {

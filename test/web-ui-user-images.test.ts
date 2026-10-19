@@ -21,6 +21,9 @@ let port: number;
 const pushed: Array<Record<string, unknown>> = [];
 /** The listener the module gave the framework for its traces. */
 let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
+/** The bound app's recipe agent, which the module reads its image limits from
+ *  at each welcome and each send. */
+const agent: { strategy?: Record<string, unknown> } = {};
 
 beforeAll(async () => {
   webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' } });
@@ -34,7 +37,7 @@ beforeAll(async () => {
       pushEvent: (e: Record<string, unknown>) => { pushed.push(e); },
     },
     sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
-    recipe: { name: 'recipe', agent: {} },
+    recipe: { name: 'recipe', agent },
   } as never);
 });
 
@@ -111,6 +114,58 @@ describe('composer images over the WebSocket', () => {
     c.ws.close();
   });
 
+  test("a dropped tool result's images reach clients as notes too", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    // agent-framework 0.22.1's shape: the result whole, its image's data at
+    // the block's top level as a tool result carries it.
+    emitTrace!({
+      type: 'tool:result_dropped', agentName: 'agent', callId: 't1', agentStatus: 'idle',
+      result: { content: [{ type: 'image', data: FIX.png, mimeType: 'image/png' }] },
+    });
+    const trace = await c.until(() => c.frames.find((f) => f.type === 'trace'), 'the trace');
+    expect(trace.event).toEqual({
+      type: 'tool:result_dropped', agentName: 'agent', callId: 't1', agentStatus: 'idle',
+      result: { content: [{ type: 'image', data: `[${FIX.png!.length} base64 characters, not sent in traces]`, mimeType: 'image/png' }] },
+    });
+    c.ws.close();
+  });
+
+  test("a fleet child's traces reach clients without their images' base64", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    const image = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: FIX.png } };
+    // As FleetModule's child-event subscription calls it.
+    (webUiModule as unknown as { handleFleetEvent(name: string, event: unknown): void })
+      .handleFleetEvent('kid', { type: 'process:received', processEvent: { type: 'external-message', content: [image] } });
+    const frame = await c.until(() => c.frames.find((f) => f.type === 'child-event'), 'the child event');
+    expect(frame).toEqual({
+      type: 'child-event',
+      childName: 'kid',
+      event: { type: 'process:received', processEvent: { type: 'external-message', content: [
+        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: `[${FIX.png!.length} base64 characters, not sent in traces]` } },
+      ] } },
+    });
+    c.ws.close();
+  });
+
+  test("the recipe's own image window reaches both the welcome and the check", async () => {
+    agent.strategy = { type: 'autobiographical', maxLiveImages: 3, maxLiveImageBytes: 4_000_000 };
+    try {
+      const c = await connect();
+      const welcome = await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+      expect(welcome.userImageLimits).toEqual({
+        ...USER_IMAGE_LIMITS, maxCount: 3, maxBase64Chars: 4_000_000, maxTotalBase64Chars: 4_000_000,
+      });
+      c.ws.close();
+      const four = Array.from({ length: 4 }, () => ({ mediaType: 'image/png', data: FIX.png }));
+      expect((await send({ content: '', images: four })).error).toBe('message not sent: 4 images attached; a message takes at most 3 here');
+      expect((await send({ content: '', images: four.slice(0, 3) })).pushed).toBeDefined();
+    } finally {
+      delete agent.strategy;
+    }
+  });
+
   test("a send's corrId goes to the framework with its message", async () => {
     const r = await send({ content: 'hello', corrId: 'c-42' });
     expect(r.pushed!.metadata).toEqual({ corrId: 'c-42' });
@@ -151,7 +206,7 @@ describe('composer images over the WebSocket', () => {
   test('an image the model API would refuse is answered with the reason, and nothing is pushed', async () => {
     const before = pushed.length;
     const r = await send({ content: 'big', images: [{ mediaType: 'image/png', data: FIX.png8001x1 }] });
-    expect(r.error).toBe('message not sent: the image is 8001×1; the model API takes at most 8000 px on a side');
+    expect(r.error).toBe('message not sent: the image is 8001×1; the model API takes at most 8000 px on a side. Shrink it to 8000 px or less on its longer side.');
     expect(pushed.length).toBe(before);
   });
 

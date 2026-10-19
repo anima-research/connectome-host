@@ -9,7 +9,7 @@ import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { ProcessState } from '@animalabs/agent-framework';
 import { imageLimitsFrom, isClientMessage, USER_IMAGE_LIMITS } from '../src/web/protocol.js';
-import { hostImageLimits, liveImageWindow, userImageBlocks } from '../src/web/user-images.js';
+import { hostImageLimits, liveImageBytes, liveImageWindow, userImageBlocks } from '../src/web/user-images.js';
 import { imageDamage, imageSize, isAnimated, sniffImageType } from '../src/web/image-bytes.js';
 import { TuiModule } from '../src/modules/tui-module.js';
 import { coalesceAndFlatten, toWireEntry, withoutImageData } from '../src/modules/web-ui-module.js';
@@ -119,6 +119,8 @@ describe('image headers', () => {
     const gif = Buffer.from(bytes('gif'));
     gif.write('88a', 3, 'latin1');
     expect(sniffImageType(gif)).toBeUndefined();
+    gif.write('89b', 3, 'latin1');
+    expect(sniffImageType(gif)).toBeUndefined();
     gif.write('87a', 3, 'latin1');
     expect(sniffImageType(gif)).toBe('image/gif');
   });
@@ -220,6 +222,10 @@ describe('isAnimated', () => {
     expect(imageDamage(apng, 'image/png')).toBeNull();
     expect(isAnimated(apng, 'image/png')).toBe(true);
     expect(isAnimated(png, 'image/png')).toBe(false);
+    // acTL counts only ahead of the image data, as APNG places it.
+    const iend = png.length - 12;
+    const late = Buffer.concat([png.subarray(0, iend), actl, png.subarray(iend)]);
+    expect(isAnimated(late, 'image/png')).toBe(false);
   });
 
   test("a WebP is animated when its VP8X header sets the animation flag", () => {
@@ -231,6 +237,10 @@ describe('isAnimated', () => {
     expect(isAnimated(vp8x(0x10), 'image/webp')).toBe(false);
     expect(isAnimated(bytes('webpExtended'), 'image/webp')).toBe(false);
     expect(isAnimated(bytes('webpLossy'), 'image/webp')).toBe(false);
+    // Only a VP8X header has the flag: byte 20 of a lossless file is its
+    // signature, 0x2f, which has that bit set.
+    expect(bytes('webpLossless')[20]! & 0x02).toBe(0x02);
+    expect(isAnimated(bytes('webpLossless'), 'image/webp')).toBe(false);
   });
 });
 
@@ -254,13 +264,21 @@ describe('userImageBlocks', () => {
   test('8000 px on a side is taken, 8001 is refused with the size', () => {
     expect(userImageBlocks([{ mediaType: 'image/png', data: FIX.png8000x1! }]).ok).toBe(true);
     const r = userImageBlocks([{ mediaType: 'image/png', data: FIX.png8001x1! }]);
-    expect(r).toEqual({ ok: false, error: 'the image is 8001×1; the model API takes at most 8000 px on a side' });
+    expect(r).toEqual({ ok: false, error: 'the image is 8001×1; the model API takes at most 8000 px on a side. Shrink it to 8000 px or less on its longer side.' });
   });
 
   test('what is not an image is refused, naming which one', () => {
     const pdf = Buffer.from('%PDF-1.7\n' + 'x'.repeat(60)).toString('base64');
     const r = userImageBlocks([{ mediaType: 'image/png', data: FIX.png! }, { mediaType: 'image/png', data: pdf }]);
     expect(r).toEqual({ ok: false, error: 'image 2 is not a PNG, JPEG, GIF or WebP image' });
+  });
+
+  test('a PNG whose signature was changed in transit is refused as a damaged PNG', () => {
+    // A copy that turns \r\n into \n drops the signature's byte 4.
+    const png = Buffer.from(FIX.png!, 'base64');
+    const copied = Buffer.concat([png.subarray(0, 4), png.subarray(5)]);
+    const r = userImageBlocks([{ mediaType: 'image/png', data: copied.toString('base64') }]);
+    expect(r).toEqual({ ok: false, error: "the image is a damaged PNG: its 8-byte signature isn't whole" });
   });
 
   test('base64 that is not base64 is refused rather than decoded leniently', () => {
@@ -321,7 +339,7 @@ describe('userImageBlocks', () => {
     expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2000, 1).toString('base64') }], many).ok).toBe(true);
     expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2001, 1).toString('base64') }], many)).toEqual({
       ok: false,
-      error: "the image is 2001×1; this host's recipe can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 2000 px on a side stays under it",
+      error: 'the image is 2001×1; this host can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 2000 px on a side stays under it. Shrink it to 2000 px or less on its longer side.',
     });
   });
 });
@@ -343,6 +361,19 @@ describe("a host's image limits, from its recipe's live window", () => {
     expect(hostImageLimits(undefined)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
   });
 
+  test('a message takes no more base64 than the window keeps, where the recipe sets that', () => {
+    expect(liveImageBytes(undefined)).toBeUndefined();
+    expect(liveImageBytes({ type: 'autobiographical', maxLiveImageBytes: 4_000_000 })).toBe(4_000_000);
+    expect(liveImageBytes({ type: 'frontdesk', maxLiveImageBytes: 4_000_000 })).toBe(4_000_000);
+    expect(liveImageBytes({ type: 'autobiographical', maxLiveImageBytes: 0 })).toBeUndefined();
+    expect(liveImageBytes({ type: 'passthrough', maxLiveImageBytes: 4_000_000 })).toBeUndefined();
+    expect(hostImageLimits(6, 4_000_000)).toEqual({
+      ...USER_IMAGE_LIMITS, maxCount: 6, maxBase64Chars: 4_000_000, maxTotalBase64Chars: 4_000_000,
+    });
+    // A byte window above the defaults leaves them as they are.
+    expect(hostImageLimits(6, 64 * 1024 * 1024)).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6 });
+  });
+
   test("the composer takes a host's limits where they're sound, and the defaults otherwise", () => {
     expect(imageLimitsFrom(undefined)).toEqual(USER_IMAGE_LIMITS);
     expect(imageLimitsFrom({ maxCount: 6, maxSidePx: 2000 })).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6, maxSidePx: 2000 });
@@ -356,10 +387,12 @@ describe('stored messages as the WebUI is sent them', () => {
   const image = { type: 'image', source: { type: 'base64', data: FIX.png, mediaType: 'image/png' } };
 
   test("a stored user message carries its send's corrId, and nothing else does", () => {
-    const user = { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'hi' }], metadata: { corrId: 'c-9' } };
+    const user = { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'hi' }], metadata: { webuiCorrId: 'c-9' } };
     expect(toWireEntry(user, 0).corrId).toBe('c-9');
     expect(toWireEntry({ ...user, metadata: {} }, 0).corrId).toBeUndefined();
     expect(toWireEntry({ ...user, participant: 'Claude' }, 0).corrId).toBeUndefined();
+    // Another producer's `corrId` in a message's metadata isn't a send's.
+    expect(toWireEntry({ ...user, metadata: { corrId: 'c-9' } }, 0).corrId).toBeUndefined();
   });
 
   test("a coalesced shard run's images name the shard each is stored in", () => {
@@ -377,6 +410,34 @@ describe('stored messages as the WebUI is sent them', () => {
     ]);
     expect(entries[0]!.index).toBe(10);
     expect(entries[1]!.blocks).toEqual([{ kind: 'media', mediaType: 'image/png', ref: 'm2/0' }]);
+  });
+
+  test("a run's blob refs and a tool result's images name their shard too", () => {
+    const blob = { type: 'blob_ref', ref: { mediaType: 'image/png' } };
+    const toolImage = { type: 'tool_result', toolUseId: 't1', content: [{ type: 'text', text: 'shot' }, image] };
+    const entries = coalesceAndFlatten([
+      { id: 's0', participant: 'user', bodyGroupId: 'g', shardIndex: 0, content: [{ type: 'text', text: 'a' }, blob] },
+      { id: 's1', participant: 'user', bodyGroupId: 'g', shardIndex: 1, content: [toolImage] },
+    ], 0);
+    expect(entries).toHaveLength(1);
+    const media = entries[0]!.blocks.filter((b) => b.kind === 'media');
+    expect(media).toEqual([
+      { kind: 'media', mediaType: 'image/png', ref: 's0/1' },
+      { kind: 'media', mediaType: 'image/png', ref: 's1/0.1' },
+    ]);
+  });
+
+  test('two ingestions of the same text are two entries, since a body is what continuesBody says', () => {
+    const shard = (id: string, shardIndex: number, text: string) =>
+      ({ id, participant: 'user', bodyGroupId: 'same-text', shardIndex, content: [{ type: 'text', text }] });
+    const entries = coalesceAndFlatten([
+      shard('a0', 0, 'x1 '), shard('a1', 1, 'x2'),
+      shard('b0', 0, 'x1 '), shard('b1', 1, 'x2'),
+    ], 4);
+    expect(entries.map((e) => [e.id, e.index, e.blocks])).toEqual([
+      ['a0', 4, [{ kind: 'text', text: 'x1 x2' }]],
+      ['b0', 6, [{ kind: 'text', text: 'x1 x2' }]],
+    ]);
   });
 });
 
@@ -400,6 +461,25 @@ describe('traces sent to WebUI clients', () => {
     expect(out.responses).toEqual(event.responses);
     expect(out.at).toBe(when);
     expect(event.processEvent.content[0]!.source).toMatchObject({ data: 'AAAA'.repeat(10) });
+  });
+
+  test("a tool result's image, with its data at the top level, is elided too", () => {
+    const out = withoutImageData({
+      type: 'tool:result_dropped',
+      result: { content: [{ type: 'image', data: 'AAAA'.repeat(5), mimeType: 'image/png' }] },
+    });
+    expect(out).toEqual({
+      type: 'tool:result_dropped',
+      result: { content: [{ type: 'image', data: '[20 base64 characters, not sent in traces]', mimeType: 'image/png' }] },
+    });
+  });
+
+  test('past its depth the walk sends a note, never the value', () => {
+    let deep: unknown = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } };
+    for (let i = 0; i < 20; i++) deep = { inner: deep };
+    const out = JSON.stringify(withoutImageData(deep));
+    expect(out).not.toContain('AAAA');
+    expect(out).toContain('[nested too deep to send in traces]');
   });
 });
 
@@ -516,7 +596,7 @@ describe('TuiModule', () => {
     const m = new TuiModule();
     const withCorr = { ...event('hello'), metadata: { corrId: 'c-1', other: 'x' } };
     expect((await m.onProcess(withCorr, state)).addMessages).toEqual([
-      { participant: 'user', content: [{ type: 'text', text: 'hello' }], metadata: { corrId: 'c-1' } },
+      { participant: 'user', content: [{ type: 'text', text: 'hello' }], metadata: { webuiCorrId: 'c-1' } },
     ]);
     const empty = { ...event('hello'), metadata: { corrId: '' } };
     expect((await m.onProcess(empty, state)).addMessages).toEqual([

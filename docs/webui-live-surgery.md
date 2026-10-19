@@ -56,8 +56,9 @@ for an image nested in a tool result (read_image, cameras, screenshots).
 The endpoint resolves that one message's blobs and streams bytes
 (`image/*` only, `nosniff`, sandboxed CSP; observer sessions need the
 `messages` scope; `?agent=<name>` picks a non-root agent; `?scope=<child>`
-proxies to a fleet child via the `media` panel op). Coalesced shard runs carry
-no refs (their block indices are synthetic) and keep the type chip.
+proxies to a fleet child via the `media` panel op). A coalesced shard run's
+images carry refs that name the shard each is stored in, since the run's own
+block indices are its own.
 
 The Context document already receives the compiled request with base64
 inline (it *is* what the model sees), so it renders those directly; the
@@ -97,8 +98,11 @@ chunks are checksummed too; a JPEG's, GIF's or WebP's compressed data has no
 checksum, so damage inside it would take a decoder to see), and refuses a
 message whose image fails with `message not sent: <reason>`. A stored image the
 API refuses would fail every later inference on the branch until it leaves the
-live window, so it is never stored. The limits are the host's own, from its
-recipe, and its welcome advertises them for the composer to fit to. The
+live window, so the host refuses what these checks can see: the format, a file
+cut short, a damaged PNG, the size and the dimensions. Damage inside compressed
+data, which they can't see, can still be stored. The limits are the host's
+own, from its recipe, and its welcome advertises them for the composer to fit
+to. The
 refusal carries the send's `corrId`: when the composer is empty (no text,
 no images, none still being read), the message goes back into it and its
 row comes out of the transcript; with a draft there, the row stays, marked

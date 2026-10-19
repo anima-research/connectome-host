@@ -53,19 +53,35 @@ export function liveImageWindow(strategy: RecipeStrategy | undefined): number | 
 }
 
 /**
- * The limits this host checks composer images against, from how many images
- * its recipe can keep live at once (`undefined`: no limit, as under
- * passthrough or `maxLiveImages: 0`). A message takes no more images than the
- * live window holds, since the rest would never reach the model; and when
- * more than 20 can be live, each side is held to 2000 px, which every
- * platform takes in a request that many images ride in.
+ * The base64 a recipe's strategy keeps live across its images, where the
+ * recipe sets it (`maxLiveImageBytes`); `undefined` leaves context-manager's
+ * default, 20 MiB at 0.14.0, which is above what one message may carry
+ * anyway. Read for the strategies `liveImageWindow` reads.
  */
-export function hostImageLimits(liveImages: number | undefined): UserImageLimits {
+export function liveImageBytes(strategy: RecipeStrategy | undefined): number | undefined {
+  const type = strategy?.type ?? 'autobiographical';
+  if (type !== 'autobiographical' && type !== 'frontdesk') return undefined;
+  const n = strategy?.maxLiveImageBytes;
+  return typeof n === 'number' && n > 0 ? n : undefined;
+}
+
+/**
+ * The limits this host checks composer images against, from what its recipe
+ * keeps live: how many images (`undefined`: no limit, as under passthrough or
+ * `maxLiveImages: 0`) and how much of their base64 (`undefined`: the default).
+ * A message takes no more images than the window keeps by count, and no more
+ * base64 than it keeps by bytes, since images past either are stripped before
+ * they reach the model. When more than 20 images can be live, each side is
+ * held to 2000 px, which every platform takes in a request that many images
+ * ride in.
+ */
+export function hostImageLimits(liveImages: number | undefined, liveBytes?: number): UserImageLimits {
   const L = USER_IMAGE_LIMITS;
   const unbounded = liveImages === undefined || liveImages <= 0;
   return {
-    ...L,
     maxCount: unbounded ? L.maxCount : Math.min(L.maxCount, liveImages),
+    maxBase64Chars: liveBytes ? Math.min(L.maxBase64Chars, liveBytes) : L.maxBase64Chars,
+    maxTotalBase64Chars: liveBytes ? Math.min(L.maxTotalBase64Chars, liveBytes) : L.maxTotalBase64Chars,
     maxSidePx: unbounded || liveImages > MANY_IMAGES ? Math.min(L.maxSidePx, MANY_IMAGES_SIDE_PX) : L.maxSidePx,
   };
 }
@@ -100,7 +116,15 @@ export function userImageBlocks(
     const bytes = Buffer.from(data, 'base64');
     const mediaType = sniffImageType(bytes);
     if (!mediaType) {
-      return { ok: false, error: `${which} is not a PNG, JPEG, GIF or WebP image` };
+      // "\x89PNG" with the rest of the signature changed is a PNG damaged in
+      // transit, as a text-mode copy that rewrites \r\n does.
+      const damagedPng = bytes.length >= 4 && bytes[0] === 0x89 && bytes.toString('latin1', 1, 4) === 'PNG';
+      return {
+        ok: false,
+        error: damagedPng
+          ? `${which} is a damaged PNG: its 8-byte signature isn't whole`
+          : `${which} is not a PNG, JPEG, GIF or WebP image`,
+      };
     }
     const damage = imageDamage(bytes, mediaType);
     if (damage) {
@@ -115,9 +139,9 @@ export function userImageBlocks(
     }
     if (size.width > L.maxSidePx || size.height > L.maxSidePx) {
       const why = L.maxSidePx < USER_IMAGE_LIMITS.maxSidePx
-        ? `this host's recipe can carry more than ${MANY_IMAGES} images in one request, where the model APIs hold every image to a stricter limit, and ${L.maxSidePx} px on a side stays under it`
+        ? `this host can carry more than ${MANY_IMAGES} images in one request, where the model APIs hold every image to a stricter limit, and ${L.maxSidePx} px on a side stays under it`
         : `the model API takes at most ${L.maxSidePx} px on a side`;
-      return { ok: false, error: `${which} is ${size.width}×${size.height}; ${why}` };
+      return { ok: false, error: `${which} is ${size.width}×${size.height}; ${why}. Shrink it to ${L.maxSidePx} px or less on its longer side.` };
     }
     blocks.push({ type: 'image', source: { type: 'base64', data, mediaType } });
   }

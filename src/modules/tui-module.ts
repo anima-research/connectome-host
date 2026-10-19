@@ -70,7 +70,9 @@ export class TuiModule implements Module {
         {
           participant: 'user',
           content: blocks,
-          ...(typeof corrId === 'string' && corrId.length > 0 ? { metadata: { corrId } } : {}),
+          // Under a key of the WebUI's own, so another producer's `corrId` in
+          // a message's metadata never reads as a send's.
+          ...(typeof corrId === 'string' && corrId.length > 0 ? { metadata: { webuiCorrId: corrId } } : {}),
         },
       ],
     };

@@ -38,6 +38,7 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import type { ServerWebSocket } from 'bun';
+import { continuesBody } from '@animalabs/context-manager';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
@@ -110,7 +111,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { hostImageLimits, liveImageWindow, userImageBlocks } from '../web/user-images.js';
+import { hostImageLimits, liveImageBytes, liveImageWindow, userImageBlocks } from '../web/user-images.js';
 import { loadRecipe } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -393,6 +394,9 @@ interface SharedServerState {
    *  pushes. Re-installed on every setApp (fresh ContextManager per session)
    *  and cleared in stop(). */
   messageListenerDetacher: (() => void) | null;
+  /** Sends the long message whose shards that listener is holding, if any.
+   *  `send` calls it before any frame, so entries keep the store's order. */
+  flushHeldRun: (() => void) | null;
   /** Cached child recipe summaries keyed by recipe path. Recipes are
    *  static-ish per host run (re-spawn doesn't change the file), so we
    *  parse once and reuse on every welcome. Cleared on session switch. */
@@ -470,6 +474,7 @@ export class WebUiModule implements Module {
       treeAggregator: null,
       fleetEventDetacher: null,
       messageListenerDetacher: null,
+      flushHeldRun: null,
     };
     state.observers?.start();
     state.server = Bun.serve({
@@ -591,10 +596,15 @@ export class WebUiModule implements Module {
       // A long message is stored as a run of shards, one add each, which
       // context-manager appends in one synchronous loop. The welcome joins a
       // run into one entry (coalesceAndFlatten), so the live push holds the
-      // run and sends it joined the same way: from a microtask queued at its
-      // first shard, which runs once the loop is done, or at once when
-      // another message's add comes first. Were the appends ever to stop
-      // being synchronous, each shard would go out on its own, as before.
+      // run and sends it joined the same way. It goes from a microtask queued
+      // at its first shard, which runs once the loop is done, or earlier,
+      // before any other frame this module sends (`send` flushes it first),
+      // so entries keep the store's order against traces too. Consecutive
+      // shards join one held run, and the flush splits it into bodies as the
+      // welcome does, by context-manager's `continuesBody`, since two
+      // ingestions of the same text share a group id. Were the appends ever
+      // to stop being synchronous, each shard would go out on its own, as
+      // before.
       let run: { messages: MessageLike[]; startIndex: number } | null = null;
       const flushRun = (): void => {
         const held = run;
@@ -613,13 +623,13 @@ export class WebUiModule implements Module {
         try {
           const message = ev.message as MessageLike;
           const index = cm0.getMessageCount() - 1;
-          if (run && run.messages[0]!.bodyGroupId !== message.bodyGroupId) flushRun();
           if (message.bodyGroupId) {
-            if (!run) {
-              run = { messages: [], startIndex: index };
+            if (run) {
+              run.messages.push(message);
+            } else {
+              run = { messages: [message], startIndex: index };
               queueMicrotask(flushRun);
             }
-            run.messages.push(message);
             return;
           }
           pushEntry(toWireEntry(message, index));
@@ -627,10 +637,14 @@ export class WebUiModule implements Module {
           console.error('[webui] message-appended projection failed:', err);
         }
       });
+      ss.flushHeldRun = flushRun;
       // A run still held when a session switch replaces this listener goes
       // nowhere: the switch marks every client unwelcomed until its new
       // welcome, and pushEntry skips those.
-      ss.messageListenerDetacher = detach;
+      ss.messageListenerDetacher = () => {
+        if (ss.flushHeldRun === flushRun) ss.flushHeldRun = null;
+        detach();
+      };
     }
 
     // Re-derive cost snapshot for the new framework. Without this the
@@ -766,12 +780,13 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    // Forward the verbatim event so the SPA can fold it into its own
-    // per-child AgentTreeReducer for live updates.
+    // Forward the event so the SPA can fold it into its own per-child
+    // AgentTreeReducer for live updates. A child's traces carry
+    // content whole as the host's own do, so their image data goes as notes.
     const msg: WebUiServerMessage = {
       type: 'child-event',
       childName,
-      event: event as unknown as { type: string; [k: string]: unknown },
+      event: withoutImageData(event) as unknown as { type: string; [k: string]: unknown },
     };
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
@@ -894,9 +909,10 @@ export class WebUiModule implements Module {
     if (sharedServer!.clients.size === 0) return;
     const traceMsg: WebUiServerMessage = {
       type: 'trace',
-      // A process trace carries the module's event and responses whole, so a
-      // composer send's images would reach every client twice as base64.
-      event: (event.type.startsWith('process:') ? withoutImageData(event) : event) as unknown as {
+      // Traces can carry content whole: a process trace the module's event and
+      // responses, tool:result_dropped the dropped result. So a send's images
+      // would reach every client as base64 without this.
+      event: withoutImageData(event) as unknown as {
         type: string;
         [k: string]: unknown;
       },
@@ -1601,7 +1617,8 @@ export class WebUiModule implements Module {
    *  images this host's recipe keeps live (`hostImageLimits`). The welcome
    *  advertises them, so the composer fits images to the same ones. */
   private imageLimits(): UserImageLimits {
-    return hostImageLimits(liveImageWindow(sharedServer?.app?.recipe.agent.strategy));
+    const strategy = sharedServer?.app?.recipe.agent.strategy;
+    return hostImageLimits(liveImageWindow(strategy), liveImageBytes(strategy));
   }
 
   /** Capabilities the SPA feature-detects. Duck-typed against the bound
@@ -3352,6 +3369,8 @@ export class WebUiModule implements Module {
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
+    // A long message held for joining goes out before anything sent after it.
+    sharedServer?.flushHeldRun?.();
     try {
       client.ws.send(JSON.stringify(msg));
     } catch {
@@ -3511,24 +3530,36 @@ interface BlockOrigin {
 /**
  * A copy of a trace payload with each base64 image's data replaced by a note
  * of its length. Exported for its test. A trace is JSON, so the walk meets no
- * cycles; the depth cap only stops a pathological nesting, past which values
- * pass as they are.
+ * cycles; the depth cap only stops a pathological nesting, past which a value
+ * is replaced by a note too.
  */
 export function withoutImageData(value: unknown, depth = 0): unknown {
-  if (depth > 16 || value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== 'object') return value;
+  // Past this depth a value goes as a note, not whole, so nesting can't carry
+  // an image past the walk.
+  if (depth > 16) return '[nested too deep to send in traces]';
   if (Array.isArray(value)) return value.map((v) => withoutImageData(v, depth + 1));
   // A Date or other class instance passes whole, for JSON.stringify to render
   // as it would have; only plain objects are copied.
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return value;
   const o = value as Record<string, unknown>;
-  const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
-  if (o.type === 'image' && src && src.type === 'base64' && typeof src.data === 'string') {
-    return { ...o, source: { ...src, data: `[${src.data.length} base64 characters, not sent in traces]` } };
+  if (o.type === 'image') {
+    // A content block's image ({ source: { type: 'base64', data } }), or a
+    // tool result's ({ data, mimeType }, as MCP and the framework shape it).
+    const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
+    if (src && src.type === 'base64' && typeof src.data === 'string') {
+      return { ...o, source: { ...src, data: elided(src.data) } };
+    }
+    if (typeof o.data === 'string') return { ...o, data: elided(o.data) };
   }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(o)) out[k] = withoutImageData(v, depth + 1);
   return out;
+}
+
+function elided(data: string): string {
+  return `[${data.length} base64 characters, not sent in traces]`;
 }
 
 // Per-block size caps for wire frames. A single pathological tool result or
@@ -3686,7 +3717,7 @@ export function toWireEntry(
   const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
   if (ts) entry.timestamp = ts;
   // The WebUI send this user message came from, stored by TuiModule.
-  const corrId = msg.metadata?.corrId;
+  const corrId = msg.metadata?.webuiCorrId;
   if (participant === 'user' && typeof corrId === 'string' && corrId.length > 0) entry.corrId = corrId;
   return entry;
 }
@@ -3707,11 +3738,13 @@ function flattenToolResultContent(content: unknown): string {
 }
 
 /**
- * Coalesce consecutive shards of a bodyGroup (one large message chunked at
- * ingestion) into a single wire entry, then flatten everything. Shards are
- * contiguous by construction; within a run they're ordered by shardIndex.
- * The coalesced entry's `index` is the FIRST shard's slot index so paging
- * cursors stay aligned with store slots. Exported for its test.
+ * Coalesce the shards of each body (one large message chunked at ingestion)
+ * into a single wire entry, then flatten everything. A body is what
+ * context-manager's `continuesBody` says: consecutive shards of one group id
+ * whose shard indices rise, in store order. The group id names the text, so
+ * two ingestions of the same text are two bodies. The coalesced entry's
+ * `index` is the FIRST shard's slot index so paging cursors stay aligned with
+ * store slots. Exported for its test.
  */
 export function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
   const out: WelcomeMessageEntry[] = [];
@@ -3724,11 +3757,9 @@ export function coalesceAndFlatten(messages: readonly MessageLike[], startIndex:
       continue;
     }
     const runStart = i;
-    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
-    const shards = messages.slice(runStart, i)
-      .map((shard, k) => ({ shard, k }))
-      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
-      .map(({ shard }) => shard);
+    i++;
+    while (i < messages.length && continuesBody(messages[i - 1], messages[i])) i++;
+    const shards = messages.slice(runStart, i);
     // Merge adjacent text blocks with NO separator — shard cuts land
     // mid-text, so reassembly must be byte-faithful concatenation.
     const mergedContent: unknown[] = [];
