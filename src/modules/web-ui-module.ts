@@ -579,23 +579,58 @@ export class WebUiModule implements Module {
     // (clients still see streamed text via traces).
     const cm0 = app.framework.getAllAgents()[0]?.getContextManager() as unknown as WindowCapableCm | undefined;
     if (cm0 && typeof cm0.onMessage === 'function' && typeof cm0.getMessageCount === 'function') {
-      ss.messageListenerDetacher = cm0.onMessage((ev) => {
-        if (ev.type !== 'add' || !ev.message) return;
+      const pushEntry = (entry: WelcomeMessageEntry): void => {
+        const push: WebUiServerMessage = { type: 'message-appended', entry };
+        for (const c of ss.clients.values()) {
+          if (!c.welcomed) continue;
+          if (c.scopes === null) { this.send(c, push); continue; }
+          const filtered = filterEntryForScopes(entry, c.scopes);
+          if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
+        }
+      };
+      // A long message is stored as a run of shards, one add each, which
+      // context-manager appends in one synchronous loop. The welcome joins a
+      // run into one entry (coalesceAndFlatten), so the live push holds the
+      // run and sends it joined the same way: from a microtask queued at its
+      // first shard, which runs once the loop is done, or at once when
+      // another message's add comes first. Were the appends ever to stop
+      // being synchronous, each shard would go out on its own, as before.
+      let run: { messages: MessageLike[]; startIndex: number } | null = null;
+      const flushRun = (): void => {
+        const held = run;
+        run = null;
+        if (!held) return;
         try {
-          const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
-          const push: WebUiServerMessage = { type: 'message-appended', entry };
-          for (const c of ss.clients.values()) {
-            if (!c.welcomed) continue;
-            if (c.scopes === null) { this.send(c, push); continue; }
-            const filtered = filterEntryForScopes(entry, c.scopes);
-            if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
-          }
+          for (const entry of coalesceAndFlatten(held.messages, held.startIndex)) pushEntry(entry);
         } catch (err) {
-          // Never let a viewer-side projection error break the store's
-          // listener chain (ContextManager subscribes on the same path).
+          console.error('[webui] message-appended projection failed:', err);
+        }
+      };
+      const detach = cm0.onMessage((ev) => {
+        if (ev.type !== 'add' || !ev.message) return;
+        // Never let a viewer-side projection error break the store's
+        // listener chain (ContextManager subscribes on the same path).
+        try {
+          const message = ev.message as MessageLike;
+          const index = cm0.getMessageCount() - 1;
+          if (run && run.messages[0]!.bodyGroupId !== message.bodyGroupId) flushRun();
+          if (message.bodyGroupId) {
+            if (!run) {
+              run = { messages: [], startIndex: index };
+              queueMicrotask(flushRun);
+            }
+            run.messages.push(message);
+            return;
+          }
+          pushEntry(toWireEntry(message, index));
+        } catch (err) {
           console.error('[webui] message-appended projection failed:', err);
         }
       });
+      // A run still held when a session switch replaces this listener goes
+      // nowhere: the switch marks every client unwelcomed until its new
+      // welcome, and pushEntry skips those.
+      ss.messageListenerDetacher = detach;
     }
 
     // Re-derive cost snapshot for the new framework. Without this the
