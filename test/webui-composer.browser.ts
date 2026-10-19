@@ -555,15 +555,18 @@ describe('a message is never lost', () => {
       expect(await kept.textContent()).toBe(UNCONFIRMED);
       await askForOlder(c);
       // Reading from the top, as a person paging up is: the row at the top of
-      // the screen is the one the page goes in above. The page may have asked
-      // from elsewhere, so scroll there and let a frame pass.
+      // the transcript's pane is the one the page goes in above. The page may
+      // have asked from elsewhere, so scroll there and let a frame pass. Its
+      // offset is taken within the pane, since the pane itself moves when the
+      // reconnect banner, which checks the connection once a second, goes.
       const top = c.page.getByText('after fig 0', { exact: true });
       const before = await top.evaluate(async (el) => {
-        el.closest('.overflow-y-auto')!.scrollTop = 0;
+        const pane = el.closest('.overflow-y-auto')!;
+        pane.scrollTop = 0;
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return el.getBoundingClientRect().top;
+        return [el.getBoundingClientRect().top - pane.getBoundingClientRect().top, pane.clientHeight];
       });
-      expect(before >= 0 && before < (await c.page.evaluate(() => window.innerHeight))).toBe(true);
+      expect(before[0]! >= 0 && before[0]! < before[1]!).toBe(true);
       c.host.releaseHistory();
       // Unsettled, the kept row would stay marked beside the stored copy.
       await until('the page settling the row', async () => [
@@ -572,7 +575,8 @@ describe('a message is never lost', () => {
       ], ([marks, rows]) => marks === 0 && rows === 1);
       // The scroll is restored on the next frame.
       await c.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      expect(Math.abs((await top.evaluate((el) => el.getBoundingClientRect().top)) - before)).toBeLessThanOrEqual(1);
+      const after = await top.evaluate((el) => el.getBoundingClientRect().top - el.closest('.overflow-y-auto')!.getBoundingClientRect().top);
+      expect(Math.abs(after - before[0]!)).toBeLessThanOrEqual(1);
     });
   });
 
