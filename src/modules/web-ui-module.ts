@@ -783,16 +783,20 @@ export class WebUiModule implements Module {
 
     if (sharedServer!.clients.size === 0) return;
     // Forward the event so the SPA can fold it into its own per-child
-    // AgentTreeReducer for live updates. A child's traces carry
-    // content whole as the host's own do, so their image data goes as notes.
-    // An event JSON can't carry goes to no client, as send() would drop it,
-    // and the usage it brought still goes.
-    const sent = withoutImageData(event);
-    const msg: WebUiServerMessage | null = sent === undefined
-      ? null
-      : { type: 'child-event', childName, event: sent as { type: string; [k: string]: unknown } };
+    // AgentTreeReducer for live updates. A child's traces carry content whole
+    // as the host's own do, so their image data goes as notes, in a frame
+    // built for the first welcomed client (undefined until then) and sent to
+    // the rest as it is. An event JSON can't carry goes to no client, as in
+    // fanOutTrace, and the usage it brought still goes.
+    let msg: WebUiServerMessage | null | undefined;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
+      if (msg === undefined) {
+        const sent = withoutImageData(event);
+        msg = sent === undefined
+          ? null
+          : { type: 'child-event', childName, event: sent as { type: string; [k: string]: unknown } };
+      }
       if (msg) this.send(client, msg);
       if (usageMsg) this.send(client, usageMsg);
     }
@@ -910,14 +914,6 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    // Traces can carry content whole: a process trace the module's event and
-    // responses, tool:result_dropped the dropped result. So a send's images
-    // would reach every client as base64 without this. A trace JSON can't
-    // carry goes to no client, as send() would drop it.
-    const sent = withoutImageData(event);
-    const traceMsg: WebUiServerMessage | null = sent === undefined
-      ? null
-      : { type: 'trace', event: sent as { type: string; [k: string]: unknown } };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
       ? {
           type: 'usage',
@@ -927,9 +923,26 @@ export class WebUiModule implements Module {
             : {}),
         }
       : null;
+    // Traces can carry content whole: a process trace the module's event and
+    // responses, tool:result_dropped the dropped result. So a send's images
+    // would reach every client as base64 without withoutImageData. Its frame
+    // is built for the first welcomed client that takes the trace (undefined
+    // until then), so a trace no client takes costs nothing, and sent to the
+    // rest as it is. A trace JSON can't carry goes to no client: send()
+    // dropped one whose JSON.stringify threw, and would have sent one whose
+    // toJSON gives nothing without its event.
+    let traceMsg: WebUiServerMessage | null | undefined;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      if (traceMsg && this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
+      if (this.clientAllowsTrace(client, event)) {
+        if (traceMsg === undefined) {
+          const sent = withoutImageData(event);
+          traceMsg = sent === undefined
+            ? null
+            : { type: 'trace', event: sent as { type: string; [k: string]: unknown } };
+        }
+        if (traceMsg) this.send(client, traceMsg);
+      }
       if (usageMsg && (client.scopes === null || client.scopes.has('health'))) {
         this.send(client, usageMsg);
       }

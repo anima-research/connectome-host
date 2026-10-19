@@ -452,6 +452,8 @@ describe('traces sent to WebUI clients', () => {
       processEvent: { type: 'external-message', content: [
         { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(10) } },
         { type: 'text', text: 'hi' },
+        // Only an image block's data is elided: a document's base64 goes as it is.
+        { type: 'document', source: { type: 'base64', mediaType: 'application/pdf', data: 'JVBERi0x' } },
       ] },
       responses: [{ addMessages: [{ participant: 'user', content: [{ type: 'image', source: { type: 'url', url: 'u' } }] }] }],
     };
@@ -460,6 +462,7 @@ describe('traces sent to WebUI clients', () => {
       type: 'image', source: { type: 'base64', mediaType: 'image/png', data: '[40 base64 characters, not sent in traces]' },
     });
     expect(out.processEvent.content[1]).toEqual({ type: 'text', text: 'hi' });
+    expect(out.processEvent.content[2]).toEqual(event.processEvent.content[2]!);
     expect(out.responses).toEqual(event.responses);
     // A client gets the Date as JSON.stringify renders it.
     expect(out.at as unknown).toBe(when.toISOString());

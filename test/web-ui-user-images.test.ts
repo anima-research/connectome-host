@@ -180,6 +180,15 @@ describe('composer images over the WebSocket', () => {
     c.ws.close();
   });
 
+  test("a usage trace's usage reaches clients even when the trace itself can't be sent", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    emitTrace!({ type: 'usage:updated', totals: { inputTokens: 11, outputTokens: 13 }, n: 10n });
+    await c.until(() => c.frames.find((f) => f.type === 'usage'), 'the usage');
+    expect(c.frames.filter((f) => f.type === 'trace')).toEqual([]);
+    c.ws.close();
+  });
+
   test("the recipe's own image window reaches both the welcome and the check", async () => {
     agent.strategy = { type: 'autobiographical', maxLiveImages: 3, maxLiveImageBytes: 4_000_000 };
     try {
