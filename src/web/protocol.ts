@@ -148,20 +148,17 @@ export interface WelcomeMessageEntry {
 }
 
 /** A framework TraceEvent as it was emitted, except that each base64 image's
- *  data is replaced by a note of its length, and a value nested more than 16
- *  levels deep by a note that says so, so no image passes by its depth.
- *  Clients typically pipe these into the same `AgentTreeReducer` the server
- *  uses. */
+ *  data is replaced by a note of its length. Clients typically pipe these into
+ *  the same `AgentTreeReducer` the server uses. */
 export interface TraceMessage {
   type: 'trace';
   /** TraceEvent shape — discriminated by inner `type` field. */
   event: { type: string; [k: string]: unknown };
 }
 
-/** A child's WireEvent as it arrived, except for the same notes as a
- *  TraceMessage's: each base64 image's data, and a value nested more than 16
- *  levels deep. Scoped by child name so the client can route into the right
- *  reducer. */
+/** A child's WireEvent as it arrived, except that each base64 image's data
+ *  is replaced by a note of its length, as in a TraceMessage. Scoped by child
+ *  name so the client can route into the right reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
   childName: string;

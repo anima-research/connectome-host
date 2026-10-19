@@ -461,7 +461,8 @@ describe('traces sent to WebUI clients', () => {
     });
     expect(out.processEvent.content[1]).toEqual({ type: 'text', text: 'hi' });
     expect(out.responses).toEqual(event.responses);
-    expect(out.at).toBe(when);
+    // A client gets the Date as JSON.stringify renders it.
+    expect(out.at as unknown).toBe(when.toISOString());
     expect(event.processEvent.content[0]!.source).toMatchObject({ data: 'AAAA'.repeat(10) });
   });
 
@@ -476,23 +477,18 @@ describe('traces sent to WebUI clients', () => {
     });
   });
 
-  test('past its depth the walk sends a note, never the value', () => {
+  test('an image block is elided at any depth', () => {
     let deep: unknown = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } };
-    for (let i = 0; i < 20; i++) deep = { inner: deep };
-    const out = JSON.stringify(withoutImageData(deep));
+    for (let i = 0; i < 40; i++) deep = { inner: deep };
+    const out = JSON.stringify(withoutImageData({ type: 'tool:completed', input: deep }));
     expect(out).not.toContain('AAAA');
-    expect(out).toContain('[nested too deep to send in traces]');
+    expect(out).toContain('"data":"[20 base64 characters, not sent in traces]"');
   });
 
-  test('within its depth, a value without images comes out as it went in', () => {
-    // The leaf's array sits 16 levels below the trace, the deepest the walk
-    // copies rather than notes.
+  test('a value without images comes out as it went in, at any depth', () => {
     let deep: unknown = { leaf: ['x', 1, null, true] };
-    for (let i = 0; i < 14; i++) deep = { inner: deep, n: i };
+    for (let i = 0; i < 40; i++) deep = { inner: deep, n: i };
     expect(withoutImageData({ type: 'tool:completed', input: deep })).toEqual({ type: 'tool:completed', input: deep });
-    // One level more, and that array goes as the note.
-    expect(JSON.stringify(withoutImageData({ type: 'tool:completed', input: { inner: deep } })))
-      .toContain('"leaf":"[nested too deep to send in traces]"');
   });
 
   test('an image inside a class instance is elided too, and a Date still goes as JSON sends it', () => {
@@ -520,6 +516,68 @@ describe('traces sent to WebUI clients', () => {
   test('a key named __proto__ stays a key of the copy', () => {
     const event = JSON.parse('{"type":"tool:completed","input":{"__proto__":{"kept":1},"other":2}}');
     expect(JSON.stringify(withoutImageData(event))).toBe(JSON.stringify(event));
+  });
+
+  const noted = (n: number) => `[${n} base64 characters, not sent in traces]`;
+
+  test('what a toJSON gives is walked too, so an image it renders is elided', () => {
+    class Rendered {
+      toJSON(): unknown {
+        return { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } };
+      }
+    }
+    const out = JSON.stringify(withoutImageData({ type: 'tool:completed', result: new Rendered() }));
+    expect(out).not.toContain('AAAA');
+    expect(out).toBe(JSON.stringify({
+      type: 'tool:completed',
+      result: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: noted(20) } },
+    }));
+  });
+
+  test("an image nested inside an image block is elided too, and a block's data at both levels", () => {
+    const out = withoutImageData({
+      type: 'tool:completed',
+      result: {
+        type: 'image',
+        source: { type: 'base64', mediaType: 'image/png', data: 'AAAA' },
+        data: 'BBBBBBBB',
+        rawItem: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'CCCCCCCCCCCC' } },
+      },
+    });
+    expect(out).toEqual({
+      type: 'tool:completed',
+      result: {
+        type: 'image',
+        source: { type: 'base64', mediaType: 'image/png', data: noted(4) },
+        data: noted(8),
+        rawItem: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: noted(12) } },
+      },
+    });
+  });
+
+  test("a generated image's data is elided", () => {
+    const out = withoutImageData({
+      type: 'process:completed',
+      responses: [{ content: [{ type: 'generated_image', data: 'AAAA'.repeat(3), mimeType: 'image/png' }] }],
+    });
+    expect(out).toEqual({
+      type: 'process:completed',
+      responses: [{ content: [{ type: 'generated_image', data: noted(12), mimeType: 'image/png' }] }],
+    });
+  });
+
+  test("boxed primitives and an array's own toJSON go as JSON.stringify sends them", () => {
+    const list = Object.assign([1, 2], { toJSON: () => 'summary' });
+    const event = { type: 'tool:completed', n: new Number(7), b: new Boolean(false), s: new String('abc'), list };
+    expect(JSON.stringify(withoutImageData(event))).toBe(JSON.stringify(event));
+    expect(withoutImageData(event)).toEqual({ type: 'tool:completed', n: 7, b: false, s: 'abc', list: 'summary' });
+  });
+
+  test("a payload JSON can't carry, a cycle or a BigInt, gives undefined, so its frame goes to no client", () => {
+    const cyclic: Record<string, unknown> = { type: 'tool:completed' };
+    cyclic.self = cyclic;
+    expect(withoutImageData(cyclic)).toBeUndefined();
+    expect(withoutImageData({ type: 'tool:completed', n: 10n })).toBeUndefined();
   });
 });
 

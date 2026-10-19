@@ -785,10 +785,13 @@ export class WebUiModule implements Module {
     // Forward the event so the SPA can fold it into its own per-child
     // AgentTreeReducer for live updates. A child's traces carry
     // content whole as the host's own do, so their image data goes as notes.
+    // An event JSON can't carry goes to no client, as send() would drop it.
+    const sent = withoutImageData(event);
+    if (sent === undefined) return;
     const msg: WebUiServerMessage = {
       type: 'child-event',
       childName,
-      event: withoutImageData(event) as unknown as { type: string; [k: string]: unknown },
+      event: sent as { type: string; [k: string]: unknown },
     };
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
@@ -909,16 +912,14 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    const traceMsg: WebUiServerMessage = {
-      type: 'trace',
-      // Traces can carry content whole: a process trace the module's event and
-      // responses, tool:result_dropped the dropped result. So a send's images
-      // would reach every client as base64 without this.
-      event: withoutImageData(event) as unknown as {
-        type: string;
-        [k: string]: unknown;
-      },
-    };
+    // Traces can carry content whole: a process trace the module's event and
+    // responses, tool:result_dropped the dropped result. So a send's images
+    // would reach every client as base64 without this. A trace JSON can't
+    // carry goes to no client, as send() would drop it.
+    const sent = withoutImageData(event);
+    const traceMsg: WebUiServerMessage | null = sent === undefined
+      ? null
+      : { type: 'trace', event: sent as { type: string; [k: string]: unknown } };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
       ? {
           type: 'usage',
@@ -930,7 +931,7 @@ export class WebUiModule implements Module {
       : null;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      if (this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
+      if (traceMsg && this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
       if (usageMsg && (client.scopes === null || client.scopes.has('health'))) {
         this.send(client, usageMsg);
       }
@@ -3531,35 +3532,43 @@ interface BlockOrigin {
 }
 
 /**
- * A copy of a trace payload with each base64 image's data replaced by a note
- * of its length. Exported for its test. A trace is JSON, so the walk meets no
- * cycles; the depth cap only stops a pathological nesting, past which a value
- * is replaced by a note too.
+ * A trace payload as JSON.stringify sends it, with each base64 image's data
+ * replaced by a note of its length. Undefined when the payload can't be sent
+ * as JSON at all, such as one with a cycle or a BigInt, which send() would
+ * have dropped. Exported for its test.
+ *
+ * The walk is JSON.stringify's own, through its replacer, so it meets every
+ * value a client will get, at any depth, as the client gets it: what a toJSON
+ * gives, a class instance's own enumerable keys, a boxed primitive's value. A
+ * copy made to elide an image is walked on in turn, so an image nested inside
+ * one is elided too.
  */
-export function withoutImageData(value: unknown, depth = 0): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  // Past this depth a value goes as a note, not whole, so nesting can't carry
-  // an image past the walk.
-  if (depth > 16) return '[nested too deep to send in traces]';
-  if (Array.isArray(value)) return value.map((v) => withoutImageData(v, depth + 1));
-  // A value with a toJSON, such as a Date, passes whole, for JSON.stringify
-  // to render by it as it would have. Any other object, a class instance
-  // included, is copied by its own enumerable keys, which is what
-  // JSON.stringify reads of it.
-  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') return value;
-  const o = value as Record<string, unknown>;
-  if (o.type === 'image') {
-    // A content block's image ({ source: { type: 'base64', data } }), or a
-    // tool result's ({ data, mimeType }, as MCP and the framework shape it).
-    const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
-    if (src && src.type === 'base64' && typeof src.data === 'string') {
-      return { ...o, source: { ...src, data: elided(src.data) } };
-    }
-    if (typeof o.data === 'string') return { ...o, data: elided(o.data) };
+export function withoutImageData(value: unknown): unknown {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(value, (_key: string, v: unknown): unknown =>
+      v !== null && typeof v === 'object' ? imageElided(v) : v);
+  } catch {
+    return undefined;
   }
-  // fromEntries defines each key as the copy's own, `__proto__` included,
-  // where assigning that key would set the copy's prototype instead.
-  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, withoutImageData(v, depth + 1)]));
+  return text === undefined ? undefined : JSON.parse(text);
+}
+
+/** `v` with its base64 image data replaced by notes, or `v` itself: a content
+ *  block's image ({ source: { type: 'base64', data } }), a tool result's
+ *  ({ data, mimeType }, as MCP and the framework shape it), or a generated
+ *  image ({ type: 'generated_image', data, mimeType }, as membrane shapes
+ *  it). Spreading defines each key as the copy's own, `__proto__` included. */
+function imageElided(v: object): object {
+  const o = v as Record<string, unknown>;
+  if (o.type !== 'image' && o.type !== 'generated_image') return v;
+  let copy: Record<string, unknown> | null = null;
+  const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
+  if (src !== null && typeof src === 'object' && src.type === 'base64' && typeof src.data === 'string') {
+    copy = { ...o, source: { ...src, data: elided(src.data) } };
+  }
+  if (typeof o.data === 'string') copy = { ...(copy ?? o), data: elided(o.data) };
+  return copy ?? v;
 }
 
 function elided(data: string): string {

@@ -149,6 +149,26 @@ describe('composer images over the WebSocket', () => {
     c.ws.close();
   });
 
+  test("a trace or a child's event JSON can't carry reaches no client, and the next one does", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    const cyclic: Record<string, unknown> = { type: 'tool:completed' };
+    cyclic.self = cyclic;
+    const fleet = webUiModule as unknown as { handleFleetEvent(name: string, event: unknown): void };
+    emitTrace!(cyclic);
+    fleet.handleFleetEvent('kid', cyclic);
+    emitTrace!({ type: 'tool:completed', callId: 'after' });
+    fleet.handleFleetEvent('kid', { type: 'tool:completed', callId: 'after' });
+    await c.until(() => c.frames.find((f) => f.type === 'child-event'), 'the child event');
+    await c.until(() => c.frames.find((f) => f.type === 'trace'), 'the trace');
+    const sent = c.frames.filter((f) => f.type === 'trace' || f.type === 'child-event');
+    expect(sent.map((f) => [f.type, (f.event as { callId?: string }).callId])).toEqual([
+      ['trace', 'after'],
+      ['child-event', 'after'],
+    ]);
+    c.ws.close();
+  });
+
   test("the recipe's own image window reaches both the welcome and the check", async () => {
     agent.strategy = { type: 'autobiographical', maxLiveImages: 3, maxLiveImageBytes: 4_000_000 };
     try {
