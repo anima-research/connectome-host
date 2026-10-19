@@ -169,6 +169,17 @@ describe('composer images over the WebSocket', () => {
     c.ws.close();
   });
 
+  test("a child's usage reaches clients even when the event that brought it can't be sent", async () => {
+    const c = await connect();
+    await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
+    (webUiModule as unknown as { handleFleetEvent(name: string, event: unknown): void })
+      .handleFleetEvent('counted', { type: 'usage:updated', totals: { inputTokens: 5, outputTokens: 7 }, n: 10n });
+    const usage = await c.until(() => c.frames.find((f) => f.type === 'usage'), 'the usage');
+    expect(usage.usage).toMatchObject({ input: 5, output: 7 });
+    expect(c.frames.filter((f) => f.type === 'child-event')).toEqual([]);
+    c.ws.close();
+  });
+
   test("the recipe's own image window reaches both the welcome and the check", async () => {
     agent.strategy = { type: 'autobiographical', maxLiveImages: 3, maxLiveImageBytes: 4_000_000 };
     try {

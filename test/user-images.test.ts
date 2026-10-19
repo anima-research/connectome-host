@@ -466,15 +466,17 @@ describe('traces sent to WebUI clients', () => {
     expect(event.processEvent.content[0]!.source).toMatchObject({ data: 'AAAA'.repeat(10) });
   });
 
-  test("a tool result's image, with its data at the top level, is elided too", () => {
-    const out = withoutImageData({
+  test("a tool result's image, with its data at the top level, is elided too, in a copy", () => {
+    const event = {
       type: 'tool:result_dropped',
       result: { content: [{ type: 'image', data: 'AAAA'.repeat(5), mimeType: 'image/png' }] },
-    });
+    };
+    const out = withoutImageData(event);
     expect(out).toEqual({
       type: 'tool:result_dropped',
       result: { content: [{ type: 'image', data: '[20 base64 characters, not sent in traces]', mimeType: 'image/png' }] },
     });
+    expect(event.result.content[0]!.data).toBe('AAAA'.repeat(5));
   });
 
   test('an image block is elided at any depth', () => {
@@ -513,9 +515,14 @@ describe('traces sent to WebUI clients', () => {
     }));
   });
 
-  test('a key named __proto__ stays a key of the copy', () => {
+  test('a key named __proto__ stays a key of the copy, an image block\'s own included', () => {
     const event = JSON.parse('{"type":"tool:completed","input":{"__proto__":{"kept":1},"other":2}}');
     expect(JSON.stringify(withoutImageData(event))).toBe(JSON.stringify(event));
+    const image = JSON.parse('{"type":"image","__proto__":{"kept":2},"source":{"type":"base64","mediaType":"image/png","data":"AAAA"}}');
+    expect(JSON.stringify(withoutImageData({ type: 'tool:completed', image }))).toBe(
+      '{"type":"tool:completed","image":{"type":"image","__proto__":{"kept":2},'
+        + '"source":{"type":"base64","mediaType":"image/png","data":"[4 base64 characters, not sent in traces]"}}}',
+    );
   });
 
   const noted = (n: number) => `[${n} base64 characters, not sent in traces]`;
@@ -555,15 +562,39 @@ describe('traces sent to WebUI clients', () => {
     });
   });
 
-  test("a generated image's data is elided", () => {
-    const out = withoutImageData({
+  test("a generated image's data is elided, in a copy", () => {
+    const event = {
       type: 'process:completed',
       responses: [{ content: [{ type: 'generated_image', data: 'AAAA'.repeat(3), mimeType: 'image/png' }] }],
-    });
+    };
+    const out = withoutImageData(event);
     expect(out).toEqual({
       type: 'process:completed',
       responses: [{ content: [{ type: 'generated_image', data: noted(12), mimeType: 'image/png' }] }],
     });
+    expect(event.responses[0]!.content[0]!.data).toBe('AAAA'.repeat(3));
+  });
+
+  test("an image's source given by its own toJSON, and data in a boxed String, are elided as a client gets them", () => {
+    const source = { toJSON: () => ({ type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(4) }) };
+    const out = withoutImageData({
+      type: 'tool:completed',
+      rendered: { type: 'image', source },
+      boxed: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: new String('BBBB') } },
+      top: { type: 'image', data: new String('CCCCCCCC'), mimeType: 'image/png' },
+    });
+    expect(JSON.stringify(out)).not.toMatch(/AAAA|BBBB|CCCC/);
+    expect(out).toEqual({
+      type: 'tool:completed',
+      rendered: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: noted(16) } },
+      boxed: { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: noted(4) } },
+      top: { type: 'image', data: noted(8), mimeType: 'image/png' },
+    });
+  });
+
+  test('an image block with a null source keeps it, and its own data is still elided', () => {
+    expect(withoutImageData({ type: 'tool:completed', image: { type: 'image', source: null, data: 'AAAA' } }))
+      .toEqual({ type: 'tool:completed', image: { type: 'image', source: null, data: noted(4) } });
   });
 
   test("boxed primitives and an array's own toJSON go as JSON.stringify sends them", () => {
@@ -573,11 +604,12 @@ describe('traces sent to WebUI clients', () => {
     expect(withoutImageData(event)).toEqual({ type: 'tool:completed', n: 7, b: false, s: 'abc', list: 'summary' });
   });
 
-  test("a payload JSON can't carry, a cycle or a BigInt, gives undefined, so its frame goes to no client", () => {
+  test("a payload JSON can't carry, a cycle or a BigInt, gives undefined, so its frame goes to no client, and so does one with nothing to send", () => {
     const cyclic: Record<string, unknown> = { type: 'tool:completed' };
     cyclic.self = cyclic;
     expect(withoutImageData(cyclic)).toBeUndefined();
     expect(withoutImageData({ type: 'tool:completed', n: 10n })).toBeUndefined();
+    expect(withoutImageData({ type: 'tool:completed', toJSON: () => undefined })).toBeUndefined();
   });
 });
 

@@ -785,17 +785,15 @@ export class WebUiModule implements Module {
     // Forward the event so the SPA can fold it into its own per-child
     // AgentTreeReducer for live updates. A child's traces carry
     // content whole as the host's own do, so their image data goes as notes.
-    // An event JSON can't carry goes to no client, as send() would drop it.
+    // An event JSON can't carry goes to no client, as send() would drop it,
+    // and the usage it brought still goes.
     const sent = withoutImageData(event);
-    if (sent === undefined) return;
-    const msg: WebUiServerMessage = {
-      type: 'child-event',
-      childName,
-      event: sent as { type: string; [k: string]: unknown },
-    };
+    const msg: WebUiServerMessage | null = sent === undefined
+      ? null
+      : { type: 'child-event', childName, event: sent as { type: string; [k: string]: unknown } };
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      this.send(client, msg);
+      if (msg) this.send(client, msg);
       if (usageMsg) this.send(client, usageMsg);
     }
   }
@@ -3532,43 +3530,48 @@ interface BlockOrigin {
 }
 
 /**
- * A trace payload as JSON.stringify sends it, with each base64 image's data
- * replaced by a note of its length. Undefined when the payload can't be sent
- * as JSON at all, such as one with a cycle or a BigInt, which send() would
- * have dropped. Exported for its test.
+ * A trace payload as a client gets it, JSON.stringify's text read back, with
+ * each image block's base64 data replaced by a note of its length. Undefined
+ * when JSON.stringify has nothing to send: it throws for a cycle, a BigInt or
+ * nesting past the engine's limit, as it did in send(), which dropped such a
+ * frame, and gives nothing for a toJSON that gives nothing. Exported for its
+ * test.
  *
- * The walk is JSON.stringify's own, through its replacer, so it meets every
- * value a client will get, at any depth, as the client gets it: what a toJSON
- * gives, a class instance's own enumerable keys, a boxed primitive's value. A
- * copy made to elide an image is walked on in turn, so an image nested inside
- * one is elided too.
+ * The images are found in that copy, so each value is as the client gets it:
+ * what a toJSON gives, a boxed primitive's value, a class instance's own keys.
+ * The copy is this function's own, so the notes go into it in place, and the
+ * walk reaches every value in it, an image's own fields included.
  */
 export function withoutImageData(value: unknown): unknown {
-  let text: string | undefined;
+  let sent: unknown;
   try {
-    text = JSON.stringify(value, (_key: string, v: unknown): unknown =>
-      v !== null && typeof v === 'object' ? imageElided(v) : v);
+    // Parsing the undefined JSON.stringify gives for nothing to send throws too.
+    sent = JSON.parse(JSON.stringify(value));
   } catch {
     return undefined;
   }
-  return text === undefined ? undefined : JSON.parse(text);
+  const pending: unknown[] = [sent];
+  while (pending.length > 0) {
+    const v = pending.pop();
+    if (v === null || typeof v !== 'object') continue;
+    elideImageData(v as Record<string, unknown>);
+    for (const child of Object.values(v)) pending.push(child);
+  }
+  return sent;
 }
 
-/** `v` with its base64 image data replaced by notes, or `v` itself: a content
- *  block's image ({ source: { type: 'base64', data } }), a tool result's
- *  ({ data, mimeType }, as MCP and the framework shape it), or a generated
- *  image ({ type: 'generated_image', data, mimeType }, as membrane shapes
- *  it). Spreading defines each key as the copy's own, `__proto__` included. */
-function imageElided(v: object): object {
-  const o = v as Record<string, unknown>;
-  if (o.type !== 'image' && o.type !== 'generated_image') return v;
-  let copy: Record<string, unknown> | null = null;
-  const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
-  if (src !== null && typeof src === 'object' && src.type === 'base64' && typeof src.data === 'string') {
-    copy = { ...o, source: { ...src, data: elided(src.data) } };
+/** Replace an image block's data with a note, in the copy: a content block's
+ *  image ({ source: { data } }), a tool result's ({ data, mimeType }, as MCP
+ *  and the framework shape it), or a generated image ({ type:
+ *  'generated_image', data, mimeType }, as membrane shapes it). */
+function elideImageData(o: Record<string, unknown>): void {
+  if (o.type !== 'image' && o.type !== 'generated_image') return;
+  const source = o.source;
+  if (source !== null && typeof source === 'object') {
+    const s = source as Record<string, unknown>;
+    if (typeof s.data === 'string') s.data = elided(s.data);
   }
-  if (typeof o.data === 'string') copy = { ...(copy ?? o), data: elided(o.data) };
-  return copy ?? v;
+  if (typeof o.data === 'string') o.data = elided(o.data);
 }
 
 function elided(data: string): string {
