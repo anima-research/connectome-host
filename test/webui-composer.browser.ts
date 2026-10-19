@@ -119,7 +119,7 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
             startIndex: start,
             totalCount: stored.length,
           };
-          if (holding) heldPages.push(() => ws.send(JSON.stringify(page)));
+          if (holding) heldPages.push(() => { if (ws.readyState === 1) ws.send(JSON.stringify(page)); });
           else ws.send(JSON.stringify(page));
         }
       },
@@ -187,7 +187,8 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
       toClients(welcome());
     },
     /** Hold the history pages asked for from now on, each as it was when
-     *  asked for, until releaseHistory sends them. */
+     *  asked for, until releaseHistory sends them, to the socket that asked
+     *  if it's still open. */
     holdHistory(): void {
       holding = true;
     },
@@ -236,9 +237,9 @@ async function until<T>(what: string, get: () => T | Promise<T>, ok: (v: T) => b
 }
 
 /** A PNG a canvas draws: one red fill; pixels that don't compress, so its
- *  size is about four bytes a pixel; or red on its left half and
- *  transparent on its right. */
-async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' = 'red'): Promise<Buffer> {
+ *  size is about four bytes a pixel; red on its left half and transparent
+ *  on its right; or red on its left half and blue on its right. */
+async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' | 'red-blue' = 'red'): Promise<Buffer> {
   const b64 = await page.evaluate(([w, h, look]) => {
     const canvas = document.createElement('canvas');
     canvas.width = w;
@@ -250,7 +251,11 @@ async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise'
       ctx.putImageData(img, 0, 0);
     } else {
       ctx.fillStyle = '#c33';
-      ctx.fillRect(0, 0, look === 'half-clear' ? w / 2 : w, h);
+      ctx.fillRect(0, 0, look === 'red' ? w : w / 2, h);
+      if (look === 'red-blue') {
+        ctx.fillStyle = '#33c';
+        ctx.fillRect(w / 2, 0, w / 2, h);
+      }
     }
     return canvas.toDataURL('image/png').split(',')[1]!;
   }, [w, h, look] as const);
@@ -273,9 +278,9 @@ const tileImage = (tile: Locator, fx = 0.5, fy = 0.5): Promise<{ size: number[];
   }, [fx, fy] as const), (v) => v !== null) as Promise<{ size: number[]; rgba: number[] }>;
 
 /** An image a frame carries, decoded in the page: its size and the colour
- *  of its middle pixel. */
-const sentImage = (page: Page, image: { mediaType: string; data: string }): Promise<{ size: number[]; rgba: number[] }> =>
-  page.evaluate(async ({ mediaType, data }) => {
+ *  of the pixel at (fx, fy), each a fraction of its width and height. */
+const sentImage = (page: Page, image: { mediaType: string; data: string }, fx = 0.5, fy = 0.5): Promise<{ size: number[]; rgba: number[] }> =>
+  page.evaluate(async ({ mediaType, data, fx, fy }) => {
     const img = new Image();
     img.src = `data:${mediaType};base64,${data}`;
     await img.decode();
@@ -284,12 +289,19 @@ const sentImage = (page: Page, image: { mediaType: string; data: string }): Prom
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d')!;
     ctx.drawImage(img, 0, 0);
-    const at = ctx.getImageData(Math.floor(img.naturalWidth / 2), Math.floor(img.naturalHeight / 2), 1, 1).data;
+    const at = ctx.getImageData(Math.floor(fx * img.naturalWidth), Math.floor(fy * img.naturalHeight), 1, 1).data;
     return { size: [img.naturalWidth, img.naturalHeight], rgba: [...at] };
-  }, image);
+  }, { ...image, fx, fy });
 
-/** Whether a pixel is the fixtures' red (#c33), as lossy encoding leaves it. */
+/** Whether a pixel is the fixtures' red (#c33), or blue (#33c), as lossy
+ *  encoding leaves it. */
 const isRed = (rgba: number[]): boolean => rgba[0]! > 150 && rgba[1]! < 100 && rgba[2]! < 100 && rgba[3]! > 200;
+const isBlue = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! < 100 && rgba[2]! > 150 && rgba[3]! > 200;
+/** Where the fit check reads a red-and-blue picture, each a fraction of its
+ *  width, and the colour a scaled picture shows there: near each end, and
+ *  on each side of the middle. A crop from the corner shows red past the
+ *  middle, one from the centre blue before it, and padding a blank. */
+const RED_BLUE_READS: Array<[number, (rgba: number[]) => boolean]> = [[0.03, isRed], [0.45, isRed], [0.55, isBlue], [0.97, isBlue]];
 
 let browser: Browser;
 let WIDE_PNG: Buffer;
@@ -303,7 +315,7 @@ beforeAll(async () => {
   }
   browser = await chromium.launch();
   const page = await browser.newPage();
-  WIDE_PNG = await canvasPng(page, 3000, 100);
+  WIDE_PNG = await canvasPng(page, 3000, 100, 'red-blue');
   HALF_CLEAR_PNG = await canvasPng(page, 3000, 100, 'half-clear');
   DOT_PNG = await canvasPng(page, 1, 1);
   NOISE_PNG = await canvasPng(page, 30, 30, 'noise');
@@ -603,26 +615,66 @@ describe('a message is never lost', () => {
       await c.page.getByTitle(/^load ALL/).click();
       const bulk = await until('the bulk request', () => c.host.received.find((f) => f.type === 'request-history'), (f) => f !== undefined);
       expect(bulk?.type === 'request-history' && bulk.limit).toBe(1);
-      // Another branch, with older history of its own.
+      // Another branch, with older history of its own, its window starting
+      // at another slot, so a request at the old branch's position would
+      // miss some of it.
       c.host.announceBranch('b2', 'side');
+      c.host.store('oldest on side');
       c.host.store('older on side');
       c.host.store('newer on side');
-      c.host.showFrom(1);
+      c.host.showFrom(2);
       c.host.welcomeAgain();
       await until('the new branch', () => c.page.getByText('newer on side', { exact: true }).count(), (n) => n === 1);
       expect(await c.page.getByText('newer on long', { exact: true }).count()).toBe(0);
-      // No bulk load carried over to it.
+      // No load carried over to it, bulk or single.
       expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
+      if (c.host.historyAsked() === 1) expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
       c.host.releaseHistory();
       // A socket's frames arrive in order, so once this shows, the page has
       // been handled.
       c.host.append('after the page', 'a corrId of its own');
       await c.page.getByText('after the page', { exact: true }).waitFor();
       expect(await c.page.getByText('older on long', { exact: true }).count()).toBe(0);
-      // The new branch's own older history comes in, asked for by the pane
-      // itself or, if it hasn't, as a person would.
-      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 }).catch(() => {});
-      await until("the new branch's own history", () => c.page.getByText('older on side', { exact: true }).count(), (n) => n === 1);
+      // The new branch's own older history comes in, all of it, asked for by
+      // the pane itself or, if it hasn't, as a person would.
+      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 });
+      await until("the new branch's own history", async () =>
+        [await c.page.getByText('oldest on side', { exact: true }).count(), await c.page.getByText('older on side', { exact: true }).count()].join(), (v) => v === '1,1');
+    });
+  });
+
+  test('a history request in flight across a reconnect to the same place is dropped, and paging goes on', async () => {
+    await withComposer(async (c) => {
+      // A branch with older history: the first welcome of a place sets where
+      // its window starts, and a reconnect's keeps it.
+      c.host.announceBranch('b3', 'here');
+      c.host.store('oldest');
+      c.host.store('older');
+      c.host.store('newest');
+      c.host.showFrom(2);
+      c.host.holdHistory();
+      c.host.welcomeAgain();
+      await until('the welcome with older history', () => c.page.getByText('newest', { exact: true }).count(), (n) => n === 1);
+      await c.page.getByTitle(/^load ALL/).click();
+      await until('the bulk request', () => c.host.historyAsked(), (n) => n === 1);
+      expect(await c.page.getByTitle('stop after the current page').count()).toBe(1);
+      // The socket drops with the request unanswered, and the client comes
+      // back to the same place. Its page never comes: it's held for the
+      // closed socket.
+      c.host.drop({ accept: true });
+      await until('the reconnect', () => c.host.connections(), (n) => n === 2);
+      // The welcome comes first on the new socket, so once this shows, it has
+      // been handled, well inside the 10 s a request waits before giving up.
+      c.host.append('after the reconnect', 'a corrId of its own');
+      await c.page.getByText('after the reconnect', { exact: true }).waitFor();
+      expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
+      if (c.host.historyAsked() === 1) expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
+      // Paging goes on from the welcome, asked for by the pane itself or, if
+      // it hasn't, as a person would.
+      c.host.releaseHistory();
+      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 });
+      await until('the older history', async () =>
+        [await c.page.getByText('oldest', { exact: true }).count(), await c.page.getByText('older', { exact: true }).count()].join(), (v) => v === '1,1');
     });
   });
 });
@@ -676,15 +728,20 @@ describe('images', () => {
       await tile.waitFor();
       expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×100 to 2000×67 to fit');
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
-      // The image itself, not only its note: the picture, at its new size.
-      const shown = await tileImage(tile);
-      expect(shown.size).toEqual([2000, 67]);
-      expect(isRed(shown.rgba)).toBe(true);
+      // The image itself, not only its note: the whole picture, scaled to
+      // its new size, neither cropped nor padded.
+      for (const [fx, colour] of RED_BLUE_READS) {
+        const shown = await tileImage(tile, fx);
+        expect(shown.size).toEqual([2000, 67]);
+        expect([fx, colour(shown.rgba)]).toEqual([fx, true]);
+      }
       const frame = await send(c, 'a wide picture');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
-      const sent = await sentImage(c.page, frame.images![0]!);
-      expect(sent.size).toEqual([2000, 67]);
-      expect(isRed(sent.rgba)).toBe(true);
+      for (const [fx, colour] of RED_BLUE_READS) {
+        const sent = await sentImage(c.page, frame.images![0]!, fx);
+        expect(sent.size).toEqual([2000, 67]);
+        expect([fx, colour(sent.rgba)]).toEqual([fx, true]);
+      }
     });
   });
 
