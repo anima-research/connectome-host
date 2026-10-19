@@ -62,8 +62,9 @@ jobs:
         run: npm test
 
       # The Web UI's browser check (test/webui-composer.browser.ts): the web
-      # build above, in headless Chromium, against a scripted host. Chromium's
-      # headless shell is the one the locked playwright-core names.
+      # build above, in headless Chromium, against a scripted host, and in one
+      # check the real host on its mock provider. Chromium's headless shell is
+      # the one the locked playwright-core names.
       - name: Install Chromium for the browser check
         if: matrix.os == 'ubuntu-latest'
         run: npx playwright-core install --with-deps --only-shell chromium

@@ -48,18 +48,22 @@ interface ScriptedHostOptions {
 }
 
 /** A host that speaks just enough of the protocol: a welcome holding what its
- *  session has stored, pages of older history, then whatever a check sends. */
+ *  session and branch have stored, pages of older history, then whatever a
+ *  check sends. */
 function scriptedHost(opts: ScriptedHostOptions = {}) {
   const received: WebUiClientMessage[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let accepting = true;
   let connections = 0;
   let session = { id: 's1', name: 'scripted', autoNamed: false };
-  /** Each session's stored messages, and the slot its welcome's window starts at. */
-  const sessions = new Map<string, { stored: WelcomeMessageEntry[]; windowFrom: number }>();
+  let branch = { id: 'b1', name: 'main' };
+  /** Each session and branch's stored messages, and the slot its welcome's
+   *  window starts at. */
+  const places = new Map<string, { stored: WelcomeMessageEntry[]; windowFrom: number }>();
+  const place = (): string => `${session.id}/${branch.id}`;
   const current = () => {
-    let s = sessions.get(session.id);
-    if (!s) sessions.set(session.id, (s = { stored: [], windowFrom: 0 }));
+    let s = places.get(place());
+    if (!s) places.set(place(), (s = { stored: [], windowFrom: 0 }));
     return s;
   };
 
@@ -69,7 +73,7 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     recipe: { name: 'scripted' },
     agents: [{ name: 'agent', model: 'scripted' }],
     session,
-    branch: { id: 'b1', name: 'main' },
+    branch,
     messages: current().stored.slice(current().windowFrom),
     history: { startIndex: current().windowFrom, totalCount: current().stored.length },
     localTree: { asOfTs: Date.now(), nodes: [], callIdIndex: {} },
@@ -124,12 +128,12 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     for (const ws of sockets) ws.send(JSON.stringify(msg));
   };
 
-  /** Store a user message in the current session without sending its entry,
-   *  as while a client is away. */
+  /** Store a user message in the current session and branch without sending
+   *  its entry, as while a client is away. */
   const store = (text: string, corrId?: string): WelcomeMessageEntry => {
     const { stored } = current();
     const entry: WelcomeMessageEntry = {
-      id: `${session.id}-stored-${stored.length}`,
+      id: `${place()}-stored-${stored.length}`,
       index: stored.length,
       participant: 'user',
       blocks: [],
@@ -162,6 +166,13 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     /** From the next welcome on, it's for this session, with what it holds. */
     switchSession(id: string, name: string): void {
       session = { id, name, autoNamed: false };
+    },
+    /** Check out another branch, as the host does: branch-changed to every
+     *  client, then a welcome for the new branch. */
+    changeBranch(id: string, name: string): void {
+      branch = { id, name };
+      toClients({ type: 'branch-changed', branch });
+      toClients(welcome());
     },
     /** Close every socket; `accept: false` refuses the client's reconnects. */
     drop(o: { accept: boolean }): void {
@@ -419,6 +430,16 @@ describe('a message is never lost', () => {
       await until('the reconnect', () => c.host.connections(), (n) => n === 2);
       await until('the mark naming the session', () => rowsOf(c.page, 'kiwi').getByText('sent in session scripted').count(), (n) => n === 1);
       expect(await rowsOf(c.page, 'kiwi').getByText(REFUSED).count()).toBe(1);
+    });
+  });
+
+  test('a refused send survives a change of branch, naming the branch it was sent in', async () => {
+    await withComposer(async (c) => {
+      await refusedWithDraft(c, 'lime');
+      c.host.changeBranch('b2', 'side');
+      const mark = rowsOf(c.page, 'lime').getByText(/; sent in branch /);
+      await until('a mark naming a branch', () => mark.count(), (n) => n === 1);
+      expect(await mark.textContent()).toBe(`${REFUSED} (message not sent: refused by the scripted host); sent in branch main`);
     });
   });
 
