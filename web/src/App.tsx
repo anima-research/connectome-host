@@ -1749,6 +1749,7 @@ export function App() {
             <div class="flex gap-2">
               <textarea
                 class="flex-1 bg-neutral-900 text-neutral-100 border border-neutral-800 rounded px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-neutral-600 font-mono text-sm"
+                aria-label="Message"
                 rows="2"
                 placeholder={canAttach()
                   ? 'Type a message, /help, or @childname — paste or drop images to attach'
@@ -2383,7 +2384,7 @@ function MessageView(props: {
 
   if (props.msg.participant === 'user') {
     return (
-      <div class="msg-enter">
+      <div class="msg-enter" data-testid="user-message">
         <div class="text-xs text-neutral-500 mb-1">
           you<TimeChip ts={props.msg.timestamp} />
           <Show when={props.msg.unsent}>
