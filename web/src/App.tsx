@@ -876,6 +876,17 @@ export function App() {
   // -------------------------------------------------------------------------
 
   const applyWelcome = (msg: WelcomeMessage): void => {
+    // A history page asked for before this welcome is dropped, and paging
+    // starts again from here: after a reconnect, the socket it was asked on
+    // is gone, so no answer would come; after a change of session or branch,
+    // the request named a position in the old transcript, so its page has no
+    // place in this one, whichever place the host reads it from; and a
+    // welcome in a protocol this client doesn't speak leaves nothing to page.
+    pendingHistoryCorr = null;
+    window.clearTimeout(pendingHistoryTimer);
+    setHistoryLoading(false);
+    setBulkRemaining(0);
+
     if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
       setProtoMismatch(msg.protocolVersion);
       return;
@@ -897,15 +908,6 @@ export function App() {
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
     const entries = msg.messages.map(entryToMessage);
-    // A history page asked for before this welcome is dropped, and paging
-    // starts again from here: after a reconnect, the socket it was asked on
-    // is gone, so no answer would come, and after a change of session or
-    // branch, the request named a position in the old transcript, so its
-    // page has no place in this one, whichever place the host reads it from.
-    pendingHistoryCorr = null;
-    window.clearTimeout(pendingHistoryTimer);
-    setHistoryLoading(false);
-    setBulkRemaining(0);
 
     if (key !== welcomeKey) {
       // Session/branch changed (or first connect): the welcome's window
