@@ -102,23 +102,21 @@ live window, so the host refuses what these checks can see: the format, a file
 cut short, a damaged PNG, the size and the dimensions. Damage inside compressed
 data, which they can't see, can still be stored. The limits are the host's
 own, from its recipe, and its welcome advertises them for the composer to fit
-to. The
-refusal carries the send's `corrId`: when the composer is empty (no text,
-no images, none still being read), the message goes back into it and its
-row comes out of the transcript; with a draft there, the row stays, marked
-not sent with the host's reason. The stored message's entry carries the
-`corrId` too, so its echo replaces exactly the row its send showed, and a
-history page holding it settles the row the same way. A message the socket
-doesn't take, while it isn't open, stays in the composer with a note.
-Whenever a welcome replaces the transcript, after a reconnect or a change
-of session or branch, a send typed here that its window doesn't hold stays
-after it: a refused one with its mark, and any other marked not confirmed,
-since its message may not have reached the host, until an echo replaces
-it. After a change of session or branch, the mark names the one it was sent
-in. Only `/clear` drops them. A routed message's row gives way, since no
-echo of it comes here. A host from before the `corrId` on entries, as under
-`bun run dev` against an older running host, shows each send twice until a
-reload.
+to. The refusal carries the send's `corrId`: when the composer is empty (no
+text, no images, none still being read), the message goes back into it and its
+row comes out of the transcript; with a draft there, the row stays, marked not
+sent with the host's reason. The stored message's entry carries the `corrId`
+too, so its echo replaces exactly the row its send showed, and a history page
+holding it settles the row the same way. A message the socket doesn't take,
+while it isn't open, stays in the composer with a note. Whenever a welcome
+replaces the transcript, after a reconnect or a change of session or branch, a
+send typed here that its window doesn't hold stays after it: a refused one
+with its mark, and any other marked not confirmed, since its message may not
+have reached the host, until an echo replaces it. After a change of session or
+branch, the mark names the one it was sent in. Only `/clear` drops them. A
+routed message's row gives way, since no echo of it comes here. A host from
+before the `corrId` on entries, as under `bun run dev` against an older
+running host, shows each send twice until a reload.
 
 Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's
