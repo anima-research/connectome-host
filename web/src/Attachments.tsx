@@ -4,8 +4,9 @@
  * message is sent.
  */
 import { For, Show } from 'solid-js';
-import { USER_IMAGE_LIMITS } from '@conhost/web/protocol';
+import type { UserImageLimits } from '@conhost/web/protocol';
 import { imageDamage, sniffImageType } from '@conhost/web/image-bytes';
+import { base64Length, fitByRedraw, fitNote, noFitReason } from './fit';
 
 export interface Attachment {
   id: string;
@@ -22,8 +23,6 @@ export interface Attachment {
 }
 
 let attachmentSeq = 0;
-
-const base64Length = (bytes: number): number => 4 * Math.ceil(bytes / 3);
 
 function readDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -50,35 +49,40 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number): P
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-/** Redraw at w×h as WebP, or JPEG on a white ground where the browser can't
- *  write WebP (Safari hands back PNG instead). */
-async function redraw(img: HTMLImageElement, w: number, h: number): Promise<Blob> {
+/** Redraw at w×h as WebP, or as JPEG on a white ground where the browser
+ *  can't write WebP (Safari hands back PNG instead). Null when the browser
+ *  gives no 2D context or no image at this size, as past its canvas limits,
+ *  so a smaller size is tried (fitByRedraw). */
+async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ blob: Blob; flattened: boolean } | null> {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('this browser has no 2D canvas to resize with');
+  if (!ctx) return null;
   ctx.drawImage(img, 0, 0, w, h);
   const webp = await canvasBlob(canvas, 'image/webp', 0.9);
-  if (webp && webp.type === 'image/webp') return webp;
+  if (webp && webp.type === 'image/webp') return { blob: webp, flattened: false };
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
   const jpeg = await canvasBlob(canvas, 'image/jpeg', 0.9);
-  if (!jpeg) throw new Error('the browser could not re-encode it');
-  return jpeg;
+  return jpeg ? { blob: jpeg, flattened: true } : null;
 }
 
 /**
- * Read a file as an attachment that fits the limits. One that already fits is
- * sent byte for byte; one that is too big, too large on a side, or in a format
- * the model APIs don't take (BMP, SVG, …) is redrawn smaller as WebP/JPEG.
- * A PNG, JPEG, GIF or WebP that is cut short or damaged is refused, not
- * redrawn: the browser draws what it has of one, and would send that as if
- * it were the picture. Throws with a reason the composer shows.
+ * Read a file as an attachment that fits `limits`, the host's
+ * (`imageLimitsFrom` its welcome). One that already fits is sent byte for
+ * byte; one that is too big, too large on a side, or in a format the model
+ * APIs don't take (BMP, SVG, …) is redrawn smaller as WebP/JPEG. A PNG, JPEG,
+ * GIF or WebP whose structure doesn't hold to its end is refused, not
+ * redrawn, as is a PNG with a chunk that fails its checksum (imageDamage):
+ * the browser draws what it has of one, and would send that as if it were
+ * the picture. Damage inside a JPEG's, GIF's or WebP's compressed data takes
+ * a decoder to see, and isn't caught here. Throws with a reason the composer
+ * shows.
  */
-export async function prepareImage(file: File): Promise<Attachment> {
-  const L = USER_IMAGE_LIMITS;
+export async function prepareImage(file: File, limits: UserImageLimits): Promise<Attachment> {
+  const L = limits;
   const name = file.name || 'pasted image';
   // The type by the bytes, as the host reads it: a browser takes the type
   // from the file name.
@@ -110,27 +114,18 @@ export async function prepareImage(file: File): Promise<Attachment> {
     };
   }
 
-  let scale = Math.min(1, L.maxSidePx / Math.max(width, height));
-  for (let attempt = 0; attempt < 6; attempt++, scale *= 0.7) {
-    const w = Math.max(1, Math.round(width * scale));
-    const h = Math.max(1, Math.round(height * scale));
-    const blob = await redraw(img, w, h);
-    if (base64Length(blob.size) > L.maxBase64Chars) continue;
-    const dataUrl = await readDataUrl(blob);
-    const resized = w !== width || h !== height;
-    return {
-      id: `att${++attachmentSeq}`,
-      name,
-      mediaType: blob.type,
-      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
-      dataUrl,
-      adjusted: resized ? 'shrunk' : 'converted',
-      note: resized
-        ? `shrunk from ${width}×${height} to ${w}×${h} to fit`
-        : `converted from ${file.type || 'an unknown type'} to ${blob.type}`,
-    };
-  }
-  throw new Error(`${name} is still over ${(L.maxBase64Chars / 1_000_000).toFixed(1)} MB after shrinking`);
+  const fit = await fitByRedraw(width, height, L, (w, h) => redraw(img, w, h));
+  if (!fit.ok) throw new Error(noFitReason(name, fit, L));
+  const dataUrl = await readDataUrl(fit.blob);
+  return {
+    id: `att${++attachmentSeq}`,
+    name,
+    mediaType: fit.blob.type,
+    data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+    dataUrl,
+    adjusted: fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
+    note: fitNote(fit, { width, height, type: file.type, to: fit.blob.type }),
+  };
 }
 
 /**
