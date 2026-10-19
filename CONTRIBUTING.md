@@ -166,6 +166,8 @@ bunx tsc --noEmit   # typecheck
 bun src/index.ts    # run (generic assistant)
 
 # the Web UI's browser check, against its build, in headless Chromium
+# (on Linux, add --with-deps to the install if Chromium can't start for
+# missing system libraries; it installs them, as CI does)
 npm run build:web
 npx playwright-core install --only-shell chromium
 npm run test:browser
