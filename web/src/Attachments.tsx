@@ -130,9 +130,11 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     data: dataUrl.slice(dataUrl.indexOf(',') + 1),
     dataUrl,
     adjusted: fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
+    // The bytes' own type where they have one, as the host reads them; the
+    // browser's, from the file name, otherwise.
     note: animated
-      ? `${fitNote(fit, { width, height, type: file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
-      : fitNote(fit, { width, height, type: file.type, to: fit.blob.type }),
+      ? `${fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
+      : fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type }),
   };
 }
 

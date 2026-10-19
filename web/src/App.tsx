@@ -22,7 +22,9 @@ import {
 } from './Health';
 import { BranchPanel } from './Branches';
 import { AttachmentStrip, dragHasFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
-import { isSyntheticId, newCorrId, rowsAfterWelcome, sentRowIndex, settleRefusal } from './echo';
+import {
+  isSyntheticId, newCorrId, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+} from './echo';
 import { base64Chars } from './fit';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
@@ -98,9 +100,14 @@ interface Message {
   /** On a row typed here, and on a stored user message's entry: its send's
    *  corrId, by which the echo replaces the row (echo.ts). */
   corrId?: string;
-  /** Client-only: a row typed here that the host refused while the composer
-   *  held another draft, or that a reconnect's welcome didn't hold. */
+  /** Client-only: a send typed here that the host refused while the composer
+   *  held another draft, or that a welcome didn't hold (echo.ts). */
   unsent?: 'refused' | 'unconfirmed';
+  /** Client-only, on a refused send: the host's reason. */
+  refusal?: string;
+  /** Client-only, on a send kept across a change of session or branch: the
+   *  one it was sent in. */
+  earlier?: string;
   /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
     origin: string;
@@ -871,6 +878,7 @@ export function App() {
       return;
     }
     setProtoMismatch(null);
+    const prev = welcome();
     setWelcome(msg);
     // A scope pinned to a child that no longer exists (stopped, crashed,
     // session switch) would leave every panel dead-ended on a name the
@@ -889,10 +897,23 @@ export function App() {
     const entries = msg.messages.map(entryToMessage);
 
     if (key !== welcomeKey) {
-      // Session/branch changed (or first connect): hard reset.
+      // Session/branch changed (or first connect): the welcome's window
+      // replaces the transcript, and the sends typed here that it doesn't
+      // hold stay after it, naming the session or branch they were sent in
+      // (rowsAfterReset), so a refused send's text isn't lost with the old
+      // transcript. /clear is the one replacement that drops them.
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
-      setMessages(entries);
+      const earlier = !prev
+        ? undefined
+        : prev.session.id !== msg.session.id
+          ? `session ${prev.session.name || prev.session.id}`
+          : `branch ${prev.branch.name || prev.branch.id}`;
+      setMessages(produce((arr) => {
+        const rows = rowsAfterReset(arr, entries, earlier);
+        arr.length = 0;
+        arr.push(...rows);
+      }));
       setHistoryInfo({ startIndex: msg.history.startIndex, totalCount: msg.history.totalCount });
       atBottom = true;
       queueScroll();
@@ -901,10 +922,10 @@ export function App() {
 
     // Same session+branch (reconnect / setApp re-welcome): keep paged-in
     // older scrollback, replace the tail with the canonical window, and keep
-    // after it each message typed here that the window doesn't hold, so a
-    // send refused or lost in the reconnect isn't lost here too
-    // (rowsAfterWelcome). Other synthetic rows (command output, triggers)
-    // give way to the window.
+    // after it each send typed here that the window doesn't hold, so a send
+    // refused or lost in the reconnect isn't lost here too
+    // (rowsAfterWelcome). Other synthetic rows (command output, triggers,
+    // routed messages) give way to the window.
     setMessages(produce((arr) => {
       const rows = rowsAfterWelcome(arr, entries, msg.history.startIndex);
       arr.length = 0;
@@ -1007,7 +1028,13 @@ export function App() {
     // offsetting scrollTop by the height delta after the DOM settles.
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
     const prevScrollTop = scrollPane?.scrollTop ?? 0;
-    setMessages(produce((arr) => arr.unshift(...fresh.map(entryToMessage))));
+    // A page can hold the stored copy of a send still kept as unconfirmed,
+    // as when the welcome's window was too short to hold it: the copy stands
+    // in its place in the history, and the kept row goes.
+    setMessages(produce((arr) => {
+      arr.unshift(...fresh.map(entryToMessage));
+      settleByEntries(arr, fresh);
+    }));
     setHistoryInfo((prev) => ({
       startIndex: msg.startIndex,
       totalCount: msg.totalCount > 0 ? msg.totalCount : prev?.totalCount ?? 0,
@@ -1522,14 +1549,16 @@ export function App() {
    *  empty, its row comes out and the message goes back there, to fix and
    *  send again; with another draft there, the row stays, marked not sent
    *  (settleRefusal). */
-  const retractSend = (corrId: string): void => {
+  const retractSend = (corrId: string, reason?: string): void => {
     const i = sentRowIndex(messages, corrId);
     if (i < 0) return;
     const text = messages[i]!.text;
     const images = (messages[i]!.sentImages ?? []).map((a) => ({ ...a }));
-    const composerEmpty = !draft().trim() && attachments().length === 0;
+    // Images still being read count as a draft: the message going back would
+    // meet them as they land.
+    const composerEmpty = !draft().trim() && attachments().length === 0 && preparing() === 0;
     let restore = false;
-    setMessages(produce((arr) => { restore = settleRefusal(arr, corrId, composerEmpty); }));
+    setMessages(produce((arr) => { restore = settleRefusal(arr, corrId, composerEmpty, reason); }));
     if (restore) {
       setDraft(text);
       setAttachments(images);
@@ -1992,7 +2021,7 @@ interface HandlerHooks {
   /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
   /** Settle a refused send's row, by its corrId (see retractSend). */
-  retractSend: (corrId: string) => void;
+  retractSend: (corrId: string, reason?: string) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
   setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
@@ -2217,7 +2246,7 @@ function handleServerMessage(
       return;
     case 'error':
       console.warn('[server error]', msg.message);
-      if (msg.corrId) hooks.retractSend(msg.corrId);
+      if (msg.corrId) hooks.retractSend(msg.corrId, msg.message);
       hooks.appendMessage({
         id: nextMessageId(),
         participant: 'system',
@@ -2387,12 +2416,8 @@ function MessageView(props: {
       <div class="msg-enter" data-testid="user-message">
         <div class="text-xs text-neutral-500 mb-1">
           you<TimeChip ts={props.msg.timestamp} />
-          <Show when={props.msg.unsent}>
-            <span class="ml-2 text-amber-300/90">
-              {props.msg.unsent === 'refused'
-                ? 'not sent: the host refused it (see the error)'
-                : 'not confirmed: it may not have reached the host'}
-            </span>
+          <Show when={unsentMark(props.msg)}>
+            {(mark) => <span class="ml-2 text-amber-300/90">{mark()}</span>}
           </Show>
         </div>
         <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>

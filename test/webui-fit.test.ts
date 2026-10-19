@@ -55,6 +55,13 @@ describe('fitByRedraw', () => {
     const big = recording(() => ({ bytes: 5_000_000 }));
     expect(await fitByRedraw(1000, 1000, USER_IMAGE_LIMITS, big.redraw)).toEqual({ ok: false, tooBig: true });
   });
+
+  test('a redraw flattened onto white, where the browser wrote no WebP, comes back flattened', async () => {
+    const r = recording(() => ({ bytes: 1000, flattened: true }));
+    expect(await fitByRedraw(1000, 1000, USER_IMAGE_LIMITS, r.redraw)).toMatchObject({ ok: true, flattened: true });
+    const plain = recording(() => ({ bytes: 1000 }));
+    expect(await fitByRedraw(1000, 1000, USER_IMAGE_LIMITS, plain.redraw)).toMatchObject({ ok: true, flattened: false });
+  });
 });
 
 describe('the notes', () => {

@@ -9,8 +9,10 @@
   stored. An animation sent as it is is marked "first frame", since the
   model sees only that. A message the host refuses, or that the connection
   doesn't take, isn't lost: it stays in the composer, or in the transcript
-  marked not sent, and one a reconnect can't confirm is marked so until its
-  echo comes.
+  marked not sent with the host's reason, and one a reconnect can't confirm
+  is marked so until its echo comes. Such a row stays through a change of
+  session or branch too, naming the one it was sent in; only `/clear`
+  drops it.
   Up to 8 images per message, and no more than the recipe keeps live (6 by
   default); a recipe that can keep more than 20 live holds them to 2000 px
   on a side, under the stricter limit the model APIs apply to requests that

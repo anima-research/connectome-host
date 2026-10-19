@@ -2,8 +2,10 @@
  * A message typed in the Web UI and the row shown for it when it was sent,
  * found again by its send's corrId (web/src/echo.ts).
  */
-import { describe, test, expect } from 'bun:test';
-import { newCorrId, rowsAfterWelcome, sentRowIndex, settleRefusal, type SentRow } from '../web/src/echo.js';
+import { describe, test, expect, spyOn } from 'bun:test';
+import {
+  newCorrId, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark, type SentRow,
+} from '../web/src/echo.js';
 
 interface Row extends SentRow {
   participant: string;
@@ -20,6 +22,25 @@ describe('newCorrId', () => {
     const ids = Array.from({ length: 1000 }, newCorrId);
     expect(new Set(ids).size).toBe(1000);
     for (const id of ids) expect(id).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  test("is the hex of crypto.getRandomValues' bytes, and needs no crypto.randomUUID", () => {
+    // A page served over plain http to a LAN or tailnet address has no
+    // randomUUID; getRandomValues it has.
+    Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+    const random = spyOn(crypto, 'getRandomValues').mockImplementation(<T extends ArrayBufferView | null>(a: T): T => {
+      (a as unknown as Uint8Array).set(Array.from({ length: 16 }, (_, i) => i * 17));
+      return a;
+    });
+    try {
+      expect(crypto.randomUUID).toBeUndefined();
+      expect(newCorrId()).toBe('00112233445566778899aabbccddeeff');
+      expect(random).toHaveBeenCalledTimes(1);
+    } finally {
+      random.mockRestore();
+      delete (crypto as { randomUUID?: unknown }).randomUUID;
+    }
+    expect(typeof crypto.randomUUID).toBe('function');
   });
 });
 
@@ -62,6 +83,12 @@ describe('settleRefusal', () => {
     expect(rows.map((r) => [r.id, r.unsent])).toEqual([['m1', 'refused'], ['m2', undefined]]);
   });
 
+  test("a row that stays keeps the host's reason", () => {
+    const rows = [sent('m1', 'a')];
+    settleRefusal(rows, 'a', false, 'host not ready');
+    expect(rows[0]).toMatchObject({ unsent: 'refused', refusal: 'host not ready' });
+  });
+
   test('a refusal that names no row changes nothing', () => {
     const rows = [sent('m1', 'a')];
     expect(settleRefusal(rows, 'z', true)).toBe(false);
@@ -99,5 +126,53 @@ describe('rowsAfterWelcome', () => {
   test('other rows this client made give way to the window', () => {
     const output: Row = { id: 'm7', participant: 'command', text: '/status output' };
     expect(rowsAfterWelcome([output], [stored(5)], 5).map((r) => r.id)).toEqual(['stored-5']);
+  });
+
+  test('a kept row keeps the rest of itself, images included', () => {
+    const withImage = { ...sent('m1', 'a'), sentImages: ['image'] };
+    expect(rowsAfterWelcome([withImage], [], 0)[0]).toMatchObject({ id: 'm1', sentImages: ['image'], unsent: 'unconfirmed' });
+  });
+});
+
+describe('rowsAfterReset', () => {
+  test("the window replaces the old transcript's stored rows, and the sends it lacks stay after it", () => {
+    const refused = { ...sent('m1', 'a'), unsent: 'refused' as const, refusal: 'host not ready' };
+    const output: Row = { id: 'm3', participant: 'command', text: '/status output' };
+    const rows = [stored(0), stored(1), refused, sent('m2', 'b'), output];
+    expect(rowsAfterReset(rows, [stored(0, undefined, 'other')]).map((r) => [r.id, r.unsent, r.refusal])).toEqual([
+      ['stored-0', undefined, undefined],
+      ['m1', 'refused', 'host not ready'],
+      ['m2', 'unconfirmed', undefined],
+    ]);
+  });
+
+  test('after a change of session, a kept send names the one it was sent in, and keeps the first it named', () => {
+    const named = { ...sent('m1', 'a'), unsent: 'refused' as const, earlier: 'session one' };
+    const after = rowsAfterReset([named, sent('m2', 'b')], [], 'session two');
+    expect(after.map((r) => [r.id, r.earlier])).toEqual([['m1', 'session one'], ['m2', 'session two']]);
+  });
+
+  test('a send the window holds gives way to it, as on a reconnect', () => {
+    expect(rowsAfterReset([sent('m1', 'a')], [stored(4, 'a')]).map((r) => r.id)).toEqual(['stored-4']);
+  });
+});
+
+describe('settleByEntries', () => {
+  test("a page's stored copy of a kept send takes the row out, and nothing else moves", () => {
+    const kept = { ...sent('m1', 'a'), unsent: 'unconfirmed' as const };
+    const rows = [stored(0, 'a'), stored(3), kept, sent('m2', 'b')];
+    settleByEntries(rows, [stored(0, 'a'), stored(1)]);
+    expect(rows.map((r) => r.id)).toEqual(['stored-0', 'stored-3', 'm2']);
+  });
+});
+
+describe('unsentMark', () => {
+  test('says why a kept send is kept, and where it was sent when that was another session', () => {
+    expect(unsentMark(sent('m1', 'a'))).toBeNull();
+    expect(unsentMark({ ...sent('m1', 'a'), unsent: 'refused' })).toBe('not sent: the host refused it');
+    expect(unsentMark({ ...sent('m1', 'a'), unsent: 'refused', refusal: 'host not ready' }))
+      .toBe('not sent: the host refused it (host not ready)');
+    expect(unsentMark({ ...sent('m1', 'a'), unsent: 'unconfirmed', earlier: 'session one' }))
+      .toBe('not confirmed: it may not have reached the host; sent in session one');
   });
 });
