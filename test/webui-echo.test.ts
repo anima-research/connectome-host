@@ -4,7 +4,8 @@
  */
 import { describe, test, expect, spyOn } from 'bun:test';
 import {
-  newCorrId, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark, type SentRow,
+  newCorrId, placeLabel, placeOf, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+  type Place, type SentRow,
 } from '../web/src/echo.js';
 
 interface Row extends SentRow {
@@ -16,6 +17,8 @@ interface Row extends SentRow {
 const sent = (id: string, corrId: string, text = 'hi'): Row => ({ id, participant: 'user', text, corrId });
 const stored = (index: number, corrId?: string, text = 'hi'): Row =>
   ({ id: `stored-${index}`, participant: 'user', text, index, ...(corrId ? { corrId } : {}) });
+/** A session and a branch named by their ids. */
+const at = (session: string, branch: string): Place => ({ session: { id: session, name: session }, branch: { id: branch, name: branch } });
 
 describe('newCorrId', () => {
   test('is 32 hex digits, and new for each send', () => {
@@ -128,9 +131,10 @@ describe('rowsAfterWelcome', () => {
     expect(rowsAfterWelcome([output], [stored(5)], 5).map((r) => r.id)).toEqual(['stored-5']);
   });
 
-  test('a kept row keeps the rest of itself, images included', () => {
-    const withImage = { ...sent('m1', 'a'), sentImages: ['image'] };
-    expect(rowsAfterWelcome([withImage], [], 0)[0]).toMatchObject({ id: 'm1', sentImages: ['image'], unsent: 'unconfirmed' });
+  test('a kept row keeps the rest of itself, images and the place it names included', () => {
+    const withImage = { ...sent('m1', 'a'), sentImages: ['image'], earlier: 'session s1' };
+    expect(rowsAfterWelcome([withImage], [], 0)[0])
+      .toMatchObject({ id: 'm1', sentImages: ['image'], unsent: 'unconfirmed', earlier: 'session s1' });
   });
 });
 
@@ -139,21 +143,44 @@ describe('rowsAfterReset', () => {
     const refused = { ...sent('m1', 'a'), unsent: 'refused' as const, refusal: 'host not ready' };
     const output: Row = { id: 'm3', participant: 'command', text: '/status output' };
     const rows = [stored(0), stored(1), refused, sent('m2', 'b'), output];
-    expect(rowsAfterReset(rows, [stored(0, undefined, 'other')]).map((r) => [r.id, r.unsent, r.refusal])).toEqual([
+    expect(rowsAfterReset(rows, [stored(0, undefined, 'other')], at('s1', 'main')).map((r) => [r.id, r.unsent, r.refusal])).toEqual([
       ['stored-0', undefined, undefined],
       ['m1', 'refused', 'host not ready'],
       ['m2', 'unconfirmed', undefined],
     ]);
   });
 
-  test('after a change of session, a kept send names the one it was sent in, and keeps the first it named', () => {
-    const named = { ...sent('m1', 'a'), unsent: 'refused' as const, earlier: 'session one' };
-    const after = rowsAfterReset([named, sent('m2', 'b')], [], 'session two');
-    expect(after.map((r) => [r.id, r.earlier])).toEqual([['m1', 'session one'], ['m2', 'session two']]);
+  test('a kept send names the place it was sent in where that is another: its session and branch, or else its branch', () => {
+    const rows = [
+      { ...sent('m1', 'a'), sentIn: at('s1', 'main') },
+      { ...sent('m2', 'b'), sentIn: at('s2', 'side') },
+      { ...sent('m3', 'c'), sentIn: at('s1', 'side') },
+      sent('m4', 'd'),
+    ];
+    expect(rowsAfterReset(rows, [], at('s1', 'side')).map((r) => [r.id, r.earlier])).toEqual([
+      ['m1', 'branch main'], ['m2', 'session s2, branch side'], ['m3', undefined], ['m4', undefined],
+    ]);
+  });
+
+  test('each change names the place again: back where it was sent, a kept send names none', () => {
+    const away = rowsAfterReset([{ ...sent('m1', 'a'), sentIn: at('s1', 'main') }], [], at('s2', 'main'));
+    expect(away[0]!.earlier).toBe('session s1, branch main');
+    expect(rowsAfterReset(away, [], at('s1', 'main'))[0]!.earlier).toBeUndefined();
   });
 
   test('a send the window holds gives way to it, as on a reconnect', () => {
-    expect(rowsAfterReset([sent('m1', 'a')], [stored(4, 'a')]).map((r) => r.id)).toEqual(['stored-4']);
+    expect(rowsAfterReset([sent('m1', 'a')], [stored(4, 'a')], at('s1', 'main')).map((r) => r.id)).toEqual(['stored-4']);
+  });
+});
+
+describe('placeOf and placeLabel', () => {
+  test('a place names each part by its name, or its id without one', () => {
+    expect(placeOf({ session: { id: 's1', name: '' }, branch: { id: 'b1', name: 'main' } }))
+      .toEqual({ session: { id: 's1', name: 's1' }, branch: { id: 'b1', name: 'main' } });
+  });
+
+  test('a send with no place names none', () => {
+    expect(placeLabel(undefined, at('s1', 'main'))).toBeUndefined();
   });
 });
 
@@ -172,6 +199,8 @@ describe('unsentMark', () => {
     expect(unsentMark({ ...sent('m1', 'a'), unsent: 'refused' })).toBe('not sent: the host refused it');
     expect(unsentMark({ ...sent('m1', 'a'), unsent: 'refused', refusal: 'host not ready' }))
       .toBe('not sent: the host refused it (host not ready)');
+    expect(unsentMark({ ...sent('m1', 'a'), unsent: 'refused', refusal: 'message not sent: image 1 is cut short' }))
+      .toBe('not sent: the host refused it (image 1 is cut short)');
     expect(unsentMark({ ...sent('m1', 'a'), unsent: 'unconfirmed', earlier: 'session one' }))
       .toBe('not confirmed: it may not have reached the host; sent in session one');
   });

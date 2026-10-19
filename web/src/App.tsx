@@ -23,7 +23,8 @@ import {
 import { BranchPanel } from './Branches';
 import { AttachmentStrip, dragHasFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
 import {
-  isSyntheticId, newCorrId, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+  isSyntheticId, newCorrId, placeOf, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+  type Place,
 } from './echo';
 import { base64Chars } from './fit';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
@@ -105,8 +106,10 @@ interface Message {
   unsent?: 'refused' | 'unconfirmed';
   /** Client-only, on a refused send: the host's reason. */
   refusal?: string;
-  /** Client-only, on a send kept across a change of session or branch: the
-   *  one it was sent in. */
+  /** Client-only, on a send typed here: where it was sent (echo.ts). */
+  sentIn?: Place;
+  /** Client-only, on a kept send shown in another session or branch than it
+   *  was sent in: that one, as its mark names it. */
   earlier?: string;
   /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
@@ -162,10 +165,6 @@ export function App() {
   /** session.id of the last welcome, to tell a session switch apart from a
    *  first connect or a reconnect. */
   let welcomeSessionId: string | null = null;
-  /** The session and branch the last welcome was for, by the names a kept
-   *  send's mark gives them. welcome()'s branch can't stand in: branch-changed
-   *  moves it on before the new branch's welcome arrives. */
-  let welcomePlace: { sessionId: string; session: string; branch: string } | null = null;
   /** Whether the operator is pinned to the bottom of the scroll pane.
    *  Autoscroll only fires when true, so reading history isn't yanked. */
   let atBottom = true;
@@ -882,8 +881,6 @@ export function App() {
       return;
     }
     setProtoMismatch(null);
-    const prev = welcomePlace;
-    welcomePlace = { sessionId: msg.session.id, session: msg.session.name || msg.session.id, branch: msg.branch.name || msg.branch.id };
     setWelcome(msg);
     // A scope pinned to a child that no longer exists (stopped, crashed,
     // session switch) would leave every panel dead-ended on a name the
@@ -904,18 +901,19 @@ export function App() {
     if (key !== welcomeKey) {
       // Session/branch changed (or first connect): the welcome's window
       // replaces the transcript, and the sends typed here that it doesn't
-      // hold stay after it, naming the session or branch they were sent in
-      // (rowsAfterReset), so a refused send's text isn't lost with the old
-      // transcript. /clear is the one replacement that drops them.
+      // hold stay after it, each naming the session or branch it was sent in
+      // where that's another (rowsAfterReset), so a refused send's text isn't
+      // lost with the old transcript. /clear is the one replacement that
+      // drops them. A history page asked for before is the old transcript's,
+      // so its answer is dropped.
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
-      const earlier = !prev
-        ? undefined
-        : prev.sessionId !== msg.session.id
-          ? `session ${prev.session}`
-          : `branch ${prev.branch}`;
+      pendingHistoryCorr = null;
+      window.clearTimeout(pendingHistoryTimer);
+      setHistoryLoading(false);
+      setBulkRemaining(0);
       setMessages(produce((arr) => {
-        const rows = rowsAfterReset(arr, entries, earlier);
+        const rows = rowsAfterReset(arr, entries, placeOf(msg));
         arr.length = 0;
         arr.push(...rows);
       }));
@@ -1029,17 +1027,17 @@ export function App() {
     setHistoryLoading(false);
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
+    // A page can hold the stored copy of a send still kept as unconfirmed,
+    // as after leaving its session and coming back: the copy stands in its
+    // place in the history, and the kept row goes. That goes first, before
+    // the page's own rows are in, and before the measure below, which then
+    // takes the page's height alone.
+    setMessages(produce((arr) => settleByEntries(arr, fresh)));
     // Prepending grows the pane upward; restore the operator's viewport by
     // offsetting scrollTop by the height delta after the DOM settles.
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
     const prevScrollTop = scrollPane?.scrollTop ?? 0;
-    // A page can hold the stored copy of a send still kept as unconfirmed,
-    // as when the welcome's window was too short to hold it: the copy stands
-    // in its place in the history, and the kept row goes.
-    setMessages(produce((arr) => {
-      arr.unshift(...fresh.map(entryToMessage));
-      settleByEntries(arr, fresh);
-    }));
+    setMessages(produce((arr) => arr.unshift(...fresh.map(entryToMessage))));
     setHistoryInfo((prev) => ({
       startIndex: msg.startIndex,
       totalCount: msg.totalCount > 0 ? msg.totalCount : prev?.totalCount ?? 0,
@@ -1534,12 +1532,14 @@ export function App() {
       queueScroll();
       return;
     }
+    const here = welcome();
     setMessages(produce((arr) => arr.push({
       id: nextMessageId(),
       participant: 'user',
       text,
       timestamp: Date.now(),
       corrId,
+      ...(here ? { sentIn: placeOf(here) } : {}),
       ...(images.length > 0
         ? {
             blocks: images.map((a): UiBlock => ({ kind: 'media', mediaType: a.mediaType, dataUrl: a.dataUrl })),

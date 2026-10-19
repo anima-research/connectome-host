@@ -11,7 +11,8 @@
  *
  * The composer relies on the host carrying the `corrId` back on the stored
  * message's entry. A host from before that, as under `bun run dev` against an
- * older running host, shows each send twice until a reload.
+ * older running host, shows each send twice until a reload, and after a
+ * reconnect marks this client's copy 'not confirmed' beside the stored one.
  */
 
 /** Ids `nextMessageId()` makes (`m<n>`): rows this client made itself, not
@@ -29,6 +30,33 @@ export function newCorrId(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** A session and a branch, each by id, with the name a mark gives it: where
+ *  a send was made, or what a welcome is for. */
+export interface Place {
+  session: { id: string; name: string };
+  branch: { id: string; name: string };
+}
+
+/** The place a welcome is for, naming each part by its name or, without
+ *  one, its id. */
+export function placeOf(w: { session: { id: string; name?: string }; branch: { id: string; name?: string } }): Place {
+  return {
+    session: { id: w.session.id, name: w.session.name || w.session.id },
+    branch: { id: w.branch.id, name: w.branch.name || w.branch.id },
+  };
+}
+
+/** What a kept send's mark names when it was sent somewhere other than
+ *  `here`: its session and branch when the session differs, or else its
+ *  branch. A send with no recorded place, made before any welcome, names
+ *  none. */
+export function placeLabel(sentIn: Place | undefined, here: Place): string | undefined {
+  if (!sentIn) return undefined;
+  if (sentIn.session.id !== here.session.id) return `session ${sentIn.session.name}, branch ${sentIn.branch.name}`;
+  if (sentIn.branch.id !== here.branch.id) return `branch ${sentIn.branch.name}`;
+  return undefined;
+}
+
 export interface SentRow {
   id: string;
   /** On a row typed here, and on a stored message's entry: the send's
@@ -40,8 +68,13 @@ export interface SentRow {
   unsent?: 'refused' | 'unconfirmed';
   /** On a refused row: the host's reason. */
   refusal?: string;
-  /** On a row kept across a change of session or branch: the one it was sent
-   *  in, as its mark names it. */
+  /** On a row typed here: where it was sent, as the composer knew it then. A
+   *  send the host took after switching sessions, before this client's
+   *  welcome for the new one, names the old session: nothing reaches the
+   *  client in between. */
+  sentIn?: Place;
+  /** On a kept send shown in another place than it was sent in: that place,
+   *  as its mark names it (placeLabel). */
   earlier?: string;
 }
 
@@ -79,17 +112,17 @@ export function settleRefusal(rows: SentRow[], corrId: string, composerEmpty: bo
  * The sends typed here that a welcome's window doesn't hold, to keep after
  * it: a refused one keeps its mark, and any other is marked unconfirmed,
  * since its frame may not have reached the host. An echo that arrives later
- * still replaces it. `earlier`, after a change of session or branch, names
- * the one they were sent in, for a row that doesn't name one already.
+ * still replaces it. Given the place a welcome for another session or branch
+ * is for, each names the place it was sent in where that's another one.
  */
-function keptSends<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, earlier?: string): R[] {
+function keptSends<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, here?: Place): R[] {
   const welcomed = new Set(window.map((m) => m.corrId).filter((c) => c !== undefined));
   return rows
     .filter((m) => isSyntheticId(m.id) && m.corrId !== undefined && !welcomed.has(m.corrId))
     .map((m) => ({
       ...m,
       unsent: m.unsent ?? ('unconfirmed' as const),
-      ...(earlier && !m.earlier ? { earlier } : {}),
+      earlier: here ? placeLabel(m.sentIn, here) : m.earlier,
     }));
 }
 
@@ -110,10 +143,10 @@ export function rowsAfterWelcome<R extends SentRow & { index?: number }>(
 /**
  * The rows a welcome for another session or branch leaves, or the first
  * welcome: its window, and the sends kept after it (keptSends), each naming
- * `earlier` when it's given.
+ * the place it was sent in where that isn't `here`, the welcome's.
  */
-export function rowsAfterReset<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, earlier?: string): R[] {
-  return [...window, ...keptSends(rows, window, earlier)];
+export function rowsAfterReset<R extends SentRow>(rows: ReadonlyArray<R>, window: ReadonlyArray<R>, here: Place): R[] {
+  return [...window, ...keptSends(rows, window, here)];
 }
 
 /**
@@ -128,11 +161,14 @@ export function settleByEntries(rows: SentRow[], entries: ReadonlyArray<{ corrId
   }
 }
 
-/** What a kept send's row says of it, or null for a row that isn't kept. */
+/** What a kept send's row says of it, or null for a row that isn't kept. The
+ *  host's image refusals begin 'message not sent: ', which the mark says
+ *  already. */
 export function unsentMark(row: SentRow): string | null {
   if (!row.unsent) return null;
+  const reason = row.refusal?.replace(/^message not sent:\s*/, '');
   const mark = row.unsent === 'refused'
-    ? `not sent: the host refused it${row.refusal ? ` (${row.refusal})` : ''}`
+    ? `not sent: the host refused it${reason ? ` (${reason})` : ''}`
     : 'not confirmed: it may not have reached the host';
   return row.earlier ? `${mark}; sent in ${row.earlier}` : mark;
 }
