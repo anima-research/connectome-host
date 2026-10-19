@@ -158,8 +158,10 @@ export interface TraceMessage {
   event: { type: string; [k: string]: unknown };
 }
 
-/** Per-child WireEvent passthrough. Scoped by child name so the client
- *  can route into the right reducer. */
+/** A child's WireEvent as it arrived, except for the same notes as a
+ *  TraceMessage's: each base64 image's data, and a value nested more than 16
+ *  levels deep. Scoped by child name so the client can route into the right
+ *  reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
   childName: string;

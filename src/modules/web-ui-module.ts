@@ -638,12 +638,14 @@ export class WebUiModule implements Module {
         }
       });
       ss.flushHeldRun = flushRun;
-      // A run still held when this listener is detached, at a session switch
-      // or a stop, is dropped, so its queued flush sends nothing: what it held
-      // is in the store, which the next welcome reads.
+      // A run still held when this listener is detached, at a stop or a
+      // session switch, goes out now, to the clients welcomed to the session
+      // it belongs to: after a stop they stay welcomed with no welcome to
+      // come, and at a switch their new welcome follows it. Its queued flush
+      // then finds nothing.
       ss.messageListenerDetacher = () => {
-        run = null;
         detach();
+        flushRun();
       };
     }
 
@@ -3540,10 +3542,11 @@ export function withoutImageData(value: unknown, depth = 0): unknown {
   // an image past the walk.
   if (depth > 16) return '[nested too deep to send in traces]';
   if (Array.isArray(value)) return value.map((v) => withoutImageData(v, depth + 1));
-  // A Date or other class instance passes whole, for JSON.stringify to render
-  // as it would have; only plain objects are copied.
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
+  // A value with a toJSON, such as a Date, passes whole, for JSON.stringify
+  // to render by it as it would have. Any other object, a class instance
+  // included, is copied by its own enumerable keys, which is what
+  // JSON.stringify reads of it.
+  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') return value;
   const o = value as Record<string, unknown>;
   if (o.type === 'image') {
     // A content block's image ({ source: { type: 'base64', data } }), or a

@@ -495,6 +495,28 @@ describe('traces sent to WebUI clients', () => {
       .toContain('"leaf":"[nested too deep to send in traces]"');
   });
 
+  test('an image inside a class instance is elided too, and a Date still goes as JSON sends it', () => {
+    class Holder {
+      block: unknown;
+      constructor(block: unknown) { this.block = block; }
+      describe(): string { return 'holder'; }
+    }
+    const image = () => ({ type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } });
+    const event = {
+      type: 'tool:completed',
+      at: new Date('2026-10-19T19:00:00Z'),
+      result: new Holder(image()),
+    };
+    const out = JSON.stringify(withoutImageData(event));
+    expect(out).not.toContain('AAAA');
+    const noted = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: '[20 base64 characters, not sent in traces]' } };
+    expect(out).toBe(JSON.stringify({
+      type: 'tool:completed',
+      at: '2026-10-19T19:00:00.000Z',
+      result: { block: noted },
+    }));
+  });
+
   test('a key named __proto__ stays a key of the copy', () => {
     const event = JSON.parse('{"type":"tool:completed","input":{"__proto__":{"kept":1},"other":2}}');
     expect(JSON.stringify(withoutImageData(event))).toBe(JSON.stringify(event));

@@ -222,24 +222,38 @@ describe('the live push of a long message', () => {
     }
   });
 
-  test("a run still held when the session switches isn't pushed into the new session", async () => {
+  test('a run still held when the session switches goes out joined, before the new welcome', async () => {
     const c = await connect();
+    const from = sends.length;
     cm.addMessage('user', [{ type: 'text', text: LONG }]);
     webUiModule.setApp(app as never);
+    // The queued flush runs here, and must add nothing.
     await Promise.resolve();
-    expect(appendedTo(c.client)).toEqual([]);
+    const deadline = performance.now() + 5000;
+    while (!sends.slice(from).some((s) => s.client === c.client && s.frame.type === 'welcome')) {
+      if (performance.now() >= deadline) throw new Error('timed out waiting for the new welcome');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const kinds = sends.slice(from).filter((s) => s.client === c.client).map((s) => s.frame.type);
+    expect(kinds.filter((k) => k === 'message-appended')).toHaveLength(1);
+    expect(kinds.indexOf('message-appended')).toBeLessThan(kinds.indexOf('welcome'));
+    const live = appendedTo(c.client);
+    expect((live[0]!.blocks as Array<{ text?: string }>)[0]!.text!.startsWith('long-echo-probe ')).toBe(true);
     c.ws.close();
   });
 
-  test("a run still held when the module stops isn't pushed, though its clients stay welcomed", async () => {
+  test('a run still held when the module stops goes out joined, once, to the clients that stay welcomed', async () => {
     const c = await connect();
     try {
       cm.addMessage('user', [{ type: 'text', text: LONG }]);
       const stopped = webUiModule.stop();
       await Promise.resolve();
       await stopped;
+      await Promise.resolve();
       expect((c.client as { welcomed: boolean }).welcomed).toBe(true);
-      expect(appendedTo(c.client)).toEqual([]);
+      const live = appendedTo(c.client);
+      expect(live).toHaveLength(1);
+      expect((live[0]!.blocks as Array<{ text?: string }>)[0]!.text!.startsWith('long-echo-probe ')).toBe(true);
     } finally {
       webUiModule.setApp(app as never);
       c.ws.close();
