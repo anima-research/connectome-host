@@ -73,8 +73,9 @@ stored as image blocks ahead of the message's text. The host advertises the
 older host ignores the field.
 
 Limits (`USER_IMAGE_LIMITS` in `src/web/protocol.ts`): 8 images, 5,000,000
-base64 characters each (3.75 MB, within both the Anthropic API's and
-Bedrock's per-image limit), 12 MiB of base64 image data per message
+base64 characters each (3.75 MB, within the per-image limit on Bedrock and
+Google Cloud, 5 MB of base64, and on the Anthropic API, 10 MB), 12 MiB of
+base64 image data per message
 (about 9 MiB of image files), leaving room for its text, and 8000 px on a
 side. A whole message, text and images, travels in one WebSocket frame of
 at most 16 MiB (`MAX_WS_FRAME_BYTES`, the host's
@@ -101,6 +102,16 @@ Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's
 live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
 `maxLiveImageBytes`) apply to them like any other image.
+
+A request carrying more than 20 images meets a stricter per-image dimension
+limit than 8000 px, and every image in it counts: earlier turns' images and
+those in tool results too. An image over that limit fails every request that
+carries it alongside 20 others, so the agent is stuck until the image leaves
+the live window. With the default `maxLiveImages` of 6 no request gets
+there. A recipe that raises `maxLiveImages` past 20, sets it to 0 (no count
+limit), or uses `passthrough` (which keeps every image) should keep images
+at 2000 px or less on a side, which the model API's docs give as under that
+limit on every platform; the composer doesn't shrink them that far.
 
 ## Operator log
 

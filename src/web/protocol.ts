@@ -775,12 +775,16 @@ export interface UserMessageImage {
  * API refuses would fail every later inference on this branch, not just one.
  *
  * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
- *   both the Anthropic API's 5 MB base64 limit and Bedrock's 3.75 MB.
+ *   the per-image limit everywhere the model is served: 5 MB of base64 on
+ *   Bedrock and Google Cloud, 10 MB on the Anthropic API itself.
  * - `maxTotalBase64Chars`: what one message's images may come to, leaving
  *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
  *   bounded by it, so the composer checks the whole frame too
  *   (`frameLimitNote`).
  * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
+ *   A request carrying more than 20 images has a stricter limit, which isn't
+ *   applied here: the context manager keeps 6 live by default (see "Sending
+ *   images" in docs/webui-live-surgery.md).
  */
 export const USER_IMAGE_LIMITS = {
   maxCount: 8,
