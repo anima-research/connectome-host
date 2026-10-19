@@ -272,14 +272,24 @@ const tileImage = (tile: Locator, fx = 0.5, fy = 0.5): Promise<{ size: number[];
     return { size: [img.naturalWidth, img.naturalHeight], rgba: [...at] };
   }, [fx, fy] as const), (v) => v !== null) as Promise<{ size: number[]; rgba: number[] }>;
 
-/** The size of an image a frame carries, decoded in the page. */
-const sentImageSize = (page: Page, image: { mediaType: string; data: string }): Promise<number[]> =>
+/** An image a frame carries, decoded in the page: its size and the colour
+ *  of its middle pixel. */
+const sentImage = (page: Page, image: { mediaType: string; data: string }): Promise<{ size: number[]; rgba: number[] }> =>
   page.evaluate(async ({ mediaType, data }) => {
     const img = new Image();
     img.src = `data:${mediaType};base64,${data}`;
     await img.decode();
-    return [img.naturalWidth, img.naturalHeight];
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    const at = ctx.getImageData(Math.floor(img.naturalWidth / 2), Math.floor(img.naturalHeight / 2), 1, 1).data;
+    return { size: [img.naturalWidth, img.naturalHeight], rgba: [...at] };
   }, image);
+
+/** Whether a pixel is the fixtures' red (#c33), as lossy encoding leaves it. */
+const isRed = (rgba: number[]): boolean => rgba[0]! > 150 && rgba[1]! < 100 && rgba[2]! < 100 && rgba[3]! > 200;
 
 let browser: Browser;
 let WIDE_PNG: Buffer;
@@ -580,9 +590,9 @@ describe('a message is never lost', () => {
     });
   });
 
-  test("a history page asked for before a change of branch isn't shown after it", async () => {
+  test("a history page asked for before a change of branch isn't shown after it, and the new branch pages its own", async () => {
     await withComposer(async (c) => {
-      // A branch with older history to page in, its page held.
+      // A branch with older history, its page asked for in bulk and held.
       c.host.announceBranch('b0', 'long');
       c.host.store('older on long');
       c.host.store('newer on long');
@@ -590,16 +600,29 @@ describe('a message is never lost', () => {
       c.host.holdHistory();
       c.host.welcomeAgain();
       await until('the welcome with older history', () => c.page.getByText('newer on long', { exact: true }).count(), (n) => n === 1);
-      await askForOlder(c);
+      await c.page.getByTitle(/^load ALL/).click();
+      const bulk = await until('the bulk request', () => c.host.received.find((f) => f.type === 'request-history'), (f) => f !== undefined);
+      expect(bulk?.type === 'request-history' && bulk.limit).toBe(1);
+      // Another branch, with older history of its own.
       c.host.announceBranch('b2', 'side');
+      c.host.store('older on side');
+      c.host.store('newer on side');
+      c.host.showFrom(1);
       c.host.welcomeAgain();
-      await until('the new branch', () => c.page.getByText('newer on long', { exact: true }).count(), (n) => n === 0);
+      await until('the new branch', () => c.page.getByText('newer on side', { exact: true }).count(), (n) => n === 1);
+      expect(await c.page.getByText('newer on long', { exact: true }).count()).toBe(0);
+      // No bulk load carried over to it.
+      expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
       c.host.releaseHistory();
       // A socket's frames arrive in order, so once this shows, the page has
       // been handled.
       c.host.append('after the page', 'a corrId of its own');
       await c.page.getByText('after the page', { exact: true }).waitFor();
       expect(await c.page.getByText('older on long', { exact: true }).count()).toBe(0);
+      // The new branch's own older history comes in, asked for by the pane
+      // itself or, if it hasn't, as a person would.
+      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 }).catch(() => {});
+      await until("the new branch's own history", () => c.page.getByText('older on side', { exact: true }).count(), (n) => n === 1);
     });
   });
 });
@@ -653,11 +676,15 @@ describe('images', () => {
       await tile.waitFor();
       expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×100 to 2000×67 to fit');
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
-      // The image itself, not only its note.
-      expect((await tileImage(tile)).size).toEqual([2000, 67]);
+      // The image itself, not only its note: the picture, at its new size.
+      const shown = await tileImage(tile);
+      expect(shown.size).toEqual([2000, 67]);
+      expect(isRed(shown.rgba)).toBe(true);
       const frame = await send(c, 'a wide picture');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
-      expect(await sentImageSize(c.page, frame.images![0]!)).toEqual([2000, 67]);
+      const sent = await sentImage(c.page, frame.images![0]!);
+      expect(sent.size).toEqual([2000, 67]);
+      expect(isRed(sent.rgba)).toBe(true);
     });
   });
 
@@ -671,7 +698,7 @@ describe('images', () => {
       // Red where the picture was red, and white where it was transparent.
       const red = await tileImage(tile, 0.25);
       expect(red.size).toEqual([1400, 47]);
-      expect(red.rgba[0]! > 150 && red.rgba[1]! < 100).toBe(true);
+      expect(isRed(red.rgba)).toBe(true);
       const clear = (await tileImage(tile, 0.75)).rgba;
       expect(clear.slice(0, 3).every((v) => v > 240)).toBe(true);
     }, { init: CANVAS_LIKE_A_SMALLER_SAFARI });
