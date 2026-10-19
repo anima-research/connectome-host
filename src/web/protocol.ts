@@ -765,8 +765,8 @@ export interface UserMessageMessage {
   images?: UserMessageImage[];
   /** Names this send. Echoed on the `error` that refuses the message, and
    *  stored with the message it becomes, whose entry carries it back to
-   *  every client, so it must be unique across clients (a random UUID), not
-   *  a per-client counter. */
+   *  every client, so it must be unique across clients (random, such as a
+   *  UUID), not a per-client counter. */
   corrId?: string;
 }
 
