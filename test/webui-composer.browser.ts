@@ -66,6 +66,9 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     if (!s) places.set(place(), (s = { stored: [], windowFrom: 0 }));
     return s;
   };
+  /** While true, history pages wait in heldPages for releaseHistory. */
+  let holding = false;
+  const heldPages: Array<() => void> = [];
 
   const welcome = (): WelcomeMessage => ({
     type: 'welcome',
@@ -105,6 +108,7 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
         const frame = JSON.parse(String(data)) as WebUiClientMessage;
         received.push(frame);
         if (frame.type === 'request-history') {
+          // The page is what the current place holds when it's asked for.
           const { stored } = current();
           const end = Math.min(frame.beforeIndex, stored.length);
           const start = Math.max(0, end - (frame.limit ?? 200));
@@ -115,7 +119,8 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
             startIndex: start,
             totalCount: stored.length,
           };
-          ws.send(JSON.stringify(page));
+          if (holding) heldPages.push(() => ws.send(JSON.stringify(page)));
+          else ws.send(JSON.stringify(page));
         }
       },
       close(ws) {
@@ -124,8 +129,9 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     },
   });
 
+  /** Send to every socket that's open: one closing is left to its close. */
   const toClients = (msg: WebUiServerMessage): void => {
-    for (const ws of sockets) ws.send(JSON.stringify(msg));
+    for (const ws of sockets) if (ws.readyState === 1) ws.send(JSON.stringify(msg));
   };
 
   /** Store a user message in the current session and branch without sending
@@ -163,17 +169,34 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
     showFrom(slot: number): void {
       current().windowFrom = slot;
     },
-    /** From the next welcome on, it's for this session, with what it holds. */
+    /** Switch to this session, with what it holds, as the host does: a fresh
+     *  welcome to every open socket, and no branch-changed. A client away
+     *  gets it when it reconnects. */
     switchSession(id: string, name: string): void {
       session = { id, name, autoNamed: false };
-    },
-    /** Check out another branch, as the host does: branch-changed to every
-     *  client, then a welcome for the new branch. */
-    changeBranch(id: string, name: string): void {
-      branch = { id, name };
-      toClients({ type: 'branch-changed', branch });
       toClients(welcome());
     },
+    /** A change of branch's first half, as the host sends it: branch-changed
+     *  to every client. */
+    announceBranch(id: string, name: string): void {
+      branch = { id, name };
+      toClients({ type: 'branch-changed', branch });
+    },
+    /** Its second half: a welcome for the current place to every open socket. */
+    welcomeAgain(): void {
+      toClients(welcome());
+    },
+    /** Hold the history pages asked for from now on, each as it was when
+     *  asked for, until releaseHistory sends them. */
+    holdHistory(): void {
+      holding = true;
+    },
+    releaseHistory(): void {
+      holding = false;
+      for (const send of heldPages.splice(0)) send();
+    },
+    /** History requests received so far. */
+    historyAsked: (): number => received.filter((f) => f.type === 'request-history').length,
     /** Close every socket; `accept: false` refuses the client's reconnects. */
     drop(o: { accept: boolean }): void {
       accepting = o.accept;
@@ -187,41 +210,80 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
 
 type Host = ReturnType<typeof scriptedHost>;
 
+const NO_ANSWER = Symbol('no answer');
+
 /** Poll `get` until `ok` holds of what it returns; throw, with the last value,
- *  after `ms`. The bound only stops a check that would otherwise hang. */
+ *  after `ms`, whether or not `get` has answered. The bound only stops a
+ *  check that would otherwise hang. */
 async function until<T>(what: string, get: () => T | Promise<T>, ok: (v: T) => boolean, ms = 15_000): Promise<T> {
-  const end = performance.now() + ms;
-  for (;;) {
-    const v = await get();
-    if (ok(v)) return v;
-    if (performance.now() > end) throw new Error(`timed out waiting for ${what}; last saw ${JSON.stringify(v)}`);
-    await Bun.sleep(25);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof NO_ANSWER>((resolve) => { timer = setTimeout(() => resolve(NO_ANSWER), ms); });
+  let last = 'no answer';
+  try {
+    for (;;) {
+      const v = await Promise.race([get(), deadline]);
+      if (v !== NO_ANSWER) {
+        if (ok(v as T)) return v as T;
+        last = JSON.stringify(v);
+      }
+      if (v === NO_ANSWER || (await Promise.race([Bun.sleep(25), deadline])) === NO_ANSWER) {
+        throw new Error(`timed out waiting for ${what}; last saw ${last}`);
+      }
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/** A PNG a canvas draws: one red fill, or, with `noise`, pixels that don't
- *  compress, so its size is about four bytes a pixel. */
-async function canvasPng(page: Page, w: number, h: number, noise = false): Promise<Buffer> {
-  const b64 = await page.evaluate(([w, h, noise]) => {
+/** A PNG a canvas draws: one red fill; pixels that don't compress, so its
+ *  size is about four bytes a pixel; or red on its left half and
+ *  transparent on its right. */
+async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' = 'red'): Promise<Buffer> {
+  const b64 = await page.evaluate(([w, h, look]) => {
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d')!;
-    if (noise) {
+    if (look === 'noise') {
       const img = ctx.createImageData(w, h);
       for (let i = 0; i < img.data.length; i++) img.data[i] = i % 4 === 3 ? 255 : Math.floor(Math.random() * 256);
       ctx.putImageData(img, 0, 0);
     } else {
       ctx.fillStyle = '#c33';
-      ctx.fillRect(0, 0, w, h);
+      ctx.fillRect(0, 0, look === 'half-clear' ? w / 2 : w, h);
     }
     return canvas.toDataURL('image/png').split(',')[1]!;
-  }, [w, h, noise] as const);
+  }, [w, h, look] as const);
   return Buffer.from(b64, 'base64');
 }
 
+/** A tile's image, once it has decoded: its size and the colour of the pixel
+ *  at (fx, fy), each a fraction of its width and height. */
+const tileImage = (tile: Locator, fx = 0.5, fy = 0.5): Promise<{ size: number[]; rgba: number[] }> =>
+  until("the thumbnail's image", () => tile.locator('img').evaluate(async (img: HTMLImageElement, [fx, fy]) => {
+    await img.decode().catch(() => {});
+    if (img.naturalWidth === 0) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    const at = ctx.getImageData(Math.floor(fx * img.naturalWidth), Math.floor(fy * img.naturalHeight), 1, 1).data;
+    return { size: [img.naturalWidth, img.naturalHeight], rgba: [...at] };
+  }, [fx, fy] as const), (v) => v !== null) as Promise<{ size: number[]; rgba: number[] }>;
+
+/** The size of an image a frame carries, decoded in the page. */
+const sentImageSize = (page: Page, image: { mediaType: string; data: string }): Promise<number[]> =>
+  page.evaluate(async ({ mediaType, data }) => {
+    const img = new Image();
+    img.src = `data:${mediaType};base64,${data}`;
+    await img.decode();
+    return [img.naturalWidth, img.naturalHeight];
+  }, image);
+
 let browser: Browser;
 let WIDE_PNG: Buffer;
+let HALF_CLEAR_PNG: Buffer;
 let DOT_PNG: Buffer;
 let NOISE_PNG: Buffer;
 
@@ -232,8 +294,9 @@ beforeAll(async () => {
   browser = await chromium.launch();
   const page = await browser.newPage();
   WIDE_PNG = await canvasPng(page, 3000, 100);
+  HALF_CLEAR_PNG = await canvasPng(page, 3000, 100, 'half-clear');
   DOT_PNG = await canvasPng(page, 1, 1);
-  NOISE_PNG = await canvasPng(page, 30, 30, true);
+  NOISE_PNG = await canvasPng(page, 30, 30, 'noise');
   await page.close();
 });
 
@@ -330,7 +393,10 @@ async function withRealHost(body: (url: string) => Promise<void>): Promise<void>
   } finally {
     host.kill();
     const exited = await Promise.race([host.exited.then(() => true), Bun.sleep(10_000).then(() => false)]);
-    if (!exited) host.kill('SIGKILL');
+    if (!exited) {
+      host.kill('SIGKILL');
+      await Promise.race([host.exited, Bun.sleep(5_000)]);
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -360,6 +426,17 @@ const REFUSED = 'not sent: the host refused it';
 const UNCONFIRMED = 'not confirmed: it may not have reached the host';
 /** The title of the control that loads older history. */
 const OLDER = 'scroll to the top or click to load 200 older messages';
+/** The title of the header's chip that names the branch. */
+const BRANCH_CHIP = 'Chronicle branches — click to browse lineage';
+
+/** Wait for the page to ask for older history: a pane near its top asks
+ *  itself, as a short one may, and otherwise the check asks as a person
+ *  would. */
+async function askForOlder(c: Composer): Promise<void> {
+  await until('the older-history control', async () => c.host.historyAsked() > 0 || (await c.page.getByTitle(OLDER).count()) > 0, (v) => v);
+  if (c.host.historyAsked() === 0) await c.page.getByTitle(OLDER).click({ timeout: 5_000 }).catch(() => {});
+  await until('the history request', () => c.host.historyAsked(), (n) => n > 0);
+}
 
 /** Send `text`, then refuse it while the composer holds another draft, so its
  *  row stays, marked refused. */
@@ -425,25 +502,31 @@ describe('a message is never lost', () => {
   test('a refused send survives a change of session, naming the session it was sent in', async () => {
     await withComposer(async (c) => {
       await refusedWithDraft(c, 'kiwi');
+      // The host's own switch: a welcome for the new session on the open socket.
       c.host.switchSession('s2', 'another');
-      c.host.drop({ accept: true });
-      await until('the reconnect', () => c.host.connections(), (n) => n === 2);
       await until('the mark naming the session', () => rowsOf(c.page, 'kiwi').getByText('sent in session scripted').count(), (n) => n === 1);
       expect(await rowsOf(c.page, 'kiwi').getByText(REFUSED).count()).toBe(1);
+      expect(c.host.connections()).toBe(1);
     });
   });
 
-  test('a refused send survives a change of branch, naming the branch it was sent in', async () => {
+  test('a refused send survives a change of branch, naming the branch it was sent in, and one sent after branch-changed names none', async () => {
     await withComposer(async (c) => {
       await refusedWithDraft(c, 'lime');
-      c.host.changeBranch('b2', 'side');
-      const mark = rowsOf(c.page, 'lime').getByText(/; sent in branch /);
-      await until('a mark naming a branch', () => mark.count(), (n) => n === 1);
-      expect(await mark.textContent()).toBe(`${REFUSED} (message not sent: refused by the scripted host); sent in branch main`);
+      // The host sends branch-changed, then the new branch's welcome, and a
+      // send between them goes to the new branch.
+      c.host.announceBranch('b2', 'side');
+      await until('the header on the new branch', () => c.page.getByTitle(BRANCH_CHIP).textContent(), (t) => (t ?? '').includes('side'));
+      await refusedWithDraft(c, 'pear');
+      c.host.welcomeAgain();
+      const lime = rowsOf(c.page, 'lime').getByText(/; sent in branch /);
+      await until('a mark naming a branch', () => lime.count(), (n) => n === 1);
+      expect(await lime.textContent()).toBe(`${REFUSED} (refused by the scripted host); sent in branch main`);
+      expect(await rowsOf(c.page, 'pear').getByText(REFUSED).textContent()).toBe(`${REFUSED} (refused by the scripted host)`);
     });
   });
 
-  test("a history page holding a kept send's stored copy settles it, as after leaving its session and coming back", async () => {
+  test("a history page holding a kept send's stored copy settles it, as after leaving its session and coming back, and what's on screen stays put", async () => {
     await withComposer(async (c) => {
       const fig = await send(c, 'fig');
       c.host.drop({ accept: false });
@@ -451,28 +534,68 @@ describe('a message is never lost', () => {
       c.host.switchSession('s2', 'another');
       c.host.drop({ accept: true });
       await until('the send kept in the other session', () => rowsOf(c.page, 'fig').getByText('sent in session scripted').count(), (n) => n === 1);
-      // Back in the first session, which stored "fig" and moved on: its
-      // window holds only "grape", so "fig" is kept again, marked unconfirmed,
-      // and its stored copy is one history page up.
+      // Back in the first session, which stored "fig" between a few messages
+      // and more than a screen of them: its window starts after "fig", so
+      // "fig" is kept again, marked unconfirmed and naming no other place,
+      // and its stored copy is on the history page above, which is held
+      // until the check has seen the kept row. The page is taller than the
+      // control it replaces, so the scroll restore isn't clamped at the top.
       c.host.drop({ accept: false });
       await c.page.getByText('Disconnected — retrying').waitFor();
       c.host.switchSession('s1', 'scripted');
+      for (let i = 0; i < 5; i++) c.host.store(`before fig ${i}`);
       c.host.store('fig', fig.corrId);
-      c.host.store('grape');
-      c.host.showFrom(1);
+      for (let i = 0; i < 40; i++) c.host.store(`after fig ${i}`);
+      c.host.showFrom(6);
+      c.host.holdHistory();
       c.host.drop({ accept: true });
-      await until('the first session again', () => c.page.getByText('grape', { exact: true }).count(), (n) => n === 1);
-      // A pane near its top asks for older history itself, as this short one
-      // may; if it hasn't, ask as a person would.
-      const asked = (): boolean => c.host.received.some((f) => f.type === 'request-history');
-      await until('the older-history control', async () => asked() || (await c.page.getByTitle(OLDER).count()) > 0, (v) => v);
-      if (!asked()) await c.page.getByTitle(OLDER).click({ timeout: 5_000 }).catch(() => {});
-      await until('the history request', asked, (a) => a);
+      await until('the first session again', () => c.page.getByText('after fig 39', { exact: true }).count(), (n) => n === 1);
+      const kept = rowsOf(c.page, 'fig').getByText(UNCONFIRMED);
+      await until('fig kept', () => kept.count(), (n) => n === 1);
+      expect(await kept.textContent()).toBe(UNCONFIRMED);
+      await askForOlder(c);
+      // Reading from the top, as a person paging up is: the row at the top of
+      // the screen is the one the page goes in above. The page may have asked
+      // from elsewhere, so scroll there and let a frame pass.
+      const top = c.page.getByText('after fig 0', { exact: true });
+      const before = await top.evaluate(async (el) => {
+        el.closest('.overflow-y-auto')!.scrollTop = 0;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return el.getBoundingClientRect().top;
+      });
+      expect(before >= 0 && before < (await c.page.evaluate(() => window.innerHeight))).toBe(true);
+      c.host.releaseHistory();
       // Unsettled, the kept row would stay marked beside the stored copy.
       await until('the page settling the row', async () => [
         await c.page.getByText(UNCONFIRMED).count(),
         await rowsOf(c.page, 'fig').count(),
       ], ([marks, rows]) => marks === 0 && rows === 1);
+      // The scroll is restored on the next frame.
+      await c.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(Math.abs((await top.evaluate((el) => el.getBoundingClientRect().top)) - before)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  test("a history page asked for before a change of branch isn't shown after it", async () => {
+    await withComposer(async (c) => {
+      // A branch with older history to page in, its page held.
+      c.host.announceBranch('b0', 'long');
+      c.host.store('older on long');
+      c.host.store('newer on long');
+      c.host.showFrom(1);
+      c.host.holdHistory();
+      c.host.welcomeAgain();
+      await until('the welcome with older history', () => c.page.getByText('newer on long', { exact: true }).count(), (n) => n === 1);
+      await askForOlder(c);
+      c.host.announceBranch('b2', 'side');
+      c.host.welcomeAgain();
+      await until('the new branch', () => c.page.getByText('newer on long', { exact: true }).count(), (n) => n === 0);
+      c.host.releaseHistory();
+      // A socket's frames arrive in order, so once this shows, the page has
+      // been handled.
+      c.host.append('after the page', 'a corrId of its own');
+      await c.page.getByText('after the page', { exact: true }).waitFor();
+      expect(await c.page.getByText('older on long', { exact: true }).count()).toBe(0);
     });
   });
 });
@@ -519,7 +642,7 @@ describe('images', () => {
     }, { init: HOLD_FILE_READS });
   });
 
-  test('an image is fitted to the side the welcome advertises, and its thumbnail says so', async () => {
+  test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
     await withComposer(async (c) => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
       const tile = c.page.getByTitle(/^wide\.png/);
@@ -527,18 +650,26 @@ describe('images', () => {
       expect(await tile.getAttribute('title')).toBe('wide.png — shrunk from 3000×100 to 2000×67 to fit');
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
       // The image itself, not only its note.
-      expect(await tile.locator('img').evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([2000, 67]);
+      expect((await tileImage(tile)).size).toEqual([2000, 67]);
+      const frame = await send(c, 'a wide picture');
+      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
+      expect(await sentImageSize(c.page, frame.images![0]!)).toEqual([2000, 67]);
     });
   });
 
   test('where the canvas draws nothing at a size, or writes no WebP, the fit goes smaller and flattens onto white', async () => {
     await withComposer(async (c) => {
-      await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
-      const tile = c.page.getByTitle(/^wide\.png/);
+      await attach(c, [{ name: 'half-clear.png', buffer: HALF_CLEAR_PNG }]);
+      const tile = c.page.getByTitle(/^half-clear\.png/);
       await tile.waitFor();
       expect(await tile.getAttribute('title'))
-        .toBe('wide.png — shrunk from 3000×100 to 1400×47 to fit, as a JPEG on white, which flattens any transparency');
-      expect(await tile.locator('img').evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([1400, 47]);
+        .toBe('half-clear.png — shrunk from 3000×100 to 1400×47 to fit, as a JPEG on white, which flattens any transparency');
+      // Red where the picture was red, and white where it was transparent.
+      const red = await tileImage(tile, 0.25);
+      expect(red.size).toEqual([1400, 47]);
+      expect(red.rgba[0]! > 150 && red.rgba[1]! < 100).toBe(true);
+      const clear = (await tileImage(tile, 0.75)).rgba;
+      expect(clear.slice(0, 3).every((v) => v > 240)).toBe(true);
     }, { init: CANVAS_LIKE_A_SMALLER_SAFARI });
   });
 
@@ -577,8 +708,9 @@ describe('with the real host', () => {
   test("a text past the host's 64 KiB shows once, as the host's copy", async () => {
     await withRealHost((url) =>
       withPage(url, async (page, box) => {
-        // The host may store messages of its own at the start of a session,
-        // such as the local time, so count the rows this send adds.
+        // The host stores messages of its own at the start of a session, such
+        // as the local time, before any welcome, so the welcome holds them:
+        // count the rows this send adds.
         const rows = page.getByTestId('user-message');
         const before = await rows.count();
         const text = `long-echo-probe ${'c'.repeat(70_000)}`;
