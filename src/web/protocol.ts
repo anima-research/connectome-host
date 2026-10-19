@@ -791,8 +791,8 @@ export interface UserMessageImage {
  *   bounded by it, so the composer checks the whole frame too
  *   (`frameLimitNote`).
  * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
- *   A request carrying more than 20 images has a stricter limit on every
- *   image in it, so a host whose recipe can keep more than 20 live
+ *   By the docs, a request carrying more than 20 images has a stricter limit
+ *   on every image in it, so a host whose recipe can keep more than 20 live
  *   advertises a smaller side, as it does a smaller count when its live
  *   window is under 8 (`userImageLimits` in the welcome).
  */

@@ -25,10 +25,17 @@ export type UserImageCheck =
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
-/** The most images a model API takes in one request at its full side limit;
- *  past it, every image in the request is held to a stricter one. */
+/**
+ * The most images a request may carry at the full side limit, by Anthropic's
+ * vision docs: past it, every image in the request is held to 2000 px on a
+ * side. Probes of the API on 2026-10-13 and 2026-10-19 found it not enforcing
+ * this (21 and 101 images, one of them 2100 px, were accepted). The cap
+ * follows the docs anyway: a stored image the API refuses fails every later
+ * request until it leaves the live window, while the cap costs at most the
+ * band between 2000 px and the size the models downscale to themselves.
+ */
 const MANY_IMAGES = 20;
-/** The side that stays under that stricter limit on every platform. */
+/** The side the docs give for a request past `MANY_IMAGES`. */
 const MANY_IMAGES_SIDE_PX = 2000;
 
 /**

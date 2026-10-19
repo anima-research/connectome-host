@@ -113,17 +113,19 @@ composer says so and keeps the draft. Once sent, the context manager's
 live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
 `maxLiveImageBytes`) apply to them like any other image.
 
-A request carrying more than 20 images meets a stricter per-image dimension
-limit than 8000 px, and every image in it counts: earlier turns' images and
-those in tool results too. An image over that limit fails every request that
-carries it alongside 20 others, so the agent is stuck until the image leaves
-the live window. With the default `maxLiveImages` of 6 no request gets
-there. A host whose recipe can keep more than 20 images live (`maxLiveImages`
-past 20 or set to 0, `passthrough`, which keeps every image, or a strategy an
-extension registers) holds composer images to 2000 px on a side, which the
-model API's docs give as under that limit on every platform. A message also
-takes no more images than the live window keeps, since the rest would never
-reach the model.
+By the model API's docs, a request carrying more than 20 images meets a
+stricter per-image dimension limit than 8000 px, and every image in it
+counts: earlier turns' images and those in tool results too. Where that
+limit is enforced, an image over it fails every request that carries it
+alongside 20 others, so the agent is stuck until the image leaves the live
+window. Probes on 2026-10-13 and 2026-10-19 found the API accepting such
+requests; the host follows the docs regardless. With the default
+`maxLiveImages` of 6 no request gets there. A host whose recipe can keep more
+than 20 images live (`maxLiveImages` past 20 or set to 0, `passthrough`,
+which keeps every image, or a strategy an extension registers) holds
+composer images to 2000 px on a side, which the model API's docs give as
+under that limit on every platform. A message also takes no more images than
+the live window keeps, since the rest would never reach the model.
 
 ## Operator log
 
