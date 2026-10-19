@@ -5,7 +5,9 @@
  * Attachments.tsx, which only a browser runs: a message is never lost, when
  * the host refuses it, when the socket is down, or when a reconnect can't
  * confirm it; an echo replaces exactly the row of its own send; and images
- * are fitted to the limits the host advertises.
+ * are fitted to the limits the host advertises. One check runs the real
+ * host instead, headless on the mock provider, for what turns on the host's
+ * side of an echo: a text longer than the host sends whole.
  *
  * Not part of `npm test`, since it needs the Web UI built and Chromium:
  *
@@ -18,7 +20,8 @@
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import type { ServerWebSocket } from 'bun';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import {
@@ -32,7 +35,8 @@ import {
 
 setDefaultTimeout(60_000);
 
-const SPA = join(import.meta.dir, '..', 'dist', 'web');
+const REPO = join(import.meta.dir, '..');
+const SPA = join(REPO, 'dist', 'web');
 
 /** A host that speaks just enough of the protocol: a welcome holding what it
  *  has stored, then whatever a check sends. */
@@ -157,22 +161,81 @@ interface Composer {
   box: Locator;
 }
 
-/** A page on a fresh host, once the welcome has reached the composer, which
- *  then offers images. Uncaught page errors fail the check. */
+/** A page (withPage) on a fresh scripted host. */
 async function withComposer(body: (c: Composer) => Promise<void>): Promise<void> {
   const host = scriptedHost();
+  try {
+    await withPage(host.url, (page, box) => body({ host, page, box }));
+  } finally {
+    host.stop();
+  }
+}
+
+/** A page at `url`, once the welcome has reached the composer, which then
+ *  offers images. Uncaught page errors fail the check. */
+async function withPage(url: string, body: (page: Page, box: Locator) => Promise<void>): Promise<void> {
   const page = await browser.newPage();
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
   try {
-    await page.goto(host.url);
+    await page.goto(url);
     const box = page.getByRole('textbox', { name: 'Message' });
     await until('the welcome', () => box.getAttribute('placeholder'), (p) => (p ?? '').includes('paste or drop images'));
-    await body({ host, page, box });
+    await body(page, box);
     expect(pageErrors).toEqual([]);
   } finally {
     await page.close();
-    host.stop();
+  }
+}
+
+/** The real host, headless, on the mock provider (no provider is called),
+ *  with its Web UI on a free local port and its own data directory. */
+async function withRealHost(body: (url: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'webui-composer-'));
+  const probe = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() });
+  const port = probe.port;
+  probe.stop(true);
+  const recipe = join(dir, 'recipe.json');
+  writeFileSync(recipe, JSON.stringify({
+    name: 'Browser check',
+    agent: {
+      name: 'agent',
+      provider: 'mock',
+      systemPrompt: 'A mock agent for the browser check.',
+      mock: { echoMode: false, defaultResponse: 'noted' },
+    },
+    modules: {
+      subagents: false,
+      lessons: false,
+      retrieval: false,
+      wake: false,
+      workspace: false,
+      webui: { host: '127.0.0.1', port },
+    },
+  }));
+  const host = Bun.spawn(['bun', join(REPO, 'src', 'index.ts'), recipe, '--headless'], {
+    cwd: dir,
+    env: { ...process.env, DATA_DIR: join(dir, 'data') },
+    stdin: 'ignore',
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+  try {
+    const url = `http://127.0.0.1:${port}/`;
+    await until(
+      "the host's Web UI",
+      () => (host.exitCode !== null ? -1 : fetch(url).then((r) => r.status, () => 0)),
+      (s) => s === 200 || s === -1,
+      30_000,
+    ).then((s) => {
+      if (s === -1) throw new Error(`the host exited (${host.exitCode}); its log is ${join(dir, 'data', 'headless.log')}`);
+    });
+    await body(url);
+  } finally {
+    host.kill();
+    const exited = await Promise.race([host.exited.then(() => true), Bun.sleep(10_000).then(() => false)]);
+    if (!exited) host.kill('SIGKILL');
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -292,6 +355,30 @@ describe('images', () => {
       expect(await tile.getAttribute('title')).toBe('blink.gif — animated: the model sees only its first frame');
       expect(await tile.getByText('first frame', { exact: true }).count()).toBe(1);
     });
+  });
+});
+
+describe('with the real host', () => {
+  test("a text longer than the host's 64 KiB cap shows once, as the host's copy", async () => {
+    await withRealHost((url) =>
+      withPage(url, async (page, box) => {
+        // The host may store messages of its own at the start of a session,
+        // such as the local time, so count the rows this send adds.
+        const rows = page.getByTestId('user-message');
+        const before = await rows.count();
+        const text = `long-echo-probe ${'c'.repeat(70_000)}`;
+        await box.fill(text);
+        await box.press('Enter');
+        // The mock agent answers after the host has stored the message and
+        // sent its entry.
+        await page.getByText('noted', { exact: true }).waitFor({ timeout: 30_000 });
+        expect(await rows.count()).toBe(before + 1);
+        // The host's copy, cut at 64 KiB, not the 70,016 characters sent.
+        const shown = await rows.last().evaluate((el) => el.textContent ?? '');
+        expect(shown.includes(text.slice(0, 64 * 1024))).toBe(true);
+        expect(shown.includes(text)).toBe(false);
+      }),
+    );
   });
 });
 
