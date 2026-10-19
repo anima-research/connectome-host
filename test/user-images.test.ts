@@ -367,6 +367,8 @@ describe("a host's image limits, from its recipe's live window", () => {
     expect(liveImageBytes({ type: 'frontdesk', maxLiveImageBytes: 4_000_000 })).toBe(4_000_000);
     expect(liveImageBytes({ type: 'autobiographical', maxLiveImageBytes: 0 })).toBeUndefined();
     expect(liveImageBytes({ type: 'passthrough', maxLiveImageBytes: 4_000_000 })).toBeUndefined();
+    // A recipe that names no strategy type gets the host's default, autobiographical.
+    expect(liveImageBytes({ maxLiveImageBytes: 4_000_000 } as Parameters<typeof liveImageBytes>[0])).toBe(4_000_000);
     expect(hostImageLimits(6, 4_000_000)).toEqual({
       ...USER_IMAGE_LIMITS, maxCount: 6, maxBase64Chars: 4_000_000, maxTotalBase64Chars: 4_000_000,
     });
@@ -480,6 +482,22 @@ describe('traces sent to WebUI clients', () => {
     const out = JSON.stringify(withoutImageData(deep));
     expect(out).not.toContain('AAAA');
     expect(out).toContain('[nested too deep to send in traces]');
+  });
+
+  test('within its depth, a value without images comes out as it went in', () => {
+    // The leaf's array sits 16 levels below the trace, the deepest the walk
+    // copies rather than notes.
+    let deep: unknown = { leaf: ['x', 1, null, true] };
+    for (let i = 0; i < 14; i++) deep = { inner: deep, n: i };
+    expect(withoutImageData({ type: 'tool:completed', input: deep })).toEqual({ type: 'tool:completed', input: deep });
+    // One level more, and that array goes as the note.
+    expect(JSON.stringify(withoutImageData({ type: 'tool:completed', input: { inner: deep } })))
+      .toContain('"leaf":"[nested too deep to send in traces]"');
+  });
+
+  test('a key named __proto__ stays a key of the copy', () => {
+    const event = JSON.parse('{"type":"tool:completed","input":{"__proto__":{"kept":1},"other":2}}');
+    expect(JSON.stringify(withoutImageData(event))).toBe(JSON.stringify(event));
   });
 });
 

@@ -166,6 +166,25 @@ describe('composer images over the WebSocket', () => {
     }
   });
 
+  test("the recipe's byte window holds the check to its base64, one image and the message's total", async () => {
+    const one = { mediaType: 'image/png', data: FIX.png! };
+    try {
+      // One image's base64 exactly: one fits, and two come to more.
+      agent.strategy = { type: 'autobiographical', maxLiveImageBytes: FIX.png!.length };
+      expect((await send({ content: '', images: [one] })).pushed).toBeDefined();
+      const two = await send({ content: '', images: [one, one] });
+      expect(two.pushed).toBeUndefined();
+      expect(two.error).toStartWith('message not sent: the images come to more than ');
+      // A little less than one image: the image alone is over.
+      agent.strategy = { type: 'autobiographical', maxLiveImageBytes: FIX.png!.length - 4 };
+      const over = await send({ content: '', images: [one] });
+      expect(over.pushed).toBeUndefined();
+      expect(over.error).toStartWith(`message not sent: the image is ${FIX.png!.length.toLocaleString('en-US')} characters of base64, over the `);
+    } finally {
+      delete agent.strategy;
+    }
+  });
+
   test("a send's corrId goes to the framework with its message", async () => {
     const r = await send({ content: 'hello', corrId: 'c-42' });
     expect(r.pushed!.metadata).toEqual({ corrId: 'c-42' });

@@ -230,4 +230,19 @@ describe('the live push of a long message', () => {
     expect(appendedTo(c.client)).toEqual([]);
     c.ws.close();
   });
+
+  test("a run still held when the module stops isn't pushed, though its clients stay welcomed", async () => {
+    const c = await connect();
+    try {
+      cm.addMessage('user', [{ type: 'text', text: LONG }]);
+      const stopped = webUiModule.stop();
+      await Promise.resolve();
+      await stopped;
+      expect((c.client as { welcomed: boolean }).welcomed).toBe(true);
+      expect(appendedTo(c.client)).toEqual([]);
+    } finally {
+      webUiModule.setApp(app as never);
+      c.ws.close();
+    }
+  });
 });

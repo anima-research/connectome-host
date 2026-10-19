@@ -638,11 +638,11 @@ export class WebUiModule implements Module {
         }
       });
       ss.flushHeldRun = flushRun;
-      // A run still held when a session switch replaces this listener goes
-      // nowhere: the switch marks every client unwelcomed until its new
-      // welcome, and pushEntry skips those.
+      // A run still held when this listener is detached, at a session switch
+      // or a stop, is dropped, so its queued flush sends nothing: what it held
+      // is in the store, which the next welcome reads.
       ss.messageListenerDetacher = () => {
-        if (ss.flushHeldRun === flushRun) ss.flushHeldRun = null;
+        run = null;
         detach();
       };
     }
@@ -1613,9 +1613,10 @@ export class WebUiModule implements Module {
     return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
   }
 
-  /** The limits composer images are checked against here, from how many
-   *  images this host's recipe keeps live (`hostImageLimits`). The welcome
-   *  advertises them, so the composer fits images to the same ones. */
+  /** The limits composer images are checked against here, from what this
+   *  host's recipe keeps live: how many images, and how much of their base64
+   *  (`hostImageLimits`). The welcome advertises them, so the composer fits
+   *  images to the same ones. */
   private imageLimits(): UserImageLimits {
     const strategy = sharedServer?.app?.recipe.agent.strategy;
     return hostImageLimits(liveImageWindow(strategy), liveImageBytes(strategy));
@@ -3553,9 +3554,9 @@ export function withoutImageData(value: unknown, depth = 0): unknown {
     }
     if (typeof o.data === 'string') return { ...o, data: elided(o.data) };
   }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(o)) out[k] = withoutImageData(v, depth + 1);
-  return out;
+  // fromEntries defines each key as the copy's own, `__proto__` included,
+  // where assigning that key would set the copy's prototype instead.
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, withoutImageData(v, depth + 1)]));
 }
 
 function elided(data: string): string {

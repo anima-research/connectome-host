@@ -148,8 +148,10 @@ export interface WelcomeMessageEntry {
 }
 
 /** A framework TraceEvent as it was emitted, except that each base64 image's
- *  data is replaced by a note of its length. Clients typically pipe these
- *  into the same `AgentTreeReducer` the server uses. */
+ *  data is replaced by a note of its length, and a value nested more than 16
+ *  levels deep by a note that says so, so no image passes by its depth.
+ *  Clients typically pipe these into the same `AgentTreeReducer` the server
+ *  uses. */
 export interface TraceMessage {
   type: 'trace';
   /** TraceEvent shape — discriminated by inner `type` field. */
