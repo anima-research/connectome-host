@@ -182,9 +182,10 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
       branch = { id, name };
       toClients({ type: 'branch-changed', branch });
     },
-    /** Its second half: a welcome for the current place to every open socket. */
-    welcomeAgain(): void {
-      toClients(welcome());
+    /** Its second half: a welcome for the current place to every open
+     *  socket, in another protocol version if one is given. */
+    welcomeAgain(o: { protocolVersion?: number } = {}): void {
+      toClients({ ...welcome(), ...(o.protocolVersion === undefined ? {} : { protocolVersion: o.protocolVersion }) });
     },
     /** Hold the history pages asked for from now on, each as it was when
      *  asked for, until releaseHistory sends them, to the socket that asked
@@ -238,7 +239,7 @@ async function until<T>(what: string, get: () => T | Promise<T>, ok: (v: T) => b
 
 /** A PNG a canvas draws: one red fill; pixels that don't compress, so its
  *  size is about four bytes a pixel; red on its left half and transparent
- *  on its right; or red on its left half and blue on its right. */
+ *  on its right; or red on its left third and blue on the rest. */
 async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' | 'red-blue' = 'red'): Promise<Buffer> {
   const b64 = await page.evaluate(([w, h, look]) => {
     const canvas = document.createElement('canvas');
@@ -250,11 +251,12 @@ async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise'
       for (let i = 0; i < img.data.length; i++) img.data[i] = i % 4 === 3 ? 255 : Math.floor(Math.random() * 256);
       ctx.putImageData(img, 0, 0);
     } else {
+      const red = look === 'red' ? w : look === 'red-blue' ? Math.round(w / 3) : w / 2;
       ctx.fillStyle = '#c33';
-      ctx.fillRect(0, 0, look === 'red' ? w : w / 2, h);
+      ctx.fillRect(0, 0, red, h);
       if (look === 'red-blue') {
         ctx.fillStyle = '#33c';
-        ctx.fillRect(w / 2, 0, w / 2, h);
+        ctx.fillRect(red, 0, w - red, h);
       }
     }
     return canvas.toDataURL('image/png').split(',')[1]!;
@@ -297,11 +299,14 @@ const sentImage = (page: Page, image: { mediaType: string; data: string }, fx = 
  *  encoding leaves it. */
 const isRed = (rgba: number[]): boolean => rgba[0]! > 150 && rgba[1]! < 100 && rgba[2]! < 100 && rgba[3]! > 200;
 const isBlue = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! < 100 && rgba[2]! > 150 && rgba[3]! > 200;
-/** Where the fit check reads a red-and-blue picture, each a fraction of its
- *  width, and the colour a scaled picture shows there: near each end, and
- *  on each side of the middle. A crop from the corner shows red past the
- *  middle, one from the centre blue before it, and padding a blank. */
-const RED_BLUE_READS: Array<[number, (rgba: number[]) => boolean]> = [[0.03, isRed], [0.45, isRed], [0.55, isBlue], [0.97, isBlue]];
+/** Where the fit check reads the red-and-blue picture, each a fraction of
+ *  its width, and the colour it shows there when scaled whole: near each
+ *  end, and on each side of the boundary at a third. Cropped from the
+ *  corner, the boundary moves right and 38% reads red; from the centre, it
+ *  moves left and 28% reads blue; cropped from the right, 3% reads blue;
+ *  padded, 97% reads blank. Each holds for a picture more than about
+ *  2,910 px wide, fitted to 2000; this one is 3000. */
+const RED_BLUE_READS: Array<[number, (rgba: number[]) => boolean]> = [[0.03, isRed], [0.28, isRed], [0.38, isBlue], [0.97, isBlue]];
 
 let browser: Browser;
 let WIDE_PNG: Buffer;
@@ -640,6 +645,24 @@ describe('a message is never lost', () => {
       if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 });
       await until("the new branch's own history", async () =>
         [await c.page.getByText('oldest on side', { exact: true }).count(), await c.page.getByText('older on side', { exact: true }).count()].join(), (v) => v === '1,1');
+    });
+  });
+
+  test("a welcome in a protocol this client doesn't speak leaves no history load in progress", async () => {
+    await withComposer(async (c) => {
+      c.host.announceBranch('b4', 'there');
+      c.host.store('older');
+      c.host.store('newest');
+      c.host.showFrom(1);
+      c.host.holdHistory();
+      c.host.welcomeAgain();
+      await until('the welcome with older history', () => c.page.getByText('newest', { exact: true }).count(), (n) => n === 1);
+      await c.page.getByTitle(/^load ALL/).click();
+      await until('the bulk request', () => c.host.historyAsked(), (n) => n === 1);
+      expect(await c.page.getByTitle('stop after the current page').count()).toBe(1);
+      c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
+      await c.page.getByText(/^Protocol mismatch/).waitFor();
+      expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
     });
   });
 
