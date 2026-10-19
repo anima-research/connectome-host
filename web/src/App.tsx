@@ -900,7 +900,8 @@ export function App() {
     // A history page asked for before this welcome is dropped, and paging
     // starts again from here: after a reconnect, the socket it was asked on
     // is gone, so no answer would come, and after a change of session or
-    // branch it's the old transcript's.
+    // branch, the request named a position in the old transcript, so its
+    // page has no place in this one, whichever place the host reads it from.
     pendingHistoryCorr = null;
     window.clearTimeout(pendingHistoryTimer);
     setHistoryLoading(false);
