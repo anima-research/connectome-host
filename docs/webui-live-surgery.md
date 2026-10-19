@@ -93,10 +93,12 @@ mislabeled type is corrected) and walking the file to its end marker (PNG
 chunks are checksummed too; a JPEG's, GIF's or WebP's compressed data has no
 checksum, so damage inside it would take a decoder to see), and refuses a
 message whose image fails with `message not sent: <reason>`. A stored image the
-API refuses would fail every later inference on the branch, so it is never
-stored. The refusal carries the send's `corrId`: the composer takes the
-message's row back out of the transcript and, when the composer is empty,
-puts the message back in it.
+API refuses would fail every later inference on the branch until it leaves the
+live window, so it is never stored. The limits are the host's own, from its
+recipe, and its welcome advertises them for the composer to fit to. The
+refusal carries the send's `corrId`: the composer takes the message's row
+back out of the transcript and, when the composer is empty, puts the message
+back in it.
 
 Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's
@@ -108,10 +110,12 @@ limit than 8000 px, and every image in it counts: earlier turns' images and
 those in tool results too. An image over that limit fails every request that
 carries it alongside 20 others, so the agent is stuck until the image leaves
 the live window. With the default `maxLiveImages` of 6 no request gets
-there. A recipe that raises `maxLiveImages` past 20, sets it to 0 (no count
-limit), or uses `passthrough` (which keeps every image) should keep images
-at 2000 px or less on a side, which the model API's docs give as under that
-limit on every platform; the composer doesn't shrink them that far.
+there. A host whose recipe can keep more than 20 images live (`maxLiveImages`
+past 20 or set to 0, `passthrough`, which keeps every image, or a strategy an
+extension registers) holds composer images to 2000 px on a side, which the
+model API's docs give as under that limit on every platform. A message also
+takes no more images than the live window keeps, since the rest would never
+reach the model.
 
 ## Operator log
 

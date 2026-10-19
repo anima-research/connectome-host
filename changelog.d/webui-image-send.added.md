@@ -6,7 +6,10 @@
   take, such as BMP, and refuses a file that is cut short or damaged; the
   host checks every image again and refuses a message whose image the API
   would refuse, saying why, so no such image is stored.
-  Up to 8 images per message. Images can't be routed to a fleet child.
+  Up to 8 images per message, and no more than the recipe keeps live (6 by
+  default); a recipe that can keep more than 20 live holds them to 2000 px
+  on a side, under the stricter limit the model APIs apply to requests that
+  carry that many. Images can't be routed to a fleet child.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.

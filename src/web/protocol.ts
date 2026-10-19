@@ -780,7 +780,8 @@ export interface UserMessageImage {
 /**
  * Limits on composer images. The SPA fits images to them before sending, and
  * the host checks them again (`userImageBlocks`), because an image the model
- * API refuses would fail every later inference on this branch, not just one.
+ * API refuses would fail every later inference on this branch, not just one,
+ * until it leaves the context manager's live window.
  *
  * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
  *   the per-image limit everywhere the model is served: 5 MB of base64 on

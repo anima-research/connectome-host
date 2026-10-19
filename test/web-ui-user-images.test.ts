@@ -84,11 +84,20 @@ async function send(msg: Record<string, unknown>, waitMs?: number) {
 }
 
 describe('composer images over the WebSocket', () => {
-  test("the welcome says this host takes images", async () => {
+  test("the welcome says this host takes images, and the limits its recipe sets", async () => {
     const c = await connect();
     const welcome = await c.until(() => c.frames.find((f) => f.type === 'welcome'), 'welcome');
     expect(welcome.features).toContain('user-images');
+    // This recipe names no strategy: the autobiographical default keeps 6
+    // images live, so a message takes at most 6.
+    expect(welcome.userImageLimits).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6 });
     c.ws.close();
+  });
+
+  test("a send's corrId goes to the framework with its message", async () => {
+    const r = await send({ content: 'hello', corrId: 'c-42' });
+    expect(r.pushed!.metadata).toEqual({ corrId: 'c-42' });
+    expect((await send({ content: 'hello' })).pushed!.metadata).toEqual({});
   });
 
   test('images and text reach the framework as one message, images first', async () => {
@@ -104,9 +113,17 @@ describe('composer images over the WebSocket', () => {
     ]);
   });
 
-  test('images alone carry no empty text block', async () => {
+  test('images alone carry no empty text block, whitespace included', async () => {
     const r = await send({ content: '', images: [{ mediaType: 'image/gif', data: FIX.gif }] });
     expect(r.pushed!.content).toEqual([{ type: 'image', source: { type: 'base64', data: FIX.gif, mediaType: 'image/gif' } }]);
+    const spaced = await send({ content: ' \n\t ', images: [{ mediaType: 'image/gif', data: FIX.gif }] });
+    expect(spaced.pushed!.content).toEqual([{ type: 'image', source: { type: 'base64', data: FIX.gif, mediaType: 'image/gif' } }]);
+  });
+
+  test('more images than the live window keeps are refused with the limit', async () => {
+    const seven = Array.from({ length: 7 }, () => ({ mediaType: 'image/png', data: FIX.png }));
+    expect((await send({ content: '', images: seven })).error).toBe('message not sent: 7 images attached; a message takes at most 6 here');
+    expect((await send({ content: '', images: seven.slice(0, 6) })).pushed).toBeDefined();
   });
 
   test('a message without images is pushed as before', async () => {
@@ -145,7 +162,7 @@ describe('composer images over the WebSocket', () => {
     // limit (MAX_WS_FRAME_BYTES, which its server sets).
     const data = atCap();
     const r = await send({ content: '', images: [data, data, data].map((d) => ({ mediaType: 'image/png', data: d })) });
-    expect(r.error).toBe('message not sent: the images come to more than 12.6 MB as base64, the most one message carries');
+    expect(r.error).toBe('message not sent: the images come to more than 12,582,912 characters of base64, the most one message carries');
   });
 });
 

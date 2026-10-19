@@ -8,13 +8,54 @@
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { ProcessState } from '@animalabs/agent-framework';
-import { isClientMessage, USER_IMAGE_LIMITS } from '../src/web/protocol.js';
-import { userImageBlocks } from '../src/web/user-images.js';
-import { imageDamage, imageSize, sniffImageType } from '../src/web/image-bytes.js';
+import { imageLimitsFrom, isClientMessage, USER_IMAGE_LIMITS } from '../src/web/protocol.js';
+import { hostImageLimits, liveImageWindow, userImageBlocks } from '../src/web/user-images.js';
+import { imageDamage, imageSize, isAnimated, sniffImageType } from '../src/web/image-bytes.js';
 import { TuiModule } from '../src/modules/tui-module.js';
+import { coalesceAndFlatten, toWireEntry, withoutImageData } from '../src/modules/web-ui-module.js';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', import.meta.url), 'utf-8')) as Record<string, string>;
 const bytes = (key: string): Buffer => Buffer.from(FIX[key]!, 'base64');
+
+/** CRC-32 as PNG chunks carry it, so a test can build a chunk that passes. */
+function crc32(b: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const byte of b) {
+    c ^= byte;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** A PNG chunk: length, type, data and its checksum. */
+function pngChunk(type: string, data: Uint8Array): Buffer {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const head = Buffer.alloc(4);
+  head.writeUInt32BE(data.length);
+  const tail = Buffer.alloc(4);
+  tail.writeUInt32BE(crc32(body));
+  return Buffer.concat([head, body, tail]);
+}
+
+/** The fixture PNG with its IHDR replaced, checksum and all. */
+function pngWithSize(width: number, height: number): Buffer {
+  const png = bytes('png');
+  const ihdr = Buffer.from(png.subarray(16, 29));
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  return Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', ihdr), png.subarray(33)]);
+}
+
+/** A GIF of `frames` 1x1 frames: header, screen, then each image's
+ *  descriptor and one data sub-block, and the trailer. */
+function gifOf(frames: number): Buffer {
+  const frame = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00];
+  return Buffer.from([
+    ...Buffer.from('GIF89a', 'latin1'), 1, 0, 1, 0, 0x00, 0, 0,
+    ...Array.from({ length: frames }, () => frame).flat(),
+    0x3b,
+  ]);
+}
 
 describe('the wire shape', () => {
   test('a user message may carry images', () => {
@@ -65,6 +106,44 @@ describe('image headers', () => {
     expect(sniffImageType(Buffer.from('%PDF-1.7 not an image'))).toBeUndefined();
     expect(sniffImageType(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBeUndefined();
   });
+
+  test("a signature counts only when it's whole: PNG's eight bytes, GIF87a or GIF89a", () => {
+    for (const at of [4, 5, 6, 7]) {
+      const b = Buffer.from(bytes('png'));
+      b[at]! ^= 0xff;
+      expect({ at, type: sniffImageType(b) }).toEqual({ at, type: undefined });
+    }
+    const gif = Buffer.from(bytes('gif'));
+    gif.write('88a', 3, 'latin1');
+    expect(sniffImageType(gif)).toBeUndefined();
+    gif.write('87a', 3, 'latin1');
+    expect(sniffImageType(gif)).toBe('image/gif');
+  });
+
+  test("a lossless WebP is read at its own header's length, under 30 bytes", () => {
+    // RIFF, WEBP, a VP8L chunk of 6: signature 0x2f, then width-1 and
+    // height-1 (both 0, so 1x1), and a byte of data. 26 bytes in all.
+    const tiny = Buffer.from([
+      ...Buffer.from('RIFF', 'latin1'), 18, 0, 0, 0, ...Buffer.from('WEBPVP8L', 'latin1'), 6, 0, 0, 0,
+      0x2f, 0, 0, 0, 0, 0,
+    ]);
+    expect(tiny.length).toBe(26);
+    expect(imageSize(tiny, 'image/webp')).toEqual({ width: 1, height: 1 });
+    expect(imageDamage(tiny, 'image/webp')).toBeNull();
+    expect(imageSize(tiny.subarray(0, 24), 'image/webp')).toBeNull();
+  });
+
+  test('a header whose layout is wrong for its format has no size', () => {
+    const lossy = Buffer.from(bytes('webpLossy'));
+    lossy[23] = 0x00; // the VP8 start code, 9d 01 2a
+    expect(imageSize(lossy, 'image/webp')).toBeNull();
+    const lossless = Buffer.from(bytes('webpLossless'));
+    lossless[20] = 0x00; // the VP8L signature, 2f
+    expect(imageSize(lossless, 'image/webp')).toBeNull();
+    const png = Buffer.from(bytes('png'));
+    png.write('IHDX', 12, 'latin1');
+    expect(imageSize(png, 'image/png')).toBeNull();
+  });
 });
 
 describe('a whole image', () => {
@@ -109,6 +188,47 @@ describe('a whole image', () => {
     b[b.indexOf(Buffer.from('IDAT')) + 5]! ^= 0xff;
     expect(imageDamage(b, 'image/png')).toBe('is damaged: its IDAT chunk fails its checksum');
   });
+
+  test('a file whose structure is whole but holds no image data is refused', () => {
+    const png = bytes('png');
+    const noData = Buffer.concat([png.subarray(0, 33), pngChunk('IEND', new Uint8Array())]);
+    expect(imageDamage(noData, 'image/png')).toBe('has no image data');
+    expect(imageDamage(gifOf(0), 'image/gif')).toBe('has no image data');
+    // RIFF, WEBP and one empty EXIF chunk: whole, with no image chunk.
+    const webp = Buffer.from([
+      ...Buffer.from('RIFF', 'latin1'), 12, 0, 0, 0, ...Buffer.from('WEBPEXIF', 'latin1'), 0, 0, 0, 0,
+    ]);
+    expect(imageDamage(webp, 'image/webp')).toBe('has no image data');
+  });
+});
+
+describe('isAnimated', () => {
+  test('a GIF of two frames is animated, and of one is not', () => {
+    expect(imageDamage(gifOf(2), 'image/gif')).toBeNull();
+    expect(isAnimated(gifOf(2), 'image/gif')).toBe(true);
+    expect(isAnimated(gifOf(1), 'image/gif')).toBe(false);
+    expect(isAnimated(bytes('gif'), 'image/gif')).toBe(false);
+  });
+
+  test('a PNG with an acTL chunk ahead of its data is animated (APNG)', () => {
+    const png = bytes('png');
+    const actl = pngChunk('acTL', new Uint8Array([0, 0, 0, 1, 0, 0, 0, 0]));
+    const apng = Buffer.concat([png.subarray(0, 33), actl, png.subarray(33)]);
+    expect(imageDamage(apng, 'image/png')).toBeNull();
+    expect(isAnimated(apng, 'image/png')).toBe(true);
+    expect(isAnimated(png, 'image/png')).toBe(false);
+  });
+
+  test("a WebP is animated when its VP8X header sets the animation flag", () => {
+    const vp8x = (flags: number) => Buffer.from([
+      ...Buffer.from('RIFF', 'latin1'), 22, 0, 0, 0, ...Buffer.from('WEBPVP8X', 'latin1'), 10, 0, 0, 0,
+      flags, 0, 0, 0, 2, 0, 0, 1, 0, 0,
+    ]);
+    expect(isAnimated(vp8x(0x02), 'image/webp')).toBe(true);
+    expect(isAnimated(vp8x(0x10), 'image/webp')).toBe(false);
+    expect(isAnimated(bytes('webpExtended'), 'image/webp')).toBe(false);
+    expect(isAnimated(bytes('webpLossy'), 'image/webp')).toBe(false);
+  });
 });
 
 describe('userImageBlocks', () => {
@@ -148,35 +268,145 @@ describe('userImageBlocks', () => {
     expect(userImageBlocks([{ mediaType: 'image/png', data: '' }])).toEqual({ ok: false, error: 'the image is not valid base64' });
   });
 
-  test('the count, per-image and per-message limits hold', () => {
+  test('the count, per-image and per-message limits hold at their edges', () => {
     const L = USER_IMAGE_LIMITS;
     const many = Array.from({ length: L.maxCount + 1 }, () => ({ mediaType: 'image/png', data: FIX.png! }));
-    expect(userImageBlocks(many)).toEqual({ ok: false, error: `${L.maxCount + 1} images attached; a message takes at most ${L.maxCount}` });
+    expect(userImageBlocks(many)).toEqual({ ok: false, error: `${L.maxCount + 1} images attached; a message takes at most ${L.maxCount} here` });
     expect(userImageBlocks(many.slice(0, L.maxCount)).ok).toBe(true);
 
-    // A real PNG header padded out: the checks read headers, not pixels.
+    // A whole PNG padded out after its end: the checks read headers, not
+    // pixels, and bytes after the end are allowed, so only a size limit can
+    // refuse these.
     const padded = (chars: number) => {
       const raw = Buffer.concat([bytes('png'), Buffer.alloc(chars * 3 / 4 - bytes('png').length)]);
       return raw.toString('base64');
     };
+    const image = (data: string) => ({ mediaType: 'image/png', data });
     const atCap = padded(L.maxBase64Chars);
     expect(atCap.length).toBe(L.maxBase64Chars);
-    expect(userImageBlocks([{ mediaType: 'image/png', data: atCap }]).ok).toBe(true);
-    expect(userImageBlocks([{ mediaType: 'image/png', data: padded(L.maxBase64Chars + 4) }]).ok).toBe(false);
-    expect(userImageBlocks([{ mediaType: 'image/png', data: padded(7_200_000) }])).toEqual({
-      ok: false, error: 'the image is 7.2 MB as base64, over the 5.0 MB limit',
+    expect(userImageBlocks([image(atCap)]).ok).toBe(true);
+    expect(userImageBlocks([image(padded(L.maxBase64Chars + 4))])).toEqual({
+      ok: false, error: 'the image is 5,000,004 characters of base64, over the 5,000,000 one image may carry',
     });
-    const three = [atCap, atCap, atCap].map((data) => ({ mediaType: 'image/png', data }));
-    expect(userImageBlocks(three)).toEqual({
-      ok: false, error: 'the images come to more than 12.6 MB as base64, the most one message carries',
+
+    // The total, exactly at it and one base64 quantum past it.
+    const rest = L.maxTotalBase64Chars - 2 * L.maxBase64Chars;
+    expect(userImageBlocks([image(atCap), image(atCap), image(padded(rest))]).ok).toBe(true);
+    expect(userImageBlocks([image(atCap), image(atCap), image(padded(rest + 4))])).toEqual({
+      ok: false, error: 'the images come to more than 12,582,912 characters of base64, the most one message carries',
     });
+  });
+
+  test('an image with no width or no height is refused', () => {
+    expect(imageSize(pngWithSize(0, 2), 'image/png')).toEqual({ width: 0, height: 2 });
+    expect(imageDamage(pngWithSize(0, 2), 'image/png')).toBeNull();
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(0, 2).toString('base64') }])).toEqual({
+      ok: false, error: 'the image is 0×2; an image needs a width and a height',
+    });
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(3, 0).toString('base64') }]).ok).toBe(false);
+  });
+
+  test("a host's own limits, from its recipe, are the ones checked", () => {
+    const six = hostImageLimits(liveImageWindow(undefined));
+    expect(six).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6 });
+    const seven = Array.from({ length: 7 }, () => ({ mediaType: 'image/png', data: FIX.png! }));
+    expect(userImageBlocks(seven, six)).toEqual({ ok: false, error: '7 images attached; a message takes at most 6 here' });
+    expect(userImageBlocks(seven.slice(0, 6), six).ok).toBe(true);
+
+    const many = hostImageLimits(liveImageWindow({ type: 'autobiographical', maxLiveImages: 24 }));
+    expect(many).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2000, 1).toString('base64') }], many).ok).toBe(true);
+    expect(userImageBlocks([{ mediaType: 'image/png', data: pngWithSize(2001, 1).toString('base64') }], many)).toEqual({
+      ok: false,
+      error: "the image is 2001×1; this host's recipe can carry more than 20 images in one request, where the model APIs hold every image to a stricter limit, and 2000 px on a side stays under it",
+    });
+  });
+});
+
+describe("a host's image limits, from its recipe's live window", () => {
+  test('the window: the strategy default, a set count, or none', () => {
+    expect(liveImageWindow(undefined)).toBe(6);
+    expect(liveImageWindow({ type: 'frontdesk' })).toBe(6);
+    expect(liveImageWindow({ type: 'autobiographical', maxLiveImages: 3 })).toBe(3);
+    expect(liveImageWindow({ type: 'autobiographical', maxLiveImages: 0 })).toBeUndefined();
+    expect(liveImageWindow({ type: 'passthrough' })).toBeUndefined();
+    expect(liveImageWindow({ type: 'from-an-extension' })).toBeUndefined();
+  });
+
+  test('a message takes no more images than the window keeps, and past 20 each side is held to 2000 px', () => {
+    expect(hostImageLimits(3)).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 3 });
+    expect(hostImageLimits(20)).toEqual(USER_IMAGE_LIMITS);
+    expect(hostImageLimits(21)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
+    expect(hostImageLimits(undefined)).toEqual({ ...USER_IMAGE_LIMITS, maxSidePx: 2000 });
+  });
+
+  test("the composer takes a host's limits where they're sound, and the defaults otherwise", () => {
+    expect(imageLimitsFrom(undefined)).toEqual(USER_IMAGE_LIMITS);
+    expect(imageLimitsFrom({ maxCount: 6, maxSidePx: 2000 })).toEqual({ ...USER_IMAGE_LIMITS, maxCount: 6, maxSidePx: 2000 });
+    // Looser than the defaults, not whole, or not a number: the default.
+    expect(imageLimitsFrom({ maxCount: 9, maxSidePx: 2000.5, maxBase64Chars: -1 })).toEqual(USER_IMAGE_LIMITS);
+    expect(imageLimitsFrom({ maxCount: '6' as unknown as number })).toEqual(USER_IMAGE_LIMITS);
+  });
+});
+
+describe('stored messages as the WebUI is sent them', () => {
+  const image = { type: 'image', source: { type: 'base64', data: FIX.png, mediaType: 'image/png' } };
+
+  test("a stored user message carries its send's corrId, and nothing else does", () => {
+    const user = { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'hi' }], metadata: { corrId: 'c-9' } };
+    expect(toWireEntry(user, 0).corrId).toBe('c-9');
+    expect(toWireEntry({ ...user, metadata: {} }, 0).corrId).toBeUndefined();
+    expect(toWireEntry({ ...user, participant: 'Claude' }, 0).corrId).toBeUndefined();
+  });
+
+  test("a coalesced shard run's images name the shard each is stored in", () => {
+    const entries = coalesceAndFlatten([
+      { id: 's0', participant: 'user', bodyGroupId: 'g', shardIndex: 0, content: [{ type: 'text', text: 'one ' }, image] },
+      { id: 's1', participant: 'user', bodyGroupId: 'g', shardIndex: 1, content: [{ type: 'text', text: 'two' }, image] },
+      { id: 'm2', participant: 'user', content: [image] },
+    ], 10);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.blocks).toEqual([
+      { kind: 'text', text: 'one ' },
+      { kind: 'media', mediaType: 'image/png', ref: 's0/1' },
+      { kind: 'text', text: 'two' },
+      { kind: 'media', mediaType: 'image/png', ref: 's1/1' },
+    ]);
+    expect(entries[0]!.index).toBe(10);
+    expect(entries[1]!.blocks).toEqual([{ kind: 'media', mediaType: 'image/png', ref: 'm2/0' }]);
+  });
+});
+
+describe('traces sent to WebUI clients', () => {
+  test("a process trace's base64 images are replaced by their length, and nothing else changes", () => {
+    const when = new Date('2026-10-19T12:00:00Z');
+    const event = {
+      type: 'process:completed',
+      at: when,
+      processEvent: { type: 'external-message', content: [
+        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(10) } },
+        { type: 'text', text: 'hi' },
+      ] },
+      responses: [{ addMessages: [{ participant: 'user', content: [{ type: 'image', source: { type: 'url', url: 'u' } }] }] }],
+    };
+    const out = withoutImageData(event) as typeof event;
+    expect(out.processEvent.content[0]).toEqual({
+      type: 'image', source: { type: 'base64', mediaType: 'image/png', data: '[40 base64 characters, not sent in traces]' },
+    });
+    expect(out.processEvent.content[1]).toEqual({ type: 'text', text: 'hi' });
+    expect(out.responses).toEqual(event.responses);
+    expect(out.at).toBe(when);
+    expect(event.processEvent.content[0]!.source).toMatchObject({ data: 'AAAA'.repeat(10) });
   });
 });
 
 describe('walking hostile bytes', () => {
   // The walkers run synchronously in the host's WebSocket handler, so one
   // that never ends freezes the host. These run in a child process with a
-  // deadline: a regression fails the test instead of hanging the suite.
+  // deadline: a regression fails the test instead of hanging the suite. The
+  // deadlines are what only a walk that never ends reaches: the work takes
+  // well under a second, so a loaded machine slowing it many times over
+  // still finishes inside them.
   const MOD = JSON.stringify(new URL('../src/web/image-bytes.ts', import.meta.url).pathname);
   const FIXTURES = JSON.stringify(new URL('./fixtures/user-images.json', import.meta.url).pathname);
   const bounded = (code: string, ms: number) => {
@@ -191,9 +421,9 @@ describe('walking hostile bytes', () => {
       import { imageDamage } from ${MOD};
       const b = new Uint8Array([0x52,0x49,0x46,0x46, 12,0,0,0, 0x57,0x45,0x42,0x50, 0x56,0x50,0x38,0x20, 0xf8,0xff,0xff,0xff]);
       console.log(imageDamage(b, 'image/webp'));
-    `, 5000);
+    `, 60_000);
     expect(r).toEqual({ exitCode: 0, out: 'is cut short: the file ends before the image does', err: '' });
-  });
+  }, 65_000);
 
   test('every fixture, damaged at random, is read to an answer', () => {
     // Seeded, so a failure reproduces: overwrite one to four bytes (often
@@ -224,9 +454,11 @@ describe('walking hostile bytes', () => {
         }
       }
       console.log(runs);
-    `, 30000);
+    `, 120_000);
+    // The answers aren't checked here, only that every read ends; the
+    // tests above pin what each read answers.
     expect(r).toEqual({ exitCode: 0, out: String(7 * 3000), err: '' });
-  }, 40000);
+  }, 130_000);
 });
 
 describe('TuiModule', () => {
@@ -258,5 +490,34 @@ describe('TuiModule', () => {
     const odd = [{ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } }];
     expect((await m.onProcess(event(odd), state)).addMessages?.[0]?.content).toEqual([{ type: 'text', text: JSON.stringify(odd) }]);
     expect((await m.onProcess(event([]), state)).addMessages?.[0]?.content).toEqual([{ type: 'text', text: '[]' }]);
+  });
+
+  test('one block that is not a whole text or base64 image block makes the whole array JSON text', async () => {
+    const m = new TuiModule();
+    const image = { type: 'image', source: { type: 'base64', data: FIX.png, mediaType: 'image/png' } };
+    for (const bad of [
+      null,
+      'text',
+      { type: 'text', text: 3 },
+      { type: 'image', source: { type: 'base64', mediaType: 'image/png' } },
+      { type: 'image', source: { type: 'base64', data: FIX.png } },
+      { type: 'image', source: { type: 'base64', data: 7, mediaType: 'image/png' } },
+    ]) {
+      const content = [image, bad];
+      expect({ bad, stored: (await m.onProcess(event(content), state)).addMessages?.[0]?.content })
+        .toEqual({ bad, stored: [{ type: 'text', text: JSON.stringify(content) }] });
+    }
+  });
+
+  test("a send's corrId is stored with its message, and nothing else is", async () => {
+    const m = new TuiModule();
+    const withCorr = { ...event('hello'), metadata: { corrId: 'c-1', other: 'x' } };
+    expect((await m.onProcess(withCorr, state)).addMessages).toEqual([
+      { participant: 'user', content: [{ type: 'text', text: 'hello' }], metadata: { corrId: 'c-1' } },
+    ]);
+    const empty = { ...event('hello'), metadata: { corrId: '' } };
+    expect((await m.onProcess(empty, state)).addMessages).toEqual([
+      { participant: 'user', content: [{ type: 'text', text: 'hello' }] },
+    ]);
   });
 });

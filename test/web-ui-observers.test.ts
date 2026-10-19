@@ -530,10 +530,12 @@ describe('WebUiModule observer flow (e2e)', () => {
     expect(ack.label).toBe('e2e-device');
     expect((ack.scopes as string[]).sort()).toEqual(['debug', 'health', 'ops']);
 
-    // Read-only: mutating messages are refused.
-    ws.send(JSON.stringify({ type: 'user-message', content: 'hi' }));
+    // Read-only: mutating messages are refused, naming the send's corrId so
+    // the composer can take its row back.
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'obs-1' }));
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
+    expect(errFrame.corrId).toBe('obs-1');
 
     // Branch listing rides the 'messages' scope, which this grant lacks.
     ws.send(JSON.stringify({ type: 'request-branches' }));
@@ -563,6 +565,24 @@ describe('WebUiModule observer flow (e2e)', () => {
 
     ws.close();
   }, 25_000);
+
+  test("before the host is ready, an operator's send is refused naming its corrId", async () => {
+    // This harness binds no app, so every message meets 'host not ready'.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: base(), authorization: BASIC },
+    } as unknown as undefined);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    await new Promise<void>((resolveOpen, reject) => {
+      const t = setTimeout(() => reject(new Error('ws never opened')), 5000);
+      ws.addEventListener('open', () => { clearTimeout(t); resolveOpen(); });
+    });
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'early-1' }));
+    const deadline = Date.now() + 5000;
+    while (!frames.some((f) => f.type === 'error') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(frames.find((f) => f.type === 'error')).toMatchObject({ message: 'host not ready', corrId: 'early-1' });
+    ws.close();
+  });
 
   test('password sign-in mints a full-session cookie the WS upgrade honors', async () => {
     // /auth/basic with valid credentials → 302 + full-session cookie.

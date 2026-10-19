@@ -58,6 +58,7 @@ import {
   WEB_PROTOCOL_VERSION,
   MAX_WS_FRAME_BYTES,
   isClientMessage,
+  type UserImageLimits,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -109,7 +110,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { userImageBlocks } from '../web/user-images.js';
+import { hostImageLimits, liveImageWindow, userImageBlocks } from '../web/user-images.js';
 import { loadRecipe } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -858,7 +859,12 @@ export class WebUiModule implements Module {
     if (sharedServer!.clients.size === 0) return;
     const traceMsg: WebUiServerMessage = {
       type: 'trace',
-      event: event as unknown as { type: string; [k: string]: unknown },
+      // A process trace carries the module's event and responses whole, so a
+      // composer send's images would reach every client twice as base64.
+      event: (event.type.startsWith('process:') ? withoutImageData(event) : event) as unknown as {
+        type: string;
+        [k: string]: unknown;
+      },
     };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
       ? {
@@ -1556,6 +1562,13 @@ export class WebUiModule implements Module {
     return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
   }
 
+  /** The limits composer images are checked against here, from how many
+   *  images this host's recipe keeps live (`hostImageLimits`). The welcome
+   *  advertises them, so the composer fits images to the same ones. */
+  private imageLimits(): UserImageLimits {
+    return hostImageLimits(liveImageWindow(sharedServer?.app?.recipe.agent.strategy));
+  }
+
   /** Capabilities the SPA feature-detects. Duck-typed against the bound
    *  framework so this host works unchanged against an older
    *  @animalabs/agent-framework (affordances simply do not appear). */
@@ -1838,7 +1851,12 @@ export class WebUiModule implements Module {
     }
 
     if (!sharedServer?.app) {
-      this.send(client, { type: 'error', message: 'host not ready' });
+      const corrId = (parsed as { corrId?: unknown }).corrId;
+      this.send(client, {
+        type: 'error',
+        ...(typeof corrId === 'string' ? { corrId } : {}),
+        message: 'host not ready',
+      });
       return;
     }
 
@@ -1851,7 +1869,7 @@ export class WebUiModule implements Module {
         // Images go ahead of the text, the order Anthropic's vision docs recommend.
         let content: unknown = parsed.content;
         if (parsed.images && parsed.images.length > 0) {
-          const checked = userImageBlocks(parsed.images);
+          const checked = userImageBlocks(parsed.images, this.imageLimits());
           if (!checked.ok) {
             this.send(client, {
               type: 'error',
@@ -1868,7 +1886,9 @@ export class WebUiModule implements Module {
           type: 'external-message',
           source: 'tui',
           content,
-          metadata: {},
+          // TuiModule stores the send's corrId with the message, and its entry
+          // carries it back, so the sending client adopts its own row by id.
+          metadata: parsed.corrId !== undefined ? { corrId: parsed.corrId } : {},
           triggerInference: true,
         });
         return;
@@ -3284,6 +3304,7 @@ export class WebUiModule implements Module {
       },
       childTrees,
       features: this.hostFeatures(),
+      userImageLimits: this.imageLimits(),
       ...(hostMode ? { hostMode } : {}),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
@@ -3442,6 +3463,37 @@ interface MessageLike {
   timestamp?: number | Date;
   bodyGroupId?: string;
   shardIndex?: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** Where a wire entry's block is stored: the message id and its block index
+ *  there, which a `/media` ref names. */
+interface BlockOrigin {
+  id?: string;
+  index: number;
+}
+
+/**
+ * A copy of a trace payload with each base64 image's data replaced by a note
+ * of its length. Exported for its test. A trace is JSON, so the walk meets no
+ * cycles; the depth cap only stops a pathological nesting, past which values
+ * pass as they are.
+ */
+export function withoutImageData(value: unknown, depth = 0): unknown {
+  if (depth > 16 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => withoutImageData(v, depth + 1));
+  // A Date or other class instance passes whole, for JSON.stringify to render
+  // as it would have; only plain objects are copied.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const o = value as Record<string, unknown>;
+  const src = o.source as { type?: unknown; data?: unknown } | null | undefined;
+  if (o.type === 'image' && src && src.type === 'base64' && typeof src.data === 'string') {
+    return { ...o, source: { ...src, data: `[${src.data.length} base64 characters, not sent in traces]` } };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) out[k] = withoutImageData(v, depth + 1);
+  return out;
 }
 
 // Per-block size caps for wire frames. A single pathological tool result or
@@ -3463,23 +3515,29 @@ function capText(s: string, cap: number): { text: string; truncated?: boolean } 
  * reduced to type placeholders and per-block size caps applied.
  *
  * `index` is the message's store slot index — the client's paging cursor.
+ * Exported for its test.
  */
-function toWireEntry(
+export function toWireEntry(
   msg: MessageLike,
   index: number,
-  opts: { mediaRefs?: boolean } = {},
+  /** For a coalesced shard run: where each merged block is stored, since
+   *  its index in the merged content names no stored message. */
+  opts: { origin?: (blockIndex: number) => BlockOrigin | undefined } = {},
 ): WelcomeMessageEntry {
   const blocks: import('../web/protocol.js').MessageBlock[] = [];
   const textParts: string[] = [];
   let toolResults = 0;
   let conversational = 0; // text/thinking blocks — used for participant fixup
   // Lazy image locator: `<messageId>/<blockIndex>[.<inner>]`, served by
-  // /media/. Only when the entry maps 1:1 onto one stored message (coalesced
-  // shard runs do not — their block indices are synthetic).
-  const mediaRef = (blockPath: string, mediaType: string): string | undefined =>
-    opts.mediaRefs !== false && typeof msg.id === 'string' && msg.id.length > 0 && mediaType.startsWith('image/')
-      ? `${encodeURIComponent(msg.id)}/${blockPath}`
+  // /media/. A coalesced shard run's block indices are its own, so each
+  // block's ref names the shard it's stored in (`opts.origin`).
+  const mediaRef = (bi: number, inner: string, mediaType: string): string | undefined => {
+    if (!mediaType.startsWith('image/')) return undefined;
+    const at: BlockOrigin | undefined = opts.origin ? opts.origin(bi) : { id: msg.id, index: bi };
+    return at && typeof at.id === 'string' && at.id.length > 0
+      ? `${encodeURIComponent(at.id)}/${at.index}${inner}`
       : undefined;
+  };
 
   for (const [bi, block] of msg.content.entries()) {
     const b = block as {
@@ -3545,7 +3603,7 @@ function toWireEntry(
                 : ib?.type === 'blob_ref' && typeof ib.ref?.mediaType === 'string' ? ib.ref.mediaType
                 : null;
               if (!mt || !mt.startsWith('image/')) continue;
-              const ref = mediaRef(`${bi}.${ii}`, mt);
+              const ref = mediaRef(bi, `.${ii}`, mt);
               blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}) });
             }
           }
@@ -3559,7 +3617,7 @@ function toWireEntry(
           typeof b.source?.mediaType === 'string' ? b.source.mediaType
           : typeof b.mediaType === 'string' ? b.mediaType
           : b.type;
-        const ref = b.type === 'image' ? mediaRef(String(bi), mediaType) : undefined;
+        const ref = b.type === 'image' ? mediaRef(bi, '', mediaType) : undefined;
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
@@ -3568,7 +3626,7 @@ function toWireEntry(
         // resolveBlobs: false so multi-MB base64 never hits the wire). The
         // ref lets the browser fetch the bytes on render instead.
         const mediaType = typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob';
-        const ref = mediaRef(String(bi), mediaType);
+        const ref = mediaRef(bi, '', mediaType);
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
@@ -3592,6 +3650,9 @@ function toWireEntry(
   if (msg.id) entry.id = msg.id;
   const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
   if (ts) entry.timestamp = ts;
+  // The WebUI send this user message came from, stored by TuiModule.
+  const corrId = msg.metadata?.corrId;
+  if (participant === 'user' && typeof corrId === 'string' && corrId.length > 0) entry.corrId = corrId;
   return entry;
 }
 
@@ -3615,9 +3676,9 @@ function flattenToolResultContent(content: unknown): string {
  * ingestion) into a single wire entry, then flatten everything. Shards are
  * contiguous by construction; within a run they're ordered by shardIndex.
  * The coalesced entry's `index` is the FIRST shard's slot index so paging
- * cursors stay aligned with store slots.
+ * cursors stay aligned with store slots. Exported for its test.
  */
-function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
+export function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
   const out: WelcomeMessageEntry[] = [];
   let i = 0;
   while (i < messages.length) {
@@ -3636,18 +3697,22 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
     // Merge adjacent text blocks with NO separator — shard cuts land
     // mid-text, so reassembly must be byte-faithful concatenation.
     const mergedContent: unknown[] = [];
-    for (const blk of shards.flatMap((s) => [...s.content])) {
-      const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
-      const cur = blk as { type?: string; text?: unknown };
-      if (prev?.type === 'text' && cur.type === 'text'
-          && typeof prev.text === 'string' && typeof cur.text === 'string') {
-        mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
-      } else {
-        mergedContent.push(blk);
+    const origins: BlockOrigin[] = [];
+    for (const shard of shards) {
+      for (const [si, blk] of shard.content.entries()) {
+        const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
+        const cur = blk as { type?: string; text?: unknown };
+        if (prev?.type === 'text' && cur.type === 'text'
+            && typeof prev.text === 'string' && typeof cur.text === 'string') {
+          mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
+        } else {
+          mergedContent.push(blk);
+          origins.push({ id: shard.id, index: si });
+        }
       }
     }
     const merged: MessageLike = { ...shards[0]!, content: mergedContent };
-    out.push(toWireEntry(merged, startIndex + runStart, { mediaRefs: false }));
+    out.push(toWireEntry(merged, startIndex + runStart, { origin: (bi) => origins[bi] }));
   }
   return out;
 }
