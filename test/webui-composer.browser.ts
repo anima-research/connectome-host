@@ -239,7 +239,8 @@ async function until<T>(what: string, get: () => T | Promise<T>, ok: (v: T) => b
 
 /** A PNG a canvas draws: one red fill; pixels that don't compress, so its
  *  size is about four bytes a pixel; red on its left half and transparent
- *  on its right; or red on its left third and blue on the rest. */
+ *  on its right; or red on its left third and blue on the rest, with a
+ *  green band across its bottom quarter. */
 async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise' | 'half-clear' | 'red-blue' = 'red'): Promise<Buffer> {
   const b64 = await page.evaluate(([w, h, look]) => {
     const canvas = document.createElement('canvas');
@@ -257,6 +258,9 @@ async function canvasPng(page: Page, w: number, h: number, look: 'red' | 'noise'
       if (look === 'red-blue') {
         ctx.fillStyle = '#33c';
         ctx.fillRect(red, 0, w - red, h);
+        const band = Math.round(h * 0.75);
+        ctx.fillStyle = '#3c3';
+        ctx.fillRect(0, band, w, h - band);
       }
     }
     return canvas.toDataURL('image/png').split(',')[1]!;
@@ -299,14 +303,19 @@ const sentImage = (page: Page, image: { mediaType: string; data: string }, fx = 
  *  encoding leaves it. */
 const isRed = (rgba: number[]): boolean => rgba[0]! > 150 && rgba[1]! < 100 && rgba[2]! < 100 && rgba[3]! > 200;
 const isBlue = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! < 100 && rgba[2]! > 150 && rgba[3]! > 200;
-/** Where the fit check reads the red-and-blue picture, each a fraction of
- *  its width, and the colour it shows there when scaled whole: near each
- *  end, and on each side of the boundary at a third. Cropped from the
- *  corner, the boundary moves right and 38% reads red; from the centre, it
- *  moves left and 28% reads blue; cropped from the right, 3% reads blue;
- *  padded, 97% reads blank. Each holds for a picture more than about
- *  2,910 px wide, fitted to 2000; this one is 3000. */
-const RED_BLUE_READS: Array<[number, (rgba: number[]) => boolean]> = [[0.03, isRed], [0.28, isRed], [0.38, isBlue], [0.97, isBlue]];
+const isGreen = (rgba: number[]): boolean => rgba[0]! < 100 && rgba[1]! > 150 && rgba[2]! < 100 && rgba[3]! > 200;
+/** Where the fit check reads the red-and-blue picture, as fractions of its
+ *  width and height, and the colour it shows there when scaled whole. Along
+ *  its middle row: near each end, and on each side of the boundary at a
+ *  third. Cropped from the corner, the boundary moves right and 38% reads
+ *  red; from the centre, it moves left and 28% reads blue; cropped from the
+ *  right, 3% reads blue; padded, 97% reads blank. Each holds for a picture
+ *  more than about 2,910 px wide, fitted to 2000; this one is 3000. And in
+ *  the green band across its bottom quarter, which a draw stretched, cut or
+ *  padded down its height leaves off that row. */
+const RED_BLUE_READS: Array<[number, number, (rgba: number[]) => boolean]> = [
+  [0.03, 0.5, isRed], [0.28, 0.5, isRed], [0.38, 0.5, isBlue], [0.97, 0.5, isBlue], [0.5, 0.9, isGreen],
+];
 
 let browser: Browser;
 let WIDE_PNG: Buffer;
@@ -501,10 +510,13 @@ describe('a message is never lost', () => {
       c.host.drop({ accept: false });
       await c.page.getByText('Disconnected — retrying').waitFor();
       const from = c.host.received.length;
+      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
+      await c.page.getByTitle(/^dot\.png/).waitFor();
       await c.box.fill('cherry');
       await c.box.press('Enter');
       await c.page.getByText('not connected to the host').waitFor();
       expect(await c.box.inputValue()).toBe('cherry');
+      expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(1);
       expect(await rowsOf(c.page, 'cherry').count()).toBe(0);
       expect(c.host.received.length).toBe(from);
     });
@@ -663,6 +675,13 @@ describe('a message is never lost', () => {
       c.host.welcomeAgain({ protocolVersion: WEB_PROTOCOL_VERSION + 1 });
       await c.page.getByText(/^Protocol mismatch/).waitFor();
       expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
+      expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
+      // The page answering the old request isn't shown. A socket's frames
+      // arrive in order, so once this shows, the page has been handled.
+      c.host.releaseHistory();
+      c.host.append('after the page', 'a corrId of its own');
+      await c.page.getByText('after the page', { exact: true }).waitFor();
+      expect(await c.page.getByText('older', { exact: true }).count()).toBe(0);
     });
   });
 
@@ -727,6 +746,9 @@ describe('images', () => {
       c.host.refuse(frame.corrId!);
       await until('the message back in the composer', () => c.box.inputValue(), (v) => v === 'with a picture');
       await c.page.getByTitle(/^dot\.png/).waitFor();
+      // The image put back is the one sent, byte for byte.
+      const again = await send(c, 'with a picture');
+      expect(again.images?.map((i) => [i.mediaType, i.data])).toEqual([['image/png', DOT_PNG.toString('base64')]]);
     });
   });
 
@@ -753,17 +775,17 @@ describe('images', () => {
       expect(await tile.getByText('shrunk', { exact: true }).count()).toBe(1);
       // The image itself, not only its note: the whole picture, scaled to
       // its new size, neither cropped nor padded.
-      for (const [fx, colour] of RED_BLUE_READS) {
-        const shown = await tileImage(tile, fx);
+      for (const [fx, fy, colour] of RED_BLUE_READS) {
+        const shown = await tileImage(tile, fx, fy);
         expect(shown.size).toEqual([2000, 67]);
-        expect([fx, colour(shown.rgba)]).toEqual([fx, true]);
+        expect([fx, fy, colour(shown.rgba)]).toEqual([fx, fy, true]);
       }
       const frame = await send(c, 'a wide picture');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
-      for (const [fx, colour] of RED_BLUE_READS) {
-        const sent = await sentImage(c.page, frame.images![0]!, fx);
+      for (const [fx, fy, colour] of RED_BLUE_READS) {
+        const sent = await sentImage(c.page, frame.images![0]!, fx, fy);
         expect(sent.size).toEqual([2000, 67]);
-        expect([fx, colour(sent.rgba)]).toEqual([fx, true]);
+        expect([fx, fy, colour(sent.rgba)]).toEqual([fx, fy, true]);
       }
     });
   });
