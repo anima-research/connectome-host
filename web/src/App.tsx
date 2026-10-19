@@ -162,6 +162,10 @@ export function App() {
   /** session.id of the last welcome, to tell a session switch apart from a
    *  first connect or a reconnect. */
   let welcomeSessionId: string | null = null;
+  /** The session and branch the last welcome was for, by the names a kept
+   *  send's mark gives them. welcome()'s branch can't stand in: branch-changed
+   *  moves it on before the new branch's welcome arrives. */
+  let welcomePlace: { sessionId: string; session: string; branch: string } | null = null;
   /** Whether the operator is pinned to the bottom of the scroll pane.
    *  Autoscroll only fires when true, so reading history isn't yanked. */
   let atBottom = true;
@@ -878,7 +882,8 @@ export function App() {
       return;
     }
     setProtoMismatch(null);
-    const prev = welcome();
+    const prev = welcomePlace;
+    welcomePlace = { sessionId: msg.session.id, session: msg.session.name || msg.session.id, branch: msg.branch.name || msg.branch.id };
     setWelcome(msg);
     // A scope pinned to a child that no longer exists (stopped, crashed,
     // session switch) would leave every panel dead-ended on a name the
@@ -906,9 +911,9 @@ export function App() {
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
       const earlier = !prev
         ? undefined
-        : prev.session.id !== msg.session.id
-          ? `session ${prev.session.name || prev.session.id}`
-          : `branch ${prev.branch.name || prev.branch.id}`;
+        : prev.sessionId !== msg.session.id
+          ? `session ${prev.session}`
+          : `branch ${prev.branch}`;
       setMessages(produce((arr) => {
         const rows = rowsAfterReset(arr, entries, earlier);
         arr.length = 0;
