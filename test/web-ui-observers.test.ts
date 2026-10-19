@@ -530,10 +530,12 @@ describe('WebUiModule observer flow (e2e)', () => {
     expect(ack.label).toBe('e2e-device');
     expect((ack.scopes as string[]).sort()).toEqual(['debug', 'health', 'ops']);
 
-    // Read-only: mutating messages are refused.
-    ws.send(JSON.stringify({ type: 'user-message', content: 'hi' }));
+    // Read-only: mutating messages are refused, naming the send's corrId so
+    // the composer can take its row back.
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'obs-1' }));
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
+    expect(errFrame.corrId).toBe('obs-1');
 
     // Branch listing rides the 'messages' scope, which this grant lacks.
     ws.send(JSON.stringify({ type: 'request-branches' }));
@@ -563,6 +565,24 @@ describe('WebUiModule observer flow (e2e)', () => {
 
     ws.close();
   }, 25_000);
+
+  test("before the host is ready, an operator's send is refused naming its corrId", async () => {
+    // This harness binds no app, so every message meets 'host not ready'.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: base(), authorization: BASIC },
+    } as unknown as undefined);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    await new Promise<void>((resolveOpen, reject) => {
+      const t = setTimeout(() => reject(new Error('ws never opened')), 5000);
+      ws.addEventListener('open', () => { clearTimeout(t); resolveOpen(); });
+    });
+    ws.send(JSON.stringify({ type: 'user-message', content: 'hi', corrId: 'early-1' }));
+    const deadline = Date.now() + 5000;
+    while (!frames.some((f) => f.type === 'error') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(frames.find((f) => f.type === 'error')).toMatchObject({ message: 'host not ready', corrId: 'early-1' });
+    ws.close();
+  });
 
   test('password sign-in mints a full-session cookie the WS upgrade honors', async () => {
     // /auth/basic with valid credentials → 302 + full-session cookie.
@@ -607,4 +627,96 @@ describe('WebUiModule observer flow (e2e)', () => {
     // Two checks 3 s apart take the grants away.
     expect(await shellStatusBecomes(401)).toBe(401);
   }, 20_000);
+});
+
+describe('traces with observers connected', () => {
+  let tmp: string;
+  let port: number;
+  let mod: WebUiModule;
+  let emitTrace: ((event: Record<string, unknown>) => void) | undefined;
+  const kp = makeKeypair();
+
+  beforeAll(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'webui-observer-traces-'));
+    const observersPath = join(tmp, 'observers.json');
+    // Granted from the start, so a socket without the password may connect and wait for its hello.
+    saveObserversFile(observersPath, { observers: [{ key: kp.id, label: 'dashboard', scopes: ['health'] }] });
+    mod = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'admin', password: 'pw' }, observersPath });
+    await mod.start({} as ModuleContext);
+    port = __getSharedServerPortForTests()!;
+    mod.setApp({
+      framework: {
+        getAllAgents: () => [],
+        getAllModules: () => [],
+        onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
+        pushEvent: () => {},
+      },
+      sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+      recipe: { name: 'recipe', agent: {} },
+    } as never);
+  });
+
+  afterAll(async () => {
+    await mod.stop();
+    await __resetSharedServerForTests();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** A connection, with every frame it has been sent, once `first` has come. */
+  async function connect(first: string, headers?: Record<string, string>) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, (headers ? { headers } : undefined) as never);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener('message', (ev) => frames.push(JSON.parse(String(ev.data))));
+    const until = async (type: string): Promise<Record<string, unknown>> => {
+      const deadline = performance.now() + 5000;
+      for (;;) {
+        const f = frames.find((m) => m.type === type);
+        if (f) return f;
+        if (performance.now() >= deadline) throw new Error(`timed out waiting for ${type}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+    await until(first);
+    return { ws, frames, until };
+  }
+
+  test("a trace or child's event no welcomed client takes isn't serialized, and one that clients take is serialized once", async () => {
+    let serialized = 0;
+    const image = { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA'.repeat(5) } };
+    const event = () => ({
+      type: 'process:received',
+      processEvent: { toJSON: () => { serialized++; return { type: 'external-message', content: [image] }; } },
+    });
+    const fleet = mod as unknown as { handleFleetEvent(name: string, event: unknown): void };
+
+    // Connected, waiting for its hello: not welcomed.
+    const waiting = await connect('observer-auth-required');
+    emitTrace!(event());
+    fleet.handleFleetEvent('kid', event());
+    expect(serialized).toBe(0);
+
+    // Welcomed, but a message's trace needs the messages scope.
+    const dashboard = await connect('observer-auth-required');
+    dashboard.ws.send(JSON.stringify({ type: 'observer-hello', identity: helloFor(kp, `127.0.0.1:${port}`) }));
+    await dashboard.until('welcome');
+    emitTrace!(event());
+    expect(serialized).toBe(0);
+
+    const operator = { origin: `http://127.0.0.1:${port}`, authorization: BASIC };
+    const operators = [await connect('welcome', operator), await connect('welcome', operator)];
+    emitTrace!(event());
+    expect(serialized).toBe(1);
+    for (const op of operators) {
+      const trace = await op.until('trace');
+      expect(JSON.stringify(trace.event)).not.toContain('AAAA');
+    }
+    // The dashboard takes a usage trace, which comes after any trace it was sent before.
+    emitTrace!({ type: 'usage:updated', totals: { inputTokens: 1, outputTokens: 1 } });
+    await dashboard.until('usage');
+    expect(dashboard.frames.filter((f) => f.type === 'trace' && (f.event as { type?: string }).type !== 'usage:updated')).toEqual([]);
+    fleet.handleFleetEvent('kid', event());
+    expect(serialized).toBe(2);
+    for (const op of operators) expect(JSON.stringify((await op.until('child-event')).event)).not.toContain('AAAA');
+    for (const c of [waiting, dashboard, ...operators]) c.ws.close();
+  }, 15_000);
 });

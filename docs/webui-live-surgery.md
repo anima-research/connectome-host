@@ -56,8 +56,9 @@ for an image nested in a tool result (read_image, cameras, screenshots).
 The endpoint resolves that one message's blobs and streams bytes
 (`image/*` only, `nosniff`, sandboxed CSP; observer sessions need the
 `messages` scope; `?agent=<name>` picks a non-root agent; `?scope=<child>`
-proxies to a fleet child via the `media` panel op). Coalesced shard runs carry
-no refs (their block indices are synthetic) and keep the type chip.
+proxies to a fleet child via the `media` panel op). A coalesced shard run's
+images carry refs that name the shard each is stored in, since the run's own
+block indices are its own.
 
 The Context document already receives the compiled request with base64
 inline (it *is* what the model sees), so it renders those directly; the
@@ -84,34 +85,60 @@ with no refusal, so the composer measures each message's frame first and
 keeps one that's over, with a note, to shorten. The browser fits an image
 to the image limits before sending: one that already fits goes byte for
 byte; one too big, too large on a side, or in a format the model APIs
-don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG where the
-browser can't write WebP), and its
-thumbnail says so. A PNG, JPEG, GIF or WebP that is cut short or damaged is
-refused rather than redrawn, since the browser would draw only what it has.
+don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG on white, which
+flattens any transparency, where the browser can't write WebP), and its
+thumbnail says so. A size the browser can't draw at is tried smaller. An
+animation sent as it is shows "first frame", since the model APIs use only
+that. A PNG, JPEG, GIF or WebP that is cut short, or a PNG with a chunk that
+fails its checksum, is refused rather than redrawn, since the browser would
+draw only what it has.
 The host checks again for every client, telling the format by the bytes (a
 mislabeled type is corrected) and walking the file to its end marker (PNG
 chunks are checksummed too; a JPEG's, GIF's or WebP's compressed data has no
 checksum, so damage inside it would take a decoder to see), and refuses a
 message whose image fails with `message not sent: <reason>`. A stored image the
-API refuses would fail every later inference on the branch, so it is never
-stored. The refusal carries the send's `corrId`: the composer takes the
-message's row back out of the transcript and, when the composer is empty,
-puts the message back in it.
+API refuses would fail every later inference on the branch until it leaves the
+live window, so the host refuses what these checks can see: the format, a file
+cut short, a damaged PNG, the size and the dimensions. Damage inside compressed
+data, which they can't see, can still be stored. The limits are the host's
+own, from its recipe, and its welcome advertises them for the composer to fit
+to. The refusal carries the send's `corrId`: when the composer is empty (no
+text, no images, none still being read), the message goes back into it and its
+row comes out of the transcript; with a draft there, the row stays, marked not
+sent with the host's reason. The stored message's entry carries the `corrId`
+too, so its echo replaces exactly the row its send showed, and a history page
+holding it settles the row the same way. A message the socket doesn't take,
+while it isn't open, stays in the composer with a note. Whenever a welcome
+replaces the transcript, after a reconnect or a change of session or branch, a
+send typed here that its window doesn't hold stays after it: a refused one
+with its mark, and any other marked not confirmed, since its message may not
+have reached the host, until an echo replaces it. Shown in another session
+than it was sent in, the mark names that session and its branch, and in
+another branch of the same session, that branch. Only `/clear`, or a reload
+of the page, drops them. A routed message's row gives way, since no echo of
+it comes here. A host from before the `corrId` on entries, as under
+`bun run dev` against an older running host, shows each send twice until a
+reload, and after a reconnect marks this client's copy not confirmed beside
+the stored one.
 
 Images can't go to a fleet child (`@name …`) or with a slash command; the
 composer says so and keeps the draft. Once sent, the context manager's
 live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
 `maxLiveImageBytes`) apply to them like any other image.
 
-A request carrying more than 20 images meets a stricter per-image dimension
-limit than 8000 px, and every image in it counts: earlier turns' images and
-those in tool results too. An image over that limit fails every request that
-carries it alongside 20 others, so the agent is stuck until the image leaves
-the live window. With the default `maxLiveImages` of 6 no request gets
-there. A recipe that raises `maxLiveImages` past 20, sets it to 0 (no count
-limit), or uses `passthrough` (which keeps every image) should keep images
-at 2000 px or less on a side, which the model API's docs give as under that
-limit on every platform; the composer doesn't shrink them that far.
+By the model API's docs, a request carrying more than 20 images meets a
+stricter per-image dimension limit than 8000 px, and every image in it
+counts: earlier turns' images and those in tool results too. Where that
+limit is enforced, an image over it fails every request that carries it
+alongside 20 others, so the agent is stuck until the image leaves the live
+window. Probes on 2026-10-13 and 2026-10-19 found the API accepting such
+requests; the host follows the docs regardless. With the default
+`maxLiveImages` of 6 no request gets there. A host whose recipe can keep more
+than 20 images live (`maxLiveImages` past 20 or set to 0, `passthrough`,
+which keeps every image, or a strategy an extension registers) holds
+composer images to 2000 px on a side, which the model API's docs give as
+under that limit on every platform. A message also takes no more images than
+the live window keeps, since the rest would never reach the model.
 
 ## Operator log
 

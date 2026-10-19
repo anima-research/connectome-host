@@ -61,11 +61,18 @@ export class TuiModule implements Module {
       });
     }
 
+    // A WebUI send names itself (`corrId`); stored with the message, it comes
+    // back on the message's entry, so the sending client replaces its own row
+    // by id rather than by matching text.
+    const corrId = (event as { metadata?: { corrId?: unknown } }).metadata?.corrId;
     const response: EventResponse = {
       addMessages: [
         {
           participant: 'user',
           content: blocks,
+          // Under a key of the WebUI's own, so another producer's `corrId` in
+          // a message's metadata never reads as a send's.
+          ...(typeof corrId === 'string' && corrId.length > 0 ? { metadata: { webuiCorrId: corrId } } : {}),
         },
       ],
     };

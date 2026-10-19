@@ -771,6 +771,13 @@ export async function runTui(app: AppContext): Promise<void> {
     for (const msg of messages) {
       const toolNames: string[] = [];
 
+      // Images sent from the WebUI's composer ride ahead of the text; an
+      // image-only message would otherwise replay as no line at all.
+      if (msg.participant === 'user') {
+        const images = msg.content.filter((block) => block.type === 'image').length;
+        if (images > 0) addLine(`You: [${images === 1 ? 'an image' : `${images} images`}]`, GREEN);
+      }
+
       for (const block of msg.content) {
         if (block.type === 'text' && (block as { text: string }).text.trim()) {
           if (msg.participant === 'user') {

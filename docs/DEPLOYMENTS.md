@@ -174,8 +174,11 @@ ambient channel chatter enters context without waking.
    degrades API-rejected media types (SVG, TIFF, …) to a visible placeholder
    and fails loudly, before the API call, when a request exceeds its byte cap
    (28 MB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
-   rejects files over 5 MB. Still missing: nothing downsamples or
-   size-checks an individual image on ingest (membrane's `images.autoResize` /
+   rejects files over 5 MB; and the WebUI's composer fits the images an
+   operator sends, which the host checks again before storing them
+   ([webui-live-surgery.md](webui-live-surgery.md), "Sending images"). Still
+   missing on other ingest paths: nothing downsamples or size-checks an
+   individual image there (membrane's `images.autoResize` /
    `maxSizeBytes` config is declared but unused), so one image over the
    provider's per-image limit still 400s the request while it stays live —
    the poison-history breaker only sheds newest exchanges. Recipes can tune

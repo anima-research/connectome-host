@@ -12,11 +12,21 @@ const u32be = (b: Uint8Array, o: number): number =>
 const u32le = (b: Uint8Array, o: number): number =>
   b[o]! + b[o + 1]! * 0x100 + b[o + 2]! * 0x10000 + b[o + 3]! * 0x1000000;
 
-/** The image format the leading bytes show, among those the model APIs take. */
+/** The image format the leading bytes show, among those the model APIs take.
+ *  A signature must be whole: PNG's eight bytes, and GIF's six, `GIF87a` or
+ *  `GIF89a`, since a decoder checks them first. */
 export function sniffImageType(b: Uint8Array): string | undefined {
-  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (
+    b.length >= 8
+    && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47
+    && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a
+  ) return 'image/png';
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
-  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
+  if (
+    b.length >= 6
+    && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38
+    && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61
+  ) return 'image/gif';
   if (
     b.length >= 12
     && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
@@ -41,21 +51,25 @@ export function imageSize(b: Uint8Array, mediaType: string): { width: number; he
       if (b.length < 10) return null;
       return { width: le16(6), height: le16(8) };
     case 'image/webp': {
-      if (b.length < 30) return null;
+      // Each variant's header has its own length: VP8L's is 25 bytes, and the
+      // others' 30. A lossless file shorter than 30 bytes can be whole.
+      if (b.length < 16) return null;
       const chunk = tag(12);
       if (chunk === 'VP8 ') {
         // Lossy: frame tag (3 bytes), start code 9d 01 2a, then 14-bit sizes.
+        if (b.length < 30) return null;
         if (b[23] !== 0x9d || b[24] !== 0x01 || b[25] !== 0x2a) return null;
         return { width: le16(26) & 0x3fff, height: le16(28) & 0x3fff };
       }
       if (chunk === 'VP8L') {
         // Lossless: signature 0x2f, then width-1 and height-1 as 14 bits each.
-        if (b[20] !== 0x2f) return null;
+        if (b.length < 25 || b[20] !== 0x2f) return null;
         const bits = u32le(b, 21);
         return { width: (bits % 0x4000) + 1, height: (Math.floor(bits / 0x4000) % 0x4000) + 1 };
       }
       if (chunk === 'VP8X') {
         // Extended: canvas width-1 and height-1 as 24 bits each.
+        if (b.length < 30) return null;
         return { width: le24(24) + 1, height: le24(27) + 1 };
       }
       return null;
@@ -100,6 +114,38 @@ export function imageDamage(b: Uint8Array, mediaType: string): string | null {
     case 'image/gif': return gifDamage(b);
     case 'image/webp': return webpDamage(b);
     default: return `is not a format whose ending can be checked (${mediaType})`;
+  }
+}
+
+/**
+ * Whether a whole image is animated: a GIF of more than one frame, a WebP
+ * whose VP8X header sets its animation flag, or a PNG with an `acTL` chunk
+ * ahead of its image data (APNG). The model APIs use only the first frame,
+ * so the composer says so.
+ */
+export function isAnimated(b: Uint8Array, mediaType: string): boolean {
+  switch (mediaType) {
+    case 'image/gif': {
+      const walk = gifWalk(b);
+      return typeof walk === 'number' && walk > 1;
+    }
+    case 'image/webp':
+      // VP8X flags byte: bit 1 is the animation flag.
+      return b.length >= 21
+        && b[12] === 0x56 && b[13] === 0x50 && b[14] === 0x38 && b[15] === 0x58
+        && (b[20]! & 0x02) !== 0;
+    case 'image/png': {
+      let o = 8;
+      while (o + 12 <= b.length) {
+        const type = String.fromCharCode(b[o + 4]!, b[o + 5]!, b[o + 6]!, b[o + 7]!);
+        if (type === 'acTL') return true;
+        if (type === 'IDAT' || type === 'IEND') return false;
+        o += 12 + u32be(b, o);
+      }
+      return false;
+    }
+    default:
+      return false;
   }
 }
 
@@ -148,6 +194,14 @@ function jpegDamage(b: Uint8Array): string | null {
 }
 
 function gifDamage(b: Uint8Array): string | null {
+  const walk = gifWalk(b);
+  if (typeof walk === 'string') return walk;
+  return walk > 0 ? null : 'has no image data';
+}
+
+/** Walks a GIF's blocks to its trailer: how many image frames it holds, or
+ *  why the file isn't whole. */
+function gifWalk(b: Uint8Array): number | string {
   if (b.length < 13) return CUT_SHORT;
   const tableSize = (flags: number) => (flags & 0x80 ? 3 * (1 << ((flags & 0x07) + 1)) : 0);
   /** Past a run of data sub-blocks (each a length byte, then that many
@@ -162,16 +216,16 @@ function gifDamage(b: Uint8Array): string | null {
     return -1;
   };
   let o = 13 + tableSize(b[10]!);
-  let sawImage = false;
+  let frames = 0;
   while (o < b.length) {
     const block = b[o]!;
-    if (block === 0x3b) return sawImage ? null : 'has no image data';
+    if (block === 0x3b) return frames;
     if (block === 0x21) {
       o = skipSubBlocks(o + 2);
     } else if (block === 0x2c) {
       if (o + 10 > b.length) return CUT_SHORT;
       o = skipSubBlocks(o + 10 + tableSize(b[o + 9]!) + 1);
-      sawImage = true;
+      frames++;
     } else {
       return 'is damaged: it has a block of unknown kind';
     }

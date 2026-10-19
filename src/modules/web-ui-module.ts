@@ -38,6 +38,7 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import type { ServerWebSocket } from 'bun';
+import { continuesBody } from '@animalabs/context-manager';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve, normalize, dirname, sep as pathSep } from 'node:path';
@@ -58,6 +59,7 @@ import {
   WEB_PROTOCOL_VERSION,
   MAX_WS_FRAME_BYTES,
   isClientMessage,
+  type UserImageLimits,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -109,7 +111,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { userImageBlocks } from '../web/user-images.js';
+import { hostImageLimits, liveImageBytes, liveImageWindow, userImageBlocks } from '../web/user-images.js';
 import { loadRecipe } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -392,6 +394,9 @@ interface SharedServerState {
    *  pushes. Re-installed on every setApp (fresh ContextManager per session)
    *  and cleared in stop(). */
   messageListenerDetacher: (() => void) | null;
+  /** Sends the long message whose shards that listener is holding, if any.
+   *  `send` calls it before any frame, so entries keep the store's order. */
+  flushHeldRun: (() => void) | null;
   /** Cached child recipe summaries keyed by recipe path. Recipes are
    *  static-ish per host run (re-spawn doesn't change the file), so we
    *  parse once and reuse on every welcome. Cleared on session switch. */
@@ -469,6 +474,7 @@ export class WebUiModule implements Module {
       treeAggregator: null,
       fleetEventDetacher: null,
       messageListenerDetacher: null,
+      flushHeldRun: null,
     };
     state.observers?.start();
     state.server = Bun.serve({
@@ -578,23 +584,69 @@ export class WebUiModule implements Module {
     // (clients still see streamed text via traces).
     const cm0 = app.framework.getAllAgents()[0]?.getContextManager() as unknown as WindowCapableCm | undefined;
     if (cm0 && typeof cm0.onMessage === 'function' && typeof cm0.getMessageCount === 'function') {
-      ss.messageListenerDetacher = cm0.onMessage((ev) => {
-        if (ev.type !== 'add' || !ev.message) return;
+      const pushEntry = (entry: WelcomeMessageEntry): void => {
+        const push: WebUiServerMessage = { type: 'message-appended', entry };
+        for (const c of ss.clients.values()) {
+          if (!c.welcomed) continue;
+          if (c.scopes === null) { this.send(c, push); continue; }
+          const filtered = filterEntryForScopes(entry, c.scopes);
+          if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
+        }
+      };
+      // A long message is stored as a run of shards, one add each, which
+      // context-manager appends in one synchronous loop. The welcome joins a
+      // run into one entry (coalesceAndFlatten), so the live push holds the
+      // run and sends it joined the same way. It goes from a microtask queued
+      // at its first shard, which runs once the loop is done, or earlier,
+      // before any other frame this module sends (`send` flushes it first),
+      // so entries keep the store's order against traces too. Consecutive
+      // shards join one held run, and the flush splits it into bodies as the
+      // welcome does, by context-manager's `continuesBody`, since two
+      // ingestions of the same text share a group id. Were the appends ever
+      // to stop being synchronous, each shard would go out on its own, as
+      // before.
+      let run: { messages: MessageLike[]; startIndex: number } | null = null;
+      const flushRun = (): void => {
+        const held = run;
+        run = null;
+        if (!held) return;
         try {
-          const entry = toWireEntry(ev.message as MessageLike, cm0.getMessageCount() - 1);
-          const push: WebUiServerMessage = { type: 'message-appended', entry };
-          for (const c of ss.clients.values()) {
-            if (!c.welcomed) continue;
-            if (c.scopes === null) { this.send(c, push); continue; }
-            const filtered = filterEntryForScopes(entry, c.scopes);
-            if (filtered) this.send(c, { type: 'message-appended', entry: filtered });
-          }
+          for (const entry of coalesceAndFlatten(held.messages, held.startIndex)) pushEntry(entry);
         } catch (err) {
-          // Never let a viewer-side projection error break the store's
-          // listener chain (ContextManager subscribes on the same path).
+          console.error('[webui] message-appended projection failed:', err);
+        }
+      };
+      const detach = cm0.onMessage((ev) => {
+        if (ev.type !== 'add' || !ev.message) return;
+        // Never let a viewer-side projection error break the store's
+        // listener chain (ContextManager subscribes on the same path).
+        try {
+          const message = ev.message as MessageLike;
+          const index = cm0.getMessageCount() - 1;
+          if (message.bodyGroupId) {
+            if (run) {
+              run.messages.push(message);
+            } else {
+              run = { messages: [message], startIndex: index };
+              queueMicrotask(flushRun);
+            }
+            return;
+          }
+          pushEntry(toWireEntry(message, index));
+        } catch (err) {
           console.error('[webui] message-appended projection failed:', err);
         }
       });
+      ss.flushHeldRun = flushRun;
+      // A run still held when this listener is detached, at a stop or a
+      // session switch, goes out now, to the clients welcomed to the session
+      // it belongs to: after a stop they stay welcomed with no welcome to
+      // come, and at a switch their new welcome follows it. Its queued flush
+      // then finds nothing.
+      ss.messageListenerDetacher = () => {
+        detach();
+        flushRun();
+      };
     }
 
     // Re-derive cost snapshot for the new framework. Without this the
@@ -730,16 +782,22 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    // Forward the verbatim event so the SPA can fold it into its own
-    // per-child AgentTreeReducer for live updates.
-    const msg: WebUiServerMessage = {
-      type: 'child-event',
-      childName,
-      event: event as unknown as { type: string; [k: string]: unknown },
-    };
+    // Forward the event so the SPA can fold it into its own per-child
+    // AgentTreeReducer for live updates. A child's traces carry content whole
+    // as the host's own do, so their image data goes as notes, in a frame
+    // built for the first welcomed client (undefined until then) and sent to
+    // the rest as it is. An event JSON can't carry goes to no client, as in
+    // fanOutTrace, and the usage it brought still goes.
+    let msg: WebUiServerMessage | null | undefined;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      this.send(client, msg);
+      if (msg === undefined) {
+        const sent = withoutImageData(event);
+        msg = sent === undefined
+          ? null
+          : { type: 'child-event', childName, event: sent as { type: string; [k: string]: unknown } };
+      }
+      if (msg) this.send(client, msg);
       if (usageMsg) this.send(client, usageMsg);
     }
   }
@@ -856,10 +914,6 @@ export class WebUiModule implements Module {
     }
 
     if (sharedServer!.clients.size === 0) return;
-    const traceMsg: WebUiServerMessage = {
-      type: 'trace',
-      event: event as unknown as { type: string; [k: string]: unknown },
-    };
     const usageMsg: WebUiServerMessage | null = event.type === 'usage:updated'
       ? {
           type: 'usage',
@@ -869,9 +923,26 @@ export class WebUiModule implements Module {
             : {}),
         }
       : null;
+    // Traces can carry content whole: a process trace the module's event and
+    // responses, tool:result_dropped the dropped result. So a send's images
+    // would reach every client as base64 without withoutImageData. Its frame
+    // is built for the first welcomed client that takes the trace (undefined
+    // until then), so a trace no client takes costs nothing, and sent to the
+    // rest as it is. A trace JSON can't carry goes to no client: send()
+    // dropped one whose JSON.stringify threw, and would have sent one whose
+    // toJSON gives nothing without its event.
+    let traceMsg: WebUiServerMessage | null | undefined;
     for (const client of sharedServer!.clients.values()) {
       if (!client.welcomed) continue;
-      if (this.clientAllowsTrace(client, event)) this.send(client, traceMsg);
+      if (this.clientAllowsTrace(client, event)) {
+        if (traceMsg === undefined) {
+          const sent = withoutImageData(event);
+          traceMsg = sent === undefined
+            ? null
+            : { type: 'trace', event: sent as { type: string; [k: string]: unknown } };
+        }
+        if (traceMsg) this.send(client, traceMsg);
+      }
       if (usageMsg && (client.scopes === null || client.scopes.has('health'))) {
         this.send(client, usageMsg);
       }
@@ -1556,6 +1627,15 @@ export class WebUiModule implements Module {
     return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
   }
 
+  /** The limits composer images are checked against here, from what this
+   *  host's recipe keeps live: how many images, and how much of their base64
+   *  (`hostImageLimits`). The welcome advertises them, so the composer fits
+   *  images to the same ones. */
+  private imageLimits(): UserImageLimits {
+    const strategy = sharedServer?.app?.recipe.agent.strategy;
+    return hostImageLimits(liveImageWindow(strategy), liveImageBytes(strategy));
+  }
+
   /** Capabilities the SPA feature-detects. Duck-typed against the bound
    *  framework so this host works unchanged against an older
    *  @animalabs/agent-framework (affordances simply do not appear). */
@@ -1838,7 +1918,12 @@ export class WebUiModule implements Module {
     }
 
     if (!sharedServer?.app) {
-      this.send(client, { type: 'error', message: 'host not ready' });
+      const corrId = (parsed as { corrId?: unknown }).corrId;
+      this.send(client, {
+        type: 'error',
+        ...(typeof corrId === 'string' ? { corrId } : {}),
+        message: 'host not ready',
+      });
       return;
     }
 
@@ -1851,7 +1936,7 @@ export class WebUiModule implements Module {
         // Images go ahead of the text, the order Anthropic's vision docs recommend.
         let content: unknown = parsed.content;
         if (parsed.images && parsed.images.length > 0) {
-          const checked = userImageBlocks(parsed.images);
+          const checked = userImageBlocks(parsed.images, this.imageLimits());
           if (!checked.ok) {
             this.send(client, {
               type: 'error',
@@ -1868,7 +1953,9 @@ export class WebUiModule implements Module {
           type: 'external-message',
           source: 'tui',
           content,
-          metadata: {},
+          // TuiModule stores the send's corrId with the message, and its entry
+          // carries it back, so the sending client adopts its own row by id.
+          metadata: parsed.corrId !== undefined ? { corrId: parsed.corrId } : {},
           triggerInference: true,
         });
         return;
@@ -3284,6 +3371,7 @@ export class WebUiModule implements Module {
       },
       childTrees,
       features: this.hostFeatures(),
+      userImageLimits: this.imageLimits(),
       ...(hostMode ? { hostMode } : {}),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
@@ -3296,6 +3384,8 @@ export class WebUiModule implements Module {
   }
 
   private send(client: ClientState, msg: WebUiServerMessage): void {
+    // A long message held for joining goes out before anything sent after it.
+    sharedServer?.flushHeldRun?.();
     try {
       client.ws.send(JSON.stringify(msg));
     } catch {
@@ -3442,6 +3532,63 @@ interface MessageLike {
   timestamp?: number | Date;
   bodyGroupId?: string;
   shardIndex?: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** Where a wire entry's block is stored: the message id and its block index
+ *  there, which a `/media` ref names. */
+interface BlockOrigin {
+  id?: string;
+  index: number;
+}
+
+/**
+ * A trace payload as a client gets it, JSON.stringify's text read back, with
+ * each image block's base64 data replaced by a note of its length. Undefined
+ * when JSON.stringify has nothing to send: it throws for a cycle, a BigInt or
+ * nesting past the engine's limit, as it did in send(), which dropped such a
+ * frame, and gives nothing for a toJSON that gives nothing. Exported for its
+ * test.
+ *
+ * The images are found in that copy, so each value is as the client gets it:
+ * what a toJSON gives, a boxed primitive's value, a class instance's own keys.
+ * The copy is this function's own, so the notes go into it in place, and the
+ * walk reaches every value in it, an image's own fields included.
+ */
+export function withoutImageData(value: unknown): unknown {
+  let sent: unknown;
+  try {
+    // Parsing the undefined JSON.stringify gives for nothing to send throws too.
+    sent = JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+  const pending: unknown[] = [sent];
+  while (pending.length > 0) {
+    const v = pending.pop();
+    if (v === null || typeof v !== 'object') continue;
+    elideImageData(v as Record<string, unknown>);
+    for (const child of Object.values(v)) pending.push(child);
+  }
+  return sent;
+}
+
+/** Replace an image block's data with a note, in the copy: a content block's
+ *  image ({ source: { data } }), a tool result's ({ data, mimeType }, as MCP
+ *  and the framework shape it), or a generated image ({ type:
+ *  'generated_image', data, mimeType }, as membrane shapes it). */
+function elideImageData(o: Record<string, unknown>): void {
+  if (o.type !== 'image' && o.type !== 'generated_image') return;
+  const source = o.source;
+  if (source !== null && typeof source === 'object') {
+    const s = source as Record<string, unknown>;
+    if (typeof s.data === 'string') s.data = elided(s.data);
+  }
+  if (typeof o.data === 'string') o.data = elided(o.data);
+}
+
+function elided(data: string): string {
+  return `[${data.length} base64 characters, not sent in traces]`;
 }
 
 // Per-block size caps for wire frames. A single pathological tool result or
@@ -3463,23 +3610,29 @@ function capText(s: string, cap: number): { text: string; truncated?: boolean } 
  * reduced to type placeholders and per-block size caps applied.
  *
  * `index` is the message's store slot index — the client's paging cursor.
+ * Exported for its test.
  */
-function toWireEntry(
+export function toWireEntry(
   msg: MessageLike,
   index: number,
-  opts: { mediaRefs?: boolean } = {},
+  /** For a coalesced shard run: where each merged block is stored, since
+   *  its index in the merged content names no stored message. */
+  opts: { origin?: (blockIndex: number) => BlockOrigin | undefined } = {},
 ): WelcomeMessageEntry {
   const blocks: import('../web/protocol.js').MessageBlock[] = [];
   const textParts: string[] = [];
   let toolResults = 0;
   let conversational = 0; // text/thinking blocks — used for participant fixup
   // Lazy image locator: `<messageId>/<blockIndex>[.<inner>]`, served by
-  // /media/. Only when the entry maps 1:1 onto one stored message (coalesced
-  // shard runs do not — their block indices are synthetic).
-  const mediaRef = (blockPath: string, mediaType: string): string | undefined =>
-    opts.mediaRefs !== false && typeof msg.id === 'string' && msg.id.length > 0 && mediaType.startsWith('image/')
-      ? `${encodeURIComponent(msg.id)}/${blockPath}`
+  // /media/. A coalesced shard run's block indices are its own, so each
+  // block's ref names the shard it's stored in (`opts.origin`).
+  const mediaRef = (bi: number, inner: string, mediaType: string): string | undefined => {
+    if (!mediaType.startsWith('image/')) return undefined;
+    const at: BlockOrigin | undefined = opts.origin ? opts.origin(bi) : { id: msg.id, index: bi };
+    return at && typeof at.id === 'string' && at.id.length > 0
+      ? `${encodeURIComponent(at.id)}/${at.index}${inner}`
       : undefined;
+  };
 
   for (const [bi, block] of msg.content.entries()) {
     const b = block as {
@@ -3545,7 +3698,7 @@ function toWireEntry(
                 : ib?.type === 'blob_ref' && typeof ib.ref?.mediaType === 'string' ? ib.ref.mediaType
                 : null;
               if (!mt || !mt.startsWith('image/')) continue;
-              const ref = mediaRef(`${bi}.${ii}`, mt);
+              const ref = mediaRef(bi, `.${ii}`, mt);
               blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}) });
             }
           }
@@ -3559,7 +3712,7 @@ function toWireEntry(
           typeof b.source?.mediaType === 'string' ? b.source.mediaType
           : typeof b.mediaType === 'string' ? b.mediaType
           : b.type;
-        const ref = b.type === 'image' ? mediaRef(String(bi), mediaType) : undefined;
+        const ref = b.type === 'image' ? mediaRef(bi, '', mediaType) : undefined;
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
@@ -3568,7 +3721,7 @@ function toWireEntry(
         // resolveBlobs: false so multi-MB base64 never hits the wire). The
         // ref lets the browser fetch the bytes on render instead.
         const mediaType = typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob';
-        const ref = mediaRef(String(bi), mediaType);
+        const ref = mediaRef(bi, '', mediaType);
         blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
       }
@@ -3592,6 +3745,9 @@ function toWireEntry(
   if (msg.id) entry.id = msg.id;
   const ts = msg.timestamp instanceof Date ? msg.timestamp.getTime() : msg.timestamp;
   if (ts) entry.timestamp = ts;
+  // The WebUI send this user message came from, stored by TuiModule.
+  const corrId = msg.metadata?.webuiCorrId;
+  if (participant === 'user' && typeof corrId === 'string' && corrId.length > 0) entry.corrId = corrId;
   return entry;
 }
 
@@ -3611,13 +3767,15 @@ function flattenToolResultContent(content: unknown): string {
 }
 
 /**
- * Coalesce consecutive shards of a bodyGroup (one large message chunked at
- * ingestion) into a single wire entry, then flatten everything. Shards are
- * contiguous by construction; within a run they're ordered by shardIndex.
- * The coalesced entry's `index` is the FIRST shard's slot index so paging
- * cursors stay aligned with store slots.
+ * Coalesce the shards of each body (one large message chunked at ingestion)
+ * into a single wire entry, then flatten everything. A body is what
+ * context-manager's `continuesBody` says: consecutive shards of one group id
+ * whose shard indices rise, in store order. The group id names the text, so
+ * two ingestions of the same text are two bodies. The coalesced entry's
+ * `index` is the FIRST shard's slot index so paging cursors stay aligned with
+ * store slots. Exported for its test.
  */
-function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
+export function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number): WelcomeMessageEntry[] {
   const out: WelcomeMessageEntry[] = [];
   let i = 0;
   while (i < messages.length) {
@@ -3628,26 +3786,28 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
       continue;
     }
     const runStart = i;
-    while (i < messages.length && messages[i]!.bodyGroupId === m.bodyGroupId) i++;
-    const shards = messages.slice(runStart, i)
-      .map((shard, k) => ({ shard, k }))
-      .sort((a, b) => (a.shard.shardIndex ?? a.k) - (b.shard.shardIndex ?? b.k))
-      .map(({ shard }) => shard);
+    i++;
+    while (i < messages.length && continuesBody(messages[i - 1], messages[i])) i++;
+    const shards = messages.slice(runStart, i);
     // Merge adjacent text blocks with NO separator — shard cuts land
     // mid-text, so reassembly must be byte-faithful concatenation.
     const mergedContent: unknown[] = [];
-    for (const blk of shards.flatMap((s) => [...s.content])) {
-      const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
-      const cur = blk as { type?: string; text?: unknown };
-      if (prev?.type === 'text' && cur.type === 'text'
-          && typeof prev.text === 'string' && typeof cur.text === 'string') {
-        mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
-      } else {
-        mergedContent.push(blk);
+    const origins: BlockOrigin[] = [];
+    for (const shard of shards) {
+      for (const [si, blk] of shard.content.entries()) {
+        const prev = mergedContent[mergedContent.length - 1] as { type?: string; text?: string } | undefined;
+        const cur = blk as { type?: string; text?: unknown };
+        if (prev?.type === 'text' && cur.type === 'text'
+            && typeof prev.text === 'string' && typeof cur.text === 'string') {
+          mergedContent[mergedContent.length - 1] = { type: 'text', text: prev.text + cur.text };
+        } else {
+          mergedContent.push(blk);
+          origins.push({ id: shard.id, index: si });
+        }
       }
     }
     const merged: MessageLike = { ...shards[0]!, content: mergedContent };
-    out.push(toWireEntry(merged, startIndex + runStart, { mediaRefs: false }));
+    out.push(toWireEntry(merged, startIndex + runStart, { origin: (bi) => origins[bi] }));
   }
   return out;
 }

@@ -22,12 +22,16 @@ import {
 } from './Health';
 import { BranchPanel } from './Branches';
 import { AttachmentStrip, dragHasFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
-import { isSyntheticId, pendingEchoIndex } from './echo';
+import {
+  isSyntheticId, newCorrId, placeOf, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
+  type Place,
+} from './echo';
+import { base64Chars } from './fit';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
   WEB_PROTOCOL_VERSION,
-  USER_IMAGE_LIMITS,
   frameLimitNote,
+  imageLimitsFrom,
   type WebUiClientMessage,
   type WebUiServerMessage,
   type WelcomeMessage,
@@ -94,6 +98,19 @@ interface Message {
   /** Client-only, on a row typed here until its echo replaces it: the
    *  images it sent, so a refused send can go back into the composer. */
   sentImages?: Attachment[];
+  /** On a row typed here, and on a stored user message's entry: its send's
+   *  corrId, by which the echo replaces the row (echo.ts). */
+  corrId?: string;
+  /** Client-only: a send typed here that the host refused while the composer
+   *  held another draft, or that a welcome didn't hold (echo.ts). */
+  unsent?: 'refused' | 'unconfirmed';
+  /** Client-only, on a refused send: the host's reason. */
+  refusal?: string;
+  /** Client-only, on a send typed here: where it was sent (echo.ts). */
+  sentIn?: Place;
+  /** Client-only, on a kept send shown in another session or branch than it
+   *  was sent in: that one, as its mark names it. */
+  earlier?: string;
   /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
     origin: string;
@@ -117,6 +134,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
     timestamp: e.timestamp,
+    ...(e.corrId ? { corrId: e.corrId } : {}),
   };
 }
 
@@ -159,7 +177,8 @@ export function App() {
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
   const [attachments, setAttachments] = createSignal<Attachment[]>([]);
-  /** Files still being read or shrunk; Send waits for them. */
+  /** Files still being read or shrunk. While any are, Send refuses every
+   *  message, text alone included, with a note to send again. */
   const [preparing, setPreparing] = createSignal(0);
   const [attachNotice, setAttachNotice] = createSignal<string | null>(null);
   const [dropActive, setDropActive] = createSignal(false);
@@ -426,6 +445,9 @@ export function App() {
   // ---------------------------------------------------------------------------
 
   const features = (): Set<string> => new Set(welcome()?.features ?? []);
+  /** The limits this host checks composer images against, as its welcome
+   *  advertises them, with the defaults for any it doesn't. */
+  const imageLimits = () => imageLimitsFrom(welcome()?.userImageLimits);
   const isObserver = (): boolean => wire.observerState() === 'observer';
   const canRollback = (): boolean => features().has('rollback') && !isObserver();
   const canSuppress = (): boolean => features().has('suppress') && !isObserver();
@@ -854,6 +876,17 @@ export function App() {
   // -------------------------------------------------------------------------
 
   const applyWelcome = (msg: WelcomeMessage): void => {
+    // A history page asked for before this welcome is dropped, and paging
+    // starts again from here: after a reconnect, the socket it was asked on
+    // is gone, so no answer would come; after a change of session or branch,
+    // the request named a position in the old transcript, so its page has no
+    // place in this one, whichever place the host reads it from; and a
+    // welcome in a protocol this client doesn't speak leaves nothing to page.
+    pendingHistoryCorr = null;
+    window.clearTimeout(pendingHistoryTimer);
+    setHistoryLoading(false);
+    setBulkRemaining(0);
+
     if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
       setProtoMismatch(msg.protocolVersion);
       return;
@@ -877,10 +910,19 @@ export function App() {
     const entries = msg.messages.map(entryToMessage);
 
     if (key !== welcomeKey) {
-      // Session/branch changed (or first connect): hard reset.
+      // Session/branch changed (or first connect): the welcome's window
+      // replaces the transcript, and the sends typed here that it doesn't
+      // hold stay after it, each naming the session or branch it was sent in
+      // where that's another (rowsAfterReset), so a refused send's text isn't
+      // lost with the old transcript. /clear is the one replacement that
+      // drops them.
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
-      setMessages(entries);
+      setMessages(produce((arr) => {
+        const rows = rowsAfterReset(arr, entries, placeOf(msg));
+        arr.length = 0;
+        arr.push(...rows);
+      }));
       setHistoryInfo({ startIndex: msg.history.startIndex, totalCount: msg.history.totalCount });
       atBottom = true;
       queueScroll();
@@ -888,15 +930,15 @@ export function App() {
     }
 
     // Same session+branch (reconnect / setApp re-welcome): keep paged-in
-    // older scrollback, replace the tail with the canonical window. Synthetic
-    // rows (optimistic user msgs, command output, triggers) are dropped —
-    // the canonical entries carry the durable conversation.
+    // older scrollback, replace the tail with the canonical window, and keep
+    // after it each send typed here that the window doesn't hold, so a send
+    // refused or lost in the reconnect isn't lost here too
+    // (rowsAfterWelcome). Other synthetic rows (command output, triggers,
+    // routed messages) give way to the window.
     setMessages(produce((arr) => {
-      const kept = arr.filter(
-        (m) => typeof m.index === 'number' && m.index < msg.history.startIndex && !isSyntheticId(m.id),
-      );
+      const rows = rowsAfterWelcome(arr, entries, msg.history.startIndex, placeOf(msg));
       arr.length = 0;
-      arr.push(...kept, ...entries);
+      arr.push(...rows);
     }));
     knownIds = new Set(
       messages.map((m) => m.id).filter((id) => !isSyntheticId(id)),
@@ -931,9 +973,10 @@ export function App() {
         arr[arr.length - 1] = incoming;
         return;
       }
-      // Server echo of a message typed here: adopt into the optimistic row.
+      // Server echo of a message typed here: it takes the place of the row
+      // its send showed, found by the send's corrId alone.
       if (incoming.participant === 'user') {
-        const i = pendingEchoIndex(arr, incoming);
+        const i = sentRowIndex(arr, incoming.corrId);
         if (i >= 0) {
           arr[i] = incoming;
           return;
@@ -990,6 +1033,12 @@ export function App() {
     setHistoryLoading(false);
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
+    // A page can hold the stored copy of a send still kept as unconfirmed,
+    // as after leaving its session and coming back: the copy stands in its
+    // place in the history, and the kept row goes. That goes first, before
+    // the page's own rows are in, and before the measure below, which then
+    // takes the page's height alone.
+    setMessages(produce((arr) => settleByEntries(arr, fresh)));
     // Prepending grows the pane upward; restore the operator's viewport by
     // offsetting scrollTop by the height delta after the DOM settles.
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
@@ -1375,7 +1424,7 @@ export function App() {
    *  limits are checked against what is already attached. */
   const attachFiles = async (files: File[]): Promise<void> => {
     if (!canAttach() || files.length === 0) return;
-    const L = USER_IMAGE_LIMITS;
+    const L = imageLimits();
     setAttachNotice(null);
     const notes: string[] = [];
     const images = files.filter((f) => f.type.startsWith('image/'));
@@ -1384,15 +1433,16 @@ export function App() {
     setPreparing((n) => n + images.length);
     for (const file of images) {
       try {
-        // Before reading, so a big drop doesn't decode (and hold up Send
-        // for) files that can't be attached; and again after, since another
-        // paste or drop may have added images while this one was read.
+        // Before reading, so a big drop doesn't decode files that can't be
+        // attached, and keep Send refusing while it does; and again after,
+        // since another paste or drop may have added images while this one
+        // was read.
         if (attachments().length >= L.maxCount) { overCount++; continue; }
-        const a = await prepareImage(file);
+        const a = await prepareImage(file, L);
         if (attachments().length >= L.maxCount) { overCount++; continue; }
         const total = attachments().reduce((sum, x) => sum + x.data.length, 0) + a.data.length;
         if (total > L.maxTotalBase64Chars) {
-          notes.push(`${a.name} not attached: the images would come to more than ${(L.maxTotalBase64Chars / 1_000_000).toFixed(1)} MB as base64`);
+          notes.push(`${a.name} not attached: the images would come to more than ${base64Chars(L.maxTotalBase64Chars)}`);
           continue;
         }
         setAttachments((prev) => [...prev, a]);
@@ -1446,10 +1496,10 @@ export function App() {
       return;
     }
     const route = text.startsWith('/') ? null : parseRoute(text);
-    // A user message's row id is its send's corrId: a refusal names it, and
-    // the row comes out (see retractSend). A routed message's row takes an
-    // id the same way, though its frame carries none.
-    const id = nextMessageId();
+    // A user message's send carries a corrId that its row keeps: the host's
+    // refusal names it, and the stored message's entry carries it back, so
+    // the echo replaces this row (echo.ts).
+    const corrId = newCorrId();
     const frame: WebUiClientMessage = text.startsWith('/')
       ? { type: 'command', command: text }
       : route
@@ -1457,7 +1507,7 @@ export function App() {
         : {
             type: 'user-message',
             content: text,
-            corrId: id,
+            corrId,
             ...(images.length > 0 ? { images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) } : {}),
           };
     // Checked before the composer is cleared: the host closes a socket whose
@@ -1468,29 +1518,34 @@ export function App() {
       setAttachNotice(overLimit);
       return;
     }
+    // Sent before the composer is cleared: a socket that isn't open takes
+    // nothing, and the message stays here to send once it's back.
+    if (!wire.send(frame)) {
+      setAttachNotice('not connected to the host: the message is still here; send it again once the connection is back');
+      return;
+    }
     setDraft('');
     setAttachments([]);
     setAttachNotice(null);
-    if (frame.type === 'command') {
-      wire.send(frame);
-      return;
-    }
+    if (frame.type === 'command') return;
     if (route) {
       setMessages(produce((arr) => arr.push({
-        id,
+        id: nextMessageId(),
         participant: 'user',
         text: `→ @${route.childName}: ${route.content}`,
         timestamp: Date.now(),
       })));
       queueScroll();
-      wire.send(frame);
       return;
     }
+    const here = welcome();
     setMessages(produce((arr) => arr.push({
-      id,
+      id: nextMessageId(),
       participant: 'user',
       text,
       timestamp: Date.now(),
+      corrId,
+      ...(here ? { sentIn: placeOf(here) } : {}),
       ...(images.length > 0
         ? {
             blocks: images.map((a): UiBlock => ({ kind: 'media', mediaType: a.mediaType, dataUrl: a.dataUrl })),
@@ -1499,25 +1554,27 @@ export function App() {
         : {}),
     })));
     queueScroll();
-    wire.send(frame);
   };
 
-  /** A send the host refused: take its row out of the transcript (the error
-   *  row says why) and, when the composer is empty, put the message back in
-   *  it to fix and send again. False when `corrId` names no such row. */
-  const retractSend = (corrId: string): boolean => {
-    const i = messages.findIndex((m) => m.id === corrId && m.participant === 'user');
-    if (i < 0) return false;
-    const row = messages[i]!;
-    const text = row.text;
-    const images = (row.sentImages ?? []).map((a) => ({ ...a }));
-    setMessages(produce((arr) => { arr.splice(i, 1); }));
-    if (!draft().trim() && attachments().length === 0) {
+  /** A send the host refused (the error row says why): with the composer
+   *  empty, its row comes out and the message goes back there, to fix and
+   *  send again; with another draft there, the row stays, marked not sent
+   *  (settleRefusal). */
+  const retractSend = (corrId: string, reason?: string): void => {
+    const i = sentRowIndex(messages, corrId);
+    if (i < 0) return;
+    const text = messages[i]!.text;
+    const images = (messages[i]!.sentImages ?? []).map((a) => ({ ...a }));
+    // Images still being read count as a draft: the message going back would
+    // meet them as they land.
+    const composerEmpty = !draft().trim() && attachments().length === 0 && preparing() === 0;
+    let restore = false;
+    setMessages(produce((arr) => { restore = settleRefusal(arr, corrId, composerEmpty, reason); }));
+    if (restore) {
       setDraft(text);
       setAttachments(images);
       setAttachNotice('not sent (see the error above); the message is back here');
     }
-    return true;
   };
 
   const interrupt = (): void => {
@@ -1732,6 +1789,7 @@ export function App() {
             <div class="flex gap-2">
               <textarea
                 class="flex-1 bg-neutral-900 text-neutral-100 border border-neutral-800 rounded px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-neutral-600 font-mono text-sm"
+                aria-label="Message"
                 rows="2"
                 placeholder={canAttach()
                   ? 'Type a message, /help, or @childname — paste or drop images to attach'
@@ -1765,7 +1823,7 @@ export function App() {
                     <button
                       type="button"
                       class="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs font-mono text-neutral-300"
-                      title={`Attach images (up to ${USER_IMAGE_LIMITS.maxCount}); you can also paste or drop them`}
+                      title={`Attach images (up to ${imageLimits().maxCount}); you can also paste or drop them`}
                       onClick={() => fileInput?.click()}
                     >
                       + img
@@ -1973,8 +2031,8 @@ interface HandlerHooks {
   applyHistoryPage: (msg: HistoryPageMessage) => void;
   /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
-  /** Take out the row of a refused send (its corrId); false if none. */
-  retractSend: (corrId: string) => boolean;
+  /** Settle a refused send's row, by its corrId (see retractSend). */
+  retractSend: (corrId: string, reason?: string) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
   setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
@@ -2199,7 +2257,7 @@ function handleServerMessage(
       return;
     case 'error':
       console.warn('[server error]', msg.message);
-      if (msg.corrId) hooks.retractSend(msg.corrId);
+      if (msg.corrId) hooks.retractSend(msg.corrId, msg.message);
       hooks.appendMessage({
         id: nextMessageId(),
         participant: 'system',
@@ -2366,8 +2424,13 @@ function MessageView(props: {
 
   if (props.msg.participant === 'user') {
     return (
-      <div class="msg-enter">
-        <div class="text-xs text-neutral-500 mb-1">you<TimeChip ts={props.msg.timestamp} /></div>
+      <div class="msg-enter" data-testid="user-message">
+        <div class="text-xs text-neutral-500 mb-1">
+          you<TimeChip ts={props.msg.timestamp} />
+          <Show when={unsentMark(props.msg)}>
+            {(mark) => <span class="ml-2 text-amber-300/90">{mark()}</span>}
+          </Show>
+        </div>
         <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
         <MediaChips blocks={props.msg.blocks} />
       </div>

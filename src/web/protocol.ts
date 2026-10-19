@@ -104,6 +104,9 @@ export interface WelcomeMessage {
   /** Recent provider calls with cache verdicts. Present when the host's
    *  provider adapter exposes the call ledger. */
   callLedger?: CallLedgerSnapshot;
+  /** The limits this host checks composer images against, from its own
+   *  recipe (`imageLimitsFrom` fills what's absent). Absent on older hosts. */
+  userImageLimits?: Partial<UserImageLimits>;
 }
 
 /**
@@ -139,18 +142,23 @@ export interface WelcomeMessageEntry {
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
+  /** On a stored user message: the `corrId` of the composer send it came
+   *  from, so that client can put it in place of the row it showed. */
+  corrId?: string;
 }
 
-/** Verbatim framework TraceEvent. Clients typically pipe these into the
- *  same `AgentTreeReducer` the server uses. */
+/** A framework TraceEvent as it was emitted, except that each base64 image's
+ *  data is replaced by a note of its length. Clients typically pipe these into
+ *  the same `AgentTreeReducer` the server uses. */
 export interface TraceMessage {
   type: 'trace';
   /** TraceEvent shape — discriminated by inner `type` field. */
   event: { type: string; [k: string]: unknown };
 }
 
-/** Per-child WireEvent passthrough. Scoped by child name so the client
- *  can route into the right reducer. */
+/** A child's WireEvent as it arrived, except that each base64 image's data
+ *  is replaced by a note of its length, as in a TraceMessage. Scoped by child
+ *  name so the client can route into the right reducer. */
 export interface ChildEventMessage {
   type: 'child-event';
   childName: string;
@@ -757,8 +765,10 @@ export interface UserMessageMessage {
    *  the 'user-images' feature: an older host ignores the field, and the
    *  images would be dropped without a word. */
   images?: UserMessageImage[];
-  /** Echoed on the `error` that refuses the message, so the client can
-   *  take back the row it showed for it. */
+  /** Names this send. Echoed on the `error` that refuses the message, and
+   *  stored with the message it becomes, whose entry carries it back to
+   *  every client, so it must be unique across clients (random, such as a
+   *  UUID), not a per-client counter. */
   corrId?: string;
 }
 
@@ -772,7 +782,8 @@ export interface UserMessageImage {
 /**
  * Limits on composer images. The SPA fits images to them before sending, and
  * the host checks them again (`userImageBlocks`), because an image the model
- * API refuses would fail every later inference on this branch, not just one.
+ * API refuses would fail every later inference on this branch, not just one,
+ * until it leaves the context manager's live window.
  *
  * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
  *   the per-image limit everywhere the model is served: 5 MB of base64 on
@@ -782,16 +793,42 @@ export interface UserMessageImage {
  *   bounded by it, so the composer checks the whole frame too
  *   (`frameLimitNote`).
  * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
- *   A request carrying more than 20 images has a stricter limit, which isn't
- *   applied here: the context manager keeps 6 live by default (see "Sending
- *   images" in docs/webui-live-surgery.md).
+ *   By the docs, a request carrying more than 20 images has a stricter limit
+ *   on every image in it, so a host whose recipe can keep more than 20 live
+ *   advertises a smaller side, as it does a smaller count when its live
+ *   window is under 8 (`userImageLimits` in the welcome).
  */
-export const USER_IMAGE_LIMITS = {
+export interface UserImageLimits {
+  maxCount: number;
+  maxBase64Chars: number;
+  maxTotalBase64Chars: number;
+  maxSidePx: number;
+}
+
+export const USER_IMAGE_LIMITS: Readonly<UserImageLimits> = {
   maxCount: 8,
   maxBase64Chars: 5_000_000,
   maxTotalBase64Chars: 12 * 1024 * 1024,
   maxSidePx: 8000,
-} as const;
+};
+
+/** The limits to fit and check composer images against: each one a host
+ *  advertised, where it's a positive whole number no looser than the
+ *  default, and the default otherwise. */
+export function imageLimitsFrom(advertised?: Partial<UserImageLimits> | null): UserImageLimits {
+  const pick = (key: keyof UserImageLimits): number => {
+    const v = advertised?.[key];
+    return typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= USER_IMAGE_LIMITS[key]
+      ? v
+      : USER_IMAGE_LIMITS[key];
+  };
+  return {
+    maxCount: pick('maxCount'),
+    maxBase64Chars: pick('maxBase64Chars'),
+    maxTotalBase64Chars: pick('maxTotalBase64Chars'),
+    maxSidePx: pick('maxSidePx'),
+  };
+}
 
 /**
  * The most one WebSocket frame from a client can carry, in bytes of its JSON
