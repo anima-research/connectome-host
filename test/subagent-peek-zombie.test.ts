@@ -39,7 +39,7 @@ function makeModuleWithSubagent(opts: {
   pendingToolCalls?: Array<{ name: string; input?: unknown }>;
   status?: 'running' | 'completed' | 'failed';
 }): SubagentModule {
-  const mod = new SubagentModule();
+  const mod = new SubagentModule({ provider: 'mock' });
   const live: FakeLiveState = {
     frameworkAgentName: `fw-${opts.displayName}`,
     displayName: opts.displayName,

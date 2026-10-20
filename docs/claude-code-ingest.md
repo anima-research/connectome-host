@@ -361,7 +361,7 @@ a typo fails at boot rather than silently disabling the rung.
 
 3. **`agent.refusalHandling`** — fleet values:
    ```jsonc
-   "refusalHandling": { "retries": 2, "autoRewind": false, "maxRewinds": 15, "announceHumanTurns": true }
+   "refusalHandling": { "retries": 2, "autoRewind": false, "maxRewinds": 15 }
    ```
    `retries` re-sends the identical request (near-threshold refusals are
    nondeterministic; two extra draws clear most of them for free). `autoRewind`

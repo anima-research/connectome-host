@@ -19,6 +19,18 @@ function apply(h: HealthSnapshot, alerts: Alerts): void {
 
 const SUB = 'spawn-reader-1760000000';
 
+test("a quarantine row counts records as records, and spans once the snapshot lists them", () => {
+  const alerts: Alerts = new Map();
+  apply({
+    agents: [{ name: 'main' }, { name: SUB }],
+    compressionQuarantine: { main: { count: 3 }, [SUB]: { count: 3, spans: [{}, {}] } },
+  }, alerts);
+  expect(alerts.get('main:compression-quarantine')!.message)
+    .toBe('3 quarantine record(s) in compression quarantine (one span can hold several) — spans stay raw and will eventually exhaust the context budget.');
+  expect(alerts.get(`${SUB}:compression-quarantine`)!.message)
+    .toBe('2 span(s) in compression quarantine (3 record(s)) — spans stay raw and will eventually exhaust the context budget.');
+});
+
 test('a subagent quarantine row clears when the subagent leaves the snapshot', () => {
   const alerts: Alerts = new Map();
   apply({

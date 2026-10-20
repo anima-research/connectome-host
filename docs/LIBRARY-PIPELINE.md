@@ -48,7 +48,7 @@ Start by reading [`../recipes/SETUP.md`](../recipes/SETUP.md) — it covers the 
 
 You need all of:
 
-- Bun, Node 20+, an Anthropic API key (from SETUP.md).
+- Bun 1.4.3+, Node 22.12+, an Anthropic API key (from SETUP.md).
 - **Zulip**: a bot account with API credentials, subscribed to the channel you want the Clerk to staff. Name that channel in `.env` as `ZULIP_CHANNEL` (e.g. `tracker-miner-f`) — `clerk.json` won't load without it. `.zuliprc` in the project directory.
 - **Zulip MCP server** built and reachable at `../zulip_mcp/build/index.js`, the path both recipes reference (see SETUP.md Step 2).
 - **Miner data sources**: the shipped miner recipe wires GitLab (set `GITLAB_TOKEN` / `GITLAB_API_URL` in `.env`, or remove the `gitlab` block) and DuckDuckGo web search (a sibling checkout). Notion and Scribe are opt-in — see SETUP.md.
@@ -166,7 +166,7 @@ cd connectome-host
 DATA_DIR=./data-reviewer bun src/index.ts recipes/knowledge-reviewer.json
 ```
 
-Order doesn't matter. The workspace's initial scan will catch any files that were written while an agent was offline: on startup each `watch: 'always'` mount does a one-shot `syncFromFs` diff against its Chronicle tree, firing `workspace:created` for files that are on disk but new to this session. So if the Miner was offline when the Clerk filed three tickets, the Miner will wake on those three tickets the moment it starts.
+Order doesn't matter. The workspace's catch-up scan will catch any files that were written while an agent was offline: on startup each `watch: 'always'` mount walks its directory against its Chronicle tree, firing `workspace:created` for files that are on disk but new to this session. So if the Miner was offline when the Clerk filed three tickets, the Miner will wake on those three tickets the moment it starts. That holds for a mount within agent-framework's walk cap, 5000 files, links and other entries that aren't directories: on a larger mount the catch-up scan takes its turn with the mount's syncs, each walking up to the cap from where the last stopped, so a file changed while the agent was offline can wait until the rotation reaches it.
 
 Nobody needs to type at the Miner or Reviewer, so you can run them with `--headless`: no TUI at all — the agent serves JSONL over `$DATA_DIR/ipc.sock` and logs to `$DATA_DIR/headless.log`. If you'd rather keep a prompt without OpenTUI taking over the terminal, `--no-tui` gives a plain readline interface instead.
 

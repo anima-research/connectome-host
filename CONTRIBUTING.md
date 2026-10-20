@@ -61,10 +61,13 @@ the house default; plain descriptive titles are accepted.
   additions plus deletions pass 400 lines, unless it carries `no-greptile`,
   and the review starts when the label lands: within about half an hour of
   the PR opening, passing 400 lines or being marked ready, and later when
-  GitHub's scheduler is busy. A smaller PR gets a Greptile review if a
-  maintainer adds the label. `no-greptile` skips the review. Removing
-  `greptile` from a PR past 400 lines doesn't skip it, since the next run
-  adds the label back.
+  GitHub's scheduler is busy. A PR updated in the two minutes before a run
+  waits for a later one. A smaller PR gets a Greptile review if a maintainer
+  adds the label a minute or more after it's opened, reopened or marked
+  ready. A label added seven seconds after opening has twice started no
+  review, and Greptile's reference counts reopening and marking ready as
+  openings too. `no-greptile` skips the review. Removing `greptile` from a PR
+  past 400 lines doesn't skip it, since a later run adds the label back.
 - Respond by pushing fix commits and replying per finding — "Addressed in
   `<sha>`" — rather than force-pushing a rewritten branch. A re-review then
   flips the verdict.
@@ -139,22 +142,33 @@ never do.
   `Unreleased` above, and refuses to release when there is nothing to
   release; npm then commits and tags. `git push --follow-tags` triggers the
   publish workflow, which refuses a tag with no matching changelog section,
-  checks in a job of its own that the packed release installs and runs on
-  its own (`node scripts/pack-installs-alone.mjs`: npm installs the tarball
-  alone into an empty directory, install scripts included, so the Web UI
-  builds; bun resolves `src/index.ts`'s static imports there, and its
-  dynamic ones with a literal specifier, though not a recipe extension's,
-  which load by a computed path, and loads `@opentui/core`; and the offline
-  mock-recipe smoke run answers; CI runs it
-  on pull requests too, and by hand it runs from the repository root, for
-  example before `git push --follow-tags`, warning when the working tree
-  differs from `HEAD`, since npm packs the working tree), publishes
-  `@animalabs/connectome-host` to npm once that check has passed, and
-  creates the GitHub release with that section as its notes. The check
-  stands for the npm it runs, node 24's npm 11, which runs a dependency's
-  install scripts: npm 12 and bun skip them by default, so the Web UI
-  isn't built in their installs. When the check fails on a tag, the notes
-  are out and npm isn't. Re-run the failed jobs first: a registry or
+  builds the Web UI and checks in a job of its own that the packed release,
+  which carries it in `dist/web`, installs and runs on its own
+  (`node scripts/pack-installs-alone.mjs`: the package carries the Web UI
+  and `tsconfig.json`, which consumers typecheck its source with; npm
+  installs the tarball alone into an empty directory and runs no install
+  scripts, as npm 12 and bun install by default; bun resolves
+  `src/index.ts`'s static imports there, and its dynamic ones with a
+  literal specifier, though not a recipe extension's, which load by a
+  computed path, and loads `@opentui/core`; and the offline mock-recipe
+  smoke run answers; CI runs it on pull requests
+  too, and by hand it runs from the repository root after
+  `npm run build:web:ci`, for example before `git push --follow-tags`,
+  warning when the working tree differs from `HEAD`, since npm packs the
+  working tree), publishes
+  `@animalabs/connectome-host` to npm with the Web UI that check built once
+  it has passed, and creates the GitHub release with that section as its
+  notes. Nothing is installed or built in the publish job, which can mint
+  the publish credential. `prepack` refuses to pack a tree without the
+  built Web UI, or a pack that would carry a file git ignores outside it,
+  such as a local recipe in `recipes/`, so `npm pack` and `npm publish`,
+  and bun's, stop there, in the publish job and by hand alike, unless
+  scripts are off (`--ignore-scripts`, which skips the release holds
+  too). The
+  root `postinstall` builds the Web UI only in a checkout, where `web/` is:
+  the package doesn't ship `web/`, so on a registry install it does
+  nothing. When the check fails on a tag, the
+  notes are out and npm isn't. Re-run the failed jobs first: a registry or
   network blip, or a timeout, passes then. If it fails the same way again,
   fix the break, which can be a dependency's new release, and release the
   next patch. The two release jobs are independent: some
@@ -163,6 +177,25 @@ never do.
   both; past it, so do a tag with no changelog section, which neither can
   release, and an open release hold (below), which each checks. Version
   bumps are a maintainer release-time action, not part of feature PRs.
+- **Breaking changes.** A dependent's caret range takes the later
+  versions of its line (0.10.x before 1.0, 1.x from 1.0, and 0.0.z alone),
+  so a breaking change released as a patch reaches each dependent whose
+  range takes it at its next fresh install. Before 1.0, a breaking change
+  goes out in a new minor version (0.10.x to 0.11.0), and from 1.0 in a
+  new major. File it as breaking, as a `breaking` fragment or under a
+  `### Breaking` subsection of `Unreleased`: that is what `npm version`
+  reads. While such an entry is pending, `npm version` refuses a version
+  that doesn't open a line no release has reached, before it bumps or
+  writes anything, and says where each entry is filed and the bump to run
+  instead. A prerelease counts as the release it leads to, so one in the
+  current line is refused too. One that opens the next line (a preminor
+  before 1.0, a premajor from 1.0) isn't, and nor is any later version of
+  that line. A version below the current line is refused as well. bun's
+  `bun pm version` runs this check without giving it either version, so
+  while a breaking entry is pending it refuses every bump there: release
+  with `npm version`. npm's `--ignore-scripts` skips this check, but it
+  also skips the fold, and the publish workflow refuses a tag whose
+  version has no changelog section.
 - **Release holds.** When releasing `main` as it stands would harm
   someone running it, open an issue that says what has to happen first
   and label it `release-hold`, or ask a maintainer to label it. Close it
@@ -178,14 +211,17 @@ never do.
   it skips the changelog fold too, so the tag lands without its changelog
   section and the publish workflow's changelog check fails it. Publishing a
   tarball made earlier with `npm pack` runs no lifecycle script, so no check
-  sees it.
+  sees it. A hold stops releases, not merges, so when the hazard is in an
+  open pull request, say so on that pull request, naming what has to happen
+  first: its comment thread is the gate (see Review process).
 
 ## Building and testing
 
 ```bash
 bun install
 bun test            # test suite
-bunx tsc --noEmit   # typecheck
+bunx tsc --noEmit   # typecheck the host's source (src/)
+(cd web && bunx tsc --noEmit)   # typecheck the web app
 bun src/index.ts    # run (generic assistant)
 ```
 
@@ -193,7 +229,11 @@ CI (`ci.yml`) runs on every pull request and every push to `main`, on ubuntu
 and macOS. Both install the root and the web app with a strict lockfile
 (`npm ci`), which fails when a lock doesn't match its `package.json` or
 lacks that platform's packages, and build the web app; the test suite runs
-on ubuntu only. If you touched `web/`
+on ubuntu only. A typecheck job checks the types of the host's source
+(`src/`; `test/` and `scripts/` aren't checked) and of the web app
+(`tsc --noEmit`), which nothing else does: bun runs TypeScript without
+checking its types, and `vite build` doesn't check them either. If you
+touched `web/`
 dependencies, regenerate the npm lock with `npm run relock:web`, so it
 carries both platforms' native binaries. It resolves every web dependency
 afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:
@@ -207,12 +247,14 @@ agree` job fails when `bun.lock` doesn't match `package.json`
 (`bun install --frozen-lockfile`) or when the two resolve the stack's
 packages (`@animalabs/*`) differently (`node scripts/lockfiles-agree.mjs`,
 which follows the stack's dependencies from the root, through each stack
-package's own, comparing registry versions and GitHub commits; a pin of
-another kind, such as a link, fails as one it can't compare, and the
-relock below doesn't clear it; other packages may differ, and a stack
-package that only a third-party package depends on isn't reached). So
-when you change a
-dependency, update `package-lock.json` with npm, then make `bun.lock`
+package's own, comparing registry versions, GitHub commits and tarball
+URLs; a pin of another kind on both sides, such as a link, fails as one
+it can't compare, and the relock below doesn't clear it, while against a
+pin of a known kind it differs; other packages may differ, and a stack
+package that only a third-party package depends on, or one declared
+under an alias outside `@animalabs/`, isn't reached). So
+when you change a dependency, update
+`package-lock.json` with npm, then make `bun.lock`
 follow it as for `web/`: delete `bun.lock` and run
 `bun install --lockfile-only`.
 

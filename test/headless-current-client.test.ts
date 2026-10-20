@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -32,7 +33,7 @@ async function withChild(body: (h: {
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   const log = () => (existsSync(join(dir, 'headless.log')) ? readFileSync(join(dir, 'headless.log'), 'utf8') : '');
   const open = async (options: { allowHalfOpen?: boolean } = {}) => {
-    const socket = connect({ path: join(dir, 'ipc.sock'), allowHalfOpen: options.allowHalfOpen ?? false });
+    const socket = await connectWhenAccepting(join(dir, 'ipc.sock'), { allowHalfOpen: options.allowHalfOpen ?? false });
     sockets.push(socket);
     const events: Array<Record<string, unknown>> = [];
     let buffer = '';
@@ -47,10 +48,6 @@ async function withChild(body: (h: {
       }
     });
     socket.on('error', () => { /* a reset is the point of one test */ });
-    await new Promise<void>((resolve, reject) => {
-      socket.once('connect', resolve);
-      socket.once('error', reject);
-    });
     await until(() => events.some(event => event.type === 'lifecycle' && event.phase === 'ready'), 'ready');
     const send = (command: object) => socket.write(JSON.stringify(command) + '\n');
     const hasReply = (text: string) => events.some(event => event.type === 'command-output' && String(event.text).includes(text));
@@ -106,11 +103,10 @@ test("a superseded client's disconnect leaves the newer client current", async (
   });
 }, 20_000);
 
-// Bun 1.3.14, the runtime connectome-host's CI pins, closes the whole socket
-// at end(), so a superseded client's later writes never arrive and the rule
-// can't be reached: there this test is skipped. The house's cross-package
-// check runs the suite on Bun 1.4.2, which half-closes the socket as Node
-// does, so the writes arrive and the rule decides.
+// Bun 1.3.14 closes the whole socket at end(), so a superseded client's
+// later writes never arrive and the rule can't be reached: there this test
+// is skipped. Bun 1.4.2 and 1.4.3 half-close the socket as Node does, so the
+// writes arrive and the rule decides.
 test.skipIf(!nodeSockets)("a superseded client's later commands are dropped, not run", async () => {
   await withChild(async ({ dir, log, open }) => {
     // The first client keeps its half of the socket open after the child
@@ -154,9 +150,19 @@ test.skipIf(!nodeSockets)("a superseded client's later commands are dropped, not
 test.skipIf(noPython)('a client whose socket is reset stops being current, and its disconnect is logged once', async () => {
   await withChild(async ({ dir, log, open }) => {
     const raw = spawn('python3', ['-c', [
-      'import select, socket, sys',
-      's = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)',
-      's.connect(sys.argv[1])',
+      'import select, socket, sys, time',
+      // Connect once the socket accepts: try again while the connect is
+      // refused or the path isn't there yet, until a deadline.
+      'deadline = time.time() + 10',
+      'while True:',
+      '    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)',
+      '    try:',
+      '        s.connect(sys.argv[1])',
+      '        break',
+      '    except (ConnectionRefusedError, FileNotFoundError):',
+      '        s.close()',
+      '        if time.time() > deadline: raise',
+      '        time.sleep(0.02)',
       // Exit once the child's ready event is waiting, unread.
       'select.select([s], [], [], 5)',
     ].join('\n'), join(dir, 'ipc.sock')], { stdio: 'ignore' });

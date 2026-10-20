@@ -237,35 +237,107 @@ if records:
                 pass
 stages.append(("chronicle ingest (+gate)", rec_ts, rec_detail))
 
-# 4c. inference: newest llm-calls file, last record stop_reason
+# 4c. inference: newest llm-calls file, last model call's stop_reason
+def err_text(err):
+    """An llm-calls error as text: a { name, message, ... } object or a string."""
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("name") or "")
+    return "" if err is None else str(err)
+
+
 llm_ts = None
 llm_detail = ""
+turn_ts = None          # the agent's last turn (a stream call) in the window
+llm_window_from = None  # the oldest row's time, when the window holds no turn
+llm_written_at = None   # the newest file's last write
+llm_unsure = False      # an unreadable or incomplete row may be a turn after the ingest
+LLM_WINDOW = 30_000_000
 llm_files = sorted(
     (f for f in os.listdir(data_dir) if f.startswith("llm-calls.")),
     key=lambda f: os.path.getmtime(os.path.join(data_dir, f)),
 )
 if llm_files:
     newest = os.path.join(data_dir, llm_files[-1])
-    llm_ts = os.path.getmtime(newest)
-    # last complete JSON line from tail (lines can be multi-MB)
-    raw = tail_bytes(newest, 30_000_000).decode("utf-8", "replace")
-    for ln in reversed(raw.splitlines()):
+    size = os.path.getsize(newest)
+    llm_written_at = os.path.getmtime(newest)
+    where = "the newest file's last 30 MB" if size > LLM_WINDOW + 1 else "the newest file"
+    # The file's tail, split at newlines only: splitlines() also splits at
+    # U+2028, U+2029 and U+0085, which JSON.stringify leaves unescaped inside
+    # a row. One byte more than the window is read, so where the window cuts
+    # a file, the first piece holds the part of a row that began before the
+    # window (all of a row that began one byte before it), or nothing when
+    # the window begins at a row, and is dropped either way.
+    raw = tail_bytes(newest, LLM_WINDOW + 1).decode("utf-8", "replace")
+    lines = raw.split("\n")
+    if size > LLM_WINDOW + 1:
+        lines = lines[1:]
+    # A last row with no newline after it is being written now, or was cut
+    # off when its process stopped; it counts as a row only if it parses.
+    last = lines.pop() if lines else ""
+    incomplete = False
+    if last.strip():
+        try:
+            json.loads(last)
+            lines.append(last)
+        except Exception:
+            incomplete = True
+    call = None        # the newest model call: the row reported
+    pokes = 0
+    unreadable = 0     # rows since the last turn that couldn't be parsed
+    # Rows are written in time order, so an unreadable row newer than a row
+    # from before the ingest could be a turn after it; an older one couldn't.
+    # No row is newer than the file's last write, so in a file last written
+    # before the ingest none could be; the last row, incomplete, was written
+    # at that last write.
+    before_ingest = rec_ts is not None and llm_written_at < rec_ts - 120
+    llm_unsure = incomplete and not before_ingest
+    for ln in reversed(lines):
         ln = ln.strip()
         if not ln.startswith("{"):
             continue
         try:
             r = json.loads(ln)
         except Exception:
+            unreadable += 1
+            llm_unsure = llm_unsure or not before_ingest
             continue
-        resp = r.get("rawResponse") or {}
+        r_ts = parse_iso(str(r.get("timestamp", "")))
+        if rec_ts is not None and r_ts is not None and r_ts < rec_ts - 120:
+            before_ingest = True
+        llm_window_from = r_ts or llm_window_from
+        # Cache keepalive pokes write rows here too, while the agent is idle,
+        # so neither the file's mtime nor its last row says when it last
+        # inferred: report the newest row that isn't a poke, at its own time,
+        # and go on past other calls to the agent's last turn.
+        if r.get("kind") == "keepalive":
+            pokes += 1
+            continue
+        if call is None:
+            call = r
+        if r.get("kind") == "stream":
+            turn_ts = parse_iso(str(r.get("timestamp", "")))
+            llm_window_from = None
+            break
+    if call is not None:
+        llm_ts = parse_iso(str(call.get("timestamp", "")))
+        resp = call.get("rawResponse") or {}
         resp = resp.get("response") or resp
         sr = resp.get("stop_reason")
-        err = resp.get("error") or r.get("error")
-        llm_detail = f"stop={sr}" + (f"  {C_RED}err={str(err)[:80]}{C_OFF}" if err else "")
+        err = resp.get("error") or call.get("error")
+        if call.get("type") == "error" or err:
+            llm_detail = f"stop={sr}  {C_RED}err={err_text(err)[:80] or '(no text)'}{C_OFF}"
+        else:
+            llm_detail = f"stop={sr}"
         if sr == "refusal":
             warn("last model response was a REFUSAL — check context contamination "
                  "(see project_mythos: contextBudgetTokens fix)")
-        break
+    else:
+        llm_detail = f"no readable model call in {where}" + (
+            f": {pokes} keepalive poke(s)" if pokes else "")
+    if unreadable:
+        llm_detail += f"  {C_YEL}{unreadable} row(s){' since the last turn' if turn_ts else ''} unreadable{C_OFF}"
+    if incomplete:
+        llm_detail += f"  {C_YEL}last row incomplete (being written, or cut off){C_OFF}"
 stages.append(("inference (llm call)", llm_ts, llm_detail))
 
 # 4d. delivery: last routeSpeech in agent log
@@ -299,11 +371,26 @@ for name, ts, detail in stages:
     if ts:
         prev_ts = ts
 
-# triggered ingest but no inference since -> the tonight signature
-if globals().get("_last_ingest_triggered") and rec_ts and (llm_ts is None or llm_ts < rec_ts - 120):
-    warn("a gate-TRIGGERED event was ingested but NO inference followed — "
-         "events are dying between the gate and the model (check inference "
-         "policy drops / budget failures / [diagnostics] dump below)")
+# triggered ingest but no turn recorded since -> the tonight signature.
+# The turn is what follows an ingest; a compression call is not one. Logging
+# is best-effort, so this says what was recorded, not that the model never
+# ran. With no llm-calls file no turn was recorded. With one, an unreadable
+# or incomplete row that may be newer than the ingest might be the turn.
+# With no turn in the window, none was recorded after the ingest only if
+# the window reaches back past it: the oldest row read bounds it, and with no
+# readable row at all, the file's last write. A file's name gives when its
+# process started it, not that the file still holds every row since: their
+# retention, rotation and shipping belong to the host box's llm-logs sync
+# job (src/logging-provider-wrapper.ts).
+NO_TURN = "NO turn was recorded after it"
+no_turn_after = turn_ts is None or (rec_ts is not None and turn_ts < rec_ts - 120)
+window_from = llm_window_from if llm_window_from is not None else llm_written_at
+turn_unknown = bool(llm_files) and (llm_unsure or (turn_ts is None and (
+    window_from is None or (rec_ts is not None and rec_ts < window_from))))
+if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not turn_unknown:
+    warn(f"a gate-TRIGGERED event was ingested but {NO_TURN} — events may be "
+         "dying between the gate and the model (check inference policy drops / "
+         "budget failures / [diagnostics] dump below)")
 
 # ---------------------------------------------------------------------------
 # 5. Recent failures (agent.log + failures.log)
@@ -336,7 +423,8 @@ if pid not in ("0", "", None) and active in ("active", "running"):
     if os.path.exists(agent_log):
         with open(agent_log, "rb") as f:
             f.seek(before)
-            for ln in f.read().decode("utf-8", "replace").splitlines():
+            # Split at newlines only: the dump is JSON, which can hold U+2028.
+            for ln in f.read().decode("utf-8", "replace").split("\n"):
                 if "[diagnostics]" in ln:
                     dump = ln
     print()
@@ -350,9 +438,9 @@ if pid not in ("0", "", None) and active in ("active", "running"):
             if g.get("sleepUntil", 0) > NOW * 1000:
                 warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}")
             if d.get("activeStreams"):
-                # a turn is running right now — the "no inference followed"
+                # a turn is running right now — the "no turn recorded"
                 # heuristic is premature; the model is just still thinking.
-                WARNINGS[:] = [w for w in WARNINGS if "NO inference followed" not in w]
+                WARNINGS[:] = [w for w in WARNINGS if NO_TURN not in w]
                 print(f"  {C_GRN}turn in-flight for: {', '.join(d['activeStreams'])}{C_OFF}")
         except Exception:
             pass

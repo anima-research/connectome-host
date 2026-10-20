@@ -11,6 +11,7 @@
  * written, and its inline script must parse.
  */
 import { readFileSync } from 'node:fs';
+import { Script } from 'node:vm';
 import { describe, expect, test } from 'bun:test';
 import { CURVE_PAGE_HTML } from '../src/modules/web-ui-curve-page.js';
 import { RETRIEVAL_TRACE_PAGE_HTML } from '../src/modules/retrieval-trace-page.js';
@@ -57,12 +58,10 @@ describe('pages served from a string', () => {
       expect(scripts.length).toBeGreaterThan(0);
       for (const script of scripts) {
         expect(script.trim()).not.toBe('');
-        // The Function constructor parses a script as a function body, without
-        // running it. That's a little looser than a browser's parse of a
-        // classic script, which also refuses a top-level return or new.target.
-        // node:vm's Script would parse it as a classic script, but under bun
-        // 1.3.14, CI's pin, it doesn't parse its source when it's constructed.
-        expect(() => new Function(script)).not.toThrow();
+        // node:vm's Script parses its source as a classic script, as a
+        // browser does, when it's constructed, without running it: under
+        // Bun 1.4.3, as under Node. (Bun 1.3.14's didn't parse until it ran.)
+        expect(() => new Script(script)).not.toThrow();
       }
     });
   }

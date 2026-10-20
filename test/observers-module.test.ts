@@ -1,10 +1,11 @@
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, lstatSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolCall } from '@animalabs/agent-framework';
 import { ObserversModule } from '../src/modules/observers-module.js';
-import { loadObserversFile } from '../src/modules/web-ui-observers.js';
+import { loadObserversFile, ObserverRegistry } from '../src/modules/web-ui-observers.js';
 
 // A canonical key: 43 base64url characters whose last one carries no stray bits.
 const key = (c: string) => `ed25519:${c.repeat(42)}A`;
@@ -23,6 +24,11 @@ const BAD_SCOPE = JSON.stringify({ observers: [BASELINE, PHONE] }, null, 2);
 const TRUNCATED = BAD_SCOPE.slice(0, BAD_SCOPE.length - 10);
 const GOOD = JSON.stringify({ observers: [BASELINE, { ...PHONE, scopes: ['messages'] }] }, null, 2);
 const SAYS = 'grant 2 ("antra-phone") names a scope that doesn\'t exist: "tool-calls"';
+const SCOPES = 'health, ops, messages, tools, thinking, debug';
+const NO_END = 'leave expires out for a grant with no end';
+const FORM = 'YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ (an offset such as +02:00 can stand for Z)';
+const PROTECTED_A = (verb: string) =>
+  `the key "${key('A')}" holds a protected grant, part of this host's baseline, which only whoever runs the host can ${verb}. Calling again won't change that.`;
 
 describe('observers tools and the grants file', () => {
   let dir: string;
@@ -41,10 +47,11 @@ describe('observers tools and the grants file', () => {
     expect(grant.error).toContain(`${path}, isn't valid JSON`);
     expect(grant.error).toContain('These tools don\'t write over a file they can\'t read as grants');
     expect(grant.error).toContain('whoever runs this host');
+    expect(grant.error).toContain('then call observers--grant again');
     const revoke = await m.handleToolCall(call('revoke', { label: 'baseline' }));
     expect(revoke.error).toStartWith('Nothing was revoked:');
     expect(revoke.error).toContain(path);
-    expect(revoke.error).toContain('then revoke again');
+    expect(revoke.error).toContain('then call observers--revoke again');
     const get = await m.handleToolCall(call('get', {}));
     expect(get.error).toStartWith('The grants can\'t be listed:');
     expect(get.error).toContain('Until it parses');
@@ -117,19 +124,21 @@ describe('observers tools and the grants file', () => {
     const shadow = { key: key('A'), label: 'baseline copy', scopes: ['health'] };
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, shadow] }));
     const overBaseline = await m.handleToolCall(call('revoke', { label: 'baseline copy' }));
-    expect(overBaseline.error).toContain('that key also holds a protected grant');
+    expect(overBaseline.error).toBe(`Nothing was revoked: a revoke takes every grant for a key, and ${PROTECTED_A('remove')}`);
     expect(stored(path).observers).toEqual([BASELINE, shadow]);
 
     // So is one by key, or a grant, when the protected entry comes second.
     writeFileSync(path, JSON.stringify({ observers: [shadow, BASELINE] }));
-    expect((await m.handleToolCall(call('revoke', { key: key('A') }))).error).toContain('that key also holds a protected grant');
-    expect((await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'] }))).error).toContain('protected');
+    expect((await m.handleToolCall(call('revoke', { key: key('A') }))).error).toBe(`Nothing was revoked: a revoke takes every grant for a key, and ${PROTECTED_A('remove')}`);
+    expect((await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'] }))).error).toBe(`Nothing was granted: ${PROTECTED_A('change')}`);
     expect(stored(path).observers).toEqual([shadow, BASELINE]);
 
     // A label that names two entries is refused.
     const twin = { key: key('D'), label: 'antra-phone', scopes: ['health'] };
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, { ...PHONE, scopes: ['messages'] }, twin] }));
-    expect((await m.handleToolCall(call('revoke', { label: 'antra-phone' }))).error).toContain('label matches 2 grants');
+    expect((await m.handleToolCall(call('revoke', { label: 'antra-phone' }))).error).toBe(
+      `Nothing was revoked: 2 grants are labelled "antra-phone". Revoke by key instead: "${key('B')}" or "${key('D')}".`,
+    );
     expect(keys(path)).toEqual([key('A'), key('B'), key('D')]);
     const overProtected = await m.handleToolCall(call('grant', { key: key('A'), label: 'mine now', scopes: ['debug'] }));
     expect(overProtected.isError).toBe(true);
@@ -294,5 +303,275 @@ describe('observers tools and the grants file', () => {
     expect(loadObserversFile(path)).toEqual({ observers: [BASELINE] } as never);
     writeFileSync(path, JSON.stringify({ observers: [{ key: key('A'), label: 'ok', scopes: ['health'], extra: 1 }] }));
     expect(loadObserversFile(path)).toEqual({ observers: [{ key: key('A'), label: 'ok', scopes: ['health'], extra: 1 }] } as never);
+  });
+});
+
+describe('what grant and revoke say', () => {
+  let dir: string;
+  let path: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'observers-say-'));
+    path = join(dir, 'observers.json');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('a grant names every wrong input at once, each with what to give, and writes nothing', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    const wrong = await m.handleToolCall(call('grant', { key: 'nope', label: 5, scopes: ['health', 'nope'], expires: 1000 }));
+    expect(wrong.error).toBe(
+      'Nothing was granted: key "nope" isn\'t an ed25519 public key: give "ed25519:<base64url public key>", a key that decodes to 32 bytes; ' +
+      'label must be text, not 5; ' +
+      `scopes names one that doesn't exist, "nope": the scopes are ${SCOPES}; ` +
+      `expires must be text, not 1000: give a date as ${FORM}, or ${NO_END}.`,
+    );
+    const missing = await m.handleToolCall(call('grant', { label: '  ', scopes: 'health' }));
+    expect(missing.error).toBe(
+      'Nothing was granted: key is missing: give the observer\'s key, "ed25519:<base64url public key>", the fingerprint the person or device shows you; ' +
+      'label is missing: say who this is, in your own words; ' +
+      `scopes must be a list of one or more of ${SCOPES}, not "health".`,
+    );
+    const none = await m.handleToolCall({ id: 't-grant', name: 'grant', input: undefined as unknown as Record<string, unknown> });
+    expect(none.error).toBe(
+      'Nothing was granted: key is missing: give the observer\'s key, "ed25519:<base64url public key>", the fingerprint the person or device shows you; ' +
+      'label is missing: say who this is, in your own words; ' +
+      `scopes must be a list of one or more of ${SCOPES}.`,
+    );
+    const notTextKey = await m.handleToolCall(call('grant', { key: 5, label: 'x', scopes: ['health', 'nope', 'nada'] }));
+    expect(notTextKey.error).toBe(
+      'Nothing was granted: key 5 isn\'t an ed25519 public key: give "ed25519:<base64url public key>", a key that decodes to 32 bytes; ' +
+      `scopes names ones that don't exist, "nope", "nada": the scopes are ${SCOPES}.`,
+    );
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+  });
+
+  test('a grant names wrong inputs before the file, even one that doesn\'t parse', async () => {
+    writeFileSync(path, TRUNCATED);
+    const r = await new ObserversModule({ path }).handleToolCall(call('grant', { label: 'x', scopes: ['health'] }));
+    expect(r.error).toBe(
+      'Nothing was granted: key is missing: give the observer\'s key, "ed25519:<base64url public key>", the fingerprint the person or device shows you.',
+    );
+    expect(readFileSync(path, 'utf-8')).toBe(TRUNCATED);
+  });
+
+  test('an expiry that isn\'t text, isn\'t a date in the ISO form or has passed is refused, and absent, null or empty means no end', async () => {
+    const m = new ObserversModule({ path });
+    for (const expires of [1000, true, { at: 1 }, ['2030-01-01T00:00:00Z']]) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
+      expect(r.error).toBe(`Nothing was granted: expires must be text, not ${JSON.stringify(expires)}: give a date as ${FORM}, or ${NO_END}.`);
+    }
+    // Date.parse reads most of these, its lenient parser "3600." as the year
+    // 3600 and "05/06/2026" as May 6; only the ISO form is taken.
+    for (const expires of [
+      'tomorrow', '3600', ' 86400 ', '+003600', '3600.5', '3600.', '3600,5', '86400.', '3600;', '3600 .',
+      '2027', '2027-01', 'Oct 18 2999', '10/18/2999', '05/06/2999', '2999.01.01', ' 2999-01-01', '2999-01-01T12', '2999-13-01', '2999-01-01T25:00:00Z',
+      // In the form, but out of range, which Date.parse reads anyway in the
+      // form with a space: it read -9999 as an offset of 100 hours and 39
+      // minutes.
+      '2999-01-01 12:00:00-9999', '2999-01-01 12:00:00+2400', '2999-01-01t12:00:00-99:99', '2999-01-01 24:00:01Z', '2999-01-01 12:60Z',
+    ]) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
+      expect(r.error).toBe(`Nothing was granted: expires ${JSON.stringify(expires)} isn't a date as ${FORM}: give it in that form, or ${NO_END}.`);
+    }
+    // A day the month doesn't have is refused, where Date.parse moves it on.
+    for (const expires of ['2999-02-29', '2999-04-31', '2999-02-30T00:00:00Z', '2100-02-29']) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
+      expect(r.error).toBe(
+        `Nothing was granted: expires ${JSON.stringify(expires)} names a day its month doesn't have, which is refused rather than ` +
+        `moved into the next month: give a date that exists, as ${FORM}, or ${NO_END}.`,
+      );
+    }
+    // A year below 100 is that year, so it has passed, where Date.parse reads
+    // the form with a space as 2049 and 1999.
+    for (const expires of ['0049-01-01 12:00:00Z', '0099-12-31 23:59Z', '0049-01-01']) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
+      expect(r.error).toBe(
+        `Nothing was granted: expires ${JSON.stringify(expires)} has already passed: give a later time, or ${NO_END} ` +
+        '(observers--revoke ends this key\'s grants, if it has any and none is protected).',
+      );
+    }
+    expect(existsSync(path)).toBe(false);
+    for (const expires of [undefined, null, '']) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
+      expect(r.success).toBe(true);
+      expect((r.data as { message: string }).message).toBe('Granted: phone → [health]. Live within ~3s.'.replace('Granted', expires === undefined ? 'Granted' : 'Updated'));
+      expect(stored(path).observers[0]!.expires).toBeNull();
+    }
+    const later = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T00:00:00Z' }));
+    expect((later.data as { message: string }).message).toBe('Updated: phone → [health] until 2999-01-01T00:00:00Z. Live within ~3s.');
+    expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T00:00:00Z' }]);
+    // Each form taken is written in ECMAScript's own form, with T, Z and an
+    // offset's colon, and the answer names that text. The grant stores it,
+    // apart from a time without a zone, which it stores as the instant it
+    // read, in UTC. The registry's Date.parse reads what's stored as meant:
+    // a date alone as its start in UTC, a time without a zone in the host's
+    // time zone (UTC under bun test, unless TZ is set as the run starts; the
+    // next test takes another), and a zone as given. The answer names the
+    // instant for a date alone or a time without a zone, which don't say
+    // their zone.
+    const local = (y: number, mo: number, d: number, h: number) => new Date(y, mo - 1, d, h).toISOString().replace('.000Z', 'Z');
+    for (const [typed, written, expires, meant, zoned] of [
+      ['2999-01-01', '2999-01-01', '2999-01-01', '2999-01-01T00:00:00Z', false],
+      ['2996-02-29', '2996-02-29', '2996-02-29', '2996-02-29T00:00:00Z', false], ['2400-02-29', '2400-02-29', '2400-02-29', '2400-02-29T00:00:00Z', false],
+      ['2999-01-01T12:00', '2999-01-01T12:00', local(2999, 1, 1, 12), local(2999, 1, 1, 12), false],
+      ['2999-01-01 12:00:00', '2999-01-01T12:00:00', local(2999, 1, 1, 12), local(2999, 1, 1, 12), false],
+      ['2999-01-01T12:00:00.123456Z', '2999-01-01T12:00:00.123456Z', '2999-01-01T12:00:00.123456Z', '2999-01-01T12:00:00.123Z', true],
+      ['2999-01-01T12:00:00+05:30', '2999-01-01T12:00:00+05:30', '2999-01-01T12:00:00+05:30', '2999-01-01T06:30:00Z', true],
+      ['2999-01-01T12:00:00-0800', '2999-01-01T12:00:00-08:00', '2999-01-01T12:00:00-08:00', '2999-01-01T20:00:00Z', true],
+      ['2999-01-01t12:00z', '2999-01-01T12:00Z', '2999-01-01T12:00Z', '2999-01-01T12:00:00Z', true],
+      ['2999-01-01t12:00:00+0530', '2999-01-01T12:00:00+05:30', '2999-01-01T12:00:00+05:30', '2999-01-01T06:30:00Z', true],
+      ['2999-01-01 12:00:00+2359', '2999-01-01T12:00:00+23:59', '2999-01-01T12:00:00+23:59', '2998-12-31T12:01:00Z', true],
+      ['2999-01-01 24:00Z', '2999-01-01T24:00Z', '2999-01-01T24:00Z', '2999-01-02T00:00:00Z', true],
+    ] as const) {
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: typed }));
+      expect(r.error).toBeUndefined();
+      expect((r.data as { message: string }).message).toBe(
+        `Updated: phone → [health] until ${written}${zoned ? '' : `, which this host reads as ${meant}`}. Live within ~3s.`,
+      );
+      expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires }]);
+      expect(new Date(Date.parse(expires)).toISOString().replace('.000Z', 'Z')).toBe(meant);
+    }
+    // The registry reads the stored text as the grant checked it: it admits
+    // the key until the expiry, and not after.
+    for (const [typed, end] of [['2999-01-01 12:00:00-0800', '2999-01-01T20:00:00Z'], ['2999-01-01 24:00Z', '2999-01-02T00:00:00Z']] as const) {
+      await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: typed }));
+      const registry = new ObserverRegistry(path);
+      registry.start();
+      try {
+        expect(registry.liveScopes(key('C'), Date.parse(end) - 1)).toEqual(new Set(['health']));
+        expect(registry.liveScopes(key('C'), Date.parse(end) + 1)).toBeNull();
+      } finally { registry.stop(); }
+    }
+  });
+
+  test('a time without a zone is read in the host\'s zone and stored as that instant, which reads the same in any zone', async () => {
+    // This grants in Europe/Berlin, then reads the stored expiry back in the
+    // zone the run started in: bun test's UTC, unless TZ was set as it
+    // started. The finally restores that zone, or UTC when none was set:
+    // deleting TZ would put the process in the machine's own zone, not bun
+    // test's UTC.
+    const zone = process.env.TZ;
+    const noonHere = new Date(2999, 0, 1, 12).getTime();
+    const m = new ObserversModule({ path });
+    try {
+      process.env.TZ = 'Europe/Berlin';
+      const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01 12:00' }));
+      expect((r.data as { message: string }).message).toBe(
+        'Granted: phone → [health] until 2999-01-01T12:00, which this host reads as 2999-01-01T11:00:00Z. Live within ~3s.',
+      );
+    } finally {
+      process.env.TZ = zone ?? 'Etc/UTC';
+    }
+    expect(new Date(2999, 0, 1, 12).getTime()).toBe(noonHere); // back in the zone the run started in
+    expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T11:00:00Z' }]);
+    const registry = new ObserverRegistry(path);
+    registry.start();
+    try {
+      expect(registry.liveScopes(key('C'), Date.parse('2999-01-01T11:00:00Z') - 1)).toEqual(new Set(['health']));
+      expect(registry.liveScopes(key('C'), Date.parse('2999-01-01T11:00:00Z') + 1)).toBeNull();
+    } finally { registry.stop(); }
+  });
+
+  test('an expiry that has passed is refused and names revoke, and the key\'s grant stays as it was', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    const passed = await m.handleToolCall(call('grant', { key: key('B'), label: 'antra-phone', scopes: ['messages'], expires: '1970-01-01T00:00:01Z' }));
+    const refusal = `Nothing was granted: expires "1970-01-01T00:00:01Z" has already passed: give a later time, or ${NO_END} ` +
+      '(observers--revoke ends this key\'s grants, if it has any and none is protected).';
+    expect(passed.error).toBe(refusal);
+    // For a key with a protected grant, the hint holds, and the protection
+    // is named once the inputs are right, when the file is read.
+    const overBaseline = await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'], expires: '1970-01-01T00:00:01Z' }));
+    expect(overBaseline.error).toBe(refusal);
+    expect((await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'] }))).error).toBe(`Nothing was granted: ${PROTECTED_A('change')}`);
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+    expect(loadObserversFile(path)!.observers.map((g) => g.label)).toEqual(['baseline', 'antra-phone']);
+  });
+
+  test('a revoke names what matched nothing, and that get lists the grants', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    const give = 'give key, the observer\'s key, or label, the exact label of its grant';
+    expect((await m.handleToolCall(call('revoke', {}))).error).toBe(`Nothing was revoked: ${give}.`);
+    expect((await m.handleToolCall(call('revoke', { key: 5 }))).error).toBe(`Nothing was revoked: key must be text, not 5; ${give}.`);
+    expect((await m.handleToolCall(call('revoke', { key: [1], label: 7 }))).error).toBe(`Nothing was revoked: key must be text, not [1]; label must be text, not 7; ${give}.`);
+    expect((await m.handleToolCall(call('revoke', { key: key('E') }))).error).toBe(`Nothing was revoked: no grant has the key "${key('E')}". observers--get lists the grants and their keys.`);
+    expect((await m.handleToolCall(call('revoke', { label: 'nobody' }))).error).toBe('Nothing was revoked: no grant is labelled "nobody". observers--get lists the grants and their keys.');
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+    // Two entries of one key under one label name that key once.
+    const twin = { key: key('C'), label: 'twin', scopes: ['health'] };
+    writeFileSync(path, JSON.stringify({ observers: [twin, { ...twin, scopes: ['ops'] }] }));
+    expect((await m.handleToolCall(call('revoke', { label: 'twin' }))).error).toBe(`Nothing was revoked: 2 grants are labelled "twin". Revoke by key instead: "${key('C')}".`);
+  });
+
+  test('a write that fails says nothing changed, and that the file is as it was', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    const spy = spyOn(fs, 'renameSync').mockImplementation(((a: fs.PathLike) => {
+      throw Object.assign(new Error(`ENOSPC: no space left on device, rename '${a}'`), { code: 'ENOSPC' });
+    }) as typeof fs.renameSync);
+    try {
+      const grant = await m.handleToolCall(call('grant', { key: key('C'), label: 'new', scopes: ['health'] }));
+      expect(grant.error).toBe(
+        `Nothing was granted: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp'), and it's as it was. ` +
+        'Whoever runs this host can fix that; call observers--grant again once they have.',
+      );
+      const revoke = await m.handleToolCall(call('revoke', { label: 'antra-phone' }));
+      expect(revoke.error).toBe(
+        `Nothing was revoked: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp'), and it's as it was. ` +
+        'Whoever runs this host can fix that; call observers--revoke again once they have.',
+      );
+    } finally { spy.mockRestore(); }
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+  });
+
+  test('a read that fails on too many files open says it can pass', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    const readFile = fs.readFileSync;
+    for (const [code, words] of [['EMFILE', 'too many open files'], ['ENFILE', 'file table overflow']] as const) {
+      const spy = spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (p === path) throw Object.assign(new Error(`${code}: ${words}, open '${p}'`), { code });
+        return (readFile as (...a: unknown[]) => unknown)(p, ...rest);
+      }) as typeof fs.readFileSync);
+      try {
+        const failed = `the grants file, ${path}, can't be read (${code}: ${words}, open '${path}')`;
+        const again = (tool: string) => `This host has too many files open, which can pass: call observers--${tool} again shortly, and if it fails the same way, ask whoever runs this host.`;
+        expect((await m.handleToolCall(call('grant', { key: key('C'), label: 'new', scopes: ['health'] }))).error).toBe(`Nothing was granted: ${failed}. ${again('grant')}`);
+        expect((await m.handleToolCall(call('revoke', { label: 'antra-phone' }))).error).toBe(`Nothing was revoked: ${failed}. ${again('revoke')}`);
+        expect((await m.handleToolCall(call('get', {}))).error).toBe(`The grants can't be listed: ${failed}. ${again('get')}`);
+      } finally { spy.mockRestore(); }
+    }
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+  });
+
+  test('a write that fails on too many files open says it can pass', async () => {
+    writeFileSync(path, GOOD);
+    const m = new ObserversModule({ path });
+    for (const [code, words] of [['EMFILE', 'too many open files'], ['ENFILE', 'file table overflow']] as const) {
+      const spy = spyOn(fs, 'renameSync').mockImplementation(((a: fs.PathLike) => {
+        throw Object.assign(new Error(`${code}: ${words}, rename '${a}'`), { code });
+      }) as typeof fs.renameSync);
+      try {
+        const grant = await m.handleToolCall(call('grant', { key: key('C'), label: 'new', scopes: ['health'] }));
+        expect(grant.error).toBe(
+          `Nothing was granted: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp'), and it's as it was. ` +
+          'This host has too many files open, which can pass: call observers--grant again shortly, and if it fails the same way, ask whoever runs this host.',
+        );
+        const revoke = await m.handleToolCall(call('revoke', { label: 'antra-phone' }));
+        expect(revoke.error).toBe(
+          `Nothing was revoked: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp'), and it's as it was. ` +
+          'This host has too many files open, which can pass: call observers--revoke again shortly, and if it fails the same way, ask whoever runs this host.',
+        );
+      } finally { spy.mockRestore(); }
+    }
+    expect(readFileSync(path, 'utf-8')).toBe(GOOD);
+  });
+
+  test('a call naming a tool the module doesn\'t have lists the ones it has, on either surface', async () => {
+    const asTools = await new ObserversModule({ path }).handleToolCall(call('kill', {}));
+    expect(asTools.error).toBe('There\'s no tool "observers--kill", so nothing ran. The observers tools are observers--get, observers--grant and observers--revoke.');
+    const asUtils = await new ObserversModule({ path, surface: 'utilities' }).handleToolCall(call('kill', {}));
+    expect(asUtils.error).toStartWith('There\'s no tool "observers--kill", so nothing ran. The observers utilities are observers--get, observers--grant and observers--revoke,');
   });
 });

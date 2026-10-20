@@ -19,9 +19,10 @@
  */
 
 import type { AgentFramework } from '@animalabs/agent-framework';
-import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
+import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
 import type { Recipe } from '../recipe.js';
+import { anthropicXmlFormatter, xmlToolsInSystem } from '../recipe-formatter.js';
 import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
@@ -869,7 +870,8 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     // Health reads never throw.
   }
   // Compression DEBT per agent — the single-authority reduction from cm
-  // (healthy / degraded / critical + the numbers behind it). Every wedge of
+  // (healthy / degraded / critical, or unknown when it couldn't read what it
+  // reports, + the numbers behind it). Every wedge of
   // the 2026-08-06 five-resident day was weeks of silently-failing
   // compression surfacing as a sudden budget crisis; this block is what
   // lets fleet-watch (and later the resident notice, af #99) catch the
@@ -1213,12 +1215,14 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
 
   // Count through the formatter the agent's recipe names: an anthropic-xml
   // agent's count takes the XML scaffold, prefill or not; everyone else the
-  // native shape.
+  // native shape. The host's one Membrane decides where an XML agent's tools
+  // go from the recipe's primary agent and its model, for every agent it runs,
+  // so the count asks the same.
   const xml = app.recipe.agent.formatter === 'anthropic-xml';
   const payload = buildCountTokensPayload(
     request as unknown as CountablePreview,
     agentName,
-    xml ? new AnthropicXmlFormatter({ toolMode: 'xml' }) : new NativeFormatter(),
+    xml ? anthropicXmlFormatter({ toolsInSystem: xmlToolsInSystem(app.recipe, requireAgent(app, resolveAgent(app)).model) }) : new NativeFormatter(),
     xml ? 'xml' : 'native',
   );
   // What the provider actually billed for the last call (fresh + cache read +

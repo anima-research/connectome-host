@@ -11,9 +11,10 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { connect as netConnect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -61,18 +62,6 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
 
-async function connectSocket(path: string, timeoutMs = 3_000): Promise<Socket> {
-  return new Promise((resolveConn, rejectConn) => {
-    const s = netConnect(path);
-    const timer = setTimeout(() => {
-      s.destroy();
-      rejectConn(new Error(`socket connect timeout: ${path}`));
-    }, timeoutMs);
-    s.once('connect', () => { clearTimeout(timer); resolveConn(s); });
-    s.once('error', (err) => { clearTimeout(timer); rejectConn(err); });
-  });
-}
-
 describe('headless daemon — describe / snapshot', () => {
   let tmpDir: string;
   let recipePath: string;
@@ -108,7 +97,7 @@ describe('headless daemon — describe / snapshot', () => {
   });
 
   test('describe returns a snapshot with the seeded framework agent', async () => {
-    const sock = await connectSocket(socketPath);
+    const sock = await connectWhenAccepting(socketPath);
     const r = lineReader(sock);
 
     await waitFor(
@@ -147,7 +136,7 @@ describe('headless daemon — describe / snapshot', () => {
   });
 
   test('snapshot bypasses subscription filter', async () => {
-    const sock = await connectSocket(socketPath);
+    const sock = await connectWhenAccepting(socketPath);
     const r = lineReader(sock);
 
     await waitFor(
@@ -175,7 +164,7 @@ describe('headless daemon — describe / snapshot', () => {
 
   test('cleanup', async () => {
     // Final shutdown so afterAll doesn't have to SIGKILL.
-    const sock = await connectSocket(socketPath);
+    const sock = await connectWhenAccepting(socketPath);
     sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
     await new Promise((r) => setTimeout(r, 500));
     sock.destroy();

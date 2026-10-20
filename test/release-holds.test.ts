@@ -1,13 +1,13 @@
 // This repository's wiring of scripts/release-holds.mjs, a copy of
 // agent-framework's, whose own suite tests the check itself (see the
 // script's header). Each case runs npm or bun with this repository's
-// preversion and prepublishOnly entries against a local stand-in for
-// GitHub's issues endpoint, or runs the script with this repository's own
-// package.json, so the hooks that make a release stop, and the repository
-// they ask, are tested here.
+// preversion, prepublishOnly and prepack entries against a local stand-in
+// for GitHub's issues endpoint, or runs the script with this repository's
+// own package.json, so the hooks that make a release stop, and the
+// repository they ask, are tested here.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,7 +18,10 @@ import { fileURLToPath } from "node:url";
 const SCRIPT = fileURLToPath(
   new URL("../scripts/release-holds.mjs", import.meta.url),
 );
+const PACK_CONTENTS = fileURLToPath(new URL("../scripts/pack-contents.mjs", import.meta.url));
 const PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
+// preversion runs the bump check before the hold check.
+const BUMP = fileURLToPath(new URL("../scripts/release-bump.mjs", import.meta.url));
 
 interface Seen {
   url: string;
@@ -89,17 +92,23 @@ function exec(
 // Under node, not the test runner's bun: npm runs it with node.
 const run = (cwd: string, env: Record<string, string>) => exec("node", [SCRIPT], cwd, env);
 
-/** A throwaway package whose preversion and prepublishOnly are this
- *  repository's own, with the script beside it. */
+/** A throwaway package whose preversion, prepublishOnly and prepack are this
+ *  repository's own, with their scripts beside them, in a git checkout with
+ *  the built Web UI that prepack requires. */
 function wiredProject(): string {
   const scripts = (JSON.parse(readFileSync(PACKAGE_JSON, "utf8")) as { scripts: Record<string, string> }).scripts;
   const dir = project({
     ...PKG,
-    scripts: { preversion: scripts.preversion, prepublishOnly: scripts.prepublishOnly },
+    scripts: { preversion: scripts.preversion, prepublishOnly: scripts.prepublishOnly, prepack: scripts.prepack },
   });
   mkdirSync(join(dir, "scripts"));
   copyFileSync(SCRIPT, join(dir, "scripts", "release-holds.mjs"));
+  copyFileSync(BUMP, join(dir, "scripts", "release-bump.mjs"));
+  copyFileSync(PACK_CONTENTS, join(dir, "scripts", "pack-contents.mjs"));
   writeFileSync(join(dir, ".npmrc"), "");
+  mkdirSync(join(dir, "dist", "web"), { recursive: true });
+  writeFileSync(join(dir, "dist", "web", "index.html"), "");
+  execFileSync("git", ["init", "-q"], { cwd: dir });
   return dir;
 }
 

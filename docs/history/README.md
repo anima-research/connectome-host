@@ -83,8 +83,9 @@ parent attached at all. The live protocol reference is now
 [`../fleet-protocol.md`](../fleet-protocol.md). Where the code departs from
 the plan:
 
-- stdout is not the JSONL channel — stdout and stderr go to `headless.log`,
-  and the socket is the only protocol channel.
+- stdout is not the JSONL channel — the socket is the only protocol
+  channel, and [`../fleet-protocol.md`](../fleet-protocol.md) §1 says where a
+  child's output goes.
 - `lifecycle:ready` is sent on every connection, before the parent subscribes;
   `graceful: false` shuts down the same way as `true`, and neither waits for
   in-flight inference.

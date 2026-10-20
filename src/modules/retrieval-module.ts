@@ -453,12 +453,16 @@ export class RetrievalModule implements Module {
   private getRecentContext(): RecentRetrievalContext | null {
     if (!this.ctx) return null;
 
-    // Get the last few messages from the conversation.
+    // Get the last few messages from the conversation. A row marked
+    // `held: true` is a write the framework still holds: it reaches the agent
+    // at a later boundary, not in the request these lessons go into, so the
+    // window keeps to stored rows.
     const { messages } = this.ctx.queryMessages({});
-    if (messages.length === 0) return null;
+    const stored = messages.filter(m => (m as unknown as { held?: unknown }).held !== true);
+    if (stored.length === 0) return null;
 
-    // Take the last 10 messages for context.
-    const recent = messages.slice(-10);
+    // Take the last 10 stored messages for context.
+    const recent = stored.slice(-10);
     const text = recent
       .map(m => {
         const messageText = m.content

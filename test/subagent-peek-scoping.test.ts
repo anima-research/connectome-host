@@ -47,7 +47,7 @@ interface FakeLiveState {
  * child-b = 'fw-b', grandchild-a1 = 'fw-a1', peer = 'fw-peer'.
  */
 function makeTree(): SubagentModule {
-  const mod = new SubagentModule();
+  const mod = new SubagentModule({ provider: 'mock' });
   const privateView = mod as unknown as {
     liveSubagents: Map<string, FakeLiveState>;
     frameworkNameIndex: Map<string, string>;
@@ -129,7 +129,11 @@ describe('SubagentModule peek + HUD descendant scoping (P3 #8)', () => {
     // descendant of child-a). Should return "no such subagent" from
     // child-a's perspective.
     const result = await callerView.handlePeek({ name: 'peer' }, 'fw-a');
-    expect(result.data).toEqual({ message: "No running subagent named 'peer'" });
+    expect(result.data).toEqual({
+      message: "No subagent of yours named 'peer' is running now. It may have finished (an async subagent's result arrives as a " +
+        'message), or not have started yet, such as while it waits for a concurrency slot. subagent--peek with no name lists ' +
+        'the ones running now.',
+    });
   });
 
   test('peek(name) on a descendant works as before', async () => {

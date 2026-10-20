@@ -22,7 +22,8 @@
  * Episode semantics (not time debounce): an episode opens on the first
  * qualifying alert and holds every kind active since; a kind leaves on its
  * `-clear` alert — or, for framework kinds that have no clear (`hard-down`,
- * refusals), on the agent's next completed inference — and the episode closes
+ * refusals), on the agent's next turn that completes or that a tool ends
+ * (skip_reply, sleep) — and the episode closes
  * when no kind remains, so a lesser alert landing mid-outage neither mutes the
  * outage nor, on its own clear, announces a false recovery. One notice
  * per (episode, channel); a channel is told again only when the announced end
@@ -54,6 +55,7 @@ import type {
   TraceEvent,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { addressedPush } from './addressed-push.js';
 
 export type NoticeTier = 'silent' | 'status' | 'reply';
 
@@ -110,8 +112,9 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'refusal': 'silent',
 });
 
-/** Framework kinds with no `-clear` producer: a completed inference by the
- *  agent is the recovery signal. Everything else waits for its clear. */
+/** Framework kinds with no `-clear` producer: the agent's next turn that
+ *  completes, or that a tool ends, is the recovery signal, since the model
+ *  answered either way. Everything else waits for its clear. */
 const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
@@ -398,6 +401,10 @@ export class NoticesModule implements Module {
     if (event.type === 'mcpl:channel-incoming') {
       const e = event as unknown as { channelId: string };
       await this.replyIfDown(e.channelId);
+    } else {
+      // A person's mention in a closed channel, reply or first DM arrives as a push.
+      const pushed = addressedPush(event);
+      if (pushed) await this.replyIfDown(pushed.channelId);
     }
     return {};
   }
@@ -416,6 +423,11 @@ export class NoticesModule implements Module {
         if (!mine) return;
         this.currentWake = typeof event.channelId === 'string' ? event.channelId : undefined;
         return;
+      case 'inference:aborted':
+        // An aborted turn hasn't failed: no channel is told it died.
+        if (!mine) return;
+        this.currentWake = undefined;
+        return;
       case 'inference:exhausted':
         if (!mine) return;
         if (this.currentWake) {
@@ -426,6 +438,7 @@ export class NoticesModule implements Module {
         }
         return;
       case 'inference:completed':
+      case 'inference:turn_ended':
         if (!mine) return;
         this.failedWake = undefined;
         {
@@ -611,7 +624,8 @@ export class NoticesModule implements Module {
 
   // --------------------------------------------------------------- replies
 
-  /** Incoming traffic on a channel while the agent is down: say so, once. */
+  /** Traffic on a channel while the agent is down (incoming traffic, or a
+   *  person's message addressed to it as a push): say so, once. */
   private async replyIfDown(channelId: string): Promise<void> {
     const ep = this.agentEpisode();
     if (!ep || episodeTier(ep) !== 'reply') return;

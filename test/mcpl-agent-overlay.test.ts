@@ -12,6 +12,8 @@ import {
   readAgentOverlay,
   saveAgentOverlay,
   saveMcplServers,
+  readMcplServersFile,
+  loadMcplServers,
   applyAgentOverlay,
   resolveOverlayEntry,
   serverProvisions,
@@ -21,7 +23,10 @@ import {
   overlayEntryTombstones,
   overlayWarnings,
   hostVariableReferences,
+  loadMcplServers,
+  mergeRecipeServers,
   AGENT_DEPLOY_DENIED_CAPABILITIES,
+  OPERATOR_ONLY_OVERLAY_FIELDS,
   type AgentOverlayEntry,
 } from '../src/mcpl-config.js';
 
@@ -51,6 +56,44 @@ describe('readAgentOverlay / saveAgentOverlay', () => {
       saveAgentOverlay(path, entries);
       expect(readAgentOverlay(path)).toEqual(entries);
     });
+  });
+
+  // JSON.parse's own message names no file, and can quote the text (Bun
+  // names the token it didn't expect, V8 quotes a stretch), which can hold
+  // credentials: the boot, the operator's /mcp commands and mcpl_list
+  // showed it. A root of null threw a TypeError naming nothing.
+  test("the operator's servers file that isn't JSON, or holds null, is named and never quoted, at the boot and in an edit", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.json');
+      writeFileSync(path, '{ "mcplServers": { "chat": { "env": { "TOKEN": s3cret } } } }');
+      for (const read of [readMcplServersFile, loadMcplServers]) {
+        expect(() => read(path)).toThrow(`${path} isn't valid JSON`);
+        try { read(path); } catch (error) {
+          // Still a SyntaxError, the class a bug report names.
+          expect(error).toBeInstanceOf(SyntaxError);
+          expect(String(error)).not.toContain('s3cret');
+        }
+      }
+      writeFileSync(path, 'null');
+      for (const read of [readMcplServersFile, loadMcplServers]) {
+        expect(() => read(path)).toThrow(`${path} holds null, not an object with mcplServers`);
+        // A TypeError, as main threw for it, unnamed.
+        expect(() => read(path)).toThrow(TypeError);
+      }
+    });
+  });
+
+  // Each check of the strict reading joins the others, so a regression to
+  // stopping at the first problem fails here.
+  test('the strict reading names every problem of an entry at once, a list read for an empty name whatever else it holds', () => {
+    expect(overlayEntryProblem(
+      { command: 5, transport: 'ws', args: 'x', env: { A: null }, enabledTools: [1, ''], reconnect: 'yes' },
+      { strict: true },
+    )).toBe(
+      "its command isn't text; its transport is neither stdio nor websocket; its args aren't a list of text; its env A " +
+      "isn't text, a finite number or true/false; its enabledTools isn't a list of names; its enabledTools holds an empty name, " +
+      'which matches nothing; its reconnect is neither true nor false',
+    );
   });
 
   // Both servers files keep the root's other keys on a save; a root that
@@ -200,6 +243,18 @@ describe('resolveOverlayEntry', () => {
     expect(r).not.toBeNull();
     expect('enabledCapabilities' in (r as object)).toBe(false);
   });
+
+  test("every operator-only field is dropped, allowHostCommands among them: the agent's file narrows, never widens", () => {
+    const r = resolveOverlayEntry('e', {
+      command: 'node', allowHostCommands: true, inheritEnv: true,
+      enabledCapabilities: ['contextHooks.beforeInference.inject.system'], toolLifecycle: { observe: ['*'] },
+    } as never, '/tmp/o.json');
+    expect(r).not.toBeNull();
+    // By name, so a field taken off the list fails here.
+    for (const k of ['allowHostCommands', 'inheritEnv', 'enabledCapabilities', 'toolLifecycle']) {
+      expect({ k, kept: k in (r as object) }).toEqual({ k, kept: false });
+    }
+  });
 });
 
 // An overlay entry replaces the operator's definition whole: its env is
@@ -218,10 +273,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
   test('serverProvisions keeps names, never values', () => {
     const p = serverProvisions({ ...shell, token: 'tok', access: ' eidoverse ', inheritEnv: true });
     // The operator's grant as the boot dials it, untrimmed.
-    expect(p).toEqual({ env: ['SESSION_SERVER_PORT', 'SESSION_SERVER_TOKEN'], token: true, access: ' eidoverse ', inheritEnv: true });
+    expect(p).toEqual({ env: ['SESSION_SERVER_PORT', 'SESSION_SERVER_TOKEN'], token: true, access: ' eidoverse ', inheritEnv: true, grants: [] });
     expect(JSON.stringify(p)).not.toContain('s3cret-token');
     expect(JSON.stringify(p)).not.toContain('tok"');
-    expect(serverProvisions({ id: 'x', command: 'node', token: '', access: '' })).toEqual({ env: [], token: false, access: null, inheritEnv: false });
+    expect(serverProvisions({ id: 'x', command: 'node', token: '', access: '' })).toEqual({ env: [], token: false, access: null, inheritEnv: false, grants: [] });
   });
 
   test('a command replacement lacks the env names it does not declare, and always the inherited host environment', () => {
@@ -233,6 +288,48 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     // Declaring a name carries it, whatever its value.
     expect(lostByReplacement(serverProvisions(shell), { command: 'node', env: { SESSION_SERVER_PORT: '1', SESSION_SERVER_TOKEN: '' } }))
       .toBeNull();
+  });
+
+  test("any replacement lacks the operator's other grants, which no overlay entry can carry", () => {
+    const operator = serverProvisions({
+      id: 's', command: 'node', inheritEnv: true,
+      enabledCapabilities: ['contextHooks'], toolLifecycle: { observe: {} }, allowHostCommands: true,
+    });
+    expect(operator.grants).toEqual(['enabledCapabilities', 'toolLifecycle', 'allowHostCommands']);
+    const grants = 'enabled capabilities (enabledCapabilities); tool lifecycle (toolLifecycle); host commands (allowHostCommands)';
+    expect(lostByReplacement(operator, { command: 'node', allowHostCommands: true } as never))
+      .toBe(`inherited host environment (inheritEnv); ${grants}`);
+    expect(lostByReplacement(operator, { url: 'wss://w/mcpl' })).toBe(grants);
+    // A definition whose grants are off grants nothing to lose.
+    expect(serverProvisions({ id: 's', command: 'node', allowHostCommands: false, toolLifecycle: null }).grants).toEqual([]);
+    expect(lostByReplacement(serverProvisions({ id: 's', command: 'node', allowHostCommands: false }), { command: 'node' })).toBeNull();
+    // An empty capabilities list is a mask that lets nothing through, which
+    // a replacement lacks.
+    expect(serverProvisions({ id: 's', command: 'node', enabledCapabilities: [] }).grants).toEqual(['enabledCapabilities']);
+    expect(lostByReplacement(serverProvisions({ id: 's', command: 'node', enabledCapabilities: [] }), { command: 'node' }))
+      .toBe('enabled capabilities (enabledCapabilities)');
+  });
+
+  test("a definition's setting counts only as agent-framework 0.22.3 would read it", () => {
+    const grants = (fields: Record<string, unknown>) => serverProvisions({ id: 's', command: 'node', ...fields }).grants;
+    // Host commands only for true; capabilities for any list, a mask even
+    // when empty; tool lifecycle for an observe or inputs policy object.
+    expect(grants({ allowHostCommands: true })).toEqual(['allowHostCommands']);
+    expect(grants({ enabledCapabilities: ['contextHooks'] })).toEqual(['enabledCapabilities']);
+    expect(grants({ enabledCapabilities: [] })).toEqual(['enabledCapabilities']);
+    expect(grants({ toolLifecycle: { observe: {} } })).toEqual(['toolLifecycle']);
+    expect(grants({ toolLifecycle: { inputs: {} } })).toEqual(['toolLifecycle']);
+    // Values the framework grants nothing from, or can't read (a
+    // capabilities value that isn't a list): no setting a replacement lacks.
+    for (const fields of [
+      { allowHostCommands: 'true' }, { allowHostCommands: 1 }, { allowHostCommands: {} },
+      { enabledCapabilities: 'contextHooks' }, { enabledCapabilities: {} },
+      { toolLifecycle: {} }, { toolLifecycle: { maxInputBytes: 100 } }, { toolLifecycle: { observe: true } }, { toolLifecycle: [] },
+      { toolLifecycle: { observe: [] } }, { toolLifecycle: { inputs: [] } },
+    ]) {
+      expect({ fields, grants: grants(fields) }).toEqual({ fields, grants: [] });
+      expect(lostByReplacement(serverProvisions({ id: 's', command: 'node', ...fields }), { command: 'node' })).toBeNull();
+    }
   });
 
   test('a URL replacement lacks a token and an access grant, and env does not reach it', () => {
@@ -416,7 +513,6 @@ describe('what an overlay replacement lacks of the operator definition', () => {
         disabledBlank: { command: 'node', disabled: '' },
         numberAccess: { url: 'wss://w/mcpl', access: 5, token: 7 },
         numberCommand: { command: 5 },
-        reconnectNull: { url: 'wss://w/mcpl', reconnect: null },
         blankTools: { command: 'node', enabledTools: '' },
         wsNoUrl: { command: 'node', transport: 'websocket' },
       };
@@ -430,9 +526,6 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       }
       // A falsy disabled loads the entry, as main's resolveOverlayEntry read it.
       expect('disabled' in loaded.get('disabledZero')!).toBe(false);
-      // reconnect: null stays off, as the framework read it on main: the
-      // default is for an entry that says nothing.
-      expect(loaded.get('reconnectNull')!.reconnect).toBeNull();
       // A blank list passes on blank, which the framework reads as no restriction.
       expect(loaded.get('blankTools')!.enabledTools).toBe('');
       // Only the entry the framework can't open is named, though it loads as
@@ -491,14 +584,25 @@ describe('what an overlay replacement lacks of the operator definition', () => {
 
   test('a new write is held to the plain shapes the boot reads leniently (strict)', () => {
     for (const [entry, problem] of [
-      [{ command: 'node', env: { A: null } }, "its env A isn't text, a number or true/false"],
-      [{ command: 'node', env: { A: ['x'], B: {} } }, "its env A, B aren't text, a number or true/false"],
+      [{ command: 'node', env: { A: null } }, "its env A isn't text, a finite number or true/false"],
+      [{ command: 'node', env: { A: ['x'], B: {} } }, "its env A, B aren't text, a finite number or true/false"],
       [{ transport: 'ws', url: 'wss://w/mcpl' }, 'its transport is neither stdio nor websocket'],
       [{ command: 'node', toolPrefix: 5 }, "its toolPrefix isn't text"],
     ] as const) {
       expect(overlayEntryProblem(entry, { strict: true })).toBe(problem);
       expect(overlayEntryProblem(entry)).toBeNull();
     }
+  });
+
+  // A number JSON can't write (a file's 1e400 parses as Infinity) is refused
+  // for a new write, which would save null in its place, while the boot reads
+  // args as main did: every number as its text.
+  test('a number JSON can\'t write is refused for a new write, and read as its text in the boot\'s args', () => {
+    expect(overlayEntryProblem({ command: 'node', env: { BIG: Infinity } }, { strict: true }))
+      .toBe("its env BIG isn't text, a finite number or true/false");
+    expect(overlayEntryProblem({ command: 'node', args: ['--size', 1e400] })).toBeNull();
+    expect(resolveOverlayEntry('big', { command: 'node', args: ['--size', 1e400] } as AgentOverlayEntry, '/o.json')?.args)
+      .toEqual(['--size', 'Infinity']);
   });
 
   // A wrong kind is refused for a new write, and the boot passes it on as
@@ -531,7 +635,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
   });
 
   test('an entry naming nothing is skipped, and one the framework fails to open passes on, as on main', () => {
-    expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names nothing to run or dial');
+    expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names no command to run and no url to dial');
     // The framework logs the failed connect, and main loaded these the same way.
     expect(overlayEntryProblem({ transport: 'websocket', command: 'node' })).toBeNull();
     expect(overlayEntryProblem({ transport: 'stdio', url: 'wss://w/mcpl' })).toBeNull();
@@ -569,10 +673,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');
       writeFileSync(path, JSON.stringify({ mcplServers: { shell: { toolPrefix: 'y' } } }));
-      expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names nothing to run or dial');
+      expect(overlayEntryProblem({ toolPrefix: 'y' })).toBe('it names no command to run and no url to dial');
       expect(applyAgentOverlay([shell], path)).toEqual([shell]);
       expect(overlayWarnings([shell], path)).toEqual([
-        `[mcpl] server "shell": the agent overlay (${path}) entry is malformed (it names nothing to run or dial), so the boot skips it and the operator's definition loads`,
+        `[mcpl] server "shell": the agent overlay (${path}) entry is malformed (it names no command to run and no url to dial), so the boot skips it and the operator's definition loads`,
       ]);
     });
   });
@@ -699,6 +803,135 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(overlayEntryReplaces({ url: 'wss://x' })).toBe(true);
   });
 
+  test("an operator-only field an entry sets is left out and named at startup, with where the operator grants it", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: {
+        hostCommands: { command: 'node', allowHostCommands: true },
+        env: { command: 'node', inheritEnv: true },
+        caps: { command: 'node', enabledCapabilities: ['channels'] },
+        lifecycle: { command: 'node', toolLifecycle: { observe: {} } },
+        // Set to something, though the framework would take no grant from it.
+        oddText: { command: 'node', allowHostCommands: 'false' },
+        // A mask that lets nothing through, which leaving out widens.
+        emptyMask: { command: 'node', enabledCapabilities: [] },
+        setsNothing: { command: 'node', allowHostCommands: false, inheritEnv: false },
+        setsNothingEither: { command: 'node', allowHostCommands: null, inheritEnv: 0, enabledCapabilities: '', toolLifecycle: null },
+      } }));
+      const loaded = applyAgentOverlay([], path) as Array<Record<string, unknown>>;
+      expect(loaded.map((s) => s.id)).toEqual(['hostCommands', 'env', 'caps', 'lifecycle', 'oddText', 'emptyMask', 'setsNothing', 'setsNothingEither']);
+      for (const server of loaded) {
+        expect(['allowHostCommands', 'inheritEnv', 'enabledCapabilities', 'toolLifecycle'].filter((k) => k in server)).toEqual([]);
+      }
+      const named = (id: string, k: string, home: string) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but its ${k} is left out, since only the operator's config grants that: set it in ${home}` +
+        (k === 'enabledCapabilities' ? '; to narrow what the server may advertise, list what to deny in its disabledCapabilities' : '');
+      const fileOrRecipe = 'mcpl-servers.json for a server the recipe names, or the recipe';
+      const recipeOwn = "a server the recipe defines itself, with its own command or url and an id mcpl-servers.json doesn't define";
+      expect(overlayWarnings([], path)).toEqual([
+        named('hostCommands', 'allowHostCommands', recipeOwn), named('env', 'inheritEnv', fileOrRecipe),
+        named('caps', 'enabledCapabilities', recipeOwn), named('lifecycle', 'toolLifecycle', fileOrRecipe),
+        named('oddText', 'allowHostCommands', recipeOwn), named('emptyMask', 'enabledCapabilities', recipeOwn),
+      ]);
+    });
+  });
+
+  test("an entry that replaces the operator's server says at startup that it lacks the operator's grant", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: { hc: { command: 'other', allowHostCommands: true } } }));
+      const operator = [{ id: 'hc', command: 'node', allowHostCommands: true }];
+      expect(overlayWarnings(operator, path)).toEqual([
+        `[mcpl] server "hc": the agent overlay (${path}) entry loads, but its allowHostCommands is left out, since only the operator's config grants that: set it in a server the recipe defines itself, with its own command or url and an id mcpl-servers.json doesn't define`,
+        `[mcpl] server "hc": the agent overlay (${path}) replaces the operator's definition and lacks its host commands (allowHostCommands), so the server runs without the operator's values for them`,
+      ]);
+      const loaded = applyAgentOverlay(operator, path) as Array<Record<string, unknown>>;
+      expect(loaded).toEqual([expect.objectContaining({ id: 'hc', command: 'other' })]);
+      expect('allowHostCommands' in loaded[0]!).toBe(false);
+    });
+  });
+
+  test("each operator-only field's named home passes it to the boot's servers, and only that home", () => {
+    const grant: Record<string, unknown> = {
+      inheritEnv: true, toolLifecycle: { observe: {} }, enabledCapabilities: ['contextHooks'], allowHostCommands: true,
+    };
+    const routes: Record<string, Record<string, boolean>> = {};
+    for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) {
+      withTmp((dir) => {
+        // Whether the boot's one server carries the field as set, from the
+        // recipe's servers and mcpl-servers.json as index.ts merges them.
+        const reaches = (recipe: Record<string, Record<string, unknown>>, file?: Record<string, unknown>) => {
+          const filePath = join(dir, `mcpl-servers-${k}.json`);
+          writeFileSync(filePath, JSON.stringify({ mcplServers: file ? { s: file } : {} }));
+          const servers = applyAgentOverlay(mergeRecipeServers(recipe, loadMcplServers(filePath)), join(dir, 'none.json')) as Array<Record<string, unknown>>;
+          return servers.length === 1 && JSON.stringify(servers[0]![k]) === JSON.stringify(grant[k]);
+        };
+        routes[k] = {
+          // The file, for a server the recipe names, and for one it doesn't.
+          fileNamed: reaches({ s: {} }, { command: 'node', [k]: grant[k] }),
+          fileUnnamed: reaches({}, { command: 'node', [k]: grant[k] }),
+          // The recipe's override of a server from the file.
+          override: reaches({ s: { [k]: grant[k] } }, { command: 'node' }),
+          // A server the recipe defines itself, with its own command or url,
+          // under an id the file doesn't define, and under one it does.
+          ownNewId: reaches({ s: { command: 'node', [k]: grant[k] } }),
+          ownNewIdUrl: reaches({ s: { url: 'wss://s.example/mcpl', [k]: grant[k] } }),
+          ownFileId: reaches({ s: { command: 'other', [k]: grant[k] } }, { command: 'node' }),
+        };
+        const overlay = join(dir, `agent-${k}.json`);
+        writeFileSync(overlay, JSON.stringify({ mcplServers: { e: { command: 'node', [k]: grant[k] } } }));
+        const [line] = overlayWarnings([], overlay);
+        // enabledCapabilities' note also names the narrowing an overlay keeps.
+        const narrow = k === 'enabledCapabilities' ? '; to narrow what the server may advertise, list what to deny in its disabledCapabilities' : '';
+        expect({ k, line }).toEqual({ k, line: expect.stringMatching(routes[k]!.fileNamed
+          ? /: set it in mcpl-servers\.json for a server the recipe names, or the recipe$/
+          : new RegExp(`: set it in a server the recipe defines itself, with its own command or url and an id mcpl-servers\\.json doesn't define${narrow}$`)) });
+      });
+    }
+    // As the code stands: inheritEnv and toolLifecycle reach the boot from the
+    // file for a server the recipe names, from an override, and from the
+    // recipe's own server; the other two only from the recipe's own server
+    // under an id the file doesn't define. No file server the recipe leaves
+    // unnamed loads at all.
+    const passOn = { fileNamed: true, fileUnnamed: false, override: true, ownNewId: true, ownNewIdUrl: true, ownFileId: true };
+    const recipeOwnOnly = { fileNamed: false, fileUnnamed: false, override: false, ownNewId: true, ownNewIdUrl: true, ownFileId: false };
+    expect(routes).toEqual({
+      enabledCapabilities: recipeOwnOnly, toolLifecycle: passOn, inheritEnv: passOn, allowHostCommands: recipeOwnOnly,
+    });
+  });
+
+  test("a reconnect that isn't true or false reads by its truth, as main read it, except the text \"false\", each named; null is off, unnamed", () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      writeFileSync(path, JSON.stringify({ mcplServers: {
+        // agent-framework 0.22.3 refuses all but true, false and null, so the
+        // framework is handed true or false. Each entry keeps the retrying it
+        // had on main, except "false", which main's truth turned on. The note
+        // says what to write.
+        text: { url: 'wss://a/mcpl', reconnect: 'true' },
+        textFalse: { url: 'wss://g/mcpl', reconnect: 'false' },
+        capitalFalse: { url: 'wss://h/mcpl', reconnect: ' False ' },
+        one: { url: 'wss://b/mcpl', reconnect: 1 },
+        empty: { url: 'wss://c/mcpl', reconnect: '' },
+        zero: { url: 'wss://d/mcpl', reconnect: 0 },
+        command: { command: 'node', reconnect: 'yes' },
+        off: { url: 'wss://e/mcpl', reconnect: null },
+        on: { url: 'wss://f/mcpl', reconnect: true },
+      } }));
+      const loaded = applyAgentOverlay([], path) as Array<Record<string, unknown>>;
+      // Every entry loads, and each is handed a boolean.
+      expect(loaded.map((s) => s.id)).toEqual(['text', 'textFalse', 'capitalFalse', 'one', 'empty', 'zero', 'command', 'off', 'on']);
+      expect(Object.fromEntries(loaded.map((s) => [s.id, s.reconnect]))).toStrictEqual({
+        text: true, textFalse: false, capitalFalse: false, one: true, empty: false, zero: false, command: true, off: false, on: true,
+      });
+      const note = (id: string, read: boolean) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but its reconnect isn't true or false, so it's read as ${read}: write true or false, without quotes`;
+      expect(overlayWarnings([], path)).toEqual([
+        note('text', true), note('textFalse', false), note('capitalFalse', false), note('one', true), note('empty', false), note('zero', false), note('command', true),
+      ]);
+    });
+  });
+
   test('the startup warnings name each replacement that lacks something, and each host-variable reference', () => {
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');
@@ -725,9 +958,9 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
-  // The receipt says an overlay entry can't name host variables, but the
-  // likeliest next move is to write one anyway: `${VAR}` there reaches the
-  // child as literal text, so it supplies nothing.
+  // The receipt says naming a host variable in an overlay entry wouldn't fill
+  // it in, and the likeliest next move is to write one anyway: `${VAR}` there
+  // reaches the child as literal text, so it supplies nothing.
   test('a value that names a host variable supplies nothing, and is named, never shown', () => {
     expect(lostByReplacement(serverProvisions(shell), {
       command: 'node',

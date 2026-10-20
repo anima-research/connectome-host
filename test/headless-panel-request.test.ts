@@ -12,9 +12,10 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { connect as netConnect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -62,18 +63,6 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
 
-async function connectSocket(path: string, timeoutMs = 3_000): Promise<Socket> {
-  return new Promise((resolveConn, rejectConn) => {
-    const s = netConnect(path);
-    const timer = setTimeout(() => {
-      s.destroy();
-      rejectConn(new Error(`socket connect timeout: ${path}`));
-    }, timeoutMs);
-    s.once('connect', () => { clearTimeout(timer); resolveConn(s); });
-    s.once('error', (err) => { clearTimeout(timer); rejectConn(err); });
-  });
-}
-
 describe('headless daemon — panel-request / panel-response', () => {
   let tmpDir: string;
   let socketPath: string;
@@ -115,7 +104,7 @@ describe('headless daemon — panel-request / panel-response', () => {
     );
 
     await waitFor(() => existsSync(socketPath), 15_000, 'socket file appears');
-    sock = await connectSocket(socketPath);
+    sock = await connectWhenAccepting(socketPath);
     reader = lineReader(sock);
     await waitFor(
       () => reader.events.some((e) => e.type === 'lifecycle' && (e as { phase?: string }).phase === 'ready'),

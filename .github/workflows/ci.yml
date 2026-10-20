@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build & Test (${{ matrix.os }})
+    name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node }}, Bun ${{ matrix.bun }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,8 +21,20 @@ jobs:
       # installs and vice versa. Each runner catches the lock the other's
       # platform produced. macOS runs the install+build lock guard only;
       # the full test suite runs on ubuntu.
+      #
+      # Runtimes: the oldest Node and Bun that package.json's engines admit,
+      # pinned exactly; the newest of each; and on Linux, Node 24 between
+      # them, the maintained line between the floor's major and the newest's.
+      # Each Node line ships its own built-in fetch. Bun has published no
+      # release to an older minor after a newer one, so its floor is its
+      # newest release when the floor was set. macOS runs the two ends.
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { os: ubuntu-latest, node: '22.12.0', bun: '1.4.3' }
+          - { os: ubuntu-latest, node: '24', bun: latest }
+          - { os: ubuntu-latest, node: latest, bun: latest }
+          - { os: macos-latest, node: '22.12.0', bun: '1.4.3' }
+          - { os: macos-latest, node: latest, bun: latest }
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -32,12 +44,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ matrix.bun }}
 
       # npm ci, the root's lockfile guard on each platform, as the web step
       # below is the web app's: it never rewrites package-lock.json, and
@@ -64,19 +76,68 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: npm test
 
-  # The release as npm would pack it, installed on its own and run, as the
-  # publish workflow checks before it publishes (see
-  # scripts/pack-installs-alone.mjs): a change that leaves a file out of the
-  # package, or imports what only devDependencies supply, fails before it
-  # merges, not after a tag and its release notes are out. Its own job,
-  # with contents: read only, since the install runs install scripts. That
-  # install resolves dependencies from the registry as it stands, not from
-  # this branch's lockfile, so a new upstream release can turn it red on a
-  # change that touched nothing it installs: when it fails, rerunning it on
-  # main tells a change's own break from the registry's drift.
+  # The types of the host's source and of the web app. Nothing else here
+  # checks them: bun runs the host's TypeScript without checking its types,
+  # and the web build is `vite build`, which doesn't either, so a type
+  # error, such as a name in a typed list of recipe keys that's no longer a
+  # key, would reach main unseen. The root's tsconfig includes src/ alone,
+  # so test/ and scripts/ aren't checked. Its isolatedModules has the host's
+  # check also reject what bun can't transpile one module at a time: a
+  # type-only name re-exported without `export type`, for one, passes the
+  # rest of the check and fails when bun loads the module. The web app's
+  # program also checks the host modules it imports from src/web/ and
+  # src/state/, and the ones those import in turn, with Node's types but not
+  # Bun's: Bun's globals or bun: modules used in one of those fail the web
+  # step while the host step passes. Types don't depend on the runtime, so
+  # one job at the Node floor does it.
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.12.0'
+
+      # Install scripts aren't needed to check types: the root's postinstall
+      # builds the web app, which the build-and-test job does in a step of
+      # its own. The root's install comes first: the web app's program takes
+      # Node's types, and what the host files it checks import, from the
+      # root's node_modules.
+      - name: Install dependencies (strict lockfile)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix web --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck the host's source
+        run: npx tsc --noEmit
+
+      - name: Typecheck the web app
+        working-directory: web
+        run: npx tsc --noEmit
+
+  # The release as npm would pack it, the Web UI built into it, installed on
+  # its own and run, as the publish workflow checks before it publishes
+  # (see scripts/pack-installs-alone.mjs): a change that leaves a file out of
+  # the package, or imports what only devDependencies supply, fails before
+  # it merges, not after a tag and its release notes are out. Its own job,
+  # with contents: read only, since the Web UI's build runs its
+  # dependencies' install scripts. The install resolves dependencies from
+  # the registry as it stands, not from this branch's lockfile, so a new
+  # upstream release can turn it red on a change that touched nothing it
+  # installs: when it fails, rerunning it on main tells a change's own break
+  # from the registry's drift. Its limit is above the script's own, which
+  # add up to 73 minutes at most, so a hang outside them ends here, not at
+  # GitHub's 6 hours.
   pack-check:
     name: Packed release installs on its own
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -92,7 +153,10 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.3
+
+      - name: Build web assets
+        run: npm run build:web:ci
 
       - name: Packed release installs on its own
         run: node scripts/pack-installs-alone.mjs
@@ -119,7 +183,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.3
 
       # Frozen, bun refuses to install when package.json asks for anything
       # bun.lock doesn't pin. Install only: scripts off, and nothing is

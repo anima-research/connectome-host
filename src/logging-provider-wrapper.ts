@@ -16,9 +16,11 @@
 // llm-logs sync job's problem — this file just writes lines.
 //
 // OOM note (learned on the Anthropic path, which once logged raw+normalized+
-// summary and contributed to production OOMs): we serialize the record ONCE,
-// and a size guard drops the raw bodies for pathological payloads (giant
-// image batches) rather than buffering multi-hundred-MB lines.
+// summary and contributed to production OOMs): the shared size guard
+// (logging-record.ts) drops the raw bodies of pathological payloads (giant
+// image batches), so the line written stays bounded. It serializes the record
+// whole before it knows the line's size, so it bounds what's written, not
+// what's built in memory.
 //
 // Decorator safety: adapters whose complete() internally delegates to their
 // own stream() (codex does) self-call the INNER method, not the wrapper —
@@ -35,8 +37,8 @@
 // logging-error-fields.ts, which the Anthropic and Bedrock writers share: a
 // provider can echo the whole rejected request in its error body, and that
 // text would otherwise sit in the record beside the request it echoes. The
-// size guard below drops raw bodies, never the error string, so the error
-// string bounds itself.
+// shared size guard (logging-record.ts) drops raw bodies first and keeps the
+// error string as long as anything, so the error string bounds itself.
 //
 // Logging never changes what the caller gets: a successful call's record is
 // written after the provider call's try, and every write is guarded.
@@ -50,9 +52,7 @@ import type {
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
 import { describeError } from './logging-error-fields.js';
-
-/** Above this many serialized bytes, drop raw bodies and keep summaries. */
-const MAX_RECORD_BYTES = 16 * 1024 * 1024;
+import { serializeRecord } from './logging-record.js';
 
 function summarizeRequest(request: ProviderRequest): Record<string, unknown> {
   const msgs = (request.messages ?? []) as Array<{ role?: string; content?: unknown }>;
@@ -132,39 +132,16 @@ export class LoggingProviderAdapter implements ProviderAdapter {
   }
 
   /**
-   * Append one record. When it can't be serialized whole (a cycle or a
-   * BigInt in a raw body), or it's over the size guard, the raw bodies are
-   * dropped and the rest kept, so the error text survives either way.
+   * Append one record, serialized by the shared size guard
+   * (logging-record.ts): when it can't be serialized whole (a cycle or a
+   * BigInt in a raw body), or it's over the guard, it drops the raw request,
+   * keeping the raw response if the line then fits, then both raw bodies,
+   * then all but the head's values and the error's name and message, until
+   * the line fits, so the error text survives either way.
    */
   private log(record: Record<string, unknown>): void {
     try {
-      let line: string | undefined;
-      try {
-        line = JSON.stringify(record);
-      } catch {
-        line = undefined;
-      }
-      if (line === undefined || line.length > MAX_RECORD_BYTES) {
-        const { rawRequest: _rq, rawResponse: _rr, ...rest } = record;
-        try {
-          line = JSON.stringify({
-            ...rest,
-            truncated: line === undefined
-              ? 'raw bodies dropped (they could not be serialized)'
-              : 'raw bodies dropped (record exceeded size guard)',
-          });
-        } catch {
-          // Even the summaries can't be serialized (a BigInt in usage, say):
-          // keep the head and the error alone, so the call is never silent.
-          const keep = ['type', 'provider', 'kind', 'timestamp', 'durationMs', 'error', 'errorType',
-            'httpStatus', 'providerErrorCode', 'retryable', 'errorChars'];
-          line = JSON.stringify({
-            ...Object.fromEntries(keep.filter((k) => k in record).map((k) => [k, record[k]])),
-            truncated: 'only the head and the error kept (the record could not be serialized)',
-          });
-        }
-      }
-      appendFileSync(this.logPath, line + '\n');
+      appendFileSync(this.logPath, serializeRecord(record));
     } catch {
       // Logging must never break inference.
     }

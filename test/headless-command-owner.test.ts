@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -22,7 +23,7 @@ for (const mode of ['same-client', 'replacement', 'disconnect-and-reconnect'] as
     });
     const exited = () => child.exitCode !== null || child.signalCode !== null;
     const open = async () => {
-      const socket = connect(join(dir, 'ipc.sock'));
+      const socket = await connectWhenAccepting(join(dir, 'ipc.sock'));
       sockets.push(socket);
       const events: Array<Record<string, unknown>> = [];
       let buffer = '';
@@ -35,10 +36,6 @@ for (const mode of ['same-client', 'replacement', 'disconnect-and-reconnect'] as
           buffer = buffer.slice(index + 1);
           if (line.trim()) events.push(JSON.parse(line));
         }
-      });
-      await new Promise<void>((resolve, reject) => {
-        socket.once('connect', resolve);
-        socket.once('error', reject);
       });
       await until(() => events.some(event => event.type === 'lifecycle' && event.phase === 'ready'), 'ready');
       const send = (command: object) => socket.write(JSON.stringify(command) + '\n');

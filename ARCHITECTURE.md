@@ -72,7 +72,10 @@ three, and in practice is how headless residents are operated.
 
 1. **Resolve the recipe** — CLI path or URL, else the saved
    `$DATA_DIR/.recipe.json`, else the built-in default (a plain assistant
-   with the gate and workspace on). `--no-recipe` clears the saved one.
+   with the gate and workspace on). A saved recipe that's there but can't be
+   used stops startup, naming the file. `--no-recipe` clears the saved one,
+   a link included, unless a directory itself is there, which the operator
+   moves or removes.
 2. **Check credentials** for the recipe's provider, fail fast if missing.
 3. **Build cross-cutting services:** the settings module (read per call by
    the adapter), the `llm-calls.<iso>.jsonl` log path, the call ledger
@@ -119,9 +122,9 @@ A recipe is JSON; the full key set is typed and validated in
 - **Validation checks values, not spelling.** Bad values, impossible
   combinations (e.g. an instructions path on a mount that can't be written)
   and partial policies are rejected at load, naming the key. Unrecognized keys
-  are generally not rejected (a few blocks, such as `subconscious` and the
-  object form of `modules.history`, refuse unknown fields), so a misspelled
-  key is silently ignored.
+  are generally not rejected (a few blocks, such as `subconscious`, the
+  object form of `modules.history`, and `modules.workspace` and its mounts,
+  refuse unknown fields), so a misspelled key is silently ignored.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register
@@ -249,7 +252,8 @@ Framework features configured by top-level recipe keys rather than modules:
 - **Agent overlay.** `mcpl-servers.agent.json` holds servers the agent deployed
   for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
   suppress servers the agent unloaded. The overlay can never grant
-  `toolLifecycle` or `inheritEnv`.
+  `enabledCapabilities`, `toolLifecycle`, `inheritEnv` or
+  `allowHostCommands`: the boot leaves them out of every overlay entry.
 - **Child env.** Stdio servers get agent-framework's allowlist of host
   variables (`CHILD_ENV_ALLOWLIST`: path, home, locale, temp dirs, TLS CA and
   proxy settings), then the entry's `env` and the host's `AGENT_TIMEZONE`
@@ -318,8 +322,9 @@ surgery and still uses its own branch stacks.
 ## Failure handling and observability
 
 - **Wire logs** — `llm-calls.<iso>.jsonl` per process (request summaries,
-  usage, timing, errors; raw requests on errors, or always with
-  `LLM_CALLS_FULL_PAYLOADS=1`).
+  usage, timing, errors; raw requests on errors and refusals, or always with
+  `LLM_CALLS_FULL_PAYLOADS=1`, which alone keeps a cache-keepalive poke's,
+  each within the 16 MiB a line may take).
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,
   inference exhaustion, context refusals, GC closes: an `ops:alert` trace
   (shown as banners in both UIs), a record in `logs/failures.log`, and a
@@ -393,7 +398,8 @@ Claude Code transcripts are ingested by the procedure in
 ## Runtime and dependencies
 
 - **Bun** runs the host (OpenTUI's native core requires it; Bun also loads
-  `.env`). **Node/npm** builds the WebUI (`postinstall` / `bun run build:web`).
+  `.env`). **Node/npm** builds the WebUI in a checkout (`postinstall` /
+  `bun run build:web`); the npm package carries it built.
 - `@animalabs/agent-framework`, `context-manager`, `membrane` and
   `chronicle` come from npm; chronicle ships prebuilt native binaries, so no
   Rust toolchain is needed unless you build it from source. For working on the

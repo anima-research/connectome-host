@@ -6,12 +6,13 @@
  * A row of either kind whose agent is missing from the snapshot's `agents`
  * list is removed, whatever raised it: the agent was torn down (an ephemeral
  * subagent), and no later snapshot would clear the row. Rows of other kinds
- * are left to the page's own handlers for them. agent-framework 0.22.1 sends
+ * are left to the page's own handlers for them. agent-framework 0.22.3 sends
  * no `hard-down-clear`, so a hard-down row leaves only by a dismissal, for a
  * present agent and a departed one alike.
  */
 
 import type { HealthSnapshot } from './Health';
+import { quarantineHeld } from '@conhost/web/quarantine-alert';
 
 export interface HealthAlertUpsert {
   kind: string;
@@ -46,7 +47,7 @@ export function planHealthAlerts(
         plan.upsert.push({
           kind: QUARANTINE,
           agent,
-          message: `${q.count} chunk(s) in compression quarantine — spans stay raw and will eventually exhaust the context budget.`,
+          message: `${quarantineHeld(q)} — spans stay raw and will eventually exhaust the context budget.`,
         });
       }
     } else {

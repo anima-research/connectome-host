@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { cacheLineageKey } from '@animalabs/membrane';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
 import type { ModuleContext } from '@animalabs/agent-framework';
@@ -202,6 +203,40 @@ describe('LoggingAnthropicAdapter initial recipe effort', () => {
       expect((wire as { thinking?: unknown }).thinking).toBeUndefined();
     } finally {
       server.stop(true);
+    }
+  });
+});
+
+describe('LoggingAnthropicAdapter cache lineage', () => {
+  test("a stream call's row and its live ledger record name the wire request's cache lineage", async () => {
+    let wire: Record<string, unknown> | undefined;
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        wire = await request.json() as Record<string, unknown>;
+        return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'stream-lineage-'));
+    const seen: ProviderCallRecord[] = [];
+    try {
+      const adapter = new LoggingAnthropicAdapter(
+        { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } },
+        join(dir, 'llm-calls.test.jsonl'), undefined, (call) => { seen.push(call); },
+      );
+      // A system prompt and a tool, which the lineage key covers beside the model.
+      const request = { ...baseRequest, system: 'You are a fixture.', tools: [{ name: 'shell', description: 'run a command', inputSchema: { type: 'object', properties: {} } }] } as ProviderRequest;
+      await expect(adapter.stream(request, {})).rejects.toThrow(/local request fixture/);
+      expect(wire).toMatchObject({ tools: [{ name: 'shell' }] });
+      expect(JSON.stringify(wire!.system)).toContain('You are a fixture.');
+      const row = JSON.parse(readFileSync(join(dir, 'llm-calls.test.jsonl'), 'utf8').trim());
+      expect(row.kind).toBe('stream');
+      expect(typeof row.requestSummary.lineage).toBe('string');
+      expect(row.requestSummary.lineage).toBe(cacheLineageKey(wire!));
+      expect(seen.map((call) => [call.kind, call.lineage])).toEqual([['stream', row.requestSummary.lineage]]);
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

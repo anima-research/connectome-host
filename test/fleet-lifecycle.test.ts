@@ -318,7 +318,7 @@ describe('FleetModule lifecycle', () => {
     expect(child.exitReason).toEndWith(' (exit: SIGKILL)');
     // A start the parent had to stop is never retried, and the record says so.
     expect(child.autoRestartStopped).toBe(
-      'its start failed and it was ended by SIGKILL, which is not retried; fleet restart or launch starts it again',
+      'its start failed and it was ended by SIGKILL, which is not retried; fleet--restart or fleet--launch starts it again',
     );
   });
 
@@ -326,7 +326,7 @@ describe('FleetModule lifecycle', () => {
     const { fleet, input } = fixture({ noSocket: true }, { socketWaitTimeoutMs: 100 });
     const result = await internal(fleet).handleLaunch(input, { viaAutoStart: true });
     expect(result.success).toBe(false);
-    expect(result.error).toContain('socket did not appear');
+    expect(result.error).toContain("its socket didn't appear within 100 ms");
     const child = fleet.getChildren().get('leaf')!;
     expect(isAlive(child.pid!)).toBe(false);
     expect(child.status).toBe('crashed');
@@ -348,7 +348,9 @@ describe('FleetModule lifecycle', () => {
     };
     const result = await api.handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true });
     expect(result.success).toBe(false);
-    expect(result.error).toBe('subscribe failed: injected subscription failure');
+    expect(result.error).toStartWith("Child 'leaf' didn't start (subscribe failed: injected subscription failure) and has exited.");
+    // Then the child's output: the mock wrote none.
+    expect(result.error!.split('\n')[1]).toBe(`The child wrote nothing to ${join(input.dataDir, 'startup.log')} during this launch.`);
     const child = fleet.getChildren().get('leaf')!;
     expect(isAlive(child.pid!)).toBe(false);
     expect(child.socket).toBeNull();
@@ -370,12 +372,19 @@ describe('FleetModule lifecycle', () => {
     try {
       const result = await api.handleLaunch(input, { viaAutoStart: true });
       expect(result.success).toBe(false);
-      expect(result.error).toContain('child termination unconfirmed');
+      expect(result.error).toContain("this host couldn't confirm that its process stopped");
       const child = fleet.getChildren().get('leaf')!;
       expect(child.status).toBe('starting');
       expect(child.killRequested).toBe(false);
       expect(child.socket).toBeNull();
       expect(isAlive(child.pid!)).toBe(true);
+      // A call that needs it running is told what its record says.
+      const sent = await fleet.handleToolCall({ id: 'send', name: 'send', input: { name: 'leaf', content: 'hi' } });
+      expect(sent.error).toStartWith("Nothing was sent: child 'leaf' is recorded as starting (child did not become ready: ");
+      expect(sent.error).toEndWith(
+        `; its stop is unconfirmed (pid ${child.pid})), and this host has no connection to it. fleet--status for ` +
+        "'leaf' shows its state.",
+      );
       const retry = await api.handleLaunch(input, { viaAutoStart: true });
       expect(retry.success).toBe(false);
       expect(retry.error).toContain('already starting');
@@ -389,7 +398,7 @@ describe('FleetModule lifecycle', () => {
       expect(child.exitReason).toEndWith(' (exit: SIGKILL)');
       api.connectChildSocket = connect;
       const relaunched = await api.handleLaunch(input, { viaAutoStart: true });
-      expect(relaunched.error).toStartWith('child did not become ready: '); // ready: false still times out
+      expect(relaunched.error).toStartWith("Child 'leaf' didn't start (child did not become ready: "); // ready: false still times out
       expect(fleet.getChildren().get('leaf')).not.toBe(child);
     } finally {
       api.waitForExit = wait;
@@ -426,7 +435,7 @@ describe('FleetModule lifecycle', () => {
     // fleet status says automatic restarts stopped, and why.
     const status = (await fleet.handleToolCall({ id: 'status', name: 'status', input: { name: 'leaf' } })).data as Record<string, unknown>;
     expect(status.autoRestart).toBe(true);
-    expect(status.autoRestartStopped).toBe('3 restarts within 60s; fleet restart or launch starts it again, with a fresh retry budget');
+    expect(status.autoRestartStopped).toBe('3 restarts within 60s; fleet--restart or fleet--launch starts it again, with a fresh retry budget');
   });
 
   test('crash before socket still preserves the retry chain through failed launches', async () => {
@@ -444,7 +453,7 @@ describe('FleetModule lifecycle', () => {
     expect(launches(input)).toHaveLength(4);
     // The exit came first, and the failure is added to it.
     expect(fleet.getChildren().get('leaf')!.exitReason).toBe(
-      'launch failed: child exited (code=1, signal=null) before socket appeared (exit: code=1)',
+      'launch failed: the child exited with code 1 before its socket appeared (exit: code=1)',
     );
   });
 
@@ -475,7 +484,9 @@ describe('FleetModule lifecycle', () => {
     await until(() => clock.completed.length === 2, 'cancelled launch settled');
     expect(clock.completed[1]!.result.success).toBe(false);
     // The refusal names its cause.
-    expect(clock.completed[1]!.result.error).toBe("Child 'leaf' wasn't launched: it was killed during the launch.");
+    expect(clock.completed[1]!.result.error).toStartWith(
+      "Nothing was launched: a fleet--kill of 'leaf' was acknowledged while this launch loaded the recipe.",
+    );
     expect(fleet.getChildren().get('leaf')).toBe(child);
     expect(launches(input)).toHaveLength(1);
   });
@@ -507,8 +518,8 @@ describe('FleetModule lifecycle', () => {
       }
       await until(() => clock.completed.length === 2, 'cancelled reconciliation settled');
       expect(clock.completed[1]!.result.success).toBe(false);
-      expect(clock.completed[1]!.result.error).toBe(
-        `Child 'leaf' wasn't launched: ${action === 'stop' ? 'the host began stopping' : 'it was killed'} during reconciliation.`,
+      expect(clock.completed[1]!.result.error).toStartWith(
+        `Nothing was launched: ${action === 'stop' ? 'this host began shutting down' : "a fleet--kill of 'leaf' was acknowledged"} while this launch checked the files an earlier run left${action === 'stop' ? ', so it starts no new children' : '.'}`,
       );
       expect(fleet.getChildren().get('leaf')).toBe(child);
       expect(launches(input)).toHaveLength(1);
@@ -553,8 +564,8 @@ describe('FleetModule lifecycle', () => {
       }
       await until(() => clock.completed.length === 2, 'cancelled adoption settled');
       expect(clock.completed[1]!.result.success).toBe(false);
-      expect(clock.completed[1]!.result.error).toBe(
-        `Child 'leaf' wasn't launched: ${action === 'stop' ? 'the host began stopping' : 'it was killed'} during adoption.`,
+      expect(clock.completed[1]!.result.error).toStartWith(
+        `Nothing was launched: ${action === 'stop' ? 'this host began shutting down' : "a fleet--kill of 'leaf' was acknowledged"} while this launch reattached to the child's running process${action === 'stop' ? ', so it starts no new children' : '.'}`,
       );
       expect(closed).toBe(1);
       expect(fleet.getChildren().get('leaf')).toBe(child);
@@ -588,20 +599,37 @@ describe('FleetModule lifecycle', () => {
 });
 
 describe('FleetModule lifecycle: every launch answers to stop, kill and newer launches', () => {
-  /** Hold the next ownership reconciliation (the launch's await) until released. */
+  /** Hold the first ownership reconciliation (its await) made once a launch
+   *  made through the hold has begun, until released. A restart's kill
+   *  reconciles before its relaunch begins when the generation it stops
+   *  leaves its pid file behind, as one killed outright does: that one is
+   *  counted apart, in `before`, and passes. A kill's or a stop's
+   *  reconciliation made after a launch has begun counts like the launch's
+   *  own, so each use installs the hold before the launch it holds, and acts
+   *  only once `entered` says that launch is held. */
   function holdReconciliation(fleet: FleetModule) {
     const api = internal(fleet);
     const cleanup = api.cleanupStaleChildFiles.bind(fleet);
+    const launch = api.handleLaunch.bind(fleet);
+    let begun = false;
+    let before = 0;
     let entered = 0;
     let holding = true;
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    api.handleLaunch = async (...args) => {
+      begun = true;
+      return launch(...args);
+    };
     api.cleanupStaleChildFiles = async (existing) => {
-      entered++;
-      if (holding) { holding = false; await gate; }
+      if (!begun) before++;
+      else {
+        entered++;
+        if (holding) { holding = false; await gate; }
+      }
       await cleanup(existing);
     };
-    return { entered: () => entered, release };
+    return { before: () => before, entered: () => entered, release };
   }
 
   // stop() during a manual launch's await used to let it spawn a child
@@ -616,7 +644,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     await fleet.stop();
     held.release();
     const result = await relaunch;
-    expect(result.error).toBe("Child 'leaf' wasn't launched: the host began stopping during reconciliation.");
+    expect(result.error).toStartWith('Nothing was launched: this host began shutting down while this launch checked the files an earlier run left,');
     expect(launches(input)).toHaveLength(1);
   });
 
@@ -632,7 +660,29 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     expect(killed.success).toBe(true);
     held.release();
     const result = await restart;
-    expect(result.error).toBe("Child 'leaf' wasn't launched: it was killed during reconciliation.");
+    expect(result.error).toStartWith("Nothing was launched: a fleet--kill of 'leaf' was acknowledged while this launch checked the files an earlier run left.");
+    expect(launches(input)).toHaveLength(1);
+  });
+
+  // When the old generation leaves its pid file behind, as a child killed
+  // outright does, the restart's kill reconciles before the relaunch begins.
+  // A kill acknowledged during the relaunch's own reconciliation still stops
+  // the replacement.
+  test('a kill acknowledged during a restart\'s relaunch stops the replacement after the old generation left its pid file', async () => {
+    const { fleet, input } = fixture();
+    expect((await internal(fleet).handleLaunch(input, { viaAutoStart: true })).success).toBe(true);
+    const old = fleet.getChildren().get('leaf')!;
+    old.process!.once('exit', () => writeFileSync(join(input.dataDir, 'headless.pid'), String(old.pid)));
+    const held = holdReconciliation(fleet);
+    const restart = fleet.handleToolCall({ id: 'restart', name: 'restart', input: { name: 'leaf' } });
+    await until(() => held.entered() === 1, 'relaunch reconciling');
+    // The order this case exists for: the restart's kill reconciled first.
+    expect(held.before()).toBe(1);
+    const killed = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
+    expect(killed.success).toBe(true);
+    held.release();
+    const result = await restart;
+    expect(result.error).toStartWith("Nothing was launched: a fleet--kill of 'leaf' was acknowledged while this launch checked the files an earlier run left.");
     expect(launches(input)).toHaveLength(1);
   });
 
@@ -693,7 +743,8 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     await until(() => clock.completed.length === 3, 'automatic retry settled');
     const retry = clock.completed.find((c) => c.result.success === false)!;
     expect(retry.result.error).toBe(
-      "Child 'leaf' wasn't launched: another launch replaced it during reconciliation; reconcile before retrying.",
+      "Nothing was launched: another launch of 'leaf' took its place while this launch checked the files an earlier run left. " +
+      "fleet--status for 'leaf' shows the child that launch started.",
     );
     expect(fleet.getChildren().get('leaf')).toBe(installed);
     expect(launches(input)).toHaveLength(2);
@@ -721,7 +772,8 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     gates[0]!(); // the automatic launch reaches the end of its awaits first
     await until(() => clock.completed.length === 2, 'automatic launch settled');
     expect(clock.completed[1]!.result.error).toBe(
-      "Child 'leaf' wasn't launched: its automatic restart was cancelled during reconciliation.",
+      "Nothing was launched: the automatic restart of 'leaf' was cancelled, by a kill, launch or restart of it, " +
+      'while this launch checked the files an earlier run left.',
     );
     gates[1]!();
     expect((await manual).success).toBe(true);
@@ -736,7 +788,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     await until(() => existsSync(join(input.dataDir, 'launches.jsonl')), 'child running');
     process.kill(fleet.getChildren().get('leaf')!.pid!, 'SIGKILL');
     const result = await launch;
-    expect(result.error).toContain('child exited (code=null, signal=SIGKILL) before socket appeared');
+    expect(result.error).toContain('the child was ended by SIGKILL before its socket appeared');
   });
 
   // A child that exits after a refused connect is reported with the
@@ -751,7 +803,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
       throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     };
     const result = await api.handleLaunch(input, { viaAutoStart: true });
-    expect(result.error).toContain('child exited (code=null, signal=SIGKILL) before the parent could connect; the last connect failed: connect ECONNREFUSED');
+    expect(result.error).toContain('the child was ended by SIGKILL before this host could connect to its socket; the last connect failed: connect ECONNREFUSED');
   });
 
   // A process that shows its exit before its 'exit' event has run must
@@ -763,7 +815,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
       process: { exitCode: 1, signalCode: null }, socket: null,
     } as unknown as Child;
     const result = await internal(fleet).failLaunch(child, 'subscribe failed: gone');
-    expect(result.error).toBe('subscribe failed: gone');
+    expect(result.error).toBe("Child 'leaf' didn't start (subscribe failed: gone) and has exited. Nothing is running, so call fleet--launch again once the cause is fixed.");
     expect(child.status).toBe('crashed');
     expect(child.exitCode).toBe(1);
     expect(child.exitReason).toBe('subscribe failed: gone (exit: code=1)');
@@ -788,7 +840,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     const killed = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
     expect(killed.success).toBe(true);
     release();
-    expect((await restart).error).toBe("Child 'leaf' wasn't launched: it was killed during the launch.");
+    expect((await restart).error).toStartWith("Nothing was launched: a fleet--kill of 'leaf' was acknowledged while this launch loaded the recipe.");
     expect(launches(input)).toHaveLength(1);
   });
 
@@ -803,7 +855,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     const nested = join(dir, 'nested.json');
     writeFileSync(nested, JSON.stringify(NESTED_FLEET_RECIPE));
     const refused = await internal(fleet).handleLaunch({ ...input, recipe: nested, autoRestart: true }, { viaAutoStart: true });
-    expect(refused.error).toContain("declares its own 'fleet' module");
+    expect(refused.error).toContain("declares a 'fleet' module of its own");
     expect(fleet.getChildren().get('leaf')).toBe(crashed);
     expect(crashed.restartTimer).toBeUndefined();
     const status = (await fleet.handleToolCall({ id: 'status', name: 'status', input: { name: 'leaf' } })).data as Record<string, unknown>;
@@ -821,7 +873,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     writeFileSync(input.recipe, JSON.stringify(NESTED_FLEET_RECIPE));
     clock.release(0);
     await until(() => clock.completed.length === 2, 'replacement refused');
-    expect(crashed.autoRestartStopped).toStartWith("the replacement was refused: fleet child recipe 'leaf'");
+    expect(crashed.autoRestartStopped).toStartWith("the replacement was refused: Nothing was launched: the recipe at ");
   });
 
   // Only an acknowledged kill refuses a launch: one that throws reports an
@@ -842,7 +894,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     const { fleet, input } = fixture();
     await fleet.stop();
     expect((await internal(fleet).handleLaunch(input, { viaAutoStart: true })).error)
-      .toBe("Child 'leaf' wasn't launched: the host is stopping.");
+      .toBe("Nothing was launched: this host is shutting down, so it starts no new children, and calling fleet--launch again won't change that.");
     expect(existsSync(join(input.dataDir, 'launches.jsonl'))).toBe(false);
   });
 
@@ -878,7 +930,12 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
         if (action === 'kill') expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
         else { if (action === 'detach') fleet.setDetachMode(true); await fleet.stop(); }
         release();
-        expect((await launch).success).toBe(false);
+        const result = await launch;
+        expect(result.success).toBe(false);
+        // The refusal says what became of the process it had reattached to.
+        expect(result.error).toEndWith(action === 'detach'
+          ? ' This host leaves that process running for the next host to adopt.'
+          : ` This launch stopped the process it had reattached to (pid ${living.pid}).`);
         if (action === 'detach') {
           expect(isAlive(living.pid)).toBe(true);
         } else {
@@ -891,6 +948,45 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     });
   }
 
+  // Stopped means this host saw it exit; a stop it can't confirm is said so.
+  test('an adoption refused by a kill whose stop is unconfirmed says the process may still be running', async () => {
+    const { fleet, input } = fixture();
+    const api = internal(fleet) as Internal & {
+      canRetryAdoption: (child: Child) => boolean;
+      probeLiveness: (child: Child) => Promise<boolean>;
+      reattachToLivingChild: (child: Child) => Promise<Child>;
+    };
+    expect((await api.handleLaunch(input, { viaAutoStart: true })).success).toBe(true);
+    const child = fleet.getChildren().get('leaf')!;
+    await crash(fleet, child);
+    const living = Bun.spawn(['sleep', '30']);
+    let entered = false;
+    let release!: () => void;
+    const adoption = new Promise<void>(resolve => { release = resolve; });
+    api.canRetryAdoption = () => true;
+    api.probeLiveness = async () => true;
+    (child as { process: ChildProcess | null }).process = null;
+    api.reattachToLivingChild = async existing => {
+      entered = true;
+      await adoption;
+      return { ...existing, process: null, adopted: true, pid: living.pid, status: 'ready', exitedAt: null,
+        socket: { destroy: () => {} } } as unknown as Child;
+    };
+    try {
+      const launch = api.handleLaunch(input, { viaAutoStart: true });
+      await until(() => entered, 'adoption started');
+      expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
+      api.waitForExitByPid = async () => false;
+      release();
+      expect((await launch).error).toEndWith(
+        ` This launch couldn't confirm that the process it had reattached to stopped (pid ${living.pid}), so it ` +
+        "may still be running; fleet--status for 'leaf' shows its record.",
+      );
+    } finally {
+      living.kill('SIGKILL');
+    }
+  });
+
   // A kill ends automatic restarts, and the record says so.
   test('a kill during backoff records that it ended automatic restarts', async () => {
     const { fleet, input } = fixture();
@@ -899,7 +995,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     const crashed = fleet.getChildren().get('leaf')!;
     await crash(fleet, crashed);
     expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
-    expect(crashed.autoRestartStopped).toBe('fleet kill ended automatic restarts; fleet restart or launch starts it again');
+    expect(crashed.autoRestartStopped).toBe('fleet--kill ended automatic restarts; fleet--restart or fleet--launch starts it again');
   });
 
   // A signal exit is never retried, whoever sent it, and the record says so.
@@ -911,7 +1007,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     child.process!.kill('SIGKILL'); // as the OOM killer would
     await until(() => child.status === 'crashed', 'child ended by a signal');
     expect(clock.pending).toHaveLength(0);
-    expect(child.autoRestartStopped).toBe('it was ended by SIGKILL, which is not retried; fleet restart or launch starts it again');
+    expect(child.autoRestartStopped).toBe('it was ended by SIGKILL, which is not retried; fleet--restart or fleet--launch starts it again');
   });
 
   // A replacement whose launch throws, rather than refusing, is recorded too.
@@ -939,12 +1035,47 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
       fleet.setDetachMode(true);
       await fleet.stop();
       const result = await launch;
-      expect(result.error).toEndWith('; the parent is detaching, so the child is left running');
+      expect(result.error).toEndWith(': this host is shutting down and leaves it running for the next host to adopt, so there is nothing to retry here.');
       expect(isAlive(pid)).toBe(true);
     } finally {
       fleet.setDetachMode(false);
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
+  });
+
+  // A child that exits during the detaching stop isn't left running, and its
+  // output is finished, so the error says it exited and quotes it.
+  test('a detaching stop during a launch whose child then exits says it has exited', async () => {
+    const { fleet, dir, input } = fixture({}, { readyTimeoutMs: 5_000 });
+    const exitNow = join(dir, 'exit-now');
+    writeFileSync(input.recipe, JSON.stringify({ ready: false, crashOnFile: exitNow, stderr: 'leaf is exiting\n' }));
+    const launch = internal(fleet).handleLaunch(input, { viaAutoStart: true });
+    await until(() => fleet.getChildren().get('leaf')?.socket != null, 'launch connected');
+    try {
+      fleet.setDetachMode(true);
+      await fleet.stop();
+      writeFileSync(exitNow, '');
+      const result = await launch;
+      expect(result.error).toStartWith(
+        "Child 'leaf' didn't start (child did not become ready: the child crashed before it reported ready) and has " +
+        'exited, and this host is shutting down, so there is nothing to retry here.',
+      );
+      expect(result.error).toContain('leaf is exiting');
+    } finally {
+      fleet.setDetachMode(false);
+    }
+  });
+
+  // A host shutting down without detaching stops its children and refuses
+  // every launch, so the error doesn't ask for another.
+  test("a stop during a launch's ready wait says there is nothing to retry", async () => {
+    const { fleet, input } = fixture({ ready: false }, { readyTimeoutMs: 5_000 });
+    const launch = internal(fleet).handleLaunch(input, { viaAutoStart: true });
+    await until(() => fleet.getChildren().get('leaf')?.socket != null, 'launch connected');
+    await fleet.stop();
+    expect((await launch).error).toContain(
+      'and has exited. Nothing is running, and this host is shutting down, so there is nothing to retry here.',
+    );
   });
 
   // At the deadline, the error says the wait ran out, not just the last
@@ -956,7 +1087,7 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
       throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     };
     const result = await api.handleLaunch(input, { viaAutoStart: true });
-    expect(result.error).toContain('refused connections for 300ms; the last connect failed: connect ECONNREFUSED');
+    expect(result.error).toContain('its socket refused connections for 300 ms; the last connect failed: connect ECONNREFUSED');
   });
 
   // The child keeps only its latest client, so a second launch of the name
@@ -979,7 +1110,9 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
     api.probeLiveness = async () => { entered = true; await adoption; return false; };
     const first = api.handleLaunch(input, { viaAutoStart: true });
     await until(() => entered, 'adoption started');
-    expect((await api.handleLaunch(input, { viaAutoStart: true })).error).toBe("Child 'leaf' is being adopted by another launch");
+    expect((await api.handleLaunch(input, { viaAutoStart: true })).error).toStartWith(
+      "Nothing was launched: another launch is reattaching to the running process of child 'leaf' right now.",
+    );
     release();
     await first;
     expect(child.adopting).toBe(false);

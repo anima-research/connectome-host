@@ -358,6 +358,74 @@ describe('RetrievalModule observability', () => {
     expect(mod.getRetrievalTraces({ includeInputs: true })[0].context?.messageIds).toEqual([]);
   });
 
+  test('takes its window from the last 10 stored messages, leaving out rows the framework still holds', async () => {
+    const h = harness(['[]'], [lesson('l1', 'memory detail')]);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    const row = (id: string, text: string, held?: boolean) => ({
+      id,
+      participant: 'user',
+      content: [{ type: 'text', text }],
+      ...(held === undefined ? {} : { held }),
+    });
+    // A stored row carries no `held`. A row with `held: false` counts as
+    // stored too, so only `held: true` leaves the window.
+    const stored = Array.from({ length: 11 }, (_, i) => row(`m${i + 1}`, `stored message ${i + 1}.`, i % 2 === 0 ? undefined : false));
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      queryMessages: () => ({
+        messages: [...stored, row('h1', 'held message A.', true), row('h2', 'held message B.', true)],
+        totalCount: 13,
+      }),
+    };
+
+    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+    const sent = JSON.stringify(h.calls[0].messages);
+    for (let i = 2; i <= 11; i++) expect(sent).toContain(`stored message ${i}.`);
+    expect(sent).not.toContain('stored message 1.');
+    expect(sent).not.toContain('held message');
+    const context = mod.getRetrievalTraces({ includeInputs: true })[0].context;
+    expect(context?.messageCount).toBe(10);
+    expect(context?.messageIds).toEqual(Array.from({ length: 10 }, (_, i) => `m${i + 2}`));
+  });
+
+  test('a held arrival leaves the window, so the cached retrieval stands', async () => {
+    const h = harness(['["memory"]'], [lesson('l1', 'memory detail')]);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    const rows: Array<Record<string, unknown>> = [
+      { id: 'm1', participant: 'user', content: [{ type: 'text', text: 'Please recall the memory detail.' }] },
+    ];
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      queryMessages: () => ({ messages: [...rows], totalCount: rows.length }),
+    };
+
+    const first = await mod.gatherContext(TEST_AGENT);
+    expect(first).toHaveLength(1);
+    rows.push({ id: 'h1', participant: 'user', content: [{ type: 'text', text: 'A message that arrived mid-turn.' }], held: true });
+    const second = await mod.gatherContext(TEST_AGENT);
+
+    expect(second).toEqual(first);
+    expect(h.calls).toHaveLength(1);
+    expect(mod.getRetrievalTraces()[0].outcome).toBe('cache-hit');
+  });
+
+  test('finds no recent context when every row is still held', async () => {
+    const h = harness([], [lesson('l1', 'memory detail')]);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      queryMessages: () => ({
+        messages: [{ participant: 'user', content: [{ type: 'text', text: 'held message.' }], held: true }],
+        totalCount: 1,
+      }),
+    };
+
+    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(0);
+    expect(mod.getRetrievalTraces()[0].outcome).toBe('no-recent-context');
+  });
+
   test('malformed mixed wrapper retains historical fail-open behavior', async () => {
     const h = harness(['prose ["memory", 3]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });

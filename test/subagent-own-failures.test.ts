@@ -1,13 +1,14 @@
 /**
  * The subagent module's retries, its time limit and its concurrency limit.
  *
- * - Its own failures (a prompt over its limit, its own time limit) end the
- *   retry loop without their words being read, and the framework's
- *   failures are read without the ephemeral agent's name in them, which
- *   holds the name the agent chose. Before, a subagent named "migrate"
- *   (which holds "rate") counted as a rate limit and halved concurrency, one
- *   named "idle-watch" counted as transient, and a 1500 ms limit (which
- *   holds "500") was retried.
+ * - Its own failures end the retry loop without their words being read: an
+ *   async run whose time limit of 429 ms runs out leaves the concurrency
+ *   limit alone, though the rate-limit pattern reads 429 as a status code.
+ *   The framework's failures are read without the ephemeral agent's name,
+ *   which holds the name the agent chose: a spawn or fork named
+ *   rate-limit-audit or idle-watch whose run the startup watchdog ends is
+ *   tried once. Before, a name or a number in such a failure could make it
+ *   count as a rate limit or as transient.
  * - At its time limit a run is stopped, not left working untracked.
  * - Raising the concurrency limit lets a waiting spawn start, except while a
  *   rate limit's halving holds.
@@ -18,7 +19,7 @@
  * - A run not started by its deadline is dropped by the framework and
  *   reported as the time limit; one whose setup outlasts it isn't started.
  */
-import { describe, test, expect, spyOn } from 'bun:test';
+import { describe, test, expect, spyOn, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,7 +39,7 @@ type Internal = {
   lastInputTokens: Map<string, number>;
   parentMap: Map<string, string>;
   waitOrStop(ms: number, cancelled: Promise<never>): Promise<unknown>;
-  acquireSlot(slotTimeoutMs?: number, cancelled?: Promise<never>): Promise<{ waitedMs: number; slot: object }>;
+  acquireSlot(kind: 'spawn' | 'fork', slotTimeoutMs?: number, cancelled?: Promise<never>): Promise<{ waitedMs: number; slot: object }>;
   releaseSlot(slot: object): void;
   persistState(): void;
   effectiveConcurrent: number;
@@ -47,7 +48,7 @@ type Internal = {
   throttled: boolean;
   reclaimZombieSlots(): number;
   stopRun(agent: unknown): void;
-  withTimeout<T>(p: Promise<T>, name: string, limitMs: number, deadline: number, stop: () => void): Promise<T>;
+  withTimeout<T>(p: Promise<T>, name: string, kind: 'spawn' | 'fork', limitMs: number, deadline: number, stop: () => void): Promise<T>;
   isRateLimitError(err: Error): boolean;
   isTransientError(err: Error): boolean;
 };
@@ -128,11 +129,12 @@ function fork(name: string, extra: Record<string, unknown> = {}): ToolCall {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Wait for what a step brings about rather than for a set time, and fail
- *  if it doesn't come. */
+ *  if it doesn't come. Timed by performance.now(), which a test that holds
+ *  Date.now doesn't stop. */
 async function until(done: () => boolean, ms = 10_000): Promise<void> {
-  const end = Date.now() + ms;
+  const end = performance.now() + ms;
   while (!done()) {
-    if (Date.now() >= end) throw new Error(`not brought about within ${ms} ms`);
+    if (performance.now() >= end) throw new Error(`not brought about within ${ms} ms`);
     await sleep(10);
   }
 }
@@ -175,6 +177,22 @@ async function outcome(h: Harness, name: string): Promise<{ ok: boolean; text: s
     (e) => ({ ok: false, text: e instanceof Error ? e.message : String(e) }),
   );
 }
+/** What the agent reads when a spawn's or fork's run ends on an error of its
+ *  own, after a run began: the module's account (failedRun). */
+function stoppedText(name: string, why: string, kind: 'spawn' | 'fork' = 'spawn', attempts = 1): string {
+  return `${kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`} stopped${attempts > 1 ? ` after ${attempts} attempts` : ''} ` +
+    `and returned no result: ${why}. What it did before then stays done, and ${kind === 'fork' ? 'forking' : 'spawning'} it again ` +
+    'starts its task over.';
+}
+/** What the agent reads when an async run's time limit ends it. */
+function timeLimitText(name: string, limit: string, kind: 'spawn' | 'fork' = 'spawn', attempts = 1, started = true): string {
+  const again = `To give it longer, call subagent--${kind} again with a larger timeoutMs; an async ${kind} with no timeoutMs has no limit.`;
+  return started
+    ? `${stoppedText(name, `its time limit of ${limit} ran out`, kind, attempts)} ${again}`
+    : `${kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`} didn't start, so nothing ran: its time limit of ${limit} ran out. ${again}`;
+}
+/** The label a reclaimed zombie's result opens with. */
+const ZOMBIE_LABEL = '[Stopped: it showed no activity for over 120 s, so the host reclaimed its slot]';
 /** What the module delivers to the parent agent: each message it adds to
  *  the parent's context, and each inference it requests. */
 function deliveries(h: Harness): { messages: string[]; requests: string[] } {
@@ -211,45 +229,52 @@ function countStops(h: Harness): number[] {
 }
 
 describe('the module\'s own failures end the retry loop without their words being read', () => {
-  for (const name of ['migrate', 'idle-watch']) {
-    test(`a prompt over the limit, for a subagent named ${name}, runs once and leaves concurrency alone`, async () => {
-      const h = await harness({ maxPromptTokens: 10, maxRetries: 1 });
+  // A time limit of 429 ms ends the run with "its time limit of 429 ms ran
+  // out", which the rate-limit classifier would read as a status code and
+  // answer by halving the concurrency limit. Each of runSpawn's and
+  // runFork's loops has its own check that ends it first.
+  for (const kind of ['spawn', 'fork'] as const) {
+    test(`an async ${kind} whose 429 ms time limit runs out leaves the concurrency limit alone`, async () => {
+      const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* never settles */ }));
       try {
-        const res = await h.subagent.handleToolCall(spawn(name, { sync: true }));
-        expect(res.error ?? '').toContain(`Prompt too large for subagent ${name}`);
-        expect(h.runs()).toBe(1);
-        expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
+        await h.subagent.handleToolCall((kind === 'spawn' ? spawn : fork)('scout', { timeoutMs: 429 }));
+        const out = await outcome(h, 'scout');
+        // Stopped at its limit, or not started if its setup outlasted it:
+        // the module's own failure either way.
+        expect(out.ok).toBe(false);
+        expect(out.text).toContain('its time limit of 429 ms ran out');
+        expect(h.subagent.getConcurrencyStatus()).toEqual({ configured: 5, effective: 5, active: 0, queued: 0 });
       } finally { await h.cleanup(); }
     }, 20_000);
   }
-
-  test('an async time limit of 1500 ms is not retried', async () => {
-    const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* never settles */ }));
-    try {
-      await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 1500 }));
-      const out = await outcome(h, 'scout');
-      expect(out).toEqual({ ok: false, text: 'Subagent scout timed out after 1500ms' });
-      expect(h.runs()).toBe(1);
-    } finally { await h.cleanup(); }
-  }, 20_000);
 });
 
 describe('a framework failure is read without the ephemeral agent\'s name, and numbers as whole numbers', () => {
-  // agent-framework 0.22.1's startup watchdog, which quotes the agent's name.
+  // agent-framework 0.22.3's startup watchdog, which quotes the agent's name.
   const watchdog = (agent: { name: string }) => new Error(
     `Ephemeral agent "${agent.name}" failed to start inference within 15000ms — zombie detected. ` +
     'The event loop may have stalled or the inference request was dropped.',
   );
 
-  test('a subagent named migrate whose run the watchdog ended runs once and leaves concurrency alone', async () => {
-    const h = await harness({ maxRetries: 1 }, async (agent) => { throw watchdog(agent); });
-    try {
-      const res = await h.subagent.handleToolCall(spawn('migrate', { sync: true }));
-      expect(res.error ?? '').toContain('failed to start inference within 15000ms');
-      expect(h.runs()).toBe(1);
-      expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
-    } finally { await h.cleanup(); }
-  }, 20_000);
+  // The watchdog's message quotes the name. One name holds a rate limit's
+  // phrase and the other "idle", which isTransientError takes as transient:
+  // read with the name, the failure would be tried again, and the rate limit
+  // would halve the concurrency limit. Each classifier reads the failure
+  // through classifiedText, and runSpawn and runFork each pass both of them
+  // their ephemeral agent's name.
+  for (const kind of ['spawn', 'fork'] as const) {
+    for (const name of ['rate-limit-audit', 'idle-watch']) {
+      test(`a ${kind} named ${name} whose run the watchdog ended runs once and leaves concurrency alone`, async () => {
+        const h = await harness({ maxRetries: 1 }, async (agent) => { throw watchdog(agent); });
+        try {
+          const res = await h.subagent.handleToolCall((kind === 'spawn' ? spawn : fork)(name, { sync: true }));
+          expect(res.error ?? '').toContain('failed to start inference within 15000ms');
+          expect(h.runs()).toBe(1);
+          expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
+        } finally { await h.cleanup(); }
+      }, 20_000);
+    }
+  }
 
   test('control: a provider\'s own transient words are still retried', async () => {
     const h = await harness({ maxRetries: 1 }, async () => { throw new Error('503 overloaded: socket hang up'); });
@@ -349,7 +374,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     const live = () => [...runs.keys()].filter((k) => k.startsWith('spawn-scout-'));
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 1000 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: 'Subagent scout timed out after 1000ms' });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: timeLimitText('scout', '1 s') });
       expect(tokensAt.length).toBeGreaterThan(0);
       expect(stops.length).toBeGreaterThan(0); // the limit stopped the run
       // The framework lets the run go well before its stream would have
@@ -357,7 +382,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       await until(() => live().length === 0, 2_000);
       expect(live()).toEqual([]);
       // Once the framework has let the run go, it drops the stream's later
-      // events unread (agent-framework 0.22.1, driveStream's check that the
+      // events unread (agent-framework 0.22.3, driveStream's check that the
       // agent still owns its name), so the count is final. At most a chunk
       // already on its way when the stream was cancelled.
       const stoppedAt = stops[0]!;
@@ -381,7 +406,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     const h = await harness({ maxRetries: 1 }, async () => { attempts++; await sleep(50); throw new Error('503 overloaded'); });
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 3000 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: '503 overloaded' });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', '503 overloaded') });
       expect(attempts).toBe(1); // the retry's 5 s back-off would end past the 3 s limit
     } finally { await h.cleanup(); }
   }, 20_000);
@@ -398,7 +423,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 6000 }));
       const out = await outcome(h, 'scout');
       const took = Date.now() - started;
-      expect(out).toEqual({ ok: false, text: 'Subagent scout timed out after 6000ms' });
+      expect(out).toEqual({ ok: false, text: timeLimitText('scout', '6 s', 'spawn', 2) });
       expect(given).toHaveLength(2);
       // The retry started after the 5 s back-off with what was left, under
       // 1 s, where a fresh limit would have given it 6 s.
@@ -419,7 +444,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
         await h.subagent.handleToolCall(kind === 'spawn' ? spawn('scout', { timeoutMs: 1500 }) : fork('scout', { timeoutMs: 1500 }));
         const out = await outcome(h, 'scout');
         const took = Date.now() - started;
-        expect(out).toEqual({ ok: false, text: '429 Too Many Requests' });
+        expect(out).toEqual({ ok: false, text: stoppedText('scout', '429 Too Many Requests', kind) });
         expect(h.runs()).toBe(1);
         // It cooled down for what was left of its limit, about 500 ms, not 5 s.
         const cooled = lines.map((l) => /cooling down (\d+)ms/.exec(l)?.[1]).filter((m) => m !== undefined).map(Number);
@@ -436,7 +461,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
 
   test('a run not started by its deadline is dropped by the framework\'s startup watchdog, and reported as the time limit', async () => {
     const given: Watchdogs[] = [];
-    // As agent-framework 0.22.1 does: a run whose inference hasn't started
+    // As agent-framework 0.22.3 does: a run whose inference hasn't started
     // by its startup watchdog is rejected with the framework's own words.
     // Its timer fires a millisecond early, as Node's can, so it settles the
     // attempt before the module's own limit does.
@@ -450,7 +475,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     });
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 1500 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: 'Subagent scout timed out after 1500ms' });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: timeLimitText('scout', '1.5 s') });
       expect(h.runs()).toBe(1);
       expect(given).toHaveLength(1);
       expect(given[0]!.startupTimeoutMs!).toBeGreaterThan(1000);
@@ -484,7 +509,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       await h.subagent.handleToolCall(spawn('first'));
       await until(() => h.subagent.getConcurrencyStatus().active === 1);
       await h.subagent.handleToolCall(spawn('second', { timeoutMs: 1500 }));
-      expect(await outcome(h, 'second')).toEqual({ ok: false, text: 'Subagent second timed out after 1500ms' });
+      expect(await outcome(h, 'second')).toEqual({ ok: false, text: timeLimitText('second', '1.5 s') });
       // It waited about 800 ms for its slot, and its limit started then.
       expect(given.second!.startupTimeoutMs!).toBeGreaterThan(1000);
     } finally { await h.cleanup(); }
@@ -498,80 +523,39 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       const create = fw.createEphemeralAgent.bind(fw);
       fw.createEphemeralAgent = async (c) => { await sleep(700); return create(c); };
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 500 }));
-      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: 'Subagent scout timed out after 500ms' });
+      expect(await outcome(h, 'scout')).toEqual({ ok: false, text: timeLimitText('scout', '500 ms', 'spawn', 1, false) });
       expect(started).toBe(0);
     } finally { await h.cleanup(); }
   }, 20_000);
 
-  test('a fork with a 1500 ms limit is stopped once and not retried', async () => {
+  test('a fork with a 1500 ms limit is stopped once', async () => {
     const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* never settles */ }));
     const stops = countStops(h);
     try {
       await h.subagent.handleToolCall(fork('probe', { timeoutMs: 1500 }));
-      expect(await outcome(h, 'probe')).toEqual({ ok: false, text: 'Subagent probe timed out after 1500ms' });
-      expect(h.runs()).toBe(1);
+      expect(await outcome(h, 'probe')).toEqual({ ok: false, text: timeLimitText('probe', '1.5 s', 'fork') });
       expect(stops).toHaveLength(1);
-    } finally { await h.cleanup(); }
-  }, 20_000);
-
-  test('a fork whose prompt is over the limit runs once and leaves concurrency alone', async () => {
-    const h = await harness({ maxPromptTokens: 10, maxRetries: 1 });
-    try {
-      const res = await h.subagent.handleToolCall(fork('migrate', { sync: true }));
-      expect(res.error ?? '').toContain('Prompt too large for subagent migrate');
-      expect(h.runs()).toBe(1);
-      expect(h.subagent.getConcurrencyStatus().effective).toBe(5);
     } finally { await h.cleanup(); }
   }, 20_000);
 });
 
 describe('the stop', () => {
-  test('cancels the live stream of an agent at a tool boundary, which cancelStream alone leaves', async () => {
-    const h = await harness({});
-    try {
-      const calls: string[] = [];
-      const agent = {
-        state: { status: 'ready', stream: { cancel: () => calls.push('stream.cancel') } },
-        cancelStream: () => calls.push('cancelStream'),
-      };
-      internal(h.subagent).stopRun(agent);
-      expect(calls).toEqual(['stream.cancel', 'cancelStream']);
-      calls.length = 0;
-      internal(h.subagent).stopRun({ state: { status: 'streaming' }, cancelStream: () => calls.push('cancelStream') });
-      expect(calls).toEqual(['cancelStream']);
-    } finally { await h.cleanup(); }
-  });
-
-  test('sets the agent idle even when the stream\'s cancel throws, or there is no stream', async () => {
-    const h = await harness({});
-    try {
-      const calls: string[] = [];
-      const throwing = {
-        state: { status: 'ready', stream: { cancel: () => { throw new Error('gone'); } } },
-        cancelStream: () => calls.push('cancelStream'),
-      };
-      expect(() => internal(h.subagent).stopRun(throwing)).toThrow('gone');
-      expect(calls).toEqual(['cancelStream']);
-      calls.length = 0;
-      internal(h.subagent).stopRun({ state: { status: 'ready' }, cancelStream: () => calls.push('cancelStream') });
-      expect(calls).toEqual(['cancelStream']);
-    } finally { await h.cleanup(); }
-  });
-
-  test('a user\'s cancel stops the run through it', async () => {
-    const h = await harness({ maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
-    try {
-      const sub = internal(h.subagent);
-      const stopped: unknown[] = [];
-      const stop = sub.stopRun.bind(sub);
-      sub.stopRun = (agent) => { stopped.push(agent); stop(agent); };
-      await h.subagent.handleToolCall(spawn('scout'));
-      await until(() => h.running('scout'));
-      expect(h.subagent.cancelSubagent('scout')).toBe(true);
-      expect((await outcome(h, 'scout')).text).toContain('[Stopped by user]');
-      expect(stopped).toHaveLength(1);
-    } finally { await h.cleanup(); }
-  });
+  for (const call of [spawn, fork]) {
+    test(`a user's cancel stops a ${call.name}'s run through it, and its stop says no output yet, not that nothing ran`, async () => {
+      const h = await harness({ maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+      try {
+        const sub = internal(h.subagent);
+        const stopped: unknown[] = [];
+        const stop = sub.stopRun.bind(sub);
+        sub.stopRun = (agent) => { stopped.push(agent); stop(agent); };
+        await h.subagent.handleToolCall(call('scout'));
+        await until(() => h.running('scout'));
+        expect(h.subagent.cancelSubagent('scout')).toBe(true);
+        expect((await outcome(h, 'scout')).text).toBe('[Stopped by user] (no output yet)');
+        expect(stopped).toHaveLength(1);
+      } finally { await h.cleanup(); }
+    });
+  }
 
   test('a stop that throws still ends the attempt at its limit, and is logged', async () => {
     const h = await harness({});
@@ -579,9 +563,9 @@ describe('the stop', () => {
     const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
     try {
       const never = new Promise<never>(() => {});
-      const ended = await internal(h.subagent).withTimeout(never, 'scout', 50, Date.now() + 50, () => { throw new Error('boom'); })
+      const ended = await internal(h.subagent).withTimeout(never, 'scout', 'spawn', 50, Date.now() + 50, () => { throw new Error('boom'); })
         .then(() => 'resolved', (e: Error) => e.message);
-      expect(ended).toBe('Subagent scout timed out after 50ms');
+      expect(ended).toBe('its time limit of 50 ms ran out');
       expect(lines).toContain('[subagent] scout: stopping the run at its time limit failed: boom');
     } finally {
       spy.mockRestore();
@@ -682,7 +666,7 @@ describe('concurrency slots', () => {
       sub.activeSubagents.get('spawn-zombie')!.lastActivityAt = Date.now() - 200_000;
       expect(sub.reclaimZombieSlots()).toBe(1);
       expect(stopped).toHaveLength(1);
-      expect((await outcome(h, 'zombie')).text).toContain('[Terminated: zombie]');
+      expect((await outcome(h, 'zombie')).text).toContain(ZOMBIE_LABEL);
       // The zombie's own finally found its slot released already.
       await until(() => h.subagent.getConcurrencyStatus().active === 2 && h.subagent.getConcurrencyStatus().queued === 0);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 2, queued: 0 });
@@ -702,7 +686,7 @@ describe('concurrency slots', () => {
       await until(() => h.running('scout'));
       sub.activeSubagents.get('spawn-scout')!.lastActivityAt = Date.now() - 200_000;
       expect(sub.reclaimZombieSlots()).toBe(1);
-      expect((await outcome(h, 'scout')).text).toContain('[Terminated: zombie]');
+      expect((await outcome(h, 'scout')).text).toContain(ZOMBIE_LABEL);
       await until(() => h.subagent.getConcurrencyStatus().active === 0);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0 });
     } finally { await h.cleanup(); }
@@ -714,8 +698,8 @@ describe('concurrency slots', () => {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('zombie'));
       await until(() => h.running('zombie'));
-      const first = sub.acquireSlot(100); // gives up after 100 ms, unless a reclaim then frees a slot
-      const second = sub.acquireSlot(10_000);
+      const first = sub.acquireSlot('spawn', 100); // gives up after 100 ms, unless a reclaim then frees a slot
+      const second = sub.acquireSlot('spawn', 10_000);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 2 });
       sub.activeSubagents.get('spawn-zombie')!.lastActivityAt = Date.now() - 200_000;
       const got = await first;
@@ -778,6 +762,20 @@ describe('a cancel reaches the whole run', () => {
     } finally { await h.cleanup(); }
   }, 20_000);
 
+  test("a live attempt's framework agent is the subagent's while its run is live, and not once the run has settled", async () => {
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    try {
+      await h.subagent.handleToolCall(spawn('long'));
+      await until(() => h.running('long'));
+      const long = internal(h.subagent).liveSubagents.get('long')!.frameworkAgentName;
+      expect(h.subagent.isSubagentAgent(long)).toBe(true);
+      expect(h.subagent.isSubagentAgent('main')).toBe(false);
+      expect(h.subagent.cancelAll()).toBe(1);
+      await outcome(h, 'long');
+      expect(h.subagent.isSubagentAgent(long)).toBe(false);
+    } finally { await h.cleanup(); }
+  }, 20_000);
+
   test('cancelling them all reaches a spawn still waiting for a slot', async () => {
     const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
     try {
@@ -789,7 +787,7 @@ describe('a cancel reaches the whole run', () => {
       const waiting = outcome(h, 'waiting');
       const long = outcome(h, 'long');
       expect((await waiting).text).toStartWith('[Stopped by user] (no output: it was still waiting');
-      expect((await long).text).toStartWith('[Stopped by user]');
+      expect((await long).text).toBe('[Stopped by user] (no output yet)');
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
     } finally { await h.cleanup(); }
   }, 20_000);
@@ -805,7 +803,8 @@ describe('a cancel reaches the whole run', () => {
           await h.subagent.handleToolCall(call('scout'));
           await until(() => waits.length === 1); // past the attempt, into the wait of 5 s
           expect(h.subagent.cancelSubagent('scout')).toBe(true);
-          expect((await outcome(h, 'scout')).text).toStartWith('[Stopped by user]');
+          // An attempt ran before the wait, so the stop says only that it has no output.
+          expect((await outcome(h, 'scout')).text).toBe('[Stopped by user] (no output yet)');
           expect(waits).toEqual([{ ms: 5000, endedBy: 'cancel' }]);
           expect(attempts).toBe(1);
           expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0 });
@@ -828,7 +827,7 @@ describe('a cancel reaches the whole run', () => {
         await until(() => creating);
         const done = outcome(h, 'scout');
         expect(h.subagent.cancelSubagent('scout')).toBe(true);
-        expect((await done).text).toStartWith('[Stopped by user]');
+        expect((await done).text).toBe('[Stopped by user] (no output: it was stopped before its run began, so nothing ran)');
         await sleep(100);
         expect(started).toBe(0);
         expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
@@ -858,7 +857,7 @@ describe('a cancel reaches the whole run', () => {
       };
       try {
         await h.subagent.handleToolCall(call('scout'));
-        expect((await outcome(h, 'scout')).text).toStartWith('[Stopped by user]');
+        expect((await outcome(h, 'scout')).text).toBe('[Stopped by user] (no output: it was stopped before its run began, so nothing ran)');
         await sleep(100);
         expect(started).toBe(0);
         expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
@@ -876,7 +875,7 @@ describe('a cancel reaches the whole run', () => {
       await until(() => waits.length === 1); // in the back-off, still registered
       sub.activeSubagents.get('spawn-scout')!.lastActivityAt = Date.now() - 200_000;
       expect(sub.reclaimZombieSlots()).toBe(1);
-      expect((await outcome(h, 'scout')).text).toContain('[Terminated: zombie]');
+      expect((await outcome(h, 'scout')).text).toBe(`${ZOMBIE_LABEL} (no output yet)`);
       expect(waits).toEqual([{ ms: 5000, endedBy: 'cancel' }]);
       expect(attempts).toBe(1);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0 });
@@ -1023,7 +1022,7 @@ describe('a cancel reaches the whole run', () => {
       const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
       const sub = internal(h.subagent);
       const acquire = sub.acquireSlot.bind(h.subagent);
-      sub.acquireSlot = (_slotTimeoutMs?: number, cancelled?: Promise<never>) => acquire(50, cancelled);
+      sub.acquireSlot = (kind: 'spawn' | 'fork', _slotTimeoutMs?: number, cancelled?: Promise<never>) => acquire(kind, 50, cancelled);
       try {
         await h.subagent.handleToolCall(spawn('lead'));
         await until(() => h.running('lead'));
@@ -1031,7 +1030,12 @@ describe('a cancel reaches the whole run', () => {
         await h.subagent.handleToolCall({ ...call('child'), callerAgentName: lead });
         expect(sub.parentMap.get('child')).toBe(lead); // taken as it queued
         const child = await outcome(h, 'child');
-        expect(child.text).toContain('Timed out waiting for a concurrency slot');
+        expect(child.text).toContain(
+          `${call === fork ? "Fork 'child'" : "Subagent 'child'"} didn't start, so nothing ran: no concurrency slot opened within 50 ms ` +
+          '(1 running against a limit of 1, 0 others waiting). Wait for one of the subagents below to finish, or raise the limit ' +
+          `with subagent--concurrency, then call subagent--${call === fork ? 'fork' : 'spawn'} again. Start no more than 1 at a time ` +
+          'here.\nSlots held by:\n  - lead [spawn] ',
+        );
         expect(sub.parentMap.has('child')).toBe(false);
       } finally { await h.cleanup(); }
     }, 20_000);
@@ -1379,7 +1383,7 @@ describe('a name means one subagent until its result has come back', () => {
       sub.activeSubagents.get('spawn-scout')!.lastActivityAt = Date.now() - 200_000;
       expect(sub.reclaimZombieSlots()).toBe(1);
       await until(() => delivered.requests.length === 1);
-      expect(delivered.messages.at(-1)).toContain('[Terminated: zombie]');
+      expect(delivered.messages.at(-1)).toContain(ZOMBIE_LABEL);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
       expect(sub.asyncHandles.has('scout')).toBe(false);
     } finally { await h.cleanup(); }
@@ -1446,4 +1450,94 @@ describe('a name means one subagent until its result has come back', () => {
       expect((await h.subagent.handleToolCall(spawn('scout'))).success).toBe(true);
     } finally { await h.cleanup(); }
   }, 20_000);
+});
+
+describe('with the clock held, agent names stay new to agent-framework, and until() still gives up', () => {
+  // agent-framework refuses to create an agent under a name it has seen in
+  // the framework's life. These cases hold the clock, so every attempt in
+  // them starts in the same millisecond, and the clock is given back after
+  // each case, one that times out included.
+  const realNow = Date.now;
+  const holdClock = (now = realNow()) => { Date.now = () => now; };
+  afterEach(() => { Date.now = realNow; });
+  const ran = (speech: string) => ({ speech, toolCallsCount: 0 });
+  /** The number an agent name ends in. */
+  const stampOf = (agentName: string) => Number(/-(\d+)$/.exec(agentName)?.[1]);
+
+  test('until() still gives up while the clock is held', async () => {
+    holdClock();
+    let error: unknown;
+    try { await until(() => false, 50); } catch (err) { error = err; }
+    expect(String(error)).toContain('not brought about within 50 ms');
+  }, 2_000);
+
+  test('a name\'s number is the time when no earlier name has reached it', async () => {
+    // A minute past any number given so far, so the time is what decides.
+    const now = realNow() + 60_000;
+    holdClock(now);
+    const names: string[] = [];
+    const h = await harness({ maxRetries: 0 }, async (agent) => { names.push(agent.name); return ran('done'); });
+    try {
+      await h.subagent.handleToolCall(spawn('scout'));
+      expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'done' });
+      expect(names).toEqual([`spawn-scout-${now}`]);
+    } finally { await h.cleanup(); }
+  }, 20_000);
+
+  for (const call of [spawn, fork]) {
+    const shapes = call === spawn
+      ? [/^spawn-scout-\d+$/, /^spawn-scout-\d+$/]
+      : [/^scout-d1-\d+$/, /^scout-d1-retry1-\d+$/];
+
+    test(`a ${call.name}'s retry starts in the same millisecond as the attempt before it`, async () => {
+      holdClock();
+      const names: string[] = [];
+      const h = await harness({ maxRetries: 1 }, async (agent) => {
+        names.push(agent.name);
+        if (names.length === 1) throw new Error('503 overloaded');
+        return ran('second');
+      });
+      internal(h.subagent).waitOrStop = async () => null; // retry at once
+      try {
+        await h.subagent.handleToolCall(call('scout'));
+        expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'second' });
+        expect(names).toHaveLength(2);
+        expect(names[0]).toMatch(shapes[0]);
+        expect(names[1]).toMatch(shapes[1]);
+        expect(stampOf(names[1])).toBeGreaterThan(stampOf(names[0]));
+      } finally { await h.cleanup(); }
+    }, 20_000);
+
+    test(`a new ${call.name} run under a name, and its retry, start in the same millisecond as the last run's`, async () => {
+      holdClock();
+      const names: string[] = [];
+      // Each run's first attempt fails and its retry gives the result.
+      const h = await harness({ maxRetries: 1 }, async (agent) => {
+        names.push(agent.name);
+        if (names.length % 2 === 1) throw new Error('503 overloaded');
+        return ran(`run ${names.length / 2}`);
+      });
+      const sub = internal(h.subagent);
+      sub.waitOrStop = async () => null; // retry at once
+      try {
+        await h.subagent.handleToolCall(call('scout'));
+        expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'run 1' });
+        await until(() => !sub.asyncHandles.has('scout')); // its result has come back
+        await h.subagent.handleToolCall(call('scout'));
+        expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'run 2' });
+        expect(names).toHaveLength(4);
+        expect(names[2]).toMatch(shapes[0]);
+        expect(names[3]).toMatch(shapes[1]);
+        const stamps = names.map(stampOf);
+        expect(stamps).toEqual([...stamps].sort((a, b) => a - b));
+        expect(new Set(stamps).size).toBe(4);
+      } finally { await h.cleanup(); }
+    }, 20_000);
+  }
+
+  // Last in the file, so what runs after it in the same process has the
+  // real clock.
+  test('the clock is the real one again after the cases that held it', () => {
+    expect(Date.now).toBe(realNow);
+  });
 });

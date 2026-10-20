@@ -218,14 +218,16 @@ impressionistic with age and depth.
   When `workspace--read` is available, use it to read large files in bounded pages.
   Line pages use `offset` and `limit`. For long lines or spill files, use
   `offsetChars` and `limitChars`; continue with the returned `nextOffsetChars`
-  until it is `null`, keeping `limitChars`. Choose a page size whose serialized
-  result fits the inline cap. Character offsets count UTF-16
+  until it is `null`, keeping `limitChars`. Choose a page size whose result
+  fits the inline cap. Character offsets count UTF-16
   code units; do not mix character and line parameters. The spill notice
   supplies a bounded read command when a spill file was saved.
-  The inline cap counts serialized result characters. JSON escaping and metadata
-  can add characters to object results. When `maxMessageTokens` is positive,
-  the effective cap is at most `maxMessageTokens * 4` characters. Raising the
-  total context budget does not change this per-result limit.
+  The inline cap counts a result's characters as you receive it: a result that
+  reaches you as an object counts as its JSON, where escaping and field names
+  add characters, and one that reaches you as text counts as that text. When
+  `maxMessageTokens` is positive, the effective cap is at most
+  `maxMessageTokens * 4` characters. Raising the total context budget does not
+  change this per-result limit.
 - **Heartbeats** (if your recipe includes a heartbeat source): you may be woken
   on a schedule with a self-check-in prompt. That's a normal wake, not a user
   message.

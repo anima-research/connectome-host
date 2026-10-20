@@ -36,6 +36,15 @@ import type {
   ToolCall,
   ToolResult,
 } from '@animalabs/agent-framework';
+import { shown } from './shown.js';
+import { unknownToolResult } from './unknown-tool.js';
+
+/** What a refused channel_idle_limits can't say for the rest of its
+ *  agent_settings call: agent-framework applies each settings extension in
+ *  turn and then the core patch, so an extension's throw leaves the ones
+ *  before it applied and the core patch not (0.22.3). */
+const OTHER_SETTINGS =
+  'Other settings given in the same call may not all have been applied: agent_settings with action "get" shows each as it stands.';
 
 export interface SubscriptionGcConfig {
   /** Default ambient-character budget per channel before auto-close. */
@@ -207,13 +216,7 @@ export class SubscriptionGcModule implements Module {
           },
         };
       default:
-        return {
-          success: false,
-          error:
-            `Unknown tool: ${call.name}. Idle-limit controls live in agent_settings ` +
-            `(field channel_idle_limits).`,
-          isError: true,
-        };
+        return unknownToolResult(this, call.name, 'Idle-limit controls live in agent_settings (field channel_idle_limits).');
     }
   }
 
@@ -264,18 +267,23 @@ export class SubscriptionGcModule implements Module {
         if (raw === undefined) return this.settingsSnapshot();
         if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
           throw new Error(
-            'channel_idle_limits must be an object mapping channel ids to a ' +
-            'positive number, "off", or "default"/null',
+            "channel_idle_limits wasn't changed: it must be an object mapping channel ids to a " +
+            `positive number, "off", or "default"/null, not ${shown(raw)}. ${OTHER_SETTINGS}`,
           );
         }
         // All-or-nothing: validate the full patch into a staging copy and
         // swap only if every entry passes. Mutating live state per-entry
         // would leave earlier entries active (limitFor reads the map
         // directly, and any later flush persists them) after a failure the
-        // agent was told was rejected.
+        // agent was told was rejected. Every bad entry is named at once.
         const staged = { ...this.state.overrides };
+        const bad: string[] = [];
+        let emptyId = false;
         for (const [channelId, value] of Object.entries(raw as Record<string, unknown>)) {
-          if (channelId.length === 0) throw new Error('channel id must be non-empty');
+          if (channelId.length === 0) {
+            emptyId = true;
+            continue;
+          }
           const numeric =
             typeof value === 'number'
               ? value
@@ -289,11 +297,20 @@ export class SubscriptionGcModule implements Module {
           } else if (Number.isFinite(numeric) && numeric > 0) {
             staged[channelId] = Math.round(numeric);
           } else {
-            throw new Error(
-              `channel_idle_limits[${JSON.stringify(channelId)}] must be a positive ` +
-              'number, "off", or "default"/null (no entries were applied)',
-            );
+            bad.push(`${JSON.stringify(channelId)}: ${shown(value)}`);
           }
+        }
+        if (bad.length > 0 || emptyId) {
+          const others = Object.keys(raw).length - bad.length - (emptyId ? 1 : 0);
+          throw new Error(
+            "channel_idle_limits wasn't changed, and none of its entries were applied." +
+            (bad.length > 0
+              ? ` ${bad.length === 1 ? 'This entry is' : 'These entries are'} neither a positive number, "off", nor "default"/null (a number given as text is digits only): ${bad.join(', ')}.`
+              : '') +
+            (emptyId ? ' A channel id is empty: give each channel by its id.' : '') +
+            (others > 0 ? ` The other ${others === 1 ? 'entry was' : `${others} entries were`} fine as given.` : '') +
+            ` ${OTHER_SETTINGS}`,
+          );
         }
         this.state.overrides = staged;
         this.persistNow();

@@ -27,6 +27,7 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
   const adapter = new MockAdapter({ defaultResponse: 'ok' });
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({
+    provider: 'mock',
     parentAgentName: 'parent',
     defaultModel: 'mock',
     defaultMaxTokens: 256,
@@ -110,6 +111,7 @@ async function makeBudgetHarness(opts: {
   const adapter = new MockAdapter({ defaultResponse: 'ok' });
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({
+    provider: 'mock',
     parentAgentName: 'parent',
     defaultModel: 'mock',
     defaultMaxTokens: opts.moduleDefaultMaxTokens,
@@ -205,7 +207,7 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
 
       // Schema claim: "Async tasks have no default timeout."
       // If the claim holds → settled.ok === true, elapsed ≈ SUBAGENT_WORK (~3s).
-      // If the claim is wrong → settled.ok === false, err "timed out after 1000ms".
+      // If the claim is wrong → settled.ok === false, err "… its time limit of 1 s ran out …".
       expect(settled.ok).toBe(true);
       expect(elapsed).toBeGreaterThanOrEqual(SUBAGENT_WORK - 200);
     } finally {

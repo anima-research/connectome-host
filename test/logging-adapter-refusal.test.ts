@@ -5,7 +5,7 @@
  * streamed refusals (main driver's job) and non-refusal completions.
  */
 import { test, expect } from 'bun:test';
-import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { LoggingAnthropicAdapter, offPathRefusalAlert } from '../src/logging-adapter.js';
 
 function makeAdapter() {
   const adapter = new LoggingAnthropicAdapter({ apiKey: 'test-key' }, '/tmp/llm-test.jsonl', () => ({ enabled: false, budgetTokens: 0 }));
@@ -20,7 +20,7 @@ function makeAdapter() {
       stopReason
         ? {
             response: {
-              usage: { inputTokens: 64_000, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
+              usage: { inputTokens: 1_000, outputTokens: 3, cacheReadTokens: 60_000, cacheCreationTokens: 3_000 },
               stopReason,
               raw: { stop_reason: stopReason, ...(category ? { stop_details: { category } } : {}) },
             },
@@ -31,7 +31,7 @@ function makeAdapter() {
   return { adapter, fired, observe };
 }
 
-test('complete() refusal fires the dragnet with category + size', () => {
+test('complete() refusal fires the dragnet with category + the whole prompt\'s size', () => {
   const { fired, observe } = makeAdapter();
   observe('complete', 'refusal', 'reasoning_extraction');
   expect(fired.length).toBe(1);
@@ -57,4 +57,14 @@ test('non-refusal completions and throwing callbacks are harmless', () => {
   expect(fired.length).toBe(0);
   adapter.onRefusal = () => { throw new Error('observer bug'); };
   expect(() => observe('complete', 'refusal', 'cyber')).not.toThrow();
+});
+
+test("the ops alert says which call refused, and keeps 'refusal-offpath' as failures.log's kind", () => {
+  const alert = offPathRefusalAlert({ kind: 'complete', category: 'cyber', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
+  expect(alert.kind).toBe('refusal-offpath');
+  expect(alert.message).toBe('off-path refusal (category=cyber) on a 37-message complete() call (~64k tok) — likely compression/summarizer');
+  // agent-framework's failures.log spreads the data after the alert's kind.
+  expect(alert.data).toEqual({ call: 'complete', category: 'cyber', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
+  const unknown = offPathRefusalAlert({ kind: 'complete', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 });
+  expect(unknown.message).toBe('off-path refusal (category=unknown) on a 37-message complete() call (~64k tok) — likely compression/summarizer');
 });

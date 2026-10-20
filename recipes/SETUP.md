@@ -15,8 +15,8 @@ An AI research agent that can:
 
 | Tool | Why | Install |
 |------|-----|---------|
-| [Node.js](https://nodejs.org/) 20+ | Runtime | `nvm install 20` or download from nodejs.org |
-| [Bun](https://bun.sh/) | App runner | `curl -fsSL https://bun.sh/install \| bash` |
+| [Node.js](https://nodejs.org/) 22.12+ | Runtime | `nvm install 22` or download from nodejs.org |
+| [Bun](https://bun.sh/) 1.4.3+ | App runner | `curl -fsSL https://bun.sh/install \| bash` |
 | [Anthropic API key](https://console.anthropic.com/) | LLM access | Sign up at console.anthropic.com |
 
 ## Step 1: Install ConnectomeHost

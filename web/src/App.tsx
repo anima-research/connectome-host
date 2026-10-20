@@ -5,7 +5,8 @@ import DOMPurify from 'dompurify';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './TreeSidebar';
-import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
+import { StreamPanel } from './Stream';
+import { formatStreamEvent, withStreamLines, type StreamLine } from '@conhost/web/stream-lines';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
@@ -39,6 +40,7 @@ import {
   type SurgeryResultMessage,
   type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
+import { applyTrace, conversationAgentOf, streamEventFor } from '@conhost/web/agent-streams';
 import {
   Lightbox,
   MediaView,
@@ -408,7 +410,7 @@ export function App() {
   const [opLogLoading, setOpLogLoading] = createSignal(false);
 
   const previewOf = (m: Message): string => {
-    const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
+    const who = m.participant === 'assistant' ? (conversationAgentOf(welcome()) ?? 'assistant') : m.participant;
     const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
   };
@@ -833,6 +835,10 @@ export function App() {
     if (welcomeSessionId !== null && msg.session.id !== welcomeSessionId) {
       clearMcpl();
       if (sidebarTab() === 'mcp') refreshMcpl();
+      // An open panel shows the old session: a node of its tree, or its
+      // branches. A node of the new tree can carry an old node's name, and
+      // its stream would join the old lines. So the panel closes.
+      closePanel();
     }
     welcomeSessionId = msg.session.id;
     const key = `${msg.session.id}/${msg.branch.id}`;
@@ -945,7 +951,7 @@ export function App() {
     setBulkRemaining(want);
     requestOlder(Math.min(want, HISTORY_PAGE_CAP));
   };
-  const stopLoadOlder = (): void => setBulkRemaining(0);
+  const stopLoadOlder = (): void => { setBulkRemaining(0); };
 
   const applyHistoryPage = (msg: HistoryPageMessage): void => {
     if (msg.corrId !== pendingHistoryCorr) return;
@@ -1016,12 +1022,12 @@ export function App() {
     streamTokenBuffer = streamTokenBuffer.slice(newlineIdx + 1);
     if (completed) {
       const lines = completed.split('\n').filter(s => s.length > 0);
-      setStreamLines((prev) => [...prev, ...lines.map(s => ({
+      setStreamLines((prev) => withStreamLines(prev, lines.map(s => ({
         id: streamLineId(),
         kind: 'token' as const,
         text: s,
         color: 'text-cyan-200',
-      }))]);
+      }))));
     }
   };
 
@@ -1029,12 +1035,12 @@ export function App() {
     if (streamTokenBuffer.length === 0) return;
     const text = streamTokenBuffer;
     streamTokenBuffer = '';
-    setStreamLines((prev) => [...prev, {
+    setStreamLines((prev) => withStreamLines(prev, [{
       id: streamLineId(),
       kind: 'token' as const,
       text,
       color: 'text-cyan-200',
-    }]);
+    }]));
   };
 
   /** Tear down any peek subscription tied to the currently focused node.
@@ -1267,6 +1273,7 @@ export function App() {
         onTurnSettled: () => {
           if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
         },
+        conversationAgent: () => conversationAgentOf(welcome()),
         onSurgeryResult,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
@@ -1291,34 +1298,13 @@ export function App() {
   });
 
   /** Route a server message into the stream pane *if* it matches the focused
-   *  node's StreamSource. Each kind has its own match rule. */
+   *  node's StreamSource (streamEventFor holds each kind's match rule). */
   const handleStreamMessage = (msg: WebUiServerMessage): void => {
     if (panelMode() !== 'stream') return;
     const node = focusedNode();
     if (!node) return;
-    const src = node.streamSource;
-    if (src.kind === 'none') return;
-
-    if (src.kind === 'peek' && msg.type === 'peek' && msg.scope === src.scope) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
-
-    if (msg.type !== 'child-event') return;
-
-    if (src.kind === 'child-event-all' && msg.childName === src.childName) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
-
-    if (
-      src.kind === 'child-event-agent'
-      && msg.childName === src.childName
-      && (msg.event as { agentName?: string }).agentName === src.agentName
-    ) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
+    const event = streamEventFor(node.streamSource, msg as Parameters<typeof streamEventFor>[1]);
+    if (event) ingestStreamEvent(event);
   };
 
   const ingestStreamEvent = (event: { type: string; [k: string]: unknown }): void => {
@@ -1328,7 +1314,7 @@ export function App() {
     }
     flushStreamBuffer();
     const line = formatStreamEvent(event);
-    if (line) setStreamLines((prev) => [...prev, line]);
+    if (line) setStreamLines((prev) => withStreamLines(prev, [line]));
   };
 
   const submit = (): void => {
@@ -1753,6 +1739,7 @@ export function App() {
 function streamHint(src: StreamSource): string | undefined {
   switch (src.kind) {
     case 'peek': return 'subagent';
+    case 'trace-agent': return 'agent';
     case 'child-event-all': return 'fleet child';
     case 'child-event-agent': return `agent in ${src.childName}`;
     default: return undefined;
@@ -1814,6 +1801,9 @@ interface HandlerHooks {
   requestHostMode: () => void;
   /** A turn ended — refresh host mode if a quiesce was still draining. */
   onTurnSettled: () => void;
+  /** The agent whose conversation the main view shows: the welcome's first
+   *  (conversationAgentOf, src/web/agent-streams.ts). */
+  conversationAgent: () => string | undefined;
   onSurgeryResult: (result: SurgeryResultMessage) => void;
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   /** An operator:action trace landed — refresh the log if it is on screen. */
@@ -1862,61 +1852,9 @@ function handleServerMessage(
     case 'call-ledger':
       hooks.setCallLedger(msg.ledger);
       return;
-    case 'trace': {
-      const e = msg.event;
-      switch (e.type) {
-        case 'inference:tokens': {
-          const content = e.content;
-          if (typeof content === 'string') {
-            hooks.appendStreamToken(content, typeof e.blockType === 'string' ? e.blockType : undefined);
-          }
-          return;
-        }
-        case 'inference:content_block': {
-          if (typeof e.phase === 'string') hooks.handleContentBlock(e.phase);
-          return;
-        }
-        case 'inference:completed':
-        case 'inference:failed':
-          hooks.finishStream();
-          // A quiesce that was still draining may have just settled; the
-          // framework emits no trace for "drained", so re-pull the snapshot.
-          hooks.onTurnSettled();
-          return;
-        case 'inference:tool_calls_yielded': {
-          const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
-          if (calls.length === 0) return;
-          hooks.appendToolUseBlocks(calls);
-          return;
-        }
-        case 'tool:completed': {
-          if (typeof e.callId === 'string') {
-            hooks.updateToolStatus(e.callId, 'done',
-              typeof e.durationMs === 'number' ? e.durationMs : undefined);
-          }
-          return;
-        }
-        case 'tool:failed': {
-          if (typeof e.callId === 'string') {
-            hooks.updateToolStatus(e.callId, 'failed',
-              typeof e.durationMs === 'number' ? e.durationMs : undefined);
-          }
-          return;
-        }
-        case 'ops:alert':
-          hooks.onOpsAlert(e);
-          return;
-        case 'operator:action':
-          hooks.onOperatorAction();
-          return;
-        default:
-          // Host serving-state transitions (host:quiesce / host:resume /
-          // host:quiesced_boot) may originate elsewhere (Discord host
-          // command, API) — pull a fresh snapshot rather than parsing them.
-          if (typeof e.type === 'string' && e.type.startsWith('host:')) hooks.requestHostMode();
-          return;
-      }
-    }
+    case 'trace':
+      if (typeof msg.event.type === 'string') applyTrace(msg.event, hooks, hooks.conversationAgent());
+      return;
     case 'command-result': {
       hooks.appendMessage({
         id: nextMessageId(),

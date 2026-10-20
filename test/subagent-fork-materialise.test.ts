@@ -79,12 +79,49 @@ describe('materialiseStructuralFork', () => {
     const resultTurn = out![2];
     const results = resultTurn.content.filter(b => b.type === 'tool_result');
     expect(results.length).toBe(1);
-    const matchingResult = results[0] as { toolUseId: string; content: string };
+    const matchingResult = results[0] as { toolUseId: string; toolName?: string; content: string };
     expect(matchingResult.toolUseId).toBe('toolu_B');
+    // Named, as agent-framework stores every result, for XML replay's <tool_name>.
+    expect(matchingResult.toolName).toBe('subagent--fork');
     expect(matchingResult.content).toContain('Two parallel streams of you');
     expect(matchingResult.content).toContain('the self reading this is the fork');
     expect(matchingResult.content).toContain('B');  // the task / intention
     expect(matchingResult.content).not.toContain('Running in background');
+  });
+
+  test("an XML-mode turn's calls kept beside a removed sibling lose the round's raw text, which would replay the sibling", () => {
+    const raw = '<function_calls><invoke name="subagent--fork">A</invoke><invoke name="subagent--fork">B</invoke>' +
+      '<invoke name="read">r</invoke></function_calls>';
+    const compiled: Msg[] = [
+      userText('go'),
+      {
+        participant: 'researcher',
+        content: [
+          { type: 'tool_use', id: 'toolu_A', name: 'subagent--fork', input: { name: 'scout-a', task: 'A' }, rawXml: raw },
+          { type: 'tool_use', id: 'toolu_B', name: 'subagent--fork', input: { name: 'scout-b', task: 'B' }, rawXml: raw },
+          { type: 'tool_use', id: 'toolu_R', name: 'read', input: { path: 'r' }, rawXml: raw },
+        ] as ContentBlock[],
+      },
+    ];
+    const out = materialiseStructuralFork(compiled, 'toolu_B', 'scout-b', 'B', 1, 3)!;
+    const kept = out[1].content as unknown as Array<{ id: string; rawXml?: string }>;
+    expect(kept.map((b) => b.id)).toStrictEqual(['toolu_B', 'toolu_R']);
+    for (const b of kept) expect('rawXml' in b).toBe(false);
+    // The parent's own blocks are left as they were.
+    expect((compiled[1].content[1] as unknown as { rawXml?: string }).rawXml).toBe(raw);
+  });
+
+  test('a turn with no sibling fork keeps its raw text, replayed as the model wrote it', () => {
+    const raw = '<function_calls><invoke name="subagent--fork">B</invoke></function_calls>';
+    const compiled: Msg[] = [
+      userText('go'),
+      {
+        participant: 'researcher',
+        content: [{ type: 'tool_use', id: 'toolu_B', name: 'subagent--fork', input: { name: 'scout-b', task: 'B' }, rawXml: raw }] as ContentBlock[],
+      },
+    ];
+    const out = materialiseStructuralFork(compiled, 'toolu_B', 'scout-b', 'B', 1, 3)!;
+    expect((out[1].content[0] as unknown as { rawXml?: string }).rawXml).toBe(raw);
   });
 
   test('drops post-fork tail (peek/wait/zombie messages)', () => {
@@ -153,9 +190,12 @@ describe('materialiseStructuralFork', () => {
 
     const last = out![out!.length - 1];
     expect(last.participant).toBe('user');
-    const result = last.content[0] as { type: string; toolUseId: string; content: string };
+    const result = last.content[0] as { type: string; toolUseId: string; toolName?: string; content: string };
     expect(result.type).toBe('tool_result');
     expect(result.toolUseId).toBe('toolu_B');
+    expect(result.toolName).toBe('subagent--fork');
+    // The made message holds this call's result alone.
+    expect(last.content.length).toBe(1);
     expect(result.content).toContain('the self reading this is the fork');
   });
 

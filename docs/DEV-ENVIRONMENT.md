@@ -209,7 +209,11 @@ can't add env to a file server. A variable left only in `.env` is unset for
 the server, unless its entry (in the recipe or `mcpl-servers.json`) sets
 `inheritEnv: true`, which passes the host's whole environment, `.env` and
 every secret in it included, so prefer mapping the variables a server needs.
-An agent's own overlay can't set `inheritEnv`.
+An agent's own overlay can't set `inheritEnv`, `allowHostCommands`,
+`enabledCapabilities` or `toolLifecycle`: the boot leaves them out and
+the startup warnings say so, with where the operator sets each. Only a
+server the recipe defines itself, under an id `mcpl-servers.json` doesn't
+define, carries `allowHostCommands` or `enabledCapabilities`.
 
 **Run the host (headless), supervised,** from `<agent>-cm/`. Several things
 resolve from the working directory: Bun loads `.env` from it, `data/` is
@@ -234,8 +238,8 @@ systemd user unit in your home directory.
 
 ## 6. Runtimes
 
-- **bun** — runs the host (`bun src/index.ts …`).
-- **node ≥ 20** — runs the MCPL servers (node 22 also fine). nvm fine locally.
+- **bun ≥ 1.4.3** — runs the host (`bun src/index.ts …`).
+- **node ≥ 22.12** — builds the Web UI when the host installs, and runs the MCPL servers. nvm fine locally.
 - **Rust toolchain** — only to build `chronicle` from a checkout; the npm
   package ships prebuilt binaries.
 

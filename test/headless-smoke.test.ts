@@ -12,11 +12,12 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { connect as netConnect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -69,18 +70,6 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
 
-async function connectSocket(path: string, timeoutMs = 3_000): Promise<Socket> {
-  return new Promise((resolveConn, rejectConn) => {
-    const s = netConnect(path);
-    const timer = setTimeout(() => {
-      s.destroy();
-      rejectConn(new Error(`socket connect timeout: ${path}`));
-    }, timeoutMs);
-    s.once('connect', () => { clearTimeout(timer); resolveConn(s); });
-    s.once('error', (err) => { clearTimeout(timer); rejectConn(err); });
-  });
-}
-
 // --- test ----------------------------------------------------------------
 
 describe('headless daemon — Phase 1', () => {
@@ -125,7 +114,7 @@ describe('headless daemon — Phase 1', () => {
 
   test('protocol: ready → subscribe → command → reconnect → shutdown', async () => {
     // -- Connect 1: receive ready, run /help --
-    const sock1 = await connectSocket(socketPath);
+    const sock1 = await connectWhenAccepting(socketPath);
     const r1 = lineReader(sock1);
 
     await waitFor(
@@ -153,7 +142,7 @@ describe('headless daemon — Phase 1', () => {
     expect(child.exitCode).toBeNull();
 
     // -- Connect 2: fresh ready event --
-    const sock2 = await connectSocket(socketPath);
+    const sock2 = await connectWhenAccepting(socketPath);
     const r2 = lineReader(sock2);
 
     await waitFor(
@@ -187,5 +176,35 @@ describe('headless daemon — Phase 1', () => {
     expect(existsSync(pidPath)).toBe(false);
     expect(existsSync(logPath)).toBe(true);
     expect(readFileSync(logPath, 'utf-8').length).toBeGreaterThan(0);
+  }, 60_000);
+});
+
+describe('headless daemon: a fatal error', () => {
+  test('exits once headless.log holds what was written before it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-fatal-'));
+    let child: ChildProcess | undefined;
+    try {
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+      // A directory holds the socket's path, so listening fails once the log
+      // is open: the server's error is logged, then the start fails. Each
+      // write to headless.log lands 100 ms late, so an exit that doesn't
+      // wait for the log loses that line every time.
+      mkdirSync(join(dir, 'ipc.sock', 'taken'), { recursive: true });
+      child = spawn('bun', ['--preload', join(TEST_DIR, 'slow-log-writes.ts'), INDEX_PATH, recipe, '--headless'], {
+        cwd: dir,
+        env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-headless-fatal', DATA_DIR: dir, SLOW_LOG_WRITES_MS: '100' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = child;
+      const code = await new Promise<number | null>((resolveExit) => exited.once('exit', (c) => resolveExit(c)));
+      if (code !== 1) throw new Error(`the host exited ${code}, not 1; its stderr: ${stderr}`);
+      expect(readFileSync(join(dir, 'headless.log'), 'utf-8')).toContain('server error:');
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 60_000);
 });

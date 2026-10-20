@@ -1,9 +1,10 @@
 import { test, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const root = resolve(import.meta.dir, '..');
 
@@ -79,7 +80,7 @@ test('production headless receiver preserves Unicode commands at every byte boun
       } catch (error) { failure = error instanceof Error ? error : new Error(String(error)); }
     });
     await waitFor(() => existsSync(socketPath), 'headless startup', 15000);
-    socket = connect(socketPath);
+    socket = await connectWhenAccepting(socketPath);
     socket.on('error', error => { failure = error; });
     socket.setEncoding('utf8');
     let buffer = '';

@@ -4,9 +4,9 @@
 //
 // The error text is bounded (MAX_ERROR_CHARS): a provider can echo the whole
 // rejected request in its error body, and that text would otherwise sit in
-// the record beside the request it echoes. The generic writer's size guard
-// drops raw bodies, never the error, so the error bounds itself; the Anthropic
-// and Bedrock writers have no such guard, and keep the raw request whole.
+// the record beside the request it echoes. The size guard all three writers
+// share (logging-record.ts) drops raw bodies before the error, so the error
+// bounds itself.
 //
 // `errorChars`, set when the text was cut, is the whole length of the one text
 // that was cut: the generic record's `error` ("Name: message"), or the other

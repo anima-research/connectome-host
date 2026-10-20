@@ -206,7 +206,7 @@ travel over the WebSocket.
 | `/healthz` | health JSON: gate state, queued work, per-agent status and last inference |
 | `/quota` | subscription quota windows (`{"subscription": false}` on API keys) |
 | `/media/<messageId>/<block>[?agent=]` | one inline transcript image |
-| `/files/<mount>/<path>` | a workspace file: `403` for a path no mount holds or one leading out of its mount, a file that is itself a link (a recipe's mounts don't follow links) or one whose canonical path leaves its mount, `404` for a file the read can't give, a mount whose directory has gone among them, and `503` with no workspace or for a mount the read can't resolve after finding the file |
+| `/files/<mount>/<path>` | a workspace file. `403` for: a path no mount holds or one leading out of its mount; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
 | `/curve` | the context-curve page (reads `/debug/context/curve`) |
 | `/debug/context` and `/debug/context/{makeup,coverage,curve,preview,maintenance}` | context debugging — see [`debug-context-api.md`](./debug-context-api.md) |
 | `/debug/retrieval[/view]` | retrieval traces — see [`retrieval-traces.md`](./retrieval-traces.md) |
@@ -309,9 +309,10 @@ with that pattern.
 - **`/ws` upgrade gets 403 behind a proxy**: the Origin check rejected it.
   Forward the original `Host` header, or list the public origin in
   `allowedOrigins`.
-- **WebUI bundle not found at .../dist/web**: run `bun install` at the
-  package root; the `postinstall` script builds the SPA. For dev, run
-  `bun run build:web` from the package root.
+- **WebUI bundle not found at .../dist/web**: in a checkout, run
+  `bun install` at the repository root, whose `postinstall` script builds
+  the SPA, or `bun run build:web`. The npm package carries the SPA built,
+  so an installed package without it needs reinstalling.
 - **Disconnect banner stuck**: the host process may have crashed. Check
   `journalctl -u connectome-host -n 100` (or the equivalent for your
   init system). The SPA reconnects automatically once the host is back.

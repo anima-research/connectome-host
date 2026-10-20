@@ -36,8 +36,9 @@ export interface ObserverGrant {
   /** Human-readable label. Testimony, not identity — never treat as verified naming. */
   label: string;
   scopes: ObserverScope[];
-  /** Expiry, as the tools write it an ISO timestamp or null. The file may
-   *  hold any value Date.parse reads, which verifyHello reads the same way;
+  /** Expiry: as the tools write it, a date in ECMAScript's own form, alone
+   *  or with a time and a zone (Z or an offset), or null. The file may hold
+   *  any value Date.parse reads, which verifyHello reads the same way;
    *  absent, null, empty or any other falsy value means no expiry. */
   expires?: string | null;
   /** Protected grants cannot be revoked via the agent-facing tools
@@ -108,8 +109,9 @@ export type ObserversFileRead =
   | { kind: 'ok'; file: ObserversFile; problems: string[]; doc: GrantsDocument }
   | { kind: 'missing' }
   | { kind: 'unparsed'; problem: string }
-  /** `readFailed`: reading the file failed, which may not happen again. */
-  | { kind: 'unreadable'; problem: string; readFailed?: true };
+  /** `readFailed`: reading the file failed, which may not happen again.
+   *  `code`: that failure's code, such as EMFILE. */
+  | { kind: 'unreadable'; problem: string; readFailed?: true; code?: string };
 
 /** A grants document as found: an object whose `observers` entries may be
  *  of any shape, with whatever other fields it holds. */
@@ -123,14 +125,15 @@ export function readObserversFile(path: string): ObserversFileRead {
   try {
     text = readFileSync(path, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT') {
       // A link whose target is gone reads as ENOENT too, but the path is
       // there, and writing would replace the link rather than make a first file.
       return isLink(path)
         ? { kind: 'unreadable', problem: `is a link to a file that can't be read (${errorText(err)})`, readFailed: true }
         : { kind: 'missing' };
     }
-    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})`, readFailed: true };
+    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})`, readFailed: true, ...(typeof code === 'string' ? { code } : {}) };
   }
   let parsed: unknown;
   try {

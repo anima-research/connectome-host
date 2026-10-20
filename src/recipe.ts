@@ -11,8 +11,9 @@
  *   - Built-in default (generic assistant)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import type { MountConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
@@ -370,13 +371,18 @@ export interface RecipeAgent {
    * RecipeMockConfig. */
   mock?: RecipeMockConfig;
   /**
-   * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
-   * turn triggers an automatic rewind of the triggering turn + retry (keeping
-   * the agent on its own model). See agent-framework AgentConfig.refusalHandling.
+   * Content-refusal handling, handed whole to agent-framework's
+   * AgentConfig.refusalHandling (framework-agent-config.ts), where
+   * agent-framework documents `retries`, `autoRewind` and `maxRewinds`.
    */
   refusalHandling?: {
+    retries?: number;
     autoRewind?: boolean;
     maxRewinds?: number;
+    /**
+     * @deprecated No agent-framework release reads it, so on any release it
+     * changes nothing. A recipe that still sets it loads as before.
+     */
     announceHumanTurns?: boolean;
   };
 }
@@ -657,10 +663,13 @@ export interface RecipeCredentialFileField {
 }
 
 /**
- * Subset of MountConfig exposed to recipes.
- * Intentionally omits watchDebounceMs and followSymlinks. The maximum file
- * size is operator-configurable because binary service artifacts may
- * legitimately exceed the conservative framework default.
+ * A recipe's workspace mount: every key of agent-framework's MountConfig but
+ * those named in `MountKeyNotPassedOn`, passed to the framework as given but
+ * for `path`, which is resolved
+ * (workspace-mounts.ts), with `mode` and `watch` optional because the host
+ * defaults them. The maximum file size is
+ * operator-configurable because binary service artifacts may legitimately
+ * exceed the conservative framework default.
  */
 export interface RecipeWorkspaceMount {
   name: string;
@@ -670,6 +679,24 @@ export interface RecipeWorkspaceMount {
   ignore?: string[];
   /** Maximum file size in bytes (defaults to the framework's 5 MiB limit). */
   maxFileSize?: number;
+  /**
+   * The most entries one walk of this mount takes: files, and links or other
+   * entries that aren't directories (agent-framework's default, 5000, unless
+   * set). A whole number from 1 to `Number.MAX_SAFE_INTEGER`, as
+   * agent-framework takes it; anything else stops the recipe loading, naming
+   * the mount. A sync that reaches the cap reports the rest as incomplete,
+   * and the next sync of the same scope resumes after the last entry it took,
+   * so repeated syncs cover a larger mount. agent-framework makes that place
+   * durable with the store's next sync, so if the machine goes down before
+   * then, a sync can start again from an earlier place. A watched mount's catch-up scan takes its
+   * turn in the same rotation, so on a mount over the cap a change made while
+   * the host was down waits for the rotation to reach it. Listings (`ls`,
+   * `glob`, `grep`) and an `on-agent-action` scan take up to the cap from
+   * their scope's start every time. It bounds what a walk observes, not its
+   * work: directories don't count, and each one the walk visits is read
+   * whole.
+   */
+  walkCap?: number;
   /**
    * Request inference when files in this mount change. Pair with
    * `watch: 'always'` so chokidar actually observes the mount.
@@ -683,6 +710,19 @@ export interface RecipeWorkspaceMount {
    * so other agents' chokidar watchers actually see the change.
    */
   autoMaterialize?: boolean;
+  /** With `watch: 'always'`, how long changes are gathered before the workspace looks at them, in ms (the framework's default is 300). */
+  watchDebounceMs?: number;
+  /** With `watch: 'always'`, how often the watcher checks that the mount's directory is still the one it watches, in ms (the framework's default is 2000). */
+  watchRootPollMs?: number;
+  /**
+   * Passed to agent-framework's mount: whether the workspace follows a
+   * symlink inside the mount (the framework's default is off), a file that
+   * is itself a link and, from the framework's release with
+   * anima-research/agent-framework#468, a link among a path's directories
+   * too, which earlier releases follow either way. The framework still
+   * doesn't read through a link whose target lies outside the mount.
+   */
+  followSymlinks?: boolean;
 }
 
 export interface RecipeModules {
@@ -754,8 +794,7 @@ export interface RecipeModules {
      * Truncate content beyond this many bytes, appending a
      * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
      * under the cap when a multibyte character straddles it). Reads ask for
-     * no more than this, which agent-framework 0.22.1 exceeds only for a
-     * file that grows while it's read. Default 32768.
+     * no more than this. Default 32768.
      */
     maxBytes?: number;
     /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
@@ -1220,6 +1259,15 @@ export interface Recipe {
   toolClassOverrides?: Record<string, string[]>;
 }
 
+export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
+
+/** The provider transport the host actually builds for this recipe. One
+ *  adapter serves every stream in the process (resident, subconscious,
+ *  forks), so this is also what any subagent stream runs on. */
+export function resolveProvider(recipe: Recipe): RecipeProvider {
+  return recipe.agent.provider ?? 'anthropic';
+}
+
 // ---------------------------------------------------------------------------
 // Default recipe
 // ---------------------------------------------------------------------------
@@ -1632,6 +1680,109 @@ const recipeKeyListsInStep: [
   ListsExactly<keyof RecipeMockConfig & string, typeof RECIPE_AGENT_MOCK_KEYS>,
 ] = [true, true, true, true];
 void recipeKeyListsInStep;
+
+const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
+const MOUNT_MODES = ['read-write', 'read-only'] as const;
+const MOUNT_WATCH_VALUES = ['always', 'on-agent-action', 'never'] as const;
+const MOUNT_WAKE_OPS = ['created', 'modified', 'deleted'] as const;
+/** The longest delay a timer keeps: Bun's and Node's run a longer or negative one at once. */
+const TIMER_MS_MAX = 2147483647;
+
+/** Values in a sentence: `"a" or "b"`, `"a", "b" or "c"`. */
+function listed(values: readonly string[]): string {
+  const quoted = values.map((v) => `"${v}"`);
+  return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} or ${quoted[quoted.length - 1]}` : quoted.join('');
+}
+
+/** What a value must be, for the refusal's words, or null when it is that. */
+type MountValueCheck = (value: unknown) => string | null;
+const oneOf = (values: readonly string[]): MountValueCheck => (v) => values.includes(v as string) ? null : listed(values);
+const nonEmptyText: MountValueCheck = (v) => typeof v === 'string' && v !== '' ? null : 'a non-empty string';
+const trueOrFalse: MountValueCheck = (v) => typeof v === 'boolean' ? null : 'true or false';
+/**
+ * A whole number of milliseconds from `min` to the longest delay a timer
+ * keeps. A timer truncates a fraction, so a fraction isn't the delay that runs.
+ */
+const timerMs = (min: number): MountValueCheck => (v) =>
+  typeof v === 'number' && Number.isInteger(v) && v >= min && v <= TIMER_MS_MAX ? null
+    : `a whole number of milliseconds from ${min} to ${TIMER_MS_MAX}`;
+
+/**
+ * Mount keys an agent-framework release adds before the host passes them on:
+ * `include`, from agent-framework #536, and `backend`, from agent-framework
+ * #564. The checks below and the recipe's mount type leave them out, so this
+ * file typechecks against a framework with the keys and against one without
+ * them, and a recipe that gives one is refused as an unknown key, as before.
+ * The host's step to the release that carries a key gives it a check here,
+ * adds it to `RecipeWorkspaceMount`, and takes it out of this list. For
+ * `backend`, that step also decides a direct mount's `mode`, since the mount
+ * builder defaults it to `'read-write'` (workspace-mounts.ts), which
+ * agent-framework #564 refuses on a direct mount.
+ */
+type MountKeyNotPassedOn = 'include' | 'backend';
+
+/**
+ * Each workspace mount key, with what its value must be: what the framework
+ * reads as the recipe means it. It's typed by the framework's `MountConfig`,
+ * so a framework release that adds a mount key fails this typecheck until
+ * either the key has a check here, and the mount builder then passes it on
+ * unchanged (workspace-mounts.ts), or it is named in `MountKeyNotPassedOn`.
+ * A key these checks don't name stops the recipe loading (#275), one named
+ * in `MountKeyNotPassedOn` included.
+ */
+const MOUNT_KEY_CHECKS: { readonly [K in Exclude<keyof MountConfig, MountKeyNotPassedOn>]-?: MountValueCheck } = {
+  name: nonEmptyText,
+  path: nonEmptyText,
+  mode: oneOf(MOUNT_MODES),
+  watch: oneOf(MOUNT_WATCH_VALUES),
+  // 0 is no wait, which the framework runs as that.
+  watchDebounceMs: timerMs(0),
+  // A poll of 0 runs as often as one of 1: the framework has no "off" for it.
+  watchRootPollMs: timerMs(1),
+  ignore: (v) => Array.isArray(v) && v.every((p) => typeof p === 'string') ? null : 'an array of strings',
+  followSymlinks: trueOrFalse,
+  // A cap of 0 refuses every file that isn't empty: the framework has no "no limit".
+  maxFileSize: (v) => typeof v === 'number' && Number.isInteger(v) && v >= 1 ? null : 'a whole number of bytes, 1 or more',
+  // The framework refuses anything else when the workspace is built.
+  walkCap: (v) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 ? null
+    : `a whole number of entries from 1 to ${Number.MAX_SAFE_INTEGER}`,
+  wakeOnChange: (v) => typeof v === 'boolean' || (Array.isArray(v) && v.every((op) => (MOUNT_WAKE_OPS as readonly unknown[]).includes(op)))
+    ? null : `true, false, or a list of ${listed(MOUNT_WAKE_OPS)}`,
+  autoMaterialize: trueOrFalse,
+};
+const RECIPE_MOUNT_KEYS = Object.keys(MOUNT_KEY_CHECKS) as Array<Exclude<keyof MountConfig, MountKeyNotPassedOn> & string>;
+/** The keys a recipe's mount must give; the builder supplies `mode` and `watch`. */
+const REQUIRED_MOUNT_KEYS: readonly string[] = ['name', 'path'];
+
+type IsNever<T> = [T] extends [never] ? true : false;
+// "Type 'true' is not assignable to type 'false'" here means agent-framework's
+// MountConfig gained or lost a key or a value the host's types and checks
+// don't follow yet.
+const mountListsInStep: [
+  ListsExactly<keyof Extract<RecipeModules['workspace'], object> & string, typeof RECIPE_WORKSPACE_KEYS>,
+  ListsExactly<keyof RecipeWorkspaceMount & string, Array<Exclude<keyof MountConfig, MountKeyNotPassedOn> & string>>,
+  ListsExactly<MountConfig['mode'], typeof MOUNT_MODES>,
+  ListsExactly<Exclude<MountConfig['watch'], undefined>, typeof MOUNT_WATCH_VALUES>,
+  ListsExactly<Extract<Exclude<MountConfig['wakeOnChange'], undefined>, readonly unknown[]>[number], typeof MOUNT_WAKE_OPS>,
+  IsNever<Exclude<MountConfig['wakeOnChange'], undefined | boolean | readonly unknown[]>>,
+] = [true, true, true, true, true, true];
+void mountListsInStep;
+
+/**
+ * A key a section doesn't have, refused with what to write instead, when the
+ * key is a known mistake, or else the nearest key it does have, when there is
+ * one.
+ */
+function unknownKeyError(where: string, key: string, known: readonly string[], instead?: string): Error {
+  const near = instead === undefined ? nearestRecipeKey(key, known) : null;
+  const hint = instead !== undefined ? ` (${instead})` : near ? ` (did you mean "${near}"?)` : '';
+  return new Error(`${where} has unknown key ${JSON.stringify(key)}${hint}; known: ${known.join(', ')}`);
+}
+
+/** A mount key recipes have used that the host never read, with what says it. */
+const MOUNT_KEY_INSTEAD: Record<string, string> = {
+  readOnly: 'mode: "read-only" makes a mount read-only, and a mount is read-write without it',
+};
 
 /** Keys that were renamed or removed, with what replaced them. */
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
@@ -2344,27 +2495,53 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
+  // A `modules` that isn't an object would read every module setting as
+  // absent and build the default mounts, read-write `products` included.
+  // `null` is refused too, as for `extensions`.
+  if (obj.modules !== undefined && (typeof obj.modules !== 'object' || obj.modules === null || Array.isArray(obj.modules))) {
+    throw new Error('modules must be an object of module settings, not null or a list');
+  }
+
   // Validate workspace mounts if present
   if (obj.modules && typeof obj.modules === 'object') {
     const mods = obj.modules as Record<string, unknown>;
+    // Anything else would build the default mounts, read-write `products`
+    // included (a string such as "off"), or crash the mount builder (null).
+    if (mods.workspace !== undefined && typeof mods.workspace !== 'boolean'
+        && (typeof mods.workspace !== 'object' || mods.workspace === null || Array.isArray(mods.workspace))) {
+      throw new Error('modules.workspace must be true, false or an object of settings, not null or a list');
+    }
     if (mods.workspace && typeof mods.workspace === 'object') {
       const ws = mods.workspace as Record<string, unknown>;
+      // A key the host doesn't read stops the load: a mount's keys decide
+      // what an agent can read and write, and a misspelt one would otherwise
+      // leave the mount as it would be without it (`readOnly: true` left a
+      // mount read-write).
+      for (const key of Object.keys(ws)) {
+        if (!(RECIPE_WORKSPACE_KEYS as readonly string[]).includes(key)) throw unknownKeyError('workspace', key, RECIPE_WORKSPACE_KEYS);
+      }
+      if (ws.configMount !== undefined && typeof ws.configMount !== 'boolean') {
+        throw new Error('workspace.configMount must be true or false');
+      }
       if (!Array.isArray(ws.mounts) || ws.mounts.length === 0) {
         throw new Error('workspace.mounts must be a non-empty array');
       }
       for (let i = 0; i < ws.mounts.length; i++) {
         const m = ws.mounts[i] as Record<string, unknown>;
+        const where = `workspace.mounts[${i}]`;
         if (!m || typeof m !== 'object') {
-          throw new Error(`workspace.mounts[${i}] must be an object`);
+          throw new Error(`${where} must be an object`);
         }
-        if (typeof m.name !== 'string' || !m.name) {
-          throw new Error(`workspace.mounts[${i}].name must be a non-empty string`);
+        for (const key of Object.keys(m)) {
+          if (Object.hasOwn(MOUNT_KEY_CHECKS, key)) continue;
+          throw unknownKeyError(where, key, RECIPE_MOUNT_KEYS, Object.hasOwn(MOUNT_KEY_INSTEAD, key) ? MOUNT_KEY_INSTEAD[key] : undefined);
         }
-        if (typeof m.path !== 'string' || !m.path) {
-          throw new Error(`workspace.mounts[${i}].path must be a non-empty string`);
-        }
-        if (m.mode !== undefined && m.mode !== 'read-write' && m.mode !== 'read-only') {
-          throw new Error(`workspace.mounts[${i}].mode must be "read-write" or "read-only"`);
+        // Each key it gives, and the two it must have. `null` is no value of
+        // any key's kind, so it's refused like any other.
+        for (const key of RECIPE_MOUNT_KEYS) {
+          if (m[key] === undefined && !REQUIRED_MOUNT_KEYS.includes(key)) continue;
+          const mustBe = MOUNT_KEY_CHECKS[key](m[key]);
+          if (mustBe) throw new Error(`${where}.${key} must be ${mustBe}`);
         }
       }
     }
@@ -2845,7 +3022,7 @@ export function validateRecipe(raw: unknown): Recipe {
 // Persistence
 // ---------------------------------------------------------------------------
 
-function savedRecipePath(dataDir: string): string {
+export function savedRecipePath(dataDir: string): string {
   return resolve(dataDir, '.recipe.json');
 }
 
@@ -2882,8 +3059,40 @@ export function saveRecipe(dataDir: string, persistable: Record<string, unknown>
 }
 
 /**
+ * A directory at the saved recipe's path, itself or through a link, such as
+ * one a Docker bind mount makes for a recipe file the host didn't have yet.
+ * It was never a saved recipe. Moving or removing it is the fix that works
+ * for both kinds, since a recipe file can't be written over a directory, even
+ * through a link, and --no-recipe leaves a directory itself in place. So
+ * startup says that in place of its usual ways out.
+ */
+export class SavedRecipeDirectoryError extends Error {}
+
+/**
+ * "it's a directory" or "it's a link to a directory" when a directory sits at
+ * the saved recipe's path, itself or through a link; null for anything else,
+ * and where that can't be told, as under a directory that can't be searched.
+ * It reads what's there, whatever a failed read or write said about it: a
+ * directory the host can't read fails a read with EACCES, not EISDIR.
+ */
+export function savedRecipeDirectory(dataDir: string): string | null {
+  const path = savedRecipePath(dataDir);
+  try {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (entry?.isDirectory()) return "it's a directory";
+    if (entry?.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory()) return "it's a link to a directory";
+  } catch {
+    // Nothing that can be looked at, such as a link to itself.
+  }
+  return null;
+}
+
+/**
  * Load the `.recipe.json` snapshot for a resumed session, or null when there
- * is none (or it is unreadable/invalid).
+ * is none. A snapshot that's there but can't be used THROWS, saying why: one
+ * that can't be read, isn't JSON, isn't a JSON object, or doesn't validate, in
+ * either format. Returning null would start the default recipe in the resumed
+ * agent's place, without a word.
  *
  * Snapshots carrying SAVED_RECIPE_UNRESOLVED_KEY are re-resolved through the
  * same pipeline loadRecipe uses — env substitution (so rotated secrets take
@@ -2894,26 +3103,39 @@ export function saveRecipe(dataDir: string, persistable: Record<string, unknown>
  * for the same reason.
  *
  * Legacy snapshots (no marker — saved fully resolved by older versions) are
- * validated and returned verbatim, exactly as before: no substitution, so a
- * literal `${...}` that survived resolution in prose cannot fail the load.
+ * validated and returned verbatim: no substitution, so a literal `${...}`
+ * that survived resolution in prose cannot fail the load.
  */
 export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
   const path = savedRecipePath(dataDir);
-  if (!existsSync(path)) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // Only nothing at the path is no saved recipe: a link to nothing is one
+    // that can't be read.
+    if (code === 'ENOENT' && lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
+    const directory = savedRecipeDirectory(dataDir);
+    if (directory !== null) throw new SavedRecipeDirectoryError(directory);
+    throw new Error(`it can't be read (${code ?? (err instanceof Error ? err.message : String(err))})`);
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, 'utf-8'));
+    raw = JSON.parse(text);
   } catch {
-    return null;
+    // The parser's message can quote the file's text, and a snapshot from
+    // before 0.8.0 can hold a key inline, so it isn't passed on.
+    throw new Error("it isn't JSON");
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    const holds = raw === null ? 'null' : Array.isArray(raw) ? 'an array' : `a ${typeof raw}`;
+    throw new Error(`it holds ${holds}, not a JSON object`);
   }
 
-  if (!raw || typeof raw !== 'object' || !(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
+  if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
     // Legacy resolved snapshot: load verbatim (no substitution).
-    try {
-      return validateRecipe(raw);
-    } catch {
-      return null;
-    }
+    return validateRecipe(raw);
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
@@ -2925,11 +3147,14 @@ export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
   return resolveSystemPrompt(recipe);
 }
 
+/**
+ * Remove whatever is at the saved recipe's path, so the next start without a
+ * recipe argument starts the default: a file, or a link, one to nothing
+ * included, and never a link's target. A directory there was never a saved
+ * recipe, so it's left in place: rmSync refuses it, naming the path.
+ */
 export function clearSavedRecipe(dataDir: string): void {
-  const path = savedRecipePath(dataDir);
-  if (existsSync(path)) {
-    unlinkSync(path);
-  }
+  rmSync(savedRecipePath(dataDir), { force: true });
 }
 
 // ---------------------------------------------------------------------------

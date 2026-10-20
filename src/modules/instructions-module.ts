@@ -23,7 +23,7 @@
  * it's pending waits on it rather than starting another, until its budget,
  * counted from the read's start, runs out; a turn after that injects nothing
  * at once. So a read that never finishes (a FIFO at the path, which
- * agent-framework 0.22.1 opens and waits on) leaves agents without their
+ * agent-framework 0.22.3 opens and waits on) leaves agents without their
  * instructions until it finishes, the session is switched or the host
  * restarts, and no further read starts in that session. A stop can't cancel
  * the read, since readFileFromDisk takes no signal: the module lets go of
@@ -35,15 +35,16 @@
  *
  * Requires the workspace module: the configured path is a mount-prefixed
  * workspace path ("<mountName>/<relativePath>"). validateRecipe enforces the
- * pairing. The file is read through WorkspaceModule.readFileFromDisk, which
- * refuses a file that is itself a link unless its mount follows links (a
- * recipe's mounts don't), and reads a file only if its canonical path lies
- * inside the mount, which it checks after opening the file.
+ * pairing. The file is read through WorkspaceModule.readFileFromDisk, which,
+ * unless its mount follows links (off unless the recipe sets
+ * followSymlinks), refuses a file that is itself a link and, from
+ * agent-framework's release with anima-research/agent-framework#468, one
+ * reached through a linked directory too, and reads a file only if its
+ * canonical path lies inside the mount, which it checks after opening the
+ * file.
  *
- * Reads ask readFileFromDisk for at most maxBytes. At 0.22.1 that holds for
- * a file larger than maxBytes when the read starts, but a file that grows
- * past it during the read is read to its end, so the module cuts what it is
- * given at maxBytes too (gatherContext).
+ * Reads ask readFileFromDisk for at most maxBytes, which it keeps for a file
+ * that grows while it's read too.
  */
 
 import type {
@@ -233,15 +234,8 @@ export class InstructionsModule implements Module {
       this.unavailable(this.reasonFor(outcome.error));
       return [];
     }
-    const read = outcome.read;
-    // A read cut at the cap is of a file over it. agent-framework 0.22.1
-    // reads a file that grows after the read's size check whole, so the cap
-    // on what's injected is held here too. Once the host's agent-framework floor includes
-    // anima-research/agent-framework#409, readFileFromDisk keeps maxBytes
-    // itself, and this second condition can go.
-    const over = read.truncated || read.bytes.byteLength > this.maxBytes;
-    const bytes = over ? read.bytes.subarray(0, this.maxBytes) : read.bytes;
-    const size = Math.max(read.size, read.bytes.byteLength);
+    // A read cut at the cap is of a file over it, and its size says how far.
+    const { bytes, size, truncated: over } = outcome.read;
 
     let content: string;
     if (over) {
@@ -335,14 +329,27 @@ export class InstructionsModule implements Module {
   private reasonFor(error: unknown): string {
     const code = (error as { code?: unknown } | null)?.code;
     if (code === 'symlink') return `"${this.path}" is a link, which its mount doesn't follow: put the file itself at that path`;
-    // The read refuses a file that is itself a link before it checks where
-    // the file lies, and a recipe's mounts don't follow links, so an escape
-    // comes from a linked directory on the path that leads out of the mount:
-    // a file put "at that path" would go through it.
+    // On a mount that doesn't follow links, a recipe's default, the read
+    // refuses a file that is itself a link before it checks where the file
+    // lies, so an escape comes from a linked directory on the path. On one
+    // that follows them (`followSymlinks`), the file itself can be the link
+    // that leads out. Either way a file put "at that path" would still go
+    // through the link, so the remedy is to move it.
     if (code === 'escape') {
-      return `"${this.path}" lies outside its mount, through a linked directory on its path: move the file ` +
-        'into the mount, out from behind that link';
+      return `"${this.path}" leads outside its mount through a link, the file itself or a directory on its path: ` +
+        'move the file into the mount, so that neither it nor a directory on its path is a link that leads out';
     }
+    // Any other code is given in the read's own words, which name the path
+    // or, for a mount that's unavailable, the mount.
+    // That includes `parent_symlink`, from agent-framework's release with
+    // anima-research/agent-framework#468, for a link among the path's
+    // directories that leads neither out of the mount nor into a nested
+    // mount's directory: its message names the link and, where it leads
+    // somewhere, its target, and for a linked directory the mount's
+    // followSymlinks setting, so a remedy of the host's own would be wrong
+    // for some of them. It includes `other_mount` too, for a path in, or
+    // reached through a link into, a nested mount's directory, whose message
+    // names that mount and the path to use there.
     return error instanceof Error ? error.message : String(error);
   }
 

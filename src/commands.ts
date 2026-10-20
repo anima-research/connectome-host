@@ -35,6 +35,7 @@ import type { CredentialActionId, CredentialState } from './credential-state.js'
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { buildBugReport, composedServerConfigs, gatherBugReportFacts, runtimeMode, type LiveSetup } from './bug-report.js';
 import { parseCommand } from './command-name.js';
+import type { Line } from './output-line.js';
 import { fmtTokens } from './tui.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
@@ -61,7 +62,8 @@ interface AppContext {
   switchSession(id: string): Promise<void>;
 }
 
-export type Line = { text: string; style?: 'user' | 'agent' | 'tool' | 'system' };
+/** Re-exported for code that imports it from here. */
+export type { Line };
 
 // Undo/redo stacks: track (branchName, messageId) pairs for time-travel.
 //

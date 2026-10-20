@@ -1,14 +1,26 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
+  "files": [
+    "src",
+    "recipes",
+    "scripts",
+    "docs",
+    "dist/web",
+    "tsconfig.json",
+    ".env.example",
+    "ARCHITECTURE.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "preversion": "node scripts/release-holds.mjs",
+    "preversion": "node scripts/release-bump.mjs && node scripts/release-holds.mjs",
     "version": "bun scripts/release-changelog.ts && git add CHANGELOG.md changelog.d",
+    "prepack": "node scripts/pack-contents.mjs",
     "prepublishOnly": "node scripts/release-holds.mjs",
     "build:web": "npm --prefix web install && npm --prefix web run build",
     "build:web:ci": "npm ci --prefix web && npm --prefix web run build",
@@ -16,11 +28,15 @@
     "postinstall": "test ! -d web || { npm --prefix web install && npm --prefix web run build; } || echo 'connectome-host: the optional Web UI build failed (npm --prefix web install, then run build). The host can run without the Web UI. Retry with: npm run build:web' >&2"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.22.2",
+    "@animalabs/agent-framework": "^0.23.1",
     "@animalabs/chronicle": "^0.4.0",
     "@animalabs/context-manager": "^0.14.0",
     "@animalabs/membrane": "^0.5.87",
     "@opentui/core": "^0.1.82"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "bun": ">=1.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.3.13",

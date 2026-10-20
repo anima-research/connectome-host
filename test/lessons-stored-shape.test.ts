@@ -63,6 +63,8 @@ async function loaded(lessons: AnyObj[], globalLessons?: AnyObj[] | string) {
 
 const ids = (r: { data?: unknown }) => ((r.data as { lessons: AnyObj[] }).lessons).map(l => l.id).sort();
 
+const isObject = (v: unknown): v is AnyObj => typeof v === 'object' && v !== null && !Array.isArray(v);
+
 describe('a lesson stored without usable content or tags', () => {
   const lessons = [
     stored('notags', { content: 'alpha beta' }),
@@ -417,29 +419,30 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
     }
   });
 
-  test('an entry that isn\'t an object is left out at load, named by count, and the next save drops it', async () => {
+  test('an entry that isn\'t an object isn\'t loaded, is named by count, and stays in the file after a save', async () => {
     const h = await loaded([], [null, 5, stored('shared', { content: 'from the file', tags: ['x'] })] as AnyObj[]);
     try {
       expect(h.m.getLessons().map(l => l.id)).toEqual(['shared']);
       expect(h.warnings).toHaveLength(1);
-      expect(h.warnings[0]).toMatch(/^\[lessons\] the shared lessons file .+ has 2 entries that aren't lessons \(not objects\)\. They're left out of what this host loads, and the next save writes the file with the lessons this host holds\.$/);
+      expect(h.warnings[0]).toMatch(/^\[lessons\] the shared lessons file .+ has 2 entries that aren't lessons \(not objects\)\. They're kept in the file, and this host doesn't load them\.$/);
       await h.m.handleToolCall(call('boost', { id: 'shared' }));
-      expect(h.file().lessons.map(l => l.id)).toEqual(['shared']);
+      expect(h.file().lessons.map(l => (isObject(l) ? l.id : l))).toEqual([null, 5, 'shared']);
     } finally { h.cleanup(); }
   });
 
-  test('one the module\'s own state already holds stays in the file after a save, with the lessons this host holds', async () => {
-    // An older host's merge saved the file's 5 into the module's state; this
-    // load leaves the file's copy out, and a save writes the state's back.
+  test('one the module\'s own state also holds stays in the file once after a save, with the lessons this host holds', async () => {
+    // An older host's merge saved the file's 5 into the module's state. This
+    // load keeps the file's copy as it is, and a save writes that copy back;
+    // the state's own 5 has no named id, so it isn't written beside it.
     const h = await loaded([5, stored('local', { content: 'here', tags: ['x'] })] as unknown as AnyObj[],
       [5, stored('shared', { content: 'from the file', tags: ['x'] })] as AnyObj[]);
     try {
-      // The skipped entry's line, then the state's 5's own, each once.
+      // The carried entry's line, then the state's 5's own, each once.
       expect(h.warnings).toHaveLength(2);
-      expect(h.warnings[0]).toMatch(/has 1 entry that isn't a lesson \(not an object\)\. It's left out of what this host loads, and the next save writes the file with the lessons this host holds\.$/);
+      expect(h.warnings[0]).toMatch(/has 1 entry that isn't a lesson \(not an object\)\. It's kept in the file, and this host doesn't load it\.$/);
       expect(h.warnings[1]).toBe('[lessons] a lesson: Stored without an id, so no lesson tool can name it.');
       await h.m.handleToolCall(call('boost', { id: 'local' }));
-      expect(h.file().lessons.map(l => (l as AnyObj | number) === 5 ? 5 : l.id)).toEqual([5, 'local', 'shared']);
+      expect(h.file().lessons.map(l => (isObject(l) ? l.id : l))).toEqual([5, 'shared', 'local']);
     } finally { h.cleanup(); }
   });
 
@@ -513,15 +516,18 @@ describe('a shared file that holds one entry that isn\'t a lesson, or no lessons
     try {
       expect(h.m.getLessons().map(l => l.id)).toEqual(['shared']);
       expect(h.warnings).toHaveLength(1);
-      expect(h.warnings[0]).toMatch(/^\[lessons\] the shared lessons file .+ has 1 entry that isn't a lesson \(not an object\)\. It's left out of what this host loads, and the next save writes the file with the lessons this host holds\.$/);
+      expect(h.warnings[0]).toMatch(/^\[lessons\] the shared lessons file .+ has 1 entry that isn't a lesson \(not an object\)\. It's kept in the file, and this host doesn't load it\.$/);
     } finally { h.cleanup(); }
   });
 
-  test('a file that holds just null is read as holding no lessons, and lessons load', async () => {
+  test('a file that holds just null is named, lessons load, and a save leaves it as it is', async () => {
     const h = await loaded([stored('local', { content: 'here', tags: ['x'] })], 'null');
     try {
       expect(h.m.getLessons().map(l => l.id)).toEqual(['local']);
-      expect(h.warnings).toEqual([]);
+      expect(h.warnings).toHaveLength(1);
+      expect(h.warnings[0]).toMatch(/^\[lessons\] the shared lessons file .+ isn't a lessons file \(no object holding a lessons list\): this host keeps its lessons in its own state and won't write the file until it reads as a lessons file again\.$/);
+      await h.m.handleToolCall(call('boost', { id: 'local' }));
+      expect(h.fileText()).toBe('null');
     } finally { h.cleanup(); }
   });
 });

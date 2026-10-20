@@ -29,22 +29,21 @@ export function buildWorkspaceMounts(
 
   let mounts: MountConfig[];
   if (typeof workspace === 'object' && workspace.mounts) {
-    // Only pass fields the recipe explicitly provides; let WorkspaceModule
-    // default the rest. watch is overridden to 'never' since the host does
-    // not need chokidar filesystem watchers by default.
-    mounts = workspace.mounts.map((m: RecipeWorkspaceMount) => {
-      const mount: MountConfig = {
-        name: m.name,
-        path: resolve(m.path),
-        mode: m.mode ?? 'read-write',
-        watch: m.watch ?? 'never',
-      };
-      if (m.ignore) mount.ignore = m.ignore;
-      if (m.maxFileSize !== undefined) mount.maxFileSize = m.maxFileSize;
-      if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
-      if (m.autoMaterialize !== undefined) mount.autoMaterialize = m.autoMaterialize;
-      return mount;
-    });
+    // Every key the recipe gives goes to the framework as it is: the recipe's
+    // mount keys are the framework's MountConfig keys, less those recipe.ts
+    // names in MountKeyNotPassedOn (recipe.ts checks the two lists against
+    // each other, and validation refuses any other key), so a key the
+    // framework adds can't be read here and dropped. Keys the
+    // recipe leaves out keep the framework's defaults, except that the path
+    // resolves from the working directory, mode defaults to read-write, and
+    // watch to 'never', since the host does not need chokidar filesystem
+    // watchers by default.
+    mounts = workspace.mounts.map(({ path, mode, watch, ...rest }: RecipeWorkspaceMount): MountConfig => ({
+      ...rest,
+      path: resolve(path),
+      mode: mode ?? 'read-write',
+      watch: watch ?? 'never',
+    }));
   } else {
     // Default: read-only input mount + read-write products mount.
     mounts = [

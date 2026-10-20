@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ctxSeverity, fmtElapsed, pickTopAlert, sliceViewport } from '../src/tui.js';
+import { ctxSeverity, fleetNoticeLine, fmtElapsed, pickTopAlert, sliceViewport } from '../src/tui.js';
 
 describe('fmtElapsed', () => {
   test('seconds under a minute stay bare', () => {
@@ -102,5 +102,38 @@ describe('sliceViewport', () => {
       expect(25).toBeGreaterThanOrEqual(start);
       expect(25).toBeLessThan(end);
     }
+  });
+});
+
+describe('fleetNoticeLine', () => {
+  test('a one-line notice shows whole', () => {
+    expect(fleetNoticeLine('stop leaf failed: unknown')).toBe('  ⚠ stop leaf failed: unknown');
+  });
+
+  // The fleet view budgets one row per header line, so a notice of several
+  // lines, or one long enough to wrap, would push the tree's last rows below
+  // the fold while it shows.
+  test('a notice of several lines shows its whole first line, then " …"', () => {
+    const notice = 'restart leaf failed: subscribe failed: closed\n' +
+      "The child's output during this launch, from /data/leaf/startup.log:\n  Missing ANTHROPIC_API_KEY.";
+    expect(fleetNoticeLine(notice)).toBe('  ⚠ restart leaf failed: subscribe failed: closed …');
+  });
+
+  test('a first line past 70 characters is cut to 67 and an ellipsis, as the alerts beside it are, with no second mark for the lines after it', () => {
+    const notice = "restart leaf failed: Child 'leaf' didn't start (launch failed: the child exited with code 1 " +
+      'before its socket appeared) and has exited.';
+    expect(fleetNoticeLine(notice)).toBe(`  ⚠ ${notice.slice(0, 67)}…`);
+    expect(fleetNoticeLine(`${notice}\nThe child's output during this launch, from /data/leaf/startup.log:`))
+      .toBe(`  ⚠ ${notice.slice(0, 67)}…`);
+    expect(fleetNoticeLine('x'.repeat(70))).toBe(`  ⚠ ${'x'.repeat(70)}`);
+    expect(fleetNoticeLine('x'.repeat(71))).toBe(`  ⚠ ${'x'.repeat(67)}…`);
+    // The mark counts toward the 70, so a first line of 68 is the longest
+    // that a notice of several lines shows whole.
+    expect(fleetNoticeLine(`${'x'.repeat(68)}\nmore`)).toBe(`  ⚠ ${'x'.repeat(68)} …`);
+    expect(fleetNoticeLine(`${'x'.repeat(69)}\nmore`)).toBe(`  ⚠ ${'x'.repeat(67)}…`);
+  });
+
+  test('a cut through a character outside the BMP drops its stray half', () => {
+    expect(fleetNoticeLine(`${'x'.repeat(66)}😀${'y'.repeat(10)}`)).toBe(`  ⚠ ${'x'.repeat(66)}…`);
   });
 });

@@ -22,8 +22,11 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ContextInjection } from '@animalabs/context-manager';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, chmodSync, statSync, lstatSync, realpathSync, accessSync,
+  openSync, fsyncSync, closeSync, constants, type Stats,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
 
@@ -53,6 +56,11 @@ type StoredLesson = Omit<Lesson, 'content' | 'tags' | 'evidence' | 'confidence'>
 
 interface LessonsState {
   lessons: StoredLesson[];
+  /** The ids the last read that could read the shared file found it
+   *  holding more than once, of lessons this host holds once. The first
+   *  read that finds one held once again takes the file's copy, whatever
+   *  the stamps (see mergeShared). */
+  heldTwice?: string[];
 }
 
 interface CreateInput {
@@ -103,6 +111,18 @@ export class LessonsModule implements Module {
   private ctx: ModuleContext | null = null;
   private state: LessonsState = { lessons: [] };
   private globalPath: string | null;
+  /** The shared file's problem this host last named, and whether reading or
+   *  writing the file met it, so each is named once and its end is told. */
+  private sharedProblem: { text: string; on: 'read' | 'write' } | null = null;
+  /** The line the last save gave for this host's lessons it couldn't write,
+   *  so each is said once. */
+  private unwrittenLine = '';
+  /** The line last given for the shared file's entries this host carries
+   *  without loading, so it's said again only when they change. */
+  private carriedSaid = '';
+  /** The errors, by code, for which this host has said its writes of the
+   *  shared file go in place, so each is said once. */
+  private inPlaceSaid = new Set<string>();
 
   constructor(opts?: { globalPath?: string }) {
     this.globalPath = opts?.globalPath ?? null;
@@ -114,9 +134,15 @@ export class LessonsModule implements Module {
     if (saved) {
       this.state = saved;
     }
-    // Merge in lessons from the global shared file
+    // Merge in lessons from the shared file. Nothing is written at start.
     if (this.globalPath) {
-      this.mergeFromGlobal();
+      const read = readSharedFile(this.globalPath);
+      this.noteRead(read);
+      if (read.kind === 'read') {
+        const { carried, changed } = this.mergeShared(read.entries);
+        this.noteCarried(carried);
+        if (changed) ctx.setState(this.state);
+      }
     }
     // Each lesson stored with a fault is named once per load for whoever
     // runs the host, with the mark the agent's list gives it; see readable()
@@ -292,8 +318,9 @@ export class LessonsModule implements Module {
       return { success: false, isError: true, error: `Nothing was created: ${problems.join('; ')}.` };
     }
 
+    const read = this.refresh();
     const lesson: Lesson = {
-      id: randomUUID().slice(0, 8),
+      id: this.freshId(read),
       content: input.content,
       confidence: input.confidence ?? 0.5,
       tags: input.tags,
@@ -304,15 +331,18 @@ export class LessonsModule implements Module {
     };
 
     this.state.lessons.push(lesson);
-    this.save();
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson created' } };
   }
 
   private handleUpdate(input: UpdateInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     const problems = inputProblems(input, false);
     if (!lesson) return notFound('updated', input.id, problems.join('; ') || undefined);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'updated', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
     if (problems.length > 0) {
       return { success: false, isError: true, error: `Nothing was updated: ${problems.join('; ')}.` };
     }
@@ -327,13 +357,14 @@ export class LessonsModule implements Module {
       for (const e of input.evidence) existing.add(e);
       lesson.evidence = [...existing];
     }
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson updated' } };
   }
 
   private handleDeprecate(input: DeprecateInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     const reason: unknown = input.reason;
     const reasonProblem = typeof reason === 'string'
@@ -342,12 +373,14 @@ export class LessonsModule implements Module {
         ? 'reason is missing: say why the lesson is no longer accurate'
         : `reason must be text, not ${shown(reason)}`;
     if (!lesson) return notFound('deprecated', input.id, reasonProblem);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'deprecated', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
     if (reasonProblem) return { success: false, isError: true, error: `Nothing was deprecated: ${reasonProblem}.` };
 
     lesson.deprecated = true;
     lesson.deprecationReason = input.reason;
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, message: 'Lesson deprecated' } };
   }
@@ -446,8 +479,11 @@ export class LessonsModule implements Module {
   }
 
   private handleBoost(input: IdInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     if (!lesson) return notFound('boosted', input.id);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'boosted', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
 
     const refused = adjustRefusal(lesson, 'boost');
     if (refused) return { success: false, error: refused, isError: true };
@@ -456,15 +492,18 @@ export class LessonsModule implements Module {
     // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.min(1, base + 0.1 * (1 - base));
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, confidence: lesson.confidence } };
   }
 
   private handleDemote(input: IdInput): ToolResult {
+    const read = this.refresh();
     const lesson = findLesson(this.state.lessons, input.id);
     if (!lesson) return notFound('demoted', input.id);
+    const heldTwice = heldTwiceRefusal(read, lesson, 'demoted', this.state.heldTwice);
+    if (heldTwice) return heldTwice;
 
     const refused = adjustRefusal(lesson, 'demote');
     if (refused) return { success: false, error: refused, isError: true };
@@ -473,74 +512,481 @@ export class LessonsModule implements Module {
     // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.max(0, base - 0.1 * base);
-    lesson.updated = Date.now();
-    this.save();
+    lesson.updated = laterStamp(lesson);
+    this.save(read);
 
     return { success: true, data: { id: lesson.id, confidence: lesson.confidence } };
   }
 
-  private save(): void {
+  /** Before a call changes a lesson: read the shared file and merge it in,
+   *  so the change is made to the newest copy, and stamped past it (see
+   *  laterStamp). The read is what the call's save writes back, with nothing
+   *  awaited between. Another host that writes in between has its change
+   *  written over, and its next change writes it back, unless this call
+   *  changed the same lesson with the same or a later stamp. */
+  private refresh(): SharedRead | null {
+    if (!this.globalPath) return null;
+    const read = readSharedFile(this.globalPath);
+    this.noteRead(read);
+    if (read.kind === 'read') {
+      const { carried, changed } = this.mergeShared(read.entries);
+      this.noteCarried(carried);
+      // Kept now, so a call refused after this read doesn't lose what the
+      // merge learned, such as an id the file holds twice.
+      if (changed) this.ctx?.setState(this.state);
+    }
+    return read;
+  }
+
+  /** An id for a new lesson that neither this host nor the shared file, as
+   *  this call read it, holds, so the merge doesn't take two lessons for
+   *  one. When the call couldn't read the file, only this host's ids are
+   *  checked. */
+  private freshId(read: SharedRead | null): string {
+    const taken = new Set(this.state.lessons.map(idOf));
+    if (read?.kind === 'read') for (const e of read.entries) taken.add(idOf(e));
+    let id: string;
+    do id = randomUUID().slice(0, 8); while (taken.has(id));
+    return id;
+  }
+
+  /** Keep the module's lessons, and with a shared file, write back the file
+   *  as the call read it, with this host's lessons merged in: each entry
+   *  where it stood, this host's copy in the place of each lesson it holds
+   *  by a named id, its new lessons at the end, and the document's other
+   *  keys as they were (see writeShared for how). A file the call couldn't
+   *  read as a lessons file was named at that read, and isn't written over. */
+  private save(read: SharedRead | null): void {
     this.ctx?.setState(this.state);
-    if (this.globalPath) {
-      this.saveToGlobal();
+    if (!this.globalPath || !read || read.kind === 'unreadable') return;
+    const doc: Record<string, unknown> = read.kind === 'read' ? read.doc : {};
+    const entries: unknown[] = read.kind === 'read' ? read.entries : [];
+    const named = namedIds(entries, this.state.lessons);
+    const mine = new Map<string, StoredLesson>();
+    for (const l of this.state.lessons) {
+      const id = idOf(l);
+      if (id !== undefined && named.has(id)) mine.set(id, l);
+    }
+    const lessons = entries.map((entry) => {
+      const id = idOf(entry);
+      const l = id === undefined ? undefined : mine.get(id);
+      if (!l) return entry;
+      mine.delete(id!);
+      return l;
+    });
+    lessons.push(...mine.values());
+    // Said before the write in place is tried, since it's there to explain
+    // one that breaks the file.
+    const inPlace = (key: string, why: string): void => {
+      if (this.inPlaceSaid.has(key)) return;
+      this.inPlaceSaid.add(key);
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} is written in place, since ${why}: a write that fails partway can leave it broken.`);
+    };
+    try {
+      writeShared(this.globalPath, JSON.stringify({ ...doc, lessons }, null, 2), inPlace);
+    } catch (err) {
+      // A write in place that failed partway can have left the file broken,
+      // and a file that doesn't read as a lessons file isn't written: named
+      // as its read problem, so the next read finding it doesn't name it again.
+      const after = readSharedFile(this.globalPath);
+      if (after.kind === 'unreadable') this.sayShared(after.problem, 'read', `couldn't be written (${errorText(err)}), and now `);
+      else this.sayShared(`couldn't be written (${errorText(err)})`, 'write');
+      return;
+    }
+    const made = read.kind === 'absent';
+    // A problem still standing here is a write's: a read's ended at the
+    // call's read (noteRead).
+    if (this.sharedProblem !== null) {
+      this.sharedProblem = null;
+      const how = made ? "it wasn't there, so this host wrote it with its lessons" : 'this host merged its lessons in and wrote it';
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} can be written again: ${how}.`);
+    } else if (made) {
+      console.warn(`[lessons] the shared lessons file ${this.globalPath} wasn't there: this host wrote it with its lessons.`);
+    }
+    // A lesson whose id another lesson holds too, in the file or on this
+    // host, can't be told apart by the merge, so it isn't written. Nor is
+    // one without a usable id, which the agent's list marks unless it's
+    // deprecated (see needsFix).
+    const unwritten = this.state.lessons.filter((l) => {
+      const id = idOf(l);
+      return id !== undefined && !named.has(id);
+    });
+    const one = unwritten.length === 1;
+    const ids = [...new Set(unwritten.map(idOf))] as string[];
+    // For an id the file holds more than once, what keeps every lesson.
+    // Only for a lesson this host holds once: two it holds stay unwritten
+    // however the file is resolved.
+    const inFile = idCounts(entries);
+    const onHost = idCounts(this.state.lessons);
+    const advice = ids.filter((id) => (inFile.get(id) ?? 0) > 1 && onHost.get(id) === 1)
+      .map((id) => ` To keep every lesson with the id ${shown(id)}, ${newIdAdvice(entries, id)}.`).join('');
+    const line = unwritten.length === 0 ? '' :
+      `[lessons] the shared lessons file ${this.globalPath}, or this host, holds another lesson with the id of ` +
+      `${one ? 'a lesson' : `${unwritten.length} lessons`} this host holds (${ids.join(', ')}): ` +
+      `this host keeps ${one ? 'it' : 'them'} in its own state and doesn't write ${one ? 'it' : 'them'} to the file.${advice}`;
+    if (line !== this.unwrittenLine) {
+      this.unwrittenLine = line;
+      if (line) console.warn(line);
     }
   }
 
-  /** Merge lessons from the global JSON file. Newer `updated` wins on ID conflicts. */
-  private mergeFromGlobal(): void {
-    if (!this.globalPath) return;
-    let global: unknown;
-    try {
-      // A number JSON can't hold, such as 1e999, parses as Infinity, which
-      // the module's store refuses to save. It's read as null wherever it
-      // sits: a confidence of 1e999 reads as one that isn't a number, and
-      // an id of 1e999 as one that isn't text. A save writes the null back.
-      global = JSON.parse(readFileSync(this.globalPath, 'utf-8'), (_key, value: unknown) =>
-        typeof value === 'number' && !Number.isFinite(value) ? null : value);
-    } catch {
-      return; // File doesn't exist yet — nothing to merge
-    }
-    if (!isRecord(global) || !Array.isArray(global.lessons)) return;
-
-    const byId = new Map(this.state.lessons.map(l => [l.id, l]));
-    let merged = false;
-    // An entry that isn't an object isn't a lesson: it's left out of what's
-    // merged. The next save writes the file with the lessons the module
-    // holds, so without it unless the module's own state holds it too.
-    const entries = (global.lessons as unknown[]).filter(isRecord) as StoredLesson[];
-    const skipped = global.lessons.length - entries.length;
-    if (skipped > 0) {
-      console.warn(skipped === 1
-        ? `[lessons] the shared lessons file ${this.globalPath} has 1 entry that isn't a lesson (not an object). ` +
-          "It's left out of what this host loads, and the next save writes the file with the lessons this host holds."
-        : `[lessons] the shared lessons file ${this.globalPath} has ${skipped} entries that aren't lessons (not objects). ` +
-          "They're left out of what this host loads, and the next save writes the file with the lessons this host holds.");
-    }
-    for (const gl of entries) {
-      const existing = byId.get(gl.id);
-      if (!existing) {
-        this.state.lessons.push(gl);
-        merged = true;
-      } else if (gl.updated > existing.updated) {
-        Object.assign(existing, gl);
-        merged = true;
+  /** Merge the shared file's entries into the module's lessons. An entry
+   *  whose id is named (see namedIds) merges by it: the file's copy replaces
+   *  this host's whole unless this host's is newer (see stampOf), so a hand
+   *  edit that left `updated` as it was is what the host holds, and a lesson
+   *  new to the host is added. Every other entry, one without a named id or
+   *  one that isn't an object, is carried: kept out of the module's lessons
+   *  and written back as JSON.parse read it, so no save adds or loses an
+   *  entry.
+   *
+   *  While the file holds an id of this host's lessons twice, this host
+   *  can't tell which entry its copy came from, so it changes neither (see
+   *  heldTwiceRefusal) and keeps the id in heldTwice, which holds the ids
+   *  the last read that could read the file found so; a read that finds no
+   *  file, or can't read it, keeps them. The first read to find such an id
+   *  held once takes the file's copy, whatever the stamps, so on a host
+   *  that read the file while it held the id twice, the lesson left keeps
+   *  the id however the operator resolved the two. A host that didn't
+   *  merges by stamp.
+   *  Giving all but one with the latest `updated` a new id (see
+   *  newIdAdvice) keeps every lesson on each host that holds no change to
+   *  the lesson the file lacks, such as one lost to a write at nearly the
+   *  same moment. An id this host holds twice can't merge, so it isn't held. */
+  private mergeShared(entries: unknown[]): { carried: unknown[]; named: Set<string>; changed: boolean } {
+    const named = namedIds(entries, this.state.lessons);
+    const inFile = idCounts(entries);
+    const onHost = idCounts(this.state.lessons);
+    const wasHeld = new Set(this.state.heldTwice ?? []);
+    const held = new Set([...inFile].filter(([id, n]) => n > 1 && onHost.get(id) === 1).map(([id]) => id));
+    const at = new Map<string, number>();
+    this.state.lessons.forEach((l, i) => {
+      const id = idOf(l);
+      if (id !== undefined && named.has(id)) at.set(id, i);
+    });
+    const carried: unknown[] = [];
+    let changed = held.size !== wasHeld.size || [...held].some((id) => !wasHeld.has(id));
+    for (const entry of entries) {
+      const id = idOf(entry);
+      if (id === undefined || !named.has(id)) {
+        carried.push(entry);
+        continue;
+      }
+      const gl = entry as StoredLesson;
+      const i = at.get(id);
+      if (i === undefined) {
+        at.set(id, this.state.lessons.push(gl) - 1);
+        changed = true;
+      } else if (wasHeld.has(id) || stampOf(gl) >= stampOf(this.state.lessons[i])) {
+        this.state.lessons[i] = gl;
+        changed = true;
       }
     }
-    if (merged) {
-      this.ctx?.setState(this.state);
-    }
+    if (held.size > 0) this.state.heldTwice = [...held];
+    else delete this.state.heldTwice;
+    return { carried, named, changed };
   }
 
-  /** Write current lessons to the global JSON file. */
-  private saveToGlobal(): void {
-    if (!this.globalPath) return;
-    try {
-      mkdirSync(dirname(this.globalPath), { recursive: true });
-      writeFileSync(this.globalPath, JSON.stringify({ lessons: this.state.lessons }, null, 2));
-    } catch {
-      // Best-effort — don't break the module if the file can't be written
+  /** Name a read of the shared file that failed, once, and say when a read
+   *  succeeds after one did. A read problem ends at the read that finds it
+   *  gone, so the same problem later is named again. A file that isn't there
+   *  any more ends it too, and the write that makes the file again says so. */
+  private noteRead(read: SharedRead): void {
+    if (read.kind === 'unreadable') {
+      this.sayShared(read.problem, 'read');
+      return;
     }
+    if (this.sharedProblem?.on !== 'read') return;
+    this.sharedProblem = null;
+    if (read.kind === 'read') console.warn(`[lessons] the shared lessons file ${this.globalPath} reads as a lessons file again.`);
   }
+
+  /** Say the line for the entries this host carries, when it differs from
+   *  the one last said: at start, and at a change's read, so entries added
+   *  while the host runs are named too. */
+  private noteCarried(carried: unknown[]): void {
+    const line = carriedLine(this.globalPath!, carried) ?? '';
+    if (line === this.carriedSaid) return;
+    this.carriedSaid = line;
+    if (line) console.warn(line);
+  }
+
+  /** Name a problem with the shared file once, until it changes or passes,
+   *  after what led to it, if anything. */
+  private sayShared(problem: string, on: 'read' | 'write', lead = ''): void {
+    if (this.sharedProblem?.text === problem) return;
+    this.sharedProblem = { text: problem, on };
+    const then = on === 'read'
+      ? "won't write the file until it reads as a lessons file again"
+      : 'tries again at its next save';
+    console.warn(`[lessons] the shared lessons file ${this.globalPath} ${lead}${problem}: this host keeps its lessons in its own state and ${then}.`);
+  }
+}
+
+/** What a read of the shared lessons file finds. */
+type SharedRead =
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; problem: string }
+  | { kind: 'read'; doc: Record<string, unknown>; entries: unknown[] };
+
+/** Decodes strictly, so bytes that aren't UTF-8 make a file this host can't
+ *  read, rather than text it would write back changed. A byte-order mark at
+ *  the start is dropped, and a write leaves it out. */
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+function readSharedFile(path: string): SharedRead {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(path);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', problem: `can't be read (${errorText(err)})` };
+  }
+  let text: string;
+  try {
+    text = utf8.decode(bytes);
+  } catch {
+    return { kind: 'unreadable', problem: "isn't UTF-8 text" };
+  }
+  let doc: unknown;
+  try {
+    // A number JSON can't hold, such as 1e999, parses as Infinity, which
+    // the module's store refuses to save. It's read as null wherever it
+    // sits: a confidence of 1e999 reads as one that isn't a number, and an
+    // id of 1e999 as one that isn't text. A save writes the null back.
+    doc = JSON.parse(text, (_key, value: unknown) =>
+      typeof value === 'number' && !Number.isFinite(value) ? null : value);
+  } catch (err) {
+    return { kind: 'unreadable', problem: `isn't valid JSON (${errorText(err)})` };
+  }
+  if (!isRecord(doc) || !Array.isArray(doc.lessons)) {
+    return { kind: 'unreadable', problem: "isn't a lessons file (no object holding a lessons list)" };
+  }
+  return { kind: 'read', doc, entries: doc.lessons };
+}
+
+/** Where writing a shared file that's there through a temporary file is
+ *  refused for permission or a mount, and writing it in place still works:
+ *  a directory this host can't write in (EACCES), a rename over a file
+ *  another user owns in a directory with the sticky bit (EPERM, or EACCES:
+ *  rename(2)), a file mounted on its own (EBUSY; EXDEV), or one mounted on
+ *  its own in a directory on a read-only mount (EROFS: the file itself
+ *  passed the check of its permission). */
+const IN_PLACE = new Set(['EACCES', 'EPERM', 'EBUSY', 'EXDEV', 'EROFS']);
+
+/** Write the shared lessons file. A file that's there is replaced whole: the
+ *  text goes to a temporary file beside the file the path names after its
+ *  links, synced to disk and given that file's permissions, and is renamed
+ *  over it. So a write that fails leaves the file as it was, a host that
+ *  stops partway or a machine that goes down leaves it whole, with the old
+ *  text or the new, a reader never meets half of one, and a link stays a
+ *  link. The file is a new one, owned as any new file this host makes
+ *  there, and an access control list or other extended attribute set on
+ *  it isn't kept. A file not made yet is made the same way, with the mode a new file
+ *  takes, so a first write that fails leaves no file, and two hosts making
+ *  it at once leave one whole file. The temporary file is
+ *  lessons-<random>.tmp beside the file, its name new at each write; a
+ *  host that stops between making it and the rename leaves it there.
+ *
+ *  It's written in place instead, as on main: through a link to a file not
+ *  made yet, which a rename would replace with a plain file; for a file
+ *  this host can't write, which is refused as on main; for a file with a
+ *  second name (a hard link), which a rename would leave holding the old
+ *  text; and where, for a file that's there, making the temporary file or
+ *  the rename is refused with an IN_PLACE error. For the last two, inPlace
+ *  is called first, with a key and the reason, so the caller can say so: a
+ *  write in place that fails partway can leave the file broken. Any other
+ *  error is thrown, with the file as it was or not made. */
+function writeShared(path: string, text: string, inPlace: (key: string, why: string) => void): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const old = statIfThere(path);
+  if (old === null ? statIfThere(path, lstatSync) !== null : !writable(path)) {
+    writeFileSync(path, text);
+    return;
+  }
+  if (old !== null && old.nlink > 1) {
+    inPlace('a second name', 'it has another name, which replacing it would leave holding the old text');
+    writeFileSync(path, text);
+    return;
+  }
+  const target = old === null ? path : realpathSync(path);
+  // Its length doesn't depend on the file's name, so a name up to the
+  // longest a directory takes still leaves room for it.
+  const tmp = join(dirname(target), `lessons-${randomUUID()}.tmp`);
+  const mode = old === null ? 0o666 : old.mode & 0o777;
+  try {
+    const fd = openSync(tmp, 'w', mode);
+    try {
+      writeFileSync(fd, text);
+      // So the file is whole before the rename puts it in place: a machine
+      // that goes down finds the old file or this one, whole.
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // The umask narrows the mode a file is made with: a file that's there
+    // keeps its own, and a new one takes the umask's, as on main.
+    if (old !== null) chmodSync(tmp, mode);
+    renameSync(tmp, target);
+  } catch (err) {
+    // A removal that fails doesn't replace the error named here: on a
+    // read-only mount even a temporary file never made is refused (EROFS).
+    // One that was made then stays beside the file.
+    try { rmSync(tmp, { force: true }); } catch { /* the write's error is the one named */ }
+    const code = codeOf(err);
+    // An error's text can name the temporary file, whose name is new at
+    // each write, and a problem is named once by its text.
+    const said = errorText(err).replaceAll(tmp, join(dirname(target), 'lessons-<random>.tmp'));
+    // With no file there, writing in place needs the same directory the
+    // temporary file did, so there's nothing to fall back to.
+    if (old === null || !IN_PLACE.has(code)) throw Object.assign(new Error(said), { code });
+    inPlace(code, `this host can't replace it through a temporary file beside it (${said})`);
+    writeFileSync(path, text);
+  }
+}
+
+/** Whether this host may write the file, as far as its permission goes. A
+ *  refusal for permission (EACCES, EPERM, EROFS) is no, so the write goes
+ *  in place and is refused there, as on main; any other error from the
+ *  check is thrown, so the file is left alone. */
+function writable(path: string): boolean {
+  try {
+    accessSync(path, constants.W_OK);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'EROFS'].includes(codeOf(err))) return false;
+    throw err;
+  }
+}
+
+function codeOf(err: unknown): string {
+  return String((err as { code?: unknown }).code);
+}
+
+/** A refusal for a change to a lesson whose id the shared file, as this
+ *  call read it, holds twice, or held twice when this host last read it
+ *  and can't be read now: this host can't tell which entry its copy came
+ *  from, so the change couldn't be shared, and the merge would drop it
+ *  once the two are resolved (see mergeShared). */
+function heldTwiceRefusal(
+  read: SharedRead | null,
+  l: StoredLesson,
+  verb: 'updated' | 'deprecated' | 'boosted' | 'demoted',
+  heldTwice: string[] | undefined,
+): ToolResult | undefined {
+  const id = idOf(l);
+  if (read === null || id === undefined) return undefined;
+  let holds: string;
+  let advice: string;
+  if (read.kind === 'read' && (idCounts(read.entries).get(id) ?? 0) > 1) {
+    holds = 'holds';
+    advice = newIdAdvice(read.entries, id);
+  } else if (read.kind === 'unreadable' && heldTwice?.includes(id)) {
+    holds = 'held, when this host last read it,';
+    advice = ALL_BUT_ONE;
+  } else {
+    return undefined;
+  }
+  return {
+    success: false,
+    isError: true,
+    error:
+      `Nothing was ${verb}: the shared lessons file ${holds} another lesson with the id ${shown(id)}, so this host can't ` +
+      'tell which of them this one is, and a change to it couldn\'t be shared. It waits on whoever runs the host, who can ' +
+      `${advice}.`,
+  };
+}
+
+/** What keeps every lesson when the file holds an id more than once: all
+ *  entries but one with the latest `updated` take new ids, so the one left
+ *  under the id is at least as new as the copy a host holds, unless that
+ *  host holds a change the file lacks (see mergeShared). */
+const ALL_BUT_ONE = 'give all but one of them a new id in the file, leaving the id on one with the latest updated';
+
+/** ALL_BUT_ONE for the entries the file holds under an id, said of two by
+ *  the one to give a new id, named by its `updated` as the file holds it. */
+function newIdAdvice(entries: unknown[], id: string): string {
+  const doubled = entries.filter((e) => idOf(e) === id) as Record<string, unknown>[];
+  if (doubled.length !== 2) return ALL_BUT_ONE;
+  const [a, b] = doubled;
+  if (stampOf(a) === stampOf(b)) return 'give either one a new id in the file (neither\'s updated is later)';
+  const u = (stampOf(a) < stampOf(b) ? a : b).updated;
+  return `give the one with ${u === undefined ? 'no updated' : `updated ${shown(u)}`} a new id in the file`;
+}
+
+function statIfThere(path: string, stat: (path: string) => Stats = statSync): Stats | null {
+  try {
+    return stat(path);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** A copy's `updated` as the merge ranks it: one that isn't a number no
+ *  greater than Number.MAX_SAFE_INTEGER ranks below every one that is. Past
+ *  that, adding one can give the same number, so a change couldn't always
+ *  stamp past the copy; no clock gives one (a Date holds at most 8.64e15),
+ *  and ranked by value, a hand edit's would outrank every change. */
+function stampOf(l: unknown): number {
+  const u = isRecord(l) ? l.updated : undefined;
+  return typeof u === 'number' && Number.isFinite(u) && u <= Number.MAX_SAFE_INTEGER ? u : -Infinity;
+}
+
+/** The `updated` for a change made on a copy: now, or one past the copy's
+ *  stamp when that's later, so the change outranks the copy it was made on
+ *  in every host's merge, whatever the hosts' clocks say. A copy stamped
+ *  Number.MAX_SAFE_INTEGER itself is the exception: the change takes the
+ *  same stamp, and of the two, the one in the file wins, as for any tie. */
+function laterStamp(l: StoredLesson): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(Date.now(), stampOf(l) + 1));
+}
+
+/** The ids a merge with the shared file goes by: non-empty text that at most
+ *  one entry of the file and at most one of the module's lessons holds. An
+ *  id held twice on either side can't say which lessons match, and merging
+ *  by it would overwrite one, or write a copy at every save. */
+function namedIds(entries: unknown[], lessons: StoredLesson[]): Set<string> {
+  const inFile = idCounts(entries);
+  const inState = idCounts(lessons);
+  const named = new Set<string>();
+  for (const id of new Set([...inFile.keys(), ...inState.keys()])) {
+    if ((inFile.get(id) ?? 0) <= 1 && (inState.get(id) ?? 0) <= 1) named.add(id);
+  }
+  return named;
+}
+
+/** How many entries of a list hold each id (see idOf). */
+function idCounts(list: unknown[]): Map<string, number> {
+  const n = new Map<string, number>();
+  for (const e of list) {
+    const id = idOf(e);
+    if (id !== undefined) n.set(id, (n.get(id) ?? 0) + 1);
+  }
+  return n;
+}
+
+/** An entry's id, when it's an object whose id is non-empty text. */
+function idOf(entry: unknown): string | undefined {
+  return isRecord(entry) && typeof entry.id === 'string' && entry.id !== '' ? entry.id : undefined;
+}
+
+/** The start's line for the shared file's entries this host carries without
+ *  loading, if it has any. */
+function carriedLine(path: string, carried: unknown[]): string | undefined {
+  if (carried.length === 0) return undefined;
+  const notObjects = carried.filter(e => !isRecord(e)).length;
+  const unnamed = carried.length - notObjects;
+  const parts = [
+    ...(notObjects > 0 ? [notObjects === 1 ? "1 entry that isn't a lesson (not an object)" : `${notObjects} entries that aren't lessons (not objects)`] : []),
+    ...(unnamed > 0 ? [`${unnamed} ${unnamed === 1 ? 'lesson' : 'lessons'} without a named id (text, not empty, held once at most in the file and once at most on this host)`] : []),
+  ];
+  const one = carried.length === 1;
+  return `[lessons] the shared lessons file ${path} has ${parts.join(' and ')}. ` +
+    `${one ? "It's" : "They're"} kept in the file, and this host doesn't load ${one ? 'it' : 'them'}.`;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** What's wrong with a stored lesson, field by field, or nothing when it's

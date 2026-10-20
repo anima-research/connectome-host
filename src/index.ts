@@ -23,6 +23,8 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
+// First, so its warning about an old Bun prints before the modules below run.
+import './bun-floor-check.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -31,7 +33,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { CredentialMonitor } from './credential-state.js';
 import { AnthropicOAuthCredentials } from './anthropic-credentials.js';
@@ -67,8 +69,10 @@ import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, cleartextCredentialWarning, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
+import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
+import { startFramework } from './start-framework.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
 import {
@@ -77,17 +81,23 @@ import {
   loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
+  SavedRecipeDirectoryError,
+  savedRecipeDirectory,
+  savedRecipePath,
   clearSavedRecipe,
   parseRecipeArg,
   deprecatedConversationsNotices,
+  resolveProvider,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
+import { stopForSessionSwitch } from './session-switch-stop.js';
 
 export type { AppContext };
 
@@ -159,23 +169,33 @@ async function resolveRecipe(): Promise<Recipe> {
   const { source, noRecipe } = parseRecipeArg(process.argv);
 
   if (noRecipe) {
-    clearSavedRecipe(config.dataDir);
+    try {
+      clearSavedRecipe(config.dataDir);
+    } catch (err) {
+      stopAtSavedRecipe('clear the saved recipe', err);
+    }
     console.log('Starting with default recipe.');
     return DEFAULT_RECIPE;
   }
 
   if (source) {
+    let loaded: Awaited<ReturnType<typeof loadRecipeDetailed>>;
     try {
-      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
-      // host-mounted and backed up, so resolved secrets must never land there.
-      const { recipe, persistable } = await loadRecipeDetailed(source);
-      saveRecipe(config.dataDir, persistable);
-      console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
-      return recipe;
+      loaded = await loadRecipeDetailed(source);
     } catch (err) {
       console.error(`Failed to load recipe from ${source}:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
+    try {
+      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
+      // host-mounted and backed up, so resolved secrets must never land there.
+      saveRecipe(config.dataDir, loaded.persistable);
+    } catch (err) {
+      stopAtSavedRecipe('save the recipe to', err);
+    }
+    const { recipe } = loaded;
+    console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
+    return recipe;
   }
 
   // Try saved recipe. Re-resolves ${VAR} references against the CURRENT
@@ -189,13 +209,36 @@ async function resolveRecipe(): Promise<Recipe> {
     }
   } catch (err) {
     console.error(
-      `Failed to resume saved recipe from ${config.dataDir}:`,
+      `Failed to resume the saved recipe ${savedRecipePath(config.dataDir)}:`,
       err instanceof Error ? err.message : err,
     );
+    console.error(err instanceof SavedRecipeDirectoryError
+      ? SAVED_RECIPE_DIRECTORY_LINE
+      : 'Fix what it names (the file, or a variable missing from the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.');
     process.exit(1);
   }
 
   return DEFAULT_RECIPE;
+}
+
+/** What a directory at the saved recipe's path needs; nothing the host does replaces one. */
+const SAVED_RECIPE_DIRECTORY_LINE =
+  'Move or remove it, then start again: the host saves its recipe there as a file, so the source of a bind mount there has to be a file that exists before the container starts.';
+
+/**
+ * Stop startup on a failure to save or clear the saved recipe, naming its
+ * path, and saying so where the cause is a directory there: a save fails with
+ * EISDIR, and a clear with ERR_FS_EISDIR, when a directory there is what
+ * stopped it, itself or (for a save) through a link. Any other failure, such
+ * as a clear of a link in a data directory the host can't write, prints its
+ * own error.
+ */
+function stopAtSavedRecipe(failedTo: string, err: unknown): never {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  const directory = code === 'EISDIR' || code === 'ERR_FS_EISDIR' ? savedRecipeDirectory(config.dataDir) : null;
+  console.error(`Failed to ${failedTo} ${savedRecipePath(config.dataDir)}:`, directory ?? (err instanceof Error ? err.message : err));
+  if (directory !== null) console.error(SAVED_RECIPE_DIRECTORY_LINE);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +287,7 @@ async function createFramework(
     const subagentConfig = typeof modules.subagents === 'object' ? modules.subagents : {};
     subagentModule = new SubagentModule({
       parentAgentName: agentName,
+      provider: resolveProvider(recipe),
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
     });
@@ -615,39 +659,24 @@ agents: [agentConfig],
 
   // Compression-quarantine klaxon → the framework's ops-alert channel
   // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
-  // re-fires this every alarm interval for as long as ANY chunk is
+  // re-fires this every alarm interval for as long as ANY span is
   // quarantined: quarantined spans stay raw, the fold floor creeps, and the
   // picker eventually cannot fit the window — a guaranteed future outage
-  // that must never be a silent state.
+  // that must never be a silent state. quarantineAlarm decides what each
+  // call sends: the alarm, or the all-clear under its own kind.
   // Duck-typed on both sides so version skew in either dep degrades to a
   // no-op (the strategy's own stderr klaxon still fires) instead of a crash.
   {
     const alarmCapable = strategy as unknown as {
-      setQuarantineAlarmHandler?: (fn: (status: { count: number; keys: string[] }) => void) => void;
+      setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
     };
     const notify = (framework as unknown as {
       notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
     }).notifyOps?.bind(framework);
     if (alarmCapable.setQuarantineAlarmHandler && notify) {
       alarmCapable.setQuarantineAlarmHandler((status) => {
-        if (status.count === 0) {
-          // All-clear travels the same channel the alarm did, under a
-          // DISTINCT kind: the alarm kind's 15-min ops cooldown must never
-          // swallow the stand-down (silence after an alarm is ambiguous).
-          notify(
-            'compression-quarantine-clear',
-            agentName,
-            'compression quarantine EMPTY — all debt paid; alarm stands down.',
-            { count: 0 },
-          );
-          return;
-        }
-        notify(
-          'compression-quarantine',
-          agentName,
-          `${status.count} chunk(s) in compression quarantine — spans stay raw and WILL eventually exhaust the context budget. Operator action required (inspect refusing content; branch, pin, or clear).`,
-          { count: status.count, keys: status.keys },
-        );
+        const alert = quarantineAlarm(status);
+        notify(alert.kind, agentName, alert.message, alert.data);
       });
     }
   }
@@ -824,55 +853,13 @@ async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
   const { handleCommand } = await import('./commands.js');
 
-  let inferenceResolve: (() => void) | null = null;
-
-  app.framework.onTrace((event) => {
-    const e = event as unknown as Record<string, unknown>;
-    switch (event.type) {
-      case 'inference:started':
-        process.stdout.write('\n');
-        break;
-      case 'inference:tokens': {
-        const content = e.content as string;
-        if (content) process.stdout.write(content);
-        break;
-      }
-      case 'inference:completed':
-        process.stdout.write('\n');
-        inferenceResolve?.();
-        inferenceResolve = null;
-        break;
-      case 'inference:failed':
-        console.error(`\nError: ${e.error}`);
-        inferenceResolve?.();
-        inferenceResolve = null;
-        break;
-      case 'inference:tool_calls_yielded': {
-        const calls = e.calls as Array<{ name: string }>;
-        console.log(`\n[tools] ${calls.map(c => c.name).join(', ')}`);
-        break;
-      }
-      case 'tool:started': {
-        const toolInput = e.input ? JSON.stringify(e.input) : '';
-        const truncated = toolInput.length > 120 ? toolInput.slice(0, 120) + '...' : toolInput;
-        console.log(`[tool] ${e.tool}${truncated ? ' ' + truncated : ''}`);
-        break;
-      }
-    }
+  const turns = createPipedTurns(app.agentName, {
+    write: (text) => { process.stdout.write(text); },
+    log: (line) => { console.log(line); },
+    error: (line) => { console.error(line); },
   });
-
-  function waitForInference(): Promise<void> {
-    return new Promise(resolve => {
-      // The timer only caps the wait. Clear it once the inference settles:
-      // a pending 120 s timer held the event loop open, so a batch run sat
-      // for two minutes after `Done.` before the process exited.
-      const timer = setTimeout(() => {
-        if (inferenceResolve === settle) { inferenceResolve = null; resolve(); }
-      }, 120_000);
-      const settle = (): void => { clearTimeout(timer); resolve(); };
-      inferenceResolve = settle;
-    });
-  }
+  const traces = traceFollower((event) => turns.onTrace(event as { type: string; [key: string]: unknown }));
+  traces.follow(app.framework);
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
@@ -888,7 +875,8 @@ async function runPiped(app: AppContext) {
         }
       }
       if (result.switchToSessionId) {
-        await app.switchSession(result.switchToSessionId);
+        const sessionId = result.switchToSessionId;
+        await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
         console.log('Session switched.');
       }
     } else {
@@ -896,7 +884,7 @@ async function runPiped(app: AppContext) {
         type: 'external-message', source: 'cli',
         content: trimmed, metadata: {}, triggerInference: true,
       });
-      await waitForInference();
+      await turns.waitForTurn();
     }
     return false;
   }
@@ -972,9 +960,12 @@ function countLines(path: string): number {
 // Main
 // ---------------------------------------------------------------------------
 
+/** What a fatal error waits for before exiting: headless mode's log. */
+let beforeFatalExit: (() => Promise<void>) | undefined;
+
 async function main() {
   const recipe = await resolveRecipe();
-  const provider = recipe.agent.provider ?? 'anthropic';
+  const provider = resolveProvider(recipe);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');
@@ -1276,7 +1267,7 @@ async function main() {
     // gives generic retryable errors — e.g. a gateway 502 — zero retries; only
     // 529/overloaded_error has a dedicated schedule.
     ...(recipe.agent.retry ? { retry: recipe.agent.retry } : {}),
-    formatter: recipeFormatter(recipe.agent.formatter, provider),
+    formatter: recipeFormatter(recipe, provider, resolveModel(recipe)),
     // Caching default for internal callers (autobio compression,
     // executeMerge), which read Membrane's defaultPromptCaching rather
     // than the per-agent flag. Applies on EVERY provider whenever the
@@ -1324,7 +1315,7 @@ async function main() {
     : null;
   credentialsRef = credentials;
   if (credentials && (adapter instanceof LoggingAnthropicAdapter || adapter instanceof LoggingProviderAdapter)) {
-    adapter.onProviderError = (error) => credentials.observeError(error);
+    adapter.onProviderError = (error: unknown) => credentials.observeError(error);
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
@@ -1347,7 +1338,7 @@ async function main() {
 
     async switchSession(id: string) {
       handleExport(this);
-      await this.framework.stop();
+      await stopForSessionSwitch(this.framework, id);
       sessionManager.setActiveSession(id);
       const newStorePath = sessionManager.getStorePath(id);
       // Note: agentName stays as resolved at startup. A per-session
@@ -1355,7 +1346,7 @@ async function main() {
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
       this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
-      this.framework.start();
+      startFramework(this.framework);
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
       setupSynesthete(this);
@@ -1379,17 +1370,12 @@ async function main() {
       const fw = app.framework as unknown as {
         notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
       };
-      fw.notifyOpsAlert?.(
-        'refusal-offpath',
-        app.agentName,
-        `off-path refusal (category=${info.category ?? 'unknown'}) on a ${info.messages}-message ` +
-          `complete() call (~${Math.round(info.inputTokens / 1000)}k tok) — likely compression/summarizer`,
-        { ...info },
-      );
+      const alert = offPathRefusalAlert(info);
+      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
     };
   }
 
-  framework.start();
+  startFramework(framework);
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);
@@ -1400,7 +1386,8 @@ async function main() {
 
   try {
     if (headless) {
-      const { runHeadless } = await import('./headless.js');
+      const { runHeadless, endHeadlessLog } = await import('./headless.js');
+      beforeFatalExit = endHeadlessLog;
       await runHeadless(app, process.argv.slice(2));
     } else if (noTui) {
       await runPiped(app);
@@ -1414,7 +1401,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('Fatal error:', err);
+  // Headless, headless.log may still hold lines written just before the
+  // failure, such as the server's error; exiting at once would drop them.
+  await beforeFatalExit?.();
   process.exit(1);
 });

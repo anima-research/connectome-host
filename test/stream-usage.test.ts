@@ -136,7 +136,12 @@ async function runStream(name: string, script: CallUsage[] = CALLS, agentConfig:
     await h.framework.runEphemeralToCompletion(agent, contextManager);
     await new Promise<void>((resolve) => setImmediate(resolve));
     const mine = h.traces.filter((e) => e.agentName === name);
-    const tracked = h.framework.getSessionUsage().byAgent.find((a) => a.agentName === name)?.usage;
+    const byAgent = h.framework.getSessionUsage().byAgent;
+    // agent-framework #558 counts every ephemeral agent in one shared entry,
+    // marked ephemeral; before it, each had an entry under its own name. This
+    // harness runs one ephemeral agent, so either entry is its tally.
+    const tracked = (byAgent.find((a) => a.agentName === name)
+      ?? byAgent.find((a) => (a as { ephemeral?: true }).ephemeral === true))?.usage;
     return { calls: h.adapter.calls, events: mine, tracked };
   } finally {
     await h.cleanup();

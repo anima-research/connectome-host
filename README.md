@@ -34,7 +34,7 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Quick start
 
 ```bash
-# Prerequisites: Bun and Node.js 20+ (Node builds the web UI), plus credentials
+# Prerequisites: Bun 1.4.3+ and Node.js 22.12+ (Node builds the web UI), plus credentials
 export ANTHROPIC_API_KEY=sk-ant-...     # or ANTHROPIC_AUTH_TOKEN (Claude subscription)
 
 bun install                                   # also builds the web UI bundle
@@ -84,6 +84,8 @@ Values and combinations are validated at load time and fail loudly, naming
 the key. Unrecognized keys, though, are generally *not* rejected — a
 misspelled key (`mcplServers`, a leftover `modules.files`) is silently
 ignored, so check spelling against this README and `src/recipe.ts`.
+`modules.workspace` and each of its mounts do refuse a key they don't have,
+naming it.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
@@ -147,10 +149,10 @@ full semantics of each mode.
 
 | Command | Behavior |
 |---------|----------|
-| `bun src/index.ts` | Reuse last saved recipe, or start with generic default |
+| `bun src/index.ts` | Reuse last saved recipe, or start with generic default when there is none; a saved recipe that can't be used stops startup, naming it |
 | `bun src/index.ts <path>` | Load recipe from local file |
 | `bun src/index.ts <url>` | Fetch recipe from HTTP URL |
-| `bun src/index.ts --no-recipe` | Reset to default generic assistant |
+| `bun src/index.ts --no-recipe` | Reset to default generic assistant (a directory at the saved recipe's path stops it instead) |
 
 The loaded recipe is saved to `$DATA_DIR/.recipe.json` (mode 0600) in its
 **unresolved** form — `${VAR}` references kept, a URL system prompt kept as
@@ -200,7 +202,7 @@ through for flaky gateways.
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 
-Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full host environment, including credentials. Prefer explicit `env` entries for needed variables. Explicit recipe `false` overrides file `true`; omission preserves the file's policy. Agent-owned `mcpl-servers.agent.json` overlays strip `inheritEnv`, including when replacing an operator-defined server. Put a full-inheritance grant in the recipe or operator server file instead.
+Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full host environment, including credentials. Prefer explicit `env` entries for needed variables. Explicit recipe `false` overrides file `true`; omission preserves the file's policy. Agent-owned `mcpl-servers.agent.json` overlays strip `inheritEnv`, including when replacing an operator-defined server, as they strip `allowHostCommands`, `enabledCapabilities` and `toolLifecycle`, and the startup warnings name each one an overlay entry sets. Put `inheritEnv` or `toolLifecycle` in the recipe, or in `mcpl-servers.json` for a server the recipe names, instead, and `allowHostCommands` or `enabledCapabilities` in a server the recipe defines itself, with its own command or url and an id `mcpl-servers.json` doesn't define, since neither `mcpl-servers.json` nor a recipe's override of a server from it passes those two on.
 
 Check legacy configuration variables before enabling full inheritance. For Discord MCPL, an inherited `DISCORD_SUPPRESS_REACTION_EMOJIS=""` seeds an explicit empty suppression list when its configured filters file does not yet exist; that durable file then overrides the protective baseline. Remove an unintended stale variable before the first startup, or configure the intended suppression in the filters file. Likewise, a `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's environment becomes an inheriting child's whole baseline, in place of agent-framework's protective default. The framework logs when it does.
 
@@ -548,9 +550,12 @@ read-write instructions mount. On a read-only mount the flow reverses:
 human/deploy edits to disk reach the injection, but not `workspace--read`
 (which serves Chronicle) — prefer routing human feedback through conversation
 and letting the agent make the edit. The file is read through the
-workspace's `readFileFromDisk`, so a file that is itself a link isn't read on
-a recipe's mounts, which don't follow links, and neither is one whose
-canonical path lies outside its mount: either raises the alert instead.
+workspace's `readFileFromDisk`, so on a mount that doesn't follow links, a
+recipe's default, a file that is itself a link isn't read (nor, from
+agent-framework's release with anima-research/agent-framework#468, is one
+reached through a linked directory), and on any mount one whose canonical
+path lies outside it isn't either, a link that leads out included: either
+raises the alert instead.
 
 **Cache note**: at `position: "system"` the block lives in every agent's
 prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next
@@ -561,7 +566,7 @@ are one free-form curated document, always present verbatim.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) runs the host; [Node.js](https://nodejs.org/) 20+ and npm build the web UI
+- [Bun](https://bun.sh/) 1.4.3+ runs the host; [Node.js](https://nodejs.org/) 22.12+ and npm build the web UI
 - No Rust toolchain: `@animalabs/chronicle` ships prebuilt native binaries
 - Credentials for one provider: an Anthropic API key, a Claude subscription
   OAuth token (`claude setup-token`), an OpenAI or OpenRouter key, AWS
@@ -573,6 +578,11 @@ are one free-form curated document, always present verbatim.
 ```bash
 bun install      # or npm install; the postinstall step builds the web UI
 ```
+
+Installed from npm instead (`npm install @animalabs/connectome-host`), the
+package carries the web UI already built. npm 12 and bun may report its
+`postinstall` as blocked: it builds the web UI only in a checkout, so nothing
+is lost.
 
 ## Environment variables
 
@@ -600,7 +610,7 @@ bun install      # or npm install; the postinstall step builds the web UI
 | `IDENTITY_KEY_FILE`, `IDENTITY_HOME` | `$DATA_DIR/identity-key.pem`, `id.animalabs.ai` | `modules.identity` |
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
-| `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large) |
+| `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for
@@ -649,8 +659,9 @@ or supply credentials for a remote deployment:
 "modules": { "webui": { "basicAuth": { "username": "${WEBUI_USERNAME}", "password": "${WEBUI_PASSWORD}" } } }
 ```
 
-Build the SPA bundle once with `bun run build:web` (also runs on install via
-postinstall). Deployment behind a reverse proxy, observer access and all
+In a checkout, build the SPA bundle once with `bun run build:web` (also runs
+on install via postinstall); the npm package carries it built. Deployment
+behind a reverse proxy, observer access and all
 endpoints are covered in [`docs/webui-deployment.md`](docs/webui-deployment.md).
 
 - Chat with full interiority: thinking blocks, tool calls + results, live streaming, inline images

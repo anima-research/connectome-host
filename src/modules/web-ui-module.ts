@@ -39,6 +39,7 @@ import type {
 } from '@animalabs/agent-framework';
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { workspaceReadFields } from '../workspace-read-result.js';
 import type { ServerWebSocket } from 'bun';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
@@ -54,6 +55,7 @@ import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
+import { TurnInterrupts, interruptAgents, interruptSubagents } from '../state/turn-interrupt.js';
 import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
@@ -151,7 +153,7 @@ export interface WebUiModuleConfig {
    * literal credentials to a recipe.
    */
   basicAuth?: { username: string; password: string };
-  /** Path to the SPA build output. Default: `<cwd>/dist/web`. */
+  /** Path to the SPA build output. Default: this package's own `dist/web`. */
   staticDir?: string;
   /**
    * Origin allowlist for the WebSocket upgrade. Browsers do not enforce
@@ -229,6 +231,11 @@ interface ClientState {
 /** Default port — picked to be memorable and unlikely to collide. */
 const DEFAULT_PORT = 7340;
 
+/** What to do about a missing bundle: a checkout builds it, and the npm
+ *  package carries it built, without the web/ sources to build it from. */
+const BUNDLE_REMEDY =
+  'In a checkout, run `npm run build:web` (the postinstall runs it); an installed package carries it built, so reinstall the package.';
+
 /** HTTP route → panel op, for ?scope=<child> proxying. /curve (the HTML
  *  page) is deliberately absent: it is served locally and its own fetch of
  *  /debug/context/curve carries the scope param through. */
@@ -278,6 +285,9 @@ function panelParamsFromUrl(url: URL): Record<string, unknown> {
 
 /** Messages shipped in the welcome frame (the tail window). */
 const WELCOME_HISTORY_LIMIT = 200;
+/** How long the welcomes of a bind wait, together, for the autoStart
+ *  launches under way at setApp to record their children (autoStartRecords). */
+const AUTOSTART_RECORD_WAIT_MS = 1_000;
 /** Default / max page size for request-history. */
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
@@ -352,6 +362,13 @@ const DEFAULT_HOST = '0.0.0.0';
  */
 interface SharedServerState {
   server: ReturnType<typeof Bun.serve>;
+  /** The interrupt's turn follower for the app's framework: fed every trace
+   *  (fanOutTrace), made again with each framework (setApp). */
+  interrupts?: TurnInterrupts;
+  /** Ends the fan-out's subscription to the framework setApp last followed,
+   *  so a switched-away framework's late traces reach no client and no
+   *  follower. */
+  stopFollowing?: () => void;
   port: number;
   host: string;
   staticRoot: string;
@@ -398,9 +415,20 @@ interface SharedServerState {
    *  and cleared in stop(). */
   messageListenerDetacher: (() => void) | null;
   /** Cached child recipe summaries keyed by recipe path. Recipes are
-   *  static-ish per host run (re-spawn doesn't change the file), so we
-   *  parse once and reuse on every welcome. Cleared on session switch. */
+   *  static-ish per host run (re-spawn doesn't change the file), so a summary
+   *  once loaded is reused by every later welcome, for the life of the host.
+   *  Welcomes loading at the same time may each load it, and a load that
+   *  fails isn't kept, so the next welcome loads it again. */
   childRecipeCache: Map<string, { name: string; description?: string; version?: string; agentModel?: string }>;
+  /** What every welcome since setApp waits for before it reads the fleet's
+   *  children: the autoStart launches under way at setApp recording theirs,
+   *  for AUTOSTART_RECORD_WAIT_MS at most. Null when none were under way.
+   *  It is one wait for the whole bind, so a client that connects during a
+   *  stalled launch, once the wait is over, doesn't wait again. */
+  autoStartRecords: Promise<void> | null;
+  /** Counts setApp's binds, so a welcome that a newer bind has superseded
+   *  while it waited sends nothing: that bind welcomes every client again. */
+  bindGeneration: number;
   /** corrId → originating client + request kind, for routing scoped panel
    *  query responses (lessons / workspace) back to the requesting client.
    *  Entries are deleted on response or pruned by TTL. */
@@ -408,6 +436,42 @@ interface SharedServerState {
 }
 
 let sharedServer: SharedServerState | null = null;
+
+/**
+ * The Web UI's interrupt: the subagents' turns, then their runs stopped
+ * (interruptSubagents), then every other agent's turn (interruptAgents), each
+ * aborted at once if it can be, else as soon as it can be. Returns the reply.
+ */
+export function interruptPage(
+  agentNames: readonly string[],
+  isSubagent: (agentName: string) => boolean,
+  interrupts: Pick<TurnInterrupts, 'interrupt'> | undefined,
+  stopRuns: () => number,
+): string {
+  if (!interrupts) return interruptReply(stopRuns(), [], []);
+  const reason = 'interrupted from the Web UI';
+  // Split before the runs stop, which can change what isSubagent answers.
+  const others = agentNames.filter((name) => !isSubagent(name));
+  const subagents = interruptSubagents(agentNames, isSubagent, interrupts, stopRuns, reason);
+  const rest = interruptAgents(others, interrupts, reason);
+  return interruptReply(subagents.stopped, [...subagents.aborted, ...rest.aborted], [...subagents.deferred, ...rest.deferred]);
+}
+
+/** The Web UI interrupt's reply: the subagents it stopped, and the agents
+ *  whose turns stop only once they can be aborted, or, when it aborted,
+ *  kept and stopped nothing, that it interrupted no turn. */
+export function interruptReply(
+  subagentsStopped: number,
+  aborted: readonly string[],
+  deferred: readonly string[],
+): string {
+  const parts = [
+    ...(subagentsStopped > 0 ? [`${subagentsStopped} subagent(s) stopped`] : []),
+    ...(deferred.length > 0 ? [`${deferred.join(', ')} stopping as soon as ${deferred.length === 1 ? 'its turn' : 'their turns'} can be aborted`] : []),
+  ];
+  if (parts.length > 0) return `interrupted — ${parts.join('; ')}`;
+  return aborted.length > 0 ? 'interrupted' : 'no turn interrupted';
+}
 
 /** An openable URL for a bind address: IPv6 literals (the `::1` loopback
  *  bind, say) need brackets, or the port reads as part of the address. */
@@ -470,6 +534,8 @@ export class WebUiModule implements Module {
       callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
+      autoStartRecords: null,
+      bindGeneration: 0,
       app: null,
       treeAggregator: null,
       fleetEventDetacher: null,
@@ -510,12 +576,12 @@ export class WebUiModule implements Module {
     sharedServer = state;
     // A missing bundle otherwise shows at run time only as a 503 to whoever
     // opens the page. Say it once, where the operator starting the host
-    // looks. This also covers a skipped postinstall (e.g. `--ignore-scripts`),
-    // which can't report anything itself.
+    // looks. This also covers a checkout's skipped postinstall (e.g.
+    // `--ignore-scripts`), which can't report anything itself.
     if (!existsSync(join(state.staticRoot, 'index.html'))) {
       console.warn(
         `[webui] bundle not found at ${state.staticRoot}: the Web UI will answer 503 until it is built. ` +
-        `Run \`npm run build:web\` (or postinstall) to produce it.`,
+        BUNDLE_REMEDY,
       );
     }
 
@@ -575,6 +641,7 @@ export class WebUiModule implements Module {
     if (!sharedServer) return;
     const ss = sharedServer;
     ss.app = app;
+    ss.interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
 
     // Tear down any previous aggregator (session-switch path).
     ss.fleetEventDetacher?.();
@@ -583,6 +650,8 @@ export class WebUiModule implements Module {
     ss.messageListenerDetacher = null;
     ss.treeAggregator?.dispose();
     ss.treeAggregator = null;
+    ss.autoStartRecords = null;
+    ss.bindGeneration++;
 
     // Live message pushes: assistant turns and tool results never surface as
     // `message:added` traces (those fire only for external/MCPL sources), so
@@ -631,11 +700,13 @@ export class WebUiModule implements Module {
     // Only clear if the entire app reference changed in a way that matters —
     // for now, retain across setApp (keeps welcome fast).
 
-    // Single fan-out listener. The framework's `onTrace` does not return a
-    // detacher, so per-client subscriptions would leak across reconnects.
-    // Instead, one listener iterates the live client set and the WS lifecycle
-    // owns membership. Cheap as long as the client count stays small (admin UI).
-    app.framework.onTrace((event: TraceEvent) => this.fanOutTrace(event));
+    // Single fan-out listener, which iterates the live client set while the
+    // WS lifecycle owns membership. Cheap as long as the client count stays
+    // small (admin UI). The framework this module followed before a session
+    // switch is stopped but keeps its listeners, so its subscription ends
+    // here, and the new framework's begins.
+    ss.stopFollowing?.();
+    ss.stopFollowing = app.framework.onTrace((event: TraceEvent) => this.fanOutTrace(event));
 
     // Fleet integration: if FleetModule is mounted, spin up a private
     // FleetTreeAggregator and start forwarding child events to clients. The
@@ -648,11 +719,25 @@ export class WebUiModule implements Module {
     if (fleetMod) {
       const agg = new FleetTreeAggregator(fleetMod);
       ss.treeAggregator = agg;
-      // Register existing children up front. autoStart launches finish before
-      // setApp() runs, so this catches everything currently up.
-      for (const childName of fleetMod.getChildren().keys()) {
+      // Register the children the fleet has now, and the autoStart children
+      // it's launching: those launches begin as the agents start, just before
+      // this, and record their children only once they've tried to load their
+      // recipes. A client takes its scopes from welcomes alone, so naming them
+      // here keeps them in the welcomes this sends below, a session switch's
+      // included. Registering a name only subscribes to its events; its tree
+      // arrives once it's ready.
+      const launching = fleetMod.autoStartLaunching();
+      for (const childName of new Set([...fleetMod.getChildren().keys(), ...launching])) {
         agg.registerChild(childName);
       }
+      // A welcome takes a child's recipe from the fleet's record of it, so the
+      // welcomes wait for those launches to record their children, all on one
+      // wait of a second at most: a recipe fetched from a URL has no time
+      // limit of its own. A launch still under way after that is listed by
+      // name, and its recipe comes with the first welcome begun after its
+      // launch records it. The welcome's own load of a recorded child's recipe
+      // isn't bounded here, as before this wait.
+      if (launching.size > 0) ss.autoStartRecords = within(fleetMod.autoStartRecorded(), AUTOSTART_RECORD_WAIT_MS);
 
       // One subscription on '*' — fan out to clients AND register newly-seen
       // children with the aggregator. This avoids a polling loop and keeps the
@@ -847,6 +932,7 @@ export class WebUiModule implements Module {
   }
 
   private fanOutTrace(event: TraceEvent): void {
+    sharedServer!.interrupts?.onTrace(event as unknown as { type: string; agentName?: unknown });
     // Update cached usage snapshot first so welcomes for late-connecting
     // clients get a current value.
     if (event.type === 'usage:updated') {
@@ -1207,8 +1293,10 @@ export class WebUiModule implements Module {
 
     // Workspace file passthrough: /files/<mount>/<path...>
     // Reads through WorkspaceModule.readFileFromDisk, which refuses a file
-    // that is itself a link unless the mount follows links, and reads a file
-    // only if its canonical path lies inside the mount.
+    // that is itself a link unless the mount follows links (and, from
+    // agent-framework's release with anima-research/agent-framework#468, a
+    // link among its directories too), and reads a file only if its
+    // canonical path lies inside the mount.
     if (url.pathname.startsWith('/files/')) {
       return this.serveWorkspaceFile(url.pathname.slice('/files/'.length));
     }
@@ -1446,17 +1534,25 @@ export class WebUiModule implements Module {
       // opened, so a path spelt with a trailing slash keeps its extension's.
       return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': mimeFor(realPath) } });
     } catch (err) {
-      // A path no mount holds or one leading out of its mount, a file that is
-      // itself a link the mount doesn't follow, and one whose canonical path
-      // lies outside the mount are forbidden. A mount the read can't resolve
-      // after finding the file is the server's fault, as no workspace is, and
+      // A path no mount holds or one leading out of its mount, one in another
+      // mount's directory nested in it or reached through a link into one
+      // (`other_mount`, from anima-research/agent-framework#460 and, for a
+      // link, the release with anima-research/agent-framework#468), a file
+      // that is itself a link the mount doesn't follow or one reached through
+      // such a link among its directories (`parent_symlink`, from that
+      // release), and one whose canonical path lies outside the mount are
+      // forbidden. A mount the read refuses as unavailable
+      // (`mount_unavailable`) is the server's fault, as no workspace is, and
       // says nothing about the file. Anything else the read can't give is not
-      // found: a file that changed while it was read, and a mount whose
-      // directory has gone, which the read finds no file in. The body is
-      // the read's message, which says why and names no host path; the
-      // status says forbidden, unavailable or not found.
+      // found, such as a file that changed while it was read. A mount whose
+      // directory has gone is not found on agent-framework 0.22.3, whose read
+      // finds no file in it, and unavailable from the release with
+      // anima-research/agent-framework#533, whose read checks the mount's
+      // root. The body is the read's message, which says why, names no host
+      // path, and for a nested mount names the path to use there; the status
+      // says forbidden, unavailable or not found.
       const read = err instanceof WorkspaceReadError ? err : null;
-      if (read && ['unknown_mount', 'traversal', 'symlink', 'escape'].includes(read.code)) {
+      if (read && ['unknown_mount', 'traversal', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
         return new Response(read.message, { status: 403 });
       }
       if (read?.code === 'mount_unavailable') return new Response(read.message, { status: 503 });
@@ -1500,7 +1596,7 @@ export class WebUiModule implements Module {
         return new Response(data, { headers: { 'content-type': 'text/html', 'cache-control': cacheControlFor(indexPath) } });
       } catch {
         return new Response(
-          `WebUI bundle not found at ${sharedServer!.staticRoot}. Run \`npm run build:web\` (or postinstall) to produce it.`,
+          `WebUI bundle not found at ${sharedServer!.staticRoot}. ${BUNDLE_REMEDY}`,
           { status: 503, headers: { 'content-type': 'text/plain' } },
         );
       }
@@ -1897,21 +1993,16 @@ export class WebUiModule implements Module {
       case 'interrupt': {
         if (!sharedServer?.app) return;
         const fw = sharedServer.app.framework;
-        // Cancel any in-process subagents so their results propagate.
         const subMod = fw.getAllModules().find((m) => m.name === 'subagent') as
-          | { cancelAll(): number }
+          | { cancelAll(): number; isSubagentAgent(frameworkAgentName: string): boolean }
           | undefined;
-        const cancelled = subMod?.cancelAll() ?? 0;
-        for (const agent of fw.getAllAgents()) {
-          try { agent.cancelStream(); } catch { /* idempotent */ }
-        }
-        this.send(client, {
-          type: 'command-result',
-          lines: [{
-            text: cancelled > 0 ? `interrupted — ${cancelled} subagent(s) stopped` : 'interrupted',
-            style: 'system',
-          }],
-        });
+        const reply = interruptPage(
+          fw.getAllAgents().map((a) => a.name),
+          (name) => subMod?.isSubagentAgent(name) ?? false,
+          sharedServer.interrupts,
+          () => subMod?.cancelAll() ?? 0,
+        );
+        this.send(client, { type: 'command-result', lines: [{ text: reply, style: 'system' }] });
         return;
       }
 
@@ -2359,12 +2450,12 @@ export class WebUiModule implements Module {
    *  keeps the SPA decoupled from module implementation details. */
 
   private async workspaceMod(): Promise<
-    | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+    | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; structured?: unknown; error?: string }> }
     | undefined
   > {
     if (!sharedServer?.app) return undefined;
     return sharedServer.app.framework.getAllModules().find((m) => m.name === 'workspace') as
-      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; error?: string }> }
+      | { handleToolCall(call: { name: string; input: unknown; id?: string }): Promise<{ success: boolean; data?: unknown; structured?: unknown; error?: string }> }
       | undefined;
   }
 
@@ -2439,13 +2530,7 @@ export class WebUiModule implements Module {
         this.send(client, { type: 'error', message: `read ${path} failed: ${result.error ?? 'unknown'}` });
         return;
       }
-      const data = (result.data ?? {}) as {
-        path?: string;
-        totalLines?: number;
-        fromLine?: number;
-        toLine?: number;
-        content?: string;
-      };
+      const data = workspaceReadFields(result);
       const totalLines = data.totalLines ?? 0;
       const reportedToLine = data.toLine ?? totalLines;
       let content = data.content ?? '';
@@ -3110,16 +3195,24 @@ export class WebUiModule implements Module {
     // pending connections get their welcome from handleObserverHello.
     if (client.auth === 'pending') return;
 
-    // The one await comes first. From building the welcome to marking the
-    // client welcomed nothing yields, so no event falls between what the
-    // welcome copies and the client's stream (a client skips live events
-    // until it's welcomed). That covers the fleet children's trees, which the
-    // welcome copies. It names the parent's agents without their trace state
-    // (see buildWelcome), so the client's parent nodes start from the live
-    // stream, and a parent trace before the welcome, during this await
-    // included, reaches the client in neither.
+    // The awaits come first: the bind's wait for its autoStart launches to
+    // record their children (setApp), then the recipes. From building the
+    // welcome to marking the client welcomed nothing yields, so no event falls
+    // between what the welcome copies and the client's stream (a client skips
+    // live events until it's welcomed). That covers the fleet children's
+    // trees, which the welcome copies. It names the parent's agents without
+    // their trace state (see buildWelcome), so the client's parent nodes start
+    // from the live stream, and a parent trace before the welcome, during
+    // these awaits included, reaches the client in neither. A welcome that a
+    // newer bind superseded during them sends nothing, since that bind
+    // welcomes every client again after its own wait.
+    const generation = sharedServer.bindGeneration;
+    const current = (): boolean => !!sharedServer?.app && sharedServer.bindGeneration === generation;
+    const autoStartRecords = sharedServer.autoStartRecords;
+    if (autoStartRecords) await autoStartRecords;
+    if (!current()) return;
     const childRecipes = await this.loadWelcomeRecipes();
-    if (!sharedServer?.app) return;
+    if (!current()) return;
     const welcome = this.buildWelcome(childRecipes);
     this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
     client.welcomed = true;
@@ -3243,7 +3336,12 @@ export class WebUiModule implements Module {
     // either way the live event stream keeps it current.
     const childTrees: WelcomeMessage['childTrees'] = [];
     if (sharedServer?.treeAggregator) {
+      const fleetMod = fw.getAllModules().find((m) => m.name === 'fleet') as FleetModule | undefined;
       for (const name of sharedServer.treeAggregator.getAllChildNames()) {
+        // setApp registers the autoStart children the fleet is launching. One
+        // whose launch has ended without a record, as a refused one does, is
+        // no child of this fleet, so it isn't listed.
+        if (fleetMod && !fleetMod.getChildren().has(name) && !fleetMod.autoStartLaunching().has(name)) continue;
         const nodes = sharedServer.treeAggregator.getChildNodes(name);
         // A child that registered while the recipes loaded is sent without
         // its recipe, like one that registers after the welcome: a client
@@ -3396,6 +3494,13 @@ export class WebUiModule implements Module {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** `promise`, or the end of `ms`, whichever comes first; the timer doesn't outlive it. */
+function within(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([promise, new Promise<void>((done) => { timer = setTimeout(done, ms); })])
+    .finally(() => clearTimeout(timer));
+}
 
 /**
  * Default Origin allowlist for the WebSocket upgrade. Covers the recommended
@@ -3816,8 +3921,10 @@ export async function __resetSharedServerForTests(): Promise<void> {
   try { sharedServer.server.stop(true); } catch { /* ignore */ }
   // The grants file's checks, and the sweep that runs after each, end too.
   sharedServer.observers?.stop();
-  // Detach any fleet listener / aggregator so the next start runs clean.
+  // Detach any fleet listener / aggregator, and the framework's trace
+  // subscription, so the next start runs clean.
   sharedServer.fleetEventDetacher?.();
   sharedServer.treeAggregator?.dispose();
+  sharedServer.stopFollowing?.();
   sharedServer = null;
 }

@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AgentFramework } from '@animalabs/agent-framework';
 
 import {
@@ -280,7 +280,7 @@ describe('the guarantee', () => {
 describe('the shapes', () => {
   test('the error log is read from its current session only, as tags and error shapes', () => {
     const exists = () => true;
-    const session = currentSession([
+    const log = [
       '--- session 2026-10-11T22:00:00.000Z ---',
       '[mcpl] old',
       '--- session 2026-10-11T23:00:00.000Z ---',
@@ -297,10 +297,11 @@ describe('the shapes', () => {
       `    at b (${join(ROOT, 'src/b.ts')}:2:1)`,
       `    at c (${join(ROOT, 'src/c.ts')}:3:1)`,
       'error: Bun prints uncaught errors this way',
-      `    at e (file://${join(ROOT, 'src/e.ts')}:5:1)`,
+      `    at e (${pathToFileURL(join(ROOT, 'src/e.ts')).href}:5:1)`,
       `    at f (${join(ROOT, 'node_modules/@animalabs/agent-framework/dist/src/framework.js')}:9:1)`,
-    ].join('\n'));
-    expect(session.includes('old')).toBe(false);
+    ];
+    const session = currentSession(log.join('\n'));
+    expect(session).toBe(log.slice(3).join('\n'));
     const parsed = parseErrorLog(session, fakeScope());
     expect([...parsed.tags.entries()]).toEqual([['shutdown', 1], ['mcpl', 1]]);
     expect(parsed.otherTags).toBe(0);
@@ -387,12 +388,15 @@ describe('the shapes', () => {
       line('2026-10-11T23:10:00.000Z', { type: 'call' }),
       line('2026-10-11T23:20:00.000Z', { type: 'error', provider: 'bedrock', httpStatus: 429, errorType: 'rate_limit', retryable: true, providerErrorCode: 'ThrottlingException' }),
       line('2026-10-11T23:30:00.000Z', { type: 'error', httpStatus: 9999, errorType: 'made-up', providerErrorCode: 'whatever the provider said' }),
+      // A cache keepalive poke the provider rejected.
+      line('2026-10-11T23:35:00.000Z', { type: 'error', kind: 'keepalive', httpStatus: 400 }),
       'not json',
       JSON.stringify({ type: 'error', timestamp: 'yesterday' }),
     ], NOW);
-    expect(summary.calls).toBe(3);
-    expect(summary.failed).toBe(2);
+    expect(summary.calls).toBe(4);
+    expect(summary.failed).toBe(3);
     expect(summary.recent).toEqual([
+      { at: '2026-10-11T23:35:00Z', kind: 'keepalive', provider: null, status: 400, type: null, retryable: null, code: null },
       { at: '2026-10-11T23:30:00Z', kind: 'complete', provider: null, status: null, type: null, retryable: null, code: 'other' },
       { at: '2026-10-11T23:20:00Z', kind: 'complete', provider: 'bedrock', status: 429, type: 'rate_limit', retryable: true, code: 'ThrottlingException' },
     ]);
@@ -598,6 +602,68 @@ describe('what the report says about itself', () => {
       expect(named.providerCalls).toMatchObject({ calls: 3, failed: 2 });
       const none = gatherBugReportFacts({ now: NOW, mode: 'tui', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: null });
       expect(buildBugReport('x', none).full.report).toContain('Provider calls: no call log in this process');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a call log whose newest record is longer than 4 MiB still has its hour counted', () => {
+    const dir = scratch();
+    try {
+      const record = (fields: Record<string, unknown>) => JSON.stringify({
+        kind: 'stream', timestamp: '2026-10-11T23:40:00.000Z', durationMs: 900, ...fields,
+      });
+      writeFileSync(join(dir, CALL_LOG), [
+        record({ type: 'call' }),
+        record({ type: 'error', httpStatus: 529, errorType: 'server', retryable: true }),
+        // An error that keeps its raw request as evidence, 5 MiB of it.
+        record({ type: 'error', httpStatus: 400, errorType: 'invalid_request', retryable: false, rawRequest: 'x'.repeat(5 * 1024 * 1024) }),
+      ].join('\n') + '\n');
+      const facts = gatherBugReportFacts({
+        now: NOW, mode: 'batch', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: join(dir, CALL_LOG),
+      });
+      expect(facts.providerCalls).toMatchObject({ calls: 3, failed: 2, skipped: 0, truncated: false, readable: true });
+      // The log's newest failure is listed first.
+      expect(facts.providerCalls!.recent.map((f) => f.status)).toEqual([400, 529]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a call log longer than the budget is read in part, and the report names the limit', () => {
+    const dir = scratch();
+    try {
+      const record = (fields: Record<string, unknown>) => JSON.stringify({
+        kind: 'stream', timestamp: '2026-10-11T23:40:00.000Z', durationMs: 900, ...fields,
+      });
+      // Five failures that keep 15 MiB of request each, then two small
+      // records: the budget holds the two and four of the five whole.
+      const big = record({ type: 'error', httpStatus: 400, errorType: 'invalid_request', retryable: false, rawRequest: 'x'.repeat(15 * 1024 * 1024) });
+      writeFileSync(join(dir, CALL_LOG), [
+        big, big, big, big, big,
+        record({ type: 'call' }),
+        record({ type: 'error', httpStatus: 529, errorType: 'server', retryable: true }),
+      ].join('\n') + '\n');
+      const facts = gatherBugReportFacts({
+        now: NOW, mode: 'batch', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: join(dir, CALL_LOG),
+      });
+      expect(facts.providerCalls).toMatchObject({ calls: 6, failed: 5, skipped: 0, truncated: true, readable: true });
+      expect(facts.providerCalls!.recent.map((f) => f.status)).toEqual([529, 400, 400, 400, 400]);
+      expect(buildBugReport('x', facts).full.report).toContain("(only the call log's last 64 MiB were read)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a call log that isn't there, and one that can't be read, are told apart", () => {
+    const dir = scratch();
+    try {
+      const gather = (callLog: string) => gatherBugReportFacts({
+        now: NOW, mode: 'batch', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog,
+      });
+      expect(buildBugReport('x', gather(join(dir, 'missing.jsonl'))).full.report).toContain('Provider calls: no call log in this process');
+      mkdirSync(join(dir, 'a-directory.jsonl'));
+      expect(buildBugReport('x', gather(join(dir, 'a-directory.jsonl'))).full.report).toContain("Provider calls: this process's call log couldn't be read");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

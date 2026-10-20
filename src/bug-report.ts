@@ -35,6 +35,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { applyAgentOverlay, loadMcplServers, mergeRecipeServers } from './mcpl-config.js';
+import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
 
 // ---------------------------------------------------------------------------
 // Where reports go, and what they're called
@@ -155,7 +156,7 @@ export const HOST_LOG_TAGS = new Set([
   'credential', 'credential-monitor', 'deprecated', 'diagnostics', 'discord', 'discord-awareness', 'echo',
   'estimator-calibration', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
   'host-mode', 'host-notice', 'identity', 'image', 'inference-dropped', 'inference-failed',
-  'inference-hard-down', 'inference-refusal', 'inference-rewind', 'inference-stale',
+  'inference-hard-down', 'inference-refusal', 'inference-rewind', 'inference-stale', 'interrupt',
   'kv-continuity-relaxation', 'kv-diag', 'kv-escalation', 'kv-overlap', 'kv-timing', 'kv-unified',
   'lessons', 'liveness-watchdog', 'llm-calls', 'mcp', 'mcpl', 'membrane', 'membrane-oversize', 'membrane:bedrock',
   'membrane:content', 'membrane:cost', 'membrane:gemini', 'membrane:normalize-tool-pairs',
@@ -219,7 +220,7 @@ export interface ServerRow {
 
 export interface ProviderFailure {
   at: string;
-  kind: 'complete' | 'stream' | null;
+  kind: 'complete' | 'stream' | 'keepalive' | null;
   provider: string | null;
   status: number | null;
   type: string | null;
@@ -526,7 +527,7 @@ export function summarizeProviderCalls(
       : opts.fallbackProvider ?? null;
     failures.push({
       at: at.replace(/\.\d+Z$/, 'Z'),
-      kind: record.kind === 'complete' || record.kind === 'stream' ? record.kind : null,
+      kind: record.kind === 'complete' || record.kind === 'stream' || record.kind === 'keepalive' ? record.kind : null,
       provider,
       status,
       type: typeof record.errorType === 'string' && MEMBRANE_ERROR_TYPES.has(record.errorType) ? record.errorType : null,
@@ -805,7 +806,7 @@ export function formatBugReport(text: string, facts: BugReportFacts, detail: Det
     lines.push('Provider calls: this process\'s call log couldn\'t be read');
   } else {
     lines.push(`Provider calls, last hour: ${pc.calls}, ${pc.failed} failed`);
-    if (pc.truncated) lines.push('  (only the call log\'s last 4 MiB were read)');
+    if (pc.truncated) lines.push(`  (only the call log's last ${CALL_LOG_READ_BUDGET >> 20} MiB were read)`);
     if (pc.skipped > 0) lines.push(`  (${pc.skipped} records couldn't be read)`);
     if (detail === 'full') {
       const shown = pc.recent.slice(0, FULL_LIST);
@@ -976,6 +977,8 @@ export function tailLines(path: string, bytes: number): { lines: string[]; trunc
   }
 }
 
+/** How much of the host's error log is read. Its lines aren't call records,
+ *  so the call log's bound, and the budget taken from it, don't apply. */
 const LOG_WINDOW = 4 * 1024 * 1024;
 
 export interface GatherOptions {
@@ -1005,14 +1008,22 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
   const setup = setupFacts(opts.recipe, opts.live);
   const callLog = opts.callLog === undefined ? callLogPath : opts.callLog;
   let providerCalls: ProviderCallSummary | null = null;
-  if (callLog) {
-    const read = tailLines(callLog, LOG_WINDOW);
-    if (read) {
-      const summary = summarizeProviderCalls(read.lines, now, {
-        fallbackProvider: setup.provider === 'anthropic' || setup.provider === 'bedrock' ? setup.provider : null,
-      });
-      providerCalls = { ...summary, truncated: read.truncated, readable: read.readable };
+  if (callLog && existsSync(callLog)) {
+    // Whole lines back from the end, within a budget taken from the writers'
+    // bound, so a few long lines can't leave nothing to count (call-log-tail.ts).
+    const newestFirst: string[] = [];
+    let truncated = false;
+    let readable = true;
+    try {
+      truncated = readLinesFromEnd(callLog, CALL_LOG_READ_BUDGET, (line) => { newestFirst.push(line); }).truncated;
+    } catch {
+      newestFirst.length = 0;
+      readable = false;
     }
+    const summary = summarizeProviderCalls(newestFirst.reverse(), now, {
+      fallbackProvider: setup.provider === 'anthropic' || setup.provider === 'bedrock' ? setup.provider : null,
+    });
+    providerCalls = { ...summary, truncated, readable };
   }
   const errorLogName = opts.mode === 'tui' ? 'tui-error.log' : opts.mode === 'headless' ? 'headless.log' : null;
   let hostErrors: HostErrorSummary | null = null;
