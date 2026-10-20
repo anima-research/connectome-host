@@ -69,7 +69,7 @@ function without(record: Record<string, unknown>, keys: readonly string[], trunc
  *  MAX_LAST_RESORT_CHARS. At most a few dozen KB, so it always fits, and
  *  building it can't throw. Its marker says what sent the line here: the
  *  record without its raw bodies couldn't be serialized, or didn't fit. */
-function lastResort(record: Record<string, unknown>, unserializable: boolean): string {
+function lastResort(record: Record<string, unknown>, unserializable: boolean): { line: string; truncated: string } {
   const kept: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(pick(record, HEAD_AND_ERROR))) {
     if (typeof value === 'string') kept[key] = boundText(value, MAX_LAST_RESORT_CHARS);
@@ -85,35 +85,45 @@ function lastResort(record: Record<string, unknown>, unserializable: boolean): s
       if (Object.keys(error).length > 0) kept.error = error;
     }
   }
-  kept.truncated = unserializable
+  const truncated = unserializable
     ? 'only bounded head and classification kept (the record could not be serialized)'
     : 'only bounded head and classification kept (record exceeded size guard)';
-  return JSON.stringify(kept);
+  kept.truncated = truncated;
+  return { line: JSON.stringify(kept), truncated };
 }
 
 /**
  * The record's JSONL line, its newline included, within MAX_RECORD_BYTES of
- * UTF-8. Each fallback's `truncated` marker says what it dropped: the
- * generic writer's existing markers, and "raw request dropped" for a line
- * that keeps its raw response.
+ * UTF-8, and the `truncated` marker the line carries when a fallback made
+ * it, so a writer can say what its row kept. Each fallback's marker says
+ * what it dropped: the generic writer's existing markers, and "raw request
+ * dropped" for a line that keeps its raw response.
  */
-export function serializeRecord(record: Record<string, unknown>): string {
+export function recordLine(record: Record<string, unknown>): { line: string; truncated?: string } {
   const whole = stringify(record);
-  if (whole !== undefined && fits(whole)) return whole + '\n';
+  if (whole !== undefined && fits(whole)) return { line: whole + '\n' };
   // A record with a raw response loses its raw request first, and the
   // response only when the line still doesn't fit: a request is the usual
   // oversized part, and the response holds the usage, cache writes and stop
   // reason that the call ledger's restore and the doctor read from the line.
   const response = pick(record, ['rawResponse']).rawResponse;
   if (response !== undefined && response !== null) {
-    const withoutRequest = without(record, ['rawRequest'], whole === undefined
+    const requestDropped = whole === undefined
       ? 'raw request dropped (the record could not be serialized)'
-      : 'raw request dropped (record exceeded size guard)');
-    if (withoutRequest !== undefined && fits(withoutRequest)) return withoutRequest + '\n';
+      : 'raw request dropped (record exceeded size guard)';
+    const withoutRequest = without(record, ['rawRequest'], requestDropped);
+    if (withoutRequest !== undefined && fits(withoutRequest)) return { line: withoutRequest + '\n', truncated: requestDropped };
   }
-  const withoutRaw = without(record, ['rawRequest', 'rawResponse'], whole === undefined
+  const bodiesDropped = whole === undefined
     ? 'raw bodies dropped (they could not be serialized)'
-    : 'raw bodies dropped (record exceeded size guard)');
-  if (withoutRaw !== undefined && fits(withoutRaw)) return withoutRaw + '\n';
-  return lastResort(record, withoutRaw === undefined) + '\n';
+    : 'raw bodies dropped (record exceeded size guard)';
+  const withoutRaw = without(record, ['rawRequest', 'rawResponse'], bodiesDropped);
+  if (withoutRaw !== undefined && fits(withoutRaw)) return { line: withoutRaw + '\n', truncated: bodiesDropped };
+  const last = lastResort(record, withoutRaw === undefined);
+  return { line: last.line + '\n', truncated: last.truncated };
+}
+
+/** The record's JSONL line, as recordLine gives it. */
+export function serializeRecord(record: Record<string, unknown>): string {
+  return recordLine(record).line;
 }

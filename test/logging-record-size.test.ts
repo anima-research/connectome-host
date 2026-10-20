@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import { LoggingBedrockAdapter } from '../src/logging-bedrock-adapter.js';
 import { LoggingProviderAdapter } from '../src/logging-provider-wrapper.js';
-import { MAX_RECORD_BYTES, serializeRecord } from '../src/logging-record.js';
+import { MAX_RECORD_BYTES, recordLine, serializeRecord } from '../src/logging-record.js';
 import { parseLoggedCall } from '../src/call-ledger.js';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -219,5 +219,25 @@ describe('serializeRecord drops parts in order, each step checked against the ca
 
   test('MAX_RECORD_BYTES is the 16 MiB the line may take', () => {
     expect(MAX_RECORD_BYTES).toBe(CAP);
+  });
+});
+
+describe("recordLine gives serializeRecord's line with the marker that line carries", () => {
+  test("each fallback's marker is the line's own truncated, and a whole line has none", () => {
+    const cycle: any = {}; cycle.self = cycle;
+    const cases: Array<[Record<string, unknown>, string | undefined]> = [
+      [{ ...call, rawRequest: 'small', rawResponse: response }, undefined],
+      [{ ...call, rawRequest: BIG, rawResponse: response }, 'raw request dropped (record exceeded size guard)'],
+      [{ ...call, rawRequest: cycle, rawResponse: response }, 'raw request dropped (the record could not be serialized)'],
+      [{ ...call, rawRequest: BIG }, 'raw bodies dropped (record exceeded size guard)'],
+      [{ ...call, rawRequest: cycle }, 'raw bodies dropped (they could not be serialized)'],
+      [{ ...call, requestSummary: { model: BIG } }, 'only bounded head and classification kept (record exceeded size guard)'],
+      [{ ...call, requestSummary: cycle }, 'only bounded head and classification kept (the record could not be serialized)'],
+    ];
+    for (const [record, marker] of cases) {
+      const { line, truncated } = recordLine(record);
+      expect(truncated).toBe(marker);
+      expect(JSON.parse(line).truncated).toBe(marker);
+    }
   });
 });

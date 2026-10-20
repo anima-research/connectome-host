@@ -55,6 +55,7 @@
 // 2026-10-19 as `end_turn` with a complete tool call), or one whose raw
 // response lists `anomalies` of its own.
 // Over the cap, an anomalous row loses its raw request like any other.
+// Its stderr line ends with what became of the row (see anomalyLogLine).
 
 import { AnthropicAdapter, cacheLineageKey } from '@animalabs/membrane';
 import type {
@@ -67,7 +68,7 @@ import type {
 import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
-import { serializeRecord } from './logging-record.js';
+import { recordLine } from './logging-record.js';
 
 /** Live read of the current reasoning setting. The host wires this to
  *  `SettingsModule.getReasoning()` so toggles via the `agent_settings` tool's
@@ -218,14 +219,29 @@ export function responseIds(response: unknown): { messageId?: string; requestId?
   return out;
 }
 
+/** What became of a row: written, with the `truncated` marker its line
+ *  carries when it had to drop parts (logging-record.ts), or not written
+ *  whole, because its append failed, with the error's code where it has
+ *  one. A failed append can leave part of the line in the file. */
+export interface LoggedRow {
+  written: boolean;
+  truncated?: string;
+  code?: string;
+}
+
 /** The one stderr line an anomalous call prints, timestamped so it can be
- *  placed in an append-mode log that stamps nothing itself. */
+ *  placed in an append-mode log that stamps nothing itself. It ends with
+ *  what became of the call's row: "full request kept" for a row whose line
+ *  was written whole, the row's own `truncated` text for one whose line had
+ *  to drop parts (over the cap, or unserializable), or that the row could
+ *  not be written. */
 export function anomalyLogLine(
   timestamp: string,
   kind: 'complete' | 'stream',
   model: unknown,
   anomaly: ResponseAnomaly,
   ids: { messageId?: string; requestId?: string },
+  row: LoggedRow,
 ): string {
   const provider = anomaly.providerStopReason === undefined ? ''
     : ` (provider: ${anomaly.providerStopReason ?? 'none'})`;
@@ -236,7 +252,9 @@ export function anomalyLogLine(
     + ` tools=${anomaly.toolNames.join(',') || '-'}`
     + (ids.requestId ? ` request=${ids.requestId}` : '')
     + (ids.messageId ? ` message=${ids.messageId}` : '')
-    + ' — full request kept in this call\'s llm-calls row';
+    + (!row.written ? ` — this call's llm-calls row could not be written${row.code ? ` (${row.code})` : ''}`
+      : row.truncated !== undefined ? ` — this call's llm-calls row: ${row.truncated}`
+      : ' — full request kept in this call\'s llm-calls row');
 }
 
 /** What the off-path refusal dragnet hears of one refused call. */
@@ -416,11 +434,16 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly warnedEffort = new Set<string>();
   private readonly warnedThinking = new Set<string>();
 
-  private log(record: Record<string, unknown>): void {
+  /** Append the record's line and say what became of the row. Never throws. */
+  private log(record: Record<string, unknown>): LoggedRow {
     try {
-      appendFileSync(this.logPath, serializeRecord(record));
-    } catch {
+      const { line, truncated } = recordLine(record);
+      appendFileSync(this.logPath, line);
+      return truncated === undefined ? { written: true } : { written: true, truncated };
+    } catch (error) {
       // never throw from logging
+      const code = guarded(() => (error as { code?: unknown } | null | undefined)?.code);
+      return { written: false, ...(typeof code === 'string' ? { code } : {}) };
     }
   }
 
@@ -671,10 +694,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       } catch {
         record = { ...head, summaryUnavailable: true, ...errorFields };
       }
-      this.log(record);
+      const row = this.log(record);
       if (anomaly) {
         try {
-          console.error(anomalyLogLine(timestamp, kind, summary.model, anomaly, ids));
+          console.error(anomalyLogLine(timestamp, kind, summary.model, anomaly, ids, row));
         } catch { /* never throw from logging */ }
       }
       try {

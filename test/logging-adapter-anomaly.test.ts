@@ -2,13 +2,14 @@
  * Anomalous responses in llm-calls: a response that carries a client tool_use
  * block under a stop reason other than 'tool_use' is dropped downstream (the
  * caller runs tool rounds only on 'tool_use'), so its row keeps the full raw
- * request, names the anomaly, and prints one timestamped stderr line. Rows
- * also keep the provider's message and request ids where the response has
- * them. Driven end to end through a local Anthropic-shaped server, so the
- * rows are the ones the real adapter writes.
+ * request while its line fits the 16 MiB cap, names the anomaly, and prints
+ * one timestamped stderr line that says what became of the row. Rows also
+ * keep the provider's message and request ids where the response has them.
+ * Driven end to end through a local Anthropic-shaped server, so the rows are
+ * the ones the real adapter writes.
  */
 import { describe, test, expect, spyOn } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderRequest } from '@animalabs/membrane';
@@ -72,8 +73,14 @@ function message(blocks: Block[], stopReason: string, id = 'msg_fixture_complete
 const THINK: Block = { type: 'tool_use', id: 'toolu_fixture1', name: 'think', input: { content: 'a long private note' } };
 const TEXT: Block = { type: 'text', text: 'plain answer' };
 
-/** Run one call against a local server answering `body`, return its llm-calls row and stderr lines. */
-async function oneCall(kind: 'stream' | 'complete', body: string | Record<string, unknown>) {
+/** Run one call against a local server answering `body`, return its llm-calls row and stderr lines.
+ *  `prompt` replaces the request's text; `unwritable` puts the log in a directory that doesn't
+ *  exist, so the row can't be appended (`written` false, `row` empty). */
+async function oneCall(
+  kind: 'stream' | 'complete',
+  body: string | Record<string, unknown>,
+  options: { prompt?: string; unwritable?: boolean } = {},
+) {
   const server = Bun.serve({
     hostname: '127.0.0.1', port: 0,
     async fetch(req) {
@@ -85,7 +92,9 @@ async function oneCall(kind: 'stream' | 'complete', body: string | Record<string
     },
   });
   const dir = mkdtempSync(join(tmpdir(), 'llm-calls-anomaly-'));
-  const path = join(dir, 'llm-calls.test.jsonl');
+  const path = options.unwritable ? join(dir, 'missing', 'llm-calls.test.jsonl') : join(dir, 'llm-calls.test.jsonl');
+  const call: ProviderRequest = options.prompt === undefined ? request
+    : { ...request, messages: [{ participant: 'user', content: [{ type: 'text', text: options.prompt }] }] as never };
   const errors: string[] = [];
   const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(' ')); });
   const prev = process.env.LLM_CALLS_FULL_PAYLOADS;
@@ -94,10 +103,11 @@ async function oneCall(kind: 'stream' | 'complete', body: string | Record<string
     const adapter = new LoggingAnthropicAdapter(
       { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } }, path,
     );
-    if (kind === 'stream') await adapter.stream(request, { onChunk: () => {} });
-    else await adapter.complete(request);
-    const row = JSON.parse(readFileSync(path, 'utf8').trim()) as Record<string, unknown>;
-    return { row, anomalyLines: errors.filter((l) => l.startsWith('[llm-calls]')) };
+    if (kind === 'stream') await adapter.stream(call, { onChunk: () => {} });
+    else await adapter.complete(call);
+    const written = existsSync(path);
+    const row = written ? JSON.parse(readFileSync(path, 'utf8').trim()) as Record<string, unknown> : {};
+    return { row, written, anomalyLines: errors.filter((l) => l.startsWith('[llm-calls]')) };
   } finally {
     spy.mockRestore();
     if (prev !== undefined) process.env.LLM_CALLS_FULL_PAYLOADS = prev;
@@ -117,6 +127,25 @@ describe('llm-calls rows for anomalous responses', () => {
     expect(anomalyLines[0]).toMatch(
       /^\[llm-calls\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z ANOMALY tool_use with stop_reason=end_turn \(provider: end_turn\) kind=stream model=claude-opus-5 tools=think/,
     );
+    expect(anomalyLines[0].endsWith(" — full request kept in this call's llm-calls row")).toBe(true);
+  });
+
+  test("a row over the 16 MiB cap is written without its raw request, and the line quotes the row's own truncated text", async () => {
+    const { row, anomalyLines } = await oneCall('stream', sse([THINK], 'end_turn'), { prompt: `big ${'x'.repeat(17 * 1024 * 1024)}` });
+    expect('rawRequest' in row).toBe(false);
+    expect(row.truncated).toBe('raw request dropped (record exceeded size guard)');
+    expect(row.anomaly).toEqual({
+      kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', providerStopReason: 'end_turn', toolNames: ['think'],
+    });
+    expect(anomalyLines).toHaveLength(1);
+    expect(anomalyLines[0].endsWith(` — this call's llm-calls row: ${row.truncated}`)).toBe(true);
+  });
+
+  test("a row that can't be appended is named as not written, not as kept", async () => {
+    const { written, anomalyLines } = await oneCall('stream', sse([THINK], 'end_turn'), { unwritable: true });
+    expect(written).toBe(false);
+    expect(anomalyLines).toHaveLength(1);
+    expect(anomalyLines[0].endsWith(" — this call's llm-calls row could not be written (ENOENT)")).toBe(true);
   });
 
   test('stream: a provider that reports no stop reason reads as provider: none', async () => {
@@ -199,7 +228,17 @@ describe('responseIds', () => {
 
 describe('anomalyLogLine', () => {
   test('omits the provider part when the response does not say', () => {
-    expect(anomalyLogLine('2026-01-01T00:00:00.000Z', 'stream', 'm', { kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', toolNames: ['a', 'b'] }, {}))
+    expect(anomalyLogLine('2026-01-01T00:00:00.000Z', 'stream', 'm', { kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', toolNames: ['a', 'b'] }, {}, { written: true }))
       .toBe("[llm-calls] 2026-01-01T00:00:00.000Z ANOMALY tool_use with stop_reason=end_turn kind=stream model=m tools=a,b — full request kept in this call's llm-calls row");
+  });
+
+  test("ends with what the row kept: the row's own truncated text, or that it could not be written", () => {
+    const line = (row: { written: boolean; truncated?: string; code?: string }) =>
+      anomalyLogLine('2026-01-01T00:00:00.000Z', 'stream', 'm', { kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', toolNames: ['a'] }, {}, row);
+    const start = '[llm-calls] 2026-01-01T00:00:00.000Z ANOMALY tool_use with stop_reason=end_turn kind=stream model=m tools=a';
+    expect(line({ written: true, truncated: 'raw bodies dropped (record exceeded size guard)' }))
+      .toBe(`${start} — this call's llm-calls row: raw bodies dropped (record exceeded size guard)`);
+    expect(line({ written: false, code: 'ENOSPC' })).toBe(`${start} — this call's llm-calls row could not be written (ENOSPC)`);
+    expect(line({ written: false })).toBe(`${start} — this call's llm-calls row could not be written`);
   });
 });
