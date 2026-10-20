@@ -97,9 +97,10 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('Sonnet 5.5 reads from cache at 0.05x, and Sonnet 5 still at 0.1x', () => {
-    const sonnet55 = priceAnthropicCall('claude-sonnet-5-5', timestamp, usage({ inputTokens: 1_000_000, cacheReadTokens: 1_000_000 }));
+    const sonnet55 = priceAnthropicCall('claude-sonnet-5-5', timestamp, usage({ inputTokens: 1_000_000, cacheReadTokens: 1_000_000, outputTokens: 1_000_000 }));
     const sonnet5 = priceAnthropicCall('claude-sonnet-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
     expect(sonnet55?.input).toBe(2);
+    expect(sonnet55?.output).toBeCloseTo(10, 9);
     expect(sonnet55?.cacheRead).toBeCloseTo(0.1, 9);
     expect(sonnet5?.cacheRead).toBeCloseTo(0.2, 9);
     expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.05);
