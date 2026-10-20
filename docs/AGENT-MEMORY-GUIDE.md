@@ -254,9 +254,10 @@ impressionistic with age and depth.
   may change all three limits under `agent.strategy` for autobiographical and
   frontdesk strategies. Zero turns the depth limit off, and lets the count or
   the bytes grow to their ceilings (`imageCeiling`, default 500 images, and
-  `imageByteCeiling`, default 24 MiB), which also bound any larger value. A
-  ceiling of zero is none, and higher ceilings can pass the provider's or
-  membrane's request caps. If an image matters beyond the moment, describe it
+  `imageByteCeiling`, default 24 MiB), which also bound any larger value. The
+  ceilings count the top-level images in your context, not images inside a
+  tool result or generated ones. A ceiling of zero is none, and higher
+  ceilings can pass the provider's or membrane's request caps. If an image matters beyond the moment, describe it
   in text or save it to your workspace.
 
 ## Finding your own settings
@@ -280,8 +281,8 @@ KV-continuity work described above.
 | `maxLiveImages` | 6 | 6 | most images kept live at once |
 | `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
 | `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
-| `imageCeiling` | 500 | 500 | most images kept live, whatever `maxLiveImages` says |
-| `imageByteCeiling` | 24 MiB | 24 MiB | most base64 image bytes kept live, whatever `maxLiveImageBytes` says |
+| `imageCeiling` | 500 | 500 | most top-level images kept live, whatever `maxLiveImages` says |
+| `imageByteCeiling` | 24 MiB | 24 MiB | most base64 bytes of top-level images kept live, whatever `maxLiveImageBytes` says |
 
 The headline numbers are the tail and the budget. A small tail means rewriting
 reaches recent material sooner; a large tail (hundreds of thousands of tokens)

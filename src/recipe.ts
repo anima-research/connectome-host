@@ -52,17 +52,19 @@ export interface RecipeStrategy {
   /** The most top-level images the live window keeps, whatever
    * `maxLiveImages` says, and the most images a compression prompt carries
    * (context-manager's default 500; the provider refuses a request with more
-   * than 600 images and documents together). Zero means no ceiling. It
-   * doesn't count images nested in tool results, or what the agent
-   * framework adds to a request within a turn. */
+   * than 600 images and documents together). Zero means no ceiling. In the
+   * window it doesn't count images nested in tool results, generated images,
+   * or what the agent framework adds to a request within a turn; a
+   * compression prompt counts every image. */
   imageCeiling?: number;
   /** The most inline base64 bytes of the live window's top-level images,
    * whatever `maxLiveImageBytes` says, and the most a compression prompt
    * carries (context-manager's default 24 MiB, under membrane's 28 MiB
    * request byte cap). Zero means no ceiling. An install that raises
    * `MEMBRANE_MAX_REQUEST_BYTES` raises this with it, leaving room under the
-   * cap for what it doesn't count: the messages' text, and images nested in
-   * tool results. */
+   * cap for what it doesn't count: the messages' text, the window's images
+   * nested in tool results and its generated images, and what the agent
+   * framework adds within a turn. */
   imageByteCeiling?: number;
   overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying

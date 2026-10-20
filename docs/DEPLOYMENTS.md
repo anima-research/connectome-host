@@ -340,7 +340,7 @@ ambient channel chatter enters context without waking.
    20 MiB (`maxLiveImageBytes`), replacing the rest with placeholders; membrane
    degrades API-rejected media types (SVG, TIFF, …) to a visible placeholder
    and fails loudly, before the API call, when a request exceeds its byte cap
-   (28 MB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
+   (28 MiB, `MEMBRANE_MAX_REQUEST_BYTES`); agent-framework's `read_image`
    rejects files over 5 MB. Still missing: nothing downsamples or
    size-checks an individual image on ingest (membrane's `images.autoResize` /
    `maxSizeBytes` config is declared but unused), so one image over the
@@ -349,7 +349,9 @@ ambient channel chatter enters context without waking.
    the image keys under `agent.strategy` (autobiographical and frontdesk):
    the three limits and their ceilings, `imageCeiling` (default 500 images)
    and `imageByteCeiling` (default 24 MiB). Zero turns the depth limit or a
-   ceiling off, and lets the count or the bytes grow to its ceiling.
+   ceiling off, and lets the count or the bytes grow to its ceiling. The
+   ceilings count top-level images only, not images inside a tool result,
+   such as `read_image`'s, or generated ones.
    (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 

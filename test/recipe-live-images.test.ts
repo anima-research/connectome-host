@@ -103,11 +103,13 @@ describe('live-image recipe limits', () => {
       }
     });
 
-    test(`${key} rejects malformed limits at recipe load`, () => {
-      for (const value of [-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '6', true, null, {}, []]) {
-        expect(() => recipe({ [key]: value })).toThrow(
-          `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
-        );
+    test(`${key} rejects malformed limits at recipe load, for autobiographical and frontdesk`, () => {
+      for (const type of ['autobiographical', 'frontdesk']) {
+        for (const value of [-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '6', true, null, {}, []]) {
+          expect(() => recipe({ type, [key]: value })).toThrow(
+            `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
+          );
+        }
       }
     });
   }
