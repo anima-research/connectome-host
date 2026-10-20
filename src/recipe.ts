@@ -1687,13 +1687,15 @@ export function validateRecipe(raw: unknown): Recipe {
     }
     // An operator control that is silently dropped is worse than none: a
     // malformed hold list fails at load instead of merging "held" summaries.
+    // The context manager matches ids exactly, so an id with spaces around it
+    // would hold nothing, and is refused too.
     if (
       strategy.mergeHoldSummaryIds !== undefined &&
       (!Array.isArray(strategy.mergeHoldSummaryIds) ||
-        !strategy.mergeHoldSummaryIds.every((id: unknown) => typeof id === 'string' && id.trim() !== ''))
+        !strategy.mergeHoldSummaryIds.every((id: unknown) => typeof id === 'string' && id !== '' && id === id.trim()))
     ) {
       throw new Error(
-        'Recipe agent.strategy.mergeHoldSummaryIds must be an array of non-empty summary ids.',
+        'Recipe agent.strategy.mergeHoldSummaryIds must be an array of summary ids, each non-empty with no spaces around it.',
       );
     }
     validateKvUnifiedConfig(strategy);

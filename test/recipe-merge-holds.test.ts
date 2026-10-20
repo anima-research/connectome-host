@@ -20,8 +20,11 @@ describe('mergeHoldSummaryIds recipe setting', () => {
   });
 
   test('rejects malformed values at load', () => {
-    for (const bad of ['L1-154', [''], ['  '], [42], {}]) {
-      expect(() => validateRecipe(recipe({ mergeHoldSummaryIds: bad }))).toThrow(/mergeHoldSummaryIds/);
+    // A padded id comes second in its list, so every entry is checked, not only the first.
+    for (const bad of ['L1-154', [''], ['  '], [42], {}, ['L1-154', ' L1-155'], ['L1-154', 'L1-155 ']]) {
+      expect(() => validateRecipe(recipe({ mergeHoldSummaryIds: bad }))).toThrow(
+        /mergeHoldSummaryIds must be an array of summary ids, each non-empty with no spaces around it/,
+      );
     }
   });
 
