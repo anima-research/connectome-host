@@ -39,14 +39,31 @@ export interface RecipeStrategy {
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
   maxMessageTokens?: number;
-  /** Maximum live image count, newest-first (default 6). Zero disables the count limit. */
+  /** Maximum live image count, newest-first (default 6). Zero means up to
+   *  `imageCeiling`, which also bounds a larger value. */
   maxLiveImages?: number;
   /** Token depth from the tail beyond which images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
-  /** Cumulative base64 byte budget for live images (default 20 MiB).
-   * Zero disables the byte limit. Count and depth limits still apply. */
+  /** Cumulative base64 byte budget for live images (default 20 MiB). Zero
+   * means up to `imageByteCeiling`, which also bounds a larger value. Count
+   * and depth limits still apply. */
   maxLiveImageBytes?: number;
+  /** The most top-level images the live window keeps, whatever
+   * `maxLiveImages` says, and the most images a compression prompt carries
+   * (context-manager's default 500; the provider refuses a request with more
+   * than 600 images and documents together). Zero means no ceiling. It
+   * doesn't count images nested in tool results, or what the agent
+   * framework adds to a request within a turn. */
+  imageCeiling?: number;
+  /** The most inline base64 bytes of the live window's top-level images,
+   * whatever `maxLiveImageBytes` says, and the most a compression prompt
+   * carries (context-manager's default 24 MiB, under membrane's 28 MiB
+   * request byte cap). Zero means no ceiling. An install that raises
+   * `MEMBRANE_MAX_REQUEST_BYTES` raises this with it, leaving room under the
+   * cap for what it doesn't count: the messages' text, and images nested in
+   * tool results. */
+  imageByteCeiling?: number;
   overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying
   // autobiographical strategy (and frontdesk, which extends it).
@@ -2241,8 +2258,9 @@ export function validateRecipe(raw: unknown): Recipe {
     // receive their own config verbatim and may use different conventions.
     const strategyType = strategy.type ?? 'autobiographical';
     if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
-      // Context Manager uses zero to disable each image limit independently.
-      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
+      // Context Manager reads zero as no limit for the depth and for a
+      // ceiling, and as up to the ceiling for the count and the bytes.
+      for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes', 'imageCeiling', 'imageByteCeiling'] as const) {
         const value = strategy[key];
         if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {
           throw new Error(`Recipe agent.strategy.${key} must be a non-negative safe integer.`);

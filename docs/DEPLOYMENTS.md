@@ -346,8 +346,11 @@ ambient channel chatter enters context without waking.
    `maxSizeBytes` config is declared but unused), so one image over the
    provider's per-image limit still 400s the request while it stays live —
    the poison-history breaker only sheds newest exchanges. Recipes can tune
-   the three image keys under `agent.strategy` (autobiographical and
-   frontdesk; zero disables each limit independently). (Stopgap: a per-install
+   the image keys under `agent.strategy` (autobiographical and frontdesk):
+   the three limits and their ceilings, `imageCeiling` (default 500 images)
+   and `imageByteCeiling` (default 24 MiB). Zero turns the depth limit or a
+   ceiling off, and lets the count or the bytes grow to its ceiling.
+   (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 
 ## Helper scripts (per install dir)
