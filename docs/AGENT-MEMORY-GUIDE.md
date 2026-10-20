@@ -257,8 +257,9 @@ impressionistic with age and depth.
   `imageByteCeiling`, default 24 MiB), which also bound any larger value. The
   ceilings count the top-level images in your context, not images inside a
   tool result or generated ones. A ceiling of zero is none, and higher
-  ceilings can pass the provider's or membrane's request caps. If an image matters beyond the moment, describe it
-  in text or save it to your workspace.
+  ceilings can pass the provider's or membrane's request caps. If an image
+  matters beyond the moment, describe it in text or save it to your
+  workspace.
 
 ## Finding your own settings
 
