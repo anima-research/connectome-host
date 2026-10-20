@@ -717,7 +717,7 @@ export class McplAdminModule implements Module {
       );
     }
     // agent-framework dials only a url that parses as ws:// or wss://. Its
-    // rule is buildWebSocketUrl's (transport.ts:357-373 at 0.22.1), restated
+    // rule is buildWebSocketUrl's (transport.ts:520 at 0.22.3), restated
     // here since it isn't exported: compare the two when either changes. A
     // url it can't dial would be saved, and with reconnect, a url's default,
     // the first dial's failure leaves a stub retrying a url that never opens.
@@ -963,11 +963,12 @@ export class McplAdminModule implements Module {
 
   /**
    * What a failed connect or restart left of `id`, read from the framework
-   * rather than guessed, with the next step. agent-framework 0.22.1 can leave
-   * the server still running as it was (a restart whose first step, reading
-   * its ledger, failed before it disconnected); not listed (a connect
-   * refused before it stored the configuration, by a prefix collision or the
-   * ledger read, a restart's connect after its disconnect included); or
+   * rather than guessed, with the next step. agent-framework 0.22.3 can leave
+   * the server still running as it was (a restart refused before it
+   * disconnected, for a setting that isn't true or false or by its ledger
+   * read); not listed (a connect refused before it stored the configuration,
+   * by such a setting, a prefix collision or the ledger read, a restart's
+   * connect after its disconnect included); or
    * listed but down: with the configuration of a connect that failed once
    * it had stored it, as a handshake failure does, or, for a server already
    * down, with its previous one, after a restart that stopped at its ledger
@@ -1034,7 +1035,7 @@ export class McplAdminModule implements Module {
    *  (the operator's, as this host's start composed them, under the
    *  overlay's other entries) or that's loaded now. agent-framework's
    *  create() refuses a prefix two hold, so the next start would stop on it
-   *  (framework.ts:2361-2377 at 0.22.1); connectMcplServer refuses it too,
+   *  (framework.ts:2827-2847 at 0.22.3); connectMcplServer refuses it too,
    *  but only after the save. */
   private prefixHolder(
     framework: AgentFramework,

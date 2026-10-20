@@ -8,8 +8,9 @@
  * not leave the dashboard blank.
  */
 
-import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
 import type {
   CallLedgerRow,
   CallLedgerSnapshot,
@@ -249,17 +250,34 @@ export class CallLedger {
       return;
     }
 
+    // The newest file first, all four within one budget, so the newest calls
+    // are read whole, up to the writers' line bound. A line longer than what's
+    // left of the budget ends the restore there, and older files go unread.
     const calls: ProviderCallRecord[] = [];
-    for (const file of files) {
-      for (const line of readTailLines(file, 16 * 1024 * 1024)) {
-        try {
-          const parsed = parseLoggedCall(JSON.parse(line) as Record<string, unknown>);
-          if (parsed) calls.push(parsed);
-        } catch {
-          // Partial/legacy/oversized forensic lines are skipped individually.
-        }
+    let budget = CALL_LOG_READ_BUDGET;
+    for (const file of files.reverse()) {
+      let read;
+      try {
+        read = readLinesFromEnd(file, budget, (line) => {
+          try {
+            const parsed = parseLoggedCall(JSON.parse(line) as Record<string, unknown>);
+            if (parsed) calls.push(parsed);
+          } catch {
+            // A line that isn't a call record is skipped on its own.
+          }
+        });
+      } catch {
+        // A file that can't be read is passed over. One that fails part way
+        // keeps the calls read from it, and what it read isn't counted
+        // against the budget.
+        continue;
       }
+      budget -= read.bytes;
+      if (budget <= 0) break;
     }
+    // Back into the order the logs hold them, oldest first, so calls that
+    // share a time keep it through the sort below.
+    calls.reverse();
     // A call whose time can't be read sorts first, the rest in time order:
     // a comparator that answered NaN for it would leave the calls around it
     // out of order, and a lineage's clock could then step backwards.
@@ -272,8 +290,9 @@ export class CallLedger {
       const y = at(b);
       return x < y ? -1 : x > y ? 1 : 0;
     });
-    // The rows kept are the newest, but every call read is its lineage's
-    // cache activity, as it was for the process that logged it.
+    // The rows kept are the newest, but every call read that read or wrote
+    // the cache is its lineage's activity, as it was for the process that
+    // logged it.
     const kept = Math.max(0, calls.length - this.maxRows);
     for (const call of calls.slice(0, kept)) this.noteCacheActivity(call);
     for (const call of calls.slice(kept)) this.append(call, false);
@@ -402,29 +421,6 @@ export function summarizeCacheControls(raw: unknown): { count: number; ttls: str
   };
   visit(raw);
   return { count, ttls };
-}
-
-function readTailLines(path: string, maxBytes: number): string[] {
-  let fd: number | undefined;
-  try {
-    const size = statSync(path).size;
-    const start = Math.max(0, size - maxBytes);
-    const length = size - start;
-    if (length <= 0) return [];
-    fd = openSync(path, 'r');
-    const buffer = Buffer.allocUnsafe(length);
-    readSync(fd, buffer, 0, length, start);
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      const firstNewline = text.indexOf('\n');
-      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
-    }
-    return text.split('\n').filter(Boolean);
-  } catch {
-    return [];
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
 }
 
 const number = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) ? v : 0;

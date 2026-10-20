@@ -310,7 +310,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       .toBe('enabled capabilities (enabledCapabilities)');
   });
 
-  test("a definition's setting counts only as agent-framework 0.22.2 would read it", () => {
+  test("a definition's setting counts only as agent-framework 0.22.3 would read it", () => {
     const grants = (fields: Record<string, unknown>) => serverProvisions({ id: 's', command: 'node', ...fields }).grants;
     // Host commands only for true; capabilities for any list, a mask even
     // when empty; tool lifecycle for an observe or inputs policy object.
@@ -900,25 +900,35 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
-  test("a reconnect that isn't true or false is read as its truth, as the framework read it, and named; null is off, unnamed", () => {
+  test("a reconnect that isn't true or false reads by its truth, as main read it, except the text \"false\", each named; null is off, unnamed", () => {
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');
       writeFileSync(path, JSON.stringify({ mcplServers: {
+        // agent-framework 0.22.3 refuses all but true, false and null, so the
+        // framework is handed true or false. Each entry keeps the retrying it
+        // had on main, except "false", which main's truth turned on. The note
+        // says what to write.
         text: { url: 'wss://a/mcpl', reconnect: 'true' },
-        // Text is true whatever it says, as the framework's `if (reconnect)`
-        // read it on main; the note is what tells the operator.
         textFalse: { url: 'wss://g/mcpl', reconnect: 'false' },
+        capitalFalse: { url: 'wss://h/mcpl', reconnect: ' False ' },
         one: { url: 'wss://b/mcpl', reconnect: 1 },
         empty: { url: 'wss://c/mcpl', reconnect: '' },
         zero: { url: 'wss://d/mcpl', reconnect: 0 },
+        command: { command: 'node', reconnect: 'yes' },
         off: { url: 'wss://e/mcpl', reconnect: null },
         on: { url: 'wss://f/mcpl', reconnect: true },
       } }));
       const loaded = applyAgentOverlay([], path) as Array<Record<string, unknown>>;
-      expect(Object.fromEntries(loaded.map((s) => [s.id, s.reconnect]))).toEqual({ text: true, textFalse: true, one: true, empty: false, zero: false, off: false, on: true });
-      const named = (id: string, v: boolean) =>
-        `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but its reconnect isn't true or false, so it's read as ${v}, as the framework read it`;
-      expect(overlayWarnings([], path)).toEqual([named('text', true), named('textFalse', true), named('one', true), named('empty', false), named('zero', false)]);
+      // Every entry loads, and each is handed a boolean.
+      expect(loaded.map((s) => s.id)).toEqual(['text', 'textFalse', 'capitalFalse', 'one', 'empty', 'zero', 'command', 'off', 'on']);
+      expect(Object.fromEntries(loaded.map((s) => [s.id, s.reconnect]))).toStrictEqual({
+        text: true, textFalse: false, capitalFalse: false, one: true, empty: false, zero: false, command: true, off: false, on: true,
+      });
+      const note = (id: string, read: boolean) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but its reconnect isn't true or false, so it's read as ${read}: write true or false, without quotes`;
+      expect(overlayWarnings([], path)).toEqual([
+        note('text', true), note('textFalse', false), note('capitalFalse', false), note('one', true), note('empty', false), note('zero', false), note('command', true),
+      ]);
     });
   });
 

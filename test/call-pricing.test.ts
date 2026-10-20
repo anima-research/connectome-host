@@ -43,13 +43,23 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('applies the US-only inference multiplier to every token category', () => {
-    const global = priceAnthropicCall('claude-fable-5', timestamp, usage({ inputTokens: 1_000_000 }));
-    const us = priceAnthropicCall('claude-fable-5', timestamp, usage({
+    const all = {
       inputTokens: 1_000_000,
-      inferenceGeo: 'us',
-    }));
-    expect(global?.total).toBe(10);
-    expect(us?.total).toBeCloseTo(11, 9);
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      cacheWrite5mTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+    };
+    const global = priceAnthropicCall('claude-fable-5', timestamp, usage(all))!;
+    const us = priceAnthropicCall('claude-fable-5', timestamp, usage({ ...all, inferenceGeo: 'us' }))!;
+    expect(global.input).toBe(10);
+    for (const category of ['input', 'output', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h'] as const) {
+      expect(us[category]).toBeCloseTo(global[category] * 1.1, 9);
+    }
+    for (const rate of ['inputPerMillion', 'outputPerMillion', 'cacheReadPerMillion', 'cacheWrite5mPerMillion', 'cacheWrite1hPerMillion'] as const) {
+      expect(us.rates[rate]).toBeCloseTo(global.rates[rate] * 1.1, 9);
+    }
+    expect(us.total).toBeCloseTo(global.total * 1.1, 9);
   });
 
   test('leaves unknown rates, custom tiers, and unclassified writes unpriced', () => {
@@ -86,12 +96,51 @@ describe('Anthropic per-call pricing', () => {
     expect(priceAnthropicCall('claude-opus-5', timestamp, usage({ inputTokens: 1_000_000 }))?.total).toBe(5);
   });
 
+  test('prices Haiku 5.5 by prompt length, up to 100,000 tokens at $0.10/$0.50 and over that at $0.50/$2.50', () => {
+    // the prompt is input, cache reads and both cache writes; output doesn't count
+    const prompt = { cacheReadTokens: 50_000, cacheWrite5mTokens: 5_000, cacheWrite1hTokens: 5_000, outputTokens: 1_000_000 };
+    const at = priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ ...prompt, inputTokens: 40_000 }));
+    expect(at?.rates.inputPerMillion).toBe(0.1);
+    expect(at?.rates.outputPerMillion).toBe(0.5);
+    expect(at?.input).toBeCloseTo(0.004, 12);
+    expect(at?.cacheRead).toBeCloseTo(0.0005, 12);
+    expect(at?.cacheWrite5m).toBeCloseTo(0.000625, 12);
+    expect(at?.cacheWrite1h).toBeCloseTo(0.001, 12);
+    expect(at?.output).toBeCloseTo(0.5, 12);
+    // The solver reads one multiple for Haiku 5.5, whatever the prompt's
+    // length (anthropicCacheReadMultiplier), so both tiers must share it.
+    expect(at!.rates.cacheReadPerMillion / at!.rates.inputPerMillion).toBeCloseTo(anthropicCacheReadMultiplier('claude-haiku-5-5'), 12);
+
+    const over = priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ ...prompt, inputTokens: 40_001 }));
+    expect(over?.rates.inputPerMillion).toBe(0.5);
+    expect(over?.rates.outputPerMillion).toBe(2.5);
+    expect(over?.rates.cacheReadPerMillion).toBeCloseTo(0.05, 12);
+    expect(over?.input).toBeCloseTo(0.0200005, 12);
+    expect(over?.cacheRead).toBeCloseTo(0.0025, 12);
+    expect(over?.cacheWrite5m).toBeCloseTo(0.003125, 12);
+    expect(over?.cacheWrite1h).toBeCloseTo(0.005, 12);
+    expect(over?.output).toBeCloseTo(2.5, 12);
+    expect(over!.rates.cacheReadPerMillion / over!.rates.inputPerMillion).toBeCloseTo(anthropicCacheReadMultiplier('claude-haiku-5-5'), 12);
+  });
+
+  test('each of a Haiku 5.5 prompt\'s input buckets counts toward its length on its own', () => {
+    for (const bucket of ['inputTokens', 'cacheReadTokens', 'cacheWrite5mTokens', 'cacheWrite1hTokens'] as const) {
+      expect(priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ [bucket]: 100_000 }))?.rates.inputPerMillion).toBe(0.1);
+      expect(priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ [bucket]: 100_001 }))?.rates.inputPerMillion).toBe(0.5);
+    }
+  });
+
   test('anthropicCacheReadMultiplier strips Bedrock and gateway prefixes and defaults to 0.1x', () => {
     expect(anthropicCacheReadMultiplier('claude-fable-5-1')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-5-5')).toBe(0.05);
     expect(anthropicCacheReadMultiplier('anthropic/claude-opus-5-5')).toBe(0.05);
     expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-1')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-4-6')).toBe(0.1);
+    expect(anthropicCacheReadMultiplier('claude-haiku-5-5')).toBe(0.1);
+    // The pricing page reads Sonnet 5.5 at 0.05x, but the table leaves it at
+    // the Sonnet 5 entry's 0.1x, and this is the solver's price for it too:
+    // see that entry's comment before changing it.
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('some-unknown-model')).toBe(0.1);
   });
 

@@ -3,9 +3,9 @@
  * for test/tui-turns.test.ts. The fake app's framework sends the traces each
  * step names to every listener, as agent-framework's emitTrace calls each
  * one, and its abortInference aborts only once told an agent's model call is
- * in flight, then sends `inference:aborted`, and the aborted stream's
- * `inference:exhausted` after it, as agent-framework 0.22.2's does. In the
- * `subagents` scenario its subagent module stands in for the host's.
+ * in flight, then sends `inference:aborted` alone, as agent-framework
+ * 0.22.3's does. In the `subagents` scenario its subagent module stands in
+ * for the host's.
  * Prints one `TUI_STEP` line of JSON per step: the frame's text and the
  * aborts asked for so far.
  */
@@ -68,9 +68,6 @@ function fakeFramework(name: string) {
       aborts.push(`${name}:${agentName}`);
       if (!abortable.delete(agentName)) return false;
       this.send('inference:aborted', { agentName, reason });
-      // The aborted stream's own end, sent as its loop ends, before the turn
-      // lets the agent go.
-      queueMicrotask(() => this.send('inference:exhausted', { agentName, error: `Stream aborted: ${reason ?? 'unknown'}` }));
       return true;
     },
     pushEvent: () => {},

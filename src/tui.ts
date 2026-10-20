@@ -46,6 +46,7 @@ import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { takeRecipeWarnings } from './recipe.js';
+import { bunFloorNotice } from './bun-floor-check.js';
 import { effectiveContextBudgetTokens } from './framework-agent-config.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
@@ -160,8 +161,9 @@ export function resolveQuitConfirm(raw: string): QuitConfirmAction {
  * (state/turn-trace.ts): the status it shows next, whether a backgrounded
  * turn's output is shown or dropped, and the line it adds. Null for a trace
  * that isn't a stream end, and for an end while no turn is showing, so an
- * end that follows an end (`aborted` or `failed`, then `exhausted`) adds
- * nothing. A failure always shows: agent-framework 0.22.2 sends
+ * end that follows an end (`completed`, then `turn_ended`; `failed`, then
+ * `exhausted` or `aborted`) adds nothing. A failure always shows:
+ * agent-framework 0.22.3 sends
  * `inference:failed` only for an attempt it started, so with no turn
  * showing it's still the end of a turn, one whose start the TUI didn't
  * follow, as at startup or around a session switch. The TUI's interrupt
@@ -191,9 +193,10 @@ export function rootTurnEnd(
       return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
     }
     case 'inference:exhausted':
-      // Alone, without a `failed` first, it ends a stream that something
-      // other than the framework aborted, with an agent's cancelStream.
-      return { status: 'idle', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'note' } };
+      // Alone, without a `failed` first, it ends a stream aborted for a
+      // reason other than a stop, which agent-framework 0.22.3 doesn't treat
+      // as deliberate, so it shows as a failure; a stop ends with `aborted`.
+      return { status: 'error', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'error' } };
     default:
       return null;
   }
@@ -2198,8 +2201,10 @@ export async function runTui(app: AppContext): Promise<void> {
     treeAggregator?.dispose();
     treeAggregator = fleetMod ? new FleetTreeAggregator(fleetMod) : null;
     if (treeAggregator && fleetMod) {
-      // Register any fleet children that already exist (e.g. autoStart entries
-      // brought up before TUI init, or reattached survivors after parent restart).
+      // Register any fleet children that already exist, such as survivors
+      // reattached after a parent restart. AutoStart children launch as the
+      // agents start and usually register after this; the status tick below
+      // registers each child it finds in the fleet that isn't here yet.
       for (const childName of fleetMod.getChildren().keys()) {
         treeAggregator.registerChild(childName);
       }
@@ -2960,6 +2965,10 @@ export async function runTui(app: AppContext): Promise<void> {
   addLine(`Error log: ${logPath}`, DIM_GRAY);
   rootTraces.follow(app.framework);
   loadSessionHistory();
+  // Printed at start too, but the alternate screen hides that line. After the
+  // history, since the view keeps to its bottom and would scroll a line above
+  // a long history out of sight.
+  if (bunFloorNotice) addLine(bunFloorNotice, YELLOW);
 
   // ── Cleanup ────────────────────────────────────────────────────────
 

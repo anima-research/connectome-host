@@ -451,7 +451,9 @@ dollar figures. The host's standard block matches them to what the provider bill
 - **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
   5-minute cache and on Bedrock (5-minute only);
 - **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
-  Fable 5.1 / Mythos 5.1;
+  Fable 5.1 / Mythos 5.1. Claude Sonnet 5.5 takes `0.1`, though its reads are billed at
+  `0.05`, since a lower price can change the layout the solver picks and rewrite the
+  agent's prompt cache;
 - **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
   models, and `1` on Codex, whose credit billing has no cache-write charge;
 - **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
@@ -687,35 +689,59 @@ before touching `treeifyNonContiguousSummaries`. `flat-profile` is the robust fa
 — this is not a permissions problem. The bot also needs **Read Message History** for backscroll
 (separate from View Channel).
 
-**11.8 — Store topology audit, and opening a store mutates it.** Since context-manager 0.12.0
-(this host depends on ^0.13.0) every load audits the summary archive for crossed ownership — a
-summary whose leaves are not contiguous in store order (the pre-0.12 head-window ratchet,
-restore/branch interleavings, hand surgery). Under the default `topologyPolicy: reject`,
-`ContextManager.open` throws `StoreTopologyError` and the resident does not boot — on `kv-stable`
-as on `kv-unified`; the store is left intact. `report` logs the violations and boots; a
+**11.8 — Store topology audit, and opening a store mutates it.** Since context-manager 0.12.0,
+every load audits the summary archive for crossed ownership — a summary whose leaves are not
+contiguous in store order (the pre-0.12 head-window ratchet, restore/branch interleavings, hand
+surgery). Under the default `topologyPolicy: reject`, `ContextManager.open` throws
+`StoreTopologyError` and the resident does not boot — on `kv-stable` as on `kv-unified`; the store
+keeps its history, though by then the open has rewritten its snapshot cadence, as an open of an
+existing store does on chronicle 0.3.0 or later. `report` logs the violations and boots; a
 `kvUnified` block with `preserveGapBearingSummaries` or `treeifyNonContiguousSummaries` set to
 `true` defaults to it. This host does not forward a `strategy.topologyPolicy` recipe key (it is
 silently ignored), so the error's "set topologyPolicy: 'report'" hint is not reachable from a
-recipe — repair the store. Separately, a merge that would mint a crossed node is refused into the
-merge quarantine. Both show on `/healthz` as `compressionDebt.<agent>.topologyViolations` /
-`.topologyRefusals`, with `state: critical`. Before **any** context-manager upgrade of an existing
-resident — including a host upgrade from a pre-0.12 context-manager — run the audit on a **copy of
-the stopped store**:
+recipe — repair a copy of the store, as below. Separately, a merge that would mint a crossed
+node is refused into the merge quarantine. Both show on `/healthz` as
+`compressionDebt.<agent>.topologyViolations` /
+`.topologyRefusals`, with `state: critical`. For **any** upgrade of an existing resident to
+context-manager 0.12 or later — including one from a pre-0.12 context-manager, which has no audit
+script of its own — install the upgrade and, before starting the resident on it, run the new
+version's audit on a **copy of the stopped store**, a full or reflinked copy, never hardlinks,
+since opening it writes:
 `node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json > audit.json`
-(exit 0 clean, 2 violations, 1 could not open; a warning that it saw no summaries means a wrong
-`--namespace`). Repair the *stopped* store, after a cold backup, with
-`node …/dist/scripts/repair-topology.js <store> --namespace agents/<agent> [--mode lossless|compact|rebuild] [--rebuild-since <messageId|ISO date>] [--apply]`
-— a dry run unless `--apply`; after `--apply` it reopens the store under `reject` to verify (exit
-0 clean or verified, 2 plan incomplete or verification failed, 1 usage/open error). `lossless`
-(the default) only detaches, so the pyramid unravels around each fragment; `compact` keeps depth
-at the price of prose gaps; `rebuild` dissolves crossed towers back to L1 for the merge ladder to
-re-fold — run `…/dist/scripts/drain-autobiographical.js <store> agents/<agent> --apply
---model=<model> --participant=<agent>` on the stopped store before restarting.
-`--rebuild-since` rebuilds only crossings from that message on and compacts older ones. Then
-re-audit to zero. Two traps: (a) any `ContextManager.open` with a normal strategy config chunks
-the store's frontier under *that* config — verify only with the `auditOnly` scripts, never by
-opening a live store from a one-off script; (b) reflink/rsync copies of a *running* store read
-different state depending on when `state.bin` was last snapshotted — copy a stopped store.
+(exit 2 violations, 1 it didn't finish, such as a usage error or a store it could not open, and 0
+clean; a warning on stderr that it saw nothing to audit, which can come with exit 0 or 2, means a
+wrong `--namespace`, a copy without the strategy state, a store with no summaries yet, or chunks
+none of which is linked to a summary). Repair a fresh copy of the stopped store, made the same
+way, never the store itself, since the repair and the drain write into it; from the copy on, the
+store stays as it was until the copy takes its place.
+`node …/dist/scripts/repair-topology.js <store-copy> --namespace agents/<agent> [--mode lossless|compact|rebuild] [--rebuild-since <messageId|ISO date>] [--apply]`
+is a dry run unless `--apply`; after `--apply` it reopens the copy under `reject` to verify.
+`lossless` (the default) only detaches, so the pyramid unravels around each fragment; `compact`
+keeps depth at the price of prose gaps; `rebuild` dissolves crossed towers back to L1 for the
+merge ladder to re-fold, and with `rebuild`, `--rebuild-since` rebuilds only crossings from that
+message on and compacts older ones (with another mode it does nothing). After a `rebuild`,
+re-fold the same copy with the offline drain, which writes summaries with real model calls,
+taking `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` from its environment. It's the command the
+repair prints, with `--tools-log` added:
+`node …/dist/scripts/drain-autobiographical.js <store-copy> agents/<agent> --apply --model=<model> --participant=<agent> --recipe=<the resident's recipe.json> --tools-log=<llm-calls.jsonl>`.
+It needs the resident's live tool definitions, and takes them from the last streamed call that
+declared tools in a call log a host on the `anthropic` provider wrote with
+`LLM_CALLS_FULL_PAYLOADS=1`, so that call has to be the resident's own. If the resident still runs
+on a release that opens its store, restart it with that set and stop it right after one of its
+turns, before you copy the store; the turn is a real one, and the store keeps it. Pass the log that
+restart began: each start of the host begins a new `llm-calls.<iso>.jsonl` in the resident's data
+directory. Without the definitions the drain can't compress a chunk with tool calls, nor any chunk
+when `--model` is a Fable or Mythos model. Without them, choose `lossless` or `compact`, which need
+no drain. A drain that stops at `--max-steps` (200 by default) can be run again on
+the same copy, or with a higher `--max-steps`. Then re-audit the copy with the `--namespace` the
+first audit used. The copy takes the store's place only when the repair with `--apply`, the
+drain's last run after a `rebuild`, and the re-audit each exited 0: read the repair's and the
+drain's output, then put the copy in the store's place, keep the original beside it untouched,
+and restart. Otherwise discard the copy; the store is as it was when you copied it. Two traps:
+(a) any `ContextManager.open` with a normal strategy config chunks the store's frontier under
+*that* config — verify only with the `auditOnly` scripts, never by opening a live store from a
+one-off script; (b) reflink/rsync copies of a *running* store read different state depending on
+when `state.bin` was last snapshotted — copy a stopped store.
 
 **11.9 — `reasoning_extraction` refusals.** Anthropic's safety classifier can end a request
 with `stop_reason: refusal` and this category; it halts residents built from dense reasoning
@@ -755,13 +781,23 @@ blocks; expect folds to interact with this on the next model generation.
 - **Reach loopback webui:** `ssh -L <port>:localhost:<port> <login-user>@<box>` → `http://localhost:<port>`
 - **Live makeup:** `GET /debug/context/makeup` (basic auth) — segments + exact total tokens
 - **Compiled context:** `GET /debug/context`
-- **Per-call logs:** `data/llm-calls.<iso>.jsonl` (raw request + response + error) — rotates to a
-  new file on every restart; re-list by mtime after a bounce. Counts *attempts*; `failures.log`
-  counts *turns*.
+- **Per-call logs:** `data/llm-calls.<iso>.jsonl`, one JSON line per provider call attempt — rotates
+  to a new file on every restart; re-list by mtime after a bounce. Counts *attempts*;
+  `failures.log` counts *turns*. A line normally carries timing and a request summary; a failure
+  adds the bounded error and its classification, and a call that got a response adds its summary
+  (Bedrock, generic wrapper) or raw response (Anthropic, generic wrapper). A summary can be
+  missing (`summaryUnavailable: true`, or dropped by the size cap below). Raw requests are kept
+  only where the writer's policy keeps them: Anthropic complete/stream on errors and refusals, or
+  on every call with `LLM_CALLS_FULL_PAYLOADS=1`; Anthropic keepalive pokes only with that opt-in,
+  whatever their outcome; Bedrock on errors; the generic wrapper on every call. Every line,
+  newline included, is capped at 16 MiB of UTF-8: an oversized or unserializable record drops its
+  raw request first, its raw response only if the line still doesn't fit, then its summaries, keeping at least its type, kind,
+  timing and error classification, and `truncated` says what was dropped. Treat the log as diagnostics, not as a
+  complete copy of any payload.
 - **Topology audit / repair (context-manager ≥ 0.12, §11.8):**
   `node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json`
-  (exit 2 = crossed), `…/repair-topology.js <store> --namespace agents/<agent> --mode lossless [--apply]`
-  — stopped store, cold backup first
+  (exit 2 = crossed), `node …/repair-topology.js <store-copy> --namespace agents/<agent> --mode lossless [--apply]`
+  — on a fresh copy of the stopped store, never hardlinks; §11.8 gives the drain and the swap
 - **Health:** `GET /healthz` — per-agent `compressionQuarantine`, `compressionDebt` (incl.
   `topologyViolations` / `topologyRefusals`),
   `contextComposition` (head / raw / summaries / tail as last rendered), `runtimeSettings`, and

@@ -7,44 +7,49 @@
  * 'complete', aborted 'abort', and failed and exhausted 'error'. Pure, so
  * the Web UI imports it too (`@conhost/state/turn-trace`).
  *
- * As agent-framework 0.22.2 sends them: `inference:started` opens an agent's
+ * As agent-framework 0.22.3 sends them: `inference:started` opens an agent's
  * stream, and a turn's tool rounds stay inside that one stream. A budget
  * restart or a guard retry starts the stream again with another
  * `inference:started` and no end before it. Then one of five traces ends it:
- *   - `inference:completed`: the turn's normal end.
+ *   - `inference:completed`: the turn's normal end, which a turn a tool
+ *     ended sends too.
  *   - `inference:turn_ended`: a tool ended the turn (skip_reply, sleep, a
- *     subagent's return).
- *   - `inference:aborted`: an operator's `abortInference`, a quiesce that
- *     abandons the turn, or a turn the framework dropped after its
- *     `inference:started` (its agent replaced or removed, or the framework
- *     stopping or stopped and started again).
+ *     subagent's return), sent right after its `inference:completed`.
+ *   - `inference:aborted`: a stop, such as an operator's `abortInference` or
+ *     a cancel of the stream, a quiesce that abandons the turn, the framework
+ *     stopping while the turn streams, or a turn the framework dropped after
+ *     its `inference:started` (its agent replaced or removed, or the
+ *     framework stopping or stopped and started again).
  *   - `inference:failed`: the attempt failed. The framework then retries it
  *     (another `inference:started`), holds the turn for a provider's stated
  *     wait or cooldown and runs it again later, or gives up
- *     (`inference:exhausted`); a quiesce can abandon it instead
- *     (`inference:aborted`), or the framework drops it with no end (below).
- *   - `inference:exhausted`: the turn failed for good, or something other
- *     than the framework itself aborted its stream.
+ *     (`inference:exhausted`). A quiesce can abandon it instead, and the
+ *     framework's stop cancels a retry it waits to send, each ending it with
+ *     `inference:aborted`, or the framework drops it with no end (below).
+ *   - `inference:exhausted`: the turn failed for good, after its
+ *     `inference:failed`, or its stream was aborted for a reason other than a
+ *     stop, with no `inference:failed` before it.
  *
- * A second end can follow the first: `abortInference` sends `aborted` and
- * then `exhausted`, and a failure the framework gives up on sends `failed`
- * and then `exhausted`. A surface that shows a turn's state (a status line,
- * a wait, a notice, the relay) reads an end that follows an end as nothing
- * new. A stream panel, which shows each of a stream's events as it comes,
- * shows both.
+ * A second end can follow the first: a turn a tool ended sends `completed`
+ * and then `turn_ended`, and a failed attempt sends `failed` and then
+ * `exhausted`, or `aborted` when a quiesce abandons it or a stop cancels its
+ * retry. A surface that shows a turn's state (a status line, a wait, a
+ * notice, the relay) reads an end that follows an end as nothing new. A
+ * stream panel, which shows each of a stream's events as it comes, shows
+ * both.
  *
- * An abort's `exhausted` comes from the aborted stream's `aborted` event,
- * before the turn's `finally` releases it, and the framework starts no next
- * turn of the agent while the turn stands (its turn-alive token): so it
- * follows the abort with no start between, an end after an end.
+ * The second end comes before the turn releases its agent, and the
+ * framework starts no next turn of the agent while the turn stands (its
+ * turn-alive token): so it follows the first with no start between, an end
+ * after an end.
  *
  * Three cases send no end: a dropped turn when another turn of the agent's
  * name has already begun (abortDroppedTurn's token check,
  * anima-research/agent-framework#338); an ephemeral run that its idle
- * watchdog disposes; and a failed attempt whose retry the framework drops,
- * which it does with a held one when its agent is disposed or the coalesced
- * wake it answers is withdrawn, and with any once it stops.
- * agent-framework 0.22.1 sent no end for any dropped turn.
+ * watchdog disposes; and a failed attempt whose held retry the framework
+ * drops when its agent is disposed or the coalesced wake it answers is
+ * withdrawn. agent-framework 0.22.1 sent no end for any dropped turn, and
+ * 0.22.2 none for a retry its stop cancelled.
  */
 
 /** Every trace that ends a stream: the turn has stopped running, for now or
@@ -79,7 +84,7 @@ export const TURN_RUNNING_TRACES: ReadonlySet<string> = new Set([
 ]);
 
 /** A failed or exhausted trace's error, as every surface prints it.
- *  agent-framework 0.22.2 builds it from an Error's message, so it can be
+ *  agent-framework 0.22.3 builds it from an Error's message, so it can be
  *  empty; anything but text with something in it reads as 'Unknown error'. */
 export function traceError(event: object): string {
   const error = (event as { error?: unknown }).error;

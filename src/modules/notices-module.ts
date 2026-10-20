@@ -424,8 +424,7 @@ export class NoticesModule implements Module {
         this.currentWake = typeof event.channelId === 'string' ? event.channelId : undefined;
         return;
       case 'inference:aborted':
-        // An aborted turn hasn't failed. The `exhausted` an abort sends after
-        // it finds no wake, so no channel is told this turn died.
+        // An aborted turn hasn't failed: no channel is told it died.
         if (!mine) return;
         this.currentWake = undefined;
         return;

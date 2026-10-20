@@ -23,6 +23,8 @@
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
+// First, so its warning about an old Bun prints before the modules below run.
+import './bun-floor-check.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -70,6 +72,7 @@ import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, BATCH_MCPL
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
+import { startFramework } from './start-framework.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
 import {
@@ -1342,7 +1345,7 @@ async function main() {
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
       this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
-      this.framework.start();
+      startFramework(this.framework);
       this.userMessageCount = 0;
       resetBranchState(this.branchState);
       setupSynesthete(this);
@@ -1371,7 +1374,7 @@ async function main() {
     };
   }
 
-  framework.start();
+  startFramework(framework);
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   getWebUiModule(framework)?.setApp(app);

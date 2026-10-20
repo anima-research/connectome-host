@@ -673,7 +673,8 @@ describe('fleet refusals name what the agent can do', () => {
       });
       fleets.push(fleet);
       await fleet.start({ getState: () => state, setState: () => {} } as unknown as Parameters<FleetModule['start']>[0]);
-      // start() doesn't wait for its autoStart launches; this one is refused.
+      fleet.launchAutoStart();
+      // launchAutoStart() doesn't wait for its launches; this one is refused.
       await until(() => logged.mock.calls.some(([line]) => String(line).startsWith('[fleet] autoStart "leaf" failed: ' +
         "Nothing was launched: child 'leaf' is recorded as starting")));
       expect(fleet.getChildren().get('leaf')!.process).toBeNull();

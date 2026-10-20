@@ -9,9 +9,10 @@
   operator sets it, and for `enabledCapabilities` how the entry can narrow
   what its server advertises instead: by listing what to deny in its
   `disabledCapabilities`. They also name an overlay entry's `reconnect`
-  that isn't true or false, which is read as its truth, as the framework's
-  connection read it, so agent-framework's setup-failure trace now reports
-  `willRetry` as the connection retries. An overlay entry that replaces an
-  operator's server is also named for the operator's host commands,
-  capabilities and tool lifecycle it lacks, as it was for env and the
-  inherited environment.
+  that isn't true or false, which is read as its truth, apart from the text
+  `"false"` in any case and with any spaces around it, which reads as false,
+  and handed to agent-framework as `true` or `false`, so its setup-failure
+  trace reports `willRetry` as the connection retries. An overlay entry
+  that replaces an operator's server is also named for the operator's host
+  commands, capabilities and tool lifecycle it lacks, as it was for env and
+  the inherited environment.

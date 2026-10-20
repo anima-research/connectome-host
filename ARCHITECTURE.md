@@ -323,7 +323,8 @@ surgery and still uses its own branch stacks.
 
 - **Wire logs** — `llm-calls.<iso>.jsonl` per process (request summaries,
   usage, timing, errors; raw requests on errors and refusals, or always with
-  `LLM_CALLS_FULL_PAYLOADS=1`, which alone keeps a cache-keepalive poke's).
+  `LLM_CALLS_FULL_PAYLOADS=1`, which alone keeps a cache-keepalive poke's,
+  each within the 16 MiB a line may take).
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,
   inference exhaustion, context refusals, GC closes: an `ops:alert` trace
   (shown as banners in both UIs), a record in `logs/failures.log`, and a

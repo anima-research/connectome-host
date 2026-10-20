@@ -35,13 +35,6 @@ describe("the origin hint comes only from what the mount's own read gives", () =
         if (path === 'files/refused.md') {
           throw new WorkspaceReadError('escape', 'Symlink escape detected: files/refused.md', 'realpath');
         }
-        if (path === 'files/grown.md') {
-          // As agent-framework 0.22.2 answers for a file that was within the
-          // head when the read took its size and grew while it was read: all
-          // of it, not truncated.
-          const bytes = Buffer.from(`${'x'.repeat(2048)}\norigin: zulip#ops#past-the-head\n`);
-          return { bytes, size: 10, truncated: false };
-        }
         const bytes = Buffer.from('origin: zulip#ops#from-the-mount\n');
         return { bytes, size: bytes.byteLength, truncated: false };
       },
@@ -95,13 +88,6 @@ describe("the origin hint comes only from what the mount's own read gives", () =
     trace('inference:started');
     expect(typing.at(-1)).toEqual({ channel: 'zulip:ops', metadata: { topic: 'from-the-mount' } });
     expect(asked.map((a) => a.path)).toEqual(['files/refused.md', 'files/given.md']);
-  });
-
-  test('a read that gives more than the head, as for a file that grew while it was read, is cut to the head', async () => {
-    const { module, typing, trace } = await moduleOverStandIn();
-    await module.onProcess({ type: 'workspace:modified', paths: ['files/grown.md'] } as never, {} as never);
-    trace('inference:started');
-    expect(typing.at(-1)).toEqual({ channel: 'zulip:ops', metadata: undefined });
   });
 
   test("agent-framework's read: a file that is itself a link gives no hint, and only a file's first 2048 bytes are read for one", async () => {

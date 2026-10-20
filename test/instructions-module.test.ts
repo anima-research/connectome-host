@@ -266,19 +266,6 @@ describe('InstructionsModule', () => {
     expect(textOf(await mod.gatherContext('a'))).toBe(`${DEFAULT_INSTRUCTIONS_HEADER}\n\n${'a'.repeat(10)}`);
   });
 
-  test('cuts at maxBytes a read that gave more, as for a file that grew while it was read', async () => {
-    // agent-framework 0.22.2 reads to its end a file that was within maxBytes
-    // when the read took its size and grew while it was read.
-    const grown = { bytes: Buffer.from('€'.repeat(10)), size: 5, truncated: false };
-    const asked: Array<{ maxBytes: number }> = [];
-    const mod = await moduleOver({ readFileFromDisk: async (_path, options) => { asked.push(options); return grown; } }, { maxBytes: 7 });
-
-    const text = textOf(await mod.gatherContext('a'));
-    expect(text).toBe(`${DEFAULT_INSTRUCTIONS_HEADER}\n\n€€\n\n[truncated: first 6 of 30 bytes]`);
-    // The read itself is still asked for no more than the cap.
-    expect(asked).toEqual([{ maxBytes: 7 }]);
-  });
-
   test('reads at most maxBytes from an oversized file', async () => {
     // Only the first maxBytes influence the injection, whatever the file's
     // size: the read asks for no more.
@@ -326,7 +313,7 @@ describe('InstructionsModule', () => {
   });
 
   test('a file reached through a linked directory inside the mount is read as the mount reads it', async () => {
-    // agent-framework 0.22.2 follows a linked directory that stays inside the
+    // agent-framework 0.22.3 follows a linked directory that stays inside the
     // mount on any mount. Its release with anima-research/agent-framework#468
     // refuses one on a mount that doesn't follow links (parent_symlink), and
     // the alert gives the read's own words, which name the link and the

@@ -285,6 +285,9 @@ function panelParamsFromUrl(url: URL): Record<string, unknown> {
 
 /** Messages shipped in the welcome frame (the tail window). */
 const WELCOME_HISTORY_LIMIT = 200;
+/** How long the welcomes of a bind wait, together, for the autoStart
+ *  launches under way at setApp to record their children (autoStartRecords). */
+const AUTOSTART_RECORD_WAIT_MS = 1_000;
 /** Default / max page size for request-history. */
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
@@ -412,9 +415,20 @@ interface SharedServerState {
    *  and cleared in stop(). */
   messageListenerDetacher: (() => void) | null;
   /** Cached child recipe summaries keyed by recipe path. Recipes are
-   *  static-ish per host run (re-spawn doesn't change the file), so we
-   *  parse once and reuse on every welcome. Cleared on session switch. */
+   *  static-ish per host run (re-spawn doesn't change the file), so a summary
+   *  once loaded is reused by every later welcome, for the life of the host.
+   *  Welcomes loading at the same time may each load it, and a load that
+   *  fails isn't kept, so the next welcome loads it again. */
   childRecipeCache: Map<string, { name: string; description?: string; version?: string; agentModel?: string }>;
+  /** What every welcome since setApp waits for before it reads the fleet's
+   *  children: the autoStart launches under way at setApp recording theirs,
+   *  for AUTOSTART_RECORD_WAIT_MS at most. Null when none were under way.
+   *  It is one wait for the whole bind, so a client that connects during a
+   *  stalled launch, once the wait is over, doesn't wait again. */
+  autoStartRecords: Promise<void> | null;
+  /** Counts setApp's binds, so a welcome that a newer bind has superseded
+   *  while it waited sends nothing: that bind welcomes every client again. */
+  bindGeneration: number;
   /** corrId → originating client + request kind, for routing scoped panel
    *  query responses (lessons / workspace) back to the requesting client.
    *  Entries are deleted on response or pruned by TTL. */
@@ -520,6 +534,8 @@ export class WebUiModule implements Module {
       callLedgerDetacher: null,
       pendingFleetRequests: new Map(),
       childRecipeCache: new Map(),
+      autoStartRecords: null,
+      bindGeneration: 0,
       app: null,
       treeAggregator: null,
       fleetEventDetacher: null,
@@ -634,6 +650,8 @@ export class WebUiModule implements Module {
     ss.messageListenerDetacher = null;
     ss.treeAggregator?.dispose();
     ss.treeAggregator = null;
+    ss.autoStartRecords = null;
+    ss.bindGeneration++;
 
     // Live message pushes: assistant turns and tool results never surface as
     // `message:added` traces (those fire only for external/MCPL sources), so
@@ -701,11 +719,25 @@ export class WebUiModule implements Module {
     if (fleetMod) {
       const agg = new FleetTreeAggregator(fleetMod);
       ss.treeAggregator = agg;
-      // Register existing children up front. autoStart launches finish before
-      // setApp() runs, so this catches everything currently up.
-      for (const childName of fleetMod.getChildren().keys()) {
+      // Register the children the fleet has now, and the autoStart children
+      // it's launching: those launches begin as the agents start, just before
+      // this, and record their children only once they've tried to load their
+      // recipes. A client takes its scopes from welcomes alone, so naming them
+      // here keeps them in the welcomes this sends below, a session switch's
+      // included. Registering a name only subscribes to its events; its tree
+      // arrives once it's ready.
+      const launching = fleetMod.autoStartLaunching();
+      for (const childName of new Set([...fleetMod.getChildren().keys(), ...launching])) {
         agg.registerChild(childName);
       }
+      // A welcome takes a child's recipe from the fleet's record of it, so the
+      // welcomes wait for those launches to record their children, all on one
+      // wait of a second at most: a recipe fetched from a URL has no time
+      // limit of its own. A launch still under way after that is listed by
+      // name, and its recipe comes with the first welcome begun after its
+      // launch records it. The welcome's own load of a recorded child's recipe
+      // isn't bounded here, as before this wait.
+      if (launching.size > 0) ss.autoStartRecords = within(fleetMod.autoStartRecorded(), AUTOSTART_RECORD_WAIT_MS);
 
       // One subscription on '*' — fan out to clients AND register newly-seen
       // children with the aggregator. This avoids a polling loop and keeps the
@@ -1513,7 +1545,7 @@ export class WebUiModule implements Module {
       // (`mount_unavailable`) is the server's fault, as no workspace is, and
       // says nothing about the file. Anything else the read can't give is not
       // found, such as a file that changed while it was read. A mount whose
-      // directory has gone is not found on agent-framework 0.22.2, whose read
+      // directory has gone is not found on agent-framework 0.22.3, whose read
       // finds no file in it, and unavailable from the release with
       // anima-research/agent-framework#533, whose read checks the mount's
       // root. The body is the read's message, which says why, names no host
@@ -3163,16 +3195,24 @@ export class WebUiModule implements Module {
     // pending connections get their welcome from handleObserverHello.
     if (client.auth === 'pending') return;
 
-    // The one await comes first. From building the welcome to marking the
-    // client welcomed nothing yields, so no event falls between what the
-    // welcome copies and the client's stream (a client skips live events
-    // until it's welcomed). That covers the fleet children's trees, which the
-    // welcome copies. It names the parent's agents without their trace state
-    // (see buildWelcome), so the client's parent nodes start from the live
-    // stream, and a parent trace before the welcome, during this await
-    // included, reaches the client in neither.
+    // The awaits come first: the bind's wait for its autoStart launches to
+    // record their children (setApp), then the recipes. From building the
+    // welcome to marking the client welcomed nothing yields, so no event falls
+    // between what the welcome copies and the client's stream (a client skips
+    // live events until it's welcomed). That covers the fleet children's
+    // trees, which the welcome copies. It names the parent's agents without
+    // their trace state (see buildWelcome), so the client's parent nodes start
+    // from the live stream, and a parent trace before the welcome, during
+    // these awaits included, reaches the client in neither. A welcome that a
+    // newer bind superseded during them sends nothing, since that bind
+    // welcomes every client again after its own wait.
+    const generation = sharedServer.bindGeneration;
+    const current = (): boolean => !!sharedServer?.app && sharedServer.bindGeneration === generation;
+    const autoStartRecords = sharedServer.autoStartRecords;
+    if (autoStartRecords) await autoStartRecords;
+    if (!current()) return;
     const childRecipes = await this.loadWelcomeRecipes();
-    if (!sharedServer?.app) return;
+    if (!current()) return;
     const welcome = this.buildWelcome(childRecipes);
     this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
     client.welcomed = true;
@@ -3296,7 +3336,12 @@ export class WebUiModule implements Module {
     // either way the live event stream keeps it current.
     const childTrees: WelcomeMessage['childTrees'] = [];
     if (sharedServer?.treeAggregator) {
+      const fleetMod = fw.getAllModules().find((m) => m.name === 'fleet') as FleetModule | undefined;
       for (const name of sharedServer.treeAggregator.getAllChildNames()) {
+        // setApp registers the autoStart children the fleet is launching. One
+        // whose launch has ended without a record, as a refused one does, is
+        // no child of this fleet, so it isn't listed.
+        if (fleetMod && !fleetMod.getChildren().has(name) && !fleetMod.autoStartLaunching().has(name)) continue;
         const nodes = sharedServer.treeAggregator.getChildNodes(name);
         // A child that registered while the recipes loaded is sent without
         // its recipe, like one that registers after the welcome: a client
@@ -3449,6 +3494,13 @@ export class WebUiModule implements Module {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** `promise`, or the end of `ms`, whichever comes first; the timer doesn't outlive it. */
+function within(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([promise, new Promise<void>((done) => { timer = setTimeout(done, ms); })])
+    .finally(() => clearTimeout(timer));
+}
 
 /**
  * Default Origin allowlist for the WebSocket upgrade. Covers the recommended

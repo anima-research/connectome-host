@@ -270,11 +270,7 @@ export class ActivityModule implements Module {
         // directory), reads a file only if its canonical path lies inside the
         // mount, and is asked for no more than the head the hint needs.
         const { bytes } = await workspace.readFileFromDisk(mountPath, { maxBytes: ORIGIN_HEAD_BYTES });
-        // agent-framework 0.22.2 reads a file that grows after the read's
-        // size check whole, so the head is cut here too. Once the host's
-        // agent-framework floor includes anima-research/agent-framework#409,
-        // readFileFromDisk keeps maxBytes itself, and this cut can go.
-        const origin = parseOriginHint(bytes.subarray(0, ORIGIN_HEAD_BYTES).toString('utf8'));
+        const origin = parseOriginHint(bytes.toString('utf8'));
         if (origin && this.channels.has(origin.channelId)) {
           // Merge with any existing metadata so other keys (e.g. senderEmail)
           // survive if the origin refresh is subsequent to an incoming message.

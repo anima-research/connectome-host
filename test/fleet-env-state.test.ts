@@ -120,6 +120,7 @@ describe('Fleet child environment stays outside Chronicle state', () => {
     let second: FleetModule | undefined;
     try {
       await first.start(store.ctx);
+      first.launchAutoStart();
       const deadline = Date.now() + 5_000;
       while (first.getChildren().get('leaf')?.status !== 'ready') {
         if (Date.now() >= deadline) throw new Error('first child did not become ready');

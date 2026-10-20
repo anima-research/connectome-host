@@ -191,7 +191,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       const link = await get('plain/latest.png');
       expect(link.status).toBe(403);
       expect(link.body).toBe('Symlinks are not allowed: plain/latest.png');
-      // A linked directory that stays inside the mount: agent-framework 0.22.2
+      // A linked directory that stays inside the mount: agent-framework 0.22.3
       // follows it on any mount, and its release with
       // anima-research/agent-framework#468 refuses it on a mount that doesn't
       // follow links (parent_symlink). The route answers as the read does.
@@ -217,7 +217,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
-  // agent-framework 0.22.2's read looks for the file before it resolves the
+  // agent-framework 0.22.3's read looks for the file before it resolves the
   // mount's directory, so a directory already gone is no file there. From the
   // release with anima-research/agent-framework#533, the read checks the
   // mount's root, and a root that has gone is an unavailable mount. The route

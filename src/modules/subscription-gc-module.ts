@@ -42,7 +42,7 @@ import { unknownToolResult } from './unknown-tool.js';
 /** What a refused channel_idle_limits can't say for the rest of its
  *  agent_settings call: agent-framework applies each settings extension in
  *  turn and then the core patch, so an extension's throw leaves the ones
- *  before it applied and the core patch not (0.22.2). */
+ *  before it applied and the core patch not (0.22.3). */
 const OTHER_SETTINGS =
   'Other settings given in the same call may not all have been applied: agent_settings with action "get" shows each as it stands.';
 

@@ -544,6 +544,7 @@ describe('a launch whose spawn starts no process', () => {
     let saved: { children: Record<string, { status: string; exitReason: string | null }> } | undefined;
     await made.fleet.start({ getState: () => null, setState: (value: typeof saved) => { saved = value; } } as unknown as
       Parameters<FleetModule['start']>[0]);
+    made.fleet.launchAutoStart();
     return { ...made, saved: () => saved };
   }
 
@@ -720,6 +721,7 @@ describe('a launch whose spawn starts no process', () => {
     try {
       const auto = setup({ autoStart: [{ name: 'leaf', recipe: '/recipes/leaf\0.json', dataDir }] });
       await auto.fleet.start({ getState: () => null, setState: () => {} } as unknown as Parameters<FleetModule['start']>[0]);
+      auto.fleet.launchAutoStart();
       const autoStart = () => logged.filter((line) => line.startsWith('[fleet] autoStart "leaf"'));
       await waitFor('the autoStart refusal to be logged', () => autoStart().length > 0);
       expect(autoStart()).toEqual([`[fleet] autoStart "leaf" failed: ${refusal}`]);

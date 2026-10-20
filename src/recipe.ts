@@ -794,8 +794,7 @@ export interface RecipeModules {
      * Truncate content beyond this many bytes, appending a
      * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
      * under the cap when a multibyte character straddles it). Reads ask for
-     * no more than this, which agent-framework 0.22.2 exceeds only for a
-     * file that grows while it's read. Default 32768.
+     * no more than this. Default 32768.
      */
     maxBytes?: number;
     /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
@@ -1710,22 +1709,26 @@ const timerMs = (min: number): MountValueCheck => (v) =>
 
 /**
  * Mount keys an agent-framework release adds before the host passes them on:
- * `include`, from agent-framework #536. The checks below and the recipe's
- * mount type leave them out, so this file typechecks against a framework
- * with the key and against one without it, and a recipe that gives one is
- * refused as an unknown key, as before. The host's step to the release that
- * carries a key gives it a check here, adds it to `RecipeWorkspaceMount`, and
- * takes it out of this list.
+ * `include`, from agent-framework #536, and `backend`, from agent-framework
+ * #564. The checks below and the recipe's mount type leave them out, so this
+ * file typechecks against a framework with the keys and against one without
+ * them, and a recipe that gives one is refused as an unknown key, as before.
+ * The host's step to the release that carries a key gives it a check here,
+ * adds it to `RecipeWorkspaceMount`, and takes it out of this list. For
+ * `backend`, that step also decides a direct mount's `mode`, since the mount
+ * builder defaults it to `'read-write'` (workspace-mounts.ts), which
+ * agent-framework #564 refuses on a direct mount.
  */
-type MountKeyNotPassedOn = 'include';
+type MountKeyNotPassedOn = 'include' | 'backend';
 
 /**
  * Each workspace mount key, with what its value must be: what the framework
  * reads as the recipe means it. It's typed by the framework's `MountConfig`,
- * so a framework release that adds a mount key fails this typecheck until the
- * key has a check here or is named in `MountKeyNotPassedOn`, and the mount
- * builder then passes it on unchanged (workspace-mounts.ts). A key it doesn't
- * name stops the recipe loading (#275).
+ * so a framework release that adds a mount key fails this typecheck until
+ * either the key has a check here, and the mount builder then passes it on
+ * unchanged (workspace-mounts.ts), or it is named in `MountKeyNotPassedOn`.
+ * A key these checks don't name stops the recipe loading (#275), one named
+ * in `MountKeyNotPassedOn` included.
  */
 const MOUNT_KEY_CHECKS: { readonly [K in Exclude<keyof MountConfig, MountKeyNotPassedOn>]-?: MountValueCheck } = {
   name: nonEmptyText,

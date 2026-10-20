@@ -43,13 +43,12 @@ export type AgentPhase =
   | 'done'
   | 'failed'
   // Terminal-but-benign: user cancel, zombie-reclaim, supersession, agent
-  // reboot, budget-restart, and a turn agent-framework 0.22.2 drops when its
+  // reboot, budget-restart, and a turn agent-framework drops when its
   // agent is replaced or removed, or the framework is stopping or restarted,
   // unless another turn of its name has begun (then no end comes for it).
   // Postmortem 2026-05-28 P1 #3: renderers must treat this as neutral (not
   // red) and terminal (not 'running'). It is the result of
-  // `inference:aborted` and reboot-induced `inference:exhausted`, both of
-  // which are NOT faults.
+  // `inference:aborted`, which is NOT a fault.
   | 'cancelled';
 
 export type AgentKind = 'framework' | 'subagent';
@@ -228,18 +227,26 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     node.lastEventAt = ts;
   },
 
-  // inference:exhausted = retries exhausted / genuine stream cancel / reboot-
-  // induced. Postmortem 2026-05-28 P1 #3: not strictly a fault — flip both
-  // fields to the dedicated 'cancelled' terminal state so the renderer can
-  // distinguish "stopped on purpose" from "errored out". (AF PR #55 / ≥ 0.6.5
-  // stopped emitting this for endTurn and context-budget restarts — those are
-  // no longer terminal at all — but user cancels and reboots still land here,
-  // and older AF still sends the endTurn-trailing one.)
+  // inference:exhausted = the turn failed for good: its retries were spent,
+  // or its stream was aborted for a reason other than a stop. Before
+  // agent-framework 0.22.3 a stop sent it too: after its `inference:aborted`
+  // when the stop came through `abortInference`, and alone when it came
+  // through `Agent.cancelStream`. So it ended a node as 'cancelled'
+  // (Postmortem 2026-05-28 P1 #3). From 0.22.3 a stop sends
+  // `inference:aborted` alone, so a node it ends has failed, unless its turn
+  // was already stopped: a fleet child this host adopted may still run an
+  // older agent-framework, and its events come through here. A stopped turn
+  // stays stopped until its next inference:started. Such a child's
+  // `cancelStream` stop, as a subagent's, still ends its node as failed.
   'inference:exhausted': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
-    node.phase = 'cancelled';
-    node.status = 'cancelled';
+    if (node.status === 'cancelled') {
+      node.lastEventAt = ts;
+      return;
+    }
+    node.phase = 'failed';
+    node.status = 'failed';
     node.completedAt = ts;
     node.lastEventAt = ts;
   },
@@ -250,7 +257,8 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
   // agent was replaced or removed, or the framework was stopping or had
   // been stopped and started again; it sends none when another turn of the
   // agent's name has already begun.
-  // Postmortem 2026-05-28 P1 #3: same as exhausted — terminal, but benign.
+  // Postmortem 2026-05-28 P1 #3: terminal, but benign, unlike exhausted,
+  // which from agent-framework 0.22.3 means the turn failed.
   'inference:aborted': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
@@ -274,9 +282,8 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
   // terminal, same family as inference:completed. This event must be terminal
   // in its own right: agent-framework PR #55 (≥ 0.6.5) settles endTurn from
   // the state machine and no longer follows it with the spurious
-  // inference:exhausted that used to flip these nodes to 'cancelled'. On
-  // older AF the trailing exhausted still arrives and (harmlessly)
-  // re-terminates the node as cancelled one event later.
+  // inference:exhausted that used to flip these nodes to 'cancelled'. From
+  // 0.22.3 an inference:completed comes right before it.
   'inference:turn_ended': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);

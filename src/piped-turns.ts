@@ -44,9 +44,10 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
   /** Each agent's stream from its start until it settles: 'open' until its
    *  first end, 'failed' after a failure, while a retry or a held turn can
    *  still answer. An end that finds none comes after the stream settled, as
-   *  an abort's `exhausted` does, and is nothing new. agent-framework 0.22.2
-   *  sends that `exhausted` before the aborted turn releases the agent, and
-   *  starts no next turn of the agent until then (state/turn-trace.ts). */
+   *  the `turn_ended` after a tool-ended turn's `completed` does, and is
+   *  nothing new. agent-framework 0.22.3 sends it before the turn releases
+   *  the agent, and starts no next turn of the agent until then
+   *  (state/turn-trace.ts). */
   const streams = new Map<string, 'open' | 'failed'>();
   let settle: (() => void) | null = null;
 

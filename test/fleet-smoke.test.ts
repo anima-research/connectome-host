@@ -73,6 +73,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     });
     fleets.push(fleet);
     await fleet.start(ctx);
+    fleet.launchAutoStart();
     await waitFor(() => fleet.getChildren().get('guard')?.status === 'ready', 10_000, 'mock child ready');
     return fleet;
   }
@@ -1225,7 +1226,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
   }, 30_000);
 
-  test('autoStart children launch during start() and reach ready', async () => {
+  test('autoStart children launch at launchAutoStart() and reach ready', async () => {
     const fleet = new FleetModule({
       childIndexPath: INDEX_PATH,
       autoStart: [
@@ -1241,6 +1242,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
 
     // Minimal ModuleContext stub — start() only uses ctx for .setState which we don't exercise here.
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
+    fleet.launchAutoStart();
 
     // autoStart is fire-and-forget, so wait for both to reach ready.
     const start = Date.now();

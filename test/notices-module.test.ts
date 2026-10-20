@@ -492,12 +492,13 @@ describe('waker replies', () => {
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:dev']);
   });
 
-  test('an aborted turn has not failed: the exhausted after its abort tells no channel', async () => {
+  test('an aborted turn has not failed: it tells no channel', async () => {
     const h = await started({ replyIn: ['zulip:*'] });
     h.alert('quota-spent', 'spent');
     h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
     h.emit({ type: 'inference:aborted', agentName: 'clerk', reason: 'user' });
-    h.emit({ type: 'inference:exhausted', agentName: 'clerk', error: 'Stream aborted: user' });
+    // A failure that reports no start of its own isn't the aborted turn's.
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk', error: 'boom' });
     await h.settle();
     expect(h.posts).toEqual([]);
     // The next turn's failure still tells its channel.

@@ -46,6 +46,11 @@ describe('workspace mount keys', () => {
       .toThrow(/^workspace\.mounts\[0\] has unknown key "include"; known: name, path, mode, watch, watchDebounceMs, watchRootPollMs, ignore, followSymlinks, maxFileSize, walkCap, wakeOnChange, autoMaterialize$/);
   });
 
+  test("refuses backend, which this host doesn't pass on to the framework yet, as a key a mount doesn't have", () => {
+    expect(() => validateRecipe(recipe({ mounts: [mount({ backend: 'direct' })] })))
+      .toThrow(/^workspace\.mounts\[0\] has unknown key "backend"; known: name, path, mode, watch, watchDebounceMs, watchRootPollMs, ignore, followSymlinks, maxFileSize, walkCap, wakeOnChange, autoMaterialize$/);
+  });
+
   test('refuses a key the workspace does not have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMounts: true })))
       .toThrow(/^workspace has unknown key "configMounts" \(did you mean "configMount"\?\); known: mounts, configMount$/);

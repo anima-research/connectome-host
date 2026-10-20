@@ -7,8 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import { TurnInterrupts, interruptSubagents } from '../src/state/turn-interrupt.js';
 
 /** A framework stand-in: abortInference succeeds for the agents in
- *  `abortable`, as agent-framework 0.22.2's does once a turn's model call is
- *  in flight, and records each call. */
+ *  `abortable`, as agent-framework 0.22.3's does once a turn holds its model
+ *  call or its stream, and records each call. */
 function harness() {
   const abortable = new Set<string>();
   const calls: string[] = [];

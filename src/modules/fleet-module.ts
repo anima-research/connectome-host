@@ -112,9 +112,10 @@ export interface FleetModuleConfig {
    */
   childRuntimePath?: string;
   /**
-   * Children to launch on start().  Each child spawns concurrently;
-   * start() returns immediately (spawns are fire-and-forget so a slow
-   * child doesn't block framework start).
+   * Children the host launches once the parent's agents have started
+   * (launchAutoStart(); start() only adopts children still running). Each
+   * launches concurrently and fire-and-forget, so a slow child holds up
+   * neither the others nor the host.
    */
   autoStart?: AutoStartChild[];
   /**
@@ -313,6 +314,13 @@ export class FleetModule implements Module {
   private autoStartChildren: AutoStartChild[];
   /** Set when stop() has been called; suppresses autoRestart during shutdown. */
   private stopping = false;
+  /** Set once start() has adopted the children still running. */
+  private started = false;
+  /** Whether launchAutoStart() has run, so a second call launches nothing. */
+  private autoStartLaunched = false;
+  /** Each autoStart launch launchAutoStart() has begun, until it records its
+   *  child or ends, with what ends the wait for it (autoStartRecorded()). */
+  private launchingAutoStart = new Map<string, { recorded: Promise<void>; end: () => void }>();
   /** When true, stop() leaves children alive so a later parent can adopt them. */
   private detachMode = false;
   /** Window in ms and cap used for autoRestart flap detection. */
@@ -396,18 +404,63 @@ export class FleetModule implements Module {
       process.on('exit', this.exitHandler);
     }
 
-    // First, try to adopt any still-alive children from a prior parent run.
+    // Try to adopt any still-alive children from a prior parent run.
     // Adoption is best-effort: for each persisted child we probe liveness
     // (PID + socket connect) and, if responsive, reattach without respawn.
-    // Unresolved orphan artifacts are preserved; the launch guard below refuses them.
-    const adoptedNames = await this.adoptPersistedChildren();
+    // Unresolved orphan artifacts are preserved; the launch guard refuses them.
+    // An adopted child is already running, so taking it back here, while the
+    // framework is still being built, starts nothing. The autoStart children
+    // wait for launchAutoStart(), once the framework has started.
+    await this.adoptPersistedChildren();
+    this.started = true;
+  }
 
-    // Kick off autoStart children concurrently; errors don't block framework
-    // boot.  Skip any that were already adopted — re-spawning them would
-    // create a duplicate alongside the still-running instance.
+  /** The names of the autoStart children whose launches launchAutoStart() has
+   *  begun and that haven't yet recorded their child or ended. A launch
+   *  records its child only after it has tried to load its recipe, so a view
+   *  that lists the fleet's children can list these with them, and stop
+   *  listing one whose launch ends without a record, as a refused one does. */
+  autoStartLaunching(): ReadonlySet<string> {
+    return new Set(this.launchingAutoStart.keys());
+  }
+
+  /** Resolves once each autoStart launch under way now has recorded its child
+   *  or ended, so the fleet's records then hold every autoStart child whose
+   *  launch recorded it, with its recipe's path; a launch refused before
+   *  its record leaves the records as they were. A view that takes a child's
+   *  recipe from its record, as the Web UI's welcome does, can wait for this,
+   *  with a bound of its own: a launch loading a recipe from a URL can take
+   *  as long as the fetch does. */
+  autoStartRecorded(): Promise<void> {
+    return Promise.all([...this.launchingAutoStart.values()].map(({ recorded }) => recorded)).then(() => undefined);
+  }
+
+  /** Ends the wait for the autoStart launch of `name`, if one is under way. */
+  private endAutoStartWait(name: string): void {
+    this.launchingAutoStart.get(name)?.end();
+    this.launchingAutoStart.delete(name);
+  }
+
+  /**
+   * Launch the autoStart children that start() didn't adopt. The host calls
+   * this once the parent's framework has started its agents, never while the
+   * framework is still being built: a child is a host with residents of its
+   * own, and none of them should act before the parent's agents run. The
+   * launches run concurrently, and a failed one is logged without stopping
+   * the others. It launches once, and nothing before start() has finished
+   * adopting or once stop() has begun; handleLaunch refuses during a stop
+   * too, so the stop check only spares each launch an attempt and its
+   * logged refusal.
+   */
+  launchAutoStart(): void {
+    if (!this.started || this.stopping || this.autoStartLaunched) return;
+    this.autoStartLaunched = true;
     for (const child of this.autoStartChildren) {
       if (child.autoStart === false) continue;
-      if (adoptedNames.has(child.name)) continue;
+      // A child start() adopted is running already. handleLaunch would refuse
+      // to launch it beside itself, and log the refusal at every start that
+      // adopts, so it's skipped here.
+      if (this.children.get(child.name)?.adopted) continue;
 
       const input: LaunchInput = { name: child.name, recipe: child.recipe };
       if (child.dataDir !== undefined) input.dataDir = child.dataDir;
@@ -415,6 +468,9 @@ export class FleetModule implements Module {
       if (child.subscription !== undefined) input.subscription = child.subscription;
       if (child.autoRestart !== undefined) input.autoRestart = child.autoRestart;
 
+      let end!: () => void;
+      const recorded = new Promise<void>((done) => { end = done; });
+      this.launchingAutoStart.set(child.name, { recorded, end });
       this.handleLaunch(input, { viaAutoStart: true })
         .then((res) => {
           if (!res.success) {
@@ -423,7 +479,8 @@ export class FleetModule implements Module {
         })
         .catch((err: unknown) => {
           console.error(`[fleet] autoStart "${child.name}" threw: ${String(err)}`);
-        });
+        })
+        .finally(() => { this.endAutoStartWait(child.name); });
     }
   }
 
@@ -459,23 +516,22 @@ export class FleetModule implements Module {
   }
 
   /**
-   * Probe persisted children for liveness and reattach to the live ones.
-   * Returns the set of names we successfully adopted so autoStart can
-   * skip them. Historical state does not authenticate the current socket/PID
-   * artifacts; preserve them for ownership reconciliation if adoption fails.
+   * Probe persisted children for liveness and reattach to the live ones,
+   * whose records then say adopted (launchAutoStart skips those). Historical
+   * state does not authenticate the current socket/PID artifacts; preserve
+   * them for ownership reconciliation if adoption fails.
    */
-  private async adoptPersistedChildren(): Promise<Set<string>> {
-    const adopted = new Set<string>();
-    if (!this.ctx) return adopted;
-    if (typeof this.ctx.getState !== 'function') return adopted;
+  private async adoptPersistedChildren(): Promise<void> {
+    if (!this.ctx) return;
+    if (typeof this.ctx.getState !== 'function') return;
 
     let state: PersistedFleetState | null;
     try {
       state = this.ctx.getState<PersistedFleetState>();
     } catch {
-      return adopted;
+      return;
     }
-    if (!state?.children) return adopted;
+    if (!state?.children) return;
 
     // No process outlives a boot, so a record from an earlier boot has none,
     // whatever holds its pid now. The boot id tells, where the record and
@@ -519,7 +575,6 @@ export class FleetModule implements Module {
       try {
         const reattached = await this.reattachToLivingChild(p);
         this.children.set(name, reattached);
-        adopted.add(name);
         console.error(`[fleet] adopted "${name}" (pid=${p.pid}, socket=${p.socketPath})`);
       } catch (err) {
         console.error(`[fleet] failed to adopt "${name}": ${String(err)}`);
@@ -534,7 +589,6 @@ export class FleetModule implements Module {
     }
 
     this.persistState();
-    return adopted;
   }
 
   /**
@@ -1542,6 +1596,11 @@ export class FleetModule implements Module {
     if (input.env !== undefined) child.env = { ...input.env };
     if (existing) this.cancelAutoRestart(existing);
     this.children.set(input.name, child);
+    // This name has a record now, before its child is spawned and ready,
+    // whichever launch made it, so an autoStart launch of the name has
+    // nothing more for autoStartRecorded() to wait for: one that resumes
+    // later finds this record and is refused as replaced.
+    this.endAutoStartWait(input.name);
 
     // The child's stdout and stderr go to startup.log for its whole life, or
     // nowhere if the parent can't open it as a regular file. headless.ts
@@ -1891,7 +1950,7 @@ export class FleetModule implements Module {
             // never through fleet--launch, and a child adopted at a host's
             // start keeps the subscription it had. A restored record takes env
             // from its recipe entry even when that entry's autoStart is false,
-            // and start() launches only entries whose autoStart isn't.
+            // and launchAutoStart() launches only entries whose autoStart isn't.
             (fromChild.env !== undefined
               ? `and fleet--launch can't pass the env '${input.from}' was started with, so a relaunch would lose ` +
                 `it. Ask the user to add inference:speech to its subscription in this host's recipe, and to turn ` +

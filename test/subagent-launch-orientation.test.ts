@@ -17,7 +17,7 @@
  * real one against the mock provider and read the first request the child
  * actually sends.
  */
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +29,12 @@ import type { Recipe } from '../src/recipe.js';
 import {
   SubagentModule, type SubagentModuleConfig, type SubagentLaunch, agentSettingsOf, describeSubagentStart, toolDifferences, undeliveredLaunchParts,
 } from '../src/modules/subagent-module.js';
+
+// Most tests here build subagent harnesses and run launches through them,
+// which is CPU work that a busy machine can slow many times over. The limit
+// is there to catch a hang, not slowness, so it's longer than bun's 5 s
+// default. bun applies it to every test in this file, and to no other file.
+setDefaultTimeout(20_000);
 
 interface Run {
   name: string;
@@ -1565,7 +1571,7 @@ describe('what a stream first reads is what its launch promises', () => {
         const cm = h.framework.getAgent('parent')!.getContextManager();
         cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
         if (path === 'structural') {
-          // As agent-framework 0.22.2 stores an XML round: each call carries
+          // As agent-framework 0.22.3 stores an XML round: each call carries
           // the round's raw text, a sibling fork's included, and each result
           // is named, in call order.
           const sibling = { name: 'sibling', task: 'SIBLING-TASK' };

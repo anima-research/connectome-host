@@ -15,8 +15,9 @@
     failing at load. The block's cache prices are matched to what the provider bills, as
     multiples of base input. Claude: writes 2 on the 1-hour cache, 1.25 on the 5-minute cache
     and on Bedrock; reads 0.1, except 0.05 on Claude Opus 5.5 and 0.025 on Claude Fable 5.1 /
-    Mythos 5.1. OpenAI: writes 1.25 on the API for the GPT-5.6 and GPT-6 families, else 1,
-    and 1 on Codex; reads by model (0.1 on most, 0.05 on GPT-6.1 Sol). With prompt caching
+    Mythos 5.1. Claude Sonnet 5.5's reads are billed at 0.05 but take 0.1 here. OpenAI:
+    writes 1.25 on the API for the GPT-5.6 and GPT-6 families, else 1, and 1 on Codex; reads
+    by model (0.1 on most, 0.05 on GPT-6.1 Sol). With prompt caching
     off (`agent.promptCaching: false`, or a Bedrock model without caching) both are 1. A
     written block must still be complete.
   - The built-in default recipe (no recipe argument and no saved recipe, or `--no-recipe`)

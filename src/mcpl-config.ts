@@ -370,7 +370,7 @@ const NARROW_INSTEAD = '; to narrow what the server may advertise, list what to 
 /** Whether a field's value sets anything: any value but absent, null,
  *  false, 0 or empty text, which set nothing, so leaving them out needs no
  *  warning. A list sets something even when it's empty: agent-framework
- *  0.22.2 reads any enabledCapabilities list as a mask of what the server
+ *  0.22.3 reads any enabledCapabilities list as a mask of what the server
  *  may advertise, and an empty one lets nothing through. */
 function setsSomething(value: unknown): boolean {
   return Boolean(value);
@@ -392,9 +392,11 @@ function setsSomething(value: unknown): boolean {
  *   sets anything (setsSomething), with where the operator grants it, and
  *   resolveOverlayEntry leaves it out of what the boot loads, since the
  *   agent's file narrows what a server may do and never widens it;
- * - a `reconnect` that isn't true or false reads as its truth, as
- *   agent-framework 0.22.2 reads it, so the framework is handed true or
- *   false (null, main's way of saying off, as false, unnamed).
+ * - a `reconnect` that isn't true or false reads by its truth, as main read
+ *   it, except the text "false" in any case and with any spaces around it,
+ *   which reads as false, and the framework is handed true or false, since
+ *   agent-framework 0.22.3 refuses any value but true, false or null (null,
+ *   main's way of saying off, reads as false, unnamed).
  * Where main's handling broke:
  * - `args` holding numbers or true/false read as their text, where main
  *   stopped the start (`arg.startsWith`);
@@ -492,14 +494,19 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
       notes.push(`its ${k} is one name, read as a list of one`);
     }
   }
-  // agent-framework 0.22.2 reads reconnect by its truth (its connection
-  // retries `if (config.reconnect)`, server-connection.ts:537), so a value
-  // that isn't true or false is read as that truth and handed on as true or
-  // false. null was main's way of saying off, and reads as false unnamed.
+  // agent-framework 0.22.3 refuses a server whose reconnect is anything but
+  // true, false or null (anima-research/agent-framework#379), so the
+  // framework is handed true or false. A value that isn't one still reads by
+  // its truth, as 0.22.2 read it, so an entry keeps the retrying it had,
+  // except the text "false" in any case and with any spaces around it, such
+  // as Python's "False", which reads as false, as its writer meant, where
+  // its truth turned retrying on. Each is named. null was main's way of
+  // saying off, and reads as false, unnamed.
   if (e.reconnect === null) e.reconnect = false;
   else if (e.reconnect !== undefined && typeof e.reconnect !== 'boolean') {
-    e.reconnect = Boolean(e.reconnect);
-    notes.push(`its reconnect isn't true or false, so it's read as ${e.reconnect}, as the framework read it`);
+    const read = typeof e.reconnect === 'string' && e.reconnect.trim().toLowerCase() === 'false' ? false : Boolean(e.reconnect);
+    notes.push(`its reconnect isn't true or false, so it's read as ${read}: write true or false, without quotes`);
+    e.reconnect = read;
   }
   for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) {
     if (setsSomething(e[k])) notes.push(`its ${k} is left out, since only the operator's config grants that: set it in ${OPERATOR_FIELD_HOME[k]}${k === 'enabledCapabilities' ? NARROW_INSTEAD : ''}`);
@@ -830,7 +837,7 @@ export interface ServerProvisions {
   access: string | null;
   inheritEnv: boolean;
   /** The other operator-only fields the definition sets, as agent-framework
-   *  0.22.2 reads each (grantsThrough), in OPERATOR_ONLY_OVERLAY_FIELDS'
+   *  0.22.3 reads each (grantsThrough), in OPERATOR_ONLY_OVERLAY_FIELDS'
    *  order: an overlay entry can't carry them, so a replacement always lacks
    *  them. */
   grants: GrantField[];
@@ -840,16 +847,17 @@ export interface ServerProvisions {
  *  has its own field, since it counts only for a replacement that spawns. */
 type GrantField = Exclude<OperatorOnlyField, 'inheritEnv'>;
 
-/** Whether an operator definition sets a field as agent-framework 0.22.2
+/** Whether an operator definition sets a field as agent-framework 0.22.3
  *  reads it, so that a replacement without it runs differently: host
- *  commands only for true (framework.ts:17591); capabilities for any list,
+ *  commands only for true (framework.ts:21359); capabilities for any list,
  *  which masks what the server may advertise, an empty one letting nothing
  *  through, and whose patterns grant the paths denied by default
  *  (capability-mask.ts, capability-grant.ts:335); and tool lifecycle for an
  *  `observe` or `inputs` policy object (configGrants, capability-grant.ts:237).
  *  A recipe checks a toolLifecycle block's shape (recipe.ts) but not the
  *  other two fields'. So allowHostCommands can hold a value such as "true",
- *  which grants nothing, and enabledCapabilities a value that isn't a list,
+ *  which grants nothing and which 0.22.3's create() refuses, and
+ *  enabledCapabilities a value that isn't a list,
  *  which the framework can't read (its negotiation calls `.some` on it and
  *  throws); neither is a setting a replacement lacks. */
 function grantsThrough(field: GrantField, value: unknown): boolean {

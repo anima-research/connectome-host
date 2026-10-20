@@ -12,12 +12,15 @@
 //
 // Each line: { type: 'call'|'error', kind: 'complete'|'stream', timestamp,
 //   durationMs, requestSummary, response?, rawRequest?, error?, errorType?,
-//   httpStatus?, providerErrorCode?, retryable?, errorChars? }
+//   httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
 // A failure's `error` is { name, message } with its text bounded, or a
 // non-Error's text (logging-error-fields.ts). A record whose request or
 // response couldn't be summarized keeps only the head fields and, for a
-// failure, the error (summaryUnavailable: true). Logging never changes what
-// the caller gets: it runs after the provider call, outside its try.
+// failure, the error (summaryUnavailable: true). Every line, newline
+// included, stays within the shared 16 MiB UTF-8 cap (logging-record.ts):
+// an oversized or unserializable record drops the raw request first, then
+// its summaries (`truncated` says what was dropped). Logging never changes
+// what the caller gets: it runs after the provider call, outside its try.
 
 import { BedrockAdapter } from '@animalabs/membrane';
 import type {
@@ -28,6 +31,7 @@ import type {
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
 import { describeErrorObject } from './logging-error-fields.js';
+import { serializeRecord } from './logging-record.js';
 
 type BedrockConfig = ConstructorParameters<typeof BedrockAdapter>[0];
 
@@ -81,7 +85,7 @@ export class LoggingBedrockAdapter extends BedrockAdapter {
 
   private log(record: Record<string, unknown>): void {
     try {
-      appendFileSync(this.logPath, JSON.stringify(record) + '\n');
+      appendFileSync(this.logPath, serializeRecord(record));
     } catch {
       // Logging must never break inference.
     }

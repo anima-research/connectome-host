@@ -3,7 +3,7 @@
  * stated wait (an ephemeral run sleeps a stated wait of up to ten minutes,
  * and ends at once on a longer one or on one it can't read as a number)
  * fails without a restart, since a restart would call the provider again
- * too soon. Other rate-limit errors stay transient. agent-framework 0.22.2
+ * too soon. Other rate-limit errors stay transient. agent-framework 0.22.3
  * rejects such a run with its ProviderWaitNotSleptError, which the module
  * reads by name.
  */

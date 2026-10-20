@@ -450,7 +450,7 @@ const SUBAGENT_STREAM_TOKENS = 500_000;
  * before the first request, is longer than the stream's recent window,
  * which context-manager 0.14.1 counts newest-first in its store's
  * estimates, raw until the stream's first call calibrates them
- * (getUnheldRecentWindowStart). agent-framework 0.22.2 adds up to two such
+ * (getUnheldRecentWindowStart). agent-framework 0.22.3 adds up to two such
  * messages at the stream's first start: the prose-routing primer under
  * explicit or hybrid routing (maybePrimeProseMode), and a one-line routing
  * notice under locus or hybrid routing once the stream's channel resolves
@@ -526,7 +526,7 @@ type ProseRouting = 'locus' | 'explicit' | 'hybrid' | 'disabled';
 /** What each prose-routing mode does with a stream's plain text, as
  *  agent-framework documents the mode (AgentConfig.proseRouting). As terse
  *  as AF's own mode primer, since a spawn's orientation is a user-role
- *  message: explicit's is the primer's own (agent-framework 0.22.2
+ *  message: explicit's is the primer's own (agent-framework 0.22.3
  *  proseModePrimer), whose prose_help pointer proseRoutingEffect adds only
  *  for a stream that is shown the tool. */
 const PROSE_ROUTING_EFFECT: Record<ProseRouting, string> = {
@@ -1167,7 +1167,7 @@ export function materialiseStructuralFork(
   // matching tool_use is excluded from siblingForkIds by construction, so
   // this filter always keeps at least one block. In XML tool mode every
   // call of a round carries the round's raw <function_calls> text (rawXml,
-  // agent-framework 0.22.2), which membrane's anthropic-xml formatter
+  // agent-framework 0.22.3), which membrane's anthropic-xml formatter
   // replays in place of the blocks, siblings included. So beside a removed
   // sibling, the calls kept drop it and are rendered from their blocks.
   const trimmedAssistantContent = forkAssistantMsg.content
@@ -1183,7 +1183,7 @@ export function materialiseStructuralFork(
     // results: every message is capped and the cap keeps a message's
     // beginning, so a sibling's length can't push out the framed result's
     // head (its orientation). It's named as the framework names the results
-    // it stores from a tool round (agent-framework 0.22.2 keeps toolName for
+    // it stores from a tool round (agent-framework 0.22.3 keeps toolName for
     // XML replay's <tool_name>): in XML tool mode a result carries no call id,
     // so its name is what tells it apart when it leads results whose calls
     // come first.
@@ -1997,27 +1997,14 @@ export class SubagentModule implements Module {
     }
   }
 
-  /** Stop a run: cancel its live stream and set its agent idle. At a tool
-   *  boundary the agent reads 'ready', and agent-framework 0.22.2's
-   *  Agent.cancelStream signals a stream only from 'streaming' or
-   *  'waiting_for_tools', so the provider stream would stay parked until
-   *  the run's 15-minute idle watchdog. That stream is cancelled directly,
-   *  the way the framework's own context-budget restart cancels it
-   *  (agent-framework's src/framework.ts at v0.22.2, the overBudget branch
-   *  of the stream driver from line 9115, which cancels at 9134 and 9136);
-   *  the agent is set idle even if that cancel throws. The framework marks
-   *  its own cancels as its own, in a private map, and nothing lets a host
-   *  do the same, so it records a stopped stream as aborted, a failed
-   *  inference in its log, as it does for a user's cancel. A tool call
-   *  already running isn't stopped: it finishes, and the framework drops
-   *  its result. */
+  /** Stop a run: cancel its live stream and set its agent idle.
+   *  agent-framework 0.22.3's Agent.cancelStream cancels a stream wherever
+   *  the agent holds one, at a tool boundary too, and the framework records
+   *  the stop as a deliberate cancel, not a failure. A tool call already
+   *  running isn't stopped: it finishes, and the framework drops its
+   *  result. */
   private stopRun(agent: Agent): void {
-    const state = agent.state;
-    try {
-      if (state.status === 'ready' && state.stream) state.stream.cancel();
-    } finally {
-      agent.cancelStream();
-    }
+    agent.cancelStream();
   }
 
   /** Format a concurrency notice for tool results (empty string if no wait). */
@@ -2145,7 +2132,7 @@ export class SubagentModule implements Module {
   /** The words the classifiers read: the failure's message without the
    *  ephemeral agent's name, which the framework quotes in its own messages
    *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …") and
-   *  which holds the name the agent chose. agent-framework 0.22.2 gives an
+   *  which holds the name the agent chose. agent-framework 0.22.3 gives an
    *  ephemeral run's failure no other structure to read: it rejects with an
    *  Error carrying the text, apart from its ProviderWaitNotSleptError,
    *  which isUnsleptProviderWait reads by name. */
@@ -2172,7 +2159,7 @@ export class SubagentModule implements Module {
    *  retryable failure: one longer than an ephemeral run sleeps, or one it
    *  can't read as a number. Either way the provider asked for a wait the
    *  run won't sit out, so a restart would only call it again too soon.
-   *  agent-framework 0.22.2 rejects such a run with its
+   *  agent-framework 0.22.3 rejects such a run with its
    *  `ProviderWaitNotSleptError`, read here by its name, which a second copy
    *  of the package gives its own class too. */
   private isUnsleptProviderWait(err: Error): boolean {
@@ -2723,7 +2710,7 @@ export class SubagentModule implements Module {
    * the stream can call. The framework builds that surface
    * (agentToolSurface) from the shared board filtered by the agent's own
    * permissions, plus prose_help under explicit
-   * prose routing when those permissions allow it (agent-framework 0.22.2's
+   * prose routing when those permissions allow it (agent-framework 0.22.3's
    * availableToolsForPresentation). An ephemeral agent has no presentation
    * and isn't the subconscious, so nothing else applies, and it isn't
    * registered until its run starts, so listToolClasses can't be asked yet.

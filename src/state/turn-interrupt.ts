@@ -4,9 +4,10 @@ import { TURN_RUNNING_TRACES, TURN_SETTLED_TRACES } from './turn-trace.js';
  * An operator's interrupt of an agent's turn, as the TUI's Escape and the
  * Web UI's interrupt send it.
  *
- * agent-framework 0.22.2's `abortInference`, as 0.22.1's, stops a turn only
- * while its model call is in flight: inferring, streaming, or waiting on
- * tools beside its stream. While the turn compiles its context, after
+ * agent-framework 0.22.3's `abortInference` stops a turn only while it holds
+ * its model call or its stream: inferring, streaming, waiting on tools
+ * beside its stream, or at the boundary after a round's tools while the
+ * round is stored. While the turn compiles its context, after
  * `inference:started` and before the call, the agent is still idle and it
  * returns false, and so it does while a failed turn waits to be tried again,
  * or runs tools between model calls with no stream open. A reset then would
@@ -20,7 +21,7 @@ import { TURN_RUNNING_TRACES, TURN_SETTLED_TRACES } from './turn-trace.js';
  * A kept interrupt is forgotten when its turn settles (TURN_SETTLED_TRACES),
  * when it aborts the turn, and at a reset. A start doesn't end a turn: a
  * failed attempt's retry, a budget restart and a guard retry each start the
- * same turn again with no end before it (turn-trace.ts). 0.22.2 ends a turn
+ * same turn again with no end before it (turn-trace.ts). 0.22.3 ends a turn
  * it drops after `inference:started` (its agent replaced or removed, or the
  * framework stopping or stopped and started again) with `inference:aborted`,
  * which forgets the interrupt, but sends no end when another turn of the
@@ -28,19 +29,21 @@ import { TURN_RUNNING_TRACES, TURN_SETTLED_TRACES } from './turn-trace.js';
  * can't tell that turn from the dropped one, and an interrupt kept for the
  * dropped turn aborts it. It sends none either for an ephemeral run its idle
  * watchdog disposes, whose name isn't used again, nor for a failed attempt
- * whose retry it drops (turn-trace.ts). Where the agent goes on, an
+ * whose held retry it drops (turn-trace.ts). Where the agent goes on, an
  * interrupt kept for that turn then aborts the agent's next one. A surface
  * starts again with a new follower when the host switches sessions (reset,
  * or one per framework).
  *
  * The abort for a kept interrupt runs on a microtask, after the trace that
- * prompted it has reached every listener: the framework sends its
- * `inference:aborted` at once, and inside that trace's delivery it would
- * reach the surfaces before the trace itself. Out of the delivery, it's out
- * of the framework's catch around each listener too, so a throw from the
- * abort is caught here, the immediate one too, and read as nothing aborted:
- * it's logged once for each interrupt, and the interrupt is kept, or stays
- * kept, while its turn runs, to be tried at the turn's next trace.
+ * prompted it has reached every listener: for an inference that holds no
+ * stream the framework sends its `inference:aborted` at once, and inside
+ * that trace's delivery it would reach the surfaces before the trace itself.
+ * A stream's `inference:aborted` comes later, when the stream ends. Out of
+ * the delivery, it's out of the framework's catch around each listener too,
+ * so a throw from the abort is caught here, the immediate one too, and read
+ * as nothing aborted: it's logged once for each interrupt, and the interrupt
+ * is kept, or stays kept, while its turn runs, to be tried at the turn's next
+ * trace.
  *
  * Fed every trace by its surface's own subscription. It holds which agents
  * have a turn running, which have an interrupt kept, and which have had a
@@ -154,7 +157,7 @@ export function interruptAgents(
  * the follower first, then the subagent module stops their runs (stopRuns,
  * its cancelAll), so each run's partial result still reaches its caller.
  * The module's stop ends only a turn whose stream is open: agent-framework
- * 0.22.2's cancelStream cancels an open stream and sets the agent idle, and
+ * 0.22.3's cancelStream cancels an open stream and sets the agent idle, and
  * an ephemeral agent's cleanup does nothing, so a subagent's turn whose
  * model call is in flight before its first token, or that is compiling,
  * waiting to try a failed attempt again or running tools between model

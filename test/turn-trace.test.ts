@@ -1,6 +1,6 @@
 /**
  * The shared end sets (state/turn-trace.ts), pinned to agent-framework
- * 0.22.2's five stream ends. Other tests loop over these sets, so a member
+ * 0.22.3's five stream ends. Other tests loop over these sets, so a member
  * taken out or added has to fail here.
  */
 import { describe, expect, test } from 'bun:test';

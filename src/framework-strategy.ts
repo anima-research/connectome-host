@@ -74,7 +74,8 @@ export const DEFAULT_RECENT_WINDOW_RATIO = 0.4;
  *  - Anthropic writes: 2x on the 1-hour cache, 1.25x on the 5-minute one
  *    (Bedrock only has the 5-minute cache); reads: the model's rate from the
  *    pricing table (0.025x Fable 5.1 / Mythos 5.1, 0.05x Opus 5.5, 0.1x
- *    elsewhere);
+ *    elsewhere). Sonnet 5.5 is billed 0.05x but takes 0.1x here, as the
+ *    table's Sonnet 5 entry explains;
  *  - OpenAI: by model and transport (openaiCacheMultipliers): API writes
  *    1.25x on the GPT-5.6 / GPT-6 families, 1x otherwise and on Codex;
  *  - prompt caching off (`agent.promptCaching: false`, or a Bedrock model
