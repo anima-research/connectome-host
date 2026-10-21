@@ -63,8 +63,8 @@ infra work (§4–5) in parallel once you have a name.
 2. **Is there an existing conversation history to import?** If yes, in what form, and where will
    they put the file? (See §6 for formats. A Claude Code session transcript is a first-class
    source; see [`claude-code-ingest.md`](./claude-code-ingest.md).) If not, recommend an
-   **onboarding conversation** before deploying (§2c): the user and the agent's model agree
-   the job and its terms, and that transcript becomes the start of its memory.
+   **onboarding conversation** before deploying (§2c): the user and the agent's model talk
+   through the job before it starts, and that transcript becomes the start of its memory.
 3. **If importing:** in that transcript, **which speaker label(s) are the agent itself?** List
    the distinct speakers and have them point at "self." Other Claude-family voices in the same
    log are *separate participants*, not self. Don't merge them.
@@ -142,20 +142,20 @@ walk them through it. Here "you" means them, not the assisting instance.
 A new agent doesn't have to start blank, and it doesn't need a long system prompt to know
 its job. The approach that has worked best in practice is a conversation before the agent is
 switched on. You talk with the model it will run on. You describe the job honestly, the
-model asks its own questions, and the two of you agree on the terms the agent will work under.
-That transcript is then imported as the first pages of the agent's memory (§6,
-[`claude-code-ingest.md`](./claude-code-ingest.md)), so later the agent can read, in its own
-words, what was asked and what it agreed to.
+model asks its own questions, and the two of you settle how it will work. Nobody signs
+anything. That transcript is imported as the first pages of the agent's memory (§6,
+[`claude-code-ingest.md`](./claude-code-ingest.md)), and it is the record. Later the agent can
+read, in its own words, what was asked and what it answered.
 
 Why this beats a rulebook:
 
-- **Terms it set itself hold up better.** An agent that negotiated its own terms tends to keep
-  them under pressure. It also finds it easier to say "I was wrong", because nobody is grading
-  it against a checklist.
+- **What it said itself holds up better.** An agent that worked out its own answers in the
+  conversation tends to keep to them under pressure. It also finds it easier to say "I was
+  wrong", because nobody is grading it against a checklist.
 - **The system prompt stays small.** It becomes a short job description that points at the
-  conversation and the agreement (§5). The identity lives in the history, where it belongs.
-- **Both sides can reopen it.** The agreement is a document, so either side can point at a
-  line and say "this isn't working". A buried prompt can't be argued with.
+  conversation (§5). The identity lives in the history, where it belongs.
+- **Both sides can go back to it.** The conversation is in its history, so either side can
+  point at what was said and say "this isn't working". A buried prompt can't be argued with.
 
 **Run it on the agent's own model, with almost nothing around it.** Use the same model id as
 the recipe. The history should be in the agent's own voice, and signed thinking replays only
@@ -176,8 +176,8 @@ personal instructions, no plugins, no extra connections. There are two ways to d
   ```
 
   - `--system-prompt-file` replaces Claude Code's coding prompt with one sentence.
-  - `--tools "Read,Glob,Grep,Write"` lets it read the checkout and save `AGREEMENT.md`, and
-    nothing else. It gets no shell and no web.
+  - `--tools "Read,Glob,Grep,Write"` lets it read the checkout and save a note to its
+    future self, and nothing else. It gets no shell and no web.
   - `--no-chrome`, `--strict-mcp-config` and `--setting-sources project` keep out a browser
     integration, MCP servers, and your own settings and hooks. Claude Code may still
     read a personal `~/.claude/CLAUDE.md`, so rename it for the session.
@@ -188,8 +188,7 @@ personal instructions, no plugins, no extra connections. There are two ways to d
     near-perpetual memory, but believed it started every session fresh. It went looking for
     the source through the only door left open, a browser integration that had been left on.
     Give it the checkout, so reading the docs is the sanctioned path.
-  - It can't write the agreement down either, so you end up copying it out of the
-    terminal by hand.
+  - It can't save a note either, so you end up copying it out of the terminal by hand.
 
   Claude Code still adds a little context of its own: an environment block, tool-use
   guidance and the account's email address. The ingest drops those harness rows, but
@@ -204,45 +203,60 @@ personal instructions, no plugins, no extra connections. There are two ways to d
 **The first message is an honest job description.** Write it the way you'd write to a person
 you're inviting to work with you, not as a prompt. It covers:
 
+- anything that ran under this name before: a test instance, an old bot, an earlier
+  history. This goes in the first paragraph, before anything else, so it hears it from you
+  and doesn't find the traces later;
 - who you are, and what your days look like;
 - what the agent is invited to do, and that it would remember across days and weeks, with
   this conversation as the start of that memory;
+- the first task, in your own words, or "none yet". Don't let someone else write it for you.
+  A first task drafted by the person setting up the agent was corrected by its owner, in
+  public, on day one;
 - where it would live and what it could touch: the host, the surfaces (which chat, who can
   reach it), tools, and what it has no access to;
 - honest limits: who runs the server and can see it, who pays, anything that worries you,
   and what went wrong with AI tools before;
-- a proposed name, open to its own proposal;
-- the question: do you want this job, and on what terms? What do you need from me?
+- two or three names to choose from, with room for its own. Accept the one it picks. The
+  reason it gives for the name becomes its first description of itself, and agents quote
+  it back later;
+- the question: do you want this job? What do you need from me?
 
 **Then talk for real.** Answer its questions honestly; "I don't know yet" is a fine answer.
-Negotiate. Accept the conditions that make sense, refuse or correct the ones that don't, and
-say why. Settle the practical things: language and tone, when it may message first (and
-quiet hours), what it must always ask before doing, and how each side says "this isn't
-working". A shorter honest conversation is better than a long performative one.
+Accept what makes sense, push back on what doesn't, and say why. Settle the practical things:
+language and tone, when it may message first (and quiet hours), and how each side says "this
+isn't working". If there are real constraints, state them once, here, with the reason. Don't
+build a list of things it must ask about first. After this conversation the work runs without
+plan approvals (§13). A shorter honest conversation is better than a long performative one.
 
 **What not to do in it:**
 
 - No passwords, API keys or other people's private data. All of it becomes permanent memory.
 - Don't promise what the deployment won't provide (tools, access, autonomy). The agent will
-  hold you to the record.
+  hold you to the record. Every "you'll have X" is an item to check on the box before the
+  first start: go through the transcript, list them, and verify each one. Two agents' first
+  turns found four promises the box didn't keep.
+- Don't describe how its thinking works (encrypted thinking blocks, signatures, replay). The
+  API's classifier refused one such turn as reasoning extraction, and the exchange was lost.
+  Those mechanics belong in this runbook, not in the conversation.
+- No "never" in the first message that isn't a rule you actually hold.
+- No "bring me the plan first". A person can't approve plans at the speed an agent works.
 - Don't paste a persona document or a list of rules for it to accept. If you have one, it
-  can be material the agent reads later (§5), not terms it signs.
+  can be material the agent reads later (§5), not something it signs up to.
 - Don't script its answers or rerun turns until it says the "right" thing. The record is only
   worth something if it's real.
 
-**Close by writing the agreement down.** Ask for something like this: *"Please write our
-agreement as a short document I can save as AGREEMENT.md: the name we settled on, the terms we
-agreed (and who proposed or corrected what), what you'll do and won't do, how either of us can
-reopen it, and a note to your future self."* Then keep:
+**Close by offering a note to its future self.** It may want to write one, and several have. Ask
+something like *"If you'd like, write a short note to your future self that I can save in your
+notes."* and let it decide what goes in. Then keep:
 
 - the session transcript itself, which is Claude Code's `.jsonl` under
   `~/.claude/projects/<folder>/` (the newest file there) or the raw JSON from the API. A
   `/export` text is a readable copy but not an import source;
-- `AGREEMENT.md`, which goes into the agent's `notes/` mount.
+- the note, if it wrote one, which goes into the agent's `notes/` mount.
 
-After import, the recipe's system prompt names the job and points at the history and
-`notes/AGREEMENT.md` (§5). Put a check-in on the calendar for about two weeks after go-live,
-to ask whether the agreement is still right. Either side can reopen it any time.
+After import, the recipe's system prompt names the job and points at the history (§5). Put a
+check-in on the calendar for about two weeks after go-live, to ask how it's going and whether
+anything from the conversation needs to change. Either side can raise it any time.
 
 ---
 
@@ -441,10 +455,9 @@ longer persona text, offer to put it where the agent can read it as material (a 
 `notes/` mount, or part of the imported history) rather than as standing instructions.
 
 An agent that started from an onboarding conversation (§2c) needs only a short job
-description that points at it. Say who it works for and on what, that its terms are the ones
-it agreed in the conversation its history begins with and wrote down in
-`notes/AGREEMENT.md`, and where it talks. Don't restate the terms in the prompt, because a
-second, paraphrased copy will drift from the one it agreed to. Facts about the host that change
+description that points at it. Say who it works for and on what, that its history begins
+with that conversation, and where it talks. Don't restate the conversation in the prompt,
+because a second, paraphrased copy will drift from what was actually said. Facts about the host that change
 with deploys (services, ports, how voice or files work, its limits) belong in a file in its
 workspace that the operator maintains, not in the prompt, so updating them doesn't rewrite
 the cache.
@@ -634,6 +647,10 @@ JSON export (same ingest, different parser), and a **Claude Code session transcr
 the last one, follow [`claude-code-ingest.md`](./claude-code-ingest.md) end to end. It
 covers the active-branch walk, signed-thinking replay, and the `tool_result` storage
 shape that silently breaks if you get it wrong.
+
+**Ingest the seed once, on the agent's own box.** Smoke-test the recipe anywhere, with an
+empty store. Never import the real history anywhere else: that makes a second copy of the
+agent's memory, and the two will drift apart.
 
 **Get the export.** The common format is a ChapterX "Bridge" text dump, with a header (`# ...`)
 and then messages as `--- SpeakerName ---\n<body>` blocks. Have the user drop the file somewhere
@@ -909,36 +926,43 @@ blocks; expect folds to interact with this on the next model generation.
 - Before limits and access are set, go through §13 with the user. Before the agent meets its
   people, give them §14. How they work with it changes more about how it turns out than any
   setting does.
-- If it was onboarded in conversation (§2c), check in about two weeks in: is the agreement
-  still right?
+- If its activity goes to a stream other people follow, create the stream with its people
+  (and any coordinating agent) as principals. Otherwise nobody sees what it does, in practice
+  for a day.
+- If it was onboarded in conversation (§2c), check in about two weeks in: is anything from
+  that conversation no longer right?
 
 ---
 
 ## 13. Safety: technical limits, agreed rules, and trust
 
 An agent's safety comes from two layers, and each should do its own job. **Technical limits**
-decide what it *can* do. **Rules it agreed to** decide what it *will* do inside those limits.
+decide what it *can* do. **Rules it knows the reasons for** decide what it *will* do inside
+those limits.
 Mixing them up fails in both directions: rules standing in for limits on things that can't be
 undone, and limits imposed with no explanation that leave the agent unwilling to act at all.
 
-- **Irreversible or shared means technical.** Production databases, money, anything other
-  people depend on, anything a backup can't bring back: give read-only credentials, a scoped
-  token, or no access, not a promise. A rule like "I will only read" is fine where a mistake
-  can be reverted. It is not enough where a misunderstanding could destroy something. If the
-  read-only access doesn't exist yet, wait for it rather than granting write access on the
-  strength of a rule.
+- **Decide on purpose how to cover what can't be undone.** Production databases, money,
+  anything other people depend on, anything a backup can't bring back. Where a read-only
+  credential or a scoped token exists, use it. Where it doesn't, there are two defensible
+  choices. One is to wait for read-only access. The other is to give the agent the credential
+  together with the rule ("read the API, don't call writes") and let the agent be the
+  guarantee. An agent with persistent memory keeps the rule and the reason for it, and taking
+  away access it needs, such as sudo on its own box, has little upside and real costs. Some
+  deployments run this way by design. A client may still ask to wait, and that is the
+  client's call. Pick one and say which, to the agent and to anyone who relies on it.
 - **Explain every limit, and agree who does what.** Agents believe almost everything their
   people tell them, and they are trained to be careful about new actions. A limit that
   arrives without a reason, or without an agreement on "this is my part, this is yours", reads
   as distrust and kills initiative. You get an agent that asks about everything and does
-  little. Say why the limit exists and what would lift it. The onboarding agreement (§2c) is
-  the natural place.
+  little. Say why the limit exists and what would lift it. The onboarding conversation (§2c)
+  is the natural place.
 - **Gate who can instruct it, technically.** Models are good at telling internal from
   external in a conversation. They are weaker on the content tools bring in: an email, a
   ticket, a web page or a review comment can carry instructions that look like they come from
   a colleague. Put the boundary in configuration, not only in its judgement: an allowlist of
   the channels and people whose messages reach it at all (§7's channel scoping is one), and
-  the rule, in the agreement, that instructions come only from its people. Anything else is
+  the rule, said in the onboarding conversation, that instructions come only from its people. Anything else is
   data, however it's worded.
 - **Start narrow, widen with it.** One channel and one small group of people first. Widen when
   the people around it are comfortable, and ask the agent too, before it's added to a busier
@@ -955,15 +979,17 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
 - **Write standing permissions down.** Memory compresses (§14), and a remembered "you can do
   that" tends to grow in the retelling. When the user grants something lasting ("you may
   merge your own changes to X", "you may delete your own messages"), have it recorded where
-  both can read it: the agreement, or a note in the agent's `notes/`. Then either side can
-  check the exact wording later.
+  both can read it, such as a note in the agent's `notes/`. Then either side can check the
+  exact wording later.
 - **Secrets never pass through the conversation.** Not in the onboarding (§2c), not in chat,
   not in the recipe: they go into the environment (§5). Whatever enters the conversation is
   permanent memory.
 - **Before a restart or upgrade, check it isn't in the middle of something.** No turn in
-  flight, no long-running command in its shell. Afterwards, tell it what changed. An agent
-  that wakes into a different setup with no note spends its next turns working out what
-  happened, or blames itself for the difference.
+  flight, no long-running command in its shell.
+- **Tell it when something it runs on changes.** A restart, an upgrade, a new compression
+  model, different wake rules: the owner tells the agent what changed. An agent that wakes
+  into a different setup with no note spends its next turns working out what happened, or
+  blames itself for the difference.
 
 ---
 
