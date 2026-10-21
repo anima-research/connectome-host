@@ -924,9 +924,9 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
 - **Irreversible or shared means technical.** Production databases, money, anything other
   people depend on, anything a backup can't bring back: give read-only credentials, a scoped
   token, or no access, not a promise. A rule like "I will only read" is fine where a mistake
-  can be reverted. It is not enough where a misunderstanding or a prompt injection could
-  destroy something. If the read-only access doesn't exist yet, wait for it rather than
-  granting write access on the strength of a rule.
+  can be reverted. It is not enough where a misunderstanding could destroy something. If the
+  read-only access doesn't exist yet, wait for it rather than granting write access on the
+  strength of a rule.
 - **Explain every limit, and agree who does what.** Agents believe almost everything their
   people tell them, and they are trained to be careful about new actions. A limit that
   arrives without a reason, or without an agreement on "this is my part, this is yours", reads
