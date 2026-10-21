@@ -244,8 +244,8 @@ impressionistic with age and depth.
   off, treat aged detail as "remembered," not "look-up-able," unless you wrote
   it down. (`modules.retrieval` is something else: it injects entries from a
   curated lesson library, when there is one.)
-- **Images age out faster than text.** Only the most recent images stay live
-  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
+- **Images age out faster than text.** Only the most recent top-level images
+  stay live (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
   tail (default 30000). Inline images also share a cumulative base64 byte
   budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond
   these limits become an `[image not shown: this context keeps only some images]`
@@ -255,11 +255,12 @@ impressionistic with age and depth.
   frontdesk strategies. Zero turns the depth limit off, and lets the count or
   the bytes grow to their ceilings (`imageCeiling`, default 500 images, and
   `imageByteCeiling`, default 24 MiB), which also bound any larger value. The
-  ceilings count the top-level images in your context, not images inside a
-  tool result or generated ones. A ceiling of zero is none, and higher
-  ceilings can pass the provider's or membrane's request caps. If an image
-  matters beyond the moment, describe it in text or save it to your
-  workspace.
+  limits and the ceilings count the top-level images in your context, not
+  images inside a tool result or generated ones, and not images added to a
+  request during a turn until your context is next compiled. A ceiling of
+  zero is none, and higher ceilings can pass the provider's or membrane's
+  request caps. If an image matters beyond the moment, describe it in text
+  or save it to your workspace.
 
 ## Finding your own settings
 

@@ -334,9 +334,9 @@ ambient channel chatter enters context without waking.
 ## Known pending fixes (forward work)
 
 1. **Image handling** — discord-mcpl base64-inlines attachments. What exists
-   now: context-manager's compile keeps at most 6 live images
-   (`maxLiveImages`), strips images deeper than 30 000 tokens
-   (`imageStripDepthTokens`) and keeps cumulative inline image base64 under
+   now: context-manager's compile keeps at most 6 live top-level images
+   (`maxLiveImages`), strips them deeper than 30 000 tokens
+   (`imageStripDepthTokens`) and keeps their cumulative inline base64 under
    20 MiB (`maxLiveImageBytes`), replacing the rest with placeholders; membrane
    degrades API-rejected media types (SVG, TIFF, …) to a visible placeholder
    and fails loudly, before the API call, when a request exceeds its byte cap
@@ -349,9 +349,10 @@ ambient channel chatter enters context without waking.
    the image keys under `agent.strategy` (autobiographical and frontdesk):
    the three limits and their ceilings, `imageCeiling` (default 500 images)
    and `imageByteCeiling` (default 24 MiB). Zero turns the depth limit or a
-   ceiling off, and lets the count or the bytes grow to its ceiling. The
-   ceilings count top-level images only, not images inside a tool result,
-   such as `read_image`'s, or generated ones.
+   ceiling off, and lets the count or the bytes grow to its ceiling. In the
+   live window the limits and the ceilings count top-level images only, not
+   images inside a tool result, such as `read_image`'s, generated ones, or
+   what agent-framework adds within a turn.
    (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 

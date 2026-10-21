@@ -189,8 +189,10 @@ conditions are required so the headers can never reach a vendor endpoint.
   `imageStripDepthTokens` and `maxLiveImageBytes` and their ceilings
   `imageCeiling` and `imageByteCeiling` (context-manager defaults 6, 30000,
   20 MiB, 500 and 24 MiB). Zero turns the depth limit or a ceiling off, and
-  lets the count or the bytes grow to its ceiling. The ceilings count
-  top-level images only.
+  lets the count or the bytes grow to its ceiling. In the live window the
+  limits and the ceilings count top-level images only, not images nested in
+  tool results, generated images, or what agent-framework adds within a
+  turn. A compression prompt counts every image against the ceilings.
 - **`frontdesk`** (`src/strategies/frontdesk-strategy.ts`) — the same, plus
   channel provenance headers, topic-aware chunk boundaries and preservation of
   unanswered questions and @mentions. For agents that staff a channel.

@@ -39,13 +39,13 @@ export interface RecipeStrategy {
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
   maxMessageTokens?: number;
-  /** Maximum live image count, newest-first (default 6). Zero means up to
+  /** Maximum live top-level image count, newest-first (default 6). Zero means up to
    *  `imageCeiling`, which also bounds a larger value. */
   maxLiveImages?: number;
-  /** Token depth from the tail beyond which images become placeholders (default 30000).
+  /** Token depth from the tail beyond which top-level images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
-  /** Cumulative base64 byte budget for live images (default 20 MiB). Zero
+  /** Cumulative base64 byte budget for live top-level images (default 20 MiB). Zero
    * means up to `imageByteCeiling`, which also bounds a larger value. Count
    * and depth limits still apply. */
   maxLiveImageBytes?: number;
