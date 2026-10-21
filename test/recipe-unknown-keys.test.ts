@@ -49,6 +49,25 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys({ name: 'T', agent: ['mock'] })).toEqual([]);
   });
 
+  test('names unknown keys under agent.strategy.kvUnified and its policy', () => {
+    const kvUnified = {
+      policy: { alpha: 0.7, ageBandStep: 4, bogusPolicyKey: 1 },
+      tokenBucketSize: 1, engine: 'dag', latentDemandMod: 'individual', hysteresisCertificate: true,
+    };
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', kvUnified } }))).toEqual([
+      'agent.strategy.kvUnified.latentDemandMod (did you mean agent.strategy.kvUnified.latentDemandMode?)',
+      'agent.strategy.kvUnified.policy.ageBandStep (did you mean agent.strategy.kvUnified.policy.ageBandSteps?)',
+      'agent.strategy.kvUnified.policy.bogusPolicyKey',
+    ]);
+    const known = {
+      policy: { alpha: 0.7, ageBandSteps: 0 }, labelCeiling: 1, engine: 'auto', latentDemandMode: 'joint',
+    };
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: known } }))).toEqual([]);
+    // A block that is not an object is the validator's to reject, not this walk's.
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: 'standard' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: { policy: [1] } } }))).toEqual([]);
+  });
+
   test('says what replaced a retired key', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });

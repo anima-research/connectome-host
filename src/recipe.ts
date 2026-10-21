@@ -201,6 +201,10 @@ export interface RecipeKvUnifiedConfig {
     continuityRecencyFloor: number;
     continuityStableHalfLife: number;
     continuityStableFloor: number;
+    /** Age bands per doubling for fidelity and continuity ages
+     * (context-manager ≥ 0.17): an integer from 0 to 64, 0 prices exact ages.
+     * Optional; a strategy built from a recipe takes 4 unless set. */
+    ageBandSteps?: number;
   };
   tokenBucketSize: number;
   continuityBucketSize: number;
@@ -212,8 +216,16 @@ export interface RecipeKvUnifiedConfig {
    * with treeifyNonContiguousSummaries; both flags must be explicit. */
   preserveGapBearingSummaries: boolean;
   /** Skip the full Pareto pass when the previously accepted layout is provably
-   * still selected (context-manager ≥ 0.14). Optional; off unless set. */
+   * still selected (context-manager ≥ 0.14). Optional; from context-manager
+   * 0.15 a strategy built from a recipe takes it on unless set to `false`. */
   hysteresisCertificate?: boolean;
+  /** Which engine solves the forest (context-manager ≥ 0.17): `auto` (absent)
+   * runs the subtree engine and falls back to the packed DAG engine past the
+   * label ceiling; `subtree` and `dag` pin one. */
+  engine?: 'auto' | 'subtree' | 'dag';
+  /** How producible merges are measured against the live cut
+   * (context-manager ≥ 0.17): `joint` unless set to `individual`. */
+  latentDemandMode?: 'individual' | 'joint';
 }
 
 export interface RecipeAgent {
@@ -1635,6 +1647,13 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
       throw new Error(`Recipe agent.strategy.kvUnified.policy.${key} must be in [0, 1].`);
     }
   }
+  // Mirror context-manager 0.17: src/adaptive/kv-unified-policy.ts (MAX_AGE_BAND_STEPS).
+  if (
+    policy.ageBandSteps !== undefined &&
+    (!Number.isInteger(policy.ageBandSteps) || (policy.ageBandSteps as number) < 0 || (policy.ageBandSteps as number) > 64)
+  ) {
+    throw new Error('Recipe agent.strategy.kvUnified.policy.ageBandSteps must be an integer from 0 to 64 when present.');
+  }
   for (const key of [
     'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
   ] as const) {
@@ -1664,6 +1683,14 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   if (config.hysteresisCertificate !== undefined && typeof config.hysteresisCertificate !== 'boolean') {
     throw new Error('Recipe agent.strategy.kvUnified.hysteresisCertificate must be a boolean when present.');
   }
+  // A typo here doesn't fail in context-manager: an engine it doesn't know
+  // runs as `auto`, and a mode other than `joint` ranks individually.
+  if (config.engine !== undefined && !['auto', 'subtree', 'dag'].includes(config.engine as string)) {
+    throw new Error('Recipe agent.strategy.kvUnified.engine must be "auto", "subtree" or "dag" when present.');
+  }
+  if (config.latentDemandMode !== undefined && !['individual', 'joint'].includes(config.latentDemandMode as string)) {
+    throw new Error('Recipe agent.strategy.kvUnified.latentDemandMode must be "individual" or "joint" when present.');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,9 +1699,9 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 
 /**
  * The keys each recipe level reads. The type check below keeps these lists in
- * step with Recipe, RecipeAgent, RecipeModules and RecipeMockConfig: a key
- * added to an interface and not here (or listed here and gone from the
- * interface) fails to compile.
+ * step with Recipe, RecipeAgent, RecipeModules, RecipeMockConfig and
+ * RecipeKvUnifiedConfig with its policy: a key added to an interface and not
+ * here (or listed here and gone from the interface) fails to compile.
  */
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
@@ -1697,6 +1724,17 @@ const RECIPE_MODULE_KEYS = [
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
   'channelMode', 'selfRestart',
 ] as const;
+const RECIPE_KV_UNIFIED_KEYS = [
+  'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
+  'adoptEpsilon', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
+  'hysteresisCertificate', 'engine', 'latentDemandMode',
+] as const;
+const RECIPE_KV_UNIFIED_POLICY_KEYS = [
+  'alpha', 'budgetLowRatio', 'budgetHighRatio', 'budgetUnderLambda', 'budgetOverLambda',
+  'cacheLambda', 'cacheScale', 'cacheReadPrice', 'cacheWritePrice', 'continuityLambda',
+  'continuityScale', 'continuityRecencyHalfLifeTokens', 'continuityRecencyFloor',
+  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps',
+] as const;
 type ListsExactly<K extends string, L extends readonly string[]> =
   [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
 // "Type 'true' is not assignable to type 'false'" here means a key was added
@@ -1706,7 +1744,9 @@ const recipeKeyListsInStep: [
   ListsExactly<keyof RecipeAgent & string, typeof RECIPE_AGENT_KEYS>,
   ListsExactly<keyof RecipeModules & string, typeof RECIPE_MODULE_KEYS>,
   ListsExactly<keyof RecipeMockConfig & string, typeof RECIPE_AGENT_MOCK_KEYS>,
-] = [true, true, true, true];
+  ListsExactly<keyof RecipeKvUnifiedConfig & string, typeof RECIPE_KV_UNIFIED_KEYS>,
+  ListsExactly<keyof RecipeKvUnifiedConfig['policy'] & string, typeof RECIPE_KV_UNIFIED_POLICY_KEYS>,
+] = [true, true, true, true, true, true];
 void recipeKeyListsInStep;
 
 const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
@@ -1844,7 +1884,8 @@ function nearestRecipeKey(key: string, known: readonly string[]): string | null 
 
 /**
  * The keys a recipe carries that the host never reads — at the top level,
- * under `agent`, `agent.mock` and `modules` — each with what it was probably
+ * under `agent`, `agent.mock`, `agent.strategy.kvUnified` and its `policy`,
+ * and `modules` — each with what it was probably
  * meant to be. A misspelled key doesn't fail, it just doesn't happen (#167);
  * for now they are warned about, not rejected, so recipes carrying leftovers
  * keep loading (the strict schema is #91's direction).
@@ -1866,8 +1907,17 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   };
   check('', obj, RECIPE_KEYS);
   check('agent.', obj.agent, RECIPE_AGENT_KEYS);
-  if (obj.agent && typeof obj.agent === 'object' && !Array.isArray(obj.agent)) {
-    check('agent.mock.', (obj.agent as Record<string, unknown>).mock, RECIPE_AGENT_MOCK_KEYS);
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  if (isObject(obj.agent)) {
+    check('agent.mock.', obj.agent.mock, RECIPE_AGENT_MOCK_KEYS);
+    // context-manager reads the kvUnified block as written, so a misspelled
+    // optional key there (`latentDemandMod`) silently takes the default.
+    const kvUnified = isObject(obj.agent.strategy) ? obj.agent.strategy.kvUnified : undefined;
+    check('agent.strategy.kvUnified.', kvUnified, RECIPE_KV_UNIFIED_KEYS);
+    if (isObject(kvUnified)) {
+      check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
+    }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
   return found;
