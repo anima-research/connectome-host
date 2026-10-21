@@ -707,6 +707,10 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'mcpl:push-event-rejected': OPS,
   'mcpl:channel-incoming-rejected': OPS,
   'mcpl:empty-content-dropped': OPS,
+  // Content context-manager won't store, refused where it would be written:
+  // the server or module, the event and the places in it, none of the content.
+  'mcpl:malformed-content-refused': OPS,
+  'process:response-refused': OPS,
   'mcpl:coalescing': OPS,
   'mcpl:request-handler-error': OPS,
   'mcpl:server-stderr': OPS,
