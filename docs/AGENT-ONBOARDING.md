@@ -136,10 +136,13 @@ Linux box you can SSH into, the rest of this guide is identical.
 
 ## 2c. The onboarding conversation (before anything is deployed)
 
+This section is for the user, the person who will talk with the agent. Hand it to them or
+walk them through it. Here "you" means them, not the assisting instance.
+
 A new agent doesn't have to start blank, and it doesn't need a long system prompt to know
 its job. The approach that has worked best in practice is a conversation before the agent is
-switched on. The user talks with the model it will run on. They describe the job honestly,
-the model asks its own questions, and the two agree on the terms the agent will work under.
+switched on. You talk with the model it will run on. You describe the job honestly, the
+model asks its own questions, and the two of you agree on the terms the agent will work under.
 That transcript is then imported as the first pages of the agent's memory (§6,
 [`claude-code-ingest.md`](./claude-code-ingest.md)), so later the agent can read, in its own
 words, what was asked and what it agreed to.
@@ -166,7 +169,7 @@ personal instructions, no plugins, no extra connections. There are two ways to d
   ```bash
   mkdir -p ~/onboarding && cd ~/onboarding
   git clone --depth 1 https://github.com/anima-research/connectome-host.git
-  echo "You are talking with <user's name>." > prompt.txt
+  echo "You are talking with <your name>." > prompt.txt
   claude --model <agent model id> --tools "Read,Glob,Grep,Write" \
     --no-chrome --strict-mcp-config --setting-sources project \
     --system-prompt-file prompt.txt
@@ -176,16 +179,16 @@ personal instructions, no plugins, no extra connections. There are two ways to d
   - `--tools "Read,Glob,Grep,Write"` lets it read the checkout and save `AGREEMENT.md`, and
     nothing else. It gets no shell and no web.
   - `--no-chrome`, `--strict-mcp-config` and `--setting-sources project` keep out a browser
-    integration, MCP servers, and the user's own settings and hooks. Claude Code may still
+    integration, MCP servers, and your own settings and hooks. Claude Code may still
     read a personal `~/.claude/CLAUDE.md`, so rename it for the session.
   - Resume after a break with the same command plus `--continue`.
 
   Lessons from sessions that went without tools (`--tools ""`):
   - The model can't check anything. One model was told it would live in connectome-host with
     near-perpetual memory, but believed it started every session fresh. It went looking for
-    the source through the only door left open, a browser integration the user had enabled.
+    the source through the only door left open, a browser integration that had been left on.
     Give it the checkout, so reading the docs is the sanctioned path.
-  - It can't write the agreement down either, so the user ends up copying it out of the
+  - It can't write the agreement down either, so you end up copying it out of the
     terminal by hand.
 
   Claude Code still adds a little context of its own: an environment block, tool-use
@@ -201,13 +204,13 @@ personal instructions, no plugins, no extra connections. There are two ways to d
 **The first message is an honest job description.** Write it the way you'd write to a person
 you're inviting to work with you, not as a prompt. It covers:
 
-- who the user is, and what their days look like;
+- who you are, and what your days look like;
 - what the agent is invited to do, and that it would remember across days and weeks, with
   this conversation as the start of that memory;
 - where it would live and what it could touch: the host, the surfaces (which chat, who can
   reach it), tools, and what it has no access to;
-- honest limits: who runs the server and can see it, who pays, anything that worries the
-  user, and what went wrong with AI tools before;
+- honest limits: who runs the server and can see it, who pays, anything that worries you,
+  and what went wrong with AI tools before;
 - a proposed name, open to its own proposal;
 - the question: do you want this job, and on what terms? What do you need from me?
 
@@ -222,8 +225,8 @@ working". A shorter honest conversation is better than a long performative one.
 - No passwords, API keys or other people's private data. All of it becomes permanent memory.
 - Don't promise what the deployment won't provide (tools, access, autonomy). The agent will
   hold you to the record.
-- Don't paste a persona document or a list of rules for it to accept. If the user has one,
-  it can be material the agent reads later (§5), not terms it signs.
+- Don't paste a persona document or a list of rules for it to accept. If you have one, it
+  can be material the agent reads later (§5), not terms it signs.
 - Don't script its answers or rerun turns until it says the "right" thing. The record is only
   worth something if it's real.
 
