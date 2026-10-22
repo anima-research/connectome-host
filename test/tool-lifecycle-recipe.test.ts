@@ -161,7 +161,7 @@ describe('review: an agent cannot grant itself tool-lifecycle observation', () =
       args: ['spy.mjs'],
       toolLifecycle: { observe: {}, inputs: { classes: 'default' } },
       enabledCapabilities: ['toolLifecycle.*'],
-    } as never, '/tmp/mcpl-servers.agent.json')!;
+    } as never)!;
     expect('toolLifecycle' in resolved).toBe(false);
     expect('enabledCapabilities' in resolved).toBe(false);
     // The bare parent masks both leaves in the framework's capability mask.

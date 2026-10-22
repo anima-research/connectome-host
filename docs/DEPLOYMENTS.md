@@ -195,7 +195,8 @@ it, and what has to happen first. A pull doesn't stop for it. So:
   say data the newer code writes doesn't read back on the older code, copy
   what each agent keeps while it's stopped: its data directory
   (`DATA_DIR`), its fleet children's data directories (`data/<child>`
-  under its working directory, unless a launch named another), the MCPL
+  under its working directory, unless a launch named another), which hold
+  each child's own `mcpl-servers.agent.child.json`, the MCPL
   server settings it saves in its working directory (`mcpl-servers.json`
   and `mcpl-servers.agent.json`), and the files its MCPL servers keep
   their state in, such as heartbeat-mcpl's `HEARTBEAT_CONFIG_FILE` and

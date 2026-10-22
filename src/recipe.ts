@@ -851,7 +851,9 @@ export interface RecipeModules {
    * MCPL self-administration. Off by default. When enabled, the agent gets
    * `mcpl_list` / `mcpl_deploy` / `mcpl_restart` / `mcpl_unload` tools to
    * hot-manage its own MCPL servers without a host restart. Deployments
-   * persist to `mcpl-servers.agent.json` (the agent overlay), merged over the
+   * persist to `mcpl-servers.agent.json` (the agent overlay, in the working
+   * directory; a fleet child's is `mcpl-servers.agent.child.json` in its data
+   * directory), merged over the
    * recipe/file server list at startup.
    *
    * SECURITY: `mcpl_deploy` spawns arbitrary commands as the host user —

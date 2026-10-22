@@ -4,7 +4,7 @@
  * Reads/writes `mcpl-servers.json` (CC `.mcp.json` shape), keyed by server ID.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, lstatSync, statSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
@@ -198,8 +198,29 @@ export function mergeRecipeServers(
 // Agent overlay — servers the agent deployed/unloaded for itself at runtime
 // ---------------------------------------------------------------------------
 
-/** Default agent-owned overlay path, resolved from cwd (per-agent deploy dir). */
-export const DEFAULT_AGENT_OVERLAY_PATH = resolve(process.cwd(), 'mcpl-servers.agent.json');
+/** The agent overlay's file name in the working directory. */
+export const AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.json';
+
+/** A fleet child's own agent overlay's file name, in its data directory. It's
+ *  never the working directory's name, so a child's overlay is never its
+ *  host's file, whatever its data directory is, the working directory
+ *  included, unless someone links the one to the other on purpose. */
+export const CHILD_AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.child.json';
+
+/** The environment variable naming the agent overlay's path. A fleet sets it
+ *  for each child, to the child's own overlay in its data directory
+ *  (fleet-module.ts), so the servers each child deploys and unloads for
+ *  itself go into a file of its own. */
+export const AGENT_OVERLAY_FILE_ENV = 'MCPL_AGENT_OVERLAY_FILE';
+
+/**
+ * The agent's own overlay: the path MCPL_AGENT_OVERLAY_FILE names, resolved
+ * from cwd, else mcpl-servers.agent.json in cwd. Every reader of the overlay
+ * takes it from here: the boot, mcpl-admin's deploy and unload, and /bug.
+ */
+export const DEFAULT_AGENT_OVERLAY_PATH = process.env[AGENT_OVERLAY_FILE_ENV]
+  ? resolve(process.cwd(), process.env[AGENT_OVERLAY_FILE_ENV])
+  : resolve(process.cwd(), AGENT_OVERLAY_FILE_NAME);
 
 /**
  * An overlay entry is either a full server definition (agent-deployed, loads
@@ -610,6 +631,48 @@ export function overlayEntryTombstones(entry: unknown): boolean {
 }
 
 /**
+ * Write a fleet child's own agent overlay at `childPath`, once, before the
+ * first start that reads it there. Where `copy` is set, it's a copy of
+ * `fromPath`, the working directory's overlay, which every child read as its
+ * own before children had their own: byte for byte, tombstones and all, with
+ * no wider permission bits than the original, since it can hold tokens. Its
+ * relative args mean the same from either file, since they resolve against
+ * the working directory (resolveOverlayEntry), and a file the boot stops on
+ * stops the child's boot, as the original did. Otherwise, and where
+ * `fromPath` is missing, it's an overlay with no entries, with `fromPath`'s
+ * permission bits where it exists, so a child's tokens are kept as privately
+ * as the working directory's overlay keeps them. Anything already at
+ * `childPath`, whoever wrote it, a link included, is left as it is, before
+ * the copy or the write begins: a copy can fail on its source while the
+ * child's own file is there (Bun 1.4.3 then reports the source's error, not
+ * EEXIST). A write or a copy that fails after making the file, as on a full
+ * disk, removes it again, since the next launch would keep it and the
+ * child's boot would stop on it: Bun leaves a failed copy's first part
+ * (1.4.3). The file is written in place, as saveAgentOverlay writes it, so a
+ * crash in the middle of it can still leave it truncated, and the child's
+ * boot then stops on it, naming it.
+ */
+export function seedChildAgentOverlay(childPath: string, fromPath: string, copy: boolean): void {
+  if (lstatSync(childPath, { throwIfNoEntry: false }) !== undefined) return;
+  try {
+    if (copy && existsSync(fromPath)) {
+      copyFileSync(fromPath, childPath, constants.COPYFILE_EXCL);
+    } else {
+      const mode = existsSync(fromPath) ? { mode: statSync(fromPath).mode & 0o777 } : {};
+      writeFileSync(childPath, JSON.stringify({ mcplServers: {} }, null, 2) + '\n', { encoding: 'utf-8', flag: 'wx', ...mode });
+    }
+  } catch (error) {
+    // Made since the look above, by whoever else writes it: theirs.
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+    // Nothing was there when this call looked, so a file there now is the one
+    // its copy or write began, unless someone made one in between and the
+    // copy then failed on its source, which Bun reports in place of EEXIST.
+    try { unlinkSync(childPath); } catch { /* never made */ }
+    throw error;
+  }
+}
+
+/**
  * Write the agent overlay file, as saveMcplServers writes its file
  * (writeServersFile). Writing through the existing file keeps its mode (it
  * can hold tokens), a symlink at its path, and a single-file bind mount; a
@@ -684,10 +747,13 @@ const OVERLAY_LIST_FIELDS = [
 
 /**
  * Resolve an overlay entry into a server config object (id + fields, relative
- * `./`/`../` args resolved against the overlay file's directory), as
+ * `./`/`../` args resolved against the working directory), as
  * readOverlayEntry reads it. Returns null for a tombstone and for every entry
  * the boot skips: one with neither command nor url, and one readOverlayEntry
- * finds malformed.
+ * finds malformed. Relative args resolve against the working directory, as
+ * mcpl_deploy's description tells the agent, wherever the overlay file is: a
+ * stdio server is spawned there, so its command resolves there too, and a
+ * fleet child shares its parent's (fleet-module.ts).
  *
  * The overlay is the AGENT's file, so resolution is also where host policy
  * for self-deployed servers lives (applied at boot AND at deploy — existing
@@ -724,11 +790,9 @@ const OVERLAY_LIST_FIELDS = [
 export function resolveOverlayEntry(
   id: string,
   entry: AgentOverlayEntry,
-  overlayPath: string,
 ): ({ id: string; command?: string; url?: string } & Record<string, unknown>) | null {
   const read = readOverlayEntry(entry).entry;
   if (!read || read.disabled === true) return null;
-  const overlayDir = dirname(resolve(overlayPath));
   const { disabled: _d, ...fields } = read;
   const rec = fields as Record<string, unknown>;
   for (const k of OVERLAY_LIST_FIELDS) {
@@ -763,7 +827,7 @@ export function resolveOverlayEntry(
     ...(Array.isArray(rec.args)
       ? {
           args: (rec.args as string[]).map(arg =>
-            arg.startsWith('./') || arg.startsWith('../') ? resolve(overlayDir, arg) : arg,
+            arg.startsWith('./') || arg.startsWith('../') ? resolve(process.cwd(), arg) : arg,
           ),
         }
       : {}),
@@ -774,13 +838,14 @@ export function resolveOverlayEntry(
  * Apply the agent overlay to a resolved server list:
  *   - tombstones (`disabled: true`) remove the matching server
  *   - full entries replace an existing server or append a new one
- * Relative `./`/`../` args are resolved against the overlay file's directory.
+ * Relative `./`/`../` args are resolved against the working directory
+ * (resolveOverlayEntry).
  */
 export function applyAgentOverlay<T extends { id: string }>(
   servers: T[],
   overlayPath: string,
 ): Array<T | ({ id: string } & Record<string, unknown>)> {
-  return composeOverlay(servers, readAgentOverlay(overlayPath), overlayPath);
+  return composeOverlay(servers, readAgentOverlay(overlayPath));
 }
 
 /** applyAgentOverlay's work on an overlay already read, such as one a
@@ -788,7 +853,6 @@ export function applyAgentOverlay<T extends { id: string }>(
 export function composeOverlay<T extends { id: string }>(
   servers: T[],
   overlay: Record<string, AgentOverlayEntry>,
-  overlayPath: string,
 ): Array<T | ({ id: string } & Record<string, unknown>)> {
   if (Object.keys(overlay).length === 0) return servers;
 
@@ -799,7 +863,7 @@ export function composeOverlay<T extends { id: string }>(
     servers.filter(s => !overlayEntryTombstones(Object.hasOwn(overlay, s.id) ? overlay[s.id] : undefined));
 
   for (const [id, entry] of Object.entries(overlay)) {
-    const loaded = resolveOverlayEntry(id, entry, overlayPath);
+    const loaded = resolveOverlayEntry(id, entry);
     if (!loaded) continue;
     const idx = result.findIndex(s => s.id === id);
     if (idx >= 0) result[idx] = loaded;

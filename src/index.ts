@@ -590,7 +590,8 @@ async function createFramework(
     fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
   );
 
-  // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
+  // Apply the agent overlay (DEFAULT_AGENT_OVERLAY_PATH: mcpl-servers.agent.json,
+  // or a fleet child's mcpl-servers.agent.child.json): servers the agent
   // deployed for itself load unconditionally (no recipe opt-in), and
   // tombstones suppress recipe/file servers the agent unloaded. An overlay
   // entry that replaces an operator's server and lacks what it provides, or

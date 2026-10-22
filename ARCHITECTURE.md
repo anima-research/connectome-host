@@ -250,8 +250,9 @@ Framework features configured by top-level recipe keys rather than modules:
   (`src/tool-lifecycle-config.ts`) and the server's own `_meta`. Off by
   default; needs agent-framework ≥ 0.20 (anima-research/agent-framework#199),
   which this host requires. See the README.
-- **Agent overlay.** `mcpl-servers.agent.json` holds servers the agent deployed
-  for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
+- **Agent overlay.** `mcpl-servers.agent.json` (a fleet child's own is
+  `mcpl-servers.agent.child.json` in its data directory) holds servers the
+  agent deployed for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
   suppress servers the agent unloaded. The overlay can never grant
   `enabledCapabilities`, `toolLifecycle`, `inheritEnv` or
   `allowHostCommands`: the boot leaves them out of every overlay entry.
@@ -353,7 +354,9 @@ Under `$DATA_DIR` (default `./data`):
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
 | `tui-error.log` | TUI-mode stderr. |
 
-Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
+Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json` (a fleet
+child's own is `mcpl-servers.agent.child.json` in its `DATA_DIR`, named by
+`MCPL_AGENT_OVERLAY_FILE`),
 `sleep-privileged.json`, `logs/failures.log`, the default workspace mounts
 `./input` and `./output`, fleet children's `./data/<name>`.
 

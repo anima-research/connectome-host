@@ -193,8 +193,10 @@ An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
 
 Agents with `modules.mcplAdmin` can also deploy, restart and unload their own
-servers; those are kept in `mcpl-servers.agent.json` and load regardless of
-the recipe.
+servers; those are kept in `mcpl-servers.agent.json` in the working directory,
+or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
+([`docs/fleet-protocol.md`](docs/fleet-protocol.md)), and load regardless of
+the recipe. Their relative `./` args resolve against the working directory.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
 by default) for slow tools, and `agent.retry` passes a Membrane retry policy
@@ -214,8 +216,9 @@ them to enable:
 - `enabledFeatureSets` **omitted**: every set the server declares is enabled,
   subject to the `uses` rule below.
 - `enabledFeatureSets: []` in a recipe or in `mcpl-servers.json`: **no** set is
-  enabled (deny-all). Only the agent's own `mcpl-servers.agent.json` reads an
-  empty list as unset, since strict function calling makes some models send
+  enabled (deny-all). Only the agent's own overlay (`mcpl-servers.agent.json`,
+  or a fleet child's `mcpl-servers.agent.child.json`) reads an empty list as
+  unset, since strict function calling makes some models send
   `[]` for "unspecified" (`resolveOverlayEntry` in `src/mcpl-config.ts`).
 - A `*` in a pattern matches exactly one dot-separated segment (`memory.*`
   matches `memory.retrieval`, not `memory.a.b`). `disabledFeatureSets` wins
@@ -272,7 +275,7 @@ An unclassed tool is treated as the most restrictive class: observable that it r
 
 To check what each tool ended up as, and which of the three sources decided it, run `/tools [agent]`, open the web UI's MCP tab, or `GET /debug/tool-classes`. With `mcplAdmin` enabled, the agent's `mcpl_list` shows the same for each server's tools.
 
-Servers an agent deploys for itself (`mcpl-servers.agent.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
+Servers an agent deploys for itself (`mcpl-servers.agent.json`, or a fleet child's `mcpl-servers.agent.child.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
 
 ### Included recipes
 
@@ -606,6 +609,7 @@ is lost.
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
 | `DATA_DIR` | `./data` | Session, recipe and log storage |
+| `MCPL_AGENT_OVERLAY_FILE` | — | Set by a fleet for each child: the child's own agent overlay, the servers it deployed and unloaded for itself (`modules.mcplAdmin`), `mcpl-servers.agent.child.json` in its data directory. A host started any other way leaves it unset, and keeps its overlay in `mcpl-servers.agent.json` in its working directory |
 | `AGENT_TIMEZONE` | process timezone | Agent-facing clock when the recipe sets no `agent.timezone` |
 | `SLEEP_PRIVILEGED_FILE` | `./sleep-privileged.json` | Who may wake the agent during `sleep` |
 | `OBSERVERS_FILE` | `$DATA_DIR/observers.json` | Web UI observer grants |

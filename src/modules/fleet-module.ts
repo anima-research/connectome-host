@@ -32,13 +32,14 @@ import type {
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 import { execFile, spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { connect as netConnect, type Socket } from 'node:net';
-import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, rmdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { uptime } from 'node:os';
 import { type IncomingCommand, type WireEvent, type PanelResponseEvent, matchesSubscription } from './fleet-types.js';
 import { loadRecipe } from '../recipe.js';
 import { REDUCER_REQUIRED_EVENTS } from '../state/agent-tree-reducer.js';
 import { parseCommand } from '../command-name.js';
+import { AGENT_OVERLAY_FILE_ENV, AGENT_OVERLAY_FILE_NAME, CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
 
@@ -1696,6 +1697,7 @@ export class FleetModule implements Module {
 
     // dataDir is the agent's own argument, so a directory this host can't
     // create is the agent's to choose again.
+    const dataDirExisted = existsSync(dataDir);
     try {
       mkdirSync(dataDir, { recursive: true });
     } catch (err) {
@@ -1704,6 +1706,33 @@ export class FleetModule implements Module {
         error: `Nothing was launched: this host couldn't create the data directory ${dataDir} ` +
           `(${(err as NodeJS.ErrnoException).code ?? String(err)}). Give fleet--launch another dataDir, or ask ` +
           'whoever runs this host to check that path.',
+      };
+    }
+
+    // The child keeps its own agent overlay in its data directory, under a
+    // name the working directory's never has, so it's the child's own
+    // whatever its data directory, and reads it from MCPL_AGENT_OVERLAY_FILE.
+    // Before children had their own, each read the overlay in the working
+    // directory it shares with this host, so a child whose data directory was
+    // there before this launch starts from a copy of that, and a new child
+    // from an empty one. Either is written by a launch that finds no file
+    // there, and is the child's from then on.
+    const overlayPath = join(dataDir, CHILD_AGENT_OVERLAY_FILE_NAME);
+    const workingOverlay = resolve(process.cwd(), AGENT_OVERLAY_FILE_NAME);
+    try {
+      seedChildAgentOverlay(overlayPath, workingOverlay, dataDirExisted);
+    } catch (err) {
+      // A directory this launch made goes again, if it's still empty, so the
+      // next launch doesn't take it for one a child has used.
+      if (!dataDirExisted) {
+        try { rmdirSync(dataDir); } catch { /* not empty, or already gone */ }
+      }
+      const copying = dataDirExisted && existsSync(workingOverlay);
+      return {
+        success: false, isError: true,
+        error: `Nothing was launched: this host couldn't write the agent overlay of child '${input.name}', ${overlayPath}` +
+          `${copying ? `, as a copy of ${workingOverlay}` : ''} (${(err as NodeJS.ErrnoException).code ?? String(err)}). ` +
+          `Ask whoever runs this host to check ${copying ? 'those paths' : 'that path'}, or give fleet--launch another dataDir.`,
       };
     }
 
@@ -1759,6 +1788,7 @@ export class FleetModule implements Module {
       ...input.env,
       AGENT_TIMEZONE: this.config.timeZone,
       DATA_DIR: dataDir,
+      [AGENT_OVERLAY_FILE_ENV]: overlayPath,
     };
     // Without the variable, a child finds no install though it runs its
     // parent's entry, so it isn't the install's host: it neither commits a

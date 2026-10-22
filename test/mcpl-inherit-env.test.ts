@@ -64,10 +64,10 @@ describe('MCPL inheritEnv configuration', () => {
   test('agent-owned overlays cannot grant full host environment inheritance', () => {
     for (const inheritEnv of [true, false, 'false', 'true', 0, 1, null, {}, []]) {
       const entry = { command: 'node', inheritEnv } as any;
-      expect(resolveOverlayEntry('tools', entry, '/tmp/overlay.json')).not.toHaveProperty('inheritEnv');
+      expect(resolveOverlayEntry('tools', entry)).not.toHaveProperty('inheritEnv');
       expect(entry).toHaveProperty('inheritEnv', inheritEnv);
     }
-    expect(resolveOverlayEntry('tools', { command: 'node' }, '/tmp/overlay.json'))
+    expect(resolveOverlayEntry('tools', { command: 'node' }))
       .not.toHaveProperty('inheritEnv');
   });
 
