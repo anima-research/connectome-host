@@ -7,10 +7,16 @@
   - **`code_execution` runs JavaScript, not Python,** in a QuickJS sandbox on
     the host's own runtime, reaching nothing but its agent's tools, and the
     host no longer needs a Python interpreter. A recipe whose
-    `codeExecution` sets the Python runner's `pythonPath`, `env`,
-    `inheritEnv`, `scriptTimeoutMs` or `idleReclaimMs` is refused when the
-    framework starts, naming what to use instead. A prompt that teaches an
-    agent Python scripts needs rewriting.
+    `codeExecution` is on and sets one of the Python runner's settings
+    (`pythonPath`, `env`, `inheritEnv`, `scriptTimeoutMs`, `idleReclaimMs`,
+    `maxScriptTimeoutMs`, `backgroundMaxLifetimeMs`, `maxBackgroundScripts`)
+    now stops loading, with an error naming what to set instead, such as
+    `yieldMs` for `scriptTimeoutMs`. The recipe type is now the framework's
+    `CodeExecutionConfig`, and the runner's numeric settings (`yieldMs`,
+    `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`,
+    `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`,
+    `maxWakesPerScript`, `memoryMaxBytes`) must be whole numbers of 0 or
+    more. A prompt that teaches an agent Python scripts needs rewriting.
   - **Subagents' usage is one line:** every ephemeral agent counts in one
     shared `ephemeral agents` entry, so `/usage` and the Web UI's per-agent
     cost show one line for all subagents instead of one each.

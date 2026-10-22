@@ -152,6 +152,9 @@ describe('kv-unified recipe plumbing', () => {
     for (const engine of ['auto', 'subtree', 'dag']) {
       expect(() => validateRecipe(recipe({ ...config(), engine }))).not.toThrow();
     }
+    for (const latentDemandMode of ['individual', 'joint']) {
+      expect(() => validateRecipe(recipe({ ...config(), latentDemandMode }))).not.toThrow();
+    }
 
     for (const steps of [-1, 65, 1.5, Number.NaN, '4', null]) {
       expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } })))

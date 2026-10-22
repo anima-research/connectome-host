@@ -496,8 +496,9 @@ unknown-key warning, like those at the other levels.
   channels an @-mention never binds or triggers a fork. Still works; the host
   logs a `[deprecated]` line at startup
 - **Subconscious** (top-level `subconscious`) — a secondary agent that can
-  `tune_out` channels; **code execution** (top-level `codeExecution`) — a
-  Python tool runner
+  `tune_out` channels; **code execution** (top-level `codeExecution`) —
+  JavaScript scripts that call the agent's tools, in a QuickJS engine
+  (agent-framework 0.24)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register

@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import type { MountConfig } from '@animalabs/agent-framework';
+import type { CodeExecutionConfig, MountConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
@@ -1159,25 +1159,41 @@ export interface RecipeExtension {
 }
 
 /**
- * Client-side programmatic tool calling (af `code_execution` tool, af ≥0.7.2).
+ * Client-side programmatic tool calling (af `code_execution` tool), passed to
+ * the framework as written, so it is the framework's own config type.
  *
- * SECURITY: like mcpl_deploy, enabling this means trusting the agent with
- * code execution — model-authored python runs as the host user with the
- * agent's full tool surface injected. It is a robustness boundary (deadline,
- * kill, respawn), not a sandbox. The agents we host already have shells;
- * enable deliberately all the same.
+ * SECURITY: from agent-framework 0.24, model-authored JavaScript runs in a
+ * QuickJS WebAssembly engine, in a child process of the host, and reaches
+ * nothing but its agent's tools: no network, files or environment. The
+ * framework claims no containment beyond its engine and glue: the child runs
+ * as the host's user, with no operating-system sandbox around it. Enable
+ * deliberately.
  */
-export interface RecipeCodeExecution {
-  enabled: boolean;
-  /** Python interpreter (default: python3 from PATH; needs ≥3.8). */
-  pythonPath?: string;
-  /** Per-inner-tool-call timeout, ms (default 270_000). */
-  toolCallTimeoutMs?: number;
-  /** Whole-script deadline, ms (default 600_000). */
-  scriptTimeoutMs?: number;
-  /** Idle interpreter reclaim, ms (default 300_000; 0 disables). */
-  idleReclaimMs?: number;
-}
+export type RecipeCodeExecution = CodeExecutionConfig;
+
+/**
+ * What agent-framework 0.24's JavaScript runner refuses from the Python
+ * runner's settings, with what to do instead: its isolateSettings' table,
+ * which the package doesn't export. The host refuses them at recipe load, as
+ * the framework does at create(), so such a recipe fails before the host
+ * starts rather than at the framework's boot.
+ */
+const RETIRED_CODE_EXECUTION_KEYS: Readonly<Record<string, string>> = {
+  pythonPath: 'scripts are JavaScript now, run by an engine built into agent-framework, so there is no interpreter to name; leave it out',
+  idleReclaimMs: 'each script starts fresh and keeps nothing after it ends, so there is nothing to reclaim; leave it out',
+  env: "a script's world holds only your agent's tools, with no environment; leave it out",
+  inheritEnv: "a script's world holds only your agent's tools, with no environment; leave it out",
+  scriptTimeoutMs: 'a script now yields at its bound and keeps running: set yieldMs for the bound',
+  maxScriptTimeoutMs: 'set maxYieldMs, the most an agent may ask a run or a wait to wait',
+  backgroundMaxLifetimeMs: 'every script now has one limit: set scriptLifetimeMs',
+  maxBackgroundScripts: 'set maxRunningScripts, how many scripts an agent may have running at once, yielded ones included',
+};
+/** The runner's numeric settings, each a whole number of 0 or more; the
+ *  framework checks their ranges when it builds the runner. */
+const CODE_EXECUTION_NUMBER_KEYS = [
+  'yieldMs', 'maxYieldMs', 'scriptLifetimeMs', 'maxRunningScripts', 'maxScriptChildren',
+  'toolCallTimeoutMs', 'wakeMinIntervalMs', 'maxWakesPerScript', 'memoryMaxBytes',
+] as const;
 
 /**
  * The subconscious resident (agent-framework FrameworkConfig.subconscious,
@@ -1835,6 +1851,13 @@ const mountListsInStep: [
   IsNever<Exclude<MountConfig['wakeOnChange'], undefined | boolean | readonly unknown[]>>,
 ] = [true, true, true, true, true, true];
 void mountListsInStep;
+// "Type 'true' is not assignable to type 'false'" here means agent-framework's
+// CodeExecutionConfig gained or lost a setting CODE_EXECUTION_NUMBER_KEYS
+// doesn't follow yet.
+const codeExecutionKeysInStep: ListsExactly<
+  Exclude<keyof CodeExecutionConfig, 'enabled'> & string, typeof CODE_EXECUTION_NUMBER_KEYS
+> = true;
+void codeExecutionKeysInStep;
 
 /**
  * A key a section doesn't have, refused with what to write instead, when the
@@ -3001,12 +3024,17 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof ce.enabled !== 'boolean') {
       throw new Error('Recipe codeExecution.enabled must be a boolean.');
     }
-    if (ce.pythonPath !== undefined && (typeof ce.pythonPath !== 'string' || !ce.pythonPath.trim())) {
-      throw new Error('Recipe codeExecution.pythonPath must be a non-empty string.');
-    }
-    for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs'] as const) {
-      if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
-        throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
+    // As in the framework, a block that isn't on has nothing else read.
+    if (ce.enabled) {
+      for (const [key, instead] of Object.entries(RETIRED_CODE_EXECUTION_KEYS)) {
+        if (ce[key] !== undefined && ce[key] !== null) {
+          throw new Error(`Recipe codeExecution.${key} is no longer read (agent-framework 0.24): ${instead}.`);
+        }
+      }
+      for (const k of CODE_EXECUTION_NUMBER_KEYS) {
+        if (ce[k] !== undefined && (typeof ce[k] !== 'number' || !Number.isSafeInteger(ce[k]) || (ce[k] as number) < 0)) {
+          throw new Error(`Recipe codeExecution.${k} must be a whole number of 0 or more.`);
+        }
       }
     }
   }

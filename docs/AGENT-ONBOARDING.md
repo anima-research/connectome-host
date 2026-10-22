@@ -490,13 +490,21 @@ Write the block yourself only to change the policy, and then set the prices to m
 - `hysteresisCertificate: true` skips the full Pareto pass when the previously
   accepted layout is provably still selected — large latency win on quiet turns;
   `adoptEpsilon` is the score slack that lets an unchanged layout be retained.
-- `hysteresisCertificate` is optional (off unless set); every other field is
-  required. The host checks the required keys at recipe load — including that
-  `treeifyNonContiguousSummaries` / `preserveGapBearingSummaries` are explicit
-  booleans and not both `true`, and that `hysteresisCertificate`, when set, is a
-  boolean — and passes the object through whole;
-  context-manager ignores keys it doesn't know, so a misspelled optional key
-  silently does nothing. Pin the runtime and validate the recipe against it.
+- `hysteresisCertificate` is optional, and from context-manager 0.15 a strategy
+  built from a recipe takes it on unless it is `false`.
+- Three optional keys (context-manager 0.17) are on by default, and each has an
+  opt-out: `policy.ageBandSteps` (an integer from 0 to 64; 4 unless set, and 0
+  prices exact ages), `latentDemandMode` (`"joint"` unless set to
+  `"individual"`) and `engine` (`"auto"`, `"subtree"` or `"dag"`; auto runs the
+  subtree engine and falls back to the DAG one past the label ceiling).
+- Every other field is required. The host checks the block at recipe load —
+  that `treeifyNonContiguousSummaries` / `preserveGapBearingSummaries` are
+  explicit booleans and not both `true`, that `hysteresisCertificate` is a
+  boolean and the three keys above take their listed values, when set — and
+  passes the object through whole. A key under `kvUnified` or its `policy` that
+  the host doesn't read is named in a startup warning, with the key it was
+  probably meant to be; context-manager itself ignores keys it doesn't know.
+  Pin the runtime and validate the recipe against it.
 
 ---
 
