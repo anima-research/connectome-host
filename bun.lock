@@ -1,14 +1,14 @@
 {
-  "lockfileVersion": 1,
+  "lockfileVersion": 2,
   "configVersion": 0,
   "workspaces": {
     "": {
       "name": "@animalabs/connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.23.1",
+        "@animalabs/agent-framework": "^0.24.0",
         "@animalabs/chronicle": "^0.4.0",
-        "@animalabs/context-manager": "^0.14.0",
-        "@animalabs/membrane": "^0.5.87",
+        "@animalabs/context-manager": "^0.18.0",
+        "@animalabs/membrane": "^0.6.0",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -19,13 +19,13 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.23.1", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/context-manager": "^0.14.1", "@animalabs/membrane": "^0.5.87", "@modelcontextprotocol/client": "^2.3.1", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-IxRMNPHWC98OVO7CeHA/9d2nE9B6OXLqe8eM9RP3N8IYyfnpDI5TvY2NIG3POd/PCyUtGsKS5OmDc822cGjwug=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.24.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/context-manager": "^0.18.0", "@animalabs/membrane": "^0.6.0", "@modelcontextprotocol/client": "^2.3.1", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-C9uBF/59B5/iVLPSqbRZ++aWhVhvb7t3mPvA6M64E568U98WRGSX19svvBf+hFUiGujBGJMJoXiS3MrY4e1lsA=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.4.0", "", {}, "sha512-Ka0jPHjo2fxWfketjea5q32qcwCTTf9dncAGAk9WfSHWAwCkDMbw6IQDHWrNmfzAt8+7z8llkfmPVy1taophMA=="],
 
-    "@animalabs/context-manager": ["@animalabs/context-manager@0.14.1", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/membrane": "^0.5.69" } }, "sha512-UIB7PM2EdIO2fnBnFidqXeL/Xf7l0xEh3DDYO/pRkZ/FUjWk4GSpY8FF4jtOCOKF0go4vGcOJW+mZSuABcumjw=="],
+    "@animalabs/context-manager": ["@animalabs/context-manager@0.18.0", "", { "dependencies": { "@animalabs/chronicle": "^0.4.0", "@animalabs/membrane": "^0.6.0" } }, "sha512-TpmNPj9ao6wzoP+DvcsW2iB0KbMEH+R205Kt2tidWJC1ZkaRR9sBxHE2rDa4w3ieIYLnFw6GHgB8MQdM03eh1g=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@0.5.87", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-TN5hypiJ0SFKFf57s0BzUhk6atAzfoo7F+feCBL4UB20XDD4fN0BzZkcUJefGXaTrINxMvTkMyGE8Qna7XajLg=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.6.0", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-Dt3VMTqmUekLqMdsIzS70PbVbyS+akAiBn9sqKAy28+TNDiUSQiJxKO1o2Pw39koa0J7RcCEBqH/efzouIDx5A=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
@@ -325,7 +325,7 @@
 
     "web-tree-sitter": ["web-tree-sitter@0.25.10", "", { "peerDependencies": { "@types/emscripten": "^1.40.0" }, "optionalPeers": ["@types/emscripten"] }, "sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA=="],
 
-    "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
+    "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
     "ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
 
