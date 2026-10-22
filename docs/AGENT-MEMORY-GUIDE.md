@@ -244,17 +244,23 @@ impressionistic with age and depth.
   off, treat aged detail as "remembered," not "look-up-able," unless you wrote
   it down. (`modules.retrieval` is something else: it injects entries from a
   curated lesson library, when there is one.)
-- **Images age out faster than text.** Only the most recent images stay live
-  (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
+- **Images age out faster than text.** Only the most recent top-level images
+  stay live (`maxLiveImages`, default 6) and only within `imageStripDepthTokens` of the
   tail (default 30000). Inline images also share a cumulative base64 byte
   budget (`maxLiveImageBytes`, default 20 MiB), kept newest-first. Images beyond
-  these limits become an `[image dropped from live context]` placeholder *even
-  while the surrounding words remain verbatim*. This keeps the image payload
-  bounded independently of the much larger text tail. Your recipe may change
-  all three limits under `agent.strategy` for autobiographical and frontdesk
-  strategies; zero disables that limit while the others still apply, and larger
-  limits can exceed the provider's request-size cap. If an image matters beyond
-  the moment, describe it in text or save it to your workspace.
+  these limits become an `[image not shown: this context keeps only some images]`
+  placeholder *even while the surrounding words remain verbatim*. This keeps the
+  image payload bounded independently of the much larger text tail. Your recipe
+  may change all three limits under `agent.strategy` for autobiographical and
+  frontdesk strategies. Zero turns the depth limit off, and lets the count or
+  the bytes grow to their ceilings (`imageCeiling`, default 500 images, and
+  `imageByteCeiling`, default 24 MiB), which also bound any larger value. The
+  limits and the ceilings count the top-level images in your context, not
+  images inside a tool result or generated ones, and not images added to a
+  request during a turn until your context is next compiled. A ceiling of
+  zero is none, and higher ceilings can pass the provider's or membrane's
+  request caps. If an image matters beyond the moment, describe it in text
+  or save it to your workspace.
 
 ## Finding your own settings
 
@@ -277,6 +283,8 @@ KV-continuity work described above.
 | `maxLiveImages` | 6 | 6 | most images kept live at once |
 | `imageStripDepthTokens` | 30 000 | 30 000 | depth past which images drop to a placeholder (text stays verbatim) |
 | `maxLiveImageBytes` | 20 MiB | 20 MiB | cumulative base64 size of inline images kept live, newest-first |
+| `imageCeiling` | 500 | 500 | most top-level images kept live, whatever `maxLiveImages` says |
+| `imageByteCeiling` | 24 MiB | 24 MiB | most base64 bytes of top-level images kept live, whatever `maxLiveImageBytes` says |
 
 The headline numbers are the tail and the budget. A small tail means rewriting
 reaches recent material sooner; a large tail (hundreds of thousands of tokens)

@@ -190,10 +190,15 @@ conditions are required so the headers can never reach a vendor endpoint.
   provider, `cacheTtl` and model; a written block must be complete, set
   `treeifyNonContiguousSummaries` and `preserveGapBearingSummaries`
   explicitly, and not both `true`. Residents built on `kv-stable` pin
-  `foldingStrategy: "kv-stable"`. About 48 further context-manager keys pass
+  `foldingStrategy: "kv-stable"`. About 50 further context-manager keys pass
   through verbatim, among them the live-image limits `maxLiveImages`,
-  `imageStripDepthTokens` and `maxLiveImageBytes` (context-manager defaults
-  6, 30000 and 20 MiB; zero disables each).
+  `imageStripDepthTokens` and `maxLiveImageBytes` and their ceilings
+  `imageCeiling` and `imageByteCeiling` (context-manager defaults 6, 30000,
+  20 MiB, 500 and 24 MiB). Zero turns the depth limit or a ceiling off, and
+  lets the count or the bytes grow to its ceiling. In the live window the
+  limits and the ceilings count top-level images only, not images nested in
+  tool results, generated images, or what agent-framework adds within a
+  turn. A compression prompt counts every image against the ceilings.
 - **`frontdesk`** (`src/strategies/frontdesk-strategy.ts`) — the same, plus
   channel provenance headers, topic-aware chunk boundaries and preservation of
   unanswered questions and @mentions. For agents that staff a channel.

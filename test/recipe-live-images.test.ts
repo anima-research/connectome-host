@@ -7,6 +7,8 @@ const limits = {
   maxLiveImages: 3,
   imageStripDepthTokens: 12000,
   maxLiveImageBytes: 8 * 1024 * 1024,
+  imageCeiling: 40,
+  imageByteCeiling: 16 * 1024 * 1024,
 };
 
 function recipe(strategy: Record<string, unknown> = {}) {
@@ -33,9 +35,9 @@ describe('live-image recipe limits', () => {
       }
     });
 
-    test(`${type} preserves zero to disable each limit`, () => {
+    test(`${type} preserves zero for each limit and ceiling`, () => {
       const built = config({
-        type, maxLiveImages: 0, imageStripDepthTokens: 0, maxLiveImageBytes: 0,
+        type, maxLiveImages: 0, imageStripDepthTokens: 0, maxLiveImageBytes: 0, imageCeiling: 0, imageByteCeiling: 0,
       });
       for (const key of Object.keys(limits)) expect(built[key]).toBe(0);
     });
@@ -47,6 +49,8 @@ describe('live-image recipe limits', () => {
       maxLiveImages: -1,
       imageStripDepthTokens: 'all',
       maxLiveImageBytes: null,
+      imageCeiling: 'none',
+      imageByteCeiling: -2,
     };
     const parsed = validateRecipe({
       name: 'custom-image-policy',
@@ -67,6 +71,7 @@ describe('live-image recipe limits', () => {
   test('passthrough does not impose limits it never consumes', () => {
     expect(() => recipe({
       type: 'passthrough', maxLiveImages: -1, imageStripDepthTokens: 'all', maxLiveImageBytes: null,
+      imageCeiling: 'none', imageByteCeiling: -2,
     })).not.toThrow();
   });
 
@@ -98,11 +103,13 @@ describe('live-image recipe limits', () => {
       }
     });
 
-    test(`${key} rejects malformed limits at recipe load`, () => {
-      for (const value of [-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '6', true, null, {}, []]) {
-        expect(() => recipe({ [key]: value })).toThrow(
-          `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
-        );
+    test(`${key} rejects malformed limits at recipe load, for autobiographical and frontdesk`, () => {
+      for (const type of ['autobiographical', 'frontdesk']) {
+        for (const value of [-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '6', true, null, {}, []]) {
+          expect(() => recipe({ type, [key]: value })).toThrow(
+            `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
+          );
+        }
       }
     });
   }

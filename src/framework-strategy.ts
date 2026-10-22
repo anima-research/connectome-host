@@ -41,6 +41,8 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'maxLiveImages',
   'imageStripDepthTokens',
   'maxLiveImageBytes',
+  'imageCeiling',
+  'imageByteCeiling',
   'adaptiveResolution',
   'kvStableReachTokens',
   'kvStableQualityGapRatio',
