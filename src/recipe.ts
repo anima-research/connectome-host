@@ -1981,8 +1981,8 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe agent.responses.serviceTier must be a non-empty string.');
     }
     if (responses.compactThreshold !== undefined &&
-        (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
-      throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
+        (typeof responses.compactThreshold !== 'number' || !Number.isFinite(responses.compactThreshold) || responses.compactThreshold <= 0)) {
+      throw new Error('Recipe agent.responses.compactThreshold must be a positive number (finite).');
     }
     const serviceTiers = ['auto', 'default', 'flex', 'priority'];
     if (responses.serviceTier !== undefined && !serviceTiers.includes(String(responses.serviceTier))) {
@@ -2032,8 +2032,8 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
-    throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || !Number.isFinite(agent.maxStreamTokens) || agent.maxStreamTokens <= 0)) {
+    throw new Error('Recipe agent.maxStreamTokens must be a positive number (finite).');
   }
 
   // Recipes are runtime JSON; a typo'd TTL ("1hr", "60m") would otherwise
@@ -2122,8 +2122,8 @@ export function validateRecipe(raw: unknown): Recipe {
       refreshAfterMinutes?: unknown;
     };
     if (refreshAfterMinutes !== undefined) {
-      if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
-        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${JSON.stringify(refreshAfterMinutes)}.`);
+      if (typeof refreshAfterMinutes !== 'number' || !Number.isFinite(refreshAfterMinutes) || !(refreshAfterMinutes > 0)) {
+        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number (finite), got ${String(refreshAfterMinutes)}.`);
       }
       const ttlMinutes = agent.cacheTtl === '1h' ? 60 : 5;
       if (refreshAfterMinutes >= ttlMinutes) {
@@ -2133,8 +2133,8 @@ export function validateRecipe(raw: unknown): Recipe {
         );
       }
     }
-    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !(maxIdleHours > 0))) {
-      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number, got ${JSON.stringify(maxIdleHours)}.`);
+    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !Number.isFinite(maxIdleHours) || !(maxIdleHours > 0))) {
+      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number (finite), got ${String(maxIdleHours)}.`);
     }
   }
 
@@ -2165,8 +2165,8 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof thinking.enabled !== 'boolean') {
       throw new Error('Recipe agent.thinking.enabled must be a boolean.');
     }
-    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || thinking.budgetTokens <= 0)) {
-      throw new Error('Recipe agent.thinking.budgetTokens must be a positive number.');
+    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || !Number.isFinite(thinking.budgetTokens) || thinking.budgetTokens <= 0)) {
+      throw new Error('Recipe agent.thinking.budgetTokens must be a positive number (finite).');
     }
     if (thinking.type !== undefined && thinking.type !== 'enabled' && thinking.type !== 'adaptive') {
       throw new Error('Recipe agent.thinking.type must be "enabled" or "adaptive".');
@@ -2935,9 +2935,17 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error('fleet.defaultSubscription must be an array of strings');
         }
       }
-      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
-        if (fleet[k] !== undefined && (typeof fleet[k] !== 'number' || (fleet[k] as number) < 0)) {
-          throw new Error(`fleet.${k} must be a non-negative number`);
+      // The first two are compared between attempts; the last two reach
+      // setTimeout (waitForExit), which runs a delay past TIMER_MS_MAX at once.
+      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs'] as const) {
+        if (fleet[k] !== undefined && (typeof fleet[k] !== 'number' || !Number.isFinite(fleet[k]) || (fleet[k] as number) < 0)) {
+          throw new Error(`fleet.${k} must be a non-negative number (finite)`);
+        }
+      }
+      for (const k of ['gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
+        const v = fleet[k];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > TIMER_MS_MAX)) {
+          throw new Error(`fleet.${k} must be a number of milliseconds from 0 to ${TIMER_MS_MAX}`);
         }
       }
     }
@@ -2955,8 +2963,8 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe codeExecution.pythonPath must be a non-empty string.');
     }
     for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs'] as const) {
-      if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
-        throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
+      if (ce[k] !== undefined && (typeof ce[k] !== 'number' || !Number.isFinite(ce[k]) || (ce[k] as number) < 0)) {
+        throw new Error(`Recipe codeExecution.${k} must be a non-negative number (finite).`);
       }
     }
   }
