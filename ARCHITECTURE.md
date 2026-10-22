@@ -352,11 +352,10 @@ Under `$DATA_DIR` (default `./data`):
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
+| `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
 
-Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json` (a fleet
-child's own is `mcpl-servers.agent.child.json` in its `DATA_DIR`, named by
-`MCPL_AGENT_OVERLAY_FILE`),
+Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
 `sleep-privileged.json`, `logs/failures.log`, the default workspace mounts
 `./input` and `./output`, fleet children's `./data/<name>`.
 

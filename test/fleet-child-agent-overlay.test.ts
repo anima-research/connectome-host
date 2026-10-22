@@ -68,6 +68,28 @@ describe("a fleet child's agent overlay", () => {
     }
   }, 60_000);
 
+  test('a child gets its own overlay\'s path though the parent\'s environment names another, as an operator\'s shell can', async () => {
+    const { home, overlay, text } = parentHome();
+    const inherited = process.env.MCPL_AGENT_OVERLAY_FILE;
+    // The parent's environment names the parent's own overlay, which the
+    // child's launch would otherwise pass on with the rest of it.
+    process.env.MCPL_AGENT_OVERLAY_FILE = overlay;
+    try {
+      const dataDir = join(home, 'data', 'child-1');
+      const own = join(dataDir, CHILD_OVERLAY);
+      await withChild(home, 'child-1', dataDir, (recorded) => {
+        expect(recorded.env).toBe(own);
+        expect(recorded.overlay).toBe(own);
+        expect(recorded.admin).toBe(own);
+      });
+      expect(readFileSync(overlay, 'utf8')).toBe(text);
+    } finally {
+      if (inherited === undefined) delete process.env.MCPL_AGENT_OVERLAY_FILE;
+      else process.env.MCPL_AGENT_OVERLAY_FILE = inherited;
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('a child whose data directory was there before its launch starts from a copy of the working directory\'s overlay, once, and keeps it as its own', async () => {
     const { home, overlay, text } = parentHome();
     try {
