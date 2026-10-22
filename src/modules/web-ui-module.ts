@@ -60,6 +60,7 @@ import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
   WEB_PROTOCOL_VERSION,
+  MAX_WS_FRAME_BYTES,
   isClientMessage,
   type WebUiServerMessage,
   type WelcomeMessage,
@@ -112,6 +113,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
+import { userImageBlocks } from '../web/user-images.js';
 import { loadRecipe } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -559,6 +561,8 @@ export class WebUiModule implements Module {
       hostname: host,
       fetch: (req, server) => this.handleHttp(req, server),
       websocket: {
+        // The module's own frame limit, which the SPA measures against.
+        maxPayloadLength: MAX_WS_FRAME_BYTES,
         open: (ws) => this.onWsOpen(ws as ServerWebSocket<WsData>),
         message: (ws, msg) => this.onWsMessage(ws as ServerWebSocket<WsData>, msg),
         close: (ws) => this.onWsClose(ws as ServerWebSocket<WsData>),
@@ -1685,7 +1689,7 @@ export class WebUiModule implements Module {
    *  @animalabs/agent-framework (affordances simply do not appear). */
   private hostFeatures(): string[] {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
-    const features = ['media'];
+    const features = ['media', 'user-images'];
     if (!fw) return features;
     if (typeof fw.rollbackToMessage === 'function') features.push('rollback');
     if (typeof fw.suppressMessages === 'function') features.push('suppress');
@@ -1952,7 +1956,12 @@ export class WebUiModule implements Module {
     }
     if (client.auth === 'pending') return; // nothing else before auth
     if (client.auth === 'observer' && !this.observerMaySend(client, parsed.type)) {
-      this.send(client, { type: 'error', message: `forbidden for observer scope (${parsed.type})` });
+      const corrId = (parsed as { corrId?: unknown }).corrId;
+      this.send(client, {
+        type: 'error',
+        ...(typeof corrId === 'string' ? { corrId } : {}),
+        message: `forbidden for observer scope (${parsed.type})`,
+      });
       return;
     }
 
@@ -1966,15 +1975,32 @@ export class WebUiModule implements Module {
         // No reply — round-trip already confirmed by the message arriving.
         return;
 
-      case 'user-message':
+      case 'user-message': {
+        // Images go ahead of the text, the order Anthropic's vision docs recommend.
+        let content: unknown = parsed.content;
+        if (parsed.images && parsed.images.length > 0) {
+          const checked = userImageBlocks(parsed.images);
+          if (!checked.ok) {
+            this.send(client, {
+              type: 'error',
+              ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+              message: `message not sent: ${checked.error}`,
+            });
+            return;
+          }
+          content = parsed.content.trim()
+            ? [...checked.blocks, { type: 'text', text: parsed.content }]
+            : checked.blocks;
+        }
         sharedServer?.app.framework.pushEvent({
           type: 'external-message',
           source: 'tui',
-          content: parsed.content,
+          content,
           metadata: {},
           triggerInference: true,
         });
         return;
+      }
 
       case 'command': {
         void this.dispatchCommand(client, parsed.command, parsed.corrId);

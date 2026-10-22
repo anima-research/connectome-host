@@ -63,6 +63,56 @@ The Context document already receives the compiled request with base64
 inline (it *is* what the model sees), so it renders those directly; the
 stripped-image placeholder text stays visible where the strategy dropped one.
 
+### Sending images
+
+The composer takes images from the `+ img` picker, a paste, or a drop onto
+it, shown as thumbnails until the message is sent. They ride in the
+`user-message` frame as `images: [{mediaType, data}]` (raw base64) and are
+stored as image blocks ahead of the message's text. The host advertises the
+`user-images` feature; the SPA offers attaching only when it does, since an
+older host ignores the field.
+
+Limits (`USER_IMAGE_LIMITS` in `src/web/protocol.ts`): 8 images, 5,000,000
+base64 characters each (3.75 MB, within the per-image limit on Bedrock and
+Google Cloud, 5 MB of base64, and on the Anthropic API, 10 MB), 12 MiB of
+base64 image data per message
+(about 9 MiB of image files), leaving room for its text, and 8000 px on a
+side. A whole message, text and images, travels in one WebSocket frame of
+at most 16 MiB (`MAX_WS_FRAME_BYTES`, the host's
+`maxPayloadLength`). The host closes a socket that sends a larger frame,
+with no refusal, so the composer measures each message's frame first and
+keeps one that's over, with a note, to shorten. The browser fits an image
+to the image limits before sending: one that already fits goes byte for
+byte; one too big, too large on a side, or in a format the model APIs
+don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG where the
+browser can't write WebP), and its
+thumbnail says so. A PNG, JPEG, GIF or WebP that is cut short or damaged is
+refused rather than redrawn, since the browser would draw only what it has.
+The host checks again for every client, telling the format by the bytes (a
+mislabeled type is corrected) and walking the file to its end marker (PNG
+chunks are checksummed too; a JPEG's, GIF's or WebP's compressed data has no
+checksum, so damage inside it would take a decoder to see), and refuses a
+message whose image fails with `message not sent: <reason>`. A stored image the
+API refuses would fail every later inference on the branch, so it is never
+stored. The refusal carries the send's `corrId`: the composer takes the
+message's row back out of the transcript and, when the composer is empty,
+puts the message back in it.
+
+Images can't go to a fleet child (`@name …`) or with a slash command; the
+composer says so and keeps the draft. Once sent, the context manager's
+live-image limits (`maxLiveImages`, `imageStripDepthTokens`,
+`maxLiveImageBytes`) apply to them like any other image.
+
+A request carrying more than 20 images meets a stricter per-image dimension
+limit than 8000 px, and every image in it counts: earlier turns' images and
+those in tool results too. An image over that limit fails every request that
+carries it alongside 20 others, so the agent is stuck until the image leaves
+the live window. With the default `maxLiveImages` of 6 no request gets
+there. A recipe that raises `maxLiveImages` past 20, sets it to 0 (no count
+limit), or uses `passthrough` (which keeps every image) should keep images
+at 2000 px or less on a side, which the model API's docs give as under that
+limit on every platform; the composer doesn't shrink them that far.
+
 ## Operator log
 
 `<storePath>/operator-actions.jsonl` (`DATA_DIR/sessions/<id>/`) — one JSON

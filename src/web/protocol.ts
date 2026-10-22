@@ -105,7 +105,7 @@ export interface WelcomeMessage {
   /**
    * Optional host capabilities the SPA feature-detects before showing an
    * affordance: 'rollback' | 'suppress' | 'quiesce' | 'media' |
-   * 'operator-log'. Absent on older hosts (nothing shown).
+   * 'operator-log' | 'user-images'. Absent on older hosts (nothing shown).
    */
   features?: string[];
   /** Host serving state when the framework supports quiesce (see HostModeSnapshot). */
@@ -781,6 +781,81 @@ export interface ObserverAckMessage {
 export interface UserMessageMessage {
   type: 'user-message';
   content: string;
+  /** Images attached in the composer. Only sent to a host that advertises
+   *  the 'user-images' feature: an older host ignores the field, and the
+   *  images would be dropped without a word. */
+  images?: UserMessageImage[];
+  /** Echoed on the `error` that refuses the message, so the client can
+   *  take back the row it showed for it. */
+  corrId?: string;
+}
+
+/** One composer image: raw base64 (no `data:` prefix) and the type the
+ *  browser gave it. The host goes by the bytes, not the declared type. */
+export interface UserMessageImage {
+  mediaType: string;
+  data: string;
+}
+
+/**
+ * Limits on composer images. The SPA fits images to them before sending, and
+ * the host checks them again (`userImageBlocks`), because an image the model
+ * API refuses would fail every later inference on this branch, not just one.
+ *
+ * - `maxBase64Chars`: 5,000,000 base64 characters is 3.75 MB of image, within
+ *   the per-image limit everywhere the model is served: 5 MB of base64 on
+ *   Bedrock and Google Cloud, 10 MB on the Anthropic API itself.
+ * - `maxTotalBase64Chars`: what one message's images may come to, leaving
+ *   room for its text in a frame of `MAX_WS_FRAME_BYTES`. The text isn't
+ *   bounded by it, so the composer checks the whole frame too
+ *   (`frameLimitNote`).
+ * - `maxSidePx`: the Anthropic API refuses an image wider or taller than this.
+ *   A request carrying more than 20 images has a stricter limit, which isn't
+ *   applied here: the context manager keeps 6 live by default (see "Sending
+ *   images" in docs/webui-live-surgery.md).
+ */
+export const USER_IMAGE_LIMITS = {
+  maxCount: 8,
+  maxBase64Chars: 5_000_000,
+  maxTotalBase64Chars: 12 * 1024 * 1024,
+  maxSidePx: 8000,
+} as const;
+
+/**
+ * The most one WebSocket frame from a client can carry, in bytes of its JSON
+ * as UTF-8. The host's server is set to it (`maxPayloadLength`), and Bun
+ * closes a socket that sends a larger frame without an `error` frame, so
+ * the message is lost. The composer checks each message the user sends
+ * from it (`frameLimitNote`) and keeps one that's over, to shorten.
+ */
+export const MAX_WS_FRAME_BYTES = 16 * 1024 * 1024;
+
+/** The bytes a client message takes as a frame: the SPA's wire client sends
+ *  `JSON.stringify(message)`, which the socket carries as UTF-8. */
+export function wsFrameBytes(message: WebUiClientMessage): number {
+  return new TextEncoder().encode(JSON.stringify(message)).length;
+}
+
+/** A size in bytes, KiB or MiB, rounded up to a tenth, so a size over
+ *  nothing never reads as 0. The unit follows the rounded figure, so a size
+ *  just under a MiB reads 1.0 MiB, not 1024.0 KiB. */
+function binarySize(bytes: number): string {
+  if (bytes < 1024) return bytes === 1 ? '1 byte' : `${bytes} bytes`;
+  const tenthsUp = (n: number): number => Math.ceil(n * 10) / 10;
+  const kib = tenthsUp(bytes / 1024);
+  return kib < 1024 ? `${kib.toFixed(1)} KiB` : `${tenthsUp(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/** What the composer says when a message's frame is over
+ *  `MAX_WS_FRAME_BYTES`, or null when it fits. Only a user message carries
+ *  images, so only its note offers removing one. */
+export function frameLimitNote(message: WebUiClientMessage): string | null {
+  const bytes = wsFrameBytes(message);
+  if (bytes <= MAX_WS_FRAME_BYTES) return null;
+  const hasImages = message.type === 'user-message' && (message.images?.length ?? 0) > 0;
+  return `not sent: this message is ${binarySize(bytes - MAX_WS_FRAME_BYTES)} over the ` +
+    `${MAX_WS_FRAME_BYTES / (1024 * 1024)} MiB one message can carry; ` +
+    (hasImages ? 'shorten the text or remove an image' : 'shorten the text');
 }
 
 /** Slash command. Server runs `handleCommand()` and replies with a
@@ -1218,7 +1293,12 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     case 'request-mcpl':
       return isOptionalScope(v.scope);
     case 'user-message':
-      return typeof v.content === 'string';
+      return typeof v.content === 'string'
+        && (v.corrId === undefined || typeof v.corrId === 'string')
+        && (v.images === undefined || (Array.isArray(v.images) && v.images.every((img) => {
+          const i = img as Record<string, unknown> | null;
+          return !!i && typeof i === 'object' && typeof i.mediaType === 'string' && typeof i.data === 'string';
+        })));
     case 'observer-hello': {
       const id = v.identity as Record<string, unknown> | undefined;
       return !!id && id.scheme === 'ed25519'

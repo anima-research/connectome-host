@@ -22,11 +22,16 @@ import {
   type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
 } from './Health';
 import { BranchPanel } from './Branches';
+import { AttachmentStrip, dragHasFiles, pastedImages, prepareImage, type Attachment } from './Attachments';
+import { isSyntheticId, pendingEchoIndex } from './echo';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import { planHealthAlerts } from './health-alerts';
 import {
   AGENT_TREE_SCOPES,
   WEB_PROTOCOL_VERSION,
+  USER_IMAGE_LIMITS,
+  frameLimitNote,
+  type WebUiClientMessage,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -65,7 +70,9 @@ type UiBlock =
       durationMs?: number;
     }
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
-  | { kind: 'media'; mediaType: string; ref?: string }
+  /** `dataUrl` is client-only: an image sent from this composer, shown from
+   *  memory until the stored message (with its `ref`) replaces the row. */
+  | { kind: 'media'; mediaType: string; ref?: string; dataUrl?: string }
   /** Client-only: a tool call being written live (raw partial JSON from
    *  blockType 'tool_call' token deltas). Replaced by the parsed tool_use
    *  blocks when inference:tool_calls_yielded lands. */
@@ -90,6 +97,9 @@ interface Message {
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   /** True if the message is mid-stream — render with a cursor cue. */
   streaming?: boolean;
+  /** Client-only, on a row typed here until its echo replaces it: the
+   *  images it sent, so a refused send can go back into the composer. */
+  sentImages?: Attachment[];
   /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
     origin: string;
@@ -101,7 +111,6 @@ interface Message {
 
 let messageCounter = 0;
 const nextMessageId = () => `m${++messageCounter}`;
-const isSyntheticId = (id: string): boolean => /^m\d+$/.test(id);
 let streamIdSeq = 0;
 const streamLineId = (): number => ++streamIdSeq;
 
@@ -157,6 +166,12 @@ export function App() {
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
+  const [attachments, setAttachments] = createSignal<Attachment[]>([]);
+  /** Files still being read or shrunk; Send waits for them. */
+  const [preparing, setPreparing] = createSignal(0);
+  const [attachNotice, setAttachNotice] = createSignal<string | null>(null);
+  const [dropActive, setDropActive] = createSignal(false);
+  let fileInput: HTMLInputElement | undefined;
   /** Currently-focused tree node + the panel mode rendered on its behalf.
    *  `mode` decides whether the side panel shows live stream events or a
    *  static usage breakdown; clicking the row opens 'stream', clicking the
@@ -906,12 +921,10 @@ export function App() {
       }
       // Server echo of a message typed here: adopt into the optimistic row.
       if (incoming.participant === 'user') {
-        for (let i = arr.length - 1; i >= Math.max(0, arr.length - 3); i--) {
-          const m = arr[i]!;
-          if (m.participant === 'user' && isSyntheticId(m.id) && m.text === incoming.text) {
-            arr[i] = incoming;
-            return;
-          }
+        const i = pendingEchoIndex(arr, incoming);
+        if (i >= 0) {
+          arr[i] = incoming;
+          return;
         }
       }
       arr.push(incoming);
@@ -1212,6 +1225,7 @@ export function App() {
         applyAppended,
         applyHistoryPage,
         appendMessage: (m) => setMessages(produce(arr => arr.push(m))),
+        retractSend,
         setUsage,
         setPerAgentCost,
         setCallLedger,
@@ -1322,43 +1336,156 @@ export function App() {
     if (line) setStreamLines((prev) => withStreamLines(prev, [line]));
   };
 
+  /** Hosts that take composer images say so; an older host would drop them. */
+  const canAttach = (): boolean => features().has('user-images');
+
+  /** Read files into the composer one at a time, so the count and total
+   *  limits are checked against what is already attached. */
+  const attachFiles = async (files: File[]): Promise<void> => {
+    if (!canAttach() || files.length === 0) return;
+    const L = USER_IMAGE_LIMITS;
+    setAttachNotice(null);
+    const notes: string[] = [];
+    const images = files.filter((f) => f.type.startsWith('image/'));
+    if (images.length < files.length) notes.push(`${files.length - images.length} file(s) skipped: only images can be attached`);
+    let overCount = 0;
+    setPreparing((n) => n + images.length);
+    for (const file of images) {
+      try {
+        // Before reading, so a big drop doesn't decode (and hold up Send
+        // for) files that can't be attached; and again after, since another
+        // paste or drop may have added images while this one was read.
+        if (attachments().length >= L.maxCount) { overCount++; continue; }
+        const a = await prepareImage(file);
+        if (attachments().length >= L.maxCount) { overCount++; continue; }
+        const total = attachments().reduce((sum, x) => sum + x.data.length, 0) + a.data.length;
+        if (total > L.maxTotalBase64Chars) {
+          notes.push(`${a.name} not attached: the images would come to more than ${(L.maxTotalBase64Chars / 1_000_000).toFixed(1)} MB as base64`);
+          continue;
+        }
+        setAttachments((prev) => [...prev, a]);
+      } catch (err) {
+        notes.push(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPreparing((n) => n - 1);
+      }
+    }
+    if (overCount > 0) notes.push(`${overCount} image(s) not attached: a message takes at most ${L.maxCount}`);
+    if (notes.length > 0) setAttachNotice(notes.join(' · '));
+  };
+
+  const removeAttachment = (id: string): void => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachNotice(null);
+  };
+
   const submit = (): void => {
     const text = draft().trim();
-    if (!text) return;
-    setDraft('');
-    if (text.startsWith('/')) {
-      // /clear is display-local (the TUI clears its scrollback the same
-      // way): wipe this client's transcript view without touching the
-      // Chronicle or other clients. Sending it to the host was a no-op
-      // that APPENDED a "(cleared)" line — the opposite of clearing.
-      if (text === '/clear' || text.startsWith('/clear ')) {
-        setMessages(produce((arr) => { arr.length = 0; }));
-        setStreamLines([]);
-        return;
-      }
-      wire.send({ type: 'command', command: text });
+    const images = attachments();
+    if (!text && images.length === 0) return;
+    if (preparing() > 0) {
+      setAttachNotice('still reading images; send again in a moment');
       return;
     }
-    const route = parseRoute(text);
+    // Attached while the host took images, sent after a reconnect to one
+    // that doesn't: it would drop them without a word.
+    if (images.length > 0 && !canAttach()) {
+      setAttachNotice("this host doesn't take images (it was restarted on a version without them): remove them to send");
+      return;
+    }
+    if (images.length > 0 && text.startsWith('/')) {
+      setAttachNotice('a slash command takes no images: remove them, or send the images as a message');
+      return;
+    }
+    if (images.length > 0 && parseRoute(text)) {
+      setAttachNotice("images can't be routed to a fleet child: remove them, or drop the @name");
+      return;
+    }
+    // /clear is display-local (the TUI clears its scrollback the same
+    // way): wipe this client's transcript view without touching the
+    // Chronicle or other clients. Sending it to the host was a no-op
+    // that APPENDED a "(cleared)" line — the opposite of clearing.
+    if (text === '/clear' || text.startsWith('/clear ')) {
+      setDraft('');
+      setAttachments([]);
+      setAttachNotice(null);
+      setMessages(produce((arr) => { arr.length = 0; }));
+      setStreamLines([]);
+      return;
+    }
+    const route = text.startsWith('/') ? null : parseRoute(text);
+    // A user message's row id is its send's corrId: a refusal names it, and
+    // the row comes out (see retractSend). A routed message's row takes an
+    // id the same way, though its frame carries none.
+    const id = nextMessageId();
+    const frame: WebUiClientMessage = text.startsWith('/')
+      ? { type: 'command', command: text }
+      : route
+        ? { type: 'route-to-child', childName: route.childName, content: route.content }
+        : {
+            type: 'user-message',
+            content: text,
+            corrId: id,
+            ...(images.length > 0 ? { images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) } : {}),
+          };
+    // Checked before the composer is cleared: the host closes a socket whose
+    // frame is over MAX_WS_FRAME_BYTES, with no refusal, so the message would
+    // be lost. One that's over stays here to shorten.
+    const overLimit = frameLimitNote(frame);
+    if (overLimit !== null) {
+      setAttachNotice(overLimit);
+      return;
+    }
+    setDraft('');
+    setAttachments([]);
+    setAttachNotice(null);
+    if (frame.type === 'command') {
+      wire.send(frame);
+      return;
+    }
     if (route) {
       setMessages(produce((arr) => arr.push({
-        id: nextMessageId(),
+        id,
         participant: 'user',
         text: `→ @${route.childName}: ${route.content}`,
         timestamp: Date.now(),
       })));
       queueScroll();
-      wire.send({ type: 'route-to-child', childName: route.childName, content: route.content });
+      wire.send(frame);
       return;
     }
     setMessages(produce((arr) => arr.push({
-      id: nextMessageId(),
+      id,
       participant: 'user',
       text,
       timestamp: Date.now(),
+      ...(images.length > 0
+        ? {
+            blocks: images.map((a): UiBlock => ({ kind: 'media', mediaType: a.mediaType, dataUrl: a.dataUrl })),
+            sentImages: images,
+          }
+        : {}),
     })));
     queueScroll();
-    wire.send({ type: 'user-message', content: text });
+    wire.send(frame);
+  };
+
+  /** A send the host refused: take its row out of the transcript (the error
+   *  row says why) and, when the composer is empty, put the message back in
+   *  it to fix and send again. False when `corrId` names no such row. */
+  const retractSend = (corrId: string): boolean => {
+    const i = messages.findIndex((m) => m.id === corrId && m.participant === 'user');
+    if (i < 0) return false;
+    const row = messages[i]!;
+    const text = row.text;
+    const images = (row.sentImages ?? []).map((a) => ({ ...a }));
+    setMessages(produce((arr) => { arr.splice(i, 1); }));
+    if (!draft().trim() && attachments().length === 0) {
+      setDraft(text);
+      setAttachments(images);
+      setAttachNotice('not sent (see the error above); the message is back here');
+    }
+    return true;
   };
 
   const interrupt = (): void => {
@@ -1543,28 +1670,83 @@ export function App() {
             </Show>
           </div>
 
-          <div class="border-t border-neutral-800 px-4 py-3 bg-neutral-950 relative">
+          <div
+            class={`border-t px-4 py-3 bg-neutral-950 relative ${dropActive() ? 'border-sky-700 bg-sky-950/20' : 'border-neutral-800'}`}
+            onDragOver={(e) => {
+              if (!canAttach() || !dragHasFiles(e)) return;
+              e.preventDefault();
+              setDropActive(true);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropActive(false);
+            }}
+            onDrop={(e) => {
+              if (!canAttach() || !dragHasFiles(e)) return;
+              e.preventDefault();
+              setDropActive(false);
+              void attachFiles([...(e.dataTransfer?.files ?? [])]);
+            }}
+          >
             <CommandSuggestions
               draft={draft()}
               onPick={(cmd) => setDraft(cmd + ' ')}
+            />
+            <AttachmentStrip
+              attachments={attachments()}
+              preparing={preparing()}
+              notice={attachNotice()}
+              onRemove={removeAttachment}
             />
             <div class="flex gap-2">
               <textarea
                 class="flex-1 bg-neutral-900 text-neutral-100 border border-neutral-800 rounded px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-neutral-600 font-mono text-sm"
                 rows="2"
-                placeholder="Type a message, /help, or @childname"
+                placeholder={canAttach()
+                  ? 'Type a message, /help, or @childname — paste or drop images to attach'
+                  : 'Type a message, /help, or @childname'}
                 value={draft()}
                 onInput={(e) => setDraft(e.currentTarget.value)}
                 onKeyDown={onKey}
+                onPaste={(e) => {
+                  if (!canAttach()) return;
+                  const files = pastedImages(e.clipboardData);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void attachFiles(files);
+                }}
               />
               <div class="flex flex-col gap-1">
-                <button
-                  type="button"
-                  class="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-sm"
-                  onClick={submit}
-                >
-                  Send
-                </button>
+                <div class="flex gap-1">
+                  <Show when={canAttach()}>
+                    <input
+                      ref={fileInput}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      class="hidden"
+                      onChange={(e) => {
+                        const files = [...(e.currentTarget.files ?? [])];
+                        e.currentTarget.value = '';
+                        void attachFiles(files);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      class="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs font-mono text-neutral-300"
+                      title={`Attach images (up to ${USER_IMAGE_LIMITS.maxCount}); you can also paste or drop them`}
+                      onClick={() => fileInput?.click()}
+                    >
+                      + img
+                    </button>
+                  </Show>
+                  <button
+                    type="button"
+                    class="flex-1 px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-sm"
+                    onClick={submit}
+                  >
+                    Send
+                  </button>
+                </div>
                 <button
                   type="button"
                   class="px-4 py-1.5 bg-rose-900/40 hover:bg-rose-900/60 text-rose-200 rounded text-xs font-mono"
@@ -1765,6 +1947,8 @@ interface HandlerHooks {
   applyHistoryPage: (msg: HistoryPageMessage) => void;
   /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
+  /** Take out the row of a refused send (its corrId); false if none. */
+  retractSend: (corrId: string) => boolean;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
   setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
@@ -1943,6 +2127,7 @@ function handleServerMessage(
       return;
     case 'error':
       console.warn('[server error]', msg.message);
+      if (msg.corrId) hooks.retractSend(msg.corrId);
       hooks.appendMessage({
         id: nextMessageId(),
         participant: 'system',
@@ -2519,7 +2704,7 @@ function ToolBlockView(props: {
 function MediaChips(props: { blocks?: UiBlock[] }) {
   return (
     <For each={(props.blocks ?? []).filter((b): b is Extract<UiBlock, { kind: 'media' }> => b.kind === 'media')}>{(b) => (
-      <MediaView mediaType={b.mediaType} mediaRef={b.ref} />
+      <MediaView mediaType={b.mediaType} mediaRef={b.ref} dataUrl={b.dataUrl} />
     )}</For>
   );
 }
