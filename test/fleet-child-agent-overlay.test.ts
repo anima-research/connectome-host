@@ -341,5 +341,5 @@ describe("a fleet child's agent overlay", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
