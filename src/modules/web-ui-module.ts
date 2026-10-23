@@ -1341,6 +1341,7 @@ export class WebUiModule implements Module {
     // that is itself a link unless the mount follows links (and, from
     // agent-framework's release with anima-research/agent-framework#468, a
     // link among its directories too), and reads a file only if its
+    // mount's include covers it, where the mount has one, and its
     // canonical path lies inside the mount.
     if (url.pathname.startsWith('/files/')) {
       return this.serveWorkspaceFile(url.pathname.slice('/files/'.length));
@@ -1584,7 +1585,8 @@ export class WebUiModule implements Module {
       // opened, so a path spelt with a trailing slash keeps its extension's.
       return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': mimeFor(realPath) } });
     } catch (err) {
-      // A path no mount holds or one leading out of its mount, one in another
+      // A path no mount holds or one leading out of its mount, one its mount's
+      // include doesn't cover (`outside_include`), one in another
       // mount's directory nested in it or reached through a link into one
       // (`other_mount`, from anima-research/agent-framework#460 and, for a
       // link, the release with anima-research/agent-framework#468), a file
@@ -1602,7 +1604,7 @@ export class WebUiModule implements Module {
       // path, and for a nested mount names the path to use there; the status
       // says forbidden, unavailable or not found.
       const read = err instanceof WorkspaceReadError ? err : null;
-      if (read && ['unknown_mount', 'traversal', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
+      if (read && ['unknown_mount', 'traversal', 'outside_include', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
         return new Response(read.message, { status: 403 });
       }
       if (read?.code === 'mount_unavailable') return new Response(read.message, { status: 503 });
@@ -3013,7 +3015,7 @@ export class WebUiModule implements Module {
     }
 
     // Branch-change side effects parity with TUI / runPiped: materialize the
-    // _config mount so gate.json etc. stay in sync, then refresh every
+    // _config mount so gate.json and gate.js stay in sync, then refresh every
     // welcomed client by re-sending welcome with the new branch's messages.
     if (result.branchChanged) {
       await this.materializeConfigMount();

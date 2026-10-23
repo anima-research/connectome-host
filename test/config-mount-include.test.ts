@@ -1,0 +1,169 @@
+/**
+ * The `_config` mount, as buildWorkspaceMounts makes it, on the
+ * agent-framework this host installs: it holds files named `gate.json` or
+ * `gate.js`, the gate's, and nothing else beside them (connectome-host#278).
+ * An editor's autosave or swap file and a copy kept for an operator are left
+ * out by a sync, by the watcher the host runs it with, and by an agent's
+ * write; a materialize writes back only files of those names, leaves every
+ * other file on disk as it is, and writes back nothing outside the include
+ * that history held from before it.
+ */
+import { afterEach, describe, expect, test } from 'bun:test';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { JsStore } from '@animalabs/chronicle';
+import { WorkspaceModule } from '@animalabs/agent-framework';
+import type { MountConfig } from '@animalabs/agent-framework';
+import { buildWorkspaceMounts } from '../src/workspace-mounts.js';
+
+/** What an editor or the framework leaves beside the config: none of it is the mount's. */
+const LEFT_OUT = ['#gate.json#', '.gate.json.swp', '.gate.json.swo', 'gate.json~', 'gate.json.unreadable-1', 'notes.txt'];
+
+type Event = { type: string; paths?: string[]; mount?: string };
+
+const cleanups: Array<() => unknown> = [];
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()!();
+});
+
+/** The `_config` mount the host builds for a store at `storePath`. */
+function configMount(storePath: string): MountConfig {
+  const mounts = buildWorkspaceMounts({ mounts: [{ name: 'products', path: join(storePath, 'out') }], configMount: true }, storePath)!;
+  return mounts.find((m) => m.name === '_config')!;
+}
+
+/** A workspace with just that mount, over a store at `dir`, started; its events are collected. */
+async function started(dir: string, mount: MountConfig, store?: ReturnType<typeof JsStore.openOrCreate>) {
+  const own = store ?? JsStore.openOrCreate({ path: join(dir, 'store.chronicle') });
+  const events: Event[] = [];
+  const listeners: Array<() => void> = [];
+  const workspace = new WorkspaceModule({ mounts: [mount] });
+  workspace.initStore(own);
+  await workspace.start({
+    isRestart: false, getState: () => null, setState: () => {},
+    pushEvent: (event: Event) => { events.push(event); for (const l of listeners) l(); },
+  } as never);
+  const stop = async () => { await workspace.stop().catch(() => {}); if (!store) own.close?.(); };
+  cleanups.push(stop);
+  /** Resolves once an event names `path`, mount-prefixed, as the watcher reports a change. */
+  const eventNaming = (path: string) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no event named ${path}: ${JSON.stringify(events)}`)), 20_000);
+    const check = () => { if (events.some((e) => e.paths?.includes(path))) { clearTimeout(timer); resolve(); } };
+    listeners.push(check);
+    check();
+  });
+  const call = async (name: string, input: Record<string, unknown>) => workspace.handleToolCall({ id: 't', name, input } as never);
+  return { workspace, store: own, events, eventNaming, call, stop };
+}
+
+function setUp() {
+  const root = mkdtempSync(join(tmpdir(), 'config-include-'));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'session');
+  const cfg = join(storePath, 'config');
+  mkdirSync(cfg, { recursive: true });
+  return { root, storePath, cfg };
+}
+
+describe("the _config mount's include", () => {
+  test('a sync takes in the files named gate.json or gate.js and passes over what lies beside them', async () => {
+    const { root, storePath, cfg } = setUp();
+    writeFileSync(join(cfg, 'gate.json'), '{}\n');
+    writeFileSync(join(cfg, 'gate.js'), 'export default () => true;\n');
+    for (const name of LEFT_OUT) writeFileSync(join(cfg, name), `${name}\n`);
+    // An include's name covers that name in a directory beneath too.
+    mkdirSync(join(cfg, 'old'));
+    writeFileSync(join(cfg, 'old', 'gate.json'), '{}\n');
+    writeFileSync(join(cfg, 'old', 'notes.txt'), 'old notes\n');
+    const { call } = await started(root, configMount(storePath));
+    const synced = (await call('sync', {})).data as { results: Array<{ synced: string[] }> };
+    expect(synced.results.flatMap((r) => r.synced).sort()).toEqual(['gate.js', 'gate.json', 'old/gate.json']);
+    const listed = (await call('ls', { path: '_config' })).data as { entries: Array<{ name: string }> };
+    expect(listed.entries.map((e) => e.name).sort()).toEqual(['gate.js', 'gate.json', 'old']);
+  }, 30_000);
+
+  test("the watcher takes in a new gate.js and nothing written beside it", async () => {
+    const { root, storePath, cfg } = setUp();
+    // gate.json is there before the start, so the event that takes it in
+    // comes from the catch-up pass, which runs once the watcher is ready.
+    writeFileSync(join(cfg, 'gate.json'), '{}\n');
+    const { events, eventNaming } = await started(root, configMount(storePath));
+    await eventNaming('_config/gate.json');
+    // Written beside the config first, then gate.js, all after the watcher is
+    // ready: the watcher reports changes as they come, so once gate.js has
+    // arrived, everything written before it has been seen.
+    for (const name of LEFT_OUT) writeFileSync(join(cfg, name), `${name}\n`);
+    writeFileSync(join(cfg, 'gate.js'), 'export default () => true;\n');
+    await eventNaming('_config/gate.js');
+    const named = events.flatMap((e) => e.paths ?? []);
+    for (const name of LEFT_OUT) expect([name, named.includes(`_config/${name}`)]).toEqual([name, false]);
+  }, 30_000);
+
+  test("an agent's write to another file under _config/ is refused as outside the mount's include", async () => {
+    const { root, storePath, cfg } = setUp();
+    const { call } = await started(root, configMount(storePath));
+    const res = await call('write', { path: '_config/notes.txt', content: 'a note' });
+    expect(res.success).toBe(false);
+    expect(String(res.error)).toContain('"_config/notes.txt" is outside the mount\'s include: mount "_config" holds only gate.json, gate.js.');
+    expect(existsSync(join(cfg, 'notes.txt'))).toBe(false);
+  }, 30_000);
+
+  // A recipe's tool catalogue (agent.toolPresentation.cataloguePath) may sit
+  // in `_config`: agent-framework serves a registered generated file whatever
+  // the include says.
+  test('a generated file registered under _config is read whatever the include covers', async () => {
+    const { root, storePath } = setUp();
+    const { workspace } = await started(root, configMount(storePath));
+    workspace.registerGeneratedTextFile('_config/tools.md', () => '# tools\n', 'agent');
+    // The agent it was registered for reads it, as a turn's call names its agent.
+    const read = await workspace.handleToolCall({ id: 't', name: 'read', input: { path: '_config/tools.md' }, callerAgentName: 'agent' } as never);
+    expect(read.success).toBe(true);
+    expect(JSON.stringify(read.data)).toContain('# tools');
+  }, 30_000);
+
+  test('a materialize writes the config back at its mode and leaves every other file on disk as it is', async () => {
+    const { root, storePath, cfg } = setUp();
+    writeFileSync(join(cfg, 'gate.json'), '{"v":1}\n');
+    chmodSync(join(cfg, 'gate.json'), 0o600);
+    // A copy kept for the operator, owner-only, and an autosave.
+    writeFileSync(join(cfg, 'gate.json.unreadable-1'), 'kept for the operator\n');
+    chmodSync(join(cfg, 'gate.json.unreadable-1'), 0o600);
+    writeFileSync(join(cfg, '#gate.json#'), 'an autosave\n');
+    const { workspace, call } = await started(root, configMount(storePath));
+    await call('sync', {});
+    // An agent's edit stays in the store until the host materializes the mount.
+    expect((await call('write', { path: '_config/gate.json', content: '{"v":2}\n' })).success).toBe(true);
+    expect(readFileSync(join(cfg, 'gate.json'), 'utf8')).toBe('{"v":1}\n');
+    await workspace.materializeMount('_config');
+    // The files beside the config stay as they were, as they do on a mount
+    // with no include: the include takes nothing off disk.
+    expect(readFileSync(join(cfg, 'gate.json'), 'utf8')).toBe('{"v":2}\n');
+    expect(statSync(join(cfg, 'gate.json')).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(cfg, 'gate.json.unreadable-1'), 'utf8')).toBe('kept for the operator\n');
+    expect(statSync(join(cfg, 'gate.json.unreadable-1')).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(cfg, '#gate.json#'), 'utf8')).toBe('an autosave\n');
+  }, 30_000);
+
+  test('of what history holds from before the include, a materialize writes back the config alone', async () => {
+    const { root, storePath, cfg } = setUp();
+    writeFileSync(join(cfg, 'gate.json'), '{}\n');
+    writeFileSync(join(cfg, '#gate.json#'), 'an autosave\n');
+    const store = JsStore.openOrCreate({ path: join(root, 'store.chronicle') });
+    cleanups.push(() => store.close?.());
+    // The mount as hosts before this change built it, with no include, takes the autosave in.
+    const { include: _, ...without } = configMount(storePath);
+    const before = await started(root, { ...without, watch: 'never' }, store);
+    const synced = (await before.call('sync', {})).data as { results: Array<{ synced: string[] }> };
+    expect(synced.results.flatMap((r) => r.synced).sort()).toEqual(['#gate.json#', 'gate.json']);
+    // A change to each, held in the store, which a materialize would write.
+    for (const name of ['#gate.json#', 'gate.json']) {
+      expect((await before.call('write', { path: `_config/${name}`, content: 'from the store\n' })).success).toBe(true);
+    }
+    await before.stop();
+    const after = await started(root, { ...configMount(storePath), watch: 'never' }, store);
+    await after.workspace.materializeMount('_config');
+    expect(readFileSync(join(cfg, 'gate.json'), 'utf8')).toBe('from the store\n');
+    expect(readFileSync(join(cfg, '#gate.json#'), 'utf8')).toBe('an autosave\n');
+  }, 30_000);
+});

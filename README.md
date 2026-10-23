@@ -532,7 +532,10 @@ unknown-key warning, like those at the other levels.
   and one that names any passes over only what it names. While its store
   holds changes from when it ran as Chronicle, it runs as Chronicle until a
   start after they're settled, and says at start how to settle them.
-  `include` limits what a mount holds. See `RecipeWorkspaceMount` in
+  `include` limits what a mount holds, and agent-framework keeps its own
+  files (spilled tool results, fetched references) only in a writable mount
+  without one. `configMount: true` adds `_config`, holding only the files
+  named `gate.json` or `gate.js` in the session's config directory. See `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form

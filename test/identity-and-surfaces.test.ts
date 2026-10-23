@@ -774,12 +774,12 @@ describe('identity: what the agent reads when a call fails', () => {
     await ready;
     const send = async (saveAs: string) =>
       (await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/x', method: 'POST', body: {}, saveAs }))).error;
-    expectSays(await send('nope/out.json'), 'Nothing was sent: `saveAs` names no mount the workspace has: "nope/out.json"', 'a mount it can write to (files)');
+    expectSays(await send('nope/out.json'), 'Nothing was sent: `saveAs` names no mount the workspace has: "nope/out.json"', 'a mount it can write to ("files")');
     expectSays(await send('files'), 'names the mount "files" but no file in it');
-    expectSays(await send('files/../../etc/out.json'), 'has a "." or ".." in it', 'name the file by its plain path.', 'a mount it can write to (files)');
-    expectSays(await send('files//out.json'), 'has an empty part right after the mount\'s name', 'name the file by its plain path.', 'a mount it can write to (files)');
+    expectSays(await send('files/../../etc/out.json'), 'has a "." or ".." in it', 'name the file by its plain path.', 'a mount it can write to ("files")');
+    expectSays(await send('files//out.json'), 'has an empty part right after the mount\'s name', 'name the file by its plain path.', 'a mount it can write to ("files")');
     expectSays(await send('files/away.json'), '`saveAs` "files/away.json" isn\'t a path the mount "files" holds: it leads out of the mount, lies in another mount\'s directory, falls outside its include, or can\'t name a file there.');
-    expectSays(await send('docs/out.json'), 'names the read-only mount "docs"', 'a mount it can write to (files)');
+    expectSays(await send('docs/out.json'), 'names the read-only mount "docs"', 'a mount it can write to ("files")');
     expect(seen.orrery).toBe(0);
   });
 
@@ -846,11 +846,17 @@ describe('identity: what the agent reads when a call fails', () => {
     ]);
   });
 
-  it("sends no saveAs its mount's include leaves out, saying so, and sends one it covers", async () => {
+  it("sends no saveAs its mount's include leaves out, saying so and naming what each mount holds, and sends one it covers", async () => {
     const dir = tempDir('ident-saveas-include-');
     mkdirSync(join(dir, 'files'));
+    mkdirSync(join(dir, 'notes'));
+    mkdirSync(join(dir, 'config'));
     const workspace = new WorkspaceModule({
-      mounts: [{ name: 'files', path: join(dir, 'files'), mode: 'read-write', watch: 'never', include: ['*.md'] }],
+      mounts: [
+        { name: 'files', path: join(dir, 'files'), mode: 'read-write', watch: 'never', include: ['*.md', '*.txt'] },
+        { name: 'notes', path: join(dir, 'notes'), mode: 'read-write', watch: 'never' },
+        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] },
+      ],
     });
     const store = JsStore.openOrCreate({ path: join(dir, 'store') });
     cleanups.push(() => store.close?.());
@@ -862,8 +868,39 @@ describe('identity: what the agent reads when a call fails', () => {
     expect(left.success).toBe(false);
     expect(seen.orrery).toBe(before);
     expectSays(left.error, '`saveAs` "files/out.json" isn\'t a path the mount "files" holds', 'falls outside its include');
+    // The remedy names what a mount with an include holds, and doesn't offer
+    // `_config`, whose files are the gate's config.
+    expectSays(left.error, 'a mount it can write to ("files" for *.md or *.txt, "notes")');
+    expect(left.error).not.toContain('_config');
+    // A file `_config`'s include covers isn't kept there either, before anything is sent.
+    const config = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/x', method: 'POST', body: {}, saveAs: '_config/gate.json' }));
+    expect(config.success).toBe(false);
+    expect(seen.orrery).toBe(before);
+    expectSays(config.error, '`saveAs` names "_config", which holds the gate\'s config, where no response is kept.', 'a mount it can write to ("files" for *.md or *.txt, "notes")');
     const kept = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/x', method: 'POST', body: {}, saveAs: 'files/out.md' }));
     expect(kept.success).toBe(true);
+  });
+
+  it("says there's no mount to keep a response in where `_config` is the only one it can write to", async () => {
+    const dir = tempDir('ident-saveas-config-only-');
+    mkdirSync(join(dir, 'docs'));
+    mkdirSync(join(dir, 'config'));
+    const workspace = new WorkspaceModule({
+      mounts: [
+        { name: 'docs', path: join(dir, 'docs'), mode: 'read-only', watch: 'never' },
+        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] },
+      ],
+    });
+    const store = JsStore.openOrCreate({ path: join(dir, 'store') });
+    cleanups.push(() => store.close?.());
+    workspace.initStore(store);
+    const { mod, ready, seen } = registeredModule({ workspace });
+    await ready;
+    const before = seen.orrery;
+    const res = await mod.handleToolCall(call('request', { service: 'orrery', path: '/api/x', method: 'POST', body: {}, saveAs: 'docs/out.md' }));
+    expect(res.success).toBe(false);
+    expect(seen.orrery).toBe(before);
+    expectSays(res.error, 'names the read-only mount "docs"', 'The workspace has no mount a response can be kept in, so leave `saveAs` out');
   });
 
   it("sends no saveAs into another mount's directory nested in the one it names, saying so", async () => {
@@ -1603,7 +1640,7 @@ describe('observers surface flag', () => {
 describe('identity request: fromFile reads only what the mount allows', () => {
   const CAP = 64 * 1024 * 1024;
 
-  async function mounted(opts: { followSymlinks?: boolean } = {}) {
+  async function mounted(opts: { followSymlinks?: boolean; include?: string[] } = {}) {
     const dir = tempDir('ident-mount-');
     const mountDir = join(dir, 'files');
     const outside = join(dir, 'outside');
@@ -1613,7 +1650,11 @@ describe('identity request: fromFile reads only what the mount allows', () => {
     const store = JsStore.openOrCreate({ path: join(dir, 'store') });
     cleanups.push(() => store.close?.());
     const workspace = new WorkspaceModule({
-      mounts: [{ name: 'files', path: mountDir, mode: 'read-write', watch: 'never', ...(opts.followSymlinks ? { followSymlinks: true } : {}) }],
+      mounts: [{
+        name: 'files', path: mountDir, mode: 'read-write', watch: 'never',
+        ...(opts.followSymlinks ? { followSymlinks: true } : {}),
+        ...(opts.include ? { include: opts.include } : {}),
+      }],
     });
     workspace.initStore(store);
     // What each disk read asked for and what it read.
@@ -1749,6 +1790,19 @@ describe('identity request: fromFile reads only what the mount allows', () => {
     // or weighed, and the reason names the path to use.
     expect(res.error).toBe('Nothing was sent to "orrery": "files/inner/x.txt" lies in mount "inner", nested in mount ' +
       '"files", which neither reads nor writes it: use "inner/x.txt".');
+    expect(bodies).toEqual([]);
+  });
+
+  // A file the mount's include leaves out, such as an autosave beside the
+  // config `_config` holds, is no copy anywhere an upload can read: the
+  // read's own reason is given, with no disk remedy and no store fallback.
+  it("refuses a file its mount's include leaves out, in the read's words", async () => {
+    const { mountDir, workspace, bodies, upload } = await mounted({ include: ['gate.json', 'gate.js'] });
+    writeFileSync(join(mountDir, '#gate.json#'), 'an autosave');
+    const read = await workspace.readFileFromDisk('files/#gate.json#').then(() => null, (err: WorkspaceReadError) => err);
+    expect(read?.code).toBe('outside_include');
+    const res = await upload('files/#gate.json#');
+    expect(res.error).toBe(`Nothing was sent to "orrery": ${read!.message}`);
     expect(bodies).toEqual([]);
   });
 

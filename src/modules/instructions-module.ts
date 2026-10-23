@@ -349,7 +349,8 @@ export class InstructionsModule implements Module {
     // followSymlinks setting, so a remedy of the host's own would be wrong
     // for some of them. It includes `other_mount` too, for a path in, or
     // reached through a link into, a nested mount's directory, whose message
-    // names that mount and the path to use there.
+    // names that mount and the path to use there, and `outside_include`, for
+    // a path its mount's include doesn't cover, whose message says so.
     return error instanceof Error ? error.message : String(error);
   }
 

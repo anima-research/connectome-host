@@ -293,14 +293,18 @@ describe('workspace mount keys', () => {
     };
     expect(() => validateRecipe(recipe(workspace))).not.toThrow();
     // What the host built for this recipe before #275, key by key, but for
-    // `_config`, which now says its backend.
+    // `_config`, which now says its backend and holds only the gate's two
+    // config files (#278).
     expect(buildWorkspaceMounts(workspace as never, '/store')).toEqual([
       {
         name: 'notes', path: resolve('./notes'), mode: 'read-only', watch: 'on-agent-action', ignore: ['node_modules'],
         maxFileSize: 1024, wakeOnChange: ['created', 'deleted'], autoMaterialize: false,
       },
       { name: 'out', path: resolve('./out'), mode: 'read-write', watch: 'never', wakeOnChange: true },
-      { name: '_config', path: resolve('/store/config'), mode: 'read-write', backend: 'chronicle', watch: 'always' },
+      {
+        name: '_config', path: resolve('/store/config'), mode: 'read-write', backend: 'chronicle', watch: 'always',
+        include: ['gate.json', 'gate.js'],
+      },
     ]);
   });
 });
