@@ -13,9 +13,6 @@
   store audit an update runs says each load repair it causes in the same
   words, since the start that opens the store next finds nothing left to
   repair, and a host on trial also sends each through the ops path, whether
-  or not its commit then holds. This needs an agent-framework whose
-  context-manager reports load repairs, installed as one copy; until then no
-  alert is sent and `/healthz`'s `loadRepair` section stays empty. A
-  conversation fork's load sends no alert, as it sends no
-  compression-quarantine alarm, though the Health tab shows a fork's repair
-  too.
+  or not its commit then holds. A conversation fork's load sends no alert,
+  as it sends no compression-quarantine alarm, though the Health tab shows a
+  fork's repair too.

@@ -7,7 +7,8 @@
  * 'complete', aborted 'abort', and failed and exhausted 'error'. Pure, so
  * the Web UI imports it too (`@conhost/state/turn-trace`).
  *
- * As agent-framework 0.22.3 sends them: `inference:started` opens an agent's
+ * As agent-framework 0.22.3 and later send them, with what a later release
+ * added named where it's described: `inference:started` opens an agent's
  * stream, and a turn's tool rounds stay inside that one stream. A budget
  * restart or a guard retry starts the stream again with another
  * `inference:started` and no end before it. Then one of five traces ends it:
@@ -19,7 +20,12 @@
  *     a cancel of the stream, a quiesce that abandons the turn, the framework
  *     stopping while the turn streams, or a turn the framework dropped after
  *     its `inference:started` (its agent replaced or removed, or the
- *     framework stopping or stopped and started again).
+ *     framework stopping or stopped and started again). Since agent-framework
+ *     0.26.1 it also ends a turn whose continuation (a budget restart's, or a
+ *     tool-result guard's retry) is dropped before it starts, by an abandon,
+ *     a stop, the inference policy, the agent's removal or a conversation
+ *     agent's disposal: then it comes with no `inference:started` since the
+ *     turn's last stream ended.
  *   - `inference:failed`: the attempt failed. The framework then retries it
  *     (another `inference:started`), holds the turn for a provider's stated
  *     wait or cooldown and runs it again later, or gives up
@@ -40,8 +46,9 @@
  *
  * The second end comes before the turn releases its agent, and the
  * framework starts no next turn of the agent while the turn stands (its
- * turn-alive token): so it follows the first with no start between, an end
- * after an end.
+ * turn-alive token, or, since agent-framework 0.26.1, its continuation on
+ * its way to its start): so it follows the first with no start between, an
+ * end after an end.
  *
  * Three cases send no end: a dropped turn when another turn of the agent's
  * name has already begun (abortDroppedTurn's token check,

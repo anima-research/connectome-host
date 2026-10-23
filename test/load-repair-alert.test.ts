@@ -5,6 +5,14 @@
  * the alert the host sends for each report context-manager makes.
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+// The strategy through agent-framework's re-export, as the host's start builds
+// it (src/framework-strategy.ts); agent-framework exports ContextManager as a
+// type only.
+import { AutobiographicalStrategy } from '@animalabs/agent-framework';
+import { ContextManager } from '@animalabs/context-manager';
 import {
   LOAD_REPAIR_KIND,
   loadRepairAlert,
@@ -249,6 +257,58 @@ describe('wireLoadRepairAlert', () => {
     let set = false;
     expect(wireLoadRepairAlert({ setLoadRepairHandler() { set = true; } }, {}, 'Alice')).toBe(false);
     expect(set).toBe(false);
+  });
+});
+
+describe("wireLoadRepairAlert after a real strategy's load", () => {
+  // A start opens the agent's store inside AgentFramework.create, and the host
+  // wires the alert only after create returns (src/index.ts). So the start-up
+  // load's report is made with no handler set, held by the strategy, and
+  // handed over when the alert sets one.
+  test("a report the load made before the alert was wired is sent when it's wired", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'load-repair-wire-'));
+    const path = join(dir, 'store');
+    const membrane = { complete: async () => ({ stopReason: 'end_turn', content: [{ type: 'text', text: 'x' }] }) } as never;
+    try {
+      // 40 messages and a level-2 summary, L2-x, holding text and naming an
+      // L1 that isn't there, so the next load's repair drops it.
+      const seed = new AutobiographicalStrategy({ adaptiveResolution: true, hierarchical: true, autoTickOnNewMessage: false, auditOnly: true });
+      const seeded = await ContextManager.open({ path, namespace: 'agents/agent', strategy: seed, membrane });
+      const ids: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        ids.push(seeded.addMessage(i % 2 ? 'agent' : 'user', [{ type: 'text', text: `message ${i} ` + 'w '.repeat(20) }]));
+      }
+      const internals = seed as unknown as { store: { setStateJson(id: string, value: unknown): void }; summariesStateId: string };
+      internals.store.setStateJson(internals.summariesStateId, [
+        { id: 'L1-a', level: 1, content: 's L1-a', tokens: 50, sourceLevel: 0, sourceIds: ids.slice(4, 14), sourceRange: { first: ids[4], last: ids[13] }, created: 1 },
+        { id: 'L2-x', level: 2, content: 's L2-x', tokens: 50, sourceLevel: 1, sourceIds: ['L1-a', 'L1-gone'], sourceRange: { first: ids[4], last: ids[33] }, created: 1 },
+      ]);
+      seeded.close();
+
+      const strategy = new AutobiographicalStrategy({ adaptiveResolution: true, hierarchical: true, autoTickOnNewMessage: false });
+      const manager = await ContextManager.open({ path, namespace: 'agents/agent', strategy, membrane });
+      try {
+        const latest = strategy.getLatestLoadRepairReport();
+        expect(latest?.dropped.map((d) => [d.id, d.reason])).toEqual([['L2-x', 'names-missing']]);
+        const sent: Array<{ kind: string; agent: string; message: string; data?: Record<string, unknown> }> = [];
+        const framework = {
+          sent,
+          notifyOps(kind: string, agent: string, message: string, data?: Record<string, unknown>) {
+            this.sent.push({ kind, agent, message, data });
+          },
+        };
+        expect(wireLoadRepairAlert(strategy, framework, 'agent', path)).toBe(true);
+        const alert = loadRepairAlert(latest!, 'agent', path);
+        expect(sent).toEqual([{ kind: LOAD_REPAIR_KIND, agent: 'agent', message: alert.message, data: alert.data }]);
+        // Handed over once: nothing is held for a later handler.
+        expect(wireLoadRepairAlert(strategy, framework, 'agent', path)).toBe(true);
+        expect(sent).toHaveLength(1);
+      } finally {
+        manager.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

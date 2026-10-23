@@ -28,9 +28,9 @@
     "postinstall": "test ! -d web || { npm --prefix web install && npm --prefix web run build; } || echo 'connectome-host: the optional Web UI build failed (npm --prefix web install, then run build). The host can run without the Web UI. Retry with: npm run build:web' >&2"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.26.0",
+    "@animalabs/agent-framework": "^0.26.1",
     "@animalabs/chronicle": "^0.4.0",
-    "@animalabs/context-manager": "^0.20.0",
+    "@animalabs/context-manager": "^0.20.1",
     "@animalabs/membrane": "^0.7.1",
     "@opentui/core": "^0.1.82"
   },

@@ -86,11 +86,6 @@ async function makeStore(path: string, namespace: string, crossed: boolean): Pro
   manager.close();
 }
 
-/** Whether the installed context-manager reports a load repair
- *  (setLoadRepairHandler): only then can a test see the audit say one. */
-const REPORTS_LOAD_REPAIRS =
-  typeof (AutobiographicalStrategy.prototype as { setLoadRepairHandler?: unknown }).setLoadRepairHandler === 'function';
-
 /** A store whose namespace holds 40 messages and a level-2 summary, L2-x,
  *  holding text and naming an L1 that isn't there, so a load's repair drops
  *  it (`names-missing`) and reports that it did. */
@@ -344,7 +339,7 @@ describe('the store audit', () => {
     expect(failed[0]).not.toContain('\n');
   });
 
-  test.skipIf(!REPORTS_LOAD_REPAIRS)("a load repair the audit causes is said in the keeper's words and handed on, and it was written, so the next open finds nothing to repair", async () => {
+  test("a load repair the audit causes is said in the keeper's words and handed on, and it was written, so the next open finds nothing to repair", async () => {
     const { dir, stores } = await makeDataDirWith('data', [(store) => makeRepairStore(store)]);
     const lines: string[] = [];
     const got: Array<{ report: LoadRepairReport; agent: string; store: string; lastSaid: string | undefined }> = [];
@@ -363,7 +358,7 @@ describe('the store audit', () => {
     expect(again.lines).toEqual([`${stores[0]} (agents/agent): opens`]);
   });
 
-  test.skipIf(!REPORTS_LOAD_REPAIRS)("a load repair is said though the store then wouldn't close", async () => {
+  test("a load repair is said though the store then wouldn't close", async () => {
     const { dir, stores } = await makeDataDirWith('data', [(store) => makeRepairStore(store)]);
     const realClose = JsStore.prototype.close;
     const storeClose = spyOn(JsStore.prototype, 'close').mockImplementation(function (this: JsStore) {
@@ -379,7 +374,7 @@ describe('the store audit', () => {
     }
   });
 
-  test.skipIf(!REPORTS_LOAD_REPAIRS)("a fleet child's load repair reaches its parent's audit, which says it and hands it on as its own", async () => {
+  test("a fleet child's load repair reaches its parent's audit, which says it and hands it on as its own", async () => {
     const child = await makeDataDirWith('child', [(store) => makeRepairStore(store, 'agents/Kid')]);
     const kidRecipe = childRecipe('kid', { agent: { ...DEFAULT_RECIPE.agent, name: 'Kid' } });
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
@@ -2907,7 +2902,7 @@ describe('a host on trial, before its commit', () => {
     expect(readCurrent(install)).toBe('0.10.2');
   });
 
-  test.skipIf(!REPORTS_LOAD_REPAIRS)("each load repair the trial's audit causes is also sent through the framework's ops path, and the trial commits", async () => {
+  test("each load repair the trial's audit causes is also sent through the framework's ops path, and the trial commits", async () => {
     const { dir, stores } = await makeDataDirWith('data', [
       (store) => makeStore(store, 'agents/agent', false),
       (store) => makeRepairStore(store),
@@ -2932,7 +2927,7 @@ describe('a host on trial, before its commit', () => {
     }
   }, 60_000);
 
-  test.skipIf(!REPORTS_LOAD_REPAIRS)("a trial whose commit is refused after its audit has still sent the load repair the audit caused, since the release it goes back to may not report it", async () => {
+  test("a trial whose commit is refused after its audit has still sent the load repair the audit caused, since the release it goes back to may not report it", async () => {
     const { dir, stores } = await makeDataDirWith('data', [
       (store) => makeStore(store, 'agents/agent', false),
       (store) => makeRepairStore(store),
