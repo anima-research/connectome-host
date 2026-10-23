@@ -44,14 +44,14 @@ describe("a subagent's peek stream", () => {
     fire({ type: 'inference:aborted', reason: 'user' });
     fire({ type: 'inference:aborted' });
     fire({ type: 'inference:aborted', reason: '' });
-    fire({ type: 'inference:exhausted', error: 'Stream aborted: user' });
+    fire({ type: 'inference:exhausted', error: 'Stream aborted: timeout' });
     expect(events).toEqual([
       { type: 'inference:turn_ended' },
       { type: 'inference:aborted', reason: 'user' },
       // No reason, or an empty one, sends none.
       { type: 'inference:aborted' },
       { type: 'inference:aborted' },
-      { type: 'inference:exhausted', error: 'Stream aborted: user' },
+      { type: 'inference:exhausted', error: 'Stream aborted: timeout' },
     ]);
   });
 

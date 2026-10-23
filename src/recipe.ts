@@ -2507,9 +2507,27 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  const refusalHandling = agent.refusalHandling as Record<string, unknown> | undefined;
-  if (refusalHandling && Object.hasOwn(refusalHandling, 'primarySummaryFallback')) {
-    throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+  // From 0.22.3, agent-framework's create() refuses a refusalHandling that
+  // isn't an object other than an array, null or false, and an autoRewind
+  // that isn't a boolean or null (assertAgentSwitches), which stops the boot
+  // after the recipe has loaded. The host passes refusalHandling on only
+  // when it's truthy (framework-agent-config.ts), so those are refused here
+  // in the recipe's words, and a falsy one loads as before.
+  const refusalHandling: unknown = agent.refusalHandling;
+  if (refusalHandling) {
+    if (typeof refusalHandling !== 'object' || Array.isArray(refusalHandling)) {
+      throw new Error(
+        `Recipe agent.refusalHandling must be an object, such as {"autoRewind": true}, or left out, got ${JSON.stringify(refusalHandling)}.`,
+      );
+    }
+    const settings = refusalHandling as Record<string, unknown>;
+    if (Object.hasOwn(settings, 'primarySummaryFallback')) {
+      throw new Error('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+    }
+    const { autoRewind } = settings;
+    if (autoRewind !== undefined && autoRewind !== null && typeof autoRewind !== 'boolean') {
+      throw new Error(`Recipe agent.refusalHandling.autoRewind must be a boolean, got ${JSON.stringify(autoRewind)}.`);
+    }
   }
 
   // Validate mcpServers entries if present

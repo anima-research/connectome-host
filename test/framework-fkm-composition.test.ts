@@ -90,7 +90,9 @@ describe('framework FKM composition', () => {
   });
 
   test('loads a recipe that still sets refusalHandling.announceHumanTurns, and hands the framework its refusalHandling as written', () => {
-    // validateRecipe refuses no refusalHandling key but primarySummaryFallback.
+    // Among refusalHandling's keys, validateRecipe refuses only
+    // primarySummaryFallback, and an autoRewind that isn't a boolean or null
+    // (test/recipe-refusal-handling.test.ts has the values it refuses).
     // This pins that a recipe still setting announceHumanTurns, which no
     // agent-framework release reads, keeps loading, and that the host passes
     // the key on with the rest.
