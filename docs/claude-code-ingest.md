@@ -137,7 +137,8 @@ if (msgs[0].role !== 'user') throw new Error('first message not user');
 //    tool_result MUST be { type:'tool_result', toolUseId, toolName, content, isError }
 //    under participant 'user' (agent-framework framework.ts). Storing the raw API
 //    shape (tool_use_id) under the human's name means the CM cannot pair results
-//    with calls and renders every one as "[tool result unavailable]".
+//    with calls and renders every one as a stub reading "[this call's result
+//    isn't shown in this context. …]".
 const toolNames = new Map();
 for (const m of msgs) for (const b of m.content) if (b.type === 'tool_use') toolNames.set(b.id, b.name);
 const out = [];
@@ -254,14 +255,18 @@ This step exists because the first real deployment shipped with **zero working t
 results**: the seed stored `tool_result` in the raw API shape under the human's name,
 the context manager couldn't pair them, and every result rendered as
 `[tool result unavailable — omitted during context compression]` with `[tool call
-omitted]` stubs. The tell was the token count: estimated 485k, real 233k.
+omitted]` stubs (the missing result's stub reads differently since
+context-manager 0.16.0). The tell was the token count: estimated 485k, real 233k.
 
 Do, on a **copy** of the store (never on the live one — opening a store with a
 strategy config chunks its frontier under *that* config):
 
 1. Compile it with the recipe's strategy and **read the rendered messages**. Search
-   the compiled output for `unavailable`, `omitted`, `[tool call`. There should be
-   none for a fresh seed.
+   the compiled output for `isn't shown in this context`, which the stub for a call
+   whose result the context doesn't hold says (context-manager 0.16.0 on), for
+   `[tool call omitted]`, and for `[tool result moved during context repair]`, which
+   marks where a result sat apart from its call and was moved next to it. There
+   should be none for a fresh seed.
 2. Compare exact `count_tokens` against the estimate. A real/estimate ratio far from
    ~1.0–1.3 means blocks are missing or doubled. Made with a real key, this call is
    also the cheapest proof that the API accepts the seed's *shape* (signed thinking,
@@ -461,7 +466,7 @@ that's the cheap moment. After first boot it's a store surgery.
 - [ ] `cache_control` stripped; no `isMeta` / command echoes / interrupt markers
 - [ ] `tool_reference` blocks replaced with text (the API 400s the whole request otherwise)
 - [ ] Ingest strategy mirrors recipe; `namespace` = `agents/<agent.name>` exactly
-- [ ] Compiled a **copy**: no `unavailable`/`omitted` stubs; real/estimate tokens sane
+- [ ] Compiled a **copy**: no `isn't shown in this context` / `[tool call omitted]` / `[tool result moved during context repair]` stubs; real/estimate tokens sane
 - [ ] Store backed up pre-first-boot
 - [ ] Recipe: same model, adaptive thinking, minimal system prompt, budget fits window
 - [ ] `refusalHandling.retries: 2`; runtime carries tools-less-compression deferral

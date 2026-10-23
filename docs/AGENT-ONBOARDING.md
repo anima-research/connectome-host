@@ -544,8 +544,9 @@ strategy in the ingest script** — `adaptiveResolution` + `targetChunkTokens` a
 ingest without them leaves those as single unfoldable blocks.
 
 **Verify on a copy before first boot.** Compile a copy of the store with the recipe's
-strategy and *read* the rendered messages — no `[tool result unavailable]` / `[tool call
-omitted]` stubs, participants right, last message is the intended seam — and compare exact
+strategy and *read* the rendered messages — no `[this call's result isn't shown in this
+context. …]` / `[tool call omitted]` / `[tool result moved during context repair]` stubs,
+participants right, last message is the intended seam — and compare exact
 `count_tokens` to the estimate (a large gap means blocks are missing or doubled). Never
 open the live store with a foreign strategy config: opening chunks the frontier under that
 config (§11.8).
