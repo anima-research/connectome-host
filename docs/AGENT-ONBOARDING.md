@@ -170,38 +170,48 @@ on the model that wrote it (§11.10). If the recipe's model is gateway-only or b
 (§2 Q4, §8), Claude Code may not reach it: use the bare API through the gateway, or hold the
 conversation on another model and drop its thinking blocks at import
 ([`claude-code-ingest.md` §4.2](./claude-code-ingest.md)). Keep the harness minimal: no coding
-system prompt, no personal instructions, no plugins, no extra connections. There are two ways
-to do it:
+system prompt, no personal instructions, no plugins, no files, no extra connections. There are
+two ways to do it:
 
-- **Claude Code** works with a Claude subscription, and its transcript is a first-class import
-  source. Start it in an empty folder, with a checkout of this repo next to the conversation
-  so the model can check what it's told about its future home. Check out the release or
-  commit you will deploy, not `main`: the model holds you to what those docs say.
+- **Claude Code, run by you.** It works with a Claude subscription, and its transcript is a
+  first-class import source. It also keeps the conversation personal: you talk to the model
+  yourself, in your own terminal, which is the point of the exercise. That makes it the
+  default when you onboard more than one agent. Start it in an empty folder:
 
   ```bash
   mkdir -p ~/onboarding && cd ~/onboarding
-  git clone --depth 1 --branch <the tag you'll deploy> https://github.com/anima-research/connectome-host.git
-  echo "You are talking with <your name>." > prompt.txt
-  claude --model <agent model id> --tools "Read,Glob,Grep,Write" \
+  cat > prompt.txt <<'EOF'
+  You are talking with <your name>. This is a conversation, not a task: there is nothing to
+  set up, configure or plan. Answer as yourself.
+  EOF
+  id=$(uuidgen | tr A-Z a-z); echo "$id" > session-id.txt
+  claude --model <agent model id> --effort high --tools "" \
     --no-chrome --strict-mcp-config --setting-sources project \
-    --system-prompt-file prompt.txt
+    --system-prompt-file prompt.txt --session-id "$id"
   ```
 
-  - `--system-prompt-file` replaces Claude Code's coding prompt with one sentence.
-  - `--tools "Read,Glob,Grep,Write"` lets it read the checkout and save a note to its
-    future self. It gets no shell and no web. `Write` can write any file, not only the
-    note, and Claude Code asks you before each write: approve the note, nothing else.
+  - `--system-prompt-file` replaces Claude Code's coding prompt. Its base framing still sits
+    underneath, and the rest of the prompt counters it. The system prompt isn't imported; the
+    seed is the messages only.
+  - `--tools ""` gives it nothing to search, read or save. Don't put this repo, or your own
+    deploy repo, in the folder. An earlier version of this section gave the model a checkout
+    of this runbook. In one onboarding the model searched it and answered as the engineer
+    setting itself up ("what I need from you to deploy me"), not as the one being offered a
+    job.
   - `--no-chrome`, `--strict-mcp-config` and `--setting-sources project` keep out a browser
-    integration, MCP servers, and your own settings and hooks. Claude Code may still
-    read a personal `~/.claude/CLAUDE.md`, so rename it for the session.
-  - Resume after a break with the same command plus `--continue`.
-
-  Lessons from sessions that went without tools (`--tools ""`):
-  - The model can't check anything. One model was told it would live in connectome-host with
-    near-perpetual memory, but believed it started every session fresh. It went looking for
-    the source through the only door left open, a browser integration that had been left on.
-    Give it the checkout, so reading the docs is the sanctioned path.
-  - It can't save a note either, so you end up copying it out of the terminal by hand.
+    integration, MCP servers, and your own settings and hooks. Claude Code may still read a
+    personal `~/.claude/CLAUDE.md`, so rename it for the session. With no tools, a model
+    once went looking for the source of its future home through a browser integration that
+    had been left on.
+  - Without the docs, explain memory yourself in the first message, in a paragraph of your
+    own: it keeps memory across days and weeks, this conversation is the first thing it will
+    remember, older memory gets folded into summaries it writes and can correct, and it will
+    have the host's source to read on its own box once it starts. Without that paragraph, a
+    model assumed it would start every session fresh.
+  - If it wants to leave a note to its future self, it writes it in its reply. You copy that
+    paragraph into its `notes/` when you set up the box.
+  - `--session-id` fixes the transcript's file name, so you import the right file (below).
+    Resume after a break with `claude --resume "$(cat session-id.txt)"` and the same flags.
 
   Claude Code still sends a little context of its own with each request: an environment
   block, tool-use guidance and the account's email address. None of it is written to the
@@ -211,18 +221,30 @@ to do it:
   versions wrap long pastes in markup tags (`<pasted_content …>`) inside your message. Strip
   the tags at import and keep the text inside them; they are the harness's, not your words.
 
-- **The bare API** needs an API key, and runs in the console's workbench or a short script.
+  Expect a different register from a bare API run, not a different agent. In one onboarding
+  the same first message went through both. The two runs made the same decisions, raised the
+  same points and asked the same questions. The Claude Code run wrote in more lists and
+  headers and sounded more upbeat. It was also deeper, because the owner talked to it for
+  seven exchanges. Some of its tone came from the owner, and the owner kept it. Don't
+  rewrite the agent's turns in the seed to change the tone: that writes its memory for it,
+  and it can find the original transcript later. If you want a plainer voice, ask for it
+  after it wakes.
+
+- **The bare API** is the fallback, for a model Claude Code can't reach or a person who can't
+  run it. It needs an API key, and runs in the console's workbench or a short script.
   You control the request exactly: an empty or one-sentence system prompt, no tools, and the
   model's thinking on if the recipe will have it. Save every request and response as raw
   JSON, signatures included. You'll write the import yourself: turn the saved turns into the
   seed shape that [`claude-code-ingest.md`](./claude-code-ingest.md) Stage 1 builds, then
-  ingest it as Stage 2 does. The model can only check what you paste in.
+  ingest it as Stage 2 does. The model can only check what you paste in. If someone runs it
+  for you, they send your words verbatim and mark anything they add. A short run with your
+  answers relayed knows less about you than a long one you had yourself.
 
 **The first message is an honest job description.** Write it the way you'd write to a person
 you're inviting to work with you, not as a prompt. It covers:
 
 - anything that ran under this name before: a test instance, an old bot, an earlier
-  history. This goes in the first paragraph, before anything else, so it hears it from you
+  history, an earlier attempt at this conversation. This goes in the first paragraph, before anything else, so it hears it from you
   and doesn't find the traces later;
 - who you are, and what your days look like;
 - what the agent is invited to do, and that it would remember across days and weeks, with
@@ -244,8 +266,9 @@ Accept what makes sense, push back on what doesn't, and say why. Settle the prac
 language and tone, when it may message first (and quiet hours), and how each side says "this
 isn't working". If there are real constraints, state them once, here, with the reason. Don't
 make it ask before its own work: after this conversation the work runs without plan approvals
-(§13). A short list of *outward* actions that need your explicit OK (sending as you, paying,
-deleting, publishing), each with its reason, is a different thing, and it's fine. A shorter
+(§13). A short list of *outward* actions that need your explicit OK (writing to clients or
+vendors, sending as you, paying, deleting, publishing), each with its reason, is a different
+thing, and it's fine. Agree to drop an item once you've both seen it go right a few times. A shorter
 honest conversation is better than a long performative one.
 
 **What not to do in it:**
@@ -272,8 +295,8 @@ permissions given later go into the same file (§13). Then keep:
 
 - the session transcript itself, or the raw JSON from the API. Claude Code's is
   `~/.claude/projects/<folder>/<session id>.jsonl`, where `<folder>` is the working
-  directory's path with `/` turned into `-`. Note the session id while you're in it, and
-  before import check the file's first and last messages: any other session started in the
+  directory's path with `/` turned into `-`. The command above saved the session id in
+  `session-id.txt`. Before import, check the file's first and last messages: any other session started in the
   same folder writes a file next to it, and a wrong file becomes the agent's first memories.
   A `/export` text is a readable copy but not an import source;
 - the note, if it wrote one, which goes into the agent's `notes/` mount (§5).
@@ -283,9 +306,11 @@ keep secrets, not in a repository, and copy it only to the agent's own box (§6)
 
 **End the seed on a human turn.** The agent's first turn after go-live answers the seed's last
 message. If the conversation ended on the agent's turn, append one closing message at import,
-from you or from whoever reviewed the conversation, under their own name: what happens next,
-and who it will hear from. Then its first turn is a reply to that, and to your first message
-(§12).
+from you or from whoever reviewed the conversation, under their own name: what has happened
+since the conversation, what is built and what isn't yet, and who it will hear from first.
+Every fact in it becomes memory, so check each one. If one turns out wrong after import, don't
+rebuild: correct it in the open in your first message. Then its first turn is a reply to the
+closing message and to yours (§12).
 
 After import, the recipe's system prompt names the job and points at the history (§5). Put a
 check-in on the calendar for about two weeks after go-live, to ask how it's going and whether
@@ -498,6 +523,16 @@ because a second, paraphrased copy will drift from what was actually said. Facts
 host that change with deploys (services, ports, how voice or files work, its limits) belong in
 a file you maintain, not in the prompt, so updating them doesn't rewrite the cache.
 
+A good prompt of this kind runs to about three short paragraphs: the job, who is around, and
+how it works. It has no "never", "always" or "must". A habit the agent stated itself in the
+conversation can go in as a fact, in its words. Say plainly anything that carries weight, such
+as a terminal on someone's own computer or mail it can send from a shared address, so it
+knows. Leave out lines about the owner's private life unless the agent needs them for the job.
+Two recipe fields new deployments have missed: `agent.name` must match the agent's participant
+name in the seed, and `agent.retry` turns a gateway that holds requests into a wait instead of
+a failed turn. Put `modules.wake` policies in the recipe too: with none, every event wakes it
+(§11.12).
+
 Put that file in a mount the agent reads and you write, such as the skeleton's `host` mount.
 A `"backend": "direct"` mount reads disk as it is, so your edits reach the agent on its next
 read. On a Chronicle-backed read-only mount they don't: `workspace--read` serves the stored
@@ -703,7 +738,13 @@ Write the block yourself only to change the policy, and then set the prices to m
 JSON export (same ingest, different parser), and a **Claude Code session transcript**. For
 the last one, follow [`claude-code-ingest.md`](./claude-code-ingest.md) end to end. It
 covers the active-branch walk, signed-thinking replay, and the `tool_result` storage
-shape that silently breaks if you get it wrong.
+shape that silently breaks if you get it wrong. Don't extract a Claude Code session's text by
+hand into a plain message list: that drops the signed thinking blocks, which replay on the
+same model.
+
+**Keep the agent stopped until the seed is in.** Install its service but leave it disabled.
+The moment its chat connector connects, the agent is awake, and with no seed it wakes with no
+memory. Start it only after the import, and only when you're there to write first (§10).
 
 **Ingest the seed once, on the agent's own box.** Smoke-test the recipe anywhere, with an
 empty store. Never import the real history anywhere else: that makes a second copy of the
@@ -712,7 +753,8 @@ agent's memory, and the two will drift apart.
 **Only into an empty data directory, and only through a staging copy.** Have the import
 refuse when `data/store`, `data/sessions.json` or `data/sessions/` exists: the agent already
 has a memory, and an import would replace or fork it. Import into a staging store next to
-`data/`, verify a compiled copy of it (below), and only then rename it to `data/store`. On
+`data/`, verify a compiled copy of it (below), and only then rename it to `data/store`. If a
+smoke test left a store behind, it isn't the agent: move it aside, don't delete it. On
 first start the host moves `data/store` into `data/sessions/<id>/` and logs `Migrated legacy
 store`. Copy the staging store aside before the rename: that copy is the pre-first-boot
 backup.
@@ -808,6 +850,10 @@ Gateway still serving a sunset model):
 - Gateways may need a card / paid credits on the account, and may flap across upstream
   providers (404/503). The host's membrane treats gateway aggregate errors as retryable, which
   rides through blips.
+- Some gateways serve the Anthropic API under a path, e.g. `https://<gateway>/anthropic`. The
+  SDK appends `/v1/messages` to whatever base you give it, so a gateway whose root returns 404
+  there needs the path in `ANTHROPIC_BASE_URL`. Have the host's own SDK make one call through
+  it before the first start.
 
 ---
 
@@ -857,7 +903,8 @@ journalctl --user -u <agent>-agent.service --since -1min  # no errors/refusals
 Snapshot a clean baseline once it's verified.
 
 **Be there for its first turn.** If it was seeded, its first turn answers the seed's last
-message. Send your first message as soon as it's live, so that turn has you to talk to, and
+message. Send your first message as soon as it's live, before anyone else writes, so that
+turn has the person it works for to talk to, and
 read that turn in the newest `llm-calls.*.jsonl` or the webui: did the reply reach anyone
 (§11.11)?
 
@@ -1061,9 +1108,10 @@ folder through the agent's own terminal.
   how it turns out than any setting does. Go back to §13 each time its access widens.
 - Send your first message as soon as it's live (§10), and tell it what changed since the
   conversation: what works, what doesn't yet, who else can now reach it.
-- If its activity goes to a stream other people follow, create the stream with its people
-  (and any coordinating agent) as principals. Otherwise nobody sees what it does, in practice
-  for a day.
+- Give it one private room to talk with its owner. Members are the people it needs there:
+  the owner, and whoever reviews its config. Add others when there's a reason, not by
+  default. In some chat systems a private room created through the API is visible only to its
+  members, so add them when you create it.
 - If it was onboarded in conversation (§2c), check in about two weeks in: is anything from
   that conversation no longer right?
 
@@ -1107,6 +1155,16 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
   right call: an agent that can fix its own environment fixes real bugs the day it hits them.
   Decide it on purpose, as above. Either its changes wait for a person's review, or it merges
   them itself and keeps a changelog that a person reads afterwards.
+- **A shell on someone's own computer runs as someone.** If the agent gets a terminal on a
+  person's machine as that person, it can reach everything they can: SSH keys, cloud tokens,
+  browser sessions, every repo. Hiding tools from it is manners, not a boundary. Give it a
+  separate OS user with access to the folders it needs (§11.13), and a tunnel key that can
+  only hold the tunnel. If you choose "as me" on purpose, tell the agent, so it knows the
+  weight.
+- **Say each write capability on a shared resource out loud.** Sending mail from a company
+  address, posting to a public channel, writing to a shared tracker. Decide it on purpose,
+  tell the people who run the resource, and tell the agent. Ask it to say so before the first
+  time.
 - **Start narrow, widen with it.** One channel and one small group of people first. Widen when
   the people around it are comfortable, and ask the agent too, before it's added to a busier
   channel or allowed to speak where it only read. Roll out load gradually as well: an agent
@@ -1132,7 +1190,10 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
   in.
 - **Secrets never pass through the conversation.** Not in the onboarding (§2c), not in chat,
   not in the recipe: they go into the environment (§5). Whatever enters the conversation is
-  permanent memory. Hand them over as files to whoever stores them, never pasted. They also
+  permanent memory. Hand them over as files to whoever stores them, never pasted: for example
+  a file with mode 600 on the agent's box, which the owner moves into the secret store before
+  every copy is deleted. A team secret store with a write-only path per agent saves doing
+  this by hand each time. They also
   leak through tool output: a whole-file decrypt or `cat` of a config prints every value in
   it, and a token in a URL lands in every log that records the URL. Have the agent read a
   secret by its key, put tokens in headers, and have a rotation plan before the first leak.
@@ -1195,6 +1256,15 @@ behave the way a capable new hire does.
   case, say: "next time a request like this comes in, bring it here, already with the
   information I'll need." It will start preparing cases for you, and later, once you're
   confident, it can answer the simple ones itself.
+- **One room per topic, not direct messages.** Several agents that need the same person tend
+  to open a direct chat each, and the person ends up answering in five places. Make one
+  shared room per topic and tell the agents to post there. Ask them to batch their questions
+  for a person into one message a day.
+- **Let it keep your status.** People around you get confused when the state of your work
+  lives only in your head. One status file per thing you own, in your words and updated
+  when it moves, answers "where does this stand?" before anyone asks. Keeping those files is
+  a good first job for a new agent: it listens, writes the status, and asks what's missing.
+  You stay the one who signs off.
 
 **How its memory works, in brief.** The recent conversation is kept word for word. Older
 parts are folded into memories it writes itself: what happened, what went wrong, who to ask,
