@@ -38,15 +38,78 @@ Headless mode and the fleet protocol are specified in
 ## Shared infra (per host)
 
 ### Shell — terminal-sessions daemon
-The shell tool is a per-agent MCP frontend talking to one shared, token-auth'd
-session daemon. Each agent's recipe passes `SESSION_SERVER_TOKEN` (from its
-`.env`); without it the daemon drops the socket ("Connection lost").
+The shell tool is terminal-sessions-mcp 2.0's session daemon, `termd`, which
+each agent's host dials over a loopback WebSocket as an MCPL server (the
+recipe's `shell` entry, AGENT-ONBOARDING §5). The daemon maps each agent's
+token to its principal in a tokens file (`--tokens-file`, `chmod 600`), and
+each agent's recipe passes its own token as `TSM_TOKEN` (from its `.env`);
+termd refuses a connection without a known token.
 
 - Bind the daemon to **loopback** (`127.0.0.1:<port>`), never a public
   interface. Reach it (and any loopback service) by SSH-tunnelling through a
   login account, not by exposing a port.
 - Tokens differ per host — each daemon is independent; don't share tokens
-  across machines. Values live in the `.env` files — **not** in this doc.
+  across machines. Values live in the tokens file and the `.env` files —
+  **not** in this doc.
+
+#### Moving a host from terminal-sessions 1.x to 2.0
+1.x's daemon (`start-session-server.js`, port 3100 by default) and each
+agent's stdio frontend give way to `termd` (port 3101 by default), which each
+agent's host dials directly. On each host, with each agent stopped:
+
+1. Install terminal-sessions-mcp 2.0, and set up `termd.service` with a
+   tokens file and `--retention-days` (AGENT-ONBOARDING §9). On macOS, set up
+   its `com.animalabs.termd.plist` the same way, with absolute paths.
+2. Stop and disable `terminal-sessions.service`, then start `termd.service`.
+   On macOS, unload the 1.x launchd job (`com.terminal-sessions.server`) and
+   load termd's.
+3. In each agent's unit, change `After=`/`Wants=terminal-sessions.service`
+   to `termd.service`, so the agent's start doesn't start 1.x again.
+4. In each agent's recipe, replace the `shell` entry with 2.0's (websocket,
+   `TSM_PORT` and `TSM_TOKEN`) and add its wake policy, `shell-wakes`
+   (AGENT-ONBOARDING §5). In its `.env`, set `TSM_TOKEN` and `TSM_PORT`, and
+   remove `SESSION_SERVER_TOKEN` and `SESSION_SERVER_PORT`.
+5. An agent that has run before keeps its own wake policies in its session's
+   `config/gate.json` (`data/sessions/<id>/config/gate.json`), and the host
+   adds a recipe policy that file lacks at its end, after any broad defer rule
+   there (DEV-ENVIRONMENT, "Gotchas").
+   So add `shell-wakes` to that file too, under the same name and with the
+   recipe's whole `match`, above its broad defer rules: the host leaves a
+   policy the file already has as it is.
+6. If the agent's own overlay (`mcpl-servers.agent.json` in its working
+   directory) holds a `shell` entry, remove it: an overlay entry replaces the
+   recipe's at boot, or hides it if the agent unloaded the server.
+7. Start the agent.
+
+Choose when to switch knowing what it ends and changes:
+- **Every 1.x session ends, and nothing from 1.x carries over.** 1.x keeps
+  sessions only in memory, so a long-running job in an agent's shell can end
+  at the switch.
+- **The agent meets new tool names.** 1.x's `runCommand`, `tailLogs`,
+  `sendInput`, `listSessions`, `killSession` and `takeScreenshot` are 2.0's
+  `run`, `read`, `input`, `session_list`, `session_close` and `screen`. Two of
+  them behave differently: `input` sends nothing after its text (add `keys:
+  ["Enter"]` to submit a line), where `sendInput` pressed Enter after text
+  sent without `keys`; and `screen` gives the screen as lines of text, where
+  `takeScreenshot` gave an image. Any note or instruction of the agent's that
+  names a 1.x tool needs rewriting.
+- **A shell inside a session is declared.** Once an agent has run `ssh` or
+  another shell in a session, 2.0's `run` finds the session busy (or, with
+  `queue: true`, waits behind it), where 1.x's `runCommand` typed into
+  whatever was in front. The agent
+  declares the program in front a shell once (`session_declare_shell`), and
+  `run` then runs its commands there.
+- **Four things 1.x did have no tool in the three feature sets the recipe
+  enables:**
+  - another signal than `input`'s keys (`C-c`, `C-z`, `C-\`) and `cancel`'s
+    give, such as `HUP`: a `run` of `kill -HUP <pid>`, or
+    `terminal.control`'s `signal`;
+  - `launch`'s wait for a ready line: a shell loop in one `run` (`until
+    grep -q 'listening' log; do sleep 0.5; done`), or `terminal.services`'s
+    `start`;
+  - `searchLogs`: `read`, or `grep` on a file the command `tee`s to, or
+    `terminal.search`'s `search`;
+  - `killAll`: a `session_close` for each session.
 
 ### Debug context API
 `GET /debug/context` (no inference, no message writes) is served by the `webui`
@@ -59,11 +122,11 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
 
 **Recipe / config / data live in the install dir:**
 - `recipes/<agent>.json` — agent def, model, MCP servers (absolute paths to each
-  `dist/`), wake-gate policies, modules.
+  stdio server's `dist/`), wake-gate policies, modules.
 - `.env` — `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, an OAuth/subscription
   bearer token that takes precedence over the key), `DISCORD_TOKEN`,
   `DISCORD_GUILD_ID`, `DISCORD_MCPL_DEBUG_LOG`, `DISCORD_SUBSCRIPTIONS_FILE`,
-  `SESSION_SERVER_TOKEN`, `HEARTBEAT_CONFIG_FILE`; the WebUI credentials the
+  `TSM_TOKEN`, `TSM_PORT`, `HEARTBEAT_CONFIG_FILE`; the WebUI credentials the
   recipe's `${VAR}`s name (e.g. `WEBUI_USER` / `WEBUI_PASS`); optionally
   `CONNECTOME_OPS_WEBHOOK` (ops alerts, below). The host reads `.env`, but a
   stdio MCPL server sees only the variables its entry maps in `env` (plus a

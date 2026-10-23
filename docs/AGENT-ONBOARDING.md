@@ -23,13 +23,13 @@ A connectome agent is:
 - a **chronicle** (`data/`) — the event-sourced memory store, optionally seeded by importing
   a prior conversation;
 - run by the **connectome-host** (`bun src/index.ts <recipe> --headless`);
-- under a **systemd --user** service, with a sibling **terminal-sessions** daemon for the shell tool.
+- under a **systemd --user** service, with a sibling **terminal-sessions** daemon (`termd`) for the shell tool.
 
 It reaches the model through **membrane** (Anthropic-format adapter; can target a gateway via
 `ANTHROPIC_BASE_URL`). Memory is **context-manager** with the **autobiographical** strategy
 (adaptive resolution, folded by the cost-aware **`kv-unified`** solver, the host default;
 established residents built on `kv-stable` pin it — §5b). The shell, Discord, and heartbeat tools are
-**MCPL** servers spawned by the host.
+**MCPL** servers: the host spawns Discord's and heartbeat's, and dials the shell's daemon.
 
 You don't need to understand all of it to deploy one. Follow the phases.
 
@@ -216,10 +216,10 @@ Sanity: connectome-host is healthy once `bun src/index.ts <recipe> --headless` b
 errors and logs `[webui] listening`. Then continue with the per-agent install dir (§5).
 
 **Pick non-colliding ports.** Every agent on the box needs a unique:
-- **shell-daemon port** (`SESSION_SERVER_PORT`, default 3100)
+- **shell-daemon port** (`TSM_PORT`, termd's default 3101), since each agent's user runs its own termd
 - **webui port** (module default 7340; binds `0.0.0.0` and requires `basicAuth` unless set to loopback)
 
-Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
+Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3102 / 7343).
 
 > ⚠️ **Native dependencies are platform-specific — never rsync them across OSes.**
 > `chronicle` ships a native `.node` (`chronicle.linux-x64-gnu.node` etc.) and the TUI lib
@@ -287,14 +287,46 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
                           "basicAuth": { "username": "${WEBUI_USER}", "password": "${WEBUI_PASS}" } },
                "identity": true, "history": true, "mcplAdmin": true,
                "subagents": false, "lessons": false, "retrieval": false
-               /* + wake policies, workspace mounts (files/, notes/) */ },
+               /* + wake policies (the shell's, below), workspace mounts (files/, notes/) */ },
   "mcpServers": {
-    "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
+    "shell":   { "transport": "websocket", "url": "ws://127.0.0.1:${TSM_PORT}/?resultText=transcript",
+                 "token": "${TSM_TOKEN}", "reconnect": true,
+                 "enabledFeatureSets": ["terminal.core", "terminal.live", "terminal.presence"] },
     "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ },
     "heartbeat": { /* heartbeat-mcpl; "env": { "HEARTBEAT_CONFIG_FILE": "${HEARTBEAT_CONFIG_FILE}" } */ }
   }
 }
 ```
+
+**The shell** is termd, terminal-sessions-mcp 2.0's daemon (§9), dialed over a loopback
+WebSocket; the host reconnects it after the daemon restarts (`reconnect: true`). Its three
+feature sets give the agent ten tools (`run`, `await`, `read`, `screen`, `input`, `cancel`,
+`session_list`, `session_open`, `session_close`, `session_declare_shell`), and bring a Run's
+end, a program waiting for input and a session's exit to the agent as events. termd has more
+tool sets (`terminal.control`, `terminal.services`, `terminal.watch`, `terminal.search`);
+add one to `enabledFeatureSets` when a resident's work needs it. Put the shell's wake policy
+in `modules.wake.policies`, above any broad defer rule (the first match wins). `source` is the
+entry's id:
+
+```jsonc
+{ "name": "shell-wakes", "behavior": "always",
+  "match": { "source": "shell", "tagsAny": ["terminal:run-finished", "terminal:run-lost", "terminal:needs-input",
+                                            "terminal:watch", "terminal:session-exited", "terminal:service-*",
+                                            "terminal:missed", "terminal:recovered"] } }
+```
+
+With these three sets, termd sends the agent only what concerns it, and each of those wakes
+it: a Run's end, a program that seems to wait for input, a session's shell exiting, a summary
+of what it missed while away, and termd's restart, which says whether its shells survived.
+
+A recipe that adds `terminal.channels` also gets more on each session channel the agent opens
+(`channel_open`): input someone typed into a program there (`terminal:human-input`), which
+belongs in `shell-wakes` too; and progress digests, screens, seat changes and notes
+(`terminal:output`, `terminal:screen`, `terminal:control`, `terminal:note`). Give those a
+policy that `defer`s them, so they don't wake the agent. terminal-sessions-mcp's own
+`next/config/agent-framework.gate.json` debounces the digests, screens and seat changes
+instead, which can wake the agent a second time at the end of a Run its completion already
+wakes it for, and its wake policy leaves out the missed summary and the restart.
 
 These are the values the long-running production residents converge on for a
 ≥500k-window model (300k budget / 100k recent tail / 32k reply). For a **200k-window**
@@ -374,8 +406,8 @@ DISCORD_SUBSCRIPTIONS_FILE=/home/<agent>/<agent>-cm/data/discord-subscriptions.j
 DISCORD_DM_USERS=<id>,<id>               # who may DM it (optional)
 DISCORD_ADMIN_USERS=<id>,<id>
 DISCORD_MCPL_DEBUG_LOG=/home/<agent>/<agent>-cm/data/discord-mcpl-debug.log
-SESSION_SERVER_TOKEN=<random hex>
-SESSION_SERVER_PORT=3101
+TSM_TOKEN=<this agent's token in termd's tokens file (§9)>
+TSM_PORT=3101
 WEBUI_USER=<name>
 WEBUI_PASS=<random>
 HEARTBEAT_CONFIG_FILE=/home/<agent>/<agent>-cm/data/heartbeat-config.json
@@ -610,12 +642,19 @@ Gateway still serving a sunset model):
 
 Two `systemd --user` units in `~/.config/systemd/user/`:
 
-1. **`terminal-sessions.service`** — the shell daemon, `--host localhost --headless --token
-   ${SESSION_SERVER_TOKEN}`, env `SESSION_SERVER_PORT`. `enable` + `start` it first.
+1. **`termd.service`** — the shell daemon. Copy terminal-sessions-mcp's
+   `next/config/termd.service` and replace its `PACKAGE` placeholder with the package's
+   directory; its command runs `termd-launch.sh`, which finds node. In that command, set
+   `--port` to the agent's `TSM_PORT` and add `--tokens-file %h/.tsm-tokens.json
+   --retention-days 30` (`%h` is systemd's home directory; it doesn't expand `~`). The tokens
+   file maps this agent's `TSM_TOKEN` to its principal (`{ "<token>": "agent:<agent>@<domain>" }`,
+   `chmod 600`, or termd refuses it). The retention is this
+   guide's choice, since termd otherwise keeps every session's history on disk forever.
+   `enable` + `start` it first.
 2. **`<agent>-agent.service`** — `bun .../connectome-host/src/index.ts
    .../recipes/<agent>.json --headless`, `WorkingDirectory=<agent>-cm` (the host reads
    `mcpl-servers.json` and the agent's overlay from it), `EnvironmentFile=...env`,
-   `Environment=PATH=<node bin>:<bun bin>:...`, `After=/Wants=terminal-sessions.service`,
+   `Environment=PATH=<node bin>:<bun bin>:...`, `After=/Wants=termd.service`,
    `Restart=always`.
 
 Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
@@ -875,7 +914,7 @@ other agent already on the box.
 
 **Scaffold (Phase 3).** Recipe adapted from a known-good one (`name`, `model`,
 `summaryParticipant: opus4`, `contextBudgetTokens` set *under* the model window, webui on 7343).
-`.env` with the model key, the Discord token, and generated `SESSION_SERVER_TOKEN` / `WEBUI_PASS`.
+`.env` with the model key, the Discord token, and generated `TSM_TOKEN` / `WEBUI_PASS`.
 
 **Import (Phase 4).**
 ```bash
