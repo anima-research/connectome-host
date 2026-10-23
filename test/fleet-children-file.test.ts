@@ -13,6 +13,7 @@ import { FLEET_BEGIN_ENV } from '../src/fleet-begin.js';
 import { FleetModule, fleetChildEnv, type FleetModuleConfig } from '../src/modules/fleet-module.js';
 import * as contract from '../src/update/contract.js';
 import { childrenFilePath, readRecord, type ChildrenFile } from '../src/update/contract.js';
+import { processEnded } from './process-ended.js';
 
 type Result = Awaited<ReturnType<FleetModule['handleToolCall']>>;
 type Launch = { name: string; recipe: string; dataDir: string; env?: Record<string, string> };
@@ -149,15 +150,6 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Whether the process with this pid has ended, as one that is only waiting
- *  to be reaped has, where /proc says so. */
-function ended(pid: number): boolean {
-  try {
-    return /^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, 'utf8'));
-  } catch {
-    return !isAlive(pid);
-  }
-}
 
 /** Waits until `ready` holds, for up to 30 s, or throws naming `what`. */
 async function waitFor(ready: () => boolean, what: string, ms = 30_000): Promise<void> {
@@ -943,7 +935,7 @@ describe("the fleet's children file", () => {
       // As the host exits, the child's exit handler can't run.
       fleet.getChildren().get('leaf')!.process!.removeAllListeners('exit');
       (fleet as unknown as { killAllOnExitSync: () => void }).killAllOnExitSync();
-      await waitFor(() => ended(helper), 'the helper ended with its child');
+      await waitFor(() => processEnded(helper), 'the helper ended with its child');
     } finally {
       try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
     }
