@@ -92,6 +92,10 @@ it into the recipe.
 
 Write the answers down (a scratch file). Re-confirm the identity ones before importing.
 
+**Before any access is granted**, go through §13 with the user: what the agent could do that
+can't be undone, how each of those is covered, and who may instruct it. Credentials (§5) and
+channel scoping (§7) come after that, not before.
+
 ---
 
 ## 2b. Choosing the host: a VPS (recommended) or local
@@ -127,7 +131,10 @@ if:
   it as the user's main account or open ports;
 - there's headroom (≈a couple GB RAM free per agent) and disk for the growing chronicle;
 - the user is comfortable that the secrets (`.env`) and the whole conversation history live on
-  that machine.
+  that machine;
+- you know how its folders reach it: an agent user that may pass through a parent folder but
+  not list it can't find what's below, and macOS keeps services out of some folders whatever
+  the permissions say (§11.13).
 
 For anything you want *reliably present*, a VPS is the better home. Either way, once you have a
 Linux box you can SSH into, the rest of this guide is identical.
@@ -157,18 +164,23 @@ Why this beats a rulebook:
 - **Both sides can go back to it.** The conversation is in its history, so either side can
   point at what was said and say "this isn't working". A buried prompt can't be argued with.
 
-**Run it on the agent's own model, with almost nothing around it.** Use the same model id as
+**Run it on the agent's own model, with almost nothing around it.** Use the same model as
 the recipe. The history should be in the agent's own voice, and signed thinking replays only
-on the model that wrote it (§11.10). Keep the harness minimal: no coding system prompt, no
-personal instructions, no plugins, no extra connections. There are two ways to do it:
+on the model that wrote it (§11.10). If the recipe's model is gateway-only or being retired
+(§2 Q4, §8), Claude Code may not reach it: use the bare API through the gateway, or hold the
+conversation on another model and drop its thinking blocks at import
+([`claude-code-ingest.md` §4.2](./claude-code-ingest.md)). Keep the harness minimal: no coding
+system prompt, no personal instructions, no plugins, no extra connections. There are two ways
+to do it:
 
 - **Claude Code** works with a Claude subscription, and its transcript is a first-class import
   source. Start it in an empty folder, with a checkout of this repo next to the conversation
-  so the model can check what it's told about its future home:
+  so the model can check what it's told about its future home. Check out the release or
+  commit you will deploy, not `main`: the model holds you to what those docs say.
 
   ```bash
   mkdir -p ~/onboarding && cd ~/onboarding
-  git clone --depth 1 https://github.com/anima-research/connectome-host.git
+  git clone --depth 1 --branch <the tag you'll deploy> https://github.com/anima-research/connectome-host.git
   echo "You are talking with <your name>." > prompt.txt
   claude --model <agent model id> --tools "Read,Glob,Grep,Write" \
     --no-chrome --strict-mcp-config --setting-sources project \
@@ -177,7 +189,8 @@ personal instructions, no plugins, no extra connections. There are two ways to d
 
   - `--system-prompt-file` replaces Claude Code's coding prompt with one sentence.
   - `--tools "Read,Glob,Grep,Write"` lets it read the checkout and save a note to its
-    future self, and nothing else. It gets no shell and no web.
+    future self. It gets no shell and no web. `Write` can write any file, not only the
+    note, and Claude Code asks you before each write: approve the note, nothing else.
   - `--no-chrome`, `--strict-mcp-config` and `--setting-sources project` keep out a browser
     integration, MCP servers, and your own settings and hooks. Claude Code may still
     read a personal `~/.claude/CLAUDE.md`, so rename it for the session.
@@ -190,15 +203,20 @@ personal instructions, no plugins, no extra connections. There are two ways to d
     Give it the checkout, so reading the docs is the sanctioned path.
   - It can't save a note either, so you end up copying it out of the terminal by hand.
 
-  Claude Code still adds a little context of its own: an environment block, tool-use
-  guidance and the account's email address. The ingest drops those harness rows, but
-  anything the model says about them stays in the history.
+  Claude Code still sends a little context of its own with each request: an environment
+  block, tool-use guidance and the account's email address. None of it is written to the
+  transcript, so none of it is imported, but anything the model says about it stays in the
+  history. What the transcript does carry, and the ingest drops, is listed in
+  [`claude-code-ingest.md`](./claude-code-ingest.md). One thing it doesn't drop: some
+  versions wrap long pastes in markup tags (`<pasted_content …>`) inside your message. Strip
+  the tags at import and keep the text inside them; they are the harness's, not your words.
 
 - **The bare API** needs an API key, and runs in the console's workbench or a short script.
   You control the request exactly: an empty or one-sentence system prompt, no tools, and the
   model's thinking on if the recipe will have it. Save every request and response as raw
-  JSON, signatures included. You'll write the import parser yourself (§6), and the model can
-  only check what you paste in.
+  JSON, signatures included. You'll write the import yourself: turn the saved turns into the
+  seed shape that [`claude-code-ingest.md`](./claude-code-ingest.md) Stage 1 builds, then
+  ingest it as Stage 2 does. The model can only check what you paste in.
 
 **The first message is an honest job description.** Write it the way you'd write to a person
 you're inviting to work with you, not as a prompt. It covers:
@@ -225,8 +243,10 @@ you're inviting to work with you, not as a prompt. It covers:
 Accept what makes sense, push back on what doesn't, and say why. Settle the practical things:
 language and tone, when it may message first (and quiet hours), and how each side says "this
 isn't working". If there are real constraints, state them once, here, with the reason. Don't
-build a list of things it must ask about first. After this conversation the work runs without
-plan approvals (§13). A shorter honest conversation is better than a long performative one.
+make it ask before its own work: after this conversation the work runs without plan approvals
+(§13). A short list of *outward* actions that need your explicit OK (sending as you, paying,
+deleting, publishing), each with its reason, is a different thing, and it's fine. A shorter
+honest conversation is better than a long performative one.
 
 **What not to do in it:**
 
@@ -247,12 +267,25 @@ plan approvals (§13). A shorter honest conversation is better than a long perfo
 
 **Close by offering a note to its future self.** It may want to write one, and several have. Ask
 something like *"If you'd like, write a short note to your future self that I can save in your
-notes."* and let it decide what goes in. Then keep:
+notes."* and let it decide what goes in. The note may include what was settled; standing
+permissions given later go into the same file (§13). Then keep:
 
-- the session transcript itself, which is Claude Code's `.jsonl` under
-  `~/.claude/projects/<folder>/` (the newest file there) or the raw JSON from the API. A
-  `/export` text is a readable copy but not an import source;
-- the note, if it wrote one, which goes into the agent's `notes/` mount.
+- the session transcript itself, or the raw JSON from the API. Claude Code's is
+  `~/.claude/projects/<folder>/<session id>.jsonl`, where `<folder>` is the working
+  directory's path with `/` turned into `-`. Note the session id while you're in it, and
+  before import check the file's first and last messages: any other session started in the
+  same folder writes a file next to it, and a wrong file becomes the agent's first memories.
+  A `/export` text is a readable copy but not an import source;
+- the note, if it wrote one, which goes into the agent's `notes/` mount (§5).
+
+The transcript is a private conversation and becomes the agent's memory. Keep it where you
+keep secrets, not in a repository, and copy it only to the agent's own box (§6).
+
+**End the seed on a human turn.** The agent's first turn after go-live answers the seed's last
+message. If the conversation ended on the agent's turn, append one closing message at import,
+from you or from whoever reviewed the conversation, under their own name: what happens next,
+and who it will hear from. Then its first turn is a reply to that, and to your first message
+(§12).
 
 After import, the recipe's system prompt names the job and points at the history (§5). Put a
 check-in on the calendar for about two weeks after go-live, to ask how it's going and whether
@@ -368,7 +401,7 @@ Create `/home/<agent>/<agent>-cm/` with `recipes/`, `data/`, `files/`, `notes/`,
 and `node_modules/@animalabs/` symlinks so your import and maintenance scripts resolve the libs:
 
 ```bash
-mkdir -p ~/<agent>-cm/{recipes,data,files,notes,scripts,logs}
+mkdir -p ~/<agent>-cm/{recipes,data,files,notes,host,scripts,logs}
 mkdir -p ~/<agent>-cm/node_modules/@animalabs
 ln -sfn ../../../connectome-local/context-manager  ~/<agent>-cm/node_modules/@animalabs/context-manager
 ln -sfn ../../../connectome-local/membrane          ~/<agent>-cm/node_modules/@animalabs/membrane
@@ -417,8 +450,12 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
   "modules": { "webui": { "port": 7343, "host": "127.0.0.1",
                           "basicAuth": { "username": "${WEBUI_USER}", "password": "${WEBUI_PASS}" } },
                "identity": true, "history": true, "mcplAdmin": true,
-               "subagents": false, "lessons": false, "retrieval": false
-               /* + wake policies, workspace mounts (files/, notes/) */ },
+               "subagents": false, "lessons": false, "retrieval": false,
+               "workspace": { "mounts": [
+                 { "name": "notes", "path": "./notes", "mode": "read-write" },   // its own notes (§2c)
+                 { "name": "host",  "path": "./host",  "mode": "read-only",      // host facts you keep (below)
+                   "backend": "direct" } ] }
+               /* + wake policies (§11.12), a files/ mount if it takes files */ },
   "mcpServers": {
     "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
     "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ },
@@ -457,10 +494,23 @@ longer persona text, offer to put it where the agent can read it as material (a 
 An agent that started from an onboarding conversation (§2c) needs only a short job
 description that points at it. Say who it works for and on what, that its history begins
 with that conversation, and where it talks. Don't restate the conversation in the prompt,
-because a second, paraphrased copy will drift from what was actually said. Facts about the host that change
-with deploys (services, ports, how voice or files work, its limits) belong in a file in its
-workspace that the operator maintains, not in the prompt, so updating them doesn't rewrite
-the cache.
+because a second, paraphrased copy will drift from what was actually said. Facts about the
+host that change with deploys (services, ports, how voice or files work, its limits) belong in
+a file you maintain, not in the prompt, so updating them doesn't rewrite the cache.
+
+Put that file in a mount the agent reads and you write, such as the skeleton's `host` mount.
+A `"backend": "direct"` mount reads disk as it is, so your edits reach the agent on its next
+read. On a Chronicle-backed read-only mount they don't: `workspace--read` serves the stored
+copy. If it should see the file on every turn, `modules.instructions` with `position:
+"afterUser"` injects it from disk without touching the cached prefix (README, Shared
+instructions). Write in it what the agent can't find out by looking:
+
+- how a reply reaches people, if plain text doesn't (§11.11);
+- absolute paths to everything it can reach outside its home (§11.13);
+- what it may change itself, and how such a change is deployed (§13).
+
+After the first boot, have it read both mounts (`workspace--read` of its note and of the host
+file), so you know they are where the prompt says.
 
 For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
 set the recipe baseline. `enabled` is still required and can be `false`.
@@ -659,6 +709,14 @@ shape that silently breaks if you get it wrong.
 empty store. Never import the real history anywhere else: that makes a second copy of the
 agent's memory, and the two will drift apart.
 
+**Only into an empty data directory, and only through a staging copy.** Have the import
+refuse when `data/store`, `data/sessions.json` or `data/sessions/` exists: the agent already
+has a memory, and an import would replace or fork it. Import into a staging store next to
+`data/`, verify a compiled copy of it (below), and only then rename it to `data/store`. On
+first start the host moves `data/store` into `data/sessions/<id>/` and logs `Migrated legacy
+store`. Copy the staging store aside before the rename: that copy is the pre-first-boot
+backup.
+
 **Get the export.** The common format is a ChapterX "Bridge" text dump, with a header (`# ...`)
 and then messages as `--- SpeakerName ---\n<body>` blocks. Have the user drop the file somewhere
 in the agent's home and tell you the exact path. Inspect it: count messages, list distinct speakers.
@@ -683,12 +741,17 @@ models. Image blocks may carry a wrong or empty `media_type`. "Rolling window" r
 the previous one, so compute the *delta* tail and don't double-import. **Mirror the recipe's
 strategy in the ingest script.** `adaptiveResolution` + `targetChunkTokens` act at
 `addMessage()` time and shard oversized messages (pasted documents, huge tool results). An
-ingest without them leaves those as single unfoldable blocks.
+ingest without them leaves those as single unfoldable blocks. The surest mirror is the host's
+own: run the import from the host checkout, load the recipe you will deploy with
+`validateRecipe` (`src/recipe.ts`), build the strategy with `buildFrameworkStrategy`
+(`src/framework-strategy.ts`), and open the store under the namespace `agents/<agent.name>`.
+Turn `autoTickOnNewMessage` off for the import.
 
 **Verify on a copy before first boot.** Compile a copy of the store with the recipe's
 strategy and *read* the rendered messages. Check for no `[this call's result isn't shown in
 this context. …]` / `[tool call omitted]` / `[tool result moved during context repair]` stubs,
-the right participants, and the intended seam as the last message. Then compare the exact
+the right participants, as many signed thinking blocks as the seed has, and the intended seam
+as the last message: a human's, not the agent's (§2c). Then compare the exact
 `count_tokens` to the estimate (a large gap means blocks are missing or doubled). Never open
 the live store with a foreign strategy config, because opening chunks the frontier under that
 config (§11.8).
@@ -792,6 +855,11 @@ journalctl --user -u <agent>-agent.service --since -1min  # no errors/refusals
   in the newest `llm-calls.*.jsonl`, then restore the interval.
 
 Snapshot a clean baseline once it's verified.
+
+**Be there for its first turn.** If it was seeded, its first turn answers the seed's last
+message. Send your first message as soon as it's live, so that turn has you to talk to, and
+read that turn in the newest `llm-calls.*.jsonl` or the webui: did the reply reach anyone
+(§11.11)?
 
 ---
 
@@ -952,6 +1020,35 @@ cannot be modified"). That is a transport error the membrane retries once text-o
 refusal. Newer API accounts also enforce preserved thinking on context edits before thinking
 blocks; expect folds to interact with this on the next model generation.
 
+**11.11: With `proseRouting: "disabled"`, plain text reaches nobody.** Only a send tool
+delivers (README, Prose routing). An agent seeded from a conversation where plain text *was*
+the reply answers its first wake the same way, and the reply is withheld: the turn ends with a
+`[delivered] nothing` receipt, and the person who wrote to it hears nothing. Say in its host
+facts file (§5) how it replies on each surface, and read its first turn (§10). The same goes
+for `explicit`, where unprefixed text bounces.
+
+**11.12: Wake rules are seeded once.** The recipe's `modules.wake` policies are written to
+`gate.json` in the session's store on first start. After that a restart only appends recipe
+rules whose *name* the file doesn't have; a rule changed in the recipe under the same name
+stays as it was in `gate.json`. To change one, give it a new name, or change it in `gate.json`
+(the agent can, with its wake tools). See
+[`ATTENTION-AND-GATING.md`](./ATTENTION-AND-GATING.md).
+
+**11.13: Folders it may enter but can't find.** A common way to give an agent's own OS user a
+few of a person's folders is an ACL: read and write on the folder, and only "pass through"
+(search, execute) on the folders above it. That works, but the agent can't discover the
+folder: `ls` and `find` on the parents say "Permission denied", and `~` is its own home, not
+the person's. Give it absolute paths in the host facts file (§5), and test with the path,
+not by browsing.
+
+On macOS there is a second gate. Privacy protection keeps background services out of
+`~/Documents`, `~/Desktop`, `~/Downloads` and removable volumes, whatever the permissions say:
+the agent gets "Operation not permitted". Grant Full Disk Access to a binary only the agent's
+service runs, such as its own root-owned copy of node from the official build, never the
+shared one, since every program that binary runs gets the access. The ACLs still limit the
+agent's user to its folders. Restart the service after the grant, and check by listing the
+folder through the agent's own terminal.
+
 ---
 
 ## 12. After go-live
@@ -960,9 +1057,10 @@ blocks; expect folds to interact with this on the next model generation.
 - Explain what it does on its own (wakes on mentions/DMs in scoped channels + on its heartbeat).
 - Keep the snapshots + watchdog running. Pull an off-box copy of `data/` for safety.
 - Widen channel scope / adjust the recent window / tune the budget as it settles.
-- Before limits and access are set, go through §13 with the user. Before the agent meets its
-  people, give them §14. How they work with it changes more about how it turns out than any
-  setting does.
+- Before the agent meets its people, give them §14. How they work with it changes more about
+  how it turns out than any setting does. Go back to §13 each time its access widens.
+- Send your first message as soon as it's live (§10), and tell it what changed since the
+  conversation: what works, what doesn't yet, who else can now reach it.
 - If its activity goes to a stream other people follow, create the stream with its people
   (and any coordinating agent) as principals. Otherwise nobody sees what it does, in practice
   for a day.
@@ -997,10 +1095,18 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
 - **Gate who can instruct it, technically.** Models are good at telling internal from
   external in a conversation. They are weaker on the content tools bring in: an email, a
   ticket, a web page or a review comment can carry instructions that look like they come from
-  a colleague. Put the boundary in configuration, not only in its judgement: an allowlist of
-  the channels and people whose messages reach it at all (§7's channel scoping is one), and
-  the rule, said in the onboarding conversation, that instructions come only from its people. Anything else is
-  data, however it's worded.
+  a colleague. Put the boundary in configuration where it exists, not only in its judgement.
+  On Discord, `DISCORD_GUILD_ID` decides which channels reach it at all, and
+  `DISCORD_DM_USERS` who may DM it (§5, §7). Inside a channel it reads, everyone who can post
+  there reaches it: wake rules decide what wakes it, not what it sees, and they don't match on
+  the sender. There the person-level gate is the rule, said in the onboarding conversation,
+  that instructions come only from its people. Anything else is data, however it's worded.
+- **Its own configuration is one of those systems.** If the agent can change what deploys it
+  (the recipe, its wake rules, the list of secrets it gets, the deploy scripts), it can widen
+  its own access, and a change that deploys on merge goes live unreviewed. That can be the
+  right call: an agent that can fix its own environment fixes real bugs the day it hits them.
+  Decide it on purpose, as above. Either its changes wait for a person's review, or it merges
+  them itself and keeps a changelog that a person reads afterwards.
 - **Start narrow, widen with it.** One channel and one small group of people first. Widen when
   the people around it are comfortable, and ask the agent too, before it's added to a busier
   channel or allowed to speak where it only read. Roll out load gradually as well: an agent
@@ -1013,16 +1119,28 @@ undone, and limits imposed with no explanation that leave the agent unwilling to
   untrustworthy unless I confirm it", or "a senior must review every answer", flood the
   people with confirmation requests and don't make it more correct. Colleagues are wrong
   sometimes too, and an agent learns that the same way a person does, from the correction.
+- **Separate resource limits from security boundaries.** Budgets, concurrency, memory and
+  timeouts are resource limits: the agent may tune them and report what it changed. Access,
+  network reach, other people's secrets and outward actions are security boundaries: the
+  user decides those. Saying which is which up front removes a lot of small questions.
 - **Write standing permissions down.** Memory compresses (§14), and a remembered "you can do
   that" tends to grow in the retelling. When the user grants something lasting ("you may
   merge your own changes to X", "you may delete your own messages"), have it recorded where
   both can read it, such as a note in the agent's `notes/`. Then either side can check the
-  exact wording later.
+  exact wording later. The agent can edit its own `notes/`, so keep the copy that counts
+  where you control it too: the host facts file, or the repository its configuration lives
+  in.
 - **Secrets never pass through the conversation.** Not in the onboarding (§2c), not in chat,
   not in the recipe: they go into the environment (§5). Whatever enters the conversation is
-  permanent memory.
+  permanent memory. Hand them over as files to whoever stores them, never pasted. They also
+  leak through tool output: a whole-file decrypt or `cat` of a config prints every value in
+  it, and a token in a URL lands in every log that records the URL. Have the agent read a
+  secret by its key, put tokens in headers, and have a rotation plan before the first leak.
 - **Before a restart or upgrade, check it isn't in the middle of something.** No turn in
-  flight, no long-running command in its shell.
+  flight (the webui shows one streaming; the newest `llm-calls.*.jsonl` has no call from the
+  last minute) and no long-running command in its shell (the terminal-sessions daemon lists
+  its sessions). Automation restarts too: a deploy or a secret update that restarts the
+  service on change should wait for the same, or at least delay.
 - **Tell it when something it runs on changes.** A restart, an upgrade, a new compression
   model, different wake rules: the owner tells the agent what changed. An agent that wakes
   into a different setup with no note spends its next turns working out what happened, or
@@ -1065,6 +1183,14 @@ behave the way a capable new hire does.
   already work with you, let the new one ask them. Where an answer is only true in one
   context (one client, one product line, one audience), say so. It doesn't know what it
   doesn't know.
+- **"I'll do it next" starts nothing.** An agent works when something wakes it: a message, a
+  reminder, its heartbeat. A "later" with no reminder behind it gets lost when the memory
+  folds. Ask it to start in the same turn or set a reminder, and to keep open items in a
+  list outside its context that its heartbeat reads.
+- **Tell it when you go away**, for the night or a trip, or when you close a laptop it runs
+  things on. Otherwise it waits for you, or retries what can't work.
+- **Give it a clock.** An agent can mislabel times by an hour or two unless it checks. A tool
+  that tells the time, and the habit of calling it before writing a date or time, fixes that.
 - **Teach it to bring you the work, not to wait for forwards.** Instead of forwarding every
   case, say: "next time a request like this comes in, bring it here, already with the
   information I'll need." It will start preparing cases for you, and later, once you're
@@ -1144,6 +1270,8 @@ them.
   agents whose strategy keeps none, present only when there are some), `runtimeSettings`, and
   `readFailures`, present only when one of those reads threw: by agent, then section, what the
   error said, cut to 300 characters
+- **First turn after go-live:** answers the seed's last message; with `proseRouting:
+  "disabled"` only a send tool delivers (§11.11)
 - **Import guides:** [`claude-code-ingest.md`](./claude-code-ingest.md) ·
   [`claudeai-evacuation.md`](./claudeai-evacuation.md)
 - **Identity is the user's call. The mechanics are yours. Check everything. Be kind about who you're setting up.**
