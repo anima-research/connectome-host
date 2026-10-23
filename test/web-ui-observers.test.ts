@@ -932,6 +932,7 @@ describe('scope filters', () => {
           },
         },
       },
+      contextCompositionNotKept: ['passthrough'],
       runtimeSettings: {
         main: {
           contextBudgetTokens: 1000, effectiveContextBudgetTokens: 1000, tailTokens: 10, transitionPaceTokens: 10,

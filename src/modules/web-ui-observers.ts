@@ -963,6 +963,7 @@ export const HEALTH_STRINGS: KeptStrings = {
   contextComposition: {
     '*': { planVsActual: { solver: true, ceiling: true, foldDiff: { runs: { firstChunkId: true, lastChunkId: true } } } },
   },
+  contextCompositionNotKept: true,
   runtimeSettings: {
     '*': { sameRoundThinkTextPolicy: true, sameRoundThinkTextPolicySource: true, transition: true, transitionReason: true },
   },

@@ -816,14 +816,14 @@ function perAgentHealth(
   app: PanelAppRef,
   section: string,
   failures: Record<string, Record<string, string>>,
-  read: (agent: FrameworkAgent) => unknown,
+  read: (agent: FrameworkAgent, name: string) => unknown,
 ): Record<string, unknown> {
   // Keyed by agent name, so with no prototype: any name is an own key.
   const entries: Record<string, unknown> = Object.create(null);
   for (const agent of app.framework.getAllAgents()) {
     const name = (agent as unknown as { name: string }).name;
     try {
-      const value = read(agent);
+      const value = read(agent, name);
       if (value) entries[name] = value;
     } catch (error) {
       (failures[name] ??= {})[section] = describeReadFailure(error);
@@ -886,12 +886,21 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     // Health reads never throw.
   }
   // Rendered context COMPOSITION per agent — head / raw middle / summaries
-  // by level / tail, as actually emitted by the last compile. Sourced from
-  // the strategy's own render stats (already computed in-process), so it is
-  // safe on the 15s /healthz poll.
+  // by level / tail, as the last live compile emitted it. Sourced from the
+  // strategy's own render stats (already computed in-process), so it is
+  // safe on the 15s /healthz poll. An agent with none is left out, and
+  // contextCompositionNotKept names, in the same read, each of those whose
+  // strategy keeps none, so the two read apart; it's left out when it would
+  // be empty. contextComposition's entries are all render stats.
   try {
-    (snapshot as Record<string, unknown>).contextComposition = perAgentHealth(app, 'contextComposition', readFailures, (agent) =>
-      (agent.getContextManager() as unknown as { getRenderStats?: () => unknown }).getRenderStats?.());
+    const notKept: string[] = [];
+    (snapshot as Record<string, unknown>).contextComposition = perAgentHealth(app, 'contextComposition', readFailures, (agent, name) => {
+      const cm = agent.getContextManager() as unknown as { getRenderStats?: () => unknown };
+      const stats = cm.getRenderStats?.();
+      if (stats == null && !keepsRenderStats(cm)) notKept.push(name);
+      return stats;
+    });
+    if (notKept.length > 0) (snapshot as Record<string, unknown>).contextCompositionNotKept = notKept;
   } catch {
     // Health reads never throw.
   }
@@ -1206,19 +1215,35 @@ export function buildContextCoverage(app: PanelAppRef, agentName: string): Conte
   return buildContextCoverageSnapshot(agentName, agent.getContextManager());
 }
 
+/** Whether a context manager's strategy keeps render stats at all, as
+ *  context-manager's own `isRenderStatsCapable` asks (not exported): one
+ *  that doesn't, such as `PassthroughStrategy`, has `getRenderStats()` null
+ *  for good. */
+function keepsRenderStats(cm: unknown): boolean {
+  const strategy = (cm as { getStrategy?: () => unknown }).getStrategy?.();
+  return typeof (strategy as { getRenderStats?: unknown } | undefined)?.getRenderStats === 'function';
+}
+
 /**
- * Context makeup: the segment breakdown of the agent's current compiled
- * context — head window, raw middle, summaries by level (L1/L2/L3), and the
- * recent verbatim tail — from the strategy's RenderStats, plus an exact
- * total token count via the model's count_tokens endpoint. Transparent:
- * previewActivation + count_tokens only; no inference, no Chronicle writes.
+ * Context makeup: the segment breakdown of the agent's last live compile,
+ * head window, raw middle, summaries by level (L1/L2/L3) and the recent
+ * verbatim tail, from its render stats, beside an exact token count of the
+ * next request as the default preview builds it, without what modules add at
+ * each turn, counted through the model's count_tokens endpoint. The preview
+ * is a dry compile, which leaves getRenderStats() as the last live compile
+ * left it. So `stats` are null until a live compile has run since the
+ * agent's context was loaded, and for good where its strategy keeps none,
+ * which `statsKept` tells apart. Transparent: previewActivation + at most
+ * one count_tokens call; no inference or Chronicle writes of its own, though
+ * like any compile the preview releases a compression hold whose deadline
+ * has passed, as buildContextCurve says.
  */
 export async function buildContextMakeup(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   const agent = requireAgent(app, agentName);
-  // Populates the strategy's render stats as a side-effect of compiling.
   const request = await app.framework.previewActivation(agentName);
   const cm = (agent as unknown as { getContextManager: () => { getRenderStats: () => unknown } }).getContextManager();
   const stats = cm.getRenderStats();
+  const statsKept = keepsRenderStats(cm);
 
   // Count through the formatter the agent's recipe names: an anthropic-xml
   // agent's count takes the XML scaffold, prefill or not; everyone else the
@@ -1251,7 +1276,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     || anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
   if (!countModel) {
-    return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
+    return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
   try {
     const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -1283,7 +1308,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     countSource = 'count_tokens_error';
   }
 
-  return { agent: agentName, stats, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
+  return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
 }
 
 /**
@@ -1384,19 +1409,19 @@ function curveVerdict(
  * resolutions and queues no compression from the plan. Once context-manager's
  * thinking binding (#160) is released, a committed compile that's never sent
  * would also fence the replies the resident is streaming; a dry run won't.
- * With context-manager 0.13 a dry compile isn't free of every effect: the
- * adaptive select still records its estimate and arms calibration, and
- * overwrites the frontier, the transition status and the render stats that
- * the Context panel reads, until the next real compile (context-manager #161
- * restores them after a dry select). Like any hold query, a dry compile also
- * releases a compression hold whose deadline has passed, never one that
- * hasn't: that release, and the work it sets off, was already due.
+ * Since context-manager 0.14 a dry compile leaves what its select would
+ * change, the hot settings (the frontier, prepared, blocked), calibration and
+ * the render stats the Context panel reads, as the last committing compile
+ * left them. Like any hold query, a dry compile still releases a compression
+ * hold whose deadline has passed, never one that hasn't: that release, and
+ * the work it sets off, was already due.
  *
  * A plan over budget at the plan check is plotted rather than thrown, and the
  * response carries a verdict from the framework's feasibility preview, the
  * one the settings panel reports, so the plot says it won't fit. The
  * head/tail reservation check and the emission check still throw on a budget
- * that can't fit, as for a real compile. No inference, no message writes.
+ * that can't fit, as for a real compile. No inference of its own, no message
+ * writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
@@ -1667,8 +1692,8 @@ export function runContextPreview(
  * The membrane-normalized request the framework would hand to the model if
  * the agent were activated right now. Delegates to `framework.previewActivation`.
  *
- * Transparent by default: no inference, no Chronicle writes, no external
- * MCPL calls. Pass `injections: true` to gather dynamic injections
+ * Transparent by default: no inference of its own, no Chronicle writes, no
+ * external MCPL calls. Pass `injections: true` to gather dynamic injections
  * (lessons/retrieval/MCPL context) for full fidelity, which is NOT
  * transparent: it can run inference and fire MCPL `beforeInference` hooks.
  */

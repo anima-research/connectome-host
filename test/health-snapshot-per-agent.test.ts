@@ -16,15 +16,18 @@ const notReady = (): never => { throw new Error(NOT_READY); };
 type Reads = { quarantine?: () => unknown; debt?: () => unknown; render?: () => unknown; settings?: () => unknown };
 
 function agentStub(name: string, reads: Reads = {}) {
+  const render = reads.render ?? (() => ({ head: 10, tail: 20 }));
   return {
     name,
     settings: reads.settings ?? (() => ({ contextBudgetTokens: 100_000 })),
     getContextManager: () => ({
+      // A strategy that keeps render stats, as the autobiographical one does.
       getStrategy: () => ({
         getCompressionQuarantineStatus: reads.quarantine ?? (() => ({ quarantined: 1 })),
         getCompressionDebt: reads.debt ?? (() => ({ level: 'healthy' })),
+        getRenderStats: render,
       }),
-      getRenderStats: reads.render ?? (() => ({ head: 10, tail: 20 })),
+      getRenderStats: render,
     }),
   };
 }

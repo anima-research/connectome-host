@@ -74,17 +74,18 @@ GET /debug/context
 
 This is the important part. By default the endpoint:
 
-- runs **no inference** (spends no tokens),
+- runs **no inference** of its own,
 - writes **no messages** to Chronicle,
 - contacts **no** external MCPL server.
 
-It compiles the context, assembles the system prompt and filters tools. That
-compile is the one the agent's next turn would run, so it is not strictly
-read-only: it can persist the strategy's fold-resolution state, queue
-summaries its fold plan demands (the background compression then produces
-them, as it would after a real turn), and settle a pending context-budget
-transition — the same kinds of change the agent's own compile makes on every
-turn.
+It compiles the context, assembles the system prompt and filters tools, as
+the agent's next turn would, but dry: agent-framework's preview compiles with
+`dryRun`, so it persists no fold resolutions, queues no summaries, settles no
+context-budget transition, and leaves the render stats the Context page shows
+as the last live compile left them. The
+one exception: like any compile, it releases a compression hold whose
+deadline has passed. context-manager ends a hold at its deadline whoever
+looks, and releases it at any compile or hold query.
 
 The trade-off is fidelity: the default response **omits the dynamically
 gathered injections** (lessons, retrieval results, MCPL `beforeInference`
@@ -226,7 +227,7 @@ Same server and auth; `agent` defaults to the recipe's root agent.
 
 | Endpoint | Returns |
 |---|---|
-| `/debug/context/makeup` | Segment breakdown of the compiled context (head, raw middle, summaries by level, verbatim tail) from the strategy's render stats, plus `exactTotalTokens` from Anthropic's `count_tokens` for the agent's own model (`COUNT_TOKENS_MODEL` overrides; non-Claude models get `countSource: "count_tokens_unsupported_model"` and a null total) and `lastBilledInputTokens`. Same compile as the default preview, plus one `count_tokens` call. |
+| `/debug/context/makeup` | `stats`: the segment breakdown of the agent's last live compile, the one a turn makes (head, raw middle, summaries by level, verbatim tail), its render stats, or `null` until one has run since the agent's context was loaded (the host's start, a session or branch switch), and for good where its strategy keeps none, which `statsKept: false` says. `exactTotalTokens`: the next request as the default preview builds it, without what modules add at each turn, counted by Anthropic's `count_tokens` for the agent's own model (`COUNT_TOKENS_MODEL` overrides; non-Claude models get `countSource: "count_tokens_unsupported_model"` and a null total). The preview is a dry compile, which leaves `stats` as the last live compile left them. And `lastBilledInputTokens`. At most one `count_tokens` call. |
 | `/debug/context/coverage` | Summary-tree coverage and queued compression work — counts only, no message or summary text. |
 | `/debug/context/curve` | One record per compiled entry: kind (raw / L1…Ln), rendered tokens, raw-history tokens covered, date span, text. `/curve` is its HTML visualization. |
 | `/debug/context/preview?budget=<tokens>[&tail=<tokens>][&render=1]` | The fold plan at a *hypothetical* budget (and tail window), without applying it — commits nothing. Each run is a full compile that briefly blocks the agent, so runs are serialized process-wide with a 3 s cooldown (`429`). `400` for a bad `budget`/`tail`; `501` when this framework/strategy can't dry-run. |
@@ -248,5 +249,7 @@ the send fails, `504` if it doesn't answer within 30 s.
 - **`"transparent": false` when you didn't expect it** — you passed an
   `injections` value other than `0`/`false` (even an empty `injections=`).
   Drop it for a transparent call.
-- **The response seems to be costing tokens** — only the `injections=1` path
-  spends tokens. The default never does.
+- **The response seems to be costing tokens** — the `injections=1` path
+  spends tokens on what it gathers. The default spends none of its own,
+  though like any compile it releases a compression hold whose deadline has
+  passed (see "Transparent by default").
