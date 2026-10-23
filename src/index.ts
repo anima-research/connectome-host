@@ -97,7 +97,8 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride, recipeModel } from './framework-agent-config.js';
-import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
+import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
+import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
@@ -163,6 +164,15 @@ interface AppContext {
    *  (openai-codex through an inference gateway, which tracks them per
    *  login): usage readouts still stay off dollars. */
   subscriptionUnmetered: boolean;
+  /**
+   * Headless only: the framework's traces from create() on, held until
+   * runHeadless attaches the sink that feeds the agent tree and the socket.
+   * create() replays its early traces (registry restore, work a stop cut
+   * off, resumed tune-out epochs) only to a listener attached before
+   * start(), and runHeadless runs after start(); this is that listener
+   * (src/boot-traces.ts).
+   */
+  bootTraces?: BootTraceHold;
   /** Set by the TUI's stop once it has begun; the host's other modes don't
    *  set it. A session switch then makes nothing more, and stops what it has
    *  already made (switchSessionSteps). */
@@ -307,6 +317,8 @@ async function createFramework(
       provider: resolveProvider(recipe),
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
+      ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
+      ...(subagentConfig.lifecycleReach ? { lifecycleReach: subagentConfig.lifecycleReach } : {}),
     });
     moduleInstances.push(subagentModule);
   }
@@ -661,9 +673,11 @@ agents: [agentConfig],
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
-    // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
-    // passed through verbatim; the framework owns the defaults.
-    ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
+    // Tune-out's reader (agent-framework#77, #232) and the Dendrite options
+    // (`speech`, `tuneOut`, `dendrite`) — recipe opt-ins, typed against the
+    // framework's own config (agent-framework#546); the reader mapping adds
+    // the one field a recipe cannot state.
+    ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     // MCPL RFC-008 tool classes: this host's module table, and the recipe's
     // operator overrides. Spread as an untyped object so an agent-framework
     // older than the tool-lifecycle release (which lacks both fields)
@@ -1453,6 +1467,10 @@ async function main() {
     };
   }
 
+  // The headless sink attaches inside runHeadless, after start() has
+  // dropped the traces create() replays; hold them from here (see
+  // AppContext.bootTraces), before startFramework calls start().
+  if (headless) app.bootTraces = holdBootTraces(framework);
   await startFramework(framework, installHere, {
     dataDir: config.dataDir,
     activeStore: storePath,

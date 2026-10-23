@@ -194,6 +194,40 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     }
   },
 
+  // Dendrite (agent-framework#546): every agent the framework derives
+  // announces itself with the agent it was made from — reader forks and
+  // task forks their source, the persistent reader the resident it serves —
+  // so they hang under it without a tool call to infer the edge from. A
+  // resident announces no parent and stays top-level. These are framework
+  // agents (their own traces carry their name; SubagentModule owns none of
+  // them), so they are `framework` nodes with a parent, as fleet--launch's
+  // children are: the panel streams their own traces and offers no
+  // subagent stop. An agent the tree already has keeps its node.
+  'dendrite:agent-created': (r, e, ts) => {
+    if (!e.agentName) return;
+    const inherit = e.inherit as { from?: string } | undefined;
+    const parent = (e.spawnedBy as string | undefined) ?? inherit?.from;
+    const node = r._ensureNode(e.agentName);
+    if (parent) node.parent = parent;
+    if (node.startedAt === undefined) node.startedAt = ts;
+    node.lastEventAt = ts;
+  },
+
+  // Its parent ended with it still running: parentless until adopted.
+  'dendrite:agent-orphaned': (r, e, ts) => {
+    if (!e.agentName) return;
+    const node = r._ensureNode(e.agentName);
+    node.parent = undefined;
+    node.lastEventAt = ts;
+  },
+
+  'dendrite:agent-reparented': (r, e, ts) => {
+    if (!e.agentName) return;
+    const node = r._ensureNode(e.agentName);
+    if (typeof e.parent === 'string') node.parent = e.parent;
+    node.lastEventAt = ts;
+  },
+
   'inference:usage': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);

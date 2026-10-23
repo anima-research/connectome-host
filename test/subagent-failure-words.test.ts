@@ -251,7 +251,8 @@ describe('every input is checked against the type its schema declares', () => {
     try {
       expect((await h.subagent.handleToolCall(call('kill', {}))).error).toBe(
         'There\'s no tool "subagent--kill", so nothing ran. The subagent tools are subagent--spawn, subagent--fork, ' +
-        'subagent--hud, subagent--concurrency, subagent--peek and subagent--return.',
+        'subagent--hud, subagent--concurrency, subagent--peek, subagent--list, subagent--stop, subagent--message, ' +
+        'subagent--adopt, subagent--resume and subagent--return.',
       );
     } finally { await h.cleanup(); }
   });

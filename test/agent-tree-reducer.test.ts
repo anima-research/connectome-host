@@ -29,6 +29,57 @@ describe('AgentTreeReducer', () => {
     expect(commander!.parent).toBeUndefined();
   });
 
+  test('dendrite:agent-created hangs a derived agent under the agent it was made from, as a framework node', () => {
+    const r = new AgentTreeReducer();
+    r.seedFrameworkAgents(['scout', 'Subconscious']);
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout.reader-3', kind: 'task-fork', model: 'm', incarnation: 1,
+      lifetime: { kind: 'task', idleTimeoutMs: 600_000 }, spawnedBy: 'scout',
+      inherit: { from: 'scout', mode: 'shared' }, timestamp: ts(0),
+    });
+    const fork = r.getNode('scout.reader-3')!;
+    // Not a SubagentModule subagent: the panel streams its own traces and offers no subagent stop.
+    expect(fork.kind).toBe('framework');
+    expect(fork.subagentType).toBeUndefined();
+    expect(fork.parent).toBe('scout');
+    expect(fork.startedAt).toBe(ts(0));
+    expect(r.getChildren('scout').map(n => n.name)).toEqual(['scout.reader-3']);
+
+    // The persistent reader is spawned by the resident it serves, and was seeded already: it nests, keeping its node.
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'Subconscious', kind: 'subconscious', incarnation: 1,
+      lifetime: { kind: 'persistent' }, spawnedBy: 'scout', timestamp: ts(1),
+    });
+    expect(r.getNode('Subconscious')!.parent).toBe('scout');
+    expect(r.getNodes()).toHaveLength(3);
+
+    // A resident announces itself with no parent: top-level, as seeded.
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout', kind: 'resident', incarnation: 2,
+      lifetime: { kind: 'persistent' }, timestamp: ts(2),
+    });
+    expect(r.getNode('scout')!.parent).toBeUndefined();
+    expect(r.getRoots().map(n => n.name)).toEqual(['scout']);
+    for (const type of ['dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented']) {
+      expect(REDUCER_REQUIRED_EVENTS).toContain(type);
+    }
+  });
+
+  test('an orphaned agent is parentless until reparented; reparenting moves it', () => {
+    const r = new AgentTreeReducer();
+    r.seedFrameworkAgents(['scout', 'archivist']);
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1,
+      lifetime: { kind: 'task', deadlineMs: 60_000 }, spawnedBy: 'scout', timestamp: ts(0),
+    });
+    r.applyEvent({ type: 'dendrite:agent-orphaned', agentName: 'scout.worker-1', formerParent: 'scout', reason: 'parent ended', candidates: ['archivist'], timestamp: ts(1) });
+    expect(r.getNode('scout.worker-1')!.parent).toBeUndefined();
+    expect(r.getRoots().map(n => n.name).sort()).toEqual(['archivist', 'scout', 'scout.worker-1']);
+    r.applyEvent({ type: 'dendrite:agent-reparented', agentName: 'scout.worker-1', parent: 'archivist', by: 'archivist', timestamp: ts(2) });
+    expect(r.getNode('scout.worker-1')!.parent).toBe('archivist');
+    expect(r.getChildren('archivist').map(n => n.name)).toEqual(['scout.worker-1']);
+  });
+
   test('phase transitions follow the canonical mapping', () => {
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
@@ -241,6 +292,12 @@ function makeRepresentativeEvent(eventType: string): Record<string, unknown> {
       return { type: eventType, agentName: 'agent', error: 'x', reason: 'x', timestamp: 1000 };
     case 'inference:stream_restarted':
       return { type: eventType, agentName: 'agent', reason: 'x', inputTokens: 0, budget: 0, timestamp: 1000 };
+    case 'dendrite:agent-created':
+      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, lifetime: { kind: 'task', idleTimeoutMs: 1 }, spawnedBy: 'agent', timestamp: 1000 };
+    case 'dendrite:agent-orphaned':
+      return { type: eventType, agentName: 'agent.fork-1', formerParent: 'agent', reason: 'parent ended', candidates: [], timestamp: 1000 };
+    case 'dendrite:agent-reparented':
+      return { type: eventType, agentName: 'agent.fork-1', parent: 'agent', timestamp: 1000 };
     default:
       return { type: eventType, agentName: 'agent', content: '', timestamp: 1000 };
   }

@@ -50,7 +50,13 @@ the recipe.
 **Connection model.** One client at a time; a new connection closes the
 previous one. On every connection the subscription resets to `['*']` and the
 child emits `lifecycle:ready`. A client disconnecting does not stop the child.
-Events emitted while no client is connected are dropped, not buffered.
+Framework events from before the first client ever connected — the boot,
+including what `create()` replays about a restart (a resumed tune-out epoch,
+a fork a stop cut off) — are kept, the first 1,000 of them, and sent to that
+first client after its `ready`, each with `replay: true`; if more were
+emitted, the replay ends with `lifecycle` `replay-truncated` saying how many
+were cut. After that, events emitted while no client is connected are
+dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
 **Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
 `command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
@@ -110,6 +116,8 @@ subject to the subscription filter: `inference:*`, `tool:*`, `usage:updated`,
 | Event | Payload | When |
 |---|---|---|
 | `lifecycle` (`phase: "ready"`) | `pid, dataDir, recipe` | On every socket accept, sent before the parent's `subscribe` can arrive. `recipe` is the recipe's display name, not a path. |
+| any framework trace, with `replay: true` | the trace's own fields | To the first client only, right after its `ready`: the events from before it connected, oldest first. Timestamps are the events' own; `ts` is the send time. |
+| `lifecycle` (`phase: "replay-truncated"`) | `dropped, kept` | After that replay, only when the boot outran the 1,000 kept: how many events were cut after them. |
 | `lifecycle` (`phase: "idle"`) | — | When every framework agent has been idle for ≥500 ms after at least one `inference:started`. Fires once per work→quiet transition. |
 | `lifecycle` (`phase: "exiting"`) | `reason` | `shutdown:graceful`, `shutdown:immediate`, `command:/quit`, `SIGTERM`, `SIGINT`, `exit-when-idle`, `self-restart`. A crash emits nothing. |
 | `inference:speech` | `agentName, content` | Primary agent only: the text of an inference round that ended without tool calls. Used by `fleet--relay`. |

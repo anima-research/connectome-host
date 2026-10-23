@@ -234,10 +234,12 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
   ends the turn without replying and arms a one-shot self-wake. Unlike `sleep` it
   suppresses nothing, and *any* turn start cancels it — it fires only if nothing
   else woke you first, arriving as a `[self-wake]` note.
-- **`tune_out`** (only when you have a subconscious) — hands a channel to your
-  subconscious: its traffic stops entering your context and waking you, your
-  subconscious summarizes it on a cadence and judges whether a mention merits
-  interrupting you, and cancelling delivers the backlog.
+- **`tune_out`** (when you have a subconscious, or the recipe sets
+  `tuneOut.enabled`) — holds a channel: its traffic stops entering your
+  context and waking you. With a subconscious, it reads the held traffic,
+  reports to you on a cadence and judges whether a mention merits
+  interrupting you; without one the hold is silent. Cancelling, or the
+  duration ending, delivers the backlog either way.
 
 ## Debugging
 

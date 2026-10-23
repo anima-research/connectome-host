@@ -1122,8 +1122,16 @@ async function residentOf(dataDir: string, read: RecipeRead, loaded?: ExtensionR
     as: (name) => ({
       namespace: `agents/${name}`,
       strategy,
+      // A persistent reader has a re-anchor fraction; reader forks (Dendrite) have none.
       ...(subconscious?.enabled
-        ? { subconscious: { namespace: `subconscious/${name}`, reAnchorFraction: subconscious.reAnchorFraction } }
+        ? {
+            subconscious: {
+              namespace: `subconscious/${name}`,
+              ...('reAnchorFraction' in subconscious && subconscious.reAnchorFraction !== undefined
+                ? { reAnchorFraction: subconscious.reAnchorFraction }
+                : {}),
+            },
+          }
         : {}),
     }),
   };
