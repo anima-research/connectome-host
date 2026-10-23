@@ -264,17 +264,28 @@ function childRecipe(name: string, fields: Record<string, unknown> = {}): string
   return path;
 }
 
+/** Whether the timer being armed now is the audit's own: the first frame of
+ *  its stack past this file's that names a file is in the audit's source.
+ *  Another timer of the same length armed meanwhile, such as an extension's
+ *  or a library's, isn't; one the audit's own code arms is, whichever audit
+ *  run arms it. */
+function armedByAudit(): boolean {
+  const frames = (new Error().stack ?? '').split('\n').slice(1);
+  const caller = frames.find((frame) => frame.includes(sep) && !frame.includes(import.meta.path));
+  return caller?.includes(join('src', 'update', 'audit-stores.ts')) ?? false;
+}
+
 /** A fleet child's audit limit made short: each timer of `limitMs` (the
  *  default, 5 minutes, unless given) the audit arms fires once `ready` holds
  *  and a second has passed, unless it was cleared first. `armed` counts the
- *  timers armed. */
+ *  timers the audit armed; any other timer is armed as it asked. */
 function limitWhen(ready: () => boolean, limitMs = 5 * 60_000): { armed: () => number; restore: () => void } {
   const later = globalThis.setTimeout;
   const cancel = globalThis.clearTimeout;
   const cleared = new Set<unknown>();
   let armed = 0;
   const arming = spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) => {
-    if (ms !== limitMs) return later(handler, ms, ...rest);
+    if (ms !== limitMs || !armedByAudit()) return later(handler, ms, ...rest);
     armed++;
     const timer = {};
     const poll = (): void => {
@@ -1254,6 +1265,10 @@ describe("a fleet child's audit, in a process of its own", () => {
     leftovers.push(() => { if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES; else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before; });
     process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = '1';
     const limit = limitWhen(() => existsSync(pidFile), 60_000);
+    // A timer of the same minute the audit didn't arm isn't its limit: it's
+    // armed as it asked, not counted, and not fired early.
+    let strayFired = false;
+    let stray: ReturnType<typeof setTimeout> | undefined;
     const kill = process.kill.bind(process);
     const killed: number[] = [];
     const killing = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
@@ -1262,8 +1277,11 @@ describe("a fleet child's audit, in a process of its own", () => {
     }) as typeof process.kill);
     let result: Awaited<ReturnType<typeof audit>>;
     try {
+      stray = setTimeout(() => { strayFired = true; }, 60_000);
       result = await audit([parent.dir]);
     } finally {
+      // The stray's real minute would outlast this test.
+      clearTimeout(stray);
       limit.restore();
       killing.mockRestore();
       if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
@@ -1271,6 +1289,7 @@ describe("a fleet child's audit, in a process of its own", () => {
     }
     expect(result.status).toBe(1);
     expect(limit.armed()).toBe(1);
+    expect(strayFired).toBe(false);
     // Its group was sent SIGKILL at the limit.
     expect(killed).toContain(Number(readFileSync(pidFile, 'utf8')));
     expect(result.failed).toEqual([`Couldn't audit ${dirs.stuck!.dir}: its audit didn't end within 1 minute, so it was ` +
@@ -1552,14 +1571,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     const later = globalThis.setTimeout;
     const limits: number[] = [];
     let others = 0;
-    // A timer is the audit's own when the first frame past this file's is in
-    // the audit's source.
-    const auditSource = join('src', 'update', 'audit-stores.ts');
-    const armedByAudit = (): boolean => {
-      const frames = (new Error().stack ?? '').split('\n').slice(1);
-      const caller = frames.find((frame) => frame.includes(sep) && !frame.includes(import.meta.path));
-      return caller?.includes(auditSource) ?? false;
-    };
     const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) => {
       if (typeof ms === 'number' && ms >= 60_000) {
         if (armedByAudit()) limits.push(ms);
