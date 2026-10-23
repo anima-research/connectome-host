@@ -19,10 +19,11 @@ import { commitRelease, currentForStart, type ReleaseHere } from './update/host.
  * On trial, while `current` names another release, the host first audits
  * every store it would otherwise open only after the commit (auditBeforeCommit,
  * given `trial`, the start's data directory and its active session's store,
- * which the framework has open). A store it can't open stops the start, so
- * the trial ends before its commit, and the launcher's fallback puts back the
- * switch's copy. A session switch's start passes no install: by then the
- * host has committed.
+ * which the framework has open, and the framework's ops path, through which a
+ * load repair the audit causes reaches the keeper). A store it can't open
+ * stops the start, so the trial ends before its commit, and the launcher's
+ * fallback puts back the switch's copy. A session switch's start passes no
+ * install: by then the host has committed.
  *
  * If the commit doesn't happen, the framework is stopped, closing what
  * creating it opened, such as its servers' processes, so none outlives the
@@ -30,7 +31,7 @@ import { commitRelease, currentForStart, type ReleaseHere } from './update/host.
  * or commitRelease says why).
  */
 export async function startFramework(
-  framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers'>,
+  framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers' | 'notifyOps'>,
   here: ReleaseHere | null,
   trial?: { dataDir: string; activeStore: string; places: () => string[] | null; extensions?: ExtensionRegistry },
 ): Promise<void> {
@@ -42,7 +43,7 @@ export async function startFramework(
       // this start is a trial, which audits before its commit, rests on it.
       const current = currentForStart(here.root);
       if (trial !== undefined && current !== null && current !== here.release) {
-        await auditBeforeCommit(trial.dataDir, trial.activeStore, current, trial.places, trial.extensions);
+        await auditBeforeCommit(trial.dataDir, trial.activeStore, current, trial.places, framework.notifyOps.bind(framework), trial.extensions);
       }
       moved = commitRelease(here, {
         unconnectedServers: () => framework.listMcplServers().filter((server) => !server.connected).map((server) => server.id),

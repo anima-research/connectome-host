@@ -101,6 +101,7 @@ import { buildFrameworkStrategy, buildConversationsConfig } from './framework-st
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
+import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions, type ExtensionRegistry } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
@@ -707,6 +708,18 @@ agents: [agentConfig],
         notify(alert.kind, agentName, alert.message, alert.data);
       });
     }
+
+    // A load whose repair dropped summaries holding text → the same channel,
+    // so the agent's keeper hears that its memory changed rather than the
+    // agent noticing first. context-manager hands this any reports from the
+    // loads `create` already ran, then each later one; /healthz reads the
+    // latest from the strategy itself (getLatestLoadRepairReport), and the
+    // Health tab reads /healthz.
+    // Duck-typed as the quarantine alarm is. A conversation fork's strategy
+    // gets no handler, as it gets no quarantine alarm: it opens a namespace
+    // no fork has used before, so its load almost never has anything to
+    // repair.
+    wireLoadRepairAlert(strategy, framework, agentName, storePath);
   }
 
   if (subagentModule) {

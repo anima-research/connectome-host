@@ -30,6 +30,13 @@
  * audited, unless its open refused the store on its topology all the same,
  * or another namespace's open refused it.
  * Each store is read at its current branch, as an open reads it.
+ *
+ * An open is a load, so context-manager's load repair runs in the audit as at
+ * a start, and writes what it repairs to the store. Each load repair that
+ * dropped summaries holding text is said, in the words the host's alert uses
+ * (load-repair-alert.ts), since the start, switch or child that opens the
+ * store next finds nothing left to repair. A host on trial also sends each
+ * through the ops path (auditBeforeCommit).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -41,6 +48,7 @@ import {
 } from '@animalabs/context-manager';
 import type { Membrane } from '@animalabs/membrane';
 import { resolveAgentName } from '../agent-name.js';
+import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../web/load-repair-alert.js';
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { recipeModel } from '../framework-agent-config.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
@@ -69,6 +77,10 @@ const WITHIN_OPTION = '--within';
  *  said what it found of each store, and gives the status it ends with:
  *  `--fleet-child audit finished: 0` or `: 1`. */
 const FLEET_CHILD_FINISHED = '--fleet-child audit finished';
+/** A fleet child's audit says each load repair it causes as this, then the
+ *  repair as JSON ({ store, agent, report }), so its parent says it, and on a
+ *  trial sends it, as it does its own. */
+const FLEET_CHILD_LOAD_REPAIR = '--fleet-child load repair';
 /** A fleet child's finished line, with the status it gives. */
 const FINISHED_LINE = new RegExp(`^${FLEET_CHILD_FINISHED}: ([01])$`);
 const USAGE = `Usage: ${AUDIT_STORES_FLAG} [${RECIPE_OPTION} <recipe>] <data directory>…, with one data directory ` +
@@ -261,10 +273,15 @@ export function checkActiveStore(store: string, committed: string, within: strin
  * store whose only line is that its strategy called a model while opening it
  * is said, and doesn't hold the commit. When any other store isn't opened,
  * it throws, naming each, so the trial ends before its commit.
+ *
+ * Each load repair the audit causes also goes to the keeper through
+ * `notify`, the framework's ops path, as it's found, whether or not the
+ * trial then commits: one that doesn't puts back the copy, damage and all,
+ * and goes back to a release that may not report it.
  */
 export async function auditBeforeCommit(
   dataDir: string, activeStore: string, committed: string, places: () => string[] | null,
-  extensions?: ExtensionRegistry,
+  notify: OpsNotify, extensions?: ExtensionRegistry,
 ): Promise<void> {
   const within = placesOnTrial(committed, places, "no other store than its active session's");
   const failures: string[] = [];
@@ -277,7 +294,13 @@ export async function auditBeforeCommit(
     }
     console.error(`[update] ${line}`);
     if (failed) failures.push(line);
-  }, { skip: [activeStore], within, listIn: childrenFilePath(resolve(dataDir)), ...(extensions ? { extensions } : {}) });
+  }, {
+    skip: [activeStore], within, listIn: childrenFilePath(resolve(dataDir)), ...(extensions ? { extensions } : {}),
+    onLoadRepair: (report, agent, store) => {
+      const alert = loadRepairAlert(report, agent, store, AUDIT_POINTER);
+      notify(alert.kind, agent, alert.message, alert.data);
+    },
+  });
   if (failures.length === 0) return;
   throw new Error(
     `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
@@ -285,6 +308,17 @@ export async function auditBeforeCommit(
     `To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line ` +
     `names, and update again; or stay on ${committed} until a release opens them.`,
   );
+}
+
+/** agent-framework's notifyOps, as a host on trial gives it. */
+export type OpsNotify = (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+
+/** A load repair a fleet child's audit caused: its report, the agent whose
+ *  store it was opened as, and the store. */
+export interface AuditRepair {
+  report: LoadRepairReport;
+  agent: string;
+  store: string;
 }
 
 /** What the audit opens in a store: the agent's namespace, its strategy, and
@@ -314,6 +348,9 @@ interface Outcome {
   namespace?: string;
   unaudited?: string;
   absent?: true;
+  /** What each load whose repair dropped summaries holding text reported,
+   *  whatever else the store's answer is: the repair was written. */
+  repairs?: LoadRepairReport[];
 }
 
 export interface AuditOptions {
@@ -336,6 +373,9 @@ export interface AuditOptions {
   /** The one data directory given is a fleet child's, audited by itself: its
    *  recipe's fleet entries, if any, aren't followed. */
   fleetChild?: true;
+  /** Called for each load repair the audit causes, a fleet child's included,
+   *  after its line is said: a host on trial sends it through the ops path. */
+  onLoadRepair?: (report: LoadRepairReport, agent: string, store: string) => void;
   /** On a trial, the extensions the host's start loaded, whose register()
    *  made the modules of its framework, alive while the audit runs: every
    *  directory given has its strategies built from them, so a trial gives its
@@ -357,6 +397,18 @@ export async function auditStores(dataDirs: string[], say: Say, options: AuditOp
   const tell = (line: string, failure = false) => {
     if (failure) failed++;
     say(flat(line), failure);
+  };
+  // A load repair the audit caused: said in the keeper's words, or, from a
+  // fleet child's audit, handed to its parent to say.
+  const repaired = (store: string, agent: string, report: LoadRepairReport) => {
+    if (options.fleetChild) {
+      tell(`${FLEET_CHILD_LOAD_REPAIR} ${JSON.stringify({ store, agent, report })}`);
+      return;
+    }
+    // Its words, without the host alert's last sentence: no strategy of a
+    // running host made this report, so the Health tab never holds it.
+    tell(`${store} (${report.namespace}): ${loadRepairLines(report, agent, store).join(' ')}`);
+    options.onLoadRepair?.(report, agent, store);
   };
   // Each directory's recipe, read once, for its fleet entries and its own
   // audit, and the environment as it is, which a fleet child's starts from.
@@ -444,6 +496,7 @@ export async function auditStores(dataDirs: string[], say: Say, options: AuditOp
           } else {
             tell(`${store} (${here.namespace}): opens`);
           }
+          for (const report of outcome.repairs ?? []) repaired(store, name, report);
         }
       }
     }
@@ -482,7 +535,7 @@ export async function auditStores(dataDirs: string[], say: Say, options: AuditOp
           'it'} by running setup again with --extra-state PATH for it and for each place already recorded, so each ` +
           'update copies it.', true);
       } else {
-        await auditAsFleetChild(dataDir, child, env, tell, options.listIn, options.within);
+        await auditAsFleetChild(dataDir, child, env, tell, repaired, options.listIn, options.within);
       }
     }
   } finally {
@@ -644,8 +697,9 @@ async function auditStore(path: string, resident: Resident): Promise<Outcome> {
     return { refused: refusal(error) };
   }
   let outcome: Outcome = {};
+  const repairs: LoadRepairReport[] = [];
   try {
-    outcome = await auditNamespace(store, resident);
+    outcome = await auditNamespace(store, resident, repairs);
   } finally {
     try {
       store.close();
@@ -658,7 +712,9 @@ async function auditStore(path: string, resident: Resident): Promise<Outcome> {
       else outcome = { unaudited: `it opened, and ${closing}` };
     }
   }
-  return outcome;
+  // Each load repair its opens caused, whatever the store's answer: the
+  // repair was written.
+  return repairs.length > 0 ? { ...outcome, repairs } : outcome;
 }
 
 /** A refusal, or why a store wasn't audited, with a closing failure after
@@ -668,13 +724,21 @@ function withClosing(line: string, closing: string): string {
   return `${line.replace(/\.$/, '')}; ${closing}`;
 }
 
-/** Open the resident's namespaces in a store as a start does, and close them. */
-async function auditNamespace(store: JsStore, resident: Resident): Promise<Outcome> {
+/** Open the resident's namespaces in a store as a start does, and close
+ *  them, adding to `repairs` each load repair the agent's open causes. */
+async function auditNamespace(store: JsStore, resident: Resident, repairs: LoadRepairReport[]): Promise<Outcome> {
   let strategy: ContextStrategy;
   try {
     strategy = resident.strategy();
   } catch (error) {
     return { unaudited: `its strategy couldn't be built for it: ${oneLine(error)}` };
+  }
+  // context-manager hands a report to a handler a microtask after its load,
+  // which runs at the strategy's first await after it, before that open
+  // resolves. Duck-typed, as the host's alert is.
+  const repairCapable = strategy as { setLoadRepairHandler?: (fn: (report: LoadRepairReport) => unknown) => void };
+  if (typeof repairCapable.setLoadRepairHandler === 'function') {
+    repairCapable.setLoadRepairHandler((report) => { repairs.push(report); });
   }
   // The agent's namespace, and the subconscious's while the agent's is open,
   // as a start opens them, each with a membrane of its own, so one open's
@@ -888,6 +952,45 @@ function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
+ * A line a fleet child's audit wrote, as the load repair it hands on: its
+ * store, the agent it was opened as and its report, or undefined where the
+ * line isn't one, such as one cut short or of another shape, which its
+ * parent then says as it came.
+ */
+export function fleetChildRepair(line: string): AuditRepair | undefined {
+  if (!line.startsWith(`${FLEET_CHILD_LOAD_REPAIR} `)) return undefined;
+  let said: unknown;
+  try {
+    said = JSON.parse(line.slice(FLEET_CHILD_LOAD_REPAIR.length + 1));
+  } catch {
+    return undefined;
+  }
+  const { store, agent, report } = (said ?? {}) as Partial<Record<'store' | 'agent' | 'report', unknown>>;
+  return typeof store === 'string' && typeof agent === 'string' && isLoadRepairReport(report)
+    ? { store, agent, report }
+    : undefined;
+}
+
+/** Whether a value has a load-repair report's shape, field by field, as
+ *  the words read it. */
+function isLoadRepairReport(value: unknown): value is LoadRepairReport {
+  const v = value as Partial<Record<keyof LoadRepairReport, unknown>> | null;
+  const numberOrNull = (x: unknown) => x === null || typeof x === 'number';
+  const timeOrNull = (x: unknown) => x === null || typeof x === 'string';
+  return typeof v === 'object' && v !== null &&
+    typeof v.namespace === 'string' && typeof v.branch === 'string' && typeof v.stateId === 'string' &&
+    typeof v.sequenceBefore === 'number' && typeof v.droppedTokens === 'number' && typeof v.emptyDropped === 'number' &&
+    Array.isArray(v.dropped) && v.dropped.every((d: unknown) => {
+      const drop = d as Record<string, unknown> | null;
+      if (typeof drop !== 'object' || drop === null) return false;
+      const range = drop.sourceRange as Record<string, unknown> | null | undefined;
+      return typeof drop.id === 'string' && numberOrNull(drop.level) && numberOrNull(drop.tokens) && typeof drop.reason === 'string' &&
+        (range === null || (typeof range === 'object' && range !== undefined && typeof range.first === 'string' &&
+          typeof range.last === 'string' && timeOrNull(range.firstAt) && timeOrNull(range.lastAt)));
+    });
+}
+
+/**
  * Audit a fleet child's directory in a process of its own, launched as the
  * fleet launches the child: under the recipe its entry names, in the
  * environment the fleet starts it with, from `env`, this audit's environment
@@ -900,6 +1003,7 @@ function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
  */
 async function auditAsFleetChild(
   dataDir: string, child: FleetChild, env: NodeJS.ProcessEnv, tell: (line: string, failure?: boolean) => void,
+  repaired: (store: string, agent: string, report: LoadRepairReport) => void,
   listIn?: string, within?: string[],
 ): Promise<void> {
   const listing = `${child.name}'s store audit`;
@@ -1017,6 +1121,11 @@ async function auditAsFleetChild(
   const failed = !answered || status !== 0;
   let failures = 0;
   for (const line of lines) {
+    const repair = fleetChildRepair(line);
+    if (repair) {
+      repaired(repair.store, repair.agent, repair.report);
+      continue;
+    }
     const failure = failed && failureLine(line);
     if (failure) failures++;
     tell(line, failure);

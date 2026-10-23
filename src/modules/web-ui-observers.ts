@@ -961,6 +961,17 @@ export const HEALTH_STRINGS: KeptStrings = {
     },
   },
   compressionDebt: { '*': { state: true, failure: true, mergeQuarantineKeys: true, mergeHeldIds: true } },
+  // A load-repair report holds no summary text: its strings are names, ids,
+  // reasons and times. Its branch is left out: welcome hides branch names
+  // without the messages scope, since a checkpoint's restore names its branch
+  // after the checkpoint, and this spec is what an observer without ops gets.
+  loadRepair: {
+    '*': {
+      namespace: true,
+      stateId: true,
+      dropped: { id: true, reason: true, sourceRange: { first: true, last: true, firstAt: true, lastAt: true } },
+    },
+  },
   contextComposition: {
     '*': { planVsActual: { solver: true, ceiling: true, foldDiff: { runs: { firstChunkId: true, lastChunkId: true } } } },
   },

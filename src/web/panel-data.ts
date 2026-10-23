@@ -835,7 +835,8 @@ function perAgentHealth(
 /**
  * Liveness/health snapshot, the /healthz assembly: framework.healthSnapshot
  * plus the credential state (on a subscription); by agent, compression
- * quarantine, compression debt, rendered context composition and runtime
+ * quarantine, compression debt, the latest load repair that dropped
+ * summaries holding text, rendered context composition and runtime
  * settings, each read on its own (perAgentHealth), with readFailures naming
  * the reads that threw; and (when a ledger is wired) recent provider calls.
  * Everything is read-only and cheap: no compile, no count_tokens.
@@ -882,6 +883,19 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
       (agent.getContextManager() as unknown as {
         getStrategy?: () => { getCompressionDebt?: () => unknown };
       }).getStrategy?.()?.getCompressionDebt?.());
+  } catch {
+    // Health reads never throw.
+  }
+  // The latest load repair that dropped summaries holding text, per agent:
+  // memory that changed at a load, which happens at starts, when nobody is
+  // usually watching the live alert. The strategy keeps it for its own life,
+  // so a session switch starts it fresh. Absent where no load dropped a
+  // summary holding text.
+  try {
+    (snapshot as Record<string, unknown>).loadRepair = perAgentHealth(app, 'loadRepair', readFailures, (agent) =>
+      (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getLatestLoadRepairReport?: () => unknown };
+      }).getStrategy?.()?.getLatestLoadRepairReport?.());
   } catch {
     // Health reads never throw.
   }

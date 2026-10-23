@@ -23,7 +23,8 @@ import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
 import { SessionManager } from '../src/session-manager.js';
 import { startFramework } from '../src/start-framework.js';
-import { auditStores, type AuditOptions } from '../src/update/audit-stores.js';
+import { auditStores, fleetChildRepair, type AuditOptions } from '../src/update/audit-stores.js';
+import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../src/web/load-repair-alert.js';
 import * as contract from '../src/update/contract.js';
 import {
   appendJournal, childrenFilePath, copyItemName, copyLabelPath, installPaths, moveCurrent, readCurrent,
@@ -82,6 +83,29 @@ async function makeStore(path: string, namespace: string, crossed: boolean): Pro
       summary('L2-x', 2, ['L1-stray', 'L1-c'], ids[3]!, ids[33]!),
     ]);
   }
+  manager.close();
+}
+
+/** Whether the installed context-manager reports a load repair
+ *  (setLoadRepairHandler): only then can a test see the audit say one. */
+const REPORTS_LOAD_REPAIRS =
+  typeof (AutobiographicalStrategy.prototype as { setLoadRepairHandler?: unknown }).setLoadRepairHandler === 'function';
+
+/** A store whose namespace holds 40 messages and a level-2 summary, L2-x,
+ *  holding text and naming an L1 that isn't there, so a load's repair drops
+ *  it (`names-missing`) and reports that it did. */
+async function makeRepairStore(path: string, namespace = 'agents/agent'): Promise<void> {
+  const seed = new AutobiographicalStrategy({ adaptiveResolution: true, hierarchical: true, autoTickOnNewMessage: false, auditOnly: true });
+  const manager = await ContextManager.open({ path, namespace, strategy: seed, membrane: MODEL });
+  const ids: string[] = [];
+  for (let i = 0; i < 40; i++) {
+    ids.push(manager.addMessage(i % 2 ? 'agent' : 'user', [{ type: 'text', text: `message ${i} ` + 'w '.repeat(20) }]));
+  }
+  const internals = seed as unknown as { store: { setStateJson(id: string, value: unknown): void }; summariesStateId: string };
+  internals.store.setStateJson(internals.summariesStateId, [
+    { id: 'L1-a', level: 1, content: 's L1-a', tokens: 50, sourceLevel: 0, sourceIds: ids.slice(4, 14), sourceRange: { first: ids[4], last: ids[13] }, created: 1 },
+    { id: 'L2-x', level: 2, content: 's L2-x', tokens: 50, sourceLevel: 1, sourceIds: ['L1-a', 'L1-gone'], sourceRange: { first: ids[4], last: ids[33] }, created: 1 },
+  ]);
   manager.close();
 }
 
@@ -318,6 +342,93 @@ describe('the store audit', () => {
     expect(failed[0]).toEndWith(`). ${REMEDY}`);
     expect(failed[0]).not.toContain('topologyPolicy');
     expect(failed[0]).not.toContain('\n');
+  });
+
+  test.skipIf(!REPORTS_LOAD_REPAIRS)("a load repair the audit causes is said in the keeper's words and handed on, and it was written, so the next open finds nothing to repair", async () => {
+    const { dir, stores } = await makeDataDirWith('data', [(store) => makeRepairStore(store)]);
+    const lines: string[] = [];
+    const got: Array<{ report: LoadRepairReport; agent: string; store: string; lastSaid: string | undefined }> = [];
+    const status = await auditStores([dir], (line) => { lines.push(line); }, {
+      onLoadRepair: (report, agent, store) => { got.push({ report, agent, store, lastSaid: lines[lines.length - 1] }); },
+    });
+    expect(status, lines.join('\n')).toBe(0);
+    expect(got.map(({ report, agent, store }) => [agent, store, report.namespace, report.dropped.map((drop) => [drop.id, drop.reason])]))
+      .toEqual([['agent', stores[0], 'agents/agent', [['L2-x', 'names-missing']]]]);
+    const said = `${stores[0]} (agents/agent): ${loadRepairLines(got[0]!.report, 'agent', stores[0]!).join(' ')}`;
+    expect(lines).toEqual([`${stores[0]} (agents/agent): opens`, said]);
+    // Said before it's handed on, so a hand-on that throws can't keep it from
+    // whoever runs the update.
+    expect(got[0]!.lastSaid).toBe(said);
+    const again = await audit([dir]);
+    expect(again.lines).toEqual([`${stores[0]} (agents/agent): opens`]);
+  });
+
+  test.skipIf(!REPORTS_LOAD_REPAIRS)("a load repair is said though the store then wouldn't close", async () => {
+    const { dir, stores } = await makeDataDirWith('data', [(store) => makeRepairStore(store)]);
+    const realClose = JsStore.prototype.close;
+    const storeClose = spyOn(JsStore.prototype, 'close').mockImplementation(function (this: JsStore) {
+      realClose.call(this);
+      throw new Error('store close failed');
+    });
+    try {
+      const { lines, failed } = await audit([dir]);
+      expect(failed).toEqual([`Couldn't audit ${stores[0]}: it opened, and closing it failed: store close failed`]);
+      expect(lines[1]).toStartWith(`${stores[0]} (agents/agent): agent's memory changed at load: `);
+    } finally {
+      storeClose.mockRestore();
+    }
+  });
+
+  test.skipIf(!REPORTS_LOAD_REPAIRS)("a fleet child's load repair reaches its parent's audit, which says it and hands it on as its own", async () => {
+    const child = await makeDataDirWith('child', [(store) => makeRepairStore(store, 'agents/Kid')]);
+    const kidRecipe = childRecipe('kid', { agent: { ...DEFAULT_RECIPE.agent, name: 'Kid' } });
+    const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
+    saveRecipe(parent.dir, {
+      ...DEFAULT_RECIPE,
+      modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe: kidRecipe, dataDir: child.dir }] } },
+    });
+    const got: Array<{ report: LoadRepairReport; agent: string; store: string }> = [];
+    const { status, lines } = await audit([parent.dir], { onLoadRepair: (report, agent, store) => { got.push({ report, agent, store }); } });
+    expect(status, lines.join('\n')).toBe(0);
+    expect(got.map(({ report, agent, store }) => [agent, store, report.dropped.map((drop) => drop.id)])).toEqual([['Kid', child.stores[0], ['L2-x']]]);
+    // The read-back's coordinates come through whole.
+    const { branch, stateId, sequenceBefore } = got[0]!.report;
+    expect([branch, stateId]).toEqual(['main', 'agents/Kid/autobio:summaries']);
+    expect(sequenceBefore).toBeGreaterThan(0);
+    const said = `${child.stores[0]} (agents/Kid): ${loadRepairLines(got[0]!.report, 'Kid', child.stores[0]!).join(' ')}`;
+    expect(lines.filter((line) => line === said)).toHaveLength(1);
+    expect(lines.filter((line) => line.startsWith('--fleet-child'))).toEqual([]);
+  }, 90_000);
+
+  test("a fleet child's load repair line is taken only whole and of a report's shape; anything else is said as it came", () => {
+    const range = { first: 'm1', last: 'm9', firstAt: null as string | null, lastAt: '2026-10-01T10:00:00.000Z' as string | null };
+    const drop = { id: 'L2-x', level: 2 as number | null, tokens: 50 as number | null, reason: 'names-missing', sourceRange: range as typeof range | null };
+    const report = {
+      namespace: 'agents/Kid', branch: 'main', stateId: 'agents/Kid/autobio:summaries', sequenceBefore: 7, droppedTokens: 50, emptyDropped: 0,
+      dropped: [drop],
+    };
+    const line = (said: unknown) => `--fleet-child load repair ${JSON.stringify(said)}`;
+    const taken = (r: unknown) => fleetChildRepair(line({ store: '/s', agent: 'Kid', report: r }));
+    expect(fleetChildRepair(line({ store: '/s', agent: 'Kid', report }))).toEqual({ store: '/s', agent: 'Kid', report } as never);
+    // What context-manager may send: nulls where a value couldn't be read,
+    // and fields a later version adds.
+    for (const r of [
+      { ...report, dropped: [{ ...drop, level: null, tokens: null, sourceRange: null }] },
+      { ...report, dropped: [{ ...drop, sourceRange: { ...range, firstAt: null, lastAt: null } }] },
+      { ...report, dropped: [{ ...drop, later: 1 }], later: 'x' },
+    ]) expect(taken(r)?.report).toEqual(r as never);
+    // Each field of the wrong type, one at a time.
+    for (const key of Object.keys(report)) expect(taken({ ...report, [key]: true }), key).toBeUndefined();
+    for (const key of Object.keys(drop)) expect(taken({ ...report, dropped: [{ ...drop, [key]: true }] }), key).toBeUndefined();
+    for (const key of Object.keys(range)) expect(taken({ ...report, dropped: [{ ...drop, sourceRange: { ...range, [key]: true } }] }), key).toBeUndefined();
+    expect(taken({ ...report, dropped: [null] })).toBeUndefined();
+    expect(fleetChildRepair(line({ store: true, agent: 'Kid', report }))).toBeUndefined();
+    expect(fleetChildRepair(line({ store: '/s', report }))).toBeUndefined();
+    // Cut short, as a kill at the time limit leaves it.
+    expect(fleetChildRepair(line({ store: '/s', agent: 'Kid', report }).slice(0, -5))).toBeUndefined();
+    // Another line, even one holding a report.
+    expect(fleetChildRepair(`/s (agents/Kid): opens`)).toBeUndefined();
+    expect(fleetChildRepair(JSON.stringify({ store: '/s', agent: 'Kid', report }))).toBeUndefined();
   });
 
   test('a store that opens says so, and the audit exits 0', async () => {
@@ -2398,6 +2509,7 @@ describe('a host on trial, before its commit', () => {
     const counts = { started: 0, stopped: 0 };
     const framework = {
       start: () => { counts.started++; }, stop: async () => { counts.stopped++; }, getModule: () => null, listMcplServers: () => [],
+      notifyOps: () => {},
     } as never;
     return { framework, counts };
   }
@@ -2794,6 +2906,50 @@ describe('a host on trial, before its commit', () => {
     expect(counts.started).toBe(0);
     expect(readCurrent(install)).toBe('0.10.2');
   });
+
+  test.skipIf(!REPORTS_LOAD_REPAIRS)("each load repair the trial's audit causes is also sent through the framework's ops path, and the trial commits", async () => {
+    const { dir, stores } = await makeDataDirWith('data', [
+      (store) => makeStore(store, 'agents/agent', false),
+      (store) => makeRepairStore(store),
+      (store) => makeRepairStore(store),
+    ]);
+    const sent: Array<{ kind: string; agent: string; message: string; data?: Record<string, unknown> }> = [];
+    const framework = {
+      start: () => {}, stop: async () => {}, getModule: () => null, listMcplServers: () => [],
+      // A method reading its own object, as agent-framework's is.
+      sent,
+      notifyOps(kind: string, agent: string, message: string, data?: Record<string, unknown>) { this.sent.push({ kind, agent, message, data }); },
+    } as never;
+    await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places: () => [dir] });
+    expect(readCurrent(install)).toBe('0.11.0');
+    expect(sent.map(({ kind, agent, data }) => [kind, agent, data!.store]).sort())
+      .toEqual([['memory-load-repair', 'agent', stores[1]], ['memory-load-repair', 'agent', stores[2]]].sort());
+    for (const { agent, message, data } of sent) {
+      // The Health tab and /healthz never hold a report the audit's own strategy made.
+      expect(message).toBe(loadRepairAlert(data as unknown as LoadRepairReport, agent, data!.store as string, AUDIT_POINTER).message);
+      expect(message).toEndWith("The message is in failures.log and among the update's audit lines.");
+      expect((data as unknown as LoadRepairReport).dropped.map((drop) => drop.id)).toEqual(['L2-x']);
+    }
+  }, 60_000);
+
+  test.skipIf(!REPORTS_LOAD_REPAIRS)("a trial whose commit is refused after its audit has still sent the load repair the audit caused, since the release it goes back to may not report it", async () => {
+    const { dir, stores } = await makeDataDirWith('data', [
+      (store) => makeStore(store, 'agents/agent', false),
+      (store) => makeRepairStore(store),
+    ]);
+    const sent: string[] = [];
+    const framework = {
+      start: () => {}, stop: async () => {}, getModule: () => null,
+      // Every store the audit opens opens, so the audit ends with its repair;
+      // a server that didn't connect then refuses the commit.
+      listMcplServers: () => [{ id: 'discord', connected: false }],
+      notifyOps: (kind: string) => { sent.push(kind); },
+    } as never;
+    await expect(startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places: () => [dir] }))
+      .rejects.toThrow("couldn't connect the MCPL server discord");
+    expect(readCurrent(install)).toBe('0.10.2');
+    expect(sent).toEqual(['memory-load-repair']);
+  }, 60_000);
 
   test('commits once every store opens, a start already committed audits nothing, one with no `current` is refused, and one whose `current` can\'t be read ends before any audit', async () => {
     const { dir, stores } = await makeDataDir('data', [

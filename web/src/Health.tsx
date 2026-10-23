@@ -22,6 +22,7 @@ import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
 import { healthComposition, lastInferenceLine, latestInferenceError } from './composition-text';
 import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
+import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt, type DebtTone } from '@conhost/web/compression-debt';
 
 /** One active operator alert, keyed `${agent}:${kind}`. `count` increments on
@@ -122,6 +123,10 @@ export interface HealthSnapshot {
   /** Each agent's quarantine status: records (`count`) and their keys, and the
    *  quarantined spans (`spans`) when context-manager lists them. */
   compressionQuarantine?: Record<string, { count?: number; keys?: string[]; spans?: unknown[] }>;
+  /** Each agent's latest load repair that dropped summaries holding text,
+   *  for the life of its strategy (getLatestLoadRepairReport); an agent with
+   *  none is absent. */
+  loadRepair?: Record<string, LoadRepairReport>;
 
   /** cm's single-authority debt reduction (getCompressionDebt) — the QUEUE
 
@@ -474,6 +479,7 @@ export function HealthPanel(props: {
   // Each section is looked up by own key (healthEntry), so an agent whose name
   // is also an Object.prototype member reads as missing when it is.
   const quarantine = (name: string) => healthEntry(props.health?.compressionQuarantine, name);
+  const loadRepair = (name: string) => healthEntry(props.health?.loadRepair, name);
   const debt = (name: string) => healthEntry(props.health?.compressionDebt, name);
   const settings = (name: string) => healthEntry(props.health?.runtimeSettings, name);
   const failures = (name: string) => healthEntry(props.health?.readFailures, name);
@@ -577,6 +583,20 @@ export function HealthPanel(props: {
                   </div>
                 </Show>
               </div>
+            </Show>
+
+            {/* A load repair that dropped summaries holding text: memory that
+                changed at a load, kept here for this session with no dismiss,
+                since loads happen at starts, when nobody is usually watching. */}
+            <Show when={loadRepair(a.name)}>
+              {(r) => (
+                <div class="text-amber-200 bg-amber-950/30 border border-amber-900/50 rounded px-2 py-1 break-words space-y-1">
+                  <div>⚠ Memory load repair (latest this session)</div>
+                  <For each={loadRepairLines(r(), a.name)}>
+                    {(line) => <div>{line}</div>}
+                  </For>
+                </div>
+              )}
             </Show>
 
             {/* A section this agent couldn't be read for is missing from the

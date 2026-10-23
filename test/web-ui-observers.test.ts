@@ -869,7 +869,7 @@ describe('scope filters', () => {
     expect(keepNamedStrings('text', true)).toBe('text');
   });
 
-  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text", () => {
+  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text and a load repair's branch", () => {
     const text = 'the provider said: overloaded';
     const cost = {
       input: 1, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 1, total: 2, currency: 'USD', grade: 'billing', pricingVersion: 'p1',
@@ -939,6 +939,13 @@ describe('scope filters', () => {
           sameRoundThinkTextPolicy: 'keep', sameRoundThinkTextPolicySource: 'default', transition: 'blocked', transitionReason: 'transition_pace_too_small',
         },
       },
+      loadRepair: {
+        main: {
+          namespace: 'agents/main', branch: 'restore-before-the-move-1792', stateId: 'agents/main/autobio:summaries', sequenceBefore: 7,
+          dropped: [{ id: 'L2-x', level: 2, tokens: 50, reason: 'names-missing', sourceRange: { first: 'm1', last: 'm9', firstAt: '2026-10-01T10:00:00.000Z', lastAt: null } }],
+          droppedTokens: 50, emptyDropped: 0,
+        },
+      },
       readFailures: { main: { contextComposition: text } },
       callLedger: {
         rows: [{ ...call, id: 'c0', verdict: 'ERROR', cause: text, error: text }, call],
@@ -952,6 +959,8 @@ describe('scope filters', () => {
     main.lastInference.lastError = '';
     expected.compressionDebt.main.error = '';
     expected.readFailures.main.contextComposition = '';
+    // Welcome hides branch names without the messages scope.
+    expected.loadRepair.main.branch = '';
     Object.assign(expected.callLedger.rows[0]!, { cause: '', error: '' });
     expected.credential.message = '';
     expected.credential.lastAction.message = '';
