@@ -9,11 +9,12 @@
     back to the model. A result's `structuredContent` still reaches a script
     whole, as before.
   - **No repeated admissions.** A coalesced MCPL message whose receipt the
-    host couldn't write, or couldn't make durable, is no longer admitted
-    again each time its server retries it. On `channels/incoming`, such a
-    failure now fails the whole request with a -32000 error, where it
-    answered that message `accepted: false`, and the messages after it in
-    the request aren't admitted until they're sent again.
+    host couldn't write is no longer admitted again each time its server
+    retries it. On `channels/incoming`, an admitted message whose receipt
+    couldn't be written or made durable now fails the whole request with a
+    -32000 error, where it answered that message `accepted: false`, and the
+    messages after it in the request aren't admitted until they're sent
+    again.
   - **A turn waiting for its continuation is alive.** While a budget
     restart's or a tool-result guard's continuation waits to start, which a
     provider's stated wait can make long, the Web UI's host-mode quiesce
