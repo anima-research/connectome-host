@@ -535,7 +535,8 @@ unknown-key warning, like those at the other levels.
   `include` limits what a mount holds, and agent-framework keeps its own
   files (spilled tool results, fetched references) only in a writable mount
   without one. `configMount: true` adds `_config`, holding only the files
-  named `gate.json` or `gate.js` in the session's config directory. See `RecipeWorkspaceMount` in
+  named `gate.json` or `gate.js` anywhere in the session's config directory,
+  subdirectories included. See `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form

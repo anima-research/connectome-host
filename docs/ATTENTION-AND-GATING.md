@@ -130,7 +130,7 @@ check is conservative, so no warning isn't proof of safety.
 - **Not `workspace--edit _config/gate.json`.** If your recipe sets
   `modules.workspace.configMount: true`, the config directory's `gate.json`
   and `gate.js` also appear in the `_config/` mount, which holds only files
-  with those names, and their changes on disk are versioned into your
+  with those names, at any depth, and their changes on disk are versioned into your
   chronicle.
   But that mount doesn't write through: a workspace edit stays chronicle-side and
   never reaches the file the gate reads until a branch-changing command

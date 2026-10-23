@@ -91,11 +91,13 @@ describe("the _config mount's include", () => {
     const { events, eventNaming } = await started(root, configMount(storePath));
     await eventNaming('_config/gate.json');
     // Written beside the config first, then gate.js, all after the watcher is
-    // ready: the watcher reports changes as they come, so once gate.js has
-    // arrived, everything written before it has been seen.
+    // ready. The watcher batches what it sees but doesn't promise order, so
+    // after gate.js arrives the test waits past another batch (the 300 ms
+    // debounce after awaitWriteFinish's 100 ms) before it checks.
     for (const name of LEFT_OUT) writeFileSync(join(cfg, name), `${name}\n`);
     writeFileSync(join(cfg, 'gate.js'), 'export default () => true;\n');
     await eventNaming('_config/gate.js');
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
     const named = events.flatMap((e) => e.paths ?? []);
     for (const name of LEFT_OUT) expect([name, named.includes(`_config/${name}`)]).toEqual([name, false]);
   }, 30_000);

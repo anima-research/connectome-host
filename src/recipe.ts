@@ -848,7 +848,7 @@ export interface RecipeModules {
   /**
    * The workspace's mounts. `configMount: true` adds `_config`, the
    * session's config directory, holding only files named `gate.json` or
-   * `gate.js` (its include), with history in Chronicle; it isn't
+   * `gate.js`, at any depth (its include), with history in Chronicle; it isn't
    * materialized on agent writes (buildWorkspaceMounts).
    */
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
