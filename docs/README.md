@@ -8,7 +8,7 @@ A map of the guides, by who they are for. The top-level
 
 | Guide | For |
 |---|---|
-| [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) | Deploying a new resident end to end — interview, host user, install dir, recipe, history import, Discord, services, launch checks. Written as a runbook for an assisting Claude instance. |
+| [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) | Deploying a new resident end to end — interview, the onboarding conversation with its own model, host user, install dir, recipe, history import, Discord, services, launch checks, safety (§13). Written as a runbook for an assisting Claude instance; §2c is for the user and §14 for the people who will work with the agent. |
 | [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Day-to-day operations: supervision, logs, wake gating, known gaps. |
 | [DEV-ENVIRONMENT.md](./DEV-ENVIRONMENT.md) | Working on the libraries themselves: sibling checkouts wired to one shared instance of each. |
 | [webui-deployment.md](./webui-deployment.md) | Serving the web console behind a proxy; auth and observers. |
