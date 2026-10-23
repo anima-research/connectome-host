@@ -6,6 +6,275 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.13.0 — 2026-10-23
+
+### Added
+
+- `llm-calls` rows now flag anomalous provider responses. A response that
+  carries a client `tool_use` block under any stop reason other than
+  `tool_use` (seen in production as `end_turn` with a complete tool call,
+  which membrane before membrane#168 dropped without running) gets an
+  `anomaly` field (`kind`, `stopReason`, `providerStopReason`, `toolNames`),
+  keeps its full raw request even without `LLM_CALLS_FULL_PAYLOADS`, as a
+  refusal's row already did, and prints one timestamped `[llm-calls] …
+  ANOMALY …` line to stderr. The line says what membrane does with such
+  calls, and says "full request kept" only when the row holding the request
+  was written whole; otherwise it says the write failed, or what the size
+  guard dropped. A missing stop reason records `stopReason: "end_turn"`
+  (membrane's default) and `providerStopReason: null` on `complete()` and
+  `stream()` alike.
+- Anthropic `complete()` and `stream()` rows also keep the provider's
+  `messageId` and `requestId` at top level when the response exposes them;
+  a failed call's row keeps the `requestId` its error carries. Stream rows
+  get them only with a membrane that adds them to its raw response
+  (membrane#168). Keepalive, Bedrock and generic-wrapper rows don't.
+- The 16 MiB size guard keeps `anomaly`, `messageId` and `requestId` at every
+  step, the last one bounded, and `serializeRecordOutcome` reports which step
+  a line came from.
+
+- A recipe's workspace mount takes agent-framework 0.24's `backend` and
+  `include`. `backend: "direct"` reads disk's own copy as it is, with no
+  store, scan or watcher, for a checkout an agent reads; a mount whose store
+  still holds changes from when it ran as Chronicle runs as Chronicle until
+  a start after they're settled, and agent-framework says at start how to
+  settle them. A direct mount that
+  names no `ignore` passes over `node_modules`, `.git`, `dist`, `build`,
+  `coverage`, `target`, `__pycache__` and `.venv`, and one that names any
+  passes over only what it names. `include` lists what a
+  mount holds, as names, `*.ext` globs and `dir/**` globs. Before, a recipe
+  that gave either stopped loading, as a key a mount doesn't have.
+- A direct mount names `mode: "read-only"`, the only mode agent-framework
+  takes on a direct mount, and one that names no mode stops the recipe
+  loading, saying so. A mount the agent writes, or whose changes should wake
+  it, leaves `backend` out. Other mounts are still read-write by default.
+- What agent-framework refuses in a recipe's mounts, such as a `watch`
+  other than `"never"`, `wakeOnChange` or `autoMaterialize` on a direct
+  mount, or an `include`
+  pattern it can't read, stops the recipe loading in the framework's own
+  words, naming the mount, so a refused recipe is never saved to resume.
+- The host's `_config` mount says its backend, `"chronicle"`, which its
+  undo and redo need, whatever the framework's default (as antra-tess
+  proposed in #241).
+
+- Recipe `agent.clock` sets agent-framework's clock rows, every ten minutes
+  when the recipe omits it (see Changed), `false` for none, or an interval of
+  its own: `{ "intervalMinutes": 10 }` (or `intervalSeconds`, with optional
+  `precision: "minutes" | "seconds"`) writes a `Clock: 10:50 Europe/Berlin
+  (UTC+02:00)` row, in `agent.timezone`, whenever a boundary of that interval
+  has passed: before an incoming message, at a turn's start, and mid-turn
+  after a tool round's results, except on the `anthropic-xml` formatter. On
+  some models a clock after a tool's results drops the loop's earlier
+  thinking from the request, at most once an interval. Subagent streams take
+  none: a subagent's start orientation lists its clock rows as off and,
+  where it has a parent or calling stream, that stream's setting beside them.
+  Validated at recipe load with the framework's own rules, naming the key; a
+  key the framework doesn't take is refused.
+
+- `--audit-stores [--recipe <recipe>] <data directory>…`, given to the host's
+  entry in place of a recipe (`bun src/index.ts --audit-stores …` in a clone),
+  says whether this version opens the agent's context in every store, before
+  you start the agents on it. For a data directory, such as an agent's
+  `DATA_DIR`, it opens it in every session's store the way a start of this
+  version does, but one that reaches past what an update copies, such as a
+  store outside the directory or one holding a link out of it, which it says
+  it didn't open, and one a session names that isn't there yet, which a start
+  makes empty, under the recipe a start would load: the one `--recipe`
+  names, or else the one the last start saved. It audits each fleet child the
+  recipe names too, in a process of its own, as the fleet launches it, given
+  5 minutes to end, or the minutes `CONNECTOME_FLEET_CHILD_AUDIT_MINUTES` in the
+  audit's environment gives: a number above 0, a larger one than a timer
+  holds (about 35,791 minutes) giving the longest it does; 0 or below, or not
+  a number, gives 5. It
+  opens the stores in place, so run it after taking the copy you'd go back
+  to: "Updating an install" in docs/DEPLOYMENTS.md says when. It prints a line
+  on stderr for each store under each agent name it opens it under, the
+  recipe's or the default and each session's own, or one for a store it
+  doesn't open, and exits 0 when no store was refused and every
+  one there was audited, 1 otherwise. Run it with the agents and their
+  children stopped.
+
+- Accept opt-in tool-presentation configuration (`agent.toolPresentation`) and expose matching description/visibility metadata in context previews.
+
+### Changed
+
+- **Operators:** connectome-host's `@animalabs/agent-framework` minimum went
+  to ^0.24.1 (was ^0.24.0), and in this release on to ^0.26.0 (see its own
+  entry). Besides clock rows (`agent.clock`), the changes
+  operators meet, in brief; agent-framework 0.24.1's notes give each in full:
+  - **The workspace's `edit` and `edit_many` refuse** a file the workspace
+    holds when the check of disk before them decided nothing, because the
+    selected branch kept changing while it ran, and say to make the same
+    call again. For a path the workspace doesn't hold, where that check
+    decided nothing, `delete`, `edit`, `edit_many` and the workspace's
+    `readBinary` method now say disk couldn't be checked, where they
+    answered "File not found".
+  - **A turn's tool results share the readers' per-message bound** when they
+    pass it together, each taking an equal share, where a later result was
+    cut or left out without a word. A cut result's notice names the
+    workspace file holding the rest. The readers' cut can still shorten a
+    notice longer than its share, even when it is the turn's only one.
+  - **A message that arrives during a tool call** is injected as the agent's
+    strategy renders it as the newest of its window, where it was injected
+    whole, so one over `maxMessageTokens` or with more images than
+    `maxLiveImages` no longer makes the next request differ from what the
+    live stream carried. On the `frontdesk` strategy, a server's message
+    that the server didn't attribute is still injected without the
+    provenance header the next compile adds (#423). A strategy without
+    that render still gets the message as stored, and nothing is injected
+    mid-turn on the `anthropic-xml` formatter. A message the next compile
+    won't send among its newest isn't injected: a stored `[not shown]` line
+    tells the agent who sent it, its size, and the `history--extract` call
+    that reads it, or its id where the agent isn't shown that tool.
+  - **`channel_close` refuses a tuned-out channel,** as `channel_open` and
+    `channel_decline` do, and says to cancel the tune-out first, which
+    delivers what it diverted. A tune-out on record where there's no
+    tune-out coordinator now ends as the channels come up, and its channel
+    is decided open again; what it diverted isn't delivered, and a log line
+    counts it.
+  - **A modern MCP server's `requestTimeoutMs` that can't be printed** is
+    refused like any other wrong deadline. Checking it used to throw, which
+    failed that server's connection and made `listMcplServers` throw rather
+    than list any server.
+
+- **Operators:** connectome-host now requires `@animalabs/agent-framework`
+  ^0.26.0 (was ^0.24.1), `@animalabs/context-manager` ^0.20.0 (was ^0.18.0)
+  and `@animalabs/membrane` ^0.7.1 (was ^0.6.0); the three move to membrane
+  0.7 together, so an install holds one membrane copy. What operators and
+  agents meet, in brief; each package's notes give it in full (membrane's
+  retry changes and the host's default for them are under their own entry):
+  - **Fewer silently lost turns and replies.** membrane runs complete tool
+    calls a provider returns under `stop_reason: end_turn`, where it ended the
+    turn without running them (with the `[llm-calls] … ANOMALY` line added
+    here, such a response is now visible either way). In explicit and hybrid
+    prose routing, the bounce-wake cap resets when a turn starts with a cause
+    of its own, so a reply to a fresh message no longer bounces with no wake
+    after a resident's third bounce.
+  - **Lone UTF-16 surrogates** reach requests and the store as U+FFFD: a
+    context injection or tool result carrying one no longer makes every
+    request fail with a 400 or wedges the agent's next turn, and
+    context-manager's edits and state writes no longer store state it can't
+    read back.
+  - **Workspace globs** take mount-prefixed patterns (`notes/diary/*.md`),
+    and `**/` matches zero or more directories. In a mount holding a
+    directory named like the mount, a pattern written relative to the mount
+    finds less (agent-framework's Breaking notes).
+  - **Tool results whose data is a string** reach the model as that text, no
+    longer JSON-quoted; `code_execution` scripts get such a result's text in
+    `content[0].text` and drop a `JSON.parse` that only unquoted it.
+  - The workspace tools' descriptions changed, so the first request after
+    the upgrade misses the prompt cache from the tool block on.
+
+- **Operators:** every agent now gets clock rows every ten minutes unless its
+  recipe says otherwise. A recipe without `agent.clock` gets
+  `{ "intervalMinutes": 10 }` (`DEFAULT_RECIPE_CLOCK`), so after the upgrade a
+  resident's window takes a `Clock: …` row at its next event or turn start and
+  then once each ten-minute boundary has passed, mid-turn after a tool round's
+  results included. On some models a clock after a tool's results drops the
+  loop's earlier thinking from the request, at most once an interval.
+  **Migration:** to keep an agent without clock rows, set `agent.clock: false`;
+  to change the interval, give `agent.clock` one of its own. **Unchanged:**
+  subagent streams take no clock rows, and a recipe that already sets
+  `agent.clock` gets what it sets.
+
+- **Operators:** connectome-host now builds its `Membrane` on
+  `@animalabs/membrane` ^0.7.1, where membrane is the one retry layer under
+  the framework: the Anthropic SDK client's own retries are off, membrane's
+  schedules run on `streamYielding()` (agent-framework's turn path) too, and a
+  connect timeout reaches the framework after one attempt, as a retryable
+  `timeout`, where the SDK made three. The host's default retry config
+  (`hostMembraneRetry`) turns membrane's overloaded schedule (seven attempts
+  over about ten minutes at a 529) off, so a 529 gets the base schedule's three
+  sends, 1 s then 2 s apart, as the SDK client sent inside each of
+  agent-framework's attempts before; agent-framework's own policy retries
+  above it as it did. Internal calls on the other paths (compression,
+  retrieval) lose the ten-minute overloaded patience they had and keep their
+  own layers' backoff. A recipe's `agent.retry` is laid over that default, so
+  `agent.retry.overloaded` brings a patient 529 schedule back.
+  **Unchanged:** a call whose first attempt succeeds, and what a failed call's
+  error says.
+
+### Fixed
+
+- A fleet child's exit now sends SIGKILL to what is left of the process group
+  it led, so a process it started there, such as a server that doesn't exit
+  when its stdin closes, doesn't go on running after it. The parent does this
+  when it sees the child exit, when it stops a child it took back at its start
+  while its connection to that child is open, and as the parent itself exits,
+  for each child it started and each it took back whose connection is open,
+  unless it is detaching and leaves its children running. A signal the system
+  refuses is logged, except as the parent exits, and a stop says what of the
+  group is left.
+- On a host started from an install, a fleet child begins only once the
+  fleet's children file lists it, so the file names each child before it can
+  write in its data directory. A child whose parent ends before telling it to
+  begin exits having done nothing. A child that ended while no parent ran
+  stays listed while a process of its group remains, and so does another
+  writer's entry, such as a store audit's. `fleet--kill` of such a child
+  signals nothing of its group, and its result says that a process of the
+  group still runs, as it does wherever a process of a child's group is left,
+  and whether the parent's signal to the group went out.
+
+- A Web UI observer is no longer sent a message whose every part its grant
+  leaves out, such as a tool's call and result without `tools` or a turn of
+  thinking alone without `thinking`, which reached it as an empty row with
+  its time. A page of older history that such messages would leave empty
+  reads further back, up to ten pages' worth. Past that the page comes back
+  empty: a bulk load stops there, and the "older messages" row reads on
+  with a click. An observer that connects while such messages fill the
+  welcome's tail opens on the last messages it may see within ten pages'
+  worth before it, read back the same way.
+
+- A Web UI observer whose grant holds `health` but not `ops` no longer gets
+  the text of failures, which the grant tool puts under `ops`: a failed
+  call's error in the call ledger, an agent's last error, a provider
+  cooldown's or wait's reason, compression debt's error, a health read's
+  failure, a quota read's error, and the credential's message and a failed
+  credential action's reason each come empty, in the live ledger, the
+  welcome, `/healthz`, `/quota`, `/credential` and the credential's state, a
+  fleet child's included. Its health keeps its numbers, flags and times, the
+  names, ids and codes it carries, and a pending device-code login, so the
+  page still shows that a call failed, a section or the whole health read
+  couldn't be read. The host's mode still carries the reason an operator
+  gave for quiescing, an operator's own words.
+
+- A Web UI observer whose grant doesn't hold `tools` no longer gets the
+  images a tool returned, as it already didn't get the tool's result: its
+  conversation leaves them out, and `/media` refuses them. An image in a
+  message itself still reaches every observer that holds `messages`.
+
+## 0.12.1 — 2026-10-22
+
+### Fixed
+
+- Makeup panel: on provider `anthropic`, the exact `count_tokens` figure
+  counts earlier turns' server-tool blocks (web search and the like), which
+  membrane 0.6.0 sends back with every later request. 0.12.0's figure left
+  them out, so it ran low from a server-tool turn on.
+
+- A host notice that can't be posted because its channel isn't registered,
+  or its server is gone, connecting or down, or because the connection
+  refused it before writing anything, is kept and posted if the server
+  reconnects, as the notices module means to do while a chat server is
+  simply not up. It reads agent-framework's refusal `reason` for this,
+  since 0.24's refusals no longer say `not found`, which it matched before.
+  A notice refused while its server was down and being reconnected is now
+  kept, where it was dropped. A first post refused for any other reason is
+  logged and not kept, as before.
+
+- Lesson retrieval no longer picks lessons from messages in a tuned-out
+  channel. It reads the last ten messages the residents are shown, leaving
+  out those a tune-out holds from them, as it already left out writes the
+  framework still holds.
+
+- When a voice client reports an interruption, the TTS relay edits only a
+  message the agent's prose published, as agent-framework's
+  `inference:published` reports it. It took its edit targets from
+  `mcpl:speech-routed`, which also reports publishes that aren't the
+  agent's prose, such as the `sleep` tool's announcement and a
+  subconscious's `speak_in_channel`, so an interruption could edit one of
+  those, or trim nothing when the newest of them was a post with no message
+  id.
+
 ## 0.12.0 — 2026-10-22
 
 ### Breaking

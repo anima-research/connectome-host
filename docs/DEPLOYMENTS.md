@@ -261,34 +261,61 @@ while a clone installs from its tag's `bun.lock`. So:
   what they say about going back. Read the same in the notes of any MCPL
   server you'll update, between the version you noted and the new one: its
   own changelog, or its commits if it keeps none. Then:
-  - **If context-manager or chronicle moved, or any notes say going back
-    isn't safe,** copy what each agent keeps, which "Updating checkouts"
-    lists, as full or reflinked copies, never hardlinks, which share files
-    the agents write, and keep the copy as it was for as long as you might
-    go back. Those two libraries decide how a store is kept on disk, and a
-    newer one can write a store an older one can't read, as chronicle
-    0.3.0's notes say of its own.
-  - **If context-manager moved,** copy each store again, the same way, and
-    audit that copy with the command
+  - **Copy what each agent keeps,** which "Updating checkouts" lists, as
+    full or reflinked copies, never hardlinks, which share files the agents
+    write, and keep the copy as it was for as long as you might go back.
+    Copy at every update, and let each update's copy replace the last: a
+    newer version can write a store, or the host's or a library's other
+    files, in a form an older one can't read, as chronicle 0.3.0's notes say
+    of its own, and a version's notes can miss saying so.
+  - **Then run the new version's store audit,** after the copy and before
+    starting any agent, with the agents and their fleet children still
+    stopped. It opens each store in place, as the new version's start
+    would, so it changes the stores as that start would, and the copy is
+    what puts them back. Run it the way you start the host, from the new
+    version, in the directory and environment the host starts in, since
+    relative directories resolve from there, with `--audit-stores` in place
+    of the recipe's options: `bun
+    node_modules/@animalabs/connectome-host/src/index.ts --audit-stores
+    --recipe <recipe> "$DATA_DIR"`, or `bun src/index.ts --audit-stores …`
+    in a clone. Give `--recipe` the recipe your start command names, so the
+    audit opens the stores under the recipe that start would load; without
+    it, the audit reads the one the host's last start saved, as a start
+    given none does, and with none saved, the default one. Run it once for
+    each agent you start. It audits every session's store in the data
+    directory, and each fleet child the recipe's `modules.fleet.children`
+    names whose data directory exists, in a process of its own, as the
+    fleet launches it: under the recipe its entry names, in the environment
+    the fleet starts it with, given 5 minutes to end, or the minutes
+    `CONNECTOME_FLEET_CHILD_AUDIT_MINUTES` in the audit's environment gives:
+    a number above 0, a larger one than a timer holds (about 35,791
+    minutes, Infinity included) giving the longest it does; 0 or below, or
+    not a number, gives 5.
+    A child launched by `fleet--launch` isn't in
+    the recipe: run the audit on its directory too, the `dataDir` its launch
+    named, `--audit-stores <directory>`, which reads the recipe its last
+    start saved, in the audit's environment. The audit prints a line on
+    stderr for each store under each agent name it opens it under, the
+    recipe's or the default and each session's own, or one for a store it
+    doesn't open, and exits 0 when no store was refused and every
+    store there was audited. A store a session names in its data directory
+    that isn't there yet gets a line and no failure, since a start makes an
+    empty one. Otherwise each
+    line that says `refused`, or starts `Couldn't audit`, names a store or a
+    directory the new version didn't open, and why: go back, below, which
+    restores the copy. A store that lies outside its data directory, or
+    holds a link to what does, isn't opened, since the copy doesn't hold
+    what it reaches; its line says how to go on. A line saying a strategy
+    called a model while opening a store means no audit can answer for that
+    store, only a start: whether to start on it is yours. A store refused
+    for crossed summaries, whose line says `store topology rejected`, can
+    instead be repaired on a copy of the stopped store as
     [AGENT-ONBOARDING §11.8](./AGENT-ONBOARDING.md#11-critical-gotchas-read-before-deploying)
-    gives. The stores are the session directories, `sessions/<id>`, in each
-    agent's `DATA_DIR` and in its fleet children's data directories, or
-    `DATA_DIR/store` on a host from before sessions, which the new version
-    moves into one as it starts. Audit after the install, so the script is
-    the new version's, and before starting, since the new version's first
-    open is what refuses a store or changes it. Opening a store changes it,
-    the audit's open included, so the copy you keep is never the one
-    audited. Then read its stderr and its exit status. A warning that it
-    saw nothing to audit means it may have looked at the wrong thing: check
-    what the warning names, the `--namespace` (`agents/<agent>`) and that
-    the copy carries the store's strategy state, and audit a fresh copy,
-    since the first audit's open changed this one. A store that has never
-    been compressed has no summaries, so it warns with both right. Exit 0
-    is then clean. Exit 2 lists violations: go back, below, or repair a copy
-    of the stopped store as §11.8 says. Exit 1 means it didn't finish, and
-    its message says why: correct the command if that's what it names, and
-    if it couldn't open the copy, go back rather than start the agents on
-    that store.
+    says. Then put the repaired copy in the store's place, keeping the
+    original, and run the audit again before starting, since the repair's
+    own check opens the copy `auditOnly`, which can pass a store a start
+    refuses. For anything else a line names, correct it and run the audit
+    again, or go back.
   - **Then** update any MCPL server the notes name, the way you installed
     it, and start the servers you stopped.
 
@@ -302,9 +329,8 @@ while a clone installs from its tag's `bun.lock`. So:
   build:web` if it says the Web UI's build failed or scripts were off. Put
   back the version of any MCPL server you updated, and any recipe or `.env`
   change you made for the newer version. Then restore the copy of what each
-  agent keeps, if you made one, which discards what the agents recorded
-  since it was made; the audited store copies aren't for restoring. Then
-  start the servers you stopped, and the agents.
+  agent keeps, which discards what the agents recorded since it was made.
+  Then start the servers you stopped, and the agents.
 
 ---
 

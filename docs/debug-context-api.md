@@ -145,8 +145,12 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.messages[].participant'
 # Read the assembled system prompt
 curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.system'
 
-# List the tools this agent may call
+# List the tools this agent is offered
 curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.request.tools[].name'
+
+# With tool presentation on (docs/tool-presentation.md), a hidden tool isn't
+# offered but can still be called: list every tool it may call
+curl -fsS "${AUTH[@]}" "$BASE" | jq -r '.toolPresentation.available[].name'
 
 # Just the model + token config
 curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
@@ -179,7 +183,8 @@ curl -fsS "${AUTH[@]}" "$BASE" | jq '.request.config'
     ],
     "promptCaching": true,
     "assistantParticipant": "agent"
-  }
+  },
+  "toolPresentation": null    // the request's tool-presentation snapshot, or null without one
 }
 ```
 
@@ -195,7 +200,14 @@ fields that matter for debugging:
   injections appended (only when `injections=1`).
 - **`config`** — model, `maxTokens`, and `temperature` (omitted when unset).
 - **`tools`** — only the tools this agent is *allowed* to use (after
-  `canUseTool` filtering), or absent if it has none.
+  `canUseTool` filtering), or absent if it has none. With tool presentation
+  on, only the ones the agent hasn't hidden.
+
+`toolPresentation` is the snapshot agent-framework captured for this request
+when the agent has a tool presentation (docs/tool-presentation.md), and `null`
+otherwise: `available` holds every tool the agent may call, `advertised` the
+ones its request offers, and `entries` each tool's visibility and where its
+description came from.
 
 ## What it does (and doesn't) mirror
 

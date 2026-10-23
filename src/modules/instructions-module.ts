@@ -193,8 +193,8 @@ export class InstructionsModule implements Module {
       ', so the text there is the current one. If ' +
       (heading ? 'that heading is' : 'they are') +
       " missing from your context, the file couldn't be read, and whoever runs this host can see why in " +
-      "its log. workspace--read shows the workspace's stored copy, which on a read-only mount can be older " +
-      'than the file. workspace--edit changes the file where its mount allows writing.',
+      "its log. workspace--read shows the workspace's stored copy, which on a read-only mount can be older than the file; " +
+      'on a mount running direct it reads the file itself. workspace--edit changes the file where its mount allows writing.',
     );
   }
 

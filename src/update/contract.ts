@@ -202,7 +202,7 @@ export interface Mark {
 }
 
 export const JOURNAL_STEPS = [
-  'lock', 'children-check', 'audit', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes',
+  'lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes',
 ] as const;
 export type JournalStep = typeof JOURNAL_STEPS[number];
 
@@ -334,9 +334,13 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 /** fleet-children.json, written by the fleet. Each write lists the fleet's
  *  own children as its record has them, and keeps what's already there that
  *  it doesn't replace, such as another session's child (writeChildrenFile in
- *  the fleet module). A `pid` is null once the fleet has seen its child
- *  exit; a child it can't see exit keeps its pid while a process of this
- *  boot may hold it, which is when the launcher reads it as running. */
+ *  the fleet module). A `pid` is null once nothing of the child can be
+ *  running: the fleet found the process group it led, whose id is its pid,
+ *  empty after the child ended, whether or not it signalled that group, or
+ *  the record is from an earlier boot. Until then the child keeps its pid,
+ *  and the launcher reads it as running while a process holds that pid or
+ *  the group has a member, its boot this one's or unknown. A store audit's entry is written and
+ *  read the same way. */
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;

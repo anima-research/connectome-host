@@ -245,7 +245,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
   const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
   const internals = adapter as unknown as {
     requestSummary(r: ProviderRequest, raw?: unknown): Record<string, unknown>;
-    refusalRawRequest(r: ProviderResponse, raw: unknown): unknown;
+    retainedRawRequest(r: ProviderResponse, raw: unknown): unknown;
   };
 
   test('summarizes requests without retaining message content', () => {
@@ -282,8 +282,8 @@ describe('LoggingAnthropicAdapter request logging', () => {
     const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
     const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;
 
-    expect(internals.refusalRawRequest(success, rawRequest)).toBeUndefined();
-    expect(internals.refusalRawRequest(refusal, rawRequest)).toBe(rawRequest);
+    expect(internals.retainedRawRequest(success, rawRequest)).toBeUndefined();
+    expect(internals.retainedRawRequest(refusal, rawRequest)).toBe(rawRequest);
   });
 
   test('LLM_CALLS_FULL_PAYLOADS=1 retains the raw request on every call', () => {
@@ -295,8 +295,8 @@ describe('LoggingAnthropicAdapter request logging', () => {
       const rawRequest = { messages: ['forensic context'] };
       const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
       const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;
-      expect(fi.refusalRawRequest(success, rawRequest)).toBe(rawRequest);
-      expect(fi.refusalRawRequest(refusal, rawRequest)).toBe(rawRequest);
+      expect(fi.retainedRawRequest(success, rawRequest)).toBe(rawRequest);
+      expect(fi.retainedRawRequest(refusal, rawRequest)).toBe(rawRequest);
     } finally {
       if (prev === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS;
       else process.env.LLM_CALLS_FULL_PAYLOADS = prev;
@@ -311,7 +311,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
         const a = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
         const ai = a as unknown as typeof internals;
         const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
-        expect(ai.refusalRawRequest(success, { m: 1 })).toBeUndefined();
+        expect(ai.retainedRawRequest(success, { m: 1 })).toBeUndefined();
       }
     } finally {
       if (prev === undefined) delete process.env.LLM_CALLS_FULL_PAYLOADS;

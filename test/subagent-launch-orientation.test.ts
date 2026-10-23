@@ -862,6 +862,49 @@ describe('what a launch block says beyond the settings it compares', () => {
     }
   });
 
+  // A fork inherits its parent's clock rows and takes no more of its own, so
+  // it's told so, in minutes when the interval is whole minutes, else seconds,
+  // and with the parent's precision where it isn't its interval's default.
+  test('a fork of a parent with clock rows is told its own are off', async () => {
+    for (const [clock, every] of [
+      [{ intervalMinutes: 10 }, '10 minutes'],
+      [{ intervalMinutes: 10, precision: 'seconds' }, '10 minutes, read to the second'],
+      [{ intervalSeconds: 15 }, '15 seconds'],
+    ] as const) {
+      const h = await makeHarness({ parent: { clock } });
+      try {
+        const input = { name: 'timed', task: 't' };
+        seedForkCall(h.framework, 'toolu_timed', input);
+        await h.subagent.handleToolCall(call('fork', 'toolu_timed', input));
+        await h.asyncPromise('timed');
+        const start = startSection(h.runs.find((r) => r.name.startsWith('timed-'))!.firstContext);
+        expect(line(start, '- Agent settings')).toStartWith(
+          "- Agent settings not carried from the parent stream, so the framework's defaults apply: " +
+            `clock rows off (the parent stream's: every ${every}). The rest match: `,
+        );
+      } finally {
+        await h.cleanup();
+      }
+    }
+  });
+
+  // A spawn's caller is read the same way, and named as the calling stream.
+  test('a spawn from a caller with clock rows is told its own are off, beside the caller\'s', async () => {
+    const h = await makeHarness({ parent: { clock: { intervalMinutes: 10 } } });
+    try {
+      const input = { name: 'timed', systemPrompt: 'p', task: 't' };
+      await h.subagent.handleToolCall(call('spawn', 'toolu_timed_spawn', input));
+      await h.asyncPromise('timed');
+      const start = startSection(h.runs[0]!.firstContext);
+      expect(line(start, '- Agent settings')).toStartWith(
+        "- Agent settings not carried from the calling stream, so the framework's defaults apply: " +
+          "clock rows off (the calling stream's: every 10 minutes). The rest match: ",
+      );
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('a fork from a parent on the defaults says they match', async () => {
     const h = await makeHarness({});
     try {
@@ -931,6 +974,11 @@ describe('each agent setting is read from its own field', () => {
       [{ refusalHandling: { mode: 'rewind' } }, 'refusal handling', 'set'],
       [{ toolResultGuard: { enabled: true } }, 'tool-result guard', 'on'],
       [{ toolWrapperProseGuard: true }, 'tool-wrapper prose guard', 'on'],
+      [{ clock: { intervalSeconds: 600, precision: 'minutes' } }, 'clock rows', 'every 10 minutes'],
+      [{ clock: { intervalSeconds: 600, precision: 'seconds' } }, 'clock rows', 'every 10 minutes, read to the second'],
+      [{ clock: { intervalSeconds: 60, precision: 'minutes' } }, 'clock rows', 'every 1 minute'],
+      [{ clock: { intervalSeconds: 90, precision: 'seconds' } }, 'clock rows', 'every 90 seconds'],
+      [{ clock: { intervalSeconds: 1, precision: 'seconds' } }, 'clock rows', 'every 1 second'],
     ];
     expect(new Set(cases.map(([, name]) => name))).toStrictEqual(new Set(Object.keys(base)));
     for (const [agent, name, value] of cases) {

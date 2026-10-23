@@ -6,7 +6,7 @@
  * line are pinned here too; test/tui-turns.test.ts runs runTui itself.
  */
 import { describe, expect, test } from 'bun:test';
-import { escapeActs, escapeLine, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
+import { escapeActs, escapeLine, formatWireEvent, peekEndColor, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 
 describe('rootTurnEnd', () => {
@@ -107,6 +107,32 @@ describe('rootTurnStep', () => {
         expect(rootTurnStep(showing, { type })).toEqual({ showing, end: null });
       }
     }
+  });
+});
+
+describe("a fleet child's peek log", () => {
+  test("shows each of a stream's ends but its completion as a subagent's peek does, a lone exhausted as a failure with its error", () => {
+    const ends = [
+      { type: 'inference:turn_ended' },
+      { type: 'inference:aborted', reason: 'user' },
+      { type: 'inference:failed', error: 'overloaded' },
+      { type: 'inference:exhausted', error: 'Stream aborted: timeout' },
+    ];
+    for (const end of ends) {
+      const line = peekEndLine(end)!;
+      expect(formatWireEvent(end as never)).toEqual({ text: line.text, color: peekEndColor(line.tone) });
+    }
+    expect(formatWireEvent({ type: 'inference:exhausted', error: 'Stream aborted: timeout' } as never)).toEqual({
+      text: '✗ turn ended: Stream aborted: timeout', color: '#cc0000',
+    });
+    // A completion, which the subagent's peek doesn't show, keeps its own line.
+    expect(formatWireEvent({ type: 'inference:completed' } as never)).toEqual({ text: '─ inference completed ─', color: '#555555' });
+  });
+
+  test('a peek shows a failure in red, a stop in yellow and a turn a tool ended in grey', () => {
+    expect(peekEndColor('error')).toBe('#cc0000');
+    expect(peekEndColor('warn')).toBe('#cccc00');
+    expect(peekEndColor('dim')).toBe('#555555');
   });
 });
 

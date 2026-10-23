@@ -251,7 +251,7 @@ no `cwd`, so it runs in the parent's working directory.
 The parent waits for the socket file, connects, sends `subscribe`, and waits
 for `lifecycle:ready`.
 
-**Failed launch.** Transient missing-socket and connection-refused errors are retried while the child sets up its socket. `socketWaitTimeoutMs` is checked between attempts, and each connect has its own 3 s timeout, so the final error can come up to 3 s after that deadline. A child that exits while its socket file is present, or after a refused connect, is reported as exiting before the parent could connect, with the refusal, since the file may be one a killed predecessor left. On a failure to keep the child's record at its spawn (§4.5: the store's write, its sync, or the children file), to set up the socket, `subscribe` or become ready, the parent sends SIGKILL to the process this launch spawned if it is still running (unless the parent is detaching, which leaves it running), then waits up to 2 s to observe its exit before returning the error. Unless the parent is detaching and leaves the child running, the error then quotes the end of what the child wrote to `startup.log` during this launch (§1), which names the cause when the stage can't, such as a recipe error or a missing key: its last 20 lines, at most 2,000 characters as printed, under a line naming the file, without escape sequences or control characters other than tab and newline. The parent reads the file as it sees the child exit (or, if it sees none, as it returns the error), since from then on the record allows another launch of the name, whose header and output come after; output written after the parent sees the exit, by anything that inherited the child's descriptor, isn't quoted. If the child wrote nothing, the error says so. A file shorter than where the launch began is quoted from its end under a line saying it was truncated, so what it holds may not be this launch's output. Another file at that path, such as one a link there names by then, isn't the file the child was given, which it goes on writing to through the descriptor it inherited, so the error says it was replaced and doesn't read it. When there's nothing to quote from, the error says why, with the error code where a call failed: when the child started, the parent couldn't open the file, found it wasn't a regular file, such as a FIFO there, or couldn't check it or write the launch's header to it, so the child's console output wasn't kept, which the host's log also says at the launch; or the file, when it's read, isn't a regular file or couldn't be read. A spawn that starts no process (Bun 1.3.14 and 1.4.3, Linux) either reports an error on a later tick, with no pid and no exit to follow, for a runtime that isn't there or that the parent may not run (`ENOENT`, `EACCES`), or throws, for a runtime the system can't execute (`ELOOP`, `ENOTDIR`, `ENOEXEC`), a NUL byte in an argument or an env value, an environment too large (`E2BIG`) or a bad descriptor. Either way the launch ends at once with the spawn's own error and its code, cut before any value it refused, since an env value may be a secret and the record's `exitReason` is saved. The parent then has nothing to stop or wait for, and records the child as `crashed` with that reason, so the name can be launched again. No automatic restart is tried, and for a child with `autoRestart`, `autoRestartStopped` says so. The error's way on follows the cause. A runtime that can't be started is for whoever runs the parent to fix, and calling `fleet--launch` again fails the same way until then. `fleet--launch` refuses a `name`, `recipe` or `dataDir` holding a NUL byte before anything starts, naming that field, as it does a missing one, and it drops env from the agent's input. So a value the spawn refuses comes from the parent's own configuration, such as an env value in its recipe, and only whoever runs the parent can change it, which takes effect when the parent restarts. Anything else, such as a limit the parent ran into, may not recur, and the error's step is `fleet--restart`, which keeps the record's env where `fleet--launch` drops it. A spawn that reports neither, starts no process and never binds the socket is reported the same way at the socket's timeout, as when the child's runtime can't be found. An error reported for a child that did start, such as a kill that failed, goes to the parent's log and changes nothing. The record's `exitReason` keeps the failure, without the quote, beside the exit (`child did not become ready: … (exit: SIGKILL)`), whichever came first. If termination remains unconfirmed, the error says so and the record stays `starting`, blocking another launch of that name until the exit is observed. The SIGKILL is a signal death and does not trigger autoRestart (§4.6), so a start the parent had to stop ends automatic restarts until a manual `fleet--launch` or `fleet--restart`, and `autoRestartStopped` says so, as it does for a signal from anywhere else; a child that exits non-zero on its own remains eligible under that section's conditions. An adopted process (§4.5) that fails its readiness check is not killed: it is left running. At the parent's start, its record stays blocked (`starting`, with the failure in `exitReason`); when a launch's own adoption fails, the record is left as it was, and the launch refuses with the leftover artifacts named.
+**Failed launch.** Transient missing-socket and connection-refused errors are retried while the child sets up its socket. `socketWaitTimeoutMs` is checked between attempts, and each connect has its own 3 s timeout, so the final error can come up to 3 s after that deadline. A child that exits while its socket file is present, or after a refused connect, is reported as exiting before the parent could connect, with the refusal, since the file may be one a killed predecessor left. On a failure to keep the child's record at its spawn (§4.5: the store's write, its sync, or the children file), to set up the socket, `subscribe` or become ready, the parent sends SIGKILL to the process this launch spawned if it is still running (unless the parent is detaching, which leaves it running; a child the parent hadn't told to begin yet (§4.5) ends with the parent instead, having done nothing), then waits up to 2 s to observe its exit before returning the error. Unless the parent is detaching and leaves the child running, the error then quotes the end of what the child wrote to `startup.log` during this launch (§1), which names the cause when the stage can't, such as a recipe error or a missing key: its last 20 lines, at most 2,000 characters as printed, under a line naming the file, without escape sequences or control characters other than tab and newline. The parent reads the file as it sees the child exit (or, if it sees none, as it returns the error), since from then on the record allows another launch of the name, whose header and output come after; output written after the parent sees the exit, by anything that inherited the child's descriptor, isn't quoted. If the child wrote nothing, the error says so. A file shorter than where the launch began is quoted from its end under a line saying it was truncated, so what it holds may not be this launch's output. Another file at that path, such as one a link there names by then, isn't the file the child was given, which it goes on writing to through the descriptor it inherited, so the error says it was replaced and doesn't read it. When there's nothing to quote from, the error says why, with the error code where a call failed: when the child started, the parent couldn't open the file, found it wasn't a regular file, such as a FIFO there, or couldn't check it or write the launch's header to it, so the child's console output wasn't kept, which the host's log also says at the launch; or the file, when it's read, isn't a regular file or couldn't be read. A spawn that starts no process (Bun 1.3.14 and 1.4.3, Linux) either reports an error on a later tick, with no pid and no exit to follow, for a runtime that isn't there or that the parent may not run (`ENOENT`, `EACCES`), or throws, for a runtime the system can't execute (`ELOOP`, `ENOTDIR`, `ENOEXEC`), a NUL byte in an argument or an env value, an environment too large (`E2BIG`) or a bad descriptor. Either way the launch ends at once with the spawn's own error and its code, cut before any value it refused, since an env value may be a secret and the record's `exitReason` is saved. The parent then has nothing to stop or wait for, and records the child as `crashed` with that reason, so the name can be launched again. No automatic restart is tried, and for a child with `autoRestart`, `autoRestartStopped` says so. The error's way on follows the cause. A runtime that can't be started is for whoever runs the parent to fix, and calling `fleet--launch` again fails the same way until then. `fleet--launch` refuses a `name`, `recipe` or `dataDir` holding a NUL byte before anything starts, naming that field, as it does a missing one, and it drops env from the agent's input. So a value the spawn refuses comes from the parent's own configuration, such as an env value in its recipe, and only whoever runs the parent can change it, which takes effect when the parent restarts. Anything else, such as a limit the parent ran into, may not recur, and the error's step is `fleet--restart`, which keeps the record's env where `fleet--launch` drops it. A spawn that reports neither, starts no process and never binds the socket is reported the same way at the socket's timeout, as when the child's runtime can't be found. An error reported for a child that did start, such as a kill that failed, goes to the parent's log and changes nothing. The record's `exitReason` keeps the failure, without the quote, beside the exit (`child did not become ready: … (exit: SIGKILL)`), whichever came first. If termination remains unconfirmed, the error says so and the record stays `starting`, blocking another launch of that name until the exit is observed. The SIGKILL is a signal death and does not trigger autoRestart (§4.6), so a start the parent had to stop ends automatic restarts until a manual `fleet--launch` or `fleet--restart`, and `autoRestartStopped` says so, as it does for a signal from anywhere else; a child that exits non-zero on its own remains eligible under that section's conditions. An adopted process (§4.5) that fails its readiness check is not killed: it is left running. At the parent's start, its record stays blocked (`starting`, with the failure in `exitReason`); when a launch's own adoption fails, the record is left as it was, and the launch refuses with the leftover artifacts named.
 
 **Interrupted launch.** A launch that starts while the parent is shutting down is refused at once. Otherwise every launch yields while it loads the recipe and reconciles leftovers, and it is refused, with nothing spawned, if during that time the parent began shutting down, a `fleet--kill` was acknowledged on the generation it replaces (a restart counts from its own start), another launch replaced that generation, or, for an automatic launch, its restart was cancelled; the error names which. A kill that fails (not attached, death unconfirmed) reports its error and refuses nothing. If the launch was adopting a living child, it stops that child rather than leave it unowned, unless it was refused because the parent is detaching. While one launch adopts a child, another launch of that name is refused, since the child keeps only its latest client. These checks guard the spawn: once a launch has spawned, a kill or shutdown acts on the new child like any running one.
 
@@ -315,6 +315,55 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
   same name, recipe and dataDir, `autoStart: false` entries included, and a
   mismatch logs the differing fields and withholds the overrides, without
   logging their values (#180).
+- **The children file.** A host started from an install (with
+  `CONNECTOME_INSTALL_ROOT`) whose recipe has a fleet also keeps
+  `<DATA_DIR>/fleet-children.json`, which the install's launcher reads before
+  a switch: whether any child may still be running, and where each child's
+  data is. The module writes it with each persist, after the store's write,
+  and at a launch after the store's sync too, so it lists a child only once
+  the store has kept it, but for a launch while the module adopts, whose
+  child it lists before the adoption's write keeps the record. On such a
+  host a child begins only once the file lists it: the module starts it with `CONNECTOME_FLEET_BEGIN` set and a pipe on its
+  stdin, and writes a line there after that launch's write. A child whose
+  stdin ends or fails before the line comes exits, having done nothing in its
+  data directory; only what its runtime and imports print before it waits
+  reaches `startup.log`, which the parent opened for it (§1)
+  (`src/fleet-begin.ts`). Each entry has the child's name, data directory and
+  boot id, and its pid while it's starting or ready. A child leads a process
+  group of its own, whose id is its pid, and when the module sees a child end
+  it sends what is left of that group SIGKILL, so a helper the child started
+  there doesn't go on after it: on the child's exit event, or, stopping an
+  adopted child, when its connection to the child was open as the stop began,
+  which only the child's own process can hold. A child whose end the module
+  didn't see, such as one that ended while no host ran, gets no signal, since
+  that group may have emptied and its id been taken since. Either way the
+  entry keeps its pid while the group has a member and the record is from
+  this boot (told as adoption tells it, below), and the pid becomes null once
+  the module finds the group empty: a signal that finds no process in it, a
+  stop, which waits up to 2 s after its signal, a write 2 s after an exit it
+  saw, or any later write once the child's end is recorded (an adopted child
+  whose process ends unseen stays recorded as running until a stop or the
+  next host's adoption). A process holding the child's own pid by then shows
+  the group has ended, since a pid isn't handed out while a group with that
+  id has a member. It stays
+  null across a restart of the host, since the record keeps it. A process a
+  SIGKILL can't reach or end, such as one under another user, stays, and so
+  does the entry. `fleet--kill` of a child whose group still has a process,
+  and a failed launch that leaves one, say so, and whether the module's
+  signal went out, was refused or wasn't sent. A record whose group has
+  ended isn't adopted. A write lists
+  the module's own children and keeps what the file already holds that it
+  doesn't replace, so it's the host's list across its sessions: another
+  directory's entry, its pid kept only while a process of this boot, or a
+  member of the group it leads, may hold it; another generation still running
+  in a child's own directory; and an entry without a child's shape
+  (`isChildEntry`), as it is. A file the module can't read is left as it is,
+  and the write fails: at a launch's spawn the launch then fails, and every
+  launch that spawns a child fails that way until whoever runs the host fixes
+  the file, or removes it once no child it lists is running. A host on trial
+  also lists there each fleet child's store audit while it runs (`<child>'s
+  store audit`, with its pid), which the launcher's fallback waits for like a
+  child (`src/update/audit-stores.ts`).
 - **Adopt on start.** For each persisted child whose record allows it (`ready`
   or `starting` with no exit time, or `crashed` by an earlier failed
   adoption): check the pid is alive and the socket path is a socket, connect,
@@ -330,9 +379,9 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
   and an adoption gives it this boot's; another id means another boot. A
   record without one, or a host that can't read one, compares the record's
   start time with the machine's uptime, with a minute of slack. That rests on
-  the clock: a clock stepped forward by more than a minute after a launch, as
-  one without a battery is when it syncs after booting, makes that record look
-  older than the boot, and a clock that booted behind makes an earlier boot's
+  the clock: a clock stepped forward after a launch by more than the time
+  from the boot to that launch plus a minute, as one without a battery is when
+  it syncs after booting, makes that record look older than the boot, and a clock that booted behind makes an earlier boot's
   record look like this boot's. On such a machine, start the host once its
   clock is set. `fleet--restart` on that name, or `fleet--launch` with the
   record's recipe and dataDir, retries, reattaching once the child answers on
@@ -343,7 +392,10 @@ ones it wants. `command-output` needs no entry: it bypasses the child's filter
   autoStart children that weren't adopted go through a normal launch, which
   may adopt, clean up or refuse (§4.3); a refusal is logged.
 - **Normal exit** stops every child (`fleet--kill`), with a `process.on('exit')`
-  SIGKILL as backstop. Only a hard crash of the parent orphans children.
+  SIGKILL as backstop: to a spawned child's process group while the child
+  runs, and to an adopted child's while the module's connection to it is
+  open, and otherwise to its pid. Only a hard crash of the parent orphans
+  children.
 - **Detach** (the `d` answer at the quit prompt) leaves children running; the
   next parent adopts them.
 

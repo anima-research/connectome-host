@@ -744,7 +744,8 @@ export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<strin
     provider: app.quotaMeter.provider,
     windows: snapshot?.windows ?? [],
     fetchedAt: snapshot?.fetchedAt ?? 0,
-    ...(snapshot?.error ? { error: snapshot.error } : {}),
+    // A failed read is one with an error, whatever its text, even none.
+    ...(snapshot?.error !== undefined ? { error: snapshot.error } : {}),
     blockedUntil: app.quotaMeter.blockedUntil(app.recipe.agent.model) ?? null,
     parked: hostHoldActive(app),
   };
@@ -1679,5 +1680,7 @@ export async function buildDebugContext(
   requireAgent(app, agentName);
   const injections = params.injections === true;
   const request = await app.framework.previewActivation(agentName, { injections });
-  return { agent: agentName, injections, transparent: !injections, request };
+  // The presentation captured with this request, or null for an agent without one.
+  return { agent: agentName, injections, transparent: !injections, request,
+    toolPresentation: app.framework.getRequestToolPresentation(request) };
 }

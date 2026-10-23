@@ -67,6 +67,9 @@ describe('buildWorkspaceMounts', () => {
     expect(config.autoMaterialize).toBeUndefined();
     expect(config.path).toBe(resolve('/store/config'));
     expect(config.watch).toBe('always');
+    // Undo and redo rewind it through materializeMount, which only a
+    // chronicle mount has history for, whatever the framework's default.
+    expect(config.backend).toBe('chronicle');
   });
 
   test('configMount composes with the implicit default mounts only in object form', () => {

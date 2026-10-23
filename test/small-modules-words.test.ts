@@ -374,7 +374,7 @@ describe('modules that offer no tools of their own', () => {
     );
     // workspace--read serves the workspace's stored copy, which a read-only
     // mount doesn't update from disk (README, "Who edits, and how it propagates").
-    expect(r.error).toContain("workspace--read shows the workspace's stored copy, which on a read-only mount can be older than the file.");
+    expect(r.error).toContain("workspace--read shows the workspace's stored copy, which on a read-only mount can be older than the file; on a mount running direct it reads the file itself.");
     expect(r.error).toContain('workspace--edit');
 
     const bare = await new InstructionsModule({ path: 'shared/AGENTS.md', header: '  ', agentName: 'resident' }).handleToolCall(call('edit'));

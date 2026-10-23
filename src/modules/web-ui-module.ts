@@ -121,7 +121,13 @@ import {
   clientHolds,
   frameScopes,
   filterEntryForScopes,
+  frameWithoutFailureText,
+  keepNamedStrings,
   scopeWelcome,
+  CREDENTIAL_STRINGS,
+  HEALTH_STRINGS,
+  QUOTA_STRINGS,
+  type KeptStrings,
   type ObserverScope,
   type ObserverHelloIdentity,
   streamEndedFor,
@@ -254,6 +260,15 @@ const HTTP_PANEL_OPS: Record<string, string> = {
   '/credential': 'credential',
 };
 
+/** The health routes an observer without 'ops' gets without their failure
+ *  text, each keeping the strings its spec names (keepNamedStrings), whether
+ *  this process answers or a fleet child does. */
+const HEALTH_ROUTE_STRINGS: ReadonlyMap<string, KeptStrings> = new Map<string, KeptStrings>([
+  ['/healthz', HEALTH_STRINGS],
+  ['/quota', QUOTA_STRINGS],
+  ['/credential', CREDENTIAL_STRINGS],
+]);
+
 /** True when a wire `scope` field names a fleet child (vs the local process). */
 function isChildScope(scope: string | undefined): scope is string {
   return scope !== undefined && scope !== '' && scope !== 'local';
@@ -293,6 +308,10 @@ const AUTOSTART_RECORD_WAIT_MS = 1_000;
 /** Default / max page size for request-history. */
 const HISTORY_PAGE_DEFAULT = 200;
 const HISTORY_PAGE_MAX = 500;
+/** The most windows of its own size an observer's page reads back past
+ *  messages its scopes empty (readHistory), each widened to whole bodies as
+ *  a full client's page is, so the reading one request starts is bounded. */
+const HISTORY_READ_BACK_WINDOWS = 10;
 
 /** Re-exported from the shared panel-data layer (moved there so headless
  *  fleet children serve the same snapshot over the fleet IPC). */
@@ -927,17 +946,28 @@ export class WebUiModule implements Module {
    *  Every frame that goes whole to more than one client goes this way, so
    *  the live stream refuses an observer what its welcome and its requests
    *  do. `message-appended` goes to each observer projected through
-   *  filterEntryForScopes instead. A client that may not have `frame` gets
-   *  `standIn` in its place, if it may have that. */
+   *  filterEntryForScopes instead. An observer that may have `frame` but
+   *  doesn't hold 'ops' gets it without its failure text
+   *  (frameWithoutFailureText), a copy made for the first such observer. A
+   *  client that may not have `frame` gets `standIn` in its place, if it may
+   *  have that. */
   private broadcast(frame: WebUiServerMessage, standIn?: WebUiServerMessage | null): void {
     if (!sharedServer) return;
     const scopes = frameScopes(frame);
     const fallback = standIn ? { frame: standIn, scopes: frameScopes(standIn) } : null;
+    let withoutText: WebUiServerMessage | undefined;
     for (const client of sharedServer.clients.values()) {
       if (!client.welcomed) continue;
-      if (clientHolds(client, scopes)) this.send(client, frame);
-      else if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
+      if (clientHolds(client, scopes)) {
+        this.send(client, clientHolds(client, ['ops']) ? frame : (withoutText ??= frameWithoutFailureText(frame)));
+      } else if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
     }
+  }
+
+  /** Send `frame` to one client that may have it, as broadcast sends it:
+   *  without its failure text to an observer without 'ops'. */
+  private sendScoped(client: ClientState, frame: WebUiServerMessage): void {
+    this.send(client, clientHolds(client, ['ops']) ? frame : frameWithoutFailureText(frame));
   }
 
   private fanOutTrace(event: TraceEvent): void {
@@ -1182,6 +1212,7 @@ export class WebUiModule implements Module {
     if ((url.pathname === '/healthz' || url.pathname === '/quota' || url.pathname === '/credential') && !httpAllowed('health')) {
       return this.unauthorized();
     }
+    const keptStrings = httpAllowed('ops') ? undefined : HEALTH_ROUTE_STRINGS.get(url.pathname);
     if (url.pathname.startsWith('/files/') && !basicOk) {
       // Workspace files stay basic-auth-only: mount contents are outside the
       // observer scope model (they are the agent's working files, not wire
@@ -1208,14 +1239,16 @@ export class WebUiModule implements Module {
 
     // Fleet-scope proxying: every debug/health route accepts ?scope=<child>.
     // The request is forwarded to that fleet child over the panel IPC verb
-    // and the child's JSON comes back verbatim — same URLs, same payloads,
-    // whether the process answering is this one or a child. Keeps these
-    // endpoints curl-able for operators / connectome-doctor / the fleet hub
-    // without teaching any of them a second transport.
+    // and the child's JSON comes back as it sent it — same URLs, same
+    // payloads, whether the process answering is this one or a child, and an
+    // observer without 'ops' gets a health route's answer without its failure
+    // text from either (HEALTH_ROUTE_STRINGS). Keeps these endpoints
+    // curl-able for operators / connectome-doctor / the fleet hub without
+    // teaching any of them a second transport.
     const scopeParam = url.searchParams.get('scope');
     if (scopeParam && scopeParam !== 'local') {
       const op = HTTP_PANEL_OPS[url.pathname];
-      if (op) return this.proxyPanelToChild(scopeParam, op, panelParamsFromUrl(url));
+      if (op) return this.proxyPanelToChild(scopeParam, op, panelParamsFromUrl(url), keptStrings);
       // Fall through: non-panel routes (static, /files) ignore the param.
     }
 
@@ -1257,10 +1290,15 @@ export class WebUiModule implements Module {
       return this.handleToolClasses(url);
     }
 
-    // Inline image bytes for transcript media refs (see serveMedia). Same
-    // sensitivity tier as the transcript itself.
+    // Inline image bytes for transcript media refs (see serveMedia). A
+    // message's own image, at a top-level block path (`<n>`), is the same
+    // sensitivity tier as the transcript itself. Any other path, such as a
+    // nested one (`<n>.<m>`), which buildMediaBlock resolves only inside a
+    // tool's result, is the tool result's tier.
     if (url.pathname.startsWith('/media/')) {
       if (!httpAllowed('messages')) return this.unauthorized();
+      const blockPath = url.pathname.slice('/media/'.length).split('/').slice(1).join('/');
+      if (!/^\d+$/.test(blockPath) && !httpAllowed('tools')) return this.unauthorized();
       return this.serveMedia(url);
     }
 
@@ -1271,10 +1309,13 @@ export class WebUiModule implements Module {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
       try {
-        return Response.json(buildHealthSnapshot(app));
+        const snapshot = buildHealthSnapshot(app);
+        return Response.json(keptStrings ? keepNamedStrings(snapshot, keptStrings) : snapshot);
       } catch (err) {
         const status = err instanceof PanelError ? err.status : 500;
-        return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status });
+        // A read that failed whole is still a failed read without its text.
+        const failed = { error: err instanceof Error ? err.message : String(err) };
+        return Response.json(keptStrings ? keepNamedStrings(failed, keptStrings) : failed, { status });
       }
     }
 
@@ -1282,14 +1323,16 @@ export class WebUiModule implements Module {
     if (url.pathname === '/quota') {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
-      return Response.json(await buildQuotaSnapshot(app));
+      const quota = await buildQuotaSnapshot(app);
+      return Response.json(keptStrings ? keepNamedStrings(quota, keptStrings) : quota);
     }
 
     // Credential state (health-scoped, like /healthz); no token ever rides here.
     if (url.pathname === '/credential') {
       const app = this.panelApp();
       if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
-      return Response.json(buildCredentialSnapshot(app));
+      const credential = buildCredentialSnapshot(app);
+      return Response.json(keptStrings ? keepNamedStrings(credential, keptStrings) : credential);
     }
 
     // Workspace file passthrough: /files/<mount>/<path...>
@@ -1338,13 +1381,16 @@ export class WebUiModule implements Module {
       | FleetModule | undefined;
   }
 
-  /** Forward one panel op to a fleet child and answer with its JSON. Status
-   *  mapping comes from the child (PanelError.status travels the wire), with
-   *  502/504 supplied by requestPanel for unreachable/unresponsive children. */
+  /** Forward one panel op to a fleet child and answer with its JSON, keeping
+   *  only the strings `keptStrings` names when it's given (keepNamedStrings).
+   *  Status mapping comes from the child (PanelError.status travels the
+   *  wire), with 502/504 supplied by requestPanel for unreachable/unresponsive
+   *  children. */
   private async proxyPanelToChild(
     childName: string,
     op: string,
     params: Record<string, unknown>,
+    keptStrings?: KeptStrings,
   ): Promise<Response> {
     const fleet = this.fleetModule();
     if (!fleet) {
@@ -1355,9 +1401,10 @@ export class WebUiModule implements Module {
     }
     const result = await fleet.requestPanel(childName, op, params);
     if (!result.ok) {
-      return Response.json({ error: result.error ?? 'panel request failed' }, { status: result.status ?? 502 });
+      const failed = { error: result.error ?? 'panel request failed' };
+      return Response.json(keptStrings ? keepNamedStrings(failed, keptStrings) : failed, { status: result.status ?? 502 });
     }
-    return Response.json(result.data);
+    return Response.json(keptStrings ? keepNamedStrings(result.data, keptStrings) : result.data);
   }
 
   /**
@@ -1872,7 +1919,10 @@ export class WebUiModule implements Module {
    * `/media/<messageId>/<blockPath>` — one inline image, streamed as bytes.
    * Transcript frames carry only a `ref`; the browser fetches on render, so
    * multi-MB base64 never rides the WebSocket and never inflates a welcome.
-   * Observer sessions need the `messages` scope (same tier as the transcript).
+   * Observer sessions need the `messages` scope (same tier as the transcript)
+   * for a message's own image, at a top-level block path, and `tools` as well
+   * for any other path, such as a tool result's image; the route checks both
+   * before a fleet child's request is sent on.
    */
   private async serveMedia(url: URL): Promise<Response> {
     const rest = url.pathname.slice('/media/'.length);
@@ -2281,13 +2331,13 @@ export class WebUiModule implements Module {
       case 'request-credential': {
         if (isChildScope(parsed.scope)) {
           void this.requestChildPanel(client, parsed.scope!, 'credential', {}).then((data) => {
-            if (data !== null) this.send(client, { type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
+            if (data !== null) this.sendScoped(client, { type: 'credential-state', scope: parsed.scope, ...(data as object) } as WebUiServerMessage);
           });
           return;
         }
         const app = this.panelApp();
         if (!app) return;
-        this.send(client, { type: 'credential-state', scope: 'local', ...buildCredentialSnapshot(app) } as WebUiServerMessage);
+        this.sendScoped(client, { type: 'credential-state', scope: 'local', ...buildCredentialSnapshot(app) } as WebUiServerMessage);
         return;
       }
 
@@ -3143,9 +3193,10 @@ export class WebUiModule implements Module {
     }
     const result = await fleet.requestPanel(childName, op, params);
     if (!result.ok) {
+      // What the child's failure said is ops's, as broadcast and sendScoped send it.
       this.send(client, {
         type: 'error',
-        message: `${op} on '${childName}' failed: ${result.error ?? 'unknown error'}`,
+        message: `${op} on '${childName}' failed` + (clientHolds(client, ['ops']) ? `: ${result.error ?? 'unknown error'}` : ''),
       });
       return null;
     }
@@ -3199,16 +3250,31 @@ export class WebUiModule implements Module {
     const childRecipes = await this.loadWelcomeRecipes();
     if (!current()) return;
     const welcome = this.buildWelcome(childRecipes);
-    this.send(client, client.scopes === null ? welcome : scopeWelcome(welcome, client.scopes));
+    this.send(client, client.scopes === null ? welcome : this.observerWelcome(welcome, client.scopes));
     client.welcomed = true;
     // Live trace forwarding is driven by the single fan-out listener
     // installed in setApp(); membership is implicit in `sharedServer!.clients`.
   }
 
+  /** The welcome as an observer with `scopes` gets it (scopeWelcome). When
+   *  its scopes empty every message of the tail, it reads back as a history
+   *  page does (readHistory), so it opens on the last messages it may see
+   *  within those windows, and its `startIndex` is where the reading stopped.
+   *  It reads in the same turn the welcome was built in, so no message lands
+   *  between them. */
+  private observerWelcome(welcome: WelcomeMessage, scopes: Set<ObserverScope>): WelcomeMessage {
+    const scoped = scopeWelcome(welcome, scopes);
+    if (scoped.messages.length > 0 || !scopes.has('messages')) return scoped;
+    const cmw = sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager() as unknown as WindowCapableCm | undefined;
+    if (typeof cmw?.getMessageWindow !== 'function') return scoped;
+    const { entries, startIndex } = readHistory(cmw, scoped.history.startIndex, WELCOME_HISTORY_LIMIT, scopes);
+    return { ...scoped, messages: entries, history: { ...scoped.history, startIndex } };
+  }
+
   /**
-   * Serve a page of older history ending just before `beforeIndex`. Windowed
-   * read with bodyGroup alignment; the reply carries the same corrId so the
-   * SPA can match it to its in-flight scroll request.
+   * Serve a page of older history ending just before `beforeIndex`
+   * (readHistory); the reply carries the same corrId so the SPA can match it
+   * to its in-flight scroll request.
    */
   private handleRequestHistory(client: ClientState, req: RequestHistoryMessage): void {
     const cm = sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager();
@@ -3226,24 +3292,7 @@ export class WebUiModule implements Module {
     }
     const limit = Math.min(req.limit ?? HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX);
     const beforeIndex = Math.min(req.beforeIndex, cmw.getMessageCount());
-    const offset = Math.max(0, beforeIndex - limit);
-    const win = cmw.getMessageWindow(offset, beforeIndex - offset, {
-      resolveBlobs: false,
-      alignToBodyGroups: true,
-    });
-    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
-    if (client.scopes !== null) {
-      entries = entries
-        .map((e) => filterEntryForScopes(e, client.scopes!))
-        .filter((e): e is WelcomeMessageEntry => e !== null);
-    }
-    this.send(client, {
-      type: 'history-page',
-      corrId: req.corrId,
-      entries,
-      startIndex: win.startIndex,
-      totalCount: win.totalCount,
-    });
+    this.send(client, { type: 'history-page', corrId: req.corrId, ...readHistory(cmw, beforeIndex, limit, client.scopes) });
   }
 
   /** Each fleet child's recipe, for its tree in the welcome. sendWelcome
@@ -3641,7 +3690,7 @@ function toWireEntry(
                 : null;
               if (!mt || !mt.startsWith('image/')) continue;
               const ref = mediaRef(`${bi}.${ii}`, mt);
-              blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}) });
+              blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}), toolUseId: b.toolUseId });
             }
           }
         }
@@ -3745,6 +3794,44 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
     out.push(toWireEntry(merged, startIndex + runStart, { mediaRefs: false }));
   }
   return out;
+}
+
+/**
+ * A page of history ending just before `beforeIndex`: one window of about
+ * `limit` slots, widened to whole bodies (alignToBodyGroups), for a full
+ * client (`scopes` null). An observer's page leaves out the entries its
+ * scopes empty, so a window of messages it may see nothing of comes back
+ * empty, and the page takes an empty page for the start of history. So for
+ * an observer it reads the window before, and the one before that, until a
+ * window leaves it an entry or history starts, for at most
+ * HISTORY_READ_BACK_WINDOWS windows. Past that the page is empty, and its
+ * startIndex is where the reading stopped: the page still shows that older
+ * messages remain, a bulk load stops there, and the page's next request,
+ * such as a click on that row, reads on from there.
+ */
+function readHistory(
+  cmw: WindowCapableCm,
+  beforeIndex: number,
+  limit: number,
+  scopes: Set<ObserverScope> | null,
+): { entries: WelcomeMessageEntry[]; startIndex: number; totalCount: number } {
+  for (let windows = 1; ; windows++) {
+    const offset = Math.max(0, beforeIndex - limit);
+    const win = cmw.getMessageWindow(offset, beforeIndex - offset, {
+      resolveBlobs: false,
+      alignToBodyGroups: true,
+    });
+    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+    if (scopes !== null) {
+      entries = entries
+        .map((e) => filterEntryForScopes(e, scopes))
+        .filter((e): e is WelcomeMessageEntry => e !== null);
+    }
+    if (entries.length > 0 || win.startIndex === 0 || windows === HISTORY_READ_BACK_WINDOWS) {
+      return { entries, startIndex: win.startIndex, totalCount: win.totalCount };
+    }
+    beforeIndex = win.startIndex;
+  }
 }
 
 /** The framework stores assistant turns under the agent's name (e.g.

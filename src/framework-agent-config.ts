@@ -1,5 +1,6 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
+import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
@@ -7,6 +8,13 @@ type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number]
  *  for the 1M-window models; a recipe on a smaller window must set its own
  *  (budget + maxTokens has to fit under the window). */
 export const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
+
+/** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
+ *  when it's set, else the recipe's own, else its provider's default. */
+export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
+  return envModel || recipe.agent.model ||
+    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
+}
 
 /** The compile budget the recipe configures: its own, else the default. A
  *  runtime override (agent settings) can still move the live budget. */
@@ -83,6 +91,7 @@ export function buildFrameworkAgentConfig(
   }
   return {
     name: agentName,
+    ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
     systemPrompt: recipe.agent.systemPrompt,
     ...(recipe.agent.allowedTools !== undefined
@@ -141,5 +150,7 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
       : {}),
+    // Ten-minute clock rows unless the recipe names its own or turns them off (false).
+    ...(recipe.agent.clock === false ? {} : { clock: recipe.agent.clock ?? { ...DEFAULT_RECIPE_CLOCK } }),
   };
 }

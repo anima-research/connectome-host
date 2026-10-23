@@ -63,9 +63,13 @@ export interface WelcomeMessage {
    *  Clients fold live `trace` / `message-appended` events on top and page
    *  older messages via `request-history`. */
   messages: WelcomeMessageEntry[];
-  /** Paging metadata for `messages`. `startIndex` is the store slot index of
-   *  the first entry (== the number of older messages not shipped);
-   *  `totalCount` is the store size at snapshot time. */
+  /** Paging metadata for `messages`. `startIndex` is the store slot index
+   *  the tail window begins at (== the number of older messages not
+   *  shipped); an observer's first entry can come after it, past messages
+   *  its scopes empty. When its scopes empty the whole tail, an observer's
+   *  welcome reads back as a `history-page` does, and `startIndex` is where
+   *  that reading stopped. `totalCount` is the store size at snapshot
+   *  time. */
   history: {
     startIndex: number;
     totalCount: number;
@@ -136,8 +140,9 @@ export type MessageBlock =
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
   /** Image/document/audio/video or un-inflated blob_ref placeholder. `ref`
    *  is present for images the host can serve lazily at `/media/<ref>` —
-   *  bytes never ride the WebSocket. */
-  | { kind: 'media'; mediaType: string; ref?: string };
+   *  bytes never ride the WebSocket. `toolUseId` names the tool call whose
+   *  result the image came in, so it goes only where tool results go. */
+  | { kind: 'media'; mediaType: string; ref?: string; toolUseId?: string };
 
 export interface WelcomeMessageEntry {
   /** Stable id from the message store; clients can use this for keys. */
@@ -229,8 +234,12 @@ export interface CallLedgerRow {
     effectiveTtl: '5m' | '1h';
   };
   verdict: CallLedgerVerdict;
+  /** Why the call got its verdict. A failed call's (`ERROR`) is its error's
+   *  text, which an observer without 'ops' gets empty. */
   cause: string;
   stopReason?: string;
+  /** Present exactly when the call failed: its error's text, which an
+   *  observer without 'ops' gets empty. */
   error?: string;
 }
 
@@ -303,6 +312,8 @@ export interface QuotaSnapshotData {
     advisory?: boolean;
   }>;
   fetchedAt?: number;
+  /** Present when the last read failed: what it said, which an observer
+   *  without 'ops' gets empty. */
   error?: string;
   /** Epoch ms at which the last spent window resets, else null. A spent
    *  window is not by itself a parked agent — see `parked`. */
@@ -544,6 +555,8 @@ export interface CredentialStateMessage {
   agent?: string;
   kind?: string;
   provider?: string;
+  /** The state's alert text, which can hold the provider's rejection detail
+   *  or a quota read's error: an observer without 'ops' gets it empty. */
   message?: string;
   since?: number;
   until?: number;
@@ -552,6 +565,8 @@ export interface CredentialStateMessage {
   expiresAt?: number;
   actions?: Array<{ id: string; label: string; hint?: string }>;
   login?: { verificationUrl: string; userCode: string };
+  /** The last operator action. Its `message`, which holds a failed action's
+   *  reason, an observer without 'ops' gets empty. */
   lastAction?: { id: string; at: number; ok: boolean; message: string };
 }
 
@@ -586,14 +601,20 @@ export interface SettingsStateMessage {
 }
 
 /** A page of older history — response to `request-history`, routed only to
- *  the requesting client and correlated by `corrId`. */
+ *  the requesting client and correlated by `corrId`. An observer's page
+ *  leaves out the entries its scopes empty (an entry that had no blocks to
+ *  begin with stays), and reads back past windows that leave it none, for
+ *  at most ten windows of the request's size. So it comes back empty at the
+ *  start of history, or where those ten windows ran out. */
 export interface HistoryPageMessage {
   type: 'history-page';
   corrId: string;
   /** Entries in store order (oldest first), ending just before the
-   *  requested `beforeIndex`. */
+   *  requested `beforeIndex`, or, for an observer, before the messages
+   *  after them that its scopes empty. */
   entries: WelcomeMessageEntry[];
-  /** Slot index of the first entry — the next page's `beforeIndex`. */
+  /** Slot index where the reading stopped — the next page's `beforeIndex`.
+   *  An observer's first entry can come after it. */
   startIndex: number;
   /** Store size at read time. */
   totalCount: number;
@@ -1062,8 +1083,8 @@ export interface RequestWorkspaceFileMessage {
 
 /** Page older conversation history. Response is a `history-page` with the
  *  same `corrId` (or an `error`). Entries returned end just before
- *  `beforeIndex`; pass the previous page's `startIndex` to keep walking
- *  backward. */
+ *  `beforeIndex`, or, for an observer, before the messages its scopes
+ *  empty; pass the previous page's `startIndex` to keep walking backward. */
 export interface RequestHistoryMessage {
   type: 'request-history';
   corrId: string;

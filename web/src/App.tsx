@@ -22,8 +22,9 @@ import {
   type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
 } from './Health';
 import { BranchPanel } from './Branches';
-import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
+import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
+import { healthReadError } from '@conhost/web/health-lookup';
 import {
   AGENT_TREE_SCOPES,
   WEB_PROTOCOL_VERSION,
@@ -65,7 +66,7 @@ type UiBlock =
       durationMs?: number;
     }
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
-  | { kind: 'media'; mediaType: string; ref?: string }
+  | { kind: 'media'; mediaType: string; ref?: string; toolUseId?: string }
   /** Client-only: a tool call being written live (raw partial JSON from
    *  blockType 'tool_call' token deltas). Replaced by the parsed tool_use
    *  blocks when inference:tool_calls_yielded lands. */
@@ -340,8 +341,8 @@ export function App() {
           setHealthErr('403');
           return;
         }
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+        const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+        throw new Error(healthReadError(res.status, body));
       }
       const h = (await res.json()) as HealthSnapshot;
       if (scope !== panelScope()) return; // scope switched mid-flight — stale
@@ -2032,8 +2033,8 @@ function Header(props: {
         </Show>
         {/* A subscription meter that has never read (inference-only token,
             gateway without the usage path) must say so, not render nothing. */}
-        <Show when={props.quota?.subscription && props.quota.windows.length === 0 && props.quota.error}>
-          <span class="ml-3 text-amber-400" title={`Subscription quota unreadable: ${props.quota!.error}`}>
+        <Show when={quotaUnreadable(props.quota ?? null)}>
+          <span class="ml-3 text-amber-400" title={`Subscription quota unreadable${props.quota!.error ? `: ${props.quota!.error}` : ''}`}>
             quota: unreadable
           </span>
         </Show>

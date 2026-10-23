@@ -151,12 +151,19 @@ describe('fleet refusals name what the agent can do', () => {
   // later launch, or a later host's start, probes again a record whose
   // adoption was left unresolved.
   test('the reason a restore leaves on an unresolved adoption is one a later launch probes again', async () => {
-    const ended = spawn(process.execPath, ['-e', '']);
+    // Its leader has ended, and its group still has a process, so the record
+    // isn't retired (a record whose group has been found empty isn't
+    // adopted again: fleet-children-file.test.ts).
+    const ended = spawn('sh', ['-c', 'sleep 60 & exit 0'], { detached: true, stdio: 'ignore' });
     await new Promise((r) => ended.once('exit', r));
-    const { fleet } = await restored({ pid: ended.pid! });
-    const record = fleet.getChildren().get('leaf')!;
-    expect(record.status).toBe('crashed');
-    expect((fleet as unknown as { canRetryAdoption(r: object): boolean }).canRetryAdoption(record)).toBe(true);
+    try {
+      const { fleet } = await restored({ pid: ended.pid! });
+      const record = fleet.getChildren().get('leaf')!;
+      expect(record.status).toBe('crashed');
+      expect((fleet as unknown as { canRetryAdoption(r: object): boolean }).canRetryAdoption(record)).toBe(true);
+    } finally {
+      try { process.kill(-ended.pid!, 'SIGKILL'); } catch { /* the group has ended */ }
+    }
   });
 
   test('an await on a child that has stopped, before the wait or during it, says so, and which children are idle', async () => {

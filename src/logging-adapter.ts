@@ -2,8 +2,9 @@
 // response, and any error to a JSONL log file. Restores the Hermes-era
 // `llm-calls.<iso>.jsonl` visibility we lose on the connectome stack by
 // default. Successful calls keep a compact request summary; the full raw
-// request is retained only for refusals and errors, where forensic inspection
-// matters (a keepalive poke's only with full payloads: see below). Serializing the full raw + normalized request on every tool-loop
+// request is retained only for refusals, anomalous responses and errors,
+// where forensic inspection matters (a keepalive poke's only with full
+// payloads: see below). Serializing the full raw + normalized request on every tool-loop
 // turn previously created several simultaneous copies of a large context and
 // contributed to production OOMs.
 //
@@ -24,8 +25,8 @@
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
 //   { type: 'call'|'error', kind: 'complete'|'stream'|'keepalive', timestamp, durationMs,
-//     requestSummary, rawRequest?, rawResponse, error?, errorType?,
-//     httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
+//     messageId?, requestId?, requestSummary, rawRequest?, rawResponse, anomaly?,
+//     error?, errorType?, httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
 // A failure's `error` is { name, message, stack } with its text bounded, or
 // a non-Error's text (logging-error-fields.ts). The request summary leaves
 // out only the parts it can't read; a record whose response can't be read
@@ -39,7 +40,25 @@
 // Every line, newline included, stays within the shared 16 MiB UTF-8 cap
 // (logging-record.ts): an oversized or unserializable record drops its raw
 // request first, its raw response only if the line still doesn't fit, then
-// its summaries, and `truncated` says what was dropped.
+// its summaries, and `truncated` says what was dropped. Every step keeps
+// `anomaly`, `messageId` and `requestId`.
+//
+// A complete() or stream() row also carries, when the provider response (or
+// a failed call's error) exposes them, `messageId` (the provider's message
+// id) and `requestId` (the provider's request id, the handle a provider needs
+// to look a call up), so a call can be reported upstream without its
+// content. Only this adapter's complete() and stream() rows do: keepalive
+// rows, the Bedrock adapter's and the generic wrapper's don't.
+//
+// An anomalous response keeps its full raw request too, and its row carries
+// `anomaly` (see responseAnomaly) plus one timestamped stderr line that says
+// whether the row with the request was written, so the call can be replayed
+// and reported. Anomalous: a response holding a client `tool_use` block
+// whose stop reason is anything but 'tool_use' (observed 2026-10-19 as
+// `end_turn` with a complete tool call). The row is the provider's response
+// as this adapter received it: membrane with membrane#168 runs complete
+// calls under `end_turn` or no stop reason; earlier membrane, and any
+// membrane under other stop reasons, don't.
 
 import { AnthropicAdapter, cacheLineageKey } from '@animalabs/membrane';
 import type {
@@ -52,7 +71,7 @@ import type {
 import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
-import { serializeRecord } from './logging-record.js';
+import { serializeRecordOutcome, type RecordKept } from './logging-record.js';
 
 /** Live read of the current reasoning setting. The host wires this to
  *  `SettingsModule.getReasoning()` so toggles via the `agent_settings` tool's
@@ -120,6 +139,154 @@ function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): b
     );
   }
   return false;
+}
+
+/** A response the provider shaped inconsistently, as its llm-calls row names it. */
+export interface ResponseAnomaly {
+  kind: 'tool_use_with_stop_reason';
+  /** The stop reason membrane acts on: the raw response's when it names
+   *  one, otherwise membrane's normalized one, which defaults a missing
+   *  reason to 'end_turn' on complete() and stream() alike. Null only when
+   *  neither names one. */
+  stopReason: string | null;
+  /** The provider's own terminal reason, before any default was applied:
+   *  null when the provider reported none (a defaulted `end_turn` then
+   *  reads as stopReason 'end_turn', providerStopReason null, on both
+   *  paths). Absent when the response doesn't say. */
+  providerStopReason?: string | null;
+  /** Names of the response's client tool_use blocks, in order. */
+  toolNames: string[];
+}
+
+/**
+ * Whether a provider response is anomalous. A client `tool_use` block under
+ * any stop reason but 'tool_use' is one: the provider asked for no tool
+ * round. That includes `max_tokens` and `refusal` (a call cut off
+ * mid-input) as well as `end_turn`, `stop_sequence` and a missing reason,
+ * since such a call is worth a replayable record whatever stopped it.
+ * Membrane before membrane#168 runs tool rounds only on 'tool_use', so these
+ * calls were lost; membrane with membrane#168 runs complete calls under
+ * `end_turn` or no reason. This reads the provider's response as the adapter
+ * returns it, before membrane decides. Server-side tool blocks
+ * (`server_tool_use`) are not client calls and don't count. Reading never
+ * throws.
+ */
+export function responseAnomaly(response: unknown): ResponseAnomaly | undefined {
+  return guarded(() => {
+    const r = response as {
+      content?: unknown;
+      stopReason?: unknown;
+      providerStopReason?: unknown;
+      raw?: { content?: unknown; stop_reason?: unknown } | null;
+    } | null | undefined;
+    if (!r || typeof r !== 'object') return undefined;
+    const raw = r.raw && typeof r.raw === 'object' ? r.raw : undefined;
+    const blocks = Array.isArray(raw?.content) ? raw!.content as unknown[]
+      : Array.isArray(r.content) ? r.content as unknown[] : [];
+    const toolNames = blocks
+      .filter((b): b is { type: string; name?: unknown } =>
+        !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'tool_use')
+      .map((b) => (typeof b.name === 'string' ? b.name : '?'));
+    // The raw response's reason when it names one; otherwise membrane's
+    // normalized one. complete()'s raw response is the API message, whose
+    // stop_reason is null when the provider sent none, while stream()'s raw
+    // carries membrane's defaulted 'end_turn': reading on to the normalized
+    // reason gives both paths 'end_turn' for the same case.
+    const rawStop = typeof raw?.stop_reason === 'string' ? raw.stop_reason : r.stopReason;
+    const stopReason = typeof rawStop === 'string' ? rawStop : null;
+    if (toolNames.length === 0 || stopReason === 'tool_use') return undefined;
+    const anomaly: ResponseAnomaly = { kind: 'tool_use_with_stop_reason', stopReason, toolNames };
+    if ('providerStopReason' in r) {
+      anomaly.providerStopReason = typeof r.providerStopReason === 'string' ? r.providerStopReason : null;
+    }
+    return anomaly;
+  });
+}
+
+/** The provider's message id and request id, where the response exposes
+ *  them: membrane's raw response (the API message on complete(), whose
+ *  request id the SDK attaches as `_request_id`), or fields a provider
+ *  adapter adds (`request_id`, `requestId`). Each is a non-empty string or
+ *  absent. Reading never throws. */
+export function responseIds(response: unknown): { messageId?: string; requestId?: string } {
+  const out: { messageId?: string; requestId?: string } = {};
+  guarded(() => {
+    const r = response as { raw?: Record<string, unknown> | null; requestId?: unknown } | null | undefined;
+    const raw = r?.raw && typeof r.raw === 'object' ? r.raw : undefined;
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+    const messageId = str(raw?.id);
+    const requestId = str(raw?.request_id) ?? str(raw?.requestId) ?? str(raw?._request_id) ?? str(r?.requestId);
+    if (messageId) out.messageId = messageId;
+    if (requestId) out.requestId = requestId;
+  });
+  return out;
+}
+
+/** The provider's request id a failed call's error carries, where it does:
+ *  the error itself (`requestID`, `request_id`, `requestId`) or, for a
+ *  membrane error, the provider SDK error it wraps (`rawError`), including
+ *  its `request-id` response header. A non-empty string or undefined.
+ *  Reading never throws. */
+export function errorRequestId(error: unknown): string | undefined {
+  return guarded(() => {
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+    const fromObject = (o: unknown): string | undefined => {
+      if (!o || typeof o !== 'object') return undefined;
+      const e = o as { requestID?: unknown; request_id?: unknown; requestId?: unknown; _request_id?: unknown; headers?: unknown };
+      const direct = guarded(() => str(e.requestID) ?? str(e.request_id) ?? str(e.requestId) ?? str(e._request_id));
+      if (direct) return direct;
+      return guarded(() => {
+        const h = e.headers as { get?: (name: string) => unknown } & Record<string, unknown> | null | undefined;
+        if (!h || typeof h !== 'object') return undefined;
+        return typeof h.get === 'function' ? str(h.get('request-id')) : str(h['request-id']);
+      });
+    };
+    return fromObject(error) ?? fromObject((error as { rawError?: unknown } | null | undefined)?.rawError);
+  });
+}
+
+/** What became of a row's write, as `log()` reports it: written, and which
+ *  step of the size guard its line came from (logging-record.ts), or not
+ *  written, and why. */
+export type LogOutcome =
+  | { written: true; kept: RecordKept; truncated?: string }
+  | { written: false; error: string };
+
+/** What the anomaly alert says of the row's request: kept only when the row
+ *  that holds it was written whole. */
+function requestFate(saved: LogOutcome | undefined, requestCaptured: boolean): string {
+  if (!requestCaptured) return 'no request was captured for this call';
+  if (!saved) return 'full request kept in this call\'s llm-calls row';
+  if (!saved.written) return `request could not be saved: the llm-calls write failed (${saved.error})`;
+  if (saved.kept === 'whole') return 'full request kept in this call\'s llm-calls row';
+  return `request not kept: ${saved.truncated ?? saved.kept}`;
+}
+
+/** The one stderr line an anomalous call prints, timestamped so it can be
+ *  placed in an append-mode log that stamps nothing itself. It names the
+ *  provider's response this adapter received, says what membrane does with
+ *  such calls, and says whether the request was saved (`saved`: the row's
+ *  write outcome; `requestCaptured`: whether there was a request to save). */
+export function anomalyLogLine(
+  timestamp: string,
+  kind: 'complete' | 'stream',
+  model: unknown,
+  anomaly: ResponseAnomaly,
+  ids: { messageId?: string; requestId?: string },
+  saved?: LogOutcome,
+  requestCaptured = true,
+): string {
+  const provider = anomaly.providerStopReason === undefined ? ''
+    : ` (provider: ${anomaly.providerStopReason ?? 'none'})`;
+  const fate = anomaly.stopReason === 'end_turn' || anomaly.stopReason === null
+    ? 'membrane with membrane#168 may have run these calls; earlier membrane drops them'
+    : 'membrane runs no calls under this stop reason';
+  return `[llm-calls] ${timestamp} ANOMALY tool_use with stop_reason=${anomaly.stopReason ?? 'none'}${provider}`
+    + ` kind=${kind} model=${typeof model === 'string' ? model : '?'}`
+    + ` tools=${anomaly.toolNames.join(',') || '-'}`
+    + (ids.requestId ? ` request=${ids.requestId}` : '')
+    + (ids.messageId ? ` message=${ids.messageId}` : '')
+    + ` — provider response; ${fate} — ${requestFate(saved, requestCaptured)}`;
 }
 
 /** What the off-path refusal dragnet hears of one refused call. */
@@ -299,11 +466,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly warnedEffort = new Set<string>();
   private readonly warnedThinking = new Set<string>();
 
-  private log(record: Record<string, unknown>): void {
+  /** Append the record's line; never throws. Says whether the line was
+   *  written and, if it was, which step of the size guard it came from. */
+  private log(record: Record<string, unknown>): LogOutcome {
     try {
-      appendFileSync(this.logPath, serializeRecord(record));
-    } catch {
+      const { line, kept, truncated } = serializeRecordOutcome(record);
+      appendFileSync(this.logPath, line);
+      return truncated === undefined ? { written: true, kept } : { written: true, kept, truncated };
+    } catch (err) {
       // never throw from logging
+      const message = guarded(() => (err instanceof Error ? err.message : String(err)));
+      return { written: false, error: typeof message === 'string' && message ? message.slice(0, 200) : 'unknown error' };
     }
   }
 
@@ -482,10 +655,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
-  private refusalRawRequest(response: ProviderResponse, rawRequest: unknown): unknown {
+  /** The raw request a successful call's row keeps: every call's with full
+   *  payloads on, otherwise a refusal's or an anomalous response's (see
+   *  responseAnomaly), the calls someone will need to replay or report. */
+  private retainedRawRequest(
+    response: ProviderResponse,
+    rawRequest: unknown,
+    anomaly: ResponseAnomaly | undefined = responseAnomaly(response),
+  ): unknown {
     if (this.fullPayloads) return rawRequest;
     const raw = (response as { raw?: { stop_reason?: string } }).raw;
-    return raw?.stop_reason === 'refusal' ? rawRequest : undefined;
+    return raw?.stop_reason === 'refusal' || anomaly ? rawRequest : undefined;
   }
 
   /** Wrap options to capture the raw provider request via the membrane
@@ -529,20 +709,32 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       const errorFields = 'error' in outcome ? describeErrorObject(outcome.error, true) : undefined;
       const summary = this.requestSummary(request, rawRequest);
       const head = { type: errorFields ? 'error' : 'call', kind, timestamp, durationMs };
+      // Read once each; reading never throws.
+      const anomaly = 'response' in outcome ? responseAnomaly(outcome.response) : undefined;
+      const errorId = 'error' in outcome ? errorRequestId(outcome.error) : undefined;
+      const ids = 'response' in outcome ? responseIds(outcome.response) : errorId ? { requestId: errorId } : {};
       let record: Record<string, unknown>;
       try {
         record = 'response' in outcome
           ? {
               ...head,
+              ...ids,
               requestSummary: summary,
-              rawRequest: this.refusalRawRequest(outcome.response, rawRequest),
+              rawRequest: this.retainedRawRequest(outcome.response, rawRequest, anomaly),
               rawResponse: (outcome.response as { raw?: unknown }).raw ?? null,
+              ...(anomaly ? { anomaly } : {}),
             }
-          : { ...head, requestSummary: summary, rawRequest, ...errorFields };
+          : { ...head, ...ids, requestSummary: summary, rawRequest, ...errorFields };
       } catch {
-        record = { ...head, summaryUnavailable: true, ...errorFields };
+        record = { ...head, ...ids, summaryUnavailable: true, ...errorFields };
       }
-      this.log(record);
+      const saved = this.log(record);
+      if (anomaly) {
+        try {
+          const captured = rawRequest !== null && rawRequest !== undefined;
+          console.error(anomalyLogLine(timestamp, kind, summary.model, anomaly, ids, saved, captured));
+        } catch { /* never throw from logging */ }
+      }
       try {
         const error = errorFields?.error;
         const errorText = error === undefined ? undefined

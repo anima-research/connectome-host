@@ -35,10 +35,14 @@ import {
   clientHolds,
   FULL_CLIENTS_ONLY,
   scopeWelcome,
+  keepNamedStrings,
+  frameWithoutFailureText,
+  HEALTH_STRINGS,
+  QUOTA_STRINGS,
   type ObserverScope,
   type ObserversFile,
 } from '../src/modules/web-ui-observers.js';
-import { WEB_PROTOCOL_VERSION, type WelcomeMessage, type WelcomeMessageEntry } from '../src/web/protocol.js';
+import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, type WelcomeMessageEntry } from '../src/web/protocol.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
 
@@ -610,6 +614,42 @@ describe('scope filters', () => {
     expect(f.blocks.map((b) => b.kind)).toEqual(['text']);
   });
 
+  test("an image a tool returned goes with its result, and an image in a message stays with the message's text", () => {
+    const withImages: WelcomeMessageEntry = {
+      index: 1,
+      participant: 'user',
+      text: 'and this',
+      blocks: [
+        { kind: 'tool_result', toolUseId: 't1', text: 'a frame' },
+        { kind: 'media', mediaType: 'image/png', ref: 'm2/0.1', toolUseId: 't1' },
+        { kind: 'text', text: 'and this' },
+        { kind: 'media', mediaType: 'image/png', ref: 'm2/2' },
+      ],
+    };
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages']))!.blocks)
+      .toEqual([{ kind: 'text', text: 'and this' }, { kind: 'media', mediaType: 'image/png', ref: 'm2/2' }]);
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages', 'thinking']))!.blocks.map((b) => b.kind))
+      .toEqual(['text', 'media']);
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages', 'tools']))).toEqual(withImages);
+  });
+
+  test('an entry whose every block the scopes remove is dropped, and one that had no blocks stays', () => {
+    const toolOnly: WelcomeMessageEntry = {
+      index: 2,
+      participant: 'assistant',
+      text: '',
+      blocks: [
+        { kind: 'thinking', text: 'private' } as never,
+        { kind: 'tool_use', id: 't1', name: 'shell', inputJson: '{}' } as never,
+      ],
+    };
+    expect(filterEntryForScopes(toolOnly, new Set<ObserverScope>(['messages']))).toBeNull();
+    expect(filterEntryForScopes(toolOnly, new Set<ObserverScope>(['messages', 'thinking']))!.blocks.map((b) => b.kind))
+      .toEqual(['thinking']);
+    const empty: WelcomeMessageEntry = { index: 3, participant: 'user', text: '', blocks: [] };
+    expect(filterEntryForScopes(empty, new Set<ObserverScope>(['messages']))).toEqual(empty);
+  });
+
   test('full interiority scopes → identical entry', () => {
     const f = filterEntryForScopes(entry, new Set<ObserverScope>(['messages', 'thinking', 'tools']));
     expect(f).toEqual(entry);
@@ -777,18 +817,169 @@ describe('scope filters', () => {
     expect(opsOnly.hostMode).toBeUndefined();
     expect(opsOnly.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
-    // A health-scoped observer keeps the telemetry verbatim.
-    const h = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
+    // An observer with health and ops keeps the telemetry verbatim.
+    const h = scopeWelcome(welcome, new Set<ObserverScope>(['health', 'ops']));
     expect(h.callLedger).toEqual(welcome.callLedger);
     expect(h.perAgentCost).toEqual(welcome.perAgentCost);
     expect(h.hostMode).toEqual(welcome.hostMode);
     expect(h.agents).toEqual(welcome.agents);
     expect(h.usage).toEqual(welcome.usage);
+    // With health alone the rest is the same, and the ledger keeps only the
+    // strings LEDGER_STRINGS names: none, in this shape.
+    const healthOnly = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
+    expect(JSON.parse(JSON.stringify(healthOnly.callLedger))).toEqual({ calls: [{ model: '', error: '', costUsd: 0.42 }] });
+    expect(healthOnly.perAgentCost).toEqual(welcome.perAgentCost);
+    expect(healthOnly.hostMode).toEqual(welcome.hostMode);
+    expect(healthOnly.agents).toEqual(welcome.agents);
+    expect(healthOnly.usage).toEqual(welcome.usage);
 
     // Input welcome is never mutated (shared across clients in sendWelcome).
     expect(welcome.callLedger).toBeDefined();
     expect(welcome.hostMode).toBeDefined();
     expect(welcome.usage.input).toBe(1);
+  });
+
+  test("keepNamedStrings empties each string its spec doesn't keep, and keeps numbers, flags, nulls, every key and each list's length", () => {
+    // From JSON, as a payload comes, so an agent named `__proto__` is an own key.
+    const value = JSON.parse(`{
+      "name": "main", "note": "free text", "count": 2, "ok": true, "none": null,
+      "byAgent": { "alice": { "state": "healthy", "error": "it broke" }, "__proto__": { "state": "degraded", "error": "also broke" } },
+      "list": ["a", "b"],
+      "rows": [{ "verdict": "ERROR", "cause": "raw provider text" }, { "verdict": "HIT", "cause": "90% from cache" }],
+      "whole": { "anything": "kept", "deep": ["x"] }
+    }`);
+    const kept = keepNamedStrings(value, {
+      name: true,
+      whole: true,
+      byAgent: { '*': { state: true } },
+      rows: { verdict: true, cause: (row) => row.verdict !== 'ERROR' },
+    });
+    expect(JSON.stringify(kept)).toBe(JSON.stringify(JSON.parse(`{
+      "name": "main", "note": "", "count": 2, "ok": true, "none": null,
+      "byAgent": { "alice": { "state": "healthy", "error": "" }, "__proto__": { "state": "degraded", "error": "" } },
+      "list": ["", ""],
+      "rows": [{ "verdict": "ERROR", "cause": "" }, { "verdict": "HIT", "cause": "90% from cache" }],
+      "whole": { "anything": "kept", "deep": ["x"] }
+    }`)));
+    // A value that isn't an object or a string comes back as it is.
+    expect(keepNamedStrings(3, undefined)).toBe(3);
+    expect(keepNamedStrings('text', undefined)).toBe('');
+    expect(keepNamedStrings('text', true)).toBe('text');
+  });
+
+  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text", () => {
+    const text = 'the provider said: overloaded';
+    const cost = {
+      input: 1, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 1, total: 2, currency: 'USD', grade: 'billing', pricingVersion: 'p1',
+      rates: { inputPerMillion: 1, outputPerMillion: 1, cacheWrite5mPerMillion: 1, cacheWrite1hPerMillion: 1, cacheReadPerMillion: 1 },
+    };
+    const call = {
+      id: 'c1', timestamp: '2026-10-22T06:00:00.000Z', kind: 'stream', originEstimate: 'turn~', model: 'a-model', messages: 3, durationMs: 10,
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, cost, cache: { breakpoints: 2, ttls: ['5m', '1h'], effectiveTtl: '5m' },
+      verdict: 'HIT', cause: '90% from cache', stopReason: 'end_turn',
+    };
+    // agent-framework 0.24.0's healthSnapshot, and every section the host adds, with a value in each place.
+    const health = {
+      at: '2026-10-22T06:00:00.000Z',
+      uptimeSec: 5,
+      gate: { inferring: ['main'], bufferedEvents: 1, droppedBufferedEvents: 0, sleepUntil: 0 },
+      pendingRequests: 1,
+      activeStreams: ['main'],
+      agents: [{
+        name: 'main',
+        status: 'inferring',
+        consecutiveInferenceFailures: 1,
+        providerAdmission: {
+          primaryActive: true, primaryPending: false, auxiliaryInFlight: 0, auxiliaryDeferred: 0,
+          cooldownUntil: 2, cooldownReason: text, hostHold: false, heldRequests: 0,
+          lastRecovery: { startedAt: 1, releasedAt: 2, completedAt: 3, cooldownMs: 4, waitedMs: 5, failures: 1, heldRequests: 0, messageCount: 2, toolCount: 0, stopReason: 'end_turn' },
+          providerWaits: [{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: text, setAt: '2026-10-22T06:00:00.000Z' }],
+        },
+        lastInference: { startedAt: 1, endedAt: 2, failedAt: 3, lastError: text },
+        refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
+      }],
+      credential: {
+        subscription: true, agent: 'main', kind: 'auth-login-required', provider: 'anthropic', message: text, since: 1, until: 2, windows: ['5h'],
+        rotatable: false, expiresAt: 3, actions: [{ id: 'login', label: 'Restart login', hint: 'Starts a new device-code login.' }],
+        login: { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' },
+        lastAction: { id: 'refresh', at: 1, ok: false, message: text },
+      },
+      compressionQuarantine: {
+        main: {
+          count: 1, keys: ['q1'],
+          spans: [{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'provider_error:invalid_request' }],
+        },
+      },
+      compressionDebt: {
+        main: {
+          state: 'unknown', error: text, failure: 'report', pendingChunks: 1, oldestPendingAgeMs: 2, mergeQueueDepth: 0, mergeQueueMaxAttempts: 0,
+          mergeQuarantineCount: 1, mergeQuarantineKeys: ['mq1'], mergeHeldIds: ['s1'], compressionQuarantineCount: 1,
+          unmergedFrontier: { l1: 1, l2: 0, l3: 0 }, lastMintAt: 1, topologyViolations: 0, topologyRefusals: 0,
+        },
+      },
+      contextComposition: {
+        main: {
+          head: { messages: 1, tokens: 1 }, tail: { messages: 1, tokens: 1 }, middleRaw: { messages: 0, tokens: 0 },
+          summaries: { l1: { count: 0, tokens: 0 }, l2: { count: 0, tokens: 0 }, l3: { count: 0, tokens: 0 } },
+          pending: { chunks: 0, merges: 0 }, total: { messages: 2, tokens: 2 },
+          calibration: { multiplier: 1, pricingEpoch: 1, provisional: true, reset: { discardedMultiplier: 2, fromEpoch: null, at: 1 } },
+          planVsActual: {
+            planned: 1, actual: 1, delta: 0, budgetMet: true, exhausted: false, moves: 0, solver: 'kv-stable', messages: 2, compileMs: 1, solveMs: 1,
+            ceiling: 'whatIfs:2', dryRun: true,
+            foldDiff: { moves: 1, deepened: 1, raised: 0, runs: [{ from: 0, to: 1, count: 1, firstChunkId: 'k1', lastChunkId: 'k2' }], runsTotal: 1, divergenceOffset: null, suffixTokens: null },
+          },
+        },
+      },
+      runtimeSettings: {
+        main: {
+          contextBudgetTokens: 1000, effectiveContextBudgetTokens: 1000, tailTokens: 10, transitionPaceTokens: 10,
+          sameRoundThinkTextPolicy: 'keep', sameRoundThinkTextPolicySource: 'default', transition: 'blocked', transitionReason: 'transition_pace_too_small',
+        },
+      },
+      readFailures: { main: { contextComposition: text } },
+      callLedger: {
+        rows: [{ ...call, id: 'c0', verdict: 'ERROR', cause: text, error: text }, call],
+        summary: { calls: 2, input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cacheHitRatio: 0, cost: { total: 2, currency: 'USD', pricedCalls: 1, unpricedCalls: 1, pricingVersion: 'p1' }, byVerdict: { ERROR: 1, HIT: 1 } },
+      },
+    };
+    const expected = structuredClone(health);
+    const main = expected.agents[0]!;
+    main.providerAdmission.cooldownReason = '';
+    main.providerAdmission.providerWaits[0]!.reason = '';
+    main.lastInference.lastError = '';
+    expected.compressionDebt.main.error = '';
+    expected.readFailures.main.contextComposition = '';
+    Object.assign(expected.callLedger.rows[0]!, { cause: '', error: '' });
+    expected.credential.message = '';
+    expected.credential.lastAction.message = '';
+    expect(JSON.parse(JSON.stringify(keepNamedStrings(health, HEALTH_STRINGS)))).toEqual(expected);
+
+    const quota = {
+      subscription: true, provider: 'anthropic', fetchedAt: 1, error: text, blockedUntil: null, parked: false,
+      windows: [{ key: 'five_hour', label: '5h', utilization: 10, resetsAt: 1, model: 'a-model', advisory: false }],
+    };
+    expect(JSON.parse(JSON.stringify(keepNamedStrings(quota, QUOTA_STRINGS)))).toEqual({ ...quota, error: '' });
+  });
+
+  test('frameWithoutFailureText gives the call ledger and the credential state without their failure text, and any other frame as it is', () => {
+    const ledger = {
+      type: 'call-ledger',
+      ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: 'raw', error: 'raw' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
+    } as unknown as WebUiServerMessage;
+    expect(JSON.parse(JSON.stringify(frameWithoutFailureText(ledger)))).toEqual({
+      type: 'call-ledger',
+      ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: '', error: '' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
+    });
+    const credential = {
+      type: 'credential-state', scope: 'kid', subscription: true, agent: 'main', kind: 'auth-rejected', provider: 'anthropic',
+      message: 'anthropic rejected the credential (raw)', since: 1, rotatable: true, actions: [{ id: 'refresh', label: 'Refresh' }],
+      lastAction: { id: 'refresh', at: 2, ok: false, message: 'refresh failed: raw' },
+    } as unknown as WebUiServerMessage;
+    expect(JSON.parse(JSON.stringify(frameWithoutFailureText(credential)))).toEqual({
+      ...credential, message: '', lastAction: { id: 'refresh', at: 2, ok: false, message: '' },
+    });
+    const trace = { type: 'trace', event: { type: 'usage:updated', agentName: 'main' } } as unknown as WebUiServerMessage;
+    expect(frameWithoutFailureText(trace)).toBe(trace);
   });
 
   test('the agent trees go only with every scope but debug, since their nodes carry token counts and how each run ended', () => {

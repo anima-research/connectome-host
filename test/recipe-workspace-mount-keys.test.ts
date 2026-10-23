@@ -1,18 +1,17 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
 import { WorkspaceModule, type ModuleContext } from '@animalabs/agent-framework';
 import { InstructionsModule } from '../src/modules/instructions-module.js';
-import { validateRecipe } from '../src/recipe.js';
+import { loadRecipeDetailed, validateRecipe } from '../src/recipe.js';
 import { buildWorkspaceMounts } from '../src/workspace-mounts.js';
 
 /**
- * A workspace mount takes every key the framework's MountConfig has but
- * those recipe.ts names in MountKeyNotPassedOn, and a recipe that names a key
- * or value the host doesn't read stops loading with an error that names it
- * (#275). Before, `walkCap`, `followSymlinks`,
+ * A workspace mount takes every key the framework's MountConfig has, and a
+ * recipe that names a key or value the host doesn't read stops loading with
+ * an error that names it (#275). Before, `walkCap`, `followSymlinks`,
  * `watchDebounceMs` and `watchRootPollMs`, which the host's list didn't
  * have, were dropped without a word, and a misspelt key such as `readOnly: true` left the mount
  * as it would have been without it.
@@ -24,10 +23,11 @@ function recipe(workspace: unknown) {
 const mount = (extra: Record<string, unknown> = {}) => ({ name: 'notes', path: './notes', ...extra });
 
 describe('workspace mount keys', () => {
-  test('passes every mount key through to the framework, walkCap, followSymlinks, watchDebounceMs and watchRootPollMs included', () => {
+  test('passes every mount key through to the framework, backend, include, walkCap, followSymlinks, watchDebounceMs and watchRootPollMs included', () => {
     const keys = {
-      mode: 'read-only', watch: 'always', watchDebounceMs: 50, watchRootPollMs: 500, ignore: ['*.tmp'],
-      followSymlinks: true, maxFileSize: 4096, walkCap: 20_000, wakeOnChange: ['created'], autoMaterialize: true,
+      mode: 'read-only', backend: 'chronicle', watch: 'always', watchDebounceMs: 50, watchRootPollMs: 500, ignore: ['*.tmp'],
+      include: ['*.md', 'drafts/**'], followSymlinks: true, maxFileSize: 4096, walkCap: 20_000, wakeOnChange: ['created'],
+      autoMaterialize: true,
     };
     const workspace = { mounts: [mount(keys)] };
     validateRecipe(recipe(workspace));
@@ -36,19 +36,111 @@ describe('workspace mount keys', () => {
 
   test('refuses a key a mount does not have, naming what to write instead or the nearest key it does have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount({ readOnly: true })] })))
-      .toThrow(/^workspace\.mounts\[0\] has unknown key "readOnly" \(mode: "read-only" makes a mount read-only, and a mount is read-write without it\); known: name, path, mode, watch, /);
+      .toThrow(/^workspace\.mounts\[0\] has unknown key "readOnly" \(mode: "read-only" makes a mount read-only, and a mount is read-write without it\); known: name, path, mode, backend, watch, /);
     expect(() => validateRecipe(recipe({ mounts: [mount(), mount({ name: 'tickets', wakeOnChnage: true })] })))
       .toThrow(/^workspace\.mounts\[1\] has unknown key "wakeOnChnage" \(did you mean "wakeOnChange"\?\)/);
   });
 
-  test("refuses include, which this host doesn't pass on to the framework yet, as a key a mount doesn't have", () => {
-    expect(() => validateRecipe(recipe({ mounts: [mount({ include: ['*.json'] })] })))
-      .toThrow(/^workspace\.mounts\[0\] has unknown key "include"; known: name, path, mode, watch, watchDebounceMs, watchRootPollMs, ignore, followSymlinks, maxFileSize, walkCap, wakeOnChange, autoMaterialize$/);
+  test("refuses a direct mount that doesn't say its mode, and passes on one that says read-only as given, unwatched", () => {
+    for (const mounts of [[mount({ backend: 'direct' })], [mount(), mount({ name: 'repo', path: './repo', backend: 'direct', include: ['*.ts'] })]]) {
+      const at = mounts.length - 1;
+      expect(() => validateRecipe(recipe({ mounts })))
+        .toThrow(new RegExp(`^workspace\\.mounts\\[${at}\\] is direct, so it must say its mode: add "mode": "read-only", the only mode a direct mount takes in agent-framework 0\\.24$`));
+    }
+    const workspace = {
+      mounts: [mount({ backend: 'direct', mode: 'read-only' }), mount({ name: 'out', path: './out' }), mount({ name: 'kept', path: './kept', backend: 'chronicle' })],
+    };
+    expect(() => validateRecipe(recipe(workspace))).not.toThrow();
+    expect(buildWorkspaceMounts(workspace as never, '/store')).toEqual([
+      { name: 'notes', path: resolve('./notes'), backend: 'direct', mode: 'read-only', watch: 'never' },
+      { name: 'out', path: resolve('./out'), mode: 'read-write', watch: 'never' },
+      // A chronicle mount, said or not, is read-write without a mode, as before.
+      { name: 'kept', path: resolve('./kept'), backend: 'chronicle', mode: 'read-write', watch: 'never' },
+    ]);
+    // What a direct mount takes when it's said, each passed on as given.
+    for (const extra of [
+      { watch: 'never' }, { wakeOnChange: false }, { wakeOnChange: [] }, { autoMaterialize: false },
+      { include: ['*.ts', 'docs/**'] }, { ignore: [] }, { walkCap: 100 }, { followSymlinks: true },
+    ]) {
+      const direct = { mounts: [mount({ backend: 'direct', mode: 'read-only', ...extra })] };
+      expect(() => validateRecipe(recipe(direct))).not.toThrow();
+      expect(buildWorkspaceMounts(direct as never, '/store')![0]).toMatchObject({ backend: 'direct', mode: 'read-only', ...extra });
+    }
   });
 
-  test("refuses backend, which this host doesn't pass on to the framework yet, as a key a mount doesn't have", () => {
-    expect(() => validateRecipe(recipe({ mounts: [mount({ backend: 'direct' })] })))
-      .toThrow(/^workspace\.mounts\[0\] has unknown key "backend"; known: name, path, mode, watch, watchDebounceMs, watchRootPollMs, ignore, followSymlinks, maxFileSize, walkCap, wakeOnChange, autoMaterialize$/);
+  test("refuses, in agent-framework's words, what it refuses on a direct mount, before the recipe can be saved", async () => {
+    const direct = "^modules\\.workspace: Mount \"notes\" is direct, which reads disk as it is with no store, watcher or push: ";
+    // Only what agent-framework 0.24 refuses on a direct mount and
+    // anima-research/agent-framework#719, which makes a direct mount
+    // writable, refuses too: #719 takes `mode: 'read-write'`.
+    for (const [extra, says] of [
+      [{ watch: 'always' }, "watch \"always\" would watch nothing \\(leave it out, or set 'never'\\)"],
+      [{ watch: 'on-agent-action' }, "watch \"on-agent-action\" would watch nothing"],
+      [{ watchDebounceMs: 50 }, 'watchDebounceMs would tune no watcher \\(leave it out\\)'],
+      [{ watchRootPollMs: 500 }, 'watchRootPollMs would tune no watcher \\(leave it out\\)'],
+      [{ wakeOnChange: true }, 'wakeOnChange would never wake \\(leave it out\\)'],
+      [{ wakeOnChange: ['created'] }, 'wakeOnChange would never wake \\(leave it out\\)'],
+      [{ autoMaterialize: true }, 'autoMaterialize would never push \\(leave it out\\)'],
+    ] as const) {
+      expect(() => validateRecipe(recipe({ mounts: [mount({ backend: 'direct', mode: 'read-only', ...extra })] }))).toThrow(new RegExp(direct + says));
+    }
+    // Each setting both refuse, all in one line.
+    expect(() => validateRecipe(recipe({ mounts: [mount({
+      backend: 'direct', mode: 'read-only', watch: 'always', watchDebounceMs: 50, watchRootPollMs: 500, wakeOnChange: true, autoMaterialize: true,
+    })] }))).toThrow(new RegExp(direct + "watch \"always\" would watch nothing \\(leave it out, or set 'never'\\); " +
+      'watchDebounceMs would tune no watcher \\(leave it out\\); watchRootPollMs would tune no watcher \\(leave it out\\); ' +
+      'wakeOnChange would never wake \\(leave it out\\); autoMaterialize would never push \\(leave it out\\)$'));
+    // A recipe file is loaded, and the host saves it only once that returns
+    // (index.ts, resolveRecipe), so a refused one is never saved to resume.
+    const dir = mkdtempSync(join(tmpdir(), 'mount-keys-'));
+    try {
+      const file = join(dir, 'recipe.json');
+      writeFileSync(file, JSON.stringify(recipe({ mounts: [mount({ backend: 'direct', mode: 'read-only', watch: 'always' })] })));
+      await expect(loadRecipeDetailed(file)).rejects.toThrow(new RegExp(direct + 'watch "always" would watch nothing'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses an include pattern agent-framework can't read, in its words", () => {
+    expect(() => validateRecipe(recipe({ mounts: [mount({ include: ['*.md', 'src/*.ts'] })] })))
+      .toThrow(/^modules\.workspace: Mount "notes": include must be a non-empty list of names, "\*\.ext" globs or "dir\/\*\*" globs, with no "\." or "\.\." segment/);
+  });
+
+  test('validates a mount without making its directory, or anything beneath it, as the framework\'s constructor does nothing but check', () => {
+    // validateRecipe constructs agent-framework's WorkspaceModule, and relies
+    // on its constructor touching nothing on disk (0.24.0).
+    const root = mkdtempSync(join(tmpdir(), 'mount-keys-untouched-'));
+    try {
+      const missing = join(root, 'not-yet');
+      validateRecipe(recipe({ mounts: [mount({ path: missing }), mount({ name: 'repo', path: join(missing, 'repo'), backend: 'direct', mode: 'read-only' })] }));
+      expect(existsSync(missing)).toBe(false);
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("warns of no nesting at load, where its paths resolve against wherever validation runs, and the start's workspace still does", () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const nested = { mounts: [mount({ path: '.' }), mount({ name: 'inner', path: './inner' })], configMount: true };
+      expect(() => validateRecipe(recipe(nested))).not.toThrow();
+      expect(warn).not.toHaveBeenCalled();
+      // A refusal still comes through while the warnings are kept.
+      expect(() => validateRecipe(recipe({ mounts: [mount({ path: '.' }), mount({ name: 'inner', path: './inner', backend: 'direct', mode: 'read-only', watch: 'always' })] })))
+        .toThrow(/^modules\.workspace: Mount "inner" is direct/);
+      expect(warn).not.toHaveBeenCalled();
+      // console.warn is the caller's again once validation returns.
+      console.warn('zz-after');
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual(['zz-after']);
+      warn.mockClear();
+      // The workspace the host builds at start, from the same mounts (index.ts), warns where the recipe runs.
+      new WorkspaceModule({ mounts: buildWorkspaceMounts(nested as never, '/store')! });
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContain('[workspace] Mount "notes" contains mount "inner" at inner/ — passing over it as another mount\'s directory');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('refuses a key the workspace does not have', () => {
@@ -61,6 +153,12 @@ describe('workspace mount keys', () => {
       [{ watch: 'allways' }, /\.watch must be "always", "on-agent-action" or "never"$/],
       [{ watch: null }, /\.watch must be "always", "on-agent-action" or "never"$/],
       [{ mode: 'readonly' }, /\.mode must be "read-write" or "read-only"$/],
+      [{ backend: 'disk' }, /\.backend must be "chronicle" or "direct"$/],
+      [{ backend: null }, /\.backend must be "chronicle" or "direct"$/],
+      [{ include: [] }, /\.include must be a non-empty list of strings$/],
+      [{ include: '*.md' }, /\.include must be a non-empty list of strings$/],
+      [{ include: ['*.md', 1] }, /\.include must be a non-empty list of strings$/],
+      [{ include: null }, /\.include must be a non-empty list of strings$/],
       [{ name: '' }, /\.name must be a non-empty string$/],
       // A timer runs a delay above 2147483647 ms, or below 0, at once, and truncates a fraction.
       [{ watchDebounceMs: -1 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647$/],
@@ -194,14 +292,15 @@ describe('workspace mount keys', () => {
       }), mount({ name: 'out', path: './out', wakeOnChange: true })],
     };
     expect(() => validateRecipe(recipe(workspace))).not.toThrow();
-    // What the host built for this recipe before #275, key by key.
+    // What the host built for this recipe before #275, key by key, but for
+    // `_config`, which now says its backend.
     expect(buildWorkspaceMounts(workspace as never, '/store')).toEqual([
       {
         name: 'notes', path: resolve('./notes'), mode: 'read-only', watch: 'on-agent-action', ignore: ['node_modules'],
         maxFileSize: 1024, wakeOnChange: ['created', 'deleted'], autoMaterialize: false,
       },
       { name: 'out', path: resolve('./out'), mode: 'read-write', watch: 'never', wakeOnChange: true },
-      { name: '_config', path: resolve('/store/config'), mode: 'read-write', watch: 'always' },
+      { name: '_config', path: resolve('/store/config'), mode: 'read-write', backend: 'chronicle', watch: 'always' },
     ]);
   });
 });

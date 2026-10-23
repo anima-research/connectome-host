@@ -7,7 +7,8 @@
  * observer only when its grant covers what the frame carries.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
 
 describe('what each client is sent', () => {
   let host: ObservedHost;
@@ -15,17 +16,69 @@ describe('what each client is sent', () => {
   let stored: Record<string, unknown> | null = null;
   let hostStatus: Record<string, unknown> = { quiesced: false };
   let ledgerUpdate: ((ledger: unknown) => void) | undefined;
+  let transcript: Record<string, unknown>[] = [];
+  let appended: ((event: { type: string; message?: unknown }) => void) | undefined;
+  let ledgerNow: unknown;
+  // Failure text, as each place in health that carries one would hold it.
+  const TEXT = {
+    call: 'overloaded_error: the provider is overloaded',
+    cooldown: 'cooling down after overloaded_error',
+    wait: 'the provider asked for a wait of 30s',
+    lastError: 'the last turn failed: overloaded_error',
+    debt: 'The compression report failed.\nCause: the store said no.',
+    read: 'the store refused the read',
+    quota: 'the usage endpoint answered 500',
+    credential: 'anthropic rejected the credential (invalid x-api-key)',
+    action: 'refresh failed: the token endpoint answered 400',
+  };
+  // The credential monitor's state, a rejected credential after a failed refresh.
+  const login = { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' };
+  const credentialState = {
+    kind: 'auth-rejected', provider: 'anthropic', message: TEXT.credential, since: 1, rotatable: true,
+    actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
+  };
+  // Told of each windowed read, before it's answered: where it begins and how many slots it asks for.
+  let onRead: ((offset: number, limit: number) => void) | undefined;
+  // The store's windowed reads, which the welcome and history pages take, and
+  // its listener, which message-appended comes from.
   const cm = {
-    getAllMessages: () => [],
+    getMessageCount: () => transcript.length,
+    getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
+      onRead?.(offset, limit);
+      // As the store does with alignToBodyGroups, a window that begins inside
+      // a sharded body begins at its first shard. (The store also carries a
+      // window's end to its body's last shard, which no test here needs.)
+      let start = offset;
+      while (opts?.alignToBodyGroups && start > 0 && continuesBody(transcript[start - 1] as BodyShard, transcript[start] as BodyShard)) start--;
+      return { messages: transcript.slice(start, offset + limit), startIndex: start, totalCount: transcript.length };
+    },
+    onMessage: (listener: (event: { type: string; message?: unknown }) => void) => {
+      appended = listener;
+      return () => { if (appended === listener) appended = undefined; };
+    },
     currentBranch: () => branch,
-    getMessage: () => stored,
+    getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
+    getStrategy: () => ({
+      getCompressionQuarantineStatus: () => ({
+        count: 1,
+        keys: ['q1'],
+        spans: [{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'refusal' }],
+      }),
+      getCompressionDebt: () => ({ state: 'unknown', error: TEXT.debt, failure: 'report', pendingChunks: null }),
+    }),
+    getRenderStats: () => {
+      throw new Error(TEXT.read);
+    },
   };
   const agent = { name: 'main', model: 'a-model', getContextManager: () => cm };
+  // The framework's agents: a test empties it to bind a host with no agent store.
+  let agents = [agent];
   // A child's panel answers, as a fleet child's panel ops give them.
   const panels: Record<string, unknown> = {
     'pin-add': { agent: 'main', pins: [], pinsSupported: true, levelHonored: false, candidates: [{ id: 'm1', index: 0, participant: 'user', text: 'a pinned line' }] },
     'settings-update': { agent: 'main', settings: { contextBudgetTokens: 1000, transition: 'stable' }, overrides: [], hotKeys: [], hotConfigurable: true, previewAvailable: false },
     'credential-action': { subscription: false },
+    media: { mediaType: 'image/png', base64: 'CCCC' },
   };
   const fleet = {
     name: 'fleet',
@@ -45,22 +98,51 @@ describe('what each client is sent', () => {
         everything: ['health', 'ops', 'messages', 'thinking', 'tools'],
       },
       framework: {
-        getAllAgents: () => [agent],
+        getAllAgents: () => agents,
         getAllModules: () => [fleet],
         getAgent: (name: string) => (name === 'main' ? agent : undefined),
         getHostModeStatus: () => hostStatus,
         getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
+        // agent-framework's healthSnapshot, with a failure in each place it
+        // carries one.
+        healthSnapshot: () => ({
+          at: '2026-10-22T06:00:00.000Z',
+          uptimeSec: 5,
+          gate: { inferring: ['main'], bufferedEvents: 0, droppedBufferedEvents: 0, sleepUntil: 0 },
+          pendingRequests: 0,
+          activeStreams: ['main'],
+          agents: [{
+            name: 'main',
+            status: 'inferring',
+            consecutiveInferenceFailures: 1,
+            providerAdmission: {
+              primaryActive: true,
+              cooldownUntil: 2,
+              cooldownReason: TEXT.cooldown,
+              hostHold: false,
+              lastRecovery: null,
+              providerWaits: [{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: TEXT.wait, setAt: '2026-10-22T06:00:00.000Z' }],
+            },
+            lastInference: { startedAt: 1, failedAt: 2, lastError: TEXT.lastError },
+            refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
+          }],
+        }),
       },
       sessionManager: { getActiveSession: () => ({ id: 's1', name: 'Debugging the bridge', manuallyNamed: false }) },
       config: {
         callLedger: {
-          snapshot: () => undefined,
+          snapshot: () => ledgerNow,
           onUpdate: (update: (ledger: unknown) => void) => {
             ledgerUpdate = update;
             return () => {};
           },
         },
-        credentials: { runAction: async () => ({ state: 'ok' }) },
+        credentials: { snapshot: () => credentialState, runAction: async () => credentialState },
+        quotaMeter: {
+          provider: 'anthropic',
+          refresh: async () => ({ provider: 'anthropic', windows: [], fetchedAt: 1, error: TEXT.quota }),
+          blockedUntil: () => null,
+        },
       },
     });
   });
@@ -176,6 +258,205 @@ describe('what each client is sent', () => {
     expect(c.dashboard.framesOf('inbound-trigger')).toEqual([]);
   });
 
+  test("an image a tool returned reaches only clients that hold tools, in the welcome, a history page, a live message and at /media, a child's too, and an image in a message reaches every client that holds messages", async () => {
+    const png = (data: string) => ({ type: 'image', source: { type: 'base64', mediaType: 'image/png', data } });
+    transcript = [
+      { id: 'm1', participant: 'assistant', content: [{ type: 'text', text: 'looking' }, { type: 'tool_use', id: 't1', name: 'camera', input: {} }] },
+      { id: 'm2', participant: 'user', content: [
+        { type: 'tool_result', toolUseId: 't1', content: [{ type: 'text', text: 'a frame' }, png('AAAA')] },
+        { type: 'text', text: 'and this' },
+        png('BBBB'),
+      ] },
+    ];
+    try {
+      const c = await everyone();
+      type Entry = { blocks: { kind: string }[] };
+      const media = (entries: Entry[]) => entries.flatMap((m) => m.blocks).filter((b) => b.kind === 'media');
+      const ofTool = { kind: 'media', mediaType: 'image/png', ref: 'm2/0.1', toolUseId: 't1' };
+      const ofMessage = { kind: 'media', mediaType: 'image/png', ref: 'm2/2' };
+      const welcomed = (conn: Connection) => media(conn.framesOf('welcome')[0]!.messages as Entry[]);
+      expect(welcomed(c.reader)).toEqual([ofMessage]);
+      expect(welcomed(c.interior)).toEqual([ofTool, ofMessage]);
+      expect(welcomed(c.operator)).toEqual([ofTool, ofMessage]);
+
+      const paged = async (conn: Connection, corrId: string) => {
+        conn.ws.send(JSON.stringify({ type: 'request-history', corrId, beforeIndex: 2 }));
+        return media((await conn.until('history-page', (f) => f.corrId === corrId)).entries as Entry[]);
+      };
+      expect(await paged(c.reader, 'h-reader')).toEqual([ofMessage]);
+      expect(await paged(c.interior, 'h-interior')).toEqual([ofTool, ofMessage]);
+
+      const m3 = { id: 'm3', participant: 'user', content: [
+        { type: 'tool_result', toolUseId: 't2', content: [png('CCCC')] },
+        { type: 'text', text: 'and another' },
+      ] };
+      transcript.push(m3);
+      appended!({ type: 'add', message: m3 });
+      await host.fence(Object.values(c));
+      const live = (conn: Connection) => conn.framesOf('message-appended').map((f) => f.entry as Entry);
+      expect(live(c.reader).map((e) => e.blocks)).toEqual([[{ kind: 'text', text: 'and another' }]]);
+      expect(media(live(c.interior))).toEqual([{ kind: 'media', mediaType: 'image/png', ref: 'm3/0.0', toolUseId: 't2' }]);
+
+      // /media: a message's own image is a top-level block (`<n>`); any other
+      // path, such as a tool result's nested one, takes tools as well, an
+      // encoded dot and a fleet child's request included. The stub fleet
+      // answers every child's media request with CCCC.
+      const get = async (conn: Connection, path: string) => {
+        const res = await fetch(`http://127.0.0.1:${host.port}${path}`, {
+          headers: { cookie: `fkm_obs=${conn.framesOf('observer-ack')[0]!.sessionToken as string}` },
+        });
+        return res.status === 200 ? Buffer.from(await res.arrayBuffer()).toString('base64') : res.status;
+      };
+      expect(await get(c.reader, '/media/m2/2')).toBe('BBBB');
+      expect(await get(c.reader, '/media/m2/0.1')).toBe(401);
+      expect(await get(c.reader, '/media/m2/0%2E1')).toBe(401);
+      expect(await get(c.reader, '/media/m2/0.1?scope=kid')).toBe(401);
+      expect(await get(c.interior, '/media/m2/0.1')).toBe('AAAA');
+      expect(await get(c.interior, '/media/m2/0.1?scope=kid')).toBe('CCCC');
+      expect(await get(c.dashboard, '/media/m2/2')).toBe(401);
+    } finally {
+      transcript = [];
+    }
+  });
+
+  describe('a message whose every block its scopes remove', () => {
+    type Entry = { id?: string };
+    const ids = (entries: unknown) => (entries as Entry[]).map((e) => e.id);
+    const say = (id: string, participant: string, content: unknown[], body?: { bodyGroupId: string; shardIndex: number }) =>
+      ({ id, participant, content, ...body });
+    const toolUse = (id: string, call: string) => say(id, 'assistant', [{ type: 'tool_use', id: call, name: 'shell', input: {} }]);
+    const toolResult = (id: string, call: string, body?: { bodyGroupId: string; shardIndex: number }) =>
+      say(id, 'user', [{ type: 'tool_result', toolUseId: call, content: [{ type: 'text', text: 'out' }] }], body);
+    const page = async (conn: Connection, corrId: string, beforeIndex: number, limit = 2) => {
+      conn.ws.send(JSON.stringify({ type: 'request-history', corrId, beforeIndex, limit }));
+      const f = await conn.until('history-page', (p) => p.corrId === corrId);
+      return { ids: ids(f.entries), startIndex: f.startIndex, totalCount: f.totalCount };
+    };
+    // Each read from here on, as [where it began, how many slots it asked for].
+    const recordReads = () => {
+      const reads: [number, number][] = [];
+      onRead = (offset, size) => { reads.push([offset, size]); };
+      return reads;
+    };
+
+    test("doesn't reach a client in its welcome, live, or in a page, which reads back past such messages to one the client may see, or to the start", async () => {
+      transcript = [
+        toolUse('m0', 't0'),
+        toolResult('m1', 't0'),
+        say('m2', 'user', [{ type: 'text', text: 'a word' }]),
+        toolUse('m3', 't1'),
+        toolResult('m4', 't1'),
+        say('m5', 'assistant', [{ type: 'thinking', thinking: 'mulling' }]),
+        toolUse('m6', 't2'),
+      ];
+      try {
+        const c = await everyone();
+        expect(ids(c.reader.framesOf('welcome')[0]!.messages)).toEqual(['m2']);
+        expect(ids(c.interior.framesOf('welcome')[0]!.messages)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6']);
+        // The reader may see nothing of 3 to 6, so its page reads back to the window holding 2.
+        expect(await page(c.reader, 'r-back', 7)).toEqual({ ids: ['m2'], startIndex: 1, totalCount: 7 });
+        const backPage = c.reader.framesOf('history-page').find((f) => f.corrId === 'r-back')!;
+        expect((backPage.entries as { index: number }[])[0]!.index).toBe(2);
+        // Before 2 it may see nothing, and history starts two windows back: an
+        // empty page, and no read past the start.
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-start', 2, 1)).toEqual({ ids: [], startIndex: 0, totalCount: 7 });
+        expect(reads).toEqual([[1, 1], [0, 1]]);
+        onRead = undefined;
+        expect(await page(c.interior, 'i-back', 7)).toEqual({ ids: ['m5', 'm6'], startIndex: 5, totalCount: 7 });
+        expect(await page(c.operator, 'o-back', 7)).toEqual({ ids: ['m5', 'm6'], startIndex: 5, totalCount: 7 });
+
+        for (const m of [toolUse('m7', 't3'), say('m8', 'assistant', [{ type: 'text', text: 'done' }])]) {
+          transcript.push(m);
+          appended!({ type: 'add', message: m });
+        }
+        await host.fence(Object.values(c));
+        const live = (conn: Connection) => ids(conn.framesOf('message-appended').map((f) => f.entry));
+        expect(live(c.reader)).toEqual(['m8']);
+        expect(live(c.interior)).toEqual(['m7', 'm8']);
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+
+    test('a page reads back from where the store began each window, a sharded body\'s first shard included', async () => {
+      const body = (shardIndex: number) => ({ bodyGroupId: 'bg-out', shardIndex });
+      transcript = [
+        say('m0', 'user', [{ type: 'text', text: 'a word' }]),
+        toolUse('m1', 't0'),
+        toolResult('m2', 't0', body(0)),
+        toolResult('m3', 't0', body(1)),
+        toolResult('m4', 't0', body(2)),
+        toolUse('m5', 't1'),
+      ];
+      try {
+        const c = await everyone();
+        // The window asked for at 4 begins at the body's first shard, 2.
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-body', 6)).toEqual({ ids: ['m0'], startIndex: 0, totalCount: 6 });
+        expect(reads).toEqual([[4, 2], [0, 2]]);
+        expect(await page(c.interior, 'i-body', 6)).toEqual({ ids: ['m2', 'm5'], startIndex: 2, totalCount: 6 });
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+
+    test('a welcome whose tail such messages fill reads back too, on connecting and when a refresh welcomes the client again', async () => {
+      transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 250 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+      try {
+        const c = await everyone();
+        const welcomed = (conn: Connection) => {
+          const w = conn.framesOf('welcome').at(-1)!;
+          return { ids: ids(w.messages), history: w.history };
+        };
+        const tail = Array.from({ length: 200 }, (_, i) => `m${i + 51}`);
+        expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
+        expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
+        // Without messages there's nothing to read back for.
+        expect(welcomed(c.dashboard)).toEqual({ ids: [], history: { startIndex: 251, totalCount: 251 } });
+        // A refresh, as a change of branch sends, welcomes every client again.
+        await host.fence([c.reader, c.interior]);
+        expect(c.reader.framesOf('welcome').length).toBe(2);
+        expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
+        expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
+        // Past ten windows of 200 before the tail, the welcome comes empty, from where the reading stopped.
+        transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 2300 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+        await host.fence([c.reader, c.interior]);
+        expect(welcomed(c.reader)).toEqual({ ids: [], history: { startIndex: 101, totalCount: 2301 } });
+        expect(welcomed(c.interior).history).toEqual({ startIndex: 2101, totalCount: 2301 });
+      } finally {
+        transcript = [];
+      }
+    });
+
+    test("an observer's welcome still comes when the host has no agent store to read back from", async () => {
+      const c = await everyone();
+      agents = [];
+      try {
+        await host.fence([c.reader]);
+        expect(c.reader.framesOf('welcome').at(-1)!.messages).toEqual([]);
+      } finally {
+        agents = [agent];
+      }
+    });
+
+    test('a page reads back at most ten windows of its own size, then answers empty from where it stopped, and the next page reads on from there', async () => {
+      transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 25 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
+      try {
+        const c = await everyone();
+        const reads = recordReads();
+        expect(await page(c.reader, 'r-ten', 26)).toEqual({ ids: [], startIndex: 6, totalCount: 26 });
+        expect(reads).toEqual([24, 22, 20, 18, 16, 14, 12, 10, 8, 6].map((offset) => [offset, 2]));
+        expect(await page(c.reader, 'r-on', 6)).toEqual({ ids: ['m0'], startIndex: 0, totalCount: 26 });
+      } finally {
+        onRead = undefined;
+        transcript = [];
+      }
+    });
+  });
+
   test('the serving state and the agents\' models reach clients that hold health in the welcome, the serving state live too, and provider calls live', async () => {
     hostStatus = { quiesced: false };
     const c = await everyone();
@@ -195,6 +476,125 @@ describe('what each client is sent', () => {
     for (const conn of [c.reader, c.interior]) {
       expect(conn.framesOf('host-mode')).toEqual([]);
       expect(conn.framesOf('call-ledger')).toEqual([]);
+    }
+  });
+
+  test("a client that holds health and not ops gets health without failure text: the call ledger live and in the welcome, and /healthz and /quota, the host's and a child's", async () => {
+    const c = await everyone();
+    const row = { timestamp: '2026-10-22T06:00:00.000Z', kind: 'stream', originEstimate: 'turn~', model: 'a-model', messages: 3, durationMs: 10, cache: { ttls: ['5m'], effectiveTtl: '5m' } };
+    const ledger = {
+      rows: [
+        { ...row, id: 'c1', tokens: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, verdict: 'ERROR', cause: TEXT.call, error: TEXT.call },
+        { ...row, id: 'c2', tokens: { input: 1, output: 1, cacheRead: 9, cacheWrite: 0 }, verdict: 'HIT', cause: '90% from cache', stopReason: 'end_turn' },
+      ],
+      summary: { calls: 2, input: 2, output: 1, cacheRead: 9, cacheWrite: 0, cacheHitRatio: 0.9, byVerdict: { ERROR: 1, HIT: 1 } },
+    };
+    // A failed call's cause is its error's text; a cache hit's is the host's own words.
+    const ledgerWithoutText = { ...ledger, rows: [{ ...ledger.rows[0]!, cause: '', error: '' }, ledger.rows[1]!] };
+    ledgerNow = ledger;
+    ledgerUpdate!(ledger);
+    await host.fence(Object.values(c));
+    const lastLedger = (conn: Connection) => conn.framesOf('call-ledger').at(-1)!.ledger;
+    const welcomeLedger = (conn: Connection) => conn.framesOf('welcome').at(-1)!.callLedger;
+    for (const conn of [c.operator, c.everything]) {
+      expect(lastLedger(conn)).toEqual(ledger);
+      expect(welcomeLedger(conn)).toEqual(ledger);
+    }
+    expect(lastLedger(c.dashboard)).toEqual(ledgerWithoutText);
+    expect(welcomeLedger(c.dashboard)).toEqual(ledgerWithoutText);
+
+    const get = async (path: string, who: Connection | null): Promise<Record<string, any>> => {
+      const token = who && (who.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+      const res = await fetch(`http://127.0.0.1:${host.port}${path}`, { headers: token ? { cookie: `fkm_obs=${token}` } : { authorization: BASIC } });
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, any>;
+    };
+    // Which failure texts a body carries, as JSON writes them.
+    const texts = (body: unknown) => Object.entries(TEXT)
+      .filter(([, text]) => JSON.stringify(body).includes(JSON.stringify(text).slice(1, -1)))
+      .map(([place]) => place);
+    // A child answers with the snapshot and the quota it builds, as the host does.
+    panels.health = await get('/healthz', null);
+    panels.quota = await get('/quota', null);
+    for (const path of ['/healthz', '/healthz?scope=kid']) {
+      for (const who of [null, c.everything]) {
+        expect(texts(await get(path, who))).toEqual(['call', 'cooldown', 'wait', 'lastError', 'debt', 'read', 'credential', 'action']);
+      }
+      const health = await get(path, c.dashboard);
+      expect(texts(health)).toEqual([]);
+      // Its names, codes, ids and times stay, and every key and list keeps its shape.
+      const main = health.agents[0];
+      expect(main).toMatchObject({ name: 'main', status: 'inferring', consecutiveInferenceFailures: 1, refusalStats: { lastCategory: 'policy', byCategory: { policy: 1 } } });
+      expect(main.providerAdmission).toMatchObject({ cooldownUntil: 2, cooldownReason: '' });
+      expect(main.providerAdmission.providerWaits).toEqual([{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: '', setAt: '2026-10-22T06:00:00.000Z' }]);
+      expect(main.lastInference).toEqual({ startedAt: 1, failedAt: 2, lastError: '' });
+      expect(health.gate.inferring).toEqual(['main']);
+      expect(health.compressionDebt.main).toEqual({ state: 'unknown', error: '', failure: 'report', pendingChunks: null });
+      expect(health.compressionQuarantine.main.spans).toEqual([{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'refusal' }]);
+      expect(health.readFailures).toEqual({ main: { contextComposition: '' } });
+      expect(health.runtimeSettings.main).toEqual({ contextBudgetTokens: 1000, transition: 'stable' });
+      expect(health.callLedger).toEqual(ledgerWithoutText);
+      // The credential keeps its kind and its device-code login.
+      expect(health.credential).toMatchObject({ kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+    for (const path of ['/quota', '/quota?scope=kid']) {
+      for (const who of [null, c.everything]) expect((await get(path, who)).error).toBe(TEXT.quota);
+      expect(await get(path, c.dashboard)).toMatchObject({ subscription: true, provider: 'anthropic', windows: [], fetchedAt: 1, error: '' });
+    }
+
+    // The credential's state, by each route that carries it: /credential, the
+    // request-credential reply, and the broadcast after an action.
+    panels.credential = await get('/credential', null);
+    for (const path of ['/credential', '/credential?scope=kid']) {
+      for (const who of [null, c.everything]) expect(texts(await get(path, who))).toEqual(['credential', 'action']);
+      expect(await get(path, c.dashboard)).toMatchObject({ subscription: true, kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+    for (const conn of [c.dashboard, c.everything]) {
+      for (const scope of ['local', 'kid']) conn.ws.send(JSON.stringify({ type: 'request-credential', scope }));
+    }
+    c.operator.ws.send(JSON.stringify({ type: 'credential-action', scope: 'local', action: 'refresh' }));
+    const credentialFrames = async (conn: Connection) => {
+      const deadline = performance.now() + 5000;
+      while (conn.framesOf('credential-state').length < 3) {
+        if (performance.now() >= deadline) throw new Error('timed out waiting for credential-state');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return conn.framesOf('credential-state');
+    };
+    for (const frame of await credentialFrames(c.everything)) expect(texts(frame)).toEqual(['credential', 'action']);
+    const bare = await credentialFrames(c.dashboard);
+    expect(bare.map((f) => f.scope).sort()).toEqual(['kid', 'local', 'local']);
+    for (const frame of bare) {
+      expect(texts(frame)).toEqual([]);
+      expect(frame).toMatchObject({ kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
+    }
+  });
+
+  test("a health read that fails whole still says it failed to a client that holds health and not ops, without what the failure said", async () => {
+    const c = await everyone();
+    const app = (host.module as unknown as { panelApp(): { framework: { healthSnapshot: () => unknown } } }).panelApp();
+    const own = app.framework.healthSnapshot;
+    const request = fleet.requestPanel;
+    const answer = async (path: string, who: Connection | null) => {
+      const token = who && (who.framesOf('observer-ack')[0] as { sessionToken: string }).sessionToken;
+      const res = await fetch(`http://127.0.0.1:${host.port}${path}`, { headers: token ? { cookie: `fkm_obs=${token}` } : { authorization: BASIC } });
+      return { status: res.status, body: await res.json() };
+    };
+    try {
+      // The host's own snapshot throws, and a child answers each panel op with its failure.
+      app.framework.healthSnapshot = () => { throw new Error(TEXT.read); };
+      (fleet as { requestPanel: unknown }).requestPanel = async () => ({ ok: false, status: 500, error: TEXT.read });
+      for (const path of ['/healthz', '/healthz?scope=kid', '/quota?scope=kid', '/credential?scope=kid']) {
+        for (const who of [null, c.everything]) expect(await answer(path, who)).toEqual({ status: 500, body: { error: TEXT.read } });
+        expect(await answer(path, c.dashboard)).toEqual({ status: 500, body: { error: '' } });
+      }
+      for (const conn of [c.dashboard, c.everything]) conn.ws.send(JSON.stringify({ type: 'request-credential', scope: 'kid' }));
+      for (const conn of [c.dashboard, c.everything]) await conn.until('error');
+      expect(c.everything.framesOf('error').map((f) => f.message)).toEqual([`credential on 'kid' failed: ${TEXT.read}`]);
+      expect(c.dashboard.framesOf('error').map((f) => f.message)).toEqual(["credential on 'kid' failed"]);
+    } finally {
+      app.framework.healthSnapshot = own;
+      (fleet as { requestPanel: unknown }).requestPanel = request;
     }
   });
 

@@ -48,6 +48,12 @@ describe('the update contract', () => {
     }
   });
 
+  test('realOrResolved names a loop of links as the path\'s own error', () => {
+    const loop = join(root, 'loop');
+    symlinkSync(loop, loop);
+    expect(() => realOrResolved(join(loop, 'below'))).toThrow(/ELOOP/);
+  });
+
   test('the names are the contract: an older release reads them, so none changes', () => {
     expect(installPaths('/r')).toEqual({
       root: '/r', releases: '/r/releases', current: '/r/current', install: '/r/install.json', mark: '/r/mark.json',
@@ -61,7 +67,7 @@ describe('the update contract', () => {
     expect(childrenFilePath('/d')).toBe('/d/fleet-children.json');
     expect(INSTALL_ROOT_ENV).toBe('CONNECTOME_INSTALL_ROOT');
     expect(RESTART_EXIT_CODE).toBe(75);
-    expect(JOURNAL_STEPS).toEqual(['lock', 'children-check', 'audit', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes']);
+    expect(JOURNAL_STEPS).toEqual(['lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes']);
     expect(goBackListPath('/r', 'm1')).toBe('/r/set-aside/m1/places.json');
     expect(PLACE_KINDS).toEqual(['dir', 'file', 'none']);
   });

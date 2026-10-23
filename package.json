@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
   "files": [
@@ -28,10 +28,10 @@
     "postinstall": "test ! -d web || { npm --prefix web install && npm --prefix web run build; } || echo 'connectome-host: the optional Web UI build failed (npm --prefix web install, then run build). The host can run without the Web UI. Retry with: npm run build:web' >&2"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.24.0",
+    "@animalabs/agent-framework": "^0.26.0",
     "@animalabs/chronicle": "^0.4.0",
-    "@animalabs/context-manager": "^0.18.0",
-    "@animalabs/membrane": "^0.6.0",
+    "@animalabs/context-manager": "^0.20.0",
+    "@animalabs/membrane": "^0.7.1",
     "@opentui/core": "^0.1.82"
   },
   "engines": {

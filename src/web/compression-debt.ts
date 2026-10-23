@@ -8,12 +8,15 @@
  * happened, what it means and what to do, a line each, and each count it
  * couldn't compute is `null`. So the line shows only the counts the report
  * gives, never a 0 it couldn't compute, and the tab shows `error` whole, with
- * its line breaks, and the host's own next step under it.
+ * its line breaks, and the host's own next step under it. An observer without
+ * 'ops' gets `error` empty, and its tab shows neither, since the next step
+ * asks whoever reads it to describe what the message shows.
  */
 export interface CompressionDebt {
   state?: 'healthy' | 'degraded' | 'critical' | 'unknown';
   /** What happened, what it means and what to do: a line saying what
-   *  happened, then `Cause:`, `Effect:` and `Fix:` lines. */
+   *  happened, then `Cause:`, `Effect:` and `Fix:` lines. An observer
+   *  without 'ops' gets it empty. */
   error?: string;
   /** Which read failed, whenever `error` is set: the compression quarantine
    *  ledger, which compression needs, or the report itself. */
