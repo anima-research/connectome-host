@@ -715,7 +715,8 @@ node is refused into the merge quarantine. Both show on `/healthz` as
 context-manager 0.12 or later — including one from a pre-0.12 context-manager, which has no
 audit script of its own — install the upgrade and, before starting the resident on it, run the
 new release's `--audit-stores` on its data directory right after a copy of it, as "Updating an
-install" in [DEPLOYMENTS.md](./DEPLOYMENTS.md) does: it opens every session's store, and its
+install" or "Updating checkouts" in [DEPLOYMENTS.md](./DEPLOYMENTS.md) does: it opens every
+session's store, and its
 recipe's fleet children's, but one that reaches past what an update copies (outside the data
 directory, or on a trial the trial's places, or holding a link out), of which it says why it
 wasn't opened, and one a session names that isn't there yet, which a start makes empty, under

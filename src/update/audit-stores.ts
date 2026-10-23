@@ -9,8 +9,8 @@
  *   place the trial's fallback puts back or takes away. A store it can't open
  *   ends the trial, and the fallback undoes what the trial changed;
  * - by hand, `--audit-stores <data directory>…` runs it in place of a host,
- *   right after the copy a hand update takes ("Updating an install" in
- *   docs/DEPLOYMENTS.md).
+ *   right after the copy a hand update takes ("Updating an install" and
+ *   "Updating checkouts" in docs/DEPLOYMENTS.md).
  *
  * In each store, the audit opens what a start of this release opens through
  * context-manager: the agent's namespace as agent-framework's createAgent
