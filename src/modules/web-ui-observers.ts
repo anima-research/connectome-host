@@ -704,6 +704,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'gate:debounce-delivered': OPS,
   'gate:config-reloaded': OPS,
   'gate:decision': OPS,
+  'gate:wake-line-omitted': OPS,
   'mcpl:push-event-rejected': OPS,
   'mcpl:channel-incoming-rejected': OPS,
   'mcpl:empty-content-dropped': OPS,
