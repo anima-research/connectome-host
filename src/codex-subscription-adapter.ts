@@ -210,15 +210,23 @@ export class CodexAppServerAuth implements CodexAuthProvider {
 
   private async readAccessToken(): Promise<string> {
     const path = join(this.codexHome, 'auth.json');
-    let parsed: unknown;
+    let text: string;
     try {
-      parsed = JSON.parse(await readFile(path, 'utf8'));
+      text = await readFile(path, 'utf8');
     } catch (error) {
       throw new Error(
         `Codex login succeeded but ${path} could not be read. ` +
         `Ensure cli_auth_credentials_store is set to \"file\".`,
         { cause: error },
       );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // The parser's message can quote the file's text, so it isn't passed
+      // on, as a cause either: a cause is printed with its error.
+      throw new Error(`Codex login succeeded but ${path} isn't valid JSON.`);
     }
     const root = parsed as { tokens?: { access_token?: unknown; account_id?: unknown } };
     const token = root?.tokens?.access_token;

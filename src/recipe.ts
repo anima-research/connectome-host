@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type MountConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { parseHandWrittenJson } from './hand-written-json.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
@@ -1526,12 +1527,27 @@ export async function loadRecipeDetailed(source: string, options: { fetchSystemP
   if (source.startsWith('http://') || source.startsWith('https://')) {
     const res = await fetch(source);
     if (!res.ok) throw new Error(`Failed to fetch recipe from ${source}: ${res.status} ${res.statusText}`);
-    raw = await res.json();
+    try {
+      raw = await res.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new SyntaxError(`the recipe at ${source} isn't valid JSON`);
+      throw error;
+    }
     sourceBase = { kind: 'url', base: source };
   } else {
     const path = resolve(source);
     if (!existsSync(path)) throw new Error(`Recipe file not found: ${path}`);
-    raw = JSON.parse(readFileSync(path, 'utf-8'));
+    const text = readFileSync(path, 'utf-8');
+    // A response's json() already skips a leading byte order mark, as
+    // UTF-8 decoding does; a file read as text keeps it.
+    try {
+      raw = parseHandWrittenJson(text);
+    } catch (error) {
+      // The parser's message can quote the file's text, and a recipe can
+      // hold a key inline, so it isn't passed on, as for a saved recipe.
+      if (error instanceof SyntaxError) throw new SyntaxError(`${path} isn't valid JSON`);
+      throw error;
+    }
     sourceBase = { kind: 'file', dir: dirname(path) };
   }
 

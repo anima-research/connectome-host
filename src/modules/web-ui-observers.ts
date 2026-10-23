@@ -23,6 +23,7 @@
 import { readFileSync, renameSync, statSync, lstatSync, realpathSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createPublicKey, verify as cryptoVerify, randomBytes } from 'node:crypto';
+import { parseHandWrittenJson } from '../hand-written-json.js';
 
 /** Scope = event-family mask. See docs/observability.md §4. */
 export const OBSERVER_SCOPES = ['health', 'ops', 'messages', 'tools', 'thinking', 'debug'] as const;
@@ -137,7 +138,7 @@ export function readObserversFile(path: string): ObserversFileRead {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseHandWrittenJson(text);
   } catch (err) {
     // Only a syntax error can be a save read halfway. A parse that gives out
     // on a value nested too deep means the file can't be checked.

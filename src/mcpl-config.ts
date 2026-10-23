@@ -8,13 +8,15 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
+import { parseHandWrittenJson } from './hand-written-json.js';
 import { resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
 
 /** Default config file path, resolved from cwd. */
 export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
 
 /**
- * The operator's servers file's root, as JSON.parse reads it, for the boot
+ * The operator's servers file's root, as JSON.parse reads it past one
+ * leading byte order mark (parseHandWrittenJson), for the boot
  * (loadMcplServers) and for editing (readMcplServersFile). A file that isn't
  * valid JSON throws a SyntaxError naming the file, never JSON.parse's own
  * message, which can quote a stretch of the text, and the file can hold a
@@ -26,7 +28,7 @@ function parseServersFile(path: string): unknown {
   const raw = readFileSync(path, 'utf-8');
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseHandWrittenJson(raw);
   } catch (error) {
     if (error instanceof SyntaxError) throw new SyntaxError(`${path} isn't valid JSON`);
     throw error;
@@ -244,7 +246,7 @@ export class OverlayUnreadableError extends Error {
  * written, which the startup warnings log.
  *
  * Main read `parsed.mcplServers ?? {}`, and this reads every file the same
- * way:
+ * way, past one leading byte order mark, which main refused as not JSON:
  * - a missing file, a root without `mcplServers`, and `mcplServers: null`
  *   hold no entries;
  * - a root that isn't an object (a list, text, a number, true/false) holds
@@ -272,7 +274,7 @@ export function readAgentOverlayFile(overlayPath: string): {
   const raw = readFileSync(overlayPath, 'utf-8');
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseHandWrittenJson(raw);
   } catch {
     throw new OverlayUnreadableError(overlayPath, 'not-json');
   }
@@ -627,7 +629,8 @@ export function saveAgentOverlay(
 
 /**
  * Write `servers` as a servers file's `mcplServers`, in place. The root's
- * other keys are kept as JSON.parse reads them: no reader acts on them, but
+ * other keys are kept as JSON.parse reads them past one leading byte order
+ * mark, which the file is written back without: no reader acts on them, but
  * they're whoever wrote them's, such as an entry under a misspelled key. A
  * root of null is refused by both files' readers, and every save follows a
  * read of its file, so a save meets one only when another writer put it
@@ -641,7 +644,7 @@ function writeServersFile(path: string, servers: Record<string, unknown>): void 
   if (existsSync(path)) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(path, 'utf-8'));
+      parsed = parseHandWrittenJson(readFileSync(path, 'utf-8'));
     } catch (error) {
       if (error instanceof SyntaxError) throw new Error(`${path} isn't valid JSON, so it wasn't overwritten`);
       throw error;
