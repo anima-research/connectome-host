@@ -101,13 +101,14 @@ const MODEL_FAMILY: Record<string, (first: string) => boolean> = {
 const BUILT_IN_MODULES = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc', 'channelMode',
+  'selfRestart',
 ];
 /** The names our own modules register under (connectome-host's and
  *  agent-framework's), as a running framework lists them. Any other is an
  *  extension's, counted. */
 const LIVE_MODULE_NAMES = new Set([
   'activity', 'api', 'channel-mode', 'discord', 'fleet', 'health', 'history', 'identity', 'instructions',
-  'lessons', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'subagent',
+  'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'subagent',
   'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
 ]);
 
@@ -164,7 +165,7 @@ export const HOST_LOG_TAGS = new Set([
   'mint-preimage', 'notices', 'nudge', 'openai-codex', 'operator', 'operator-log', 'ops-alert',
   'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'prose', 'provider-admission',
   'provider-cooldown', 'puppet', 'push-event-rejected', 'reasoning', 'reasoning-effort', 'refusal-retry',
-  'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-wake', 'settings', 'shutdown',
+  'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-restart', 'self-wake', 'settings', 'shutdown',
   'sleep', 'spill', 'store-topology', 'subagent', 'subscription-gc', 'thinking', 'tool', 'tool-boundary',
   'tool-result-guard', 'tool_result', 'tools', 'tts-relay', 'unstick', 'update', 'voice', 'webui', 'webui-observers',
   'windowed-passthrough', 'workspace',

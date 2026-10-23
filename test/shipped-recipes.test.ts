@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework, EventGate, type ModuleContext } from '@animalabs/agent-framework';
 import { validateRecipe } from '../src/recipe.js';
-import { WebUiModule, __getSharedServerPortForTests, __resetSharedServerForTests } from '../src/modules/web-ui-module.js';
+import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
 
 const readRecipe = (name: string) => JSON.parse(readFileSync(new URL(`../recipes/${name}`, import.meta.url), 'utf8'));
 
-afterEach(async () => { await __resetSharedServerForTests(); });
+afterEach(async () => { await stopWebUiServer(); });
 
 for (const file of ['webui-test.json', 'webui-fleet-test.json']) {
   test(`${file} starts an unauthenticated loopback WebUI`, async () => {

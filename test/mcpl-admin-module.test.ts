@@ -356,8 +356,10 @@ describe('mcpl_deploy', () => {
     expect(readAgentOverlay(overlayPath)).toEqual({});
   });
 
-  // agent-framework dials only ws:// or wss://, and with reconnect a url it
-  // can't dial would leave a stub retrying it, so it isn't saved.
+  // A deploy takes an MCPL server's ws:// or wss:// url, so it saves no
+  // other: agent-framework refuses every scheme but ws, wss, http and https
+  // at every start, and dials an http(s) url as modern MCP, which a deploy
+  // doesn't offer.
   test('refuses a url that isn\'t ws:// or wss://, or doesn\'t parse, without quoting it, and saves nothing', async () => {
     const { stub, calls } = makeStubFramework();
     const mod = makeModule(stub);
@@ -945,10 +947,9 @@ describe('mcpl_unload', () => {
 });
 
 describe('mcpl_list labels', () => {
-  // agent-framework's listMcplServers carries a server's command and url but
-  // not its transport, so the label is the command, else the url, as main
-  // labelled it; for a definition naming both it can't say which the
-  // framework opened.
+  // The label is the command, else the url, as main labelled it, and doesn't
+  // read the status's transport (this stub's status carries none), so for a
+  // definition naming both it shows the command.
   test('a server is labelled by its command, else its url, from the status the framework reports', async () => {
     const { stub } = makeStubFramework();
     const connect = (stub as unknown as { connectMcplServer: (c: { id: string; command?: string; url?: string; transport?: string }) => Promise<void> })

@@ -14,6 +14,12 @@ const tones: Record<CallLedgerRow['originEstimate'], string> = {
   keepalive: 'text-neutral-400',
 };
 
+/** Whether a row is a failed call: it carries an error, whose text an
+ *  observer without 'ops' gets empty. */
+export function callFailed(row: Pick<CallLedgerRow, 'error'>): boolean {
+  return row.error !== undefined;
+}
+
 export function callOriginLabel(origin: CallLedgerRow['originEstimate']): string {
   return labels[origin];
 }

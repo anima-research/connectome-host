@@ -81,15 +81,48 @@ A recipe is a JSON file that configures everything specific to one agent:
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.
 Values and combinations are validated at load time and fail loudly, naming
-the key. Unrecognized keys, though, are generally *not* rejected — a
-misspelled key (`mcplServers`, a leftover `modules.files`) is silently
-ignored, so check spelling against this README and `src/recipe.ts`.
-`modules.workspace` and each of its mounts do refuse a key they don't have,
-naming it.
+the key. An unrecognized key at the recipe's top level or in `agent`,
+`agent.mock`, `agent.strategy.kvUnified` and its `policy`, or `modules`
+(`mcplServers`, a leftover `modules.files`) doesn't stop the load: the host
+warns, naming it and, where one is close, the key it was probably meant to
+be. Keys inside other objects aren't checked this way, so check spelling
+against this README and `src/recipe.ts`. Some objects refuse a key they
+don't have, naming it, such as `modules.workspace` and each of its mounts,
+`modules.history`, `agent.retry` and `agent.clock`; `agent.toolPresentation`
+refuses one without naming it.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
 it, `AGENT_TIMEZONE` is used, then the process timezone.
+
+`agent.clock` gives the agent clock rows in that zone, every ten minutes
+when the recipe omits it; `false` turns them off. With
+`{ "intervalMinutes": 10 }`, the default, once a ten-minute boundary of its local
+wall clock (counted from local midnight) has passed, the window takes one
+`Clock: 10:50 Europe/Berlin (UTC+02:00)` row at the next of these: before
+an incoming event such as a message, at the start of a turn (a silent
+heartbeat tick too), or, mid-turn, after a tool round's results. A window
+with no clock row yet, as when the clock is first turned on, takes one at
+the next of these. Only the latest boundary is written. It reads the
+boundary's time where that boundary falls among the rows, and the time it
+is written where it can't (after a tool round that spanned it), and it
+shows the weekday and date when the day has changed.
+`{ "intervalSeconds": 15 }` gives clocks finer than a minute (read to the
+second; `"precision": "seconds"` asks for that at any interval). A recipe
+gives one of the two intervals, as a positive whole number of at most a
+day, and `"precision": "minutes"` only for whole minutes; anything else
+stops the load, naming the key.
+
+Where the clock doesn't reach: with the `anthropic-xml` formatter
+(membrane's XML prefill path), a tool round's results take no clock, and
+the next event or turn start writes it. On some models a clock after a
+tool's results drops the loop's earlier thinking from the request, as any
+message heard while acting does there, at most once an interval. Subagents
+take no clock rows: a fork keeps the rows it inherits and gets no more, and
+its start orientation names its clock rows as off beside its parent's.
+Agents that share one window read each other's clock rows, one with no
+clock of its own included. The subconscious takes none of its own and reads
+them through its merged view.
 
 **Memory defaults**: `agent.strategy` may be omitted entirely. The default is
 the autobiographical memory strategy with adaptive resolution, **kv-unified
@@ -144,6 +177,26 @@ process lifetime.
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, and `docs/hybrid-prose-routing.md` for the
 full semantics of each mode.
+
+`agent.autoContinue` (off when omitted) keeps an agent going until it says
+it's done: a turn the model ends itself, with prose or with nothing, is
+followed by another turn straight away instead of a pause until the next
+event. The run stops when the agent calls `skip_reply` (or another tool that
+ends the turn), ends on a `>>skip_reply` / `>>>skip_reply` envelope, or has
+continued `maxConsecutive` times in a row (default 3, 1 to 20). Each next turn
+reads a short `[continue]` row naming `skip_reply` as the way to stop, with
+the count once the cap is near, and speaks in the same locus. Every
+continuation is a full inference, and in `locus` mode its prose is published,
+so keep the cap low. Ephemeral subagents don't inherit it: their streams run
+with it off, and a fork's or spawn's orientation lists `auto-continue` beside
+the parent's. It takes effect only with the agent-framework release that adds
+`AgentConfig.autoContinue` (agent-framework#744); with an earlier one, as this
+host's dependency is until it moves, the key validates but turns don't
+continue. See Agent Framework's `docs/auto-continue.md`.
+
+```json
+{ "agent": { "autoContinue": { "maxConsecutive": 3 } } }
+```
 
 ### Recipe loading
 
@@ -470,7 +523,17 @@ unknown-key warning, like those at the other levels.
   [`docs/ATTENTION-AND-GATING.md`](docs/ATTENTION-AND-GATING.md)
 - **Workspace** (`modules.workspace`, on) — mounted directories backed by
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
-  (read-only `./input`) and `products` (read-write `./output`)
+  (read-only `./input`) and `products` (read-write `./output`). A mount with
+  `"backend": "direct"` reads disk as it is, with no store or watcher, for a
+  checkout an agent reads: it names `"mode": "read-only"`, the only mode
+  agent-framework takes on a direct mount, and a mount the agent writes, or
+  whose changes should wake it, leaves `backend` out. A direct mount that names no `ignore` passes over `node_modules`,
+  `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
+  and one that names any passes over only what it names. While its store
+  holds changes from when it ran as Chronicle, it runs as Chronicle until a
+  start after they're settled, and says at start how to settle them.
+  `include` limits what a mount holds. See `RecipeWorkspaceMount` in
+  `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form
   `{ "semantic": { "url": … } }` adds `history--semantic_search`:
@@ -496,8 +559,9 @@ unknown-key warning, like those at the other levels.
   channels an @-mention never binds or triggers a fork. Still works; the host
   logs a `[deprecated]` line at startup
 - **Subconscious** (top-level `subconscious`) — a secondary agent that can
-  `tune_out` channels; **code execution** (top-level `codeExecution`) — a
-  Python tool runner
+  `tune_out` channels; **code execution** (top-level `codeExecution`) —
+  JavaScript scripts that call the agent's tools, in a QuickJS engine
+  (agent-framework 0.24)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -508,6 +572,7 @@ unknown-key warning, like those at the other levels.
 - **Web UI** (`modules.webui`) — browser operator console, below
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
+- **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
 - **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -549,7 +614,9 @@ never satisfy the default path, so declare an `instructions` mount explicitly.
 read-write instructions mount. On a read-only mount the flow reverses:
 human/deploy edits to disk reach the injection, but not `workspace--read`
 (which serves Chronicle) — prefer routing human feedback through conversation
-and letting the agent make the edit. The file is read through the
+and letting the agent make the edit. A mount running direct
+(`"backend": "direct"`) has no Chronicle copy: `workspace--read` reads disk
+too, so both see an edit to disk at once. The file is read through the
 workspace's `readFileFromDisk`, so on a mount that doesn't follow links, a
 recipe's default, a file that is itself a link isn't read (nor, from
 agent-framework's release with anima-research/agent-framework#468, is one
@@ -627,6 +694,7 @@ bun src/index.ts <recipe> --headless                     # Daemon: JSONL IPC ove
 bun src/index.ts <recipe> --headless --exit-when-idle    # One-shot: exit once the agent goes idle
 bun src/index.ts <recipe> --headless --socket-path <p>   # Custom socket path
 bun --watch src/index.ts            # Dev mode
+bun src/index.ts --audit-stores --recipe <recipe> <data dir>  # Store audit: starts no agent (below)
 ```
 
 Put the recipe before other arguments: the first argument that doesn't start
@@ -642,6 +710,18 @@ anything meant to keep serving needs `--headless`. The host prints a
 `[batch]` line at the start and before the teardown. If the recipe enables
 the web UI, its server outlives the agent by design, so the process keeps
 running, with no agent data behind the page, until interrupted.
+
+`--audit-stores [--recipe <recipe>] <data directory>…`, given first and in
+place of a recipe, starts no agent. It opens the agent's context in every
+session's store in each data directory, and its recipe's fleet children's,
+but one that reaches past what an update copies, of which it says why not, or
+one that isn't there yet, which a start makes empty,
+the way a start of this version opens it, under the recipe `--recipe` names or
+else the one the last start saved. It opens them in place, so run it after a copy you'd go
+back to. It prints a line on stderr for each store under each agent name it opens it under, the recipe's or the default and each session's own, or one for a store it doesn't open, and exits 0 when no store
+was refused and every one there was audited, 1 otherwise. Run it with the
+agents stopped: "Updating an install" in
+[`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) says when.
 
 ## Web UI
 

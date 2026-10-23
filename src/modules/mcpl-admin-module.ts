@@ -568,9 +568,9 @@ export class McplAdminModule implements Module {
       } else {
         source = fileServers === null ? 'unknown' : Object.hasOwn(fileServers, s.id) ? 'file/recipe' : 'recipe';
       }
-      // The command, else the url, as main labelled it. The framework's status
-      // carries no transport, so for a definition that names both, this can't
-      // tell which one the framework opened.
+      // The command, else the url, as main labelled it: for a definition that
+      // names both, this shows the command, even where the framework dials the
+      // url.
       const target = s.command ?? s.url ?? '?';
       const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
       const policyState = s.policyEstablished === undefined
@@ -716,12 +716,11 @@ export class McplAdminModule implements Module {
         'dialled at a url (WebSocket).',
       );
     }
-    // agent-framework dials only a url that parses as ws:// or wss://. Its
-    // rule is buildWebSocketUrl's (transport.ts:520 at 0.22.3), restated
-    // here since it isn't exported: compare the two when either changes. A
-    // url it can't dial would be saved, and with reconnect, a url's default,
-    // the first dial's failure leaves a stub retrying a url that never opens.
-    // The url isn't quoted back: it can hold a credential.
+    // A deploy is an MCPL server's, which agent-framework dials at ws:// or
+    // wss://. It dials http:// and https:// as modern MCP, which a deploy
+    // doesn't offer, so the deploy refuses those itself. A url of any other
+    // scheme would be saved, and the framework would refuse it at every
+    // start. The url isn't quoted back: it can hold a credential.
     if (typeof url === 'string') {
       let scheme: string | null = null;
       try {

@@ -677,6 +677,13 @@ export function agentSettingsOf(agent: {
   refusalHandling?: unknown;
   toolResultGuard?: { enabled?: boolean };
   toolWrapperProseGuard?: boolean;
+  /** agent-framework's resolved `AgentConfig.clock` (`Agent.clock`). */
+  clock?: { intervalSeconds: number; precision?: string } | undefined;
+  /** agent-framework's resolved `AgentConfig.autoContinue` (`Agent.autoContinue`,
+   *  agent-framework#744): the framework stores it resolved, `{ maxConsecutive }`
+   *  with the default filled in, never the recipe's raw `true` or `{}`.
+   *  Absent on releases without it, which read as off. */
+  autoContinue?: { maxConsecutive: number } | undefined;
   getRuntimeSettings?(): { sameRoundThinkTextPolicy?: string };
 }): AgentSettings {
   const onOff = (v: boolean | undefined) => (v ? 'on' : 'off');
@@ -693,7 +700,23 @@ export function agentSettingsOf(agent: {
     'refusal handling': agent.refusalHandling ? 'set' : 'none',
     'tool-result guard': onOff(agent.toolResultGuard?.enabled),
     'tool-wrapper prose guard': onOff(agent.toolWrapperProseGuard),
+    'clock rows': agent.clock ? clockRows(agent.clock) : 'off',
+    'auto-continue': agent.autoContinue ? `on (up to ${agent.autoContinue.maxConsecutive} in a row)` : 'off',
   };
+}
+
+/** A clock setting as the orientation names it: its interval, in minutes
+ *  when it is whole minutes, else in seconds, since `Agent.clock` keeps only
+ *  seconds and the unit the recipe gave can't be told; and ", read to the
+ *  second" where its precision is seconds at a whole-minute interval, the one
+ *  precision that isn't its interval's default (agent-framework's
+ *  resolveClockConfig). */
+function clockRows(clock: { intervalSeconds: number; precision?: string }): string {
+  const seconds = clock.intervalSeconds;
+  if (seconds % 60 !== 0) return `every ${seconds === 1 ? '1 second' : `${seconds} seconds`}`;
+  const minutes = seconds / 60;
+  const every = `every ${minutes === 1 ? '1 minute' : `${minutes} minutes`}`;
+  return clock.precision === 'seconds' ? `${every}, read to the second` : every;
 }
 
 const formatTokens = (n: number): string => `${n.toLocaleString('en-US')} tokens`;

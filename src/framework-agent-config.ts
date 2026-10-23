@@ -1,5 +1,6 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
+import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
@@ -8,10 +9,32 @@ type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number]
  *  (budget + maxTokens has to fit under the window). */
 export const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
 
+/** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
+ *  when it's set, else the recipe's own, else its provider's default. */
+export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
+  return envModel || recipe.agent.model ||
+    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
+}
+
 /** The compile budget the recipe configures: its own, else the default. A
  *  runtime override (agent settings) can still move the live budget. */
 export function effectiveContextBudgetTokens(recipe: Recipe): number {
   return recipe.agent.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS;
+}
+
+/**
+ * A startup warning for a recipe that turns `agent.autoContinue` on while the
+ * installed agent-framework predates the setting (agent-framework#744): the
+ * key passes through, the framework builds the agent without it, and turns
+ * end as before with no other sign. `agent` is the built agent
+ * (framework.getAgent); a framework that supports the setting gives it
+ * `autoContinue`, resolved. Undefined when the setting is off or supported.
+ */
+export function autoContinueSupportWarning(recipe: Recipe, agent: object | undefined): string | undefined {
+  if (!recipe.agent.autoContinue || !agent) return undefined;
+  if ((agent as { autoContinue?: unknown }).autoContinue !== undefined) return undefined;
+  return '[agent-settings] agent.autoContinue is set, but the installed agent-framework predates it ' +
+    '(agent-framework#744): turns end as before, without continuing, until it is upgraded.';
 }
 
 export type FrameworkAgentConfig = AgentConfig & {
@@ -19,6 +42,7 @@ export type FrameworkAgentConfig = AgentConfig & {
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  autoContinue?: Recipe['agent']['autoContinue'];
 };
 
 /**
@@ -83,6 +107,7 @@ export function buildFrameworkAgentConfig(
   }
   return {
     name: agentName,
+    ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
     systemPrompt: recipe.agent.systemPrompt,
     ...(recipe.agent.allowedTools !== undefined
@@ -141,5 +166,10 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
       : {}),
+    ...(recipe.agent.autoContinue !== undefined
+      ? { autoContinue: recipe.agent.autoContinue }
+      : {}),
+    // Ten-minute clock rows unless the recipe names its own or turns them off (false).
+    ...(recipe.agent.clock === false ? {} : { clock: recipe.agent.clock ?? { ...DEFAULT_RECIPE_CLOCK } }),
   };
 }

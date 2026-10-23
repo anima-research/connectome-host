@@ -405,6 +405,46 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
     await m.stop();
   });
 
+  test('a tuned-out refusal under a configured budget stands down without a retry loop', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 10, serverId: 'discord' });
+    const { ctx, toolCalls, getState } = mockCtx();
+    (ctx as unknown as { callTool: unknown }).callTool = async (call: { name: string; input: Record<string, unknown> }) => {
+      toolCalls.push(call);
+      // As agent-framework refuses a close of a tuned-out channel, even one
+      // that certifies an idle lease.
+      return {
+        success: false,
+        isError: false,
+        error: 'tuned out',
+        data: { refusal: 'tuned-out', channelId: 'discord:g1:c1' },
+      };
+    };
+    await m.start(ctx);
+    await m.handleToolCall({
+      id: 't1',
+      name: 'set_channel_idle_limit',
+      input: { channelId: 'discord:g1:c1', limit: 8 },
+    });
+
+    const r = await m.onProcess(ambient('c1', 'abcdefghij'), PS); // 10 > 8, under the lease
+    expect(toolCalls.length).toBe(1);
+    expect(toolCalls[0].input.overrideExplicitOpen).toBe(true);
+    // No context message and no counter restored: the janitor stands down.
+    expect(r.addMessages).toBeUndefined();
+    const counters = (getState() as { counters: Record<string, number> }).counters;
+    expect(counters['discord:g1:c1']).toBeUndefined();
+
+    // The next ambient message counts from zero rather than trying the close
+    // again, so the next try is a full budget away.
+    await m.onProcess(ambient('c1', 'ab'), PS);
+    expect(toolCalls.length).toBe(1);
+    // A full budget later (2 + 7 > 8), it tries once more.
+    await m.onProcess(ambient('c1', 'abcdefg'), PS);
+    expect(toolCalls.length).toBe(2);
+
+    await m.stop();
+  });
+
   test('a successful close emits a privacy-minimal ops receipt when notifyOps exists', async () => {
     const m = new SubscriptionGcModule({ defaultLimitChars: 10, serverId: 'discord' });
     const { ctx } = mockCtx();

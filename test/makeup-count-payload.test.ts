@@ -15,6 +15,22 @@ type Block = { type: string; text?: string; signature?: string; id?: string; too
 const blocksOf = (m: unknown) => (m as { content: Block[] }).content;
 const roleOf = (m: unknown) => (m as { role: string }).role;
 
+// An assistant turn that ran a web search: membrane keeps each Anthropic
+// server-tool block on a zero-width carrier, and inference through its
+// Anthropic API adapter sends the blocks back in that turn.
+const searchTurn: NormalizedMessage[] = [
+  { participant: 'Lari', content: [{ type: 'text', text: 'what changed?' }] },
+  { participant: 'agent', content: [
+    { type: 'text', text: '', rawItem: { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'changes' } } },
+    { type: 'text', text: '', rawItem: {
+      type: 'web_search_tool_result', tool_use_id: 'srvtoolu_1',
+      content: [{ type: 'web_search_result', url: 'https://example.com/', title: 'Example', encrypted_content: 'E'.repeat(400) }],
+    } },
+    { type: 'text', text: 'Here is what I found.' },
+  ] },
+  { participant: 'Lari', content: [{ type: 'text', text: 'thanks' }] },
+];
+
 describe('buildCountTokensPayload', () => {
   test('is byte-identical to the NativeFormatter build, with prompt caching off as the count sends it', () => {
     const messages: NormalizedMessage[] = [
@@ -185,6 +201,19 @@ describe('buildCountTokensPayload', () => {
     expect(JSON.stringify(without)).not.toContain('PREFILL SCAFFOLD');
   });
 
+  test("an assistant turn's server-tool blocks are counted when inference sends them, and left out when it doesn't", () => {
+    const reference = (anthropicServerBlocks: boolean) => new NativeFormatter().buildMessages(searchTurn, {
+      participantMode: 'multiuser', assistantParticipant: 'agent', toolMode: 'native',
+      promptCaching: false, cacheMarkers: 'membrane-system', anthropicServerBlocks,
+    }).messages as unknown[];
+    const sent = buildCountTokensPayload({ messages: searchTurn }, 'agent', new NativeFormatter(), 'native', true);
+    expect(sent.messages).toEqual(reference(true));
+    expect(blocksOf(sent.messages[1]).map((b) => b.type)).toEqual(['server_tool_use', 'web_search_tool_result', 'text']);
+    const leftOut = buildCountTokensPayload({ messages: searchTurn }, 'agent');
+    expect(leftOut.messages).toEqual(reference(false));
+    expect(JSON.stringify(leftOut.messages)).not.toContain('web_search_tool_result');
+  });
+
   // An empty system, as text or as a list, and an empty tool list send
   // neither field.
   test('an empty system and an empty tool list leave both out of the payload', () => {
@@ -235,6 +264,43 @@ for (const [label, systemPrompt, where] of [
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0]![where])).toContain('Read a file from the workspace');
     expect(JSON.stringify(sent[0]![where === 'system' ? 'messages' : 'system'] ?? '')).not.toContain('Read a file from the workspace');
+  });
+}
+
+// Inference sends an assistant turn's server-tool blocks back only through the
+// Anthropic API adapter, which the host builds for provider `anthropic` (the
+// default); a Bedrock host's requests leave them out. The count sends what
+// inference does.
+for (const [label, provider, sendsServerBlocks] of [
+  ['on the Anthropic API (the default provider), with', undefined, true],
+  ['on Bedrock, without', 'bedrock', false],
+] as const) {
+  test(`an agent's context count ${label} the server-tool blocks its requests carry`, async () => {
+    const app = {
+      recipe: { agent: { name: 'agent', ...(provider ? { provider } : {}) } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => ({ getRenderStats: () => ({}) }) }),
+        previewActivation: async () => ({ messages: searchTurn }),
+      },
+    };
+    const sent: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    const priorModel = process.env.COUNT_TOKENS_MODEL;
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      sent.push(JSON.parse(init?.body ?? '{}'));
+      return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      await buildContextMakeup(app as never, 'agent');
+    } finally {
+      globalThis.fetch = realFetch;
+      if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
+      else process.env.COUNT_TOKENS_MODEL = priorModel;
+    }
+    expect(sent).toHaveLength(1);
+    const assistantTypes = blocksOf((sent[0]!.messages as unknown[])[1]).map((b) => b.type);
+    expect(assistantTypes).toEqual(sendsServerBlocks ? ['server_tool_use', 'web_search_tool_result', 'text'] : ['text']);
   });
 }
 

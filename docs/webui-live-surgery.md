@@ -86,5 +86,6 @@ Client → server: `rollback {messageId, agent?, note?}`, `suppress
 `request-host-mode`, `request-operator-log {limit?}`.
 Server → client: `surgery-result`, `host-mode`, `operator-log`;
 `welcome.features`, `welcome.hostMode`. After a successful surgery the
-server does what `/checkout` does: `branch-changed` + a fresh welcome for
-every client.
+server does what `/checkout` does: `branch-changed` to every client whose
+scopes hold `messages`, and a fresh welcome for every client, as its scopes
+allow.

@@ -8,12 +8,15 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
+import { parseHandWrittenJson } from './hand-written-json.js';
+import { resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
 
 /** Default config file path, resolved from cwd. */
 export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
 
 /**
- * The operator's servers file's root, as JSON.parse reads it, for the boot
+ * The operator's servers file's root, as JSON.parse reads it past one
+ * leading byte order mark (parseHandWrittenJson), for the boot
  * (loadMcplServers) and for editing (readMcplServersFile). A file that isn't
  * valid JSON throws a SyntaxError naming the file, never JSON.parse's own
  * message, which can quote a stretch of the text, and the file can hold a
@@ -25,7 +28,7 @@ function parseServersFile(path: string): unknown {
   const raw = readFileSync(path, 'utf-8');
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseHandWrittenJson(raw);
   } catch (error) {
     if (error instanceof SyntaxError) throw new SyntaxError(`${path} isn't valid JSON`);
     throw error;
@@ -243,7 +246,7 @@ export class OverlayUnreadableError extends Error {
  * written, which the startup warnings log.
  *
  * Main read `parsed.mcplServers ?? {}`, and this reads every file the same
- * way:
+ * way, past one leading byte order mark, which main refused as not JSON:
  * - a missing file, a root without `mcplServers`, and `mcplServers: null`
  *   hold no entries;
  * - a root that isn't an object (a list, text, a number, true/false) holds
@@ -271,7 +274,7 @@ export function readAgentOverlayFile(overlayPath: string): {
   const raw = readFileSync(overlayPath, 'utf-8');
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseHandWrittenJson(raw);
   } catch {
     throw new OverlayUnreadableError(overlayPath, 'not-json');
   }
@@ -409,11 +412,13 @@ function setsSomething(value: unknown): boolean {
  * - a `disabledCapabilities` item that String() can't read, such as a parsed
  *   object whose own `toString` isn't a function, denies nothing, where
  *   main's String() stopped the start;
- * - a `transport` other than stdio or websocket is named, though it passes
- *   on as main passed it and the framework ignores it; so is a websocket
- *   transport with no url, or a stdio one with no command, which the
- *   framework can't open and which still replaces any operator definition,
- *   as on main.
+ * - a `transport` of null reads as absent, as agent-framework 0.22 read
+ *   it, since 0.23 refuses a null transport whatever else the entry says;
+ * - an entry the framework refuses as written (openedBy), such as a
+ *   websocket transport with no url, or a command and a url with no
+ *   transport, is named; it passes on as written and still replaces any
+ *   operator definition, as on main, and the framework's own line at the
+ *   start says why.
  *
  * Skipped, so the operator's definition, if any, stays: an entry that isn't
  * an object, and `args` that aren't a list of text, numbers or true/false,
@@ -524,14 +529,13 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
     // main's String() stopped the start on such an item.
     notes.push('its disabledCapabilities holds an item that can\'t be read as text, which denies nothing, where the host used to stop the start');
   }
-  if (e.transport !== undefined && e.transport !== null && e.transport !== 'stdio' && e.transport !== 'websocket') {
-    notes.push('its transport is neither stdio nor websocket, so the framework ignores it');
-  }
-  // Passed on as main passed them, and named: such an entry replaces any
-  // operator definition with one the framework fails to open.
-  if (e.transport === 'websocket' && !e.url && e.command) notes.push('its transport is websocket, with no url to dial, so the framework can\'t open it');
-  if (e.transport === 'stdio' && !e.command && e.url) notes.push('its transport is stdio, with no command to spawn, so the framework can\'t open it');
+  // agent-framework 0.22 chose by url and command when transport was null,
+  // as when it was absent; 0.23 refuses a null transport (resolveServerBinding).
+  if (e.transport === null) delete e.transport;
   if (!e.command && !e.url) return { problem: NAMES_NOTHING };
+  // Passed on as main passed it, and named: such an entry replaces any
+  // operator definition with one the framework refuses.
+  if (openedBy(e) === null) notes.push('the framework refuses it as written (its own line at the start says why), so nothing connects in its place');
   return { entry: e as AgentOverlayEntry, notes };
 }
 
@@ -563,7 +567,7 @@ export function isLoopbackHost(hostname: string): boolean {
  * an identity attaches the grant's credential), its `token`, a user or
  * password in the url, and the url's own `token` parameter, the one
  * agent-framework's transport sends. No other query parameter is
- * recognized. It counts only an entry the framework dials (dialsUrl) on a
+ * recognized. It counts only an entry the framework dials (openedBy) on a
  * `ws://` url to a host other than this machine, where anyone on the
  * network between can read the url and the headers. The grant is named
  * first, since the framework sends its credential in place of the token
@@ -572,7 +576,7 @@ export function isLoopbackHost(hostname: string): boolean {
 export function cleartextCredential(
   entry: { url?: unknown; token?: unknown; access?: unknown; command?: unknown; transport?: unknown },
 ): { carrier: 'access' | 'token' | 'url'; host: string } | undefined {
-  if (!dialsUrl(entry)) return undefined;
+  if (openedBy(entry) !== 'dial') return undefined;
   // Parsed as the transport parses it: an older overlay entry read leniently
   // can hold a url that isn't a string, which the URL constructor coerces.
   let url: URL;
@@ -602,22 +606,6 @@ export function cleartextCarrierText(carrier: 'access' | 'token' | 'url', access
   return "the user, password or token parameter in its url";
 }
 
-/**
- * The startup warning for a server whose credential would go unencrypted
- * (cleartextCredential), if any. mcpl_deploy refuses such an entry; an
- * operator's recipe may know the network between is private, and an overlay
- * entry saved before that refusal still loads.
- */
-export function cleartextCredentialWarning(
-  id: string,
-  entry: { url?: unknown; token?: unknown; access?: unknown; command?: unknown; transport?: unknown },
-): string | undefined {
-  const cleartext = cleartextCredential(entry);
-  if (!cleartext) return undefined;
-  return `[mcpl] server "${id}": ${cleartextCarrierText(cleartext.carrier, entry.access)} goes to ${cleartext.host} ` +
-    'over unencrypted ws://, where anyone on the network between can read it; use wss:// unless that network is private';
-}
-
 /** A tombstone: `disabled: true`, the one rule every reader uses, whatever else the entry holds. */
 export function overlayEntryTombstones(entry: unknown): boolean {
   return readOverlayEntry(entry).entry?.disabled === true;
@@ -641,7 +629,8 @@ export function saveAgentOverlay(
 
 /**
  * Write `servers` as a servers file's `mcplServers`, in place. The root's
- * other keys are kept as JSON.parse reads them: no reader acts on them, but
+ * other keys are kept as JSON.parse reads them past one leading byte order
+ * mark, which the file is written back without: no reader acts on them, but
  * they're whoever wrote them's, such as an entry under a misspelled key. A
  * root of null is refused by both files' readers, and every save follows a
  * read of its file, so a save meets one only when another writer put it
@@ -655,7 +644,7 @@ function writeServersFile(path: string, servers: Record<string, unknown>): void 
   if (existsSync(path)) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(path, 'utf-8'));
+      parsed = parseHandWrittenJson(readFileSync(path, 'utf-8'));
     } catch (error) {
       if (error instanceof SyntaxError) throw new Error(`${path} isn't valid JSON, so it wasn't overwritten`);
       throw error;
@@ -757,10 +746,8 @@ export function resolveOverlayEntry(
   // 2026-08-04 door deploy). An entry that names a url now defaults to
   // reconnect unless it says otherwise; `reconnect: null` says otherwise, as
   // main read it, and readOverlayEntry has made it false. The default keys on a
-  // url's presence, as main keyed it, so an entry that names a url and a
-  // command with no transport, which the framework spawns, gets it too: the
-  // framework then spawns its child again when it exits, as it did on main.
-  // An entry with only a command keeps no default.
+  // url's presence, as main keyed it. An entry with only a command keeps no
+  // default.
   if (read.url && rec.reconnect === undefined) rec.reconnect = true;
   const denied = new Set<string>([
     ...AGENT_DEPLOY_DENIED_CAPABILITIES,
@@ -838,8 +825,8 @@ export interface ServerProvisions {
   inheritEnv: boolean;
   /** The other operator-only fields the definition sets, as agent-framework
    *  0.22.3 reads each (grantsThrough), in OPERATOR_ONLY_OVERLAY_FIELDS'
-   *  order: an overlay entry can't carry them, so a replacement always lacks
-   *  them. */
+   *  order: an overlay entry can't carry them, so a replacement the
+   *  framework opens always lacks them. */
   grants: GrantField[];
 }
 
@@ -909,18 +896,31 @@ const namesHostVariable = (text: unknown): boolean => typeof text === 'string' &
 const envOf = (entry: AgentOverlayEntry): Record<string, unknown> =>
   entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env) ? entry.env : {};
 
-/** Whether agent-framework dials an entry's URL rather than spawning its
- *  command. This is its isWebSocketTransport (mcpl/transport.ts), which the
- *  package doesn't export: an explicit `transport` decides, and otherwise a
- *  `url` with no `command`. The readers here choose their branch by it, so
- *  what they name is what the connection the framework opens would carry. */
-export const dialsUrl = (entry: { transport?: unknown; url?: unknown; command?: unknown }): boolean =>
-  entry.transport === 'websocket' || (entry.transport !== 'stdio' && Boolean(entry.url) && !entry.command);
+/** How agent-framework opens an agent overlay entry as the boot passes it, by
+ *  its own rules: 'dial' for its url, 'spawn' for its command, or null for an
+ *  entry it refuses when it connects (resolveServerBinding, then
+ *  serverConfigProblems), which nothing opens. The boot leaves out the
+ *  operator-only fields (resolveOverlayEntry), so this does too. What it
+ *  can't see is the credential provider the boot attaches to an access grant
+ *  when the recipe has an identity. The readers here choose their branch by
+ *  it, so what they name is what the connection the framework opens would
+ *  carry, and like them it never throws. */
+export const openedBy = (entry: { transport?: unknown; url?: unknown; command?: unknown }): 'dial' | 'spawn' | null => {
+  try {
+    const config: Record<string, unknown> = { id: '', ...entry };
+    for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) delete config[k];
+    const passed = config as unknown as Parameters<typeof serverConfigProblems>[0];
+    if (serverConfigProblems(passed).length > 0) return null;
+    return resolveServerBinding(passed).transport === 'stdio' ? 'spawn' : 'dial';
+  } catch {
+    return null;
+  }
+};
 
 /**
  * The parts of an agent overlay entry that name a host variable (`${VAR}`),
  * as labels for a receipt: `command`, `args` and `env NAME` for an entry the
- * framework spawns, `url`, `token` and `access` for one it dials (dialsUrl).
+ * framework spawns, `url`, `token` and `access` for one it dials (openedBy).
  * Only a recipe substitutes those (substituteEnvVars); from an overlay entry
  * the server gets the text as written. Labels only, never values. The entry
  * is read as the boot reads it (readOverlayEntry); a malformed one names none.
@@ -929,7 +929,8 @@ export function hostVariableReferences(raw: AgentOverlayEntry): string[] {
   const refs: string[] = [];
   const entry = readOverlayEntry(raw).entry;
   if (!entry) return refs;
-  if (entry.command && !dialsUrl(entry)) {
+  const opened = openedBy(entry);
+  if (opened === 'spawn') {
     if (namesHostVariable(entry.command)) refs.push('command');
     if (Array.isArray(entry.args) && entry.args.some(namesHostVariable)) refs.push('args');
     const env = envOf(entry);
@@ -938,7 +939,7 @@ export function hostVariableReferences(raw: AgentOverlayEntry): string[] {
       // gets the entry's text for it (as lostByReplacement reads it).
       if (namesHostVariable(env[name]) && !hostSetsOverServer(name)) refs.push(`env ${name}`);
     }
-  } else if (dialsUrl(entry) && entry.url) {
+  } else if (opened === 'dial') {
     if (namesHostVariable(entry.url)) refs.push('url');
     if (namesHostVariable(entry.token)) refs.push('token');
     if (namesHostVariable(entry.access)) refs.push('access');
@@ -968,22 +969,26 @@ export function hostVariableReferences(raw: AgentOverlayEntry): string[] {
  *
  * Env and inheritance count only for a replacement that spawns a process; a
  * token and an access grant count only for one that dials a URL, as the
- * framework chooses between them (dialsUrl). The operator's other grants
- * (ServerProvisions.grants) count for any replacement, since no overlay
- * entry can carry them.
+ * framework chooses between them (openedBy). The operator's other grants
+ * (ServerProvisions.grants) count for any replacement it opens, since no
+ * overlay entry can carry them.
  */
 export function lostByReplacement(operator: ServerProvisions, raw: AgentOverlayEntry): string | null {
   const lost: string[] = [];
   const entry = readOverlayEntry(raw).entry;
   if (!entry || entry.disabled === true) return null;
-  if (entry.command && !dialsUrl(entry)) {
+  const opened = openedBy(entry);
+  // An entry the framework refuses lacks nothing that would reach a server:
+  // nothing connects in its place, as its note says (readOverlayEntry).
+  if (opened === null) return null;
+  if (opened === 'spawn') {
     const declared = new Set(
       Object.entries(envOf(entry)).filter(([, value]) => !namesHostVariable(value)).map(([name]) => name),
     );
     const missing = operator.env.filter((name) => !declared.has(name) && !hostSetsOverServer(name));
     if (missing.length > 0) lost.push(`env ${missing.join(', ')}`);
     if (operator.inheritEnv) lost.push('inherited host environment (inheritEnv)');
-  } else if (dialsUrl(entry) && entry.url) {
+  } else if (opened === 'dial') {
     // As the framework sends it: any truthy token goes on the dial
     // (buildWebSocketUrl), a number as its text, as main passed it.
     const token = Boolean(entry.token) && !namesHostVariable(entry.token);

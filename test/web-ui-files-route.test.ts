@@ -17,7 +17,7 @@ import { WorkspaceModule, WorkspaceReadError, type ModuleContext } from '@animal
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 // agent-framework's code for a link among a path's directories that stays
@@ -95,7 +95,7 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
 
   afterAll(async () => {
     await webUiModule?.stop();
-    await __resetSharedServerForTests();
+    await stopWebUiServer();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 

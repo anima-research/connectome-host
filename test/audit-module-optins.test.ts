@@ -122,6 +122,22 @@ describe('auditPaths', () => {
     expect(readFileSync(childPath, 'utf-8')).toContain('"retrieval":true');
   });
 
+  test('audits a recipe an editor saved with a byte order mark, as the host loads it', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'marked.json'), '\uFEFF' + JSON.stringify({ name: 'marked', agent: AGENT, modules: { retrieval: true } }));
+    const { audits, unreadable } = auditPaths([dir]);
+    expect([audits.map((a) => a.recipeName), unreadable]).toEqual([['marked'], []]);
+  });
+
+  test("follows a parent's fleet child that an editor saved with a byte order mark", () => {
+    const dir = tmp();
+    const parentPath = join(dir, 'parent.json');
+    writeFileSync(parentPath, JSON.stringify({ name: 'parent', agent: AGENT, modules: { fleet: { children: [{ recipe: 'child.json' }] } } }));
+    writeFileSync(join(dir, 'child.json'), '\uFEFF' + JSON.stringify({ name: 'child', agent: AGENT, modules: { lessons: true } }));
+    const { audits, unreadable } = auditPaths([parentPath]);
+    expect([audits.map((a) => a.recipeName).sort(), unreadable]).toEqual([['child', 'parent'], []]);
+  });
+
   test('finds dot-prefixed .recipe.json snapshots in scanned directories', () => {
     const dir = tmp();
     writeFileSync(

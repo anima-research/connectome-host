@@ -6,7 +6,7 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 describe('retrieval operator authentication on credential-free loopback', () => {
@@ -32,7 +32,7 @@ describe('retrieval operator authentication on credential-free loopback', () => 
 
   afterAll(async () => {
     await webUiModule?.stop();
-    await __resetSharedServerForTests();
+    await stopWebUiServer();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 

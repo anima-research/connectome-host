@@ -77,17 +77,30 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
     const state = streams.get(agent);
     if (state === undefined) return;
     const primary = agent === primaryAgentName;
-    // A stream's first end closes its prose line, and for the primary says
-    // how its turn ended. An end after an end, such as `exhausted` after
-    // `failed`, prints nothing.
+    // A stream's first end closes its prose line on stdout, so that what
+    // prints next, such as a batch's echo of its next line, starts a line of
+    // its own, and says how the stream ended. A failure goes to stderr, for
+    // any agent: `failed`, and a lone `exhausted`, which from agent-framework
+    // 0.22.3 comes only from an abort whose reason isn't `user` (each of its
+    // other `exhausted` emits follows a `failed`) and which the framework
+    // counts as a failure. The primary's lone `exhausted` reads
+    // `(turn ended: …)`, the line that says this line's own turn ended;
+    // another agent's reads `Error:`, as any agent's `failed` does. Its
+    // newline goes to stdout rather than leading its stderr line, so a
+    // terminal showing both reads as before; where stdout's line had already
+    // ended, as after a tool's line, stdout gets an empty line. The primary's
+    // stop, `aborted`, goes to stdout, since it isn't one. An end after an
+    // end, such as `exhausted` after `failed`, prints nothing.
     if (state === 'open') {
       if (event.type === 'inference:failed') {
-        out.error(`\nError: ${traceError(event)}`);
+        out.write('\n');
+        out.error(`Error: ${traceError(event)}`);
+      } else if (event.type === 'inference:exhausted') {
+        out.write('\n');
+        out.error(primary ? `(turn ended: ${traceError(event)})` : `Error: ${traceError(event)}`);
       } else if (primary && event.type === 'inference:aborted') {
         const reason = typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : '';
         out.log(`\n(turn aborted${reason})`);
-      } else if (primary && event.type === 'inference:exhausted') {
-        out.log(`\n(turn ended: ${traceError(event)})`);
       } else {
         out.write('\n');
       }

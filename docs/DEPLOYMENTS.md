@@ -181,26 +181,42 @@ it, and what has to happen first. A pull doesn't stop for it. So:
 - **If a hold names a commit you already run,** go back, below, to
   commits from before it. In a checkout that contains the commit,
   `git merge-base --is-ancestor <commit> HEAD` exits 0. The commits you
-  noted may already contain it; `git reflog` shows earlier ones.
+  noted may already contain it; `git reflog` shows earlier ones. Going back
+  past your last update, the copy holds what the agents had just before
+  that update, which code newer than the commits you go back to may have
+  written. Before you restore it, read the hold's issue, which says what
+  has to happen first.
 - **To update,** note the commit each checkout is on with
   `git rev-parse HEAD`, and first stop every agent that runs from these
-  checkouts, with the shell daemon if its checkout will move. Stopping an
-  agent stops the fleet children it launched. For one left running, after
-  a TUI quit that detached it or a parent that was killed outright, `kill`
-  the PID in `headless.pid` in its data directory, which shuts it down as
-  a stop does. bun runs the host's `src/` directly and imports some
-  modules only when they're first needed, so files that change under a
-  running agent can mix new code into it. The daemon serves every agent on
-  the box, so stopping it ends their shell sessions too. If the entries
-  say data the newer code writes doesn't read back on the older code, copy
+  checkouts, with the shell daemon if its checkout will move, and any MCPL
+  server an agent reaches by `url` whose state the copy takes, wherever
+  it's defined, the agent's own deploys (`mcpl-servers.agent.json`)
+  included: such a server runs apart from the host, so stopping the agent
+  leaves it running. Stopping an agent stops the fleet children it
+  launched. For one
+  left running, after a TUI quit that detached it or a parent that was
+  killed outright, `kill` the PID in `headless.pid` in its data directory,
+  which shuts it down as a stop does, and wait until it has exited
+  (`kill -0 <pid>` then fails). bun runs the host's `src/` directly and
+  imports some modules only when they're first needed, so files that
+  change under a running agent can mix new code into it. The daemon serves
+  every agent on the box, so stopping it ends their shell sessions too.
+  Then copy
   what each agent keeps while it's stopped: its data directory
-  (`DATA_DIR`), its fleet children's data directories (`data/<child>`
-  under its working directory, unless a launch named another), the MCPL
+  (`DATA_DIR`, or `./data` in its working directory), its fleet children's
+  data directories (`data/<child>` under its working directory, unless the
+  recipe's entry for the child or a launch named another), the MCPL
   server settings it saves in its working directory (`mcpl-servers.json`
   and `mcpl-servers.agent.json`), and the files its MCPL servers keep
   their state in, such as heartbeat-mcpl's `HEARTBEAT_CONFIG_FILE` and
   those discord-mcpl's README lists under
   [Stored state](https://github.com/anima-research/discord-mcpl#stored-state).
+  Make full or reflinked copies, never hardlinks, which share files the
+  agents write, and keep the copy as it was for as long as you might go
+  back. Copy at every update, and once an update's copy is complete, let
+  it replace the last: newer code can write a store, or the host's or a
+  library's other files, in a form older code can't read, as chronicle
+  0.3.0's notes say of its own, and the entries can miss saying so.
   Then update
   the host and the libraries it loads together (`git switch main` first
   in a checkout left detached), since the host's code expects the library
@@ -210,16 +226,38 @@ it, and what has to happen first. A pull doesn't stop for it. So:
   the host's Web UI. An `npm install` in agent-framework or context-manager
   brings back their own `@animalabs/*` copies, so relink them as
   [§3](./DEV-ENVIRONMENT.md#3-wire-single-instance-symlinks-the-crucial-part)
-  says. Then start them.
+  says. Then, before starting any agent, run the host's store audit once
+  for each agent you start, in the directory it starts in, where Bun loads
+  its `.env`, with any variable its service sets for it exported: `bun
+  <host checkout>/src/index.ts --audit-stores --recipe <recipe> <data
+  directory>`, with the recipe its start names and its `DATA_DIR` as its
+  `.env` or service sets it, or `./data` there when neither does; your
+  shell has neither unless you set them. For a start that names no
+  recipe, leave `--recipe` out, and the audit reads the one its last start
+  saved, or the default one, as that start would. The audit opens each
+  store in place, as a start of the new code would, so the copy is what
+  puts them back. A fleet child a launch started, which isn't in the
+  recipe, needs a run of its own on its data directory, without
+  `--recipe`, which reads the recipe its last start saved: `bun <host
+  checkout>/src/index.ts --audit-stores <its data directory>`. "Updating
+  an install" says
+  what else the audit covers and what each line it prints asks of you; for
+  a store it refused or couldn't audit, that's going back, below, or a
+  repair or correction and the audit again. Then start the servers you
+  stopped, and the agents.
 - **To go back,** stop the agents again, with any fleet children still
-  running, and the daemon if its checkout moved. Check the noted commits
-  out again (which leaves each checkout detached), rebuild the same way,
-  and put back any recipe or `.env` change you made for the newer code.
-  If you copied the data, restore the copy before starting them. That
-  discards everything the agents recorded since it was made. Then start
-  them.
-  agent-framework 0.22.1's notes, for example, say what going back to
-  0.22.0 does with what 0.22.1 stored.
+  running, the daemon if its checkout moved, and the MCPL servers reached
+  by `url` that you stopped before the copy. Check the noted commits out
+  again (which leaves each checkout detached), rebuild the same way, and
+  put back any recipe or `.env` change you made for the newer code. Then
+  restore the copy of what each agent keeps in place of what's there now,
+  not over it, so files the newer code added go too. That discards
+  everything the agents recorded since the copy was made, and only that.
+  For the commits you go back past that the box ran before the copy, as
+  when going back past your last update, or for all of them where no copy
+  was taken, read their entries for what going back does with what they
+  stored, as agent-framework 0.22.1's notes say for going back to 0.22.0.
+  Then start the servers you stopped, and the agents.
 
 ## Updating an install
 
@@ -242,9 +280,10 @@ while a clone installs from its tag's `bun.lock`. So:
   `npm ls @animalabs/agent-framework @animalabs/context-manager
   @animalabs/chronicle` names, and the version of any MCPL server the notes
   say to update. Stop every agent that runs from the install, and its fleet
-  children, as "Updating checkouts" says, and any MCPL server the recipe
-  reaches by `url`: it runs apart from the host, and a copy may take the
-  files it keeps its state in. Then install the new version: `npm install
+  children, as "Updating checkouts" says, and any MCPL server an agent
+  reaches by `url` whose state the copy takes, wherever it's defined, the
+  agent's own deploys (`mcpl-servers.agent.json`) included: it runs apart
+  from the host. Then install the new version: `npm install
   @animalabs/connectome-host@<version>`, or `bun add
   @animalabs/connectome-host@<version>`, or in a clone `git fetch --tags`,
   `git checkout v<version>` and `bun install`. In a clone, `bun install` also
@@ -260,49 +299,78 @@ while a clone installs from its tag's `bun.lock`. So:
   what they say about going back. Read the same in the notes of any MCPL
   server you'll update, between the version you noted and the new one: its
   own changelog, or its commits if it keeps none. Then:
-  - **If context-manager or chronicle moved, or any notes say going back
-    isn't safe,** copy what each agent keeps, which "Updating checkouts"
-    lists, as full or reflinked copies, never hardlinks, which share files
-    the agents write, and keep the copy as it was for as long as you might
-    go back. Those two libraries decide how a store is kept on disk, and a
-    newer one can write a store an older one can't read, as chronicle
-    0.3.0's notes say of its own.
-  - **If context-manager moved,** copy each store again, the same way, and
-    audit that copy with the command
+  - **Copy what each agent keeps** at every update: "Updating checkouts"
+    says what to copy, how, and why.
+  - **Then run the new version's store audit,** after the copy and before
+    starting any agent, with the agents and their fleet children still
+    stopped. It opens each store in place, as the new version's start
+    would, so it changes the stores as that start would, and the copy is
+    what puts them back. Run it the way you start the host, from the new
+    version, in the directory and environment the host starts in, since
+    relative directories resolve from there, with `--audit-stores` in place
+    of the recipe's options: `bun
+    node_modules/@animalabs/connectome-host/src/index.ts --audit-stores
+    --recipe <recipe> <data directory>`, or `bun src/index.ts
+    --audit-stores …` in a clone, with the host's `DATA_DIR`, or `./data`
+    in that directory when it isn't set. A `DATA_DIR` that the service or
+    `.env` gives the host doesn't reach the shell you type the command in,
+    and nor does any other variable the service sets, so export those.
+    Give `--recipe` the recipe your start command names, so the
+    audit opens the stores under the recipe that start would load; without
+    it, the audit reads the one the host's last start saved, as a start
+    given none does, and with none saved, the default one. Run it once for
+    each agent you start. It audits every session's store in the data
+    directory, and each fleet child the recipe's `modules.fleet.children`
+    names whose data directory exists, in a process of its own, as the
+    fleet launches it: under the recipe its entry names, in the environment
+    the fleet starts it with, given 5 minutes to end, or the minutes
+    `CONNECTOME_FLEET_CHILD_AUDIT_MINUTES` in the audit's environment gives:
+    a number above 0, a larger one than a timer holds (about 35,791
+    minutes, Infinity included) giving the longest it does; 0 or below, or
+    not a number, gives 5.
+    A child launched by `fleet--launch` isn't in
+    the recipe: run the audit on its directory too, the `dataDir` its launch
+    named, `--audit-stores <directory>`, which reads the recipe its last
+    start saved, in the audit's environment. The audit prints a line on
+    stderr for each store under each agent name it opens it under, the
+    recipe's or the default and each session's own, or one for a store it
+    doesn't open, and exits 0 when no store was refused and every
+    store there was audited. A store a session names in its data directory
+    that isn't there yet gets a line and no failure, since a start makes an
+    empty one. Otherwise each
+    line that says `refused`, or starts `Couldn't audit`, names a store or a
+    directory the new version didn't open, and why: go back, below, which
+    restores the copy. A store that lies outside its data directory, or
+    holds a link to what does, isn't opened, since the copy doesn't hold
+    what it reaches; its line says how to go on. A line saying a strategy
+    called a model while opening a store means no audit can answer for that
+    store, only a start: whether to start on it is yours. A store refused
+    for crossed summaries, whose line says `store topology rejected`, can
+    instead be repaired on a copy of the stopped store as
     [AGENT-ONBOARDING §11.8](./AGENT-ONBOARDING.md#11-critical-gotchas-read-before-deploying)
-    gives. The stores are the session directories, `sessions/<id>`, in each
-    agent's `DATA_DIR` and in its fleet children's data directories, or
-    `DATA_DIR/store` on a host from before sessions, which the new version
-    moves into one as it starts. Audit after the install, so the script is
-    the new version's, and before starting, since the new version's first
-    open is what refuses a store or changes it. Opening a store changes it,
-    the audit's open included, so the copy you keep is never the one
-    audited. Then read its stderr and its exit status. A warning that it
-    saw nothing to audit means it may have looked at the wrong thing: check
-    what the warning names, the `--namespace` (`agents/<agent>`) and that
-    the copy carries the store's strategy state, and audit a fresh copy,
-    since the first audit's open changed this one. A store that has never
-    been compressed has no summaries, so it warns with both right. Exit 0
-    is then clean. Exit 2 lists violations: go back, below, or repair a copy
-    of the stopped store as §11.8 says. Exit 1 means it didn't finish, and
-    its message says why: correct the command if that's what it names, and
-    if it couldn't open the copy, go back rather than start the agents on
-    that store.
+    says. Then put the repaired copy in the store's place, keeping the
+    original, and run the audit again before starting, since the repair's
+    own check opens the copy `auditOnly`, which can pass a store a start
+    refuses. For anything else a line names, correct it and run the audit
+    again, or go back.
   - **Then** update any MCPL server the notes name, the way you installed
     it, and start the servers you stopped.
 
   Then start the agents.
 - **To go back,** stop the agents again, with any fleet children still
-  running, and any MCPL server the recipe reaches by `url`. Restore the
-  copied `package.json` and lockfile together, then run `npm ci`, or `bun
-  install --frozen-lockfile`. The install rewrote the version in
-  `package.json`, so a lockfile restored alone is refused. In a clone,
+  running, and the MCPL servers reached by `url` that you stopped before
+  the copy. Restore the copied `package.json` and lockfile together, then
+  run `npm ci`, or `bun install --frozen-lockfile`. The install rewrote
+  the version in `package.json`, so a lockfile restored alone is refused.
+  In a clone,
   check out the tag you noted and run `bun install`, then `bun run
   build:web` if it says the Web UI's build failed or scripts were off. Put
   back the version of any MCPL server you updated, and any recipe or `.env`
   change you made for the newer version. Then restore the copy of what each
-  agent keeps, if you made one, which discards what the agents recorded
-  since it was made; the audited store copies aren't for restoring. Then
+  agent keeps in place of what's there now, not over it, so files the newer
+  version added go too. That discards what the agents recorded since the
+  copy was made. Where no copy was taken, read the notes between the two
+  versions for what going back does with what the newer one stored. Then
   start the servers you stopped, and the agents.
 
 ---

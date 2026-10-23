@@ -2,11 +2,11 @@
  * A credential sent over ws:// to another machine can be read on the
  * network between: the framework puts a token, or the credential an access
  * grant attaches, in the url's query, and the WebSocket client sends a url's
- * user and password as a header. mcpl_deploy refuses such an entry; the
- * boot warns.
+ * user and password as a header. mcpl_deploy refuses such an entry;
+ * agent-framework warns when it connects one.
  */
 import { describe, expect, test } from 'bun:test';
-import { cleartextCarrierText, cleartextCredential, cleartextCredentialWarning, isLoopbackHost } from '../src/mcpl-config.js';
+import { cleartextCarrierText, cleartextCredential, isLoopbackHost } from '../src/mcpl-config.js';
 
 describe('cleartextCredential', () => {
   test('names each carrier it recognizes over ws:// to another machine, the grant first, then the token, then the url', () => {
@@ -47,7 +47,7 @@ describe('cleartextCredential', () => {
   });
 
   test('counts only an entry the framework dials', () => {
-    // A command with a url and no transport is spawned, not dialed.
+    // A command with a url and no transport is refused, so nothing is dialed.
     expect(cleartextCredential({ command: 'node', url: 'ws://tools.example', token: 't' })).toBeUndefined();
     expect(cleartextCredential({ command: 'node', url: 'ws://tools.example', token: 't', transport: 'stdio' })).toBeUndefined();
     expect(cleartextCredential({ url: 'ws://tools.example', token: 't', transport: 'stdio' })).toBeUndefined();
@@ -55,7 +55,7 @@ describe('cleartextCredential', () => {
       .toEqual({ carrier: 'token', host: 'tools.example' });
   });
 
-  test("leaves a url it can't parse, or of another scheme, to the framework, which refuses it at the dial", () => {
+  test("counts only a ws:// url: one that doesn't parse is the framework's to refuse, and mcpl_deploy refuses another scheme by its own rule", () => {
     expect(cleartextCredential({ url: 'not a url', token: 't' })).toBeUndefined();
     expect(cleartextCredential({ url: 'host:8080', token: 't' })).toBeUndefined();
     expect(cleartextCredential({ url: 'http://tools.example', token: 't' })).toBeUndefined();
@@ -82,23 +82,5 @@ describe('isLoopbackHost', () => {
     for (const host of ['localhost.', 'a.localhost', 'localhost.example', '127.0.0.1.attacker.example', '128.0.0.1', '10.0.0.1', '[::2]', '[::ffff:a00:1]', 'example.com']) {
       expect(isLoopbackHost(host)).toBe(false);
     }
-  });
-});
-
-describe('cleartextCredentialWarning', () => {
-  test('names the server, what is sent, and where, and says to use wss://', () => {
-    expect(cleartextCredentialWarning('tools', { url: 'ws://tools.example:3101', token: 't' })).toBe(
-      '[mcpl] server "tools": its token goes to tools.example:3101 over unencrypted ws://, ' +
-      'where anyone on the network between can read it; use wss:// unless that network is private',
-    );
-    expect(cleartextCredentialWarning('world', { url: 'ws://10.0.0.7', access: ' eidoverse ' })).toBe(
-      '[mcpl] server "world": the credential of its access grant " eidoverse " goes to 10.0.0.7 over unencrypted ws://, ' +
-      'where anyone on the network between can read it; use wss:// unless that network is private',
-    );
-    expect(cleartextCredentialWarning('pasted', { url: 'ws://user:pass@tools.example' })).toBe(
-      '[mcpl] server "pasted": the user, password or token parameter in its url goes to tools.example over unencrypted ws://, ' +
-      'where anyone on the network between can read it; use wss:// unless that network is private',
-    );
-    expect(cleartextCredentialWarning('safe', { url: 'wss://tools.example', token: 't' })).toBeUndefined();
   });
 });

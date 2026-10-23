@@ -20,10 +20,16 @@
  * STREAM_END_TRACES (state/turn-trace.ts), a turn a tool ended included.
  * The quiesce re-pull runs at any agent's end, since a quiesce drains when
  * the last turn in flight ends, whoever's it is.
+ *
+ * An observer's page gets only the frames its grant covers, so what the page
+ * builds from frames follows the grant too: the tree only with the trees'
+ * scopes (treesShownFor), and a tool call's state from its stored result once
+ * that has loaded (toolCallState).
  */
 
 import { STREAM_END_TRACES } from '../state/turn-trace.js';
 import type { AgentNode } from '../state/agent-tree-reducer.js';
+import { AGENT_TREE_SCOPES } from './protocol.js';
 
 export interface TraceViewHooks {
   appendStreamToken(token: string, blockType?: string): void;
@@ -52,6 +58,23 @@ export function conversationAgentOf(
   welcome: { agents: ReadonlyArray<{ name: string }> } | null | undefined,
 ): string | undefined {
   return welcome?.agents[0]?.name;
+}
+
+/** An agent's stream ended: from a stream-end trace, or from the
+ *  `stream-ended` frame a client gets in place of one whose payload its
+ *  scopes don't cover. The main view's streaming message ends when the
+ *  agent is the conversation's, and the quiesce re-pull runs at any agent's
+ *  end. */
+export function applyStreamEnded(
+  agentName: unknown,
+  hooks: Pick<TraceViewHooks, 'finishStream' | 'onTurnSettled'>,
+  conversationAgent: string | undefined,
+): void {
+  if (conversationAgent === undefined || typeof agentName !== 'string' || agentName === conversationAgent) {
+    hooks.finishStream();
+  }
+  // The framework emits no trace for "drained", so re-pull the snapshot.
+  hooks.onTurnSettled();
 }
 
 /** Apply one trace to the main view and the page's state. `conversationAgent`
@@ -102,9 +125,7 @@ export function applyTrace(
       return;
   }
   if (STREAM_END_TRACES.has(e.type)) {
-    if (inView) hooks.finishStream();
-    // The framework emits no trace for "drained", so re-pull the snapshot.
-    hooks.onTurnSettled();
+    applyStreamEnded(e.agentName, hooks, conversationAgent);
     return;
   }
   // Host serving-state transitions (host:quiesce / host:resume /
@@ -141,11 +162,19 @@ export function pickStreamSource(
 }
 
 /** The event a server message carries for the stream panel showing `src`,
- *  or null when the message isn't that panel's. */
+ *  or null when the message isn't that panel's. A `stream-ended` frame, which
+ *  a client gets in place of a host agent's stream-end trace its scopes don't
+ *  cover, is that agent's panel's, as the trace would be; a child's comes as
+ *  a `child-event`. */
 export function streamEventFor(
   src: StreamSource,
-  msg: { type: string; scope?: unknown; childName?: unknown; event?: { type: string; [k: string]: unknown } },
+  msg: { type: string; scope?: unknown; childName?: unknown; agentName?: unknown; event?: { type: string; [k: string]: unknown } },
 ): { type: string; [k: string]: unknown } | null {
+  if (msg.type === 'stream-ended') {
+    return src.kind === 'trace-agent' && msg.agentName === src.agentName
+      ? { type: 'stream-ended', agentName: src.agentName }
+      : null;
+  }
   const event = msg.event;
   if (!event) return null;
   switch (src.kind) {
@@ -162,4 +191,32 @@ export function streamEventFor(
         ? event
         : null;
   }
+}
+
+/** Whether the page builds and shows the agent trees, given its observer
+ *  sign-in state on this connection and the scopes its grant's observer-ack
+ *  gave, or null before any. An operator's connection ('none': not signed in
+ *  as an observer, either never asked to or welcomed as a full client since)
+ *  does. An observer's does when its grant holds what a
+ *  tree carries (AGENT_TREE_SCOPES), and keeps that answer while it signs in
+ *  again after a reconnect. Before its first grant, and once it can't sign
+ *  in ('denied', 'unavailable', where the page shows its sign-in screen), it
+ *  doesn't. Otherwise its traces would build nodes whose failed or exhausted
+ *  end (ops) or completion (health) it never gets, and an empty tree would
+ *  read as no agents running. */
+export function treesShownFor(state: string, scopes: readonly string[] | null): boolean {
+  if (state === 'none') return true;
+  if (state !== 'observer' && state !== 'authing') return false;
+  return scopes !== null && AGENT_TREE_SCOPES.every((scope) => scopes.includes(scope));
+}
+
+/** How a tool call shows. A loaded result says how the call ended, whatever
+ *  status traces the page got: a page without 'ops' never gets tool:failed.
+ *  Until it loads, the stream's status says. */
+export function toolCallState(
+  status: 'running' | 'done' | 'failed' | undefined,
+  result: { isError?: boolean } | undefined,
+): 'running' | 'done' | 'failed' | 'unknown' {
+  if (result) return result.isError ? 'failed' : 'done';
+  return status ?? 'unknown';
 }

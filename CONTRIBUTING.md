@@ -56,18 +56,8 @@ the house default; plain descriptive titles are accepted.
   explicitly labeled as such, with a severity verdict and itemized findings.
 - The reviewer will typically **run your branch** (typecheck, test suite,
   loading a recipe) and paste transcripts. Claims are checked, not trusted.
-- **Greptile** reviews only PRs labelled `greptile` (`.greptile/config.json`).
-  A scheduled workflow adds that label to each open, non-draft PR whose
-  additions plus deletions pass 400 lines, unless it carries `no-greptile`,
-  and the review starts when the label lands: within about half an hour of
-  the PR opening, passing 400 lines or being marked ready, and later when
-  GitHub's scheduler is busy. A PR updated in the two minutes before a run
-  waits for a later one. A smaller PR gets a Greptile review if a maintainer
-  adds the label a minute or more after it's opened, reopened or marked
-  ready. A label added seven seconds after opening has twice started no
-  review, and Greptile's reference counts reopening and marking ready as
-  openings too. `no-greptile` skips the review. Removing `greptile` from a PR
-  past 400 lines doesn't skip it, since a later run adds the label back.
+- **Greptile** doesn't review new PRs. It reviews only PRs labelled
+  `greptile` (`.greptile/config.json`), so don't add that label to a new PR.
 - Respond by pushing fix commits and replying per finding — "Addressed in
   `<sha>`" — rather than force-pushing a rewritten branch. A re-review then
   flips the verdict.

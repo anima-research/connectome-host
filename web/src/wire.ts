@@ -67,6 +67,10 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
   const handlers = new Set<(m: WebUiServerMessage) => void>();
 
   let socket: WebSocket | null = null;
+  /** Whether this socket's connection signed in as an observer. A welcome on
+   *  a connection that didn't is a full client's: the host sends an observer
+   *  its ack before its welcome. */
+  let ackedThisSocket = false;
   let stopped = false;
   let delay = initialDelay;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +81,8 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
   async function respondToAuthRequired(sock: WebSocket, host: string): Promise<void> {
     setObserverState('authing');
     const identity = await buildHelloIdentity(host);
+    // A later connection's state is its own.
+    if (sock !== socket) return;
     if (!identity) {
       setObserverState('unavailable');
       return;
@@ -90,6 +96,7 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
     if (stopped) return;
     setStatus(socket ? 'reconnecting' : 'connecting');
     socket = new WebSocket(url);
+    ackedThisSocket = false;
 
     socket.addEventListener('open', () => {
       delay = initialDelay;
@@ -109,10 +116,16 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
       if (parsed.type === 'observer-auth-required' && socket) {
         void respondToAuthRequired(socket, parsed.host);
       } else if (parsed.type === 'observer-ack') {
+        ackedThisSocket = true;
         setObserverState('observer');
         setObserver({ label: parsed.label, scopes: parsed.scopes });
         // Session cookie lets the SPA hit /debug/* and /healthz over HTTP.
         document.cookie = `fkm_obs=${parsed.sessionToken}; path=/; SameSite=Lax; max-age=${12 * 3600}`;
+      } else if (parsed.type === 'welcome' && !ackedThisSocket) {
+        // A full client's connection, whatever an earlier one on this page
+        // signed in as: a password signed in from another tab since, say.
+        setObserverState('none');
+        setObserver(null);
       }
       setLastMessage(parsed);
       for (const h of handlers) {
@@ -133,6 +146,8 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
         // don't overwrite 'unavailable' (no WebCrypto — a hello was never
         // possible) with 'denied' (a key exists but holds no grant).
         if (observerState() !== 'unavailable') setObserverState('denied');
+        // A refused connection holds no grant, whatever an earlier one held.
+        setObserver(null);
         setStatus('closed');
         return;
       }

@@ -80,6 +80,20 @@ export interface CommitCheck {
   now?: Date;
 }
 
+/** The release `current` names, or null when there's none, as a start reads
+ *  it: a `current` that can't be read ends the start, saying so. */
+export function currentForStart(root: string): string | null {
+  try {
+    return readCurrent(root);
+  } catch (error) {
+    throw new Error(
+      `This host couldn't read which release the install at ${root} runs on, so none of its agents started: ` +
+      `${error instanceof Error ? error.message : String(error)}. Each start reads \`current\` again before any ` +
+      'agent starts.',
+    );
+  }
+}
+
 /**
  * The commit: record this host's release as the one the install's data runs
  * on. startFramework calls it once the framework has opened its stores and
@@ -107,15 +121,7 @@ export interface CommitCheck {
 export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { from: string } | undefined {
   const { root, release } = here;
   const said = (error: unknown): string => error instanceof Error ? error.message : String(error);
-  let from: string | null;
-  try {
-    from = readCurrent(root);
-  } catch (error) {
-    throw new Error(
-      `This host couldn't read which release the install at ${root} runs on, so none of its agents started: ` +
-      `${said(error)}. Each start reads \`current\` again before any agent starts.`,
-    );
-  }
+  const from = currentForStart(root);
   if (from === null) {
     throw new Error(
       `The install at ${root} has no \`current\` to say which release it runs on, so this host starts none of its ` +

@@ -6,9 +6,11 @@
 import { createServer, type Socket } from 'node:net';
 import {
   readFileSync, writeFileSync, unlinkSync, appendFileSync, existsSync, truncateSync, renameSync, writeSync, chmodSync, fstatSync,
+  closeSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { waitToBeListed } from '../src/fleet-begin.js';
 
 const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   ready?: boolean;
@@ -33,7 +35,32 @@ const options = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
   reportStderr?: string;
   /** Append a line to this path for each client that connects. */
   connections?: string;
+  /** Start a helper in this child's process group that outlives it unless
+   *  ended, and write its pid to this path. */
+  helperPid?: string;
+  /** Write this path, outside the data directory, as it comes to wait to be
+   *  listed, so a test knows it's there. */
+  atGate?: string;
+  /** Write this path, outside the data directory, once it has begun. */
+  begun?: string;
+  /** Close its stdin as it comes to its wait, and wait for good, as a child
+   *  whose end of the pipe is gone before its line is written. */
+  closeStdinAtGate?: boolean;
+  /** Its stdin fails as it waits. */
+  stdinErrorAtGate?: boolean;
 };
+if (options.closeStdinAtGate) {
+  closeSync(0);
+  if (options.atGate !== undefined) writeFileSync(options.atGate, '');
+  setInterval(() => {}, 1_000);
+  await new Promise(() => {});
+}
+if (options.atGate !== undefined) writeFileSync(options.atGate, '');
+// As a host does, before anything it writes (src/fleet-begin.ts).
+const listed = waitToBeListed();
+if (options.stdinErrorAtGate) process.stdin.emit('error', new Error('a pipe that failed'));
+await listed;
+if (options.begun !== undefined) writeFileSync(options.begun, '');
 const dataDir = process.env.DATA_DIR!;
 const socketPath = join(dataDir, 'ipc.sock');
 const pidPath = join(dataDir, 'headless.pid');
@@ -55,8 +82,14 @@ if (options.lockStartupLog) chmodSync(startupLog, 0o000);
 appendFileSync(join(dataDir, 'launches.jsonl'), JSON.stringify({
   pid: process.pid, sentinel: process.env.FLEET_TEST_SENTINEL ?? null,
   installRoot: process.env.CONNECTOME_INSTALL_ROOT ?? null,
+  begin: process.env.CONNECTOME_FLEET_BEGIN ?? null,
 }) + '\n');
 
+if (options.helperPid !== undefined) {
+  const helper = spawn('sleep', ['60'], { stdio: 'ignore' });
+  writeFileSync(options.helperPid, String(helper.pid));
+  helper.unref();
+}
 if (options.lockDataDir) chmodSync(dataDir, 0o600);
 if (options.crashBeforeSocket) process.exit(1);
 if (options.noSocket) {

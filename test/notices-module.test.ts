@@ -18,7 +18,18 @@ import {
 
 type Post = { channelId: string; text: string; agentName: string };
 
-function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[] } = {}) {
+/** How agent-framework 0.24 refuses a publish: its words, and the `reason`
+ *  that names the cause, where the destination refused it; `throw` makes the
+ *  publish throw instead. */
+type Refusal = { error: string; reason?: string } | 'throw';
+/** agent-framework 0.24's refusal for a channel whose server is down while
+ *  the host reconnects (channel-registry.ts, handleToolPublish's sendRefusal). */
+const serverDown = (server: string, channelId: string): Refusal => ({
+  error: `Nothing was posted to channel "${channelId}": the "${server}" server isn't connected, and this host is reconnecting to it, so try again later.`,
+  reason: 'server-down',
+});
+
+function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[]; refusal?: (server: string, channelId: string) => Refusal } = {}) {
   const posts: Post[] = [];
   const markers: string[] = [];
   const calls = { n: 0 };
@@ -39,8 +50,12 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
         const absent = broken.has(server);
         const hold = holds.get(channelId);
         if (hold) { holds.delete(channelId); await hold; }
-        if (absent) return { success: false, error: `Server not found: ${server}` };
-        if (id.includes('grantless')) return { success: false, error: 'channels.publish not in grant' };
+        if (absent) {
+          const refusal = (opts.refusal ?? serverDown)(server, id);
+          if (refusal === 'throw') throw new Error(`Server not found: ${server}`);
+          return { success: false, ...refusal };
+        }
+        if (id.includes('grantless')) return { success: false, error: 'channels.publish not in grant', reason: 'not-permitted' };
         posts.push({ channelId, text, agentName });
         return { success: true };
       },
@@ -72,7 +87,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken, calls };
 }
 
-async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[] } = {}) {
+async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[]; refusal?: (server: string, channelId: string) => Refusal } = {}) {
   const h = harness(cfg, opts);
   await h.module.start(h.ctx);
   h.module.setFramework(h.framework as never);
@@ -147,7 +162,7 @@ describe('reactive replies', () => {
     expect(h.posts).toEqual([]);
   });
 
-  test('a non-"not found" failure is not retried on the next message, and a superseding clear posts no "back"', async () => {
+  test('a refusal outside the park set is neither parked nor counted as told, and a superseding clear posts no "back"', async () => {
     const h = await started();
     h.alert('auth-expiring', 'expires soon');
     await h.incoming('zulip:ops');
@@ -745,6 +760,38 @@ describe('status channels', () => {
 });
 
 describe('absent chat server', () => {
+  // agent-framework names a refusal's cause in `reason`. The causes a
+  // reconnect can undo park the notice for re-admission; any other refusal,
+  // one with no reason (a refusal of the call's own input), and a thrown
+  // error, whatever its words, is logged and not parked.
+  for (const [reason, parked] of [
+    ['channel-not-registered', true],
+    ['server-gone', true],
+    ['server-connecting', true],
+    ['server-down', true],
+    ['not-sent', true],
+    ['inbound-only', false],
+    ['not-permitted', false],
+    [undefined, false],
+    ['throw', false],
+  ] as const) {
+    const label = reason === undefined ? 'a refusal with no reason' : reason === 'throw' ? 'a thrown "Server not found"' : `a refusal for ${reason}`;
+    test(`${label} ${parked ? 'parks the notice' : 'doesn\'t park it'}`, async () => {
+      const h = await started({}, {
+        brokenServers: ['zulip'],
+        refusal: () => reason === 'throw' ? 'throw' : ({ error: 'Nothing was posted.', ...(reason === undefined ? {} : { reason }) }),
+      });
+      h.alert('quota-spent', 'spent');
+      await h.incoming('zulip:dev');
+      expect(h.posts).toEqual([]);
+      expect(h.module.episodeState()[0]!.pending).toEqual(parked ? ['zulip:dev'] : []);
+      h.broken.clear();
+      h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+      await h.settle();
+      expect(h.posts.map((p) => p.channelId)).toEqual(parked ? ['zulip:dev'] : []);
+    });
+  }
+
   test('a post to an absent server is parked and delivered on reconnect while the episode is open', async () => {
     const h = await started({ statusChannels: ['zulip:ops'] }, { brokenServers: ['zulip'] });
     h.alert('quota-spent', 'spent');

@@ -976,10 +976,13 @@ export class IdentityModule implements Module {
    * Why the workspace's write would refuse `path`, asked before the request
    * goes out, so a write never goes out with its answer refused for its
    * path: no mount has the path, it names a mount but no file, it has an
-   * empty part right after the mount's name or a "." or ".." part, it leads
-   * out of its mount, or its mount is read-only. Null when none holds. Each
-   * refusal is one agent-framework 0.22.3's writeBinary makes too, after the
-   * request has gone out: its path parser reads what follows an empty part
+   * empty part right after the mount's name or a "." or ".." part, its mount
+   * doesn't hold it (it leads out, lies in another mount's directory, falls
+   * outside the include, or can't name a file there), or its mount is
+   * read-only. Null when none holds. Each
+   * refusal is one agent-framework's writeBinary makes too, after the request
+   * has gone out (the include's from 0.24, the rest from 0.22.3): its path
+   * parser reads what follows an empty part
    * after the mount as absolute, which leads out of the mount unless it names
    * the mount's own directory, and its store refuses that tree path, as it
    * refuses an empty one or one with a "." or ".." part ("Invalid tree path"). The
@@ -1000,18 +1003,21 @@ export class IdentityModule implements Module {
     if (!mount) return `\`saveAs\` names no mount the workspace has: "${path}".${remedy}`;
     if (slash < 0 || slash === path.length - 1) return `\`saveAs\` names the mount "${name}" but no file in it.${remedy}`;
     if (path.slice(slash + 1).startsWith('/')) {
-      return `\`saveAs\` "${path}" has an empty part right after the mount's name, which the workspace can't save to; name the file by its plain path, such as "${name}/out.json".${remedy}`;
+      return `\`saveAs\` "${path}" has an empty part right after the mount's name, which the workspace can't save to; name the file by its plain path.${remedy}`;
     }
     if (path.slice(slash + 1).split('/').some((part) => part === '.' || part === '..')) {
-      return `\`saveAs\` "${path}" has a "." or ".." in it, which the workspace can't save to; name the file by its plain path, such as "${name}/out.json".${remedy}`;
+      return `\`saveAs\` "${path}" has a "." or ".." in it, which the workspace can't save to; name the file by its plain path.${remedy}`;
     }
     // A write target is the use resolveAbsolutePath's doc keeps it for: it
-    // answers null for a path that leads out of its mount. After the checks
-    // above, no path found on Linux reaches this (a leading empty part and a
-    // ".." are refused first), so this isn't the containment check: it stays
-    // as the guard for whatever else the resolver itself puts outside a
-    // mount, on any platform.
-    if (workspace.resolveAbsolutePath(path) === null) return `\`saveAs\` "${path}" leads out of the mount "${name}".${remedy}`;
+    // answers null for a path its mount doesn't hold: one that leads out of
+    // it, lies in another mount's directory nested in it, falls outside its
+    // include, or can't name a file of it (a lone UTF-16 surrogate). After the checks above, no path found on Linux leads out
+    // (a leading empty part and a ".." are refused first), so this isn't the
+    // containment check: it stays as the guard for whatever else the
+    // resolver itself puts outside a mount, on any platform.
+    if (workspace.resolveAbsolutePath(path) === null) {
+      return `\`saveAs\` "${path}" isn't a path the mount "${name}" holds: it leads out of the mount, lies in another mount's directory, falls outside its include, or can't name a file there.${remedy}`;
+    }
     if (mount.mode === 'read-only') return `\`saveAs\` names the read-only mount "${name}", where nothing can be saved.${remedy}`;
     return null;
   }

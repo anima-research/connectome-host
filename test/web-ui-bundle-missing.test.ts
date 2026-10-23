@@ -12,12 +12,12 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 const dirs: string[] = [];
 afterEach(async () => {
-  await __resetSharedServerForTests();
+  await stopWebUiServer();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 

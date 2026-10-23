@@ -42,13 +42,10 @@ function project({ webUi = true, git = true, files = ["recipes", "dist/web"], gi
   return dir;
 }
 
-/** npm in `dir`, with its own home, cache and user config there. */
-function npm(dir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  // As in release-holds.test.ts: npm's own CLI under `npm test`, the npm on
-  // PATH otherwise.
-  const cli = process.env.npm_execpath;
-  const [file, argv] = cli && /npm-cli\.c?js$/.test(cli) ? ["node", [cli, ...args]] : ["npm", args];
-  const env = {
+/** npm's settings for `dir`: its own home, cache and user config there, and a
+ *  registry nothing answers on, so no npm these tests start reaches the network. */
+function npmEnv(dir: string): Record<string, string> {
+  return {
     PATH: process.env.PATH ?? "",
     HOME: dir,
     npm_config_cache: join(dir, ".npm-cache"),
@@ -57,13 +54,21 @@ function npm(dir: string, args: string[]): Promise<{ code: number; stdout: strin
     npm_config_registry: "http://127.0.0.1:9/",
     npm_config_fetch_retries: "0",
   };
-  return run(file, argv, dir, env);
+}
+
+/** npm in `dir`, with npmEnv(). */
+function npm(dir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  // As in release-holds.test.ts: npm's own CLI under `npm test`, the npm on
+  // PATH otherwise.
+  const cli = process.env.npm_execpath;
+  const [file, argv] = cli && /npm-cli\.c?js$/.test(cli) ? ["node", [cli, ...args]] : ["npm", args];
+  return run(file, argv, dir, npmEnv(dir));
 }
 
 /** `bun pm pack --dry-run` in `dir`, with the bun running these tests and
- *  the same home as npm(). */
-function bunPack(dir: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return run(process.execPath, ["pm", "pack", "--dry-run"], dir, { PATH: process.env.PATH ?? "", HOME: dir });
+ *  npmEnv(), which reaches the npm that the prepack runs, and `extra`. */
+function bunPack(dir: string, extra: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return run(process.execPath, ["pm", "pack", "--dry-run"], dir, { ...npmEnv(dir), ...extra });
 }
 
 function run(file: string, argv: string[], cwd: string, env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -93,28 +98,58 @@ test("a tree where git ignores none of the files to pack packs without a word", 
   assert.doesNotMatch(result.stderr, /pack-contents: /);
 }, 30_000);
 
-test("a local file git ignores, in a directory files lists, stops npm pack, npm publish and bun pm pack, named", async () => {
+/** project(), with two local files git ignores in recipes/, which files lists. */
+function withLocalFiles(): string {
   const dir = project();
   writeFileSync(join(dir, "recipes", "my-recipe.json"), "{}\n");
   mkdirSync(join(dir, "recipes", "data"));
   writeFileSync(join(dir, "recipes", "data", "notes.txt"), "zz\n");
-  const expected =
-    "pack-contents: package.json's files would pack 2 files that git ignores:\n" +
-    "  recipes/data/notes.txt\n  recipes/my-recipe.json\nMove them out of the tree, or pack from a clean checkout.";
-  for (const [name, packing] of [
-    ["npm pack", () => npm(dir, ["pack", "--dry-run"])],
-    ["npm publish", () => npm(dir, ["publish", "--dry-run"])],
-    ["bun pm pack", () => bunPack(dir)],
-  ] as const) {
-    const result = await packing();
-    assert.notEqual(result.code, 0, `${name}: ${result.stdout}`);
-    assert.ok(result.stderr.includes(expected), `${name}: ${result.stderr}`);
-  }
-  // A file git tracks isn't a local one, whatever .gitignore says.
+  return dir;
+}
+
+const LOCAL_FILES =
+  "pack-contents: package.json's files would pack 2 files that git ignores:\n" +
+  "  recipes/data/notes.txt\n  recipes/my-recipe.json\nMove them out of the tree, or pack from a clean checkout.";
+
+for (const [name, packing] of [
+  ["npm pack", (dir: string) => npm(dir, ["pack", "--dry-run"])],
+  ["npm publish", (dir: string) => npm(dir, ["publish", "--dry-run"])],
+  ["bun pm pack", (dir: string) => bunPack(dir)],
+] as const) {
+  test(`a local file git ignores, in a directory files lists, stops ${name}, named`, async () => {
+    const result = await packing(withLocalFiles());
+    assert.notEqual(result.code, 0, result.stdout);
+    assert.ok(result.stderr.includes(LOCAL_FILES), result.stderr);
+  }, 30_000);
+}
+
+test("a file git tracks isn't a local one, whatever .gitignore says: a tree whose only such file is tracked packs", async () => {
+  const dir = withLocalFiles();
   rmSync(join(dir, "recipes", "data"), { recursive: true });
   execFileSync("git", ["add", "-f", "recipes/my-recipe.json"], { cwd: dir });
-  const tracked = await npm(dir, ["pack", "--dry-run"]);
-  assert.equal(tracked.code, 0, tracked.stderr);
+  const result = await npm(dir, ["pack", "--dry-run"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /pack-contents: /);
+}, 30_000);
+
+test("a file git tracks isn't named beside a local file that stops the pack", async () => {
+  const dir = withLocalFiles();
+  execFileSync("git", ["add", "-f", "recipes/my-recipe.json"], { cwd: dir });
+  const result = await npm(dir, ["pack", "--dry-run"]);
+  assert.notEqual(result.code, 0, result.stdout);
+  assert.ok(
+    result.stderr.includes(
+      "pack-contents: package.json's files would pack a file that git ignores:\n  recipes/data/notes.txt\nMove it out of the tree, or pack from a clean checkout.",
+    ),
+    result.stderr,
+  );
+}, 30_000);
+
+test("the npm that bun pm pack's prepack runs makes no request", async () => {
+  // At npm's http log level, each request npm makes is logged as "npm http fetch".
+  const result = await bunPack(project(), { npm_config_loglevel: "http" });
+  assert.equal(result.code, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /npm http fetch/);
 }, 30_000);
 
 test("a file git ignores in a listed directory outside dist/web stops the pack, even beside the built Web UI", async () => {
@@ -137,13 +172,21 @@ test("a tree without the built Web UI doesn't pack", async () => {
   );
 }, 30_000);
 
-test("outside a git checkout a pack goes ahead, saying it can't tell what git ignores, and an npm publish stops", async () => {
+/** project() outside a git checkout, with a local file the host's .gitignore names. */
+function outsideCheckout(): string {
   const dir = project({ git: false });
   writeFileSync(join(dir, "recipes", "my-recipe.json"), "{}\n");
-  const result = await npm(dir, ["pack", "--dry-run"]);
+  return dir;
+}
+
+test("outside a git checkout a pack goes ahead, saying it can't tell what git ignores", async () => {
+  const result = await npm(outsideCheckout(), ["pack", "--dry-run"]);
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /pack-contents: warning: this isn't a git checkout, so git couldn't say which of the files to pack it ignores \(.*\), and they weren't checked for local files\./);
-  const published = await npm(dir, ["publish", "--dry-run"]);
+}, 30_000);
+
+test("outside a git checkout an npm publish stops, saying why", async () => {
+  const published = await npm(outsideCheckout(), ["publish", "--dry-run"]);
   assert.notEqual(published.code, 0, published.stdout);
   assert.match(published.stderr, /pack-contents: this is a publish from a tree with no \.git above it, so git couldn't say which of the files to pack it ignores \(.*\), and a local file could ship: publish from a git checkout\./);
 }, 30_000);

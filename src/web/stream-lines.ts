@@ -81,6 +81,9 @@ export function formatStreamEvent(event: { type: string; [k: string]: unknown })
       return { id, kind: 'event', text: `✗ inference failed: ${traceError(event)}`, color: 'text-rose-400' };
     case 'inference:turn_ended':
       return { id, kind: 'event', text: '── turn ended by a tool ──', color: 'text-neutral-500' };
+    // In place of a stream end whose trace the page's scopes don't cover.
+    case 'stream-ended':
+      return { id, kind: 'event', text: '── stream ended ──', color: 'text-neutral-500' };
     case 'inference:aborted': {
       const reason = get<string>('reason');
       return { id, kind: 'event', text: `✗ turn aborted${reason ? `: ${reason}` : ''}`, color: 'text-amber-400' };

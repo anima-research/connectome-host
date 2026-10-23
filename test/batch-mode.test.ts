@@ -1,6 +1,7 @@
 /**
- * Batch mode (stdin not a TTY, no --headless): the host runs each stdin line,
- * then stops the framework, closing every MCPL server. These tests pin that
+ * Batch mode (stdin not a TTY, no --headless): the host echoes and runs each
+ * stdin line, then stops the framework, closing every MCPL server. These
+ * tests pin that the echo hides what an /auth line's credential may be, that
  * the teardown is announced, on the console and in each server's
  * mcpl-stderr log, and that the process exits once the run is done.
  */
@@ -15,6 +16,7 @@ import {
   batchModeStartNotice,
   batchTeardownNotice,
   batchWebUiNotice,
+  batchEchoLine,
   BATCH_MCPL_LOG_NOTE,
 } from '../src/batch-mode.js';
 
@@ -44,6 +46,38 @@ describe('batch-mode notices', () => {
     expect(webUiHttpUrl('[::1]', 7340)).toBe('http://[::1]:7340');
     expect(webUiHttpUrl('127.0.0.1', 7340)).toBe('http://127.0.0.1:7340');
     expect(webUiHttpUrl('localhost', 0)).toBe('http://localhost:0');
+  });
+
+  test("the echo hides an /auth line's words after its subcommand, and shows every other line as it came", () => {
+    expect(batchEchoLine('/auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    expect(batchEchoLine('  /auth TOKEN  two words  ')).toBe('/auth TOKEN <hidden>');
+    expect(batchEchoLine('/AUTH token sk-ant-oat01-secret')).toBe('/AUTH token <hidden>');
+    // Split on any whitespace, as handleCommand splits it, which runs a line
+    // with spaces after its slash as the command they precede.
+    expect(batchEchoLine('/auth\ttoken\tsk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    expect(batchEchoLine('/ auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
+    // Words after another subcommand /auth knows run nothing, but are hidden too.
+    expect(batchEchoLine('/auth recheck now')).toBe('/auth recheck <hidden>');
+    // A word /auth doesn't know may itself be the credential, so it's hidden
+    // with what follows it.
+    expect(batchEchoLine('/auth set-token sk-ant-oat01-secret')).toBe('/auth <hidden>');
+    expect(batchEchoLine('/auth sk-ant-oat01-secret')).toBe('/auth <hidden>');
+    expect(batchEchoLine('/AUTH set-token sk-ant-oat01-secret')).toBe('/AUTH <hidden>');
+    // A command whose name starts with auth runs nothing unless it's /auth,
+    // so a dropped space or a stray character still hides what follows.
+    expect(batchEchoLine('/authtoken sk-ant-oat01-secret')).toBe('/authtoken <hidden>');
+    expect(batchEchoLine('/auth-token sk-ant-oat01-secret')).toBe('/auth-token <hidden>');
+    expect(batchEchoLine('/authx token abc')).toBe('/authx token <hidden>');
+    // Each subcommand /auth knows keeps its name.
+    expect(batchEchoLine('/auth login now')).toBe('/auth login <hidden>');
+    expect(batchEchoLine('/auth refresh now')).toBe('/auth refresh <hidden>');
+    expect(batchEchoLine('/auth status now')).toBe('/auth status <hidden>');
+    // An /auth line with nothing to hide, a message (even one that reads as
+    // the command once its first character goes, or that has spaces around
+    // it) and other commands come as they are.
+    for (const line of ['/auth', '/auth token', '/auth token   ', '/auth status', '/auth login', '/auth refresh', '/AUTH Recheck', '/authtoken', 'a message about /auth token abc', '  a message  ', 'xauth token abc', '/help']) {
+      expect(batchEchoLine(line)).toBe(line);
+    }
   });
 
   test('the webui notice gives the URL and how to exit', () => {
@@ -173,6 +207,24 @@ describe('batch mode end to end', () => {
     const closed = text.indexOf('[host] connection closed');
     expect(note).toBeGreaterThanOrEqual(0);
     expect(closed).toBeGreaterThan(note);
+  }, 60_000);
+
+  test("a /auth token line is echoed without its credential", async () => {
+    const { dir, recipePath } = setup(false);
+    const run = startBatch(dir, recipePath, '/auth token sk-ant-oat01-batch-echo-secret\n');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      run.exited,
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
+    ]).finally(() => clearTimeout(timer));
+    if (outcome === 'still running') {
+      run.child.kill('SIGKILL');
+      await run.exited;
+    }
+    expect(outcome).toBe(0);
+    const out = run.out();
+    expect(out).toContain('> /auth token <hidden>');
+    expect(out).not.toContain('batch-echo-secret');
   }, 60_000);
 
   test('after a session switch, a line waits for the new session\'s turn rather than the cap', async () => {

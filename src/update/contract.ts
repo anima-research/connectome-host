@@ -39,8 +39,8 @@
  * its own release's.
  */
 import {
-  closeSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, renameSync, symlinkSync, truncateSync,
-  unlinkSync, writeSync,
+  closeSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync,
+  truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -76,9 +76,11 @@ export interface InstallPaths {
   lock: string;
   /** The switch's copy: each item it holds, under the name copyItemName gives
    *  it, and its label (CopyLabel, at copyLabelPath). Taken as `copy.tmp` and
-   *  renamed once whole. */
+   *  renamed once whole, with the copy before it moved to `copy.prev` first
+   *  and removed after, so a cut never leaves neither. */
   copy: string;
   copyTmp: string;
+  copyPrev: string;
   /** What a restore set aside of a file item, one directory per mark
    *  (setAsideDir), kept, with a Go back's list of its places. A directory
    *  item's goes inside it (itemSetAsideDir). */
@@ -98,6 +100,7 @@ export function installPaths(root: string): InstallPaths {
     lock: join(root, 'lock.json'),
     copy: join(root, 'copy'),
     copyTmp: join(root, 'copy.tmp'),
+    copyPrev: join(root, 'copy.prev'),
     setAside: join(root, 'set-aside'),
     midTurn: join(root, 'midturn.json'),
   };
@@ -133,15 +136,17 @@ export function copyItemName(position: number, path: string): string {
   return name;
 }
 
-/** Where a restore sets aside a file item's newer content, named by the mark
- *  it acts on, so a retry finds the one it started. A Go back that keeps the
- *  newer data sets a copy of it aside here too, before the older release's
- *  trial, so that trial's fallback can put it back. Each file's content is
- *  copied there, since the item may be on another filesystem, under the
- *  item's name in the copy (copyItemName), so no two share an entry. A
- *  directory item's newer content is set aside inside it instead
- *  (itemSetAsideDir). A Go back keeps its list of places here too
- *  (goBackListPath). */
+/** Where a restore keeps what a file item held before it, named by the mark
+ *  it acts on, so a retry finds the one it started: the file's content under
+ *  `kept/`, or under `absent/` an empty note that it wasn't there, each under
+ *  the item's name in the copy (copyItemName), so no two share an entry. A
+ *  Go back's own fallback keeps what the older release's trial left the same
+ *  way under `put-back/`. A Go back that keeps the newer data keeps a copy of
+ *  each file here too, before the older release's trial, so that trial's
+ *  fallback can put it back. Each file's content is copied there, since the
+ *  item may be on another filesystem. A directory item's content is set
+ *  aside inside it instead (itemSetAsideDir). A Go back keeps its list of places
+ *  here too (goBackListPath). */
 export function setAsideDir(root: string, markId: string): string {
   return join(root, 'set-aside', segment(markId, 'mark id'));
 }
@@ -152,8 +157,13 @@ export function setAsideDir(root: string, markId: string): string {
  *  here too, before the older release's trial, so that trial's fallback can
  *  put it back. The launcher's copy of an item leaves that directory out. */
 export function itemSetAsideDir(item: string, markId: string): string {
-  return join(item, '.connectome-update', 'set-aside', segment(markId, 'mark id'));
+  return join(item, ITEM_UPDATE_DIR, 'set-aside', segment(markId, 'mark id'));
 }
+
+/** The directory inside a directory item where an update keeps what it works
+ *  with (itemSetAsideDir). No copy of an item holds it, and nothing that puts
+ *  an item's contents in place of others moves it. */
+export const ITEM_UPDATE_DIR = '.connectome-update';
 
 /** The fleet's children file, in the parent's data directory: each child of
  *  the host's fleet, in any of its sessions, with its process, boot and data
@@ -173,8 +183,8 @@ export interface InstallRecord {
   v: 1;
   /** The data directory this install serves; the entry point refuses another. */
   dataDir: string;
-  /** Server state setup found outside the data directory, copied with it. */
-  serverState: string[];
+  /** State kept outside the data directory, which each update copies with it. */
+  extraState: string[];
 }
 
 /** mark.json, written by the host. */
@@ -192,7 +202,7 @@ export interface Mark {
 }
 
 export const JOURNAL_STEPS = [
-  'lock', 'children-check', 'audit', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes',
+  'lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes',
 ] as const;
 export type JournalStep = typeof JOURNAL_STEPS[number];
 
@@ -201,11 +211,13 @@ export type JournalStep = typeof JOURNAL_STEPS[number];
  *  first change to its data on, so the line that lets the data change goes in
  *  before it does: a switch's `trial-start` before its trial starts, and a Go
  *  back's `go-back` once the Go back has prepared and synced everything it
- *  needs, such as a restore's staged items or the newer data's copy set
- *  aside, and before it changes any data. An ok `go-back` says the data may
- *  change from that line on: a start that finds it with no ok `trial-start`,
- *  `commit` or `fallback` after it resumes that Go back from the line,
- *  whatever the mark file holds.
+ *  can without changing the data, such as a restore's staged items or the
+ *  newer data's copy set aside, and before it changes any. A directory the
+ *  Go back restores that isn't there yet has nowhere to stage its content
+ *  but inside itself, so it's made, and its content staged, after the line.
+ *  An ok `go-back` says the data may change from that line on: a start that
+ *  finds it with no ok `trial-start`, `commit` or `fallback` after it resumes
+ *  that Go back from the line, whatever the mark file holds.
  *  A `go-back` that isn't ok, refused or failed, says the data wasn't
  *  touched. */
 export interface JournalLine {
@@ -247,8 +259,10 @@ export interface MidTurnRecord {
 }
 
 /** copy.json, the copy's label, written by the launcher as the last file of a
- *  copy it takes, once every item is copied and synced, and removed as the
- *  first when the copy goes. */
+ *  copy it takes, once every item is copied and synced. A copy is never
+ *  removed in place: the next one takes its name only once whole, and the
+ *  one it replaces is moved to copy.prev first and removed there, so `copy`
+ *  is always a whole copy, or not there. */
 export interface CopyLabel {
   v: 1;
   /** The release whose data the copy holds. */
@@ -320,12 +334,46 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 /** fleet-children.json, written by the fleet. Each write lists the fleet's
  *  own children as its record has them, and keeps what's already there that
  *  it doesn't replace, such as another session's child (writeChildrenFile in
- *  the fleet module). A `pid` is null once the fleet has seen its child
- *  exit; a child it can't see exit keeps its pid while a process of this
- *  boot may hold it, which is when the launcher reads it as running. */
+ *  the fleet module). A `pid` is null once nothing of the child can be
+ *  running: the fleet found the process group it led, whose id is its pid,
+ *  empty after the child ended, whether or not it signalled that group, or
+ *  the record is from an earlier boot. Until then the child keeps its pid,
+ *  and the launcher reads it as running while a process holds that pid or
+ *  the group has a member, its boot this one's or unknown. A store audit's entry is written and
+ *  read the same way. */
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;
+}
+
+/** A path's real form as the places of a trial are written (trialPlaces): its
+ *  real path when it's there, and otherwise its nearest existing ancestor's
+ *  real path with the rest of it as written, so a path that isn't there yet,
+ *  under a directory reached through a link, compares with the places. */
+export function realOrResolved(path: string): string {
+  const rest: string[] = [];
+  for (let at = resolve(path); ; at = dirname(at)) {
+    try {
+      return join(realpathSync(at), ...rest);
+    } catch (error) {
+      // A path that isn't there, or that runs through a file, resolves by
+      // its nearest ancestor that is; any other error is the path's own.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      if (dirname(at) === at) return resolve(path);
+      rest.unshift(basename(at));
+    }
+  }
+}
+
+/** Whether a children file's entry has a child's shape (ChildrenFile). The
+ *  fleet's write reads only those as children, and keeps anything else as it
+ *  is; a reader of the file can take the same test. */
+export function isChildEntry(entry: unknown): entry is ChildrenFile['children'][number] {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  return typeof e.name === 'string' && typeof e.dataDir === 'string' &&
+    (e.pid === null || typeof e.pid === 'number') && (e.bootId === null || typeof e.bootId === 'string');
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +610,23 @@ export function trialPlaces(root: string): string[] | null {
   return [...label.items, ...(label.absent ?? [])].map((item) => item.path);
 }
 
+/** The Go back a start must carry on: the journal's last successful
+ *  `go-back` with no successful `trial-start`, `commit` or `fallback` after
+ *  it. From that line on the Go back may have changed the data, so a start
+ *  goes on with it from the line, whatever the mark file holds (JournalLine).
+ *  Only successful lines count: after a `trial-start` refused, or a
+ *  `fallback` that failed, the data may not be back as it was, so the Go
+ *  back stays pending and the next start goes on from its line. */
+export function pendingGoBack(lines: JournalLine[]): JournalLine | null {
+  let pending: JournalLine | null = null;
+  for (const line of lines) {
+    if (line.outcome !== 'ok') continue;
+    if (line.step === 'go-back') pending = line;
+    else if (line.step === 'trial-start' || line.step === 'commit' || line.step === 'fallback') pending = null;
+  }
+  return pending;
+}
+
 /** Whether a mark's request has run its course: its switch committed, so
  *  `current` names its `to`, or a fallback that names it succeeded, so the
  *  same failing request isn't run again. A switch refused before its trial
@@ -613,11 +678,13 @@ export function readMark(root: string): Mark | null {
 
 /** The switch's copy, as its label says: the release whose data it holds,
  *  when it was taken, and its items. The launcher writes the label once every
- *  item is copied and synced, and removes it first when the copy goes, so a
- *  copy with its label holds every item the label lists. Null when there's no
- *  label: no copy is there to use. A start finds that before any copy is
- *  taken, while a copy is being removed, and after damage that took the
- *  label, which this can't tell apart; the journal can. While a switch's
+ *  item is copied and synced, and never removes a copy in place (CopyLabel),
+ *  so a copy with its label holds every item the label lists. Null when
+ *  there's no label: no copy is there to use. A start finds that before any
+ *  copy is taken, after a start cut off between moving the last copy to
+ *  copy.prev and putting the new one in its place, which the next start
+ *  settles, and after damage that took the label, which this can't tell
+ *  apart; the journal can. While a switch's
  *  trial is unfinished there is always a copy, since the switch took one
  *  before it, so null then is damage. (A Go back's trial took no copy: its
  *  fallback puts back what the Go back set aside, and doesn't read this.) A

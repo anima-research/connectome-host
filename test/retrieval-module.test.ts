@@ -389,6 +389,38 @@ describe('RetrievalModule observability', () => {
     expect(context?.messageIds).toEqual(Array.from({ length: 10 }, (_, i) => `m${i + 2}`));
   });
 
+  // A row a tune-out holds from the residents (`heldFromResidents`) is stored,
+  // but no resident is shown it, so it isn't conversation to choose lessons
+  // from, whether it's stored or still held.
+  test('leaves out rows a tune-out holds from the residents', async () => {
+    const h = harness(['[]'], [lesson('l1', 'memory detail')]);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    const row = (id: string, text: string, extra: Record<string, unknown> = {}) =>
+      ({ id, participant: 'user', content: [{ type: 'text', text }], ...extra });
+    const shown = Array.from({ length: 10 }, (_, i) => row(`m${i + 1}`, `shown message ${i + 1}.`));
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      queryMessages: () => ({
+        messages: [
+          ...shown.slice(0, 5),
+          row('t1', 'tuned-out message A.', { heldFromResidents: true }),
+          ...shown.slice(5),
+          row('t2', 'tuned-out message B.', { heldFromResidents: true }),
+          row('t3', 'tuned-out message C.', { heldFromResidents: true, held: true }),
+        ],
+        totalCount: 13,
+      }),
+    };
+
+    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+    const sent = JSON.stringify(h.calls[0].messages);
+    for (let i = 1; i <= 10; i++) expect(sent).toContain(`shown message ${i}.`);
+    expect(sent).not.toContain('tuned-out message');
+    const context = mod.getRetrievalTraces({ includeInputs: true })[0].context;
+    expect(context?.messageIds).toEqual(Array.from({ length: 10 }, (_, i) => `m${i + 1}`));
+  });
+
   test('a held arrival leaves the window, so the cached retrieval stands', async () => {
     const h = harness(['["memory"]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });

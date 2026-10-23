@@ -290,7 +290,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       .toBeNull();
   });
 
-  test("any replacement lacks the operator's other grants, which no overlay entry can carry", () => {
+  test("any replacement the framework opens lacks the operator's other grants, which no overlay entry can carry", () => {
     const operator = serverProvisions({
       id: 's', command: 'node', inheritEnv: true,
       enabledCapabilities: ['contextHooks'], toolLifecycle: { observe: {} }, allowHostCommands: true,
@@ -377,9 +377,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
-  // Agent-framework chooses the connection by
-  // `transport` first (isWebSocketTransport), so a hand-edited entry with a
-  // command and a URL under transport "websocket" dials the URL.
+  // Agent-framework chooses the connection by its own rule
+  // (resolveServerBinding), so a hand-edited entry with a command and a URL
+  // under transport "websocket" or "http" dials the URL, and one it refuses
+  // opens nothing.
   test('an entry is read by the connection the framework opens for it', () => {
     const operator = serverProvisions({ id: 'world', url: 'wss://w/mcpl', token: 'tok', access: 'eidoverse' });
     const dialled = { command: 'node', url: 'wss://w/mcpl', transport: 'websocket' as const, env: { A: '${A}' }, token: '${TOKEN}' };
@@ -395,6 +396,39 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     // Nor does a websocket transport with no url: the framework refuses to dial.
     expect(lostByReplacement(operator, { command: 'node', transport: 'websocket', token: '${TOKEN}' })).toBeNull();
     expect(hostVariableReferences({ command: 'node', transport: 'websocket', token: '${TOKEN}' })).toEqual([]);
+    // agent-framework 0.23 dials an http(s) url as modern MCP, a command
+    // beside it included.
+    const modern = { command: 'node', url: 'https://w/mcp', transport: 'http', env: { A: '${A}' }, token: '${TOKEN}' };
+    expect(lostByReplacement(operator, modern)).toBe('token; access grant "eidoverse"');
+    expect(hostVariableReferences(modern)).toEqual(['token']);
+    // It refuses a command and a url with no transport, and a transport that
+    // doesn't match the url, so neither opens anything.
+    const shell = serverProvisions({ id: 'shell', command: 'node', env: { A: '1' } });
+    // Nor can it bind a command and a url whose null transport reads as none.
+    // And when it connects, it refuses some entries it could bind: an http(s)
+    // url with a user or password, a protocol on a url.
+    const granted = serverProvisions({ id: 'shell', command: 'node', env: { A: '1' }, allowHostCommands: true });
+    for (const refused of [
+      { command: 'node', url: 'wss://w/mcpl', env: { A: '${A}' }, token: '${TOKEN}' },
+      { url: 'wss://w/mcpl', transport: 'ws', token: '${TOKEN}' },
+      { url: 'https://u:p@w/mcp', token: '${TOKEN}' },
+      { url: 'wss://w/mcpl', protocol: 'modern', token: '${TOKEN}' },
+      { command: 'node', url: 'wss://w/mcpl', transport: null, env: { A: '${A}' }, token: '${TOKEN}' },
+    ] as never[]) {
+      expect(lostByReplacement(shell, refused)).toBeNull();
+      expect(lostByReplacement(operator, refused)).toBeNull();
+      // Nothing connects in its place, so not even the operator's grants are
+      // named as lacking.
+      expect(lostByReplacement(granted, refused)).toBeNull();
+      expect(hostVariableReferences(refused)).toEqual([]);
+    }
+    // A null transport reads as none, so a url alone dials.
+    const nullDial = { url: 'wss://other/mcpl', transport: null, token: '${TOKEN}' } as never;
+    expect(lostByReplacement(operator, nullDial)).toBe('token; access grant "eidoverse"');
+    expect(hostVariableReferences(nullDial)).toEqual(['token']);
+    // The boot leaves out an operator-only field before the framework sees
+    // it, so one a modern server would refuse doesn't count.
+    expect(hostVariableReferences({ url: 'https://w/mcp', allowHostCommands: true, token: '${TOKEN}' } as never)).toEqual(['token']);
   });
 
   // The overlay is hand-editable JSON, so an
@@ -522,16 +556,20 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       expect([...loaded.keys()]).toEqual(Object.keys(entries));
       for (const [id, entry] of Object.entries(entries)) {
         const { disabled: _d, ...fields } = entry;
+        // A null transport reads as absent, as agent-framework 0.22 read
+        // it, since 0.23 refuses a null one.
+        if (id === 'nullFields') delete fields.transport;
         expect(loaded.get(id)).toMatchObject(fields);
       }
+      expect('transport' in loaded.get('nullFields')!).toBe(false);
       // A falsy disabled loads the entry, as main's resolveOverlayEntry read it.
       expect('disabled' in loaded.get('disabledZero')!).toBe(false);
       // A blank list passes on blank, which the framework reads as no restriction.
       expect(loaded.get('blankTools')!.enabledTools).toBe('');
-      // Only the entry the framework can't open is named, though it loads as
-      // on main.
+      // Only the entry the framework refuses is named, though it loads as on
+      // main.
       expect(overlayWarnings([], path)).toEqual([
-        `[mcpl] server "wsNoUrl": the agent overlay (${path}) entry loads, but its transport is websocket, with no url to dial, so the framework can't open it`,
+        `[mcpl] server "wsNoUrl": the agent overlay (${path}) entry loads, but the framework refuses it as written (its own line at the start says why), so nothing connects in its place`,
       ]);
     });
   });
@@ -560,11 +598,12 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       expect('toolPrefix' in loaded.get('objectPrefix')!).toBe(false);
       expect(loaded.get('oneName')!.disabledTools).toEqual(['shell_exec']);
       expect(loaded.get('oneCapability')!.disabledCapabilities).toEqual([...AGENT_DEPLOY_DENIED_CAPABILITIES, 'channels'].sort());
-      // The framework ignores a transport it doesn't know, so a url with no
-      // command dials; the transport passes on as written.
+      // A transport the framework doesn't know passes on as written, and is
+      // named, since the framework refuses it.
       expect(loaded.get('wsTransport')).toMatchObject({ transport: 'ws', url: 'wss://w/mcpl', reconnect: true });
       const lines = overlayWarnings([], path);
       const loads = (id: string) => `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but`;
+      const refused = 'the framework refuses it as written (its own line at the start says why), so nothing connects in its place';
       expect(lines).toEqual([
         `${loads('numberArgs')} its args hold numbers or true/false, read as their text, where the host used to stop the start`,
         `${loads('numberPrefix')} its toolPrefix is a number, read as its text, so calls to its tools reach it`,
@@ -572,10 +611,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
         `${loads('objectPrefix')} its toolPrefix isn't text, so its tools take the default prefix, which calls to them reach`,
         `${loads('oneName')} its disabledTools is one name, read as a list of one`,
         `${loads('oneCapability')} its disabledCapabilities is one name, read as a list of one`,
-        `${loads('wsTransport')} its transport is neither stdio nor websocket, so the framework ignores it`,
-        // Passed on as main passed it, and named, since it replaces any
+        // Passed on as main passed them, and named, since each replaces any
         // operator definition with nothing that connects.
-        `${loads('stdioNoCommand')} its transport is stdio, with no command to spawn, so the framework can't open it`,
+        `${loads('wsTransport')} ${refused}`,
+        `${loads('stdioNoCommand')} ${refused}`,
       ]);
       // No line quotes a value from the file.
       expect(lines.join('\n')).not.toContain('"ws"');
@@ -652,14 +691,51 @@ describe('what an overlay replacement lacks of the operator definition', () => {
   });
 
   // The reconnect default keys on a url's presence, as main keyed it, so an
-  // entry the framework spawns that also names a url gets it too, and the
-  // framework spawns its child again when it exits.
-  test('an entry that names a url gets the reconnect default, as on main, and is read by the connection opened', () => {
+  // entry that names a command and a url with no transport gets it too.
+  // agent-framework 0.23 refuses such an entry, so nothing it provides
+  // reaches a server, and the warnings name the refusal instead.
+  test('an entry that names a url gets the reconnect default, as on main, and one the framework refuses is named as refused', () => {
     const both = { command: 'node', url: 'wss://w/mcpl', env: { SESSION_SERVER_TOKEN: 't' } };
     expect(resolveOverlayEntry('shell', both, '/x/mcpl-servers.agent.json')!.reconnect).toBe(true);
     expect(resolveOverlayEntry('shell', { command: 'node' }, '/x/mcpl-servers.agent.json')!.reconnect).toBeUndefined();
-    // Read as spawned: env counts, a token doesn't.
-    expect(lostByReplacement(serverProvisions({ ...shell, token: 'tok' }), both)).toBe('env SESSION_SERVER_PORT');
+    expect(lostByReplacement(serverProvisions({ ...shell, token: 'tok' }), both)).toBeNull();
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      saveAgentOverlay(path, { shell: both });
+      expect(overlayWarnings([shell], path)).toEqual([
+        `[mcpl] server "shell": the agent overlay (${path}) entry loads, but the framework refuses it as written (its own line at the start says why), so nothing connects in its place`,
+      ]);
+    });
+  });
+
+  // A null transport reads as none: an entry with a url alone dials and is
+  // named for nothing, and one with a command beside its url is refused, as
+  // it is with no transport at all. One the framework refuses when it
+  // connects, though it binds, is named too, and so is one whose check
+  // throws, which the readers take as refused rather than throwing.
+  test('a null transport reads as none, and an entry refused when the framework connects it is named', () => {
+    withTmp((dir) => {
+      const path = join(dir, 'mcpl-servers.agent.json');
+      const entries: Record<string, Record<string, unknown>> = {
+        nullUrl: { url: 'wss://w/mcpl', transport: null },
+        nullBoth: { command: 'node', url: 'wss://w/mcpl', transport: null },
+        userinfo: { url: 'https://u:p@w/mcp' },
+        protocolOnUrl: { url: 'wss://w/mcpl', protocol: 'modern' },
+        // String() can't print this one, so agent-framework's check throws.
+        oddTimeout: { url: 'https://w/mcp', requestTimeoutMs: { toString: 1 } },
+      };
+      writeFileSync(path, JSON.stringify({ mcplServers: entries }));
+      const loaded = new Map(applyAgentOverlay([], path).map((s) => [s.id, s as Record<string, unknown>]));
+      expect(loaded.get('nullUrl')).toMatchObject({ url: 'wss://w/mcpl', reconnect: true });
+      expect('transport' in loaded.get('nullUrl')!).toBe(false);
+      expect('transport' in loaded.get('nullBoth')!).toBe(false);
+      const refused = (id: string) =>
+        `[mcpl] server "${id}": the agent overlay (${path}) entry loads, but the framework refuses it as written (its own line at the start says why), so nothing connects in its place`;
+      const lines = overlayWarnings([], path);
+      expect(lines).toEqual([refused('nullBoth'), refused('userinfo'), refused('protocolOnUrl'), refused('oddTimeout')]);
+      // No line quotes the url's user or password.
+      expect(lines.join('\n')).not.toContain('u:p');
+    });
   });
 
   test('a grant that differs only by spaces is another audience as dialled, either way round', () => {

@@ -87,7 +87,9 @@ three, and in practice is how headless residents are operated.
    then a default.
 6. **Build Membrane** with the right formatter (native, Anthropic-XML prefill,
    or OpenAI Responses), retry policy and caching defaults.
-7. **`createFramework()`** — load recipe extensions, build the module list,
+7. **`createFramework()`** — take the recipe extensions `main()` loaded
+   (a trial's store audit builds its strategies from the same ones), build
+   the module list,
    merge MCP servers, build the memory strategy and agent config, then
    `AgentFramework.create()` with the gate, provider hold, code execution,
    conversations and subconscious configuration. Post-create hooks bind the
@@ -97,7 +99,8 @@ three, and in practice is how headless residents are operated.
    logs, and the chosen runtime.
 
 **Switching sessions** (`/session switch`) stops the framework and runs
-`createFramework()` again against the new store, reusing the same Membrane,
+`createFramework()` again against the new store, which loads the recipe's
+extensions again once the framework before has stopped, reusing the same Membrane,
 adapter, settings, ledger, quota meter and agent name. The WebUI's HTTP/WS
 server is a process-level singleton and survives the switch.
 
@@ -119,12 +122,15 @@ A recipe is JSON; the full key set is typed and validated in
   snapshot as its value, so keep secrets out of those two fields. Other state
   in the data dir can hold secrets too — the identity key, and fleet
   children's resolved `env` (#162).
-- **Validation checks values, not spelling.** Bad values, impossible
+- **Validation checks values, and spelling in part.** Bad values, impossible
   combinations (e.g. an instructions path on a mount that can't be written)
-  and partial policies are rejected at load, naming the key. Unrecognized keys
-  are generally not rejected (a few blocks, such as `subconscious`, the
-  object form of `modules.history`, and `modules.workspace` and its mounts,
-  refuse unknown fields), so a misspelled key is silently ignored.
+  and partial policies are rejected at load, naming the key. An unrecognized
+  key at the top level or in `agent`, `agent.mock`, `agent.strategy.kvUnified`
+  and its `policy`, or `modules` is warned about, naming it, and the load
+  goes on. Some blocks, such as `subconscious`, the object form of
+  `modules.history`, `agent.retry`, `agent.clock`, and `modules.workspace`
+  and its mounts, refuse unknown fields. Others, such as `agent.thinking`,
+  don't check their keys, so a misspelled one there is silently ignored.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register
@@ -224,6 +230,7 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 | `FleetModule` | `fleet` | off | `fleet--launch/list/status/send/command/peek/kill/restart/relay/await`: supervises headless children. |
 | `ActivityModule` | `activity` | off | `activity--show_in/hide_in`: typing indicators. |
 | `McplAdminModule` | `mcplAdmin` | off | `mcpl_list/deploy/restart/unload`: the agent manages its own MCPL servers. |
+| `LifecycleModule` | `selfRestart` | off | `lifecycle--restart`: the agent restarts its own host once its turn ends; headless only, exit code 75 for the supervisor, cooldown between restarts (`src/self-restart.ts`). |
 | `IdentityModule` | `identity` | off | The agent's own archipelago identity key; exchanges key-proofs for access tokens so credentials never enter the agent's context. |
 | `WebUiModule` + `ObserversModule` | `webui` | off | Browser console (below); `observers--get/grant/revoke` let the agent manage who may watch. |
 | `TtsRelayModule` | `ttsRelay` | off | Streams live generation to a TTS relay; trims posted messages when a voice client is interrupted. |

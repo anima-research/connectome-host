@@ -15,11 +15,11 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 afterEach(async () => {
-  await __resetSharedServerForTests();
+  await stopWebUiServer();
 });
 
 describe('WebUiModule bind safety', () => {

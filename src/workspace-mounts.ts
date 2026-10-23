@@ -3,8 +3,11 @@
  * a recipe's `modules.workspace` produces and with what flags.
  *
  * Used by BOTH the runtime (src/index.ts, to build the real WorkspaceModule
- * config) and recipe validation (validateRecipe's instructions cross-check,
- * which reasons about mount names, modes, and autoMaterialize). Keeping one
+ * config) and recipe validation: validateRecipe builds the recipe's own
+ * mounts for agent-framework's WorkspaceModule constructor to check (its
+ * refusals, not its nesting warnings, which depend on where the paths
+ * resolve and are the start's to give), and its instructions cross-check
+ * reasons about mount names, modes, and autoMaterialize. Keeping one
  * builder prevents the validator from modeling a mount differently than the
  * host constructs it — the exact split-brain the `_config` mount had when
  * validation assumed it auto-materialized and the runtime built it without.
@@ -30,14 +33,13 @@ export function buildWorkspaceMounts(
   let mounts: MountConfig[];
   if (typeof workspace === 'object' && workspace.mounts) {
     // Every key the recipe gives goes to the framework as it is: the recipe's
-    // mount keys are the framework's MountConfig keys, less those recipe.ts
-    // names in MountKeyNotPassedOn (recipe.ts checks the two lists against
-    // each other, and validation refuses any other key), so a key the
-    // framework adds can't be read here and dropped. Keys the
+    // mount keys are the framework's MountConfig keys (recipe.ts checks the
+    // two lists against each other, and validation refuses any other key),
+    // so a key the framework adds can't be read here and dropped. Keys the
     // recipe leaves out keep the framework's defaults, except that the path
-    // resolves from the working directory, mode defaults to read-write, and
-    // watch to 'never', since the host does not need chokidar filesystem
-    // watchers by default.
+    // resolves from the working directory, mode defaults to read-write (a
+    // direct mount must say its own, validateRecipe), and watch to 'never',
+    // since the host does not need chokidar filesystem watchers by default.
     mounts = workspace.mounts.map(({ path, mode, watch, ...rest }: RecipeWorkspaceMount): MountConfig => ({
       ...rest,
       path: resolve(path),
@@ -57,13 +59,17 @@ export function buildWorkspaceMounts(
   // mount is deliberately NOT autoMaterialize — the host re-materializes it
   // explicitly after branch-changing commands, and ordinary agent edits stay
   // Chronicle-side until then. Anything that assumes `_config` disk content
-  // tracks agent edits is wrong (see the instructions-path validation).
+  // tracks agent edits is wrong (see the instructions-path validation). Its
+  // backend is said, not left to the framework's default: undo and redo
+  // rewind it through materializeMount, which only a 'chronicle' mount has
+  // history for.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({
       name: '_config',
       path: resolve(join(storePath, 'config')),
       mode: 'read-write',
+      backend: 'chronicle',
       watch: 'always',
     });
   }

@@ -14,6 +14,11 @@
  *   - The instant a channel's since-last-activation count crosses its limit, it
  *     is auto-closed via the host's generic `channel_close` tool. This
  *     bounds any one channel's context pollution to ~limit characters.
+ *   - A refusal of the close as stated intent stands: the close of a
+ *     channel opened explicitly, where no configured budget gives a lease,
+ *     or of one tuned out, which only its tune-out's cancel ends. The
+ *     janitor stands down, and its next try is a full budget of traffic
+ *     away.
  *
  * Everything is durable across restarts: counters + per-channel overrides
  * persist to chronicle (a restart is NOT an activation, so counters must carry
@@ -428,12 +433,13 @@ export class SubscriptionGcModule implements Module {
       }
 
       // The registry refused because the channel was explicitly opened and
-      // we hold no lease: stand down quietly — the janitor doesn't argue
-      // with stated intent. The counter stays cleared, so the next refusal
-      // is at least a full budget away; if the channel's provenance later
-      // changes (reopened by policy), GC self-heals.
+      // we hold no lease, or because it's tuned out, which a close can't
+      // end (only the tune-out's cancel does): stand down quietly — the
+      // janitor doesn't argue with stated intent. The counter stays cleared,
+      // so the next refusal is at least a full budget away; if the channel's
+      // provenance later changes (reopened by policy), GC self-heals.
       const refusal = (result as { data?: { refusal?: string } } | undefined)?.data?.refusal;
-      if (refusal === 'explicit-open') {
+      if (refusal === 'explicit-open' || refusal === 'tuned-out') {
         return {};
       }
 

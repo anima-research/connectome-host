@@ -14,7 +14,7 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 import type { FleetEventCallback } from '../src/modules/fleet-module.js';
 
@@ -51,7 +51,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await webUiModule.stop();
-  await __resetSharedServerForTests();
+  await stopWebUiServer();
 });
 
 describe('the welcome', () => {

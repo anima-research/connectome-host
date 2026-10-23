@@ -5,18 +5,32 @@
  * deliberately mirrors the fleet IPC (`fleet-types.ts`) so a future external
  * aggregator can reuse the same parsers.
  *
- * Versioning: v1. Breaking changes bump `WEB_PROTOCOL_VERSION` and clients
- * refuse to connect on mismatch.
+ * Versioning: v2. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
+ * mismatch the Web UI page shows a banner asking for a reload and keeps the
+ * conversation it had; its socket stays open, and the welcome's other fields
+ * and later frames still apply.
  *
  * v1 (2026-07): windowed history (welcome carries only a tail window plus
  * `history` metadata; older pages via request-history/history-page), ordered
  * `blocks` on message entries (thinking / tool_use / tool_result / media
  * surface in full), and `message-appended` live pushes of stored messages.
+ *
+ * v2 (2026-10): an observer gets only the frames its grant's scopes cover,
+ * live as well as in its welcome, and a `stream-ended` frame in place of a
+ * stream-end trace its scopes don't cover, which a page has to handle to end
+ * a streamed turn.
  */
 
 import type { Line } from '../output-line.js';
 
-export const WEB_PROTOCOL_VERSION = 1;
+export const WEB_PROTOCOL_VERSION = 2;
+
+/** What an observer needs to be sent the agent trees, and so what a page
+ *  needs to build and show them: every scope but 'debug'. A tree's nodes carry
+ *  a subagent's task, each run's phase and how it ended, failures included,
+ *  its counters and its token counts, so the tree is the whole operational
+ *  view, and goes only with the whole grant. */
+export const AGENT_TREE_SCOPES = ['messages', 'thinking', 'tools', 'health', 'ops'] as const;
 
 // ---------------------------------------------------------------------------
 // Server → Client
@@ -49,9 +63,13 @@ export interface WelcomeMessage {
    *  Clients fold live `trace` / `message-appended` events on top and page
    *  older messages via `request-history`. */
   messages: WelcomeMessageEntry[];
-  /** Paging metadata for `messages`. `startIndex` is the store slot index of
-   *  the first entry (== the number of older messages not shipped);
-   *  `totalCount` is the store size at snapshot time. */
+  /** Paging metadata for `messages`. `startIndex` is the store slot index
+   *  the tail window begins at (== the number of older messages not
+   *  shipped); an observer's first entry can come after it, past messages
+   *  its scopes empty. When its scopes empty the whole tail, an observer's
+   *  welcome reads back as a `history-page` does, and `startIndex` is where
+   *  that reading stopped. `totalCount` is the store size at snapshot
+   *  time. */
   history: {
     startIndex: number;
     totalCount: number;
@@ -122,8 +140,9 @@ export type MessageBlock =
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
   /** Image/document/audio/video or un-inflated blob_ref placeholder. `ref`
    *  is present for images the host can serve lazily at `/media/<ref>` —
-   *  bytes never ride the WebSocket. */
-  | { kind: 'media'; mediaType: string; ref?: string };
+   *  bytes never ride the WebSocket. `toolUseId` names the tool call whose
+   *  result the image came in, so it goes only where tool results go. */
+  | { kind: 'media'; mediaType: string; ref?: string; toolUseId?: string };
 
 export interface WelcomeMessageEntry {
   /** Stable id from the message store; clients can use this for keys. */
@@ -215,8 +234,12 @@ export interface CallLedgerRow {
     effectiveTtl: '5m' | '1h';
   };
   verdict: CallLedgerVerdict;
+  /** Why the call got its verdict. A failed call's (`ERROR`) is its error's
+   *  text, which an observer without 'ops' gets empty. */
   cause: string;
   stopReason?: string;
+  /** Present exactly when the call failed: its error's text, which an
+   *  observer without 'ops' gets empty. */
   error?: string;
 }
 
@@ -289,6 +312,8 @@ export interface QuotaSnapshotData {
     advisory?: boolean;
   }>;
   fetchedAt?: number;
+  /** Present when the last read failed: what it said, which an observer
+   *  without 'ops' gets empty. */
   error?: string;
   /** Epoch ms at which the last spent window resets, else null. A spent
    *  window is not by itself a parked agent — see `parked`. */
@@ -313,6 +338,17 @@ export interface PerAgentCost {
 export interface BranchChangedMessage {
   type: 'branch-changed';
   branch: { id: string; name: string };
+}
+
+/** That an agent's stream ended, with nothing of how or why: sent in place
+ *  of a stream-end trace (STREAM_END_TRACES, state/turn-trace.ts) to a client
+ *  whose scopes hold 'messages' but not what that trace carries, such as
+ *  `inference:failed`'s error to an observer without 'ops'. A client ends
+ *  the agent's streamed turn on it, as on the trace. */
+export interface StreamEndedMessage {
+  type: 'stream-ended';
+  /** The agent whose stream ended, as the trace named it. */
+  agentName?: string;
 }
 
 /** One Chronicle branch with its lineage. `parentId`/`branchPoint` are
@@ -468,8 +504,9 @@ export interface McplListMessage {
 /**
  * Protected ranges (pins / documents) for one agent.
  *
- * BROADCAST on change: pins alter what the next compile folds, so two operators
- * must not hold divergent views of them.
+ * BROADCAST to full clients on change: pins alter what the next compile folds,
+ * so two operators must not hold divergent views of them. No observer gets
+ * them, as none may request them.
  */
 export interface PinsListMessage {
   type: 'pins-list';
@@ -504,9 +541,9 @@ export interface PinsListMessage {
 /**
  * Runtime context-settings snapshot.
  *
- * BROADCAST to every welcomed client on change — unlike `mcpl-list`, these are
+ * BROADCAST to every full client on change — unlike `mcpl-list`, these are
  * live process state, not a config file, so two operators must not see
- * divergent values.
+ * divergent values. No observer gets them, as none may request them.
  */
 /** Credential state of one process (see src/credential-state.ts). The
  *  `credential` fields are absent on an API-key host (`subscription: false`). */
@@ -518,6 +555,8 @@ export interface CredentialStateMessage {
   agent?: string;
   kind?: string;
   provider?: string;
+  /** The state's alert text, which can hold the provider's rejection detail
+   *  or a quota read's error: an observer without 'ops' gets it empty. */
   message?: string;
   since?: number;
   until?: number;
@@ -526,6 +565,8 @@ export interface CredentialStateMessage {
   expiresAt?: number;
   actions?: Array<{ id: string; label: string; hint?: string }>;
   login?: { verificationUrl: string; userCode: string };
+  /** The last operator action. Its `message`, which holds a failed action's
+   *  reason, an observer without 'ops' gets empty. */
   lastAction?: { id: string; at: number; ok: boolean; message: string };
 }
 
@@ -560,14 +601,20 @@ export interface SettingsStateMessage {
 }
 
 /** A page of older history — response to `request-history`, routed only to
- *  the requesting client and correlated by `corrId`. */
+ *  the requesting client and correlated by `corrId`. An observer's page
+ *  leaves out the entries its scopes empty (an entry that had no blocks to
+ *  begin with stays), and reads back past windows that leave it none, for
+ *  at most ten windows of the request's size. So it comes back empty at the
+ *  start of history, or where those ten windows ran out. */
 export interface HistoryPageMessage {
   type: 'history-page';
   corrId: string;
   /** Entries in store order (oldest first), ending just before the
-   *  requested `beforeIndex`. */
+   *  requested `beforeIndex`, or, for an observer, before the messages
+   *  after them that its scopes empty. */
   entries: WelcomeMessageEntry[];
-  /** Slot index of the first entry — the next page's `beforeIndex`. */
+  /** Slot index where the reading stopped — the next page's `beforeIndex`.
+   *  An observer's first entry can come after it. */
   startIndex: number;
   /** Store size at read time. */
   totalCount: number;
@@ -652,8 +699,9 @@ export interface HostModeMessage {
 }
 
 /** Outcome of a `rollback` / `suppress` request. On success the server also
- *  broadcasts `branch-changed` and re-welcomes every client with the new
- *  branch's messages. */
+ *  sends `branch-changed` to every client whose scopes hold 'messages' and
+ *  re-welcomes every client with the new branch's messages, as its scopes
+ *  allow. */
 export interface SurgeryResultMessage {
   type: 'surgery-result';
   corrId?: string;
@@ -693,6 +741,7 @@ export interface OperatorLogMessage {
 export type WebUiServerMessage =
   | WelcomeMessage
   | TraceMessage
+  | StreamEndedMessage
   | ChildEventMessage
   | CommandResultMessage
   | UsageMessage
@@ -1034,8 +1083,8 @@ export interface RequestWorkspaceFileMessage {
 
 /** Page older conversation history. Response is a `history-page` with the
  *  same `corrId` (or an `error`). Entries returned end just before
- *  `beforeIndex`; pass the previous page's `startIndex` to keep walking
- *  backward. */
+ *  `beforeIndex`, or, for an observer, before the messages its scopes
+ *  empty; pass the previous page's `startIndex` to keep walking backward. */
 export interface RequestHistoryMessage {
   type: 'request-history';
   corrId: string;

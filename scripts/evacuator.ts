@@ -40,6 +40,7 @@ import { Membrane, AnthropicAdapter } from '@animalabs/membrane';
 import { createLineReader, type LineReader } from './lib/line-reader.js';
 import { SessionManager, type SessionMeta } from '../src/session-manager.js';
 import { resolveAgentName } from '../src/agent-name.js';
+import { parseHandWrittenJson } from '../src/hand-written-json.js';
 
 // ---------------------------------------------------------------------------
 // Known leaked-prompt URLs keyed by model ID. New models: add an entry.
@@ -978,7 +979,8 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   if (existsSync(opts.out)) {
     let previousName: unknown;
     try {
-      const previous = JSON.parse(readFileSync(opts.out, 'utf-8'));
+      // Read as the host loads a recipe, past an editor's byte order mark.
+      const previous = parseHandWrittenJson(readFileSync(opts.out, 'utf-8')) as { agent?: { name?: unknown } } | null;
       previousName = previous?.agent?.name;
     } catch {
       console.warn('WARNING: Could not read the existing output recipe participant; replacing it without a prior-name comparison.');

@@ -25,7 +25,7 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 interface ServerHandle {
@@ -76,7 +76,7 @@ beforeAll(async () => {
     staticRoot,
     cleanup: async () => {
       await webUiModule.stop();
-      await __resetSharedServerForTests();
+      await stopWebUiServer();
       rmSync(tmp, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
     },

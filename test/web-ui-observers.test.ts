@@ -11,52 +11,40 @@
  *   observer is read-only (user-message → forbidden)
  */
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, statSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, utimesSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 import {
   ObserverRegistry,
   ObserverSessions,
   closeConnectionsWithoutGrant,
-  observerStatement,
   saveObserversFile,
   loadObserversFile,
   filterEntryForScopes,
-  traceRequiredScope,
+  traceScopes,
+  TRACE_SCOPES,
+  childEventScopes,
+  frameScopes,
+  streamEndedFor,
+  clientHolds,
+  FULL_CLIENTS_ONLY,
   scopeWelcome,
+  keepNamedStrings,
+  frameWithoutFailureText,
+  HEALTH_STRINGS,
+  QUOTA_STRINGS,
   type ObserverScope,
   type ObserversFile,
 } from '../src/modules/web-ui-observers.js';
-import type { WelcomeMessage, WelcomeMessageEntry } from '../src/web/protocol.js';
-
-// ---------------------------------------------------------------------------
-// Key helpers — raw ed25519 via node:crypto
-// ---------------------------------------------------------------------------
-
-function makeKeypair() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const raw = spki.subarray(spki.length - 32);
-  const id = `ed25519:${raw.toString('base64url')}`;
-  return { id, privateKey };
-}
-
-function helloFor(kp: ReturnType<typeof makeKeypair>, host: string, timestamp = new Date().toISOString()) {
-  const proof = cryptoSign(null, Buffer.from(observerStatement(host, timestamp), 'utf8'), kp.privateKey);
-  return {
-    scheme: 'ed25519' as const,
-    id: kp.id,
-    proof: proof.toString('base64url'),
-    timestamp,
-  };
-}
+import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, type WelcomeMessageEntry } from '../src/web/protocol.js';
+import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
+import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
 
 // ---------------------------------------------------------------------------
 // Unit: registry verification
@@ -626,25 +614,152 @@ describe('scope filters', () => {
     expect(f.blocks.map((b) => b.kind)).toEqual(['text']);
   });
 
+  test("an image a tool returned goes with its result, and an image in a message stays with the message's text", () => {
+    const withImages: WelcomeMessageEntry = {
+      index: 1,
+      participant: 'user',
+      text: 'and this',
+      blocks: [
+        { kind: 'tool_result', toolUseId: 't1', text: 'a frame' },
+        { kind: 'media', mediaType: 'image/png', ref: 'm2/0.1', toolUseId: 't1' },
+        { kind: 'text', text: 'and this' },
+        { kind: 'media', mediaType: 'image/png', ref: 'm2/2' },
+      ],
+    };
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages']))!.blocks)
+      .toEqual([{ kind: 'text', text: 'and this' }, { kind: 'media', mediaType: 'image/png', ref: 'm2/2' }]);
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages', 'thinking']))!.blocks.map((b) => b.kind))
+      .toEqual(['text', 'media']);
+    expect(filterEntryForScopes(withImages, new Set<ObserverScope>(['messages', 'tools']))).toEqual(withImages);
+  });
+
+  test('an entry whose every block the scopes remove is dropped, and one that had no blocks stays', () => {
+    const toolOnly: WelcomeMessageEntry = {
+      index: 2,
+      participant: 'assistant',
+      text: '',
+      blocks: [
+        { kind: 'thinking', text: 'private' } as never,
+        { kind: 'tool_use', id: 't1', name: 'shell', inputJson: '{}' } as never,
+      ],
+    };
+    expect(filterEntryForScopes(toolOnly, new Set<ObserverScope>(['messages']))).toBeNull();
+    expect(filterEntryForScopes(toolOnly, new Set<ObserverScope>(['messages', 'thinking']))!.blocks.map((b) => b.kind))
+      .toEqual(['thinking']);
+    const empty: WelcomeMessageEntry = { index: 3, participant: 'user', text: '', blocks: [] };
+    expect(filterEntryForScopes(empty, new Set<ObserverScope>(['messages']))).toEqual(empty);
+  });
+
   test('full interiority scopes → identical entry', () => {
     const f = filterEntryForScopes(entry, new Set<ObserverScope>(['messages', 'thinking', 'tools']));
     expect(f).toEqual(entry);
   });
 
-  test('trace scope mapping', () => {
-    expect(traceRequiredScope({ type: 'ops:alert' })).toBe('ops');
-    expect(traceRequiredScope({ type: 'mcpl:server-closed' })).toBe('ops');
-    expect(traceRequiredScope({ type: 'usage:updated' })).toBe('health');
-    expect(traceRequiredScope({ type: 'inference:tokens', blockType: 'thinking' } as never)).toBe('thinking');
-    expect(traceRequiredScope({ type: 'inference:tokens', blockType: 'tool_call' } as never)).toBe('tools');
-    expect(traceRequiredScope({ type: 'inference:tokens', blockType: 'text' } as never)).toBe('messages');
-    expect(traceRequiredScope({ type: 'tool:started' })).toBe('tools');
-    expect(traceRequiredScope({ type: 'inference:completed' })).toBe('messages');
+  test("a trace needs every scope whose data it carries, a token or block its block's too, and any type not in the table goes to full clients alone", () => {
+    expect(traceScopes({ type: 'message:added' })).toEqual(['messages']);
+    expect(traceScopes({ type: 'inference:tokens', blockType: 'text' })).toEqual(['messages']);
+    expect(traceScopes({ type: 'inference:tokens', blockType: 'thinking' })).toEqual(['messages', 'thinking']);
+    expect(traceScopes({ type: 'inference:content_block', blockType: 'tool_call' })).toEqual(['messages', 'tools']);
+    expect(traceScopes({ type: 'inference:tokens', blockType: 'tool_result' })).toEqual(['messages', 'tools']);
+    expect(traceScopes({ type: 'inference:tokens', blockType: 'a-block-added-later' })).toBe(FULL_CLIENTS_ONLY);
+    expect(traceScopes({ type: 'inference:tool_calls_yielded' })).toEqual(['messages', 'tools']);
+    expect(traceScopes({ type: 'tool:completed' })).toEqual(['messages', 'tools']);
+    // A failed or dropped call's error, and an operator's call for the agent.
+    for (const type of ['tool:failed', 'tool:result_dropped', 'puppet:tool-call']) {
+      expect(traceScopes({ type })).toEqual(['messages', 'tools', 'ops']);
+    }
+    // Whole process events and module responses.
+    for (const type of ['process:received', 'process:completed']) {
+      expect(traceScopes({ type })).toEqual(['messages', 'thinking', 'tools', 'health', 'ops']);
+    }
+    expect(traceScopes({ type: 'inference:completed' })).toEqual(['messages', 'health']);
+    expect(traceScopes({ type: 'inference:usage' })).toEqual(['health']);
+    expect(traceScopes({ type: 'host:quiesce' })).toEqual(['health']);
+    expect(traceScopes({ type: 'inference:failed' })).toEqual(['ops']);
+    expect(traceScopes({ type: 'inference:exhausted' })).toEqual(['ops']);
+    // Why a turn was stopped is ops; that it ended reaches messages as stream-ended.
+    expect(traceScopes({ type: 'inference:aborted' })).toEqual(['messages', 'ops']);
+    for (const type of ['inbound:observer-failed', 'mcpl:request-handler-error', 'prose:drafts-held', 'prose:draft-resent', 'prose:drafts-dismissed']) {
+      expect(traceScopes({ type })).toEqual(['ops']);
+    }
+    // The operator log's entry, as request-operator-log gives ops.
+    expect(traceScopes({ type: 'operator:action' })).toEqual(['ops']);
+    expect(traceScopes({ type: 'mcpl:server-closed' })).toEqual(['ops']);
+    // A batched wake run without its gate line, which agent-framework adds after 0.26.0.
+    expect(traceScopes({ type: 'gate:wake-line-omitted' })).toEqual(['ops']);
+    expect(traceScopes({ type: 'mcpl:speech-routed' })).toEqual(['messages', 'ops']);
+    for (const type of ['inference:published', 'inference:published_complete']) {
+      expect(traceScopes({ type })).toEqual(['messages']);
+    }
+    expect(traceScopes({ type: 'a-trace-added-later' })).toBe(FULL_CLIENTS_ONLY);
+    expect(traceScopes({ type: 'toString' })).toBe(FULL_CLIENTS_ONLY);
   });
 
-  test('scopeWelcome without messages empties conversation payload', () => {
+  test("every trace type the installed agent-framework defines has an entry in the table", () => {
+    // Read the source the runtime resolves the package to from here, as the host loads it, wherever
+    // it's installed: in this repository's node_modules, or in one above it, as a hoisted install or a
+    // linked checkout leaves it. Its exports give Bun the index of that source.
+    const index = Bun.resolveSync('@animalabs/agent-framework', import.meta.dir);
+    const source = readFileSync(join(dirname(index), 'types', 'trace.ts'), 'utf-8');
+    const types = [...new Set([...source.matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!))].sort();
+    expect(types.length).toBeGreaterThan(50);
+    expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
+  });
+
+  test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
+    expect(childEventScopes({ type: 'message:added' })).toEqual(['messages']);
+    expect(childEventScopes({ type: 'inference:tokens', blockType: 'thinking' } as never)).toEqual(['messages', 'thinking']);
+    expect(childEventScopes({ type: 'tool:started' })).toEqual(['messages', 'tools']);
+    expect(childEventScopes({ type: 'usage:updated' })).toEqual(['health']);
+    expect(childEventScopes({ type: 'ops:alert' })).toEqual(['ops']);
+    expect(childEventScopes({ type: 'inference:speech' })).toEqual(['messages', 'thinking', 'tools']);
+    expect(childEventScopes({ type: 'stream-ended', agentName: 'kid' } as never)).toEqual(['messages']);
+    expect(childEventScopes({ type: 'lifecycle', phase: 'ready' } as never)).toEqual(['health']);
+    expect(childEventScopes({ type: 'snapshot' })).toEqual(['messages', 'thinking', 'tools', 'health', 'ops']);
+    for (const type of ['command-output', 'a-kind-added-later', 'private:new-kind', '', undefined, 7]) {
+      expect(childEventScopes({ type })).toBe(FULL_CLIENTS_ONLY);
+    }
+  });
+
+  test('a frame sent to more than one client needs what its welcome field or request needs, and any other goes to full clients alone', () => {
+    const scopesOf = (frame: Record<string, unknown>) => frameScopes(frame as never);
+    expect(scopesOf({ type: 'trace', event: { type: 'tool:started' } })).toEqual(['messages', 'tools']);
+    expect(scopesOf({ type: 'child-event', childName: 'kid', event: { type: 'lifecycle' } })).toEqual(['health']);
+    for (const type of ['usage', 'call-ledger', 'credential-state', 'host-mode']) expect(scopesOf({ type })).toEqual(['health']);
+    for (const type of ['inbound-trigger', 'branch-changed', 'stream-ended']) expect(scopesOf({ type })).toEqual(['messages']);
+    for (const type of ['pins-list', 'settings-state', 'a-frame-added-later']) expect(scopesOf({ type })).toBe(FULL_CLIENTS_ONLY);
+  });
+
+  test('a stream-end trace has a stand-in that says only whose stream ended, and no other trace has one', () => {
+    for (const type of STREAM_END_TRACES) {
+      expect(streamEndedFor({ type, agentName: 'main', error: 'provider said no', stack: 'at x' } as never))
+        .toEqual({ type: 'stream-ended', agentName: 'main' });
+    }
+    expect(streamEndedFor({ type: 'inference:failed' })).toEqual({ type: 'stream-ended' });
+    for (const type of ['inference:started', 'inference:tokens', 'tool:failed', 'ops:alert']) {
+      expect(streamEndedFor({ type, agentName: 'main' })).toBeNull();
+    }
+  });
+
+  test('a full client holds every frame, an observer what its scopes cover, and a connection waiting for its hello nothing', () => {
+    const full = { auth: 'full', scopes: null };
+    const waiting = { auth: 'pending', scopes: null };
+    const observer = { auth: 'observer', scopes: new Set<ObserverScope>(['messages', 'health']) };
+    expect(clientHolds(full, FULL_CLIENTS_ONLY)).toBe(true);
+    expect(clientHolds(full, ['thinking'])).toBe(true);
+    expect(clientHolds(waiting, ['health'])).toBe(false);
+    expect(clientHolds(observer, ['health'])).toBe(true);
+    expect(clientHolds(observer, ['messages', 'health'])).toBe(true);
+    expect(clientHolds(observer, ['messages', 'thinking'])).toBe(false);
+    expect(clientHolds(observer, FULL_CLIENTS_ONLY)).toBe(false);
+  });
+
+  test("scopeWelcome without messages empties conversation payload, and the session's and branch's names", () => {
     const welcome = {
-      type: 'welcome', protocolVersion: 1,
+      type: 'welcome', protocolVersion: WEB_PROTOCOL_VERSION,
+      agents: [{ name: 'main', model: 'claude-x' }],
+      session: { id: 's1', name: 'Debugging the bridge', autoNamed: true },
+      branch: { id: 'b1', name: 'experiment' },
       messages: [entry],
       history: { startIndex: 40, totalCount: 240 },
       localTree: { asOfTs: 1, nodes: [{ secret: true }], callIdIndex: { a: 'b' } },
@@ -657,14 +772,22 @@ describe('scope filters', () => {
     expect(w.childTrees).toEqual([]);
     expect(w.history.startIndex).toBe(240);
     expect(w.usage.input).toBe(1); // structure/usage survive
+    // An auto-named session's name summarizes the conversation, and branch
+    // names are request-branches' tier; the ids stay, as the client's key.
+    expect(w.session).toEqual({ id: 's1', name: '', autoNamed: true });
+    expect(w.branch).toEqual({ id: 'b1', name: '' });
+    const reader = scopeWelcome(welcome, new Set<ObserverScope>(['messages']));
+    expect(reader.session).toEqual(welcome.session);
+    expect(reader.branch).toEqual(welcome.branch);
+    expect(welcome.session.name).toBe('Debugging the bridge'); // never mutated
   });
 
   // Health-gated telemetry must be masked exactly like its live frames:
-  // `usage` and `call-ledger` pushes require the 'health' scope, so the
-  // welcome cannot hand the same data to a messages-only observer.
-  test('scopeWelcome without health strips callLedger/perAgentCost and zeroes usage', () => {
+  // `usage`, `call-ledger` and `host-mode` pushes require the 'health' scope,
+  // so the welcome cannot hand the same data to a messages-only observer.
+  test('scopeWelcome without health strips callLedger/perAgentCost/hostMode and zeroes usage', () => {
     const welcome = {
-      type: 'welcome', protocolVersion: 1,
+      type: 'welcome', protocolVersion: WEB_PROTOCOL_VERSION,
       messages: [entry],
       history: { startIndex: 40, totalCount: 240 },
       localTree: { asOfTs: 1, nodes: [], callIdIndex: {} },
@@ -674,11 +797,15 @@ describe('scope filters', () => {
       callLedger: {
         calls: [{ model: 'secret-model', error: 'raw provider error', costUsd: 0.42 }],
       },
+      hostMode: { mode: 'quiesced', detail: {} },
+      agents: [{ name: 'main', model: 'secret-model' }],
     } as unknown as WelcomeMessage;
 
     const w = scopeWelcome(welcome, new Set<ObserverScope>(['messages']));
+    expect(w.agents).toEqual([{ name: 'main', model: '' }]);
     expect(w.callLedger).toBeUndefined();
     expect(w.perAgentCost).toBeUndefined();
+    expect(w.hostMode).toBeUndefined();
     expect(w.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     expect(w.messages.length).toBe(1); // messages scope still gets content
     // No trace of the ledger anywhere in the serialized frame.
@@ -689,17 +816,195 @@ describe('scope filters', () => {
     const opsOnly = scopeWelcome(welcome, new Set<ObserverScope>(['ops']));
     expect(opsOnly.callLedger).toBeUndefined();
     expect(opsOnly.perAgentCost).toBeUndefined();
+    expect(opsOnly.hostMode).toBeUndefined();
     expect(opsOnly.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
-    // A health-scoped observer keeps the telemetry verbatim.
-    const h = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
+    // An observer with health and ops keeps the telemetry verbatim.
+    const h = scopeWelcome(welcome, new Set<ObserverScope>(['health', 'ops']));
     expect(h.callLedger).toEqual(welcome.callLedger);
     expect(h.perAgentCost).toEqual(welcome.perAgentCost);
+    expect(h.hostMode).toEqual(welcome.hostMode);
+    expect(h.agents).toEqual(welcome.agents);
     expect(h.usage).toEqual(welcome.usage);
+    // With health alone the rest is the same, and the ledger keeps only the
+    // strings LEDGER_STRINGS names: none, in this shape.
+    const healthOnly = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
+    expect(JSON.parse(JSON.stringify(healthOnly.callLedger))).toEqual({ calls: [{ model: '', error: '', costUsd: 0.42 }] });
+    expect(healthOnly.perAgentCost).toEqual(welcome.perAgentCost);
+    expect(healthOnly.hostMode).toEqual(welcome.hostMode);
+    expect(healthOnly.agents).toEqual(welcome.agents);
+    expect(healthOnly.usage).toEqual(welcome.usage);
 
     // Input welcome is never mutated (shared across clients in sendWelcome).
     expect(welcome.callLedger).toBeDefined();
+    expect(welcome.hostMode).toBeDefined();
     expect(welcome.usage.input).toBe(1);
+  });
+
+  test("keepNamedStrings empties each string its spec doesn't keep, and keeps numbers, flags, nulls, every key and each list's length", () => {
+    // From JSON, as a payload comes, so an agent named `__proto__` is an own key.
+    const value = JSON.parse(`{
+      "name": "main", "note": "free text", "count": 2, "ok": true, "none": null,
+      "byAgent": { "alice": { "state": "healthy", "error": "it broke" }, "__proto__": { "state": "degraded", "error": "also broke" } },
+      "list": ["a", "b"],
+      "rows": [{ "verdict": "ERROR", "cause": "raw provider text" }, { "verdict": "HIT", "cause": "90% from cache" }],
+      "whole": { "anything": "kept", "deep": ["x"] }
+    }`);
+    const kept = keepNamedStrings(value, {
+      name: true,
+      whole: true,
+      byAgent: { '*': { state: true } },
+      rows: { verdict: true, cause: (row) => row.verdict !== 'ERROR' },
+    });
+    expect(JSON.stringify(kept)).toBe(JSON.stringify(JSON.parse(`{
+      "name": "main", "note": "", "count": 2, "ok": true, "none": null,
+      "byAgent": { "alice": { "state": "healthy", "error": "" }, "__proto__": { "state": "degraded", "error": "" } },
+      "list": ["", ""],
+      "rows": [{ "verdict": "ERROR", "cause": "" }, { "verdict": "HIT", "cause": "90% from cache" }],
+      "whole": { "anything": "kept", "deep": ["x"] }
+    }`)));
+    // A value that isn't an object or a string comes back as it is.
+    expect(keepNamedStrings(3, undefined)).toBe(3);
+    expect(keepNamedStrings('text', undefined)).toBe('');
+    expect(keepNamedStrings('text', true)).toBe('text');
+  });
+
+  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text", () => {
+    const text = 'the provider said: overloaded';
+    const cost = {
+      input: 1, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 1, total: 2, currency: 'USD', grade: 'billing', pricingVersion: 'p1',
+      rates: { inputPerMillion: 1, outputPerMillion: 1, cacheWrite5mPerMillion: 1, cacheWrite1hPerMillion: 1, cacheReadPerMillion: 1 },
+    };
+    const call = {
+      id: 'c1', timestamp: '2026-10-22T06:00:00.000Z', kind: 'stream', originEstimate: 'turn~', model: 'a-model', messages: 3, durationMs: 10,
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, cost, cache: { breakpoints: 2, ttls: ['5m', '1h'], effectiveTtl: '5m' },
+      verdict: 'HIT', cause: '90% from cache', stopReason: 'end_turn',
+    };
+    // agent-framework 0.24.0's healthSnapshot, and every section the host adds, with a value in each place.
+    const health = {
+      at: '2026-10-22T06:00:00.000Z',
+      uptimeSec: 5,
+      gate: { inferring: ['main'], bufferedEvents: 1, droppedBufferedEvents: 0, sleepUntil: 0 },
+      pendingRequests: 1,
+      activeStreams: ['main'],
+      agents: [{
+        name: 'main',
+        status: 'inferring',
+        consecutiveInferenceFailures: 1,
+        providerAdmission: {
+          primaryActive: true, primaryPending: false, auxiliaryInFlight: 0, auxiliaryDeferred: 0,
+          cooldownUntil: 2, cooldownReason: text, hostHold: false, heldRequests: 0,
+          lastRecovery: { startedAt: 1, releasedAt: 2, completedAt: 3, cooldownMs: 4, waitedMs: 5, failures: 1, heldRequests: 0, messageCount: 2, toolCount: 0, stopReason: 'end_turn' },
+          providerWaits: [{ model: 'a-model', until: '2026-10-22T06:05:00.000Z', reason: text, setAt: '2026-10-22T06:00:00.000Z' }],
+        },
+        lastInference: { startedAt: 1, endedAt: 2, failedAt: 3, lastError: text },
+        refusalStats: { total: 1, byCategory: { policy: 1 }, lastAt: 3, lastCategory: 'policy' },
+      }],
+      credential: {
+        subscription: true, agent: 'main', kind: 'auth-login-required', provider: 'anthropic', message: text, since: 1, until: 2, windows: ['5h'],
+        rotatable: false, expiresAt: 3, actions: [{ id: 'login', label: 'Restart login', hint: 'Starts a new device-code login.' }],
+        login: { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' },
+        lastAction: { id: 'refresh', at: 1, ok: false, message: text },
+      },
+      compressionQuarantine: {
+        main: {
+          count: 1, keys: ['q1'],
+          spans: [{ chunkSourceHash: 'h1', firstMessageId: 'm1', lastMessageId: 'm2', closedAgeMs: 1, quarantinedAt: 1, records: 1, answeredAttempts: 1, latestOutcome: 'provider_error:invalid_request' }],
+        },
+      },
+      compressionDebt: {
+        main: {
+          state: 'unknown', error: text, failure: 'report', pendingChunks: 1, oldestPendingAgeMs: 2, mergeQueueDepth: 0, mergeQueueMaxAttempts: 0,
+          mergeQuarantineCount: 1, mergeQuarantineKeys: ['mq1'], mergeHeldIds: ['s1'], compressionQuarantineCount: 1,
+          unmergedFrontier: { l1: 1, l2: 0, l3: 0 }, lastMintAt: 1, topologyViolations: 0, topologyRefusals: 0,
+        },
+      },
+      contextComposition: {
+        main: {
+          head: { messages: 1, tokens: 1 }, tail: { messages: 1, tokens: 1 }, middleRaw: { messages: 0, tokens: 0 },
+          summaries: { l1: { count: 0, tokens: 0 }, l2: { count: 0, tokens: 0 }, l3: { count: 0, tokens: 0 } },
+          pending: { chunks: 0, merges: 0 }, total: { messages: 2, tokens: 2 },
+          calibration: { multiplier: 1, pricingEpoch: 1, provisional: true, reset: { discardedMultiplier: 2, fromEpoch: null, at: 1 } },
+          planVsActual: {
+            planned: 1, actual: 1, delta: 0, budgetMet: true, exhausted: false, moves: 0, solver: 'kv-stable', messages: 2, compileMs: 1, solveMs: 1,
+            ceiling: 'whatIfs:2', dryRun: true,
+            foldDiff: { moves: 1, deepened: 1, raised: 0, runs: [{ from: 0, to: 1, count: 1, firstChunkId: 'k1', lastChunkId: 'k2' }], runsTotal: 1, divergenceOffset: null, suffixTokens: null },
+          },
+        },
+      },
+      contextCompositionNotKept: ['passthrough'],
+      runtimeSettings: {
+        main: {
+          contextBudgetTokens: 1000, effectiveContextBudgetTokens: 1000, tailTokens: 10, transitionPaceTokens: 10,
+          sameRoundThinkTextPolicy: 'keep', sameRoundThinkTextPolicySource: 'default', transition: 'blocked', transitionReason: 'transition_pace_too_small',
+        },
+      },
+      readFailures: { main: { contextComposition: text } },
+      callLedger: {
+        rows: [{ ...call, id: 'c0', verdict: 'ERROR', cause: text, error: text }, call],
+        summary: { calls: 2, input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cacheHitRatio: 0, cost: { total: 2, currency: 'USD', pricedCalls: 1, unpricedCalls: 1, pricingVersion: 'p1' }, byVerdict: { ERROR: 1, HIT: 1 } },
+      },
+    };
+    const expected = structuredClone(health);
+    const main = expected.agents[0]!;
+    main.providerAdmission.cooldownReason = '';
+    main.providerAdmission.providerWaits[0]!.reason = '';
+    main.lastInference.lastError = '';
+    expected.compressionDebt.main.error = '';
+    expected.readFailures.main.contextComposition = '';
+    Object.assign(expected.callLedger.rows[0]!, { cause: '', error: '' });
+    expected.credential.message = '';
+    expected.credential.lastAction.message = '';
+    expect(JSON.parse(JSON.stringify(keepNamedStrings(health, HEALTH_STRINGS)))).toEqual(expected);
+
+    const quota = {
+      subscription: true, provider: 'anthropic', fetchedAt: 1, error: text, blockedUntil: null, parked: false,
+      windows: [{ key: 'five_hour', label: '5h', utilization: 10, resetsAt: 1, model: 'a-model', advisory: false }],
+    };
+    expect(JSON.parse(JSON.stringify(keepNamedStrings(quota, QUOTA_STRINGS)))).toEqual({ ...quota, error: '' });
+  });
+
+  test('frameWithoutFailureText gives the call ledger and the credential state without their failure text, and any other frame as it is', () => {
+    const ledger = {
+      type: 'call-ledger',
+      ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: 'raw', error: 'raw' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
+    } as unknown as WebUiServerMessage;
+    expect(JSON.parse(JSON.stringify(frameWithoutFailureText(ledger)))).toEqual({
+      type: 'call-ledger',
+      ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: '', error: '' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
+    });
+    const credential = {
+      type: 'credential-state', scope: 'kid', subscription: true, agent: 'main', kind: 'auth-rejected', provider: 'anthropic',
+      message: 'anthropic rejected the credential (raw)', since: 1, rotatable: true, actions: [{ id: 'refresh', label: 'Refresh' }],
+      lastAction: { id: 'refresh', at: 2, ok: false, message: 'refresh failed: raw' },
+    } as unknown as WebUiServerMessage;
+    expect(JSON.parse(JSON.stringify(frameWithoutFailureText(credential)))).toEqual({
+      ...credential, message: '', lastAction: { id: 'refresh', at: 2, ok: false, message: '' },
+    });
+    const trace = { type: 'trace', event: { type: 'usage:updated', agentName: 'main' } } as unknown as WebUiServerMessage;
+    expect(frameWithoutFailureText(trace)).toBe(trace);
+  });
+
+  test('the agent trees go only with every scope but debug, since their nodes carry token counts and how each run ended', () => {
+    const tree = { asOfTs: 1, nodes: [{ name: 'main', tokens: { input: 5 } }], callIdIndex: {} };
+    const welcome = {
+      type: 'welcome', protocolVersion: WEB_PROTOCOL_VERSION, agents: [], messages: [],
+      session: { id: 's', name: 's', autoNamed: false }, branch: { id: 'b', name: 'b' },
+      history: { startIndex: 0, totalCount: 0 },
+      localTree: tree,
+      childTrees: [{ name: 'kid', ...tree, recipe: { name: 'kid', agentModel: 'a-model' } }],
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    } as unknown as WelcomeMessage;
+    for (const missing of ['messages', 'thinking', 'tools', 'health', 'ops'] as const) {
+      const scopes = new Set<ObserverScope>(['messages', 'thinking', 'tools', 'health', 'ops']);
+      scopes.delete(missing);
+      const w = scopeWelcome(welcome, scopes);
+      expect(w.localTree.nodes).toEqual([]);
+      expect(w.childTrees).toEqual([]);
+    }
+    const all = scopeWelcome(welcome, new Set<ObserverScope>(['messages', 'thinking', 'tools', 'health', 'ops']));
+    expect(all.localTree).toEqual(tree);
+    expect(all.childTrees).toEqual(welcome.childTrees);
   });
 });
 
@@ -731,8 +1036,6 @@ describe('ObserverSessions', () => {
 // hot-appears → observer flow works.
 // ---------------------------------------------------------------------------
 
-const BASIC = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
-
 describe('WebUiModule observer flow (e2e)', () => {
   let tmp: string;
   let observersPath: string;
@@ -761,7 +1064,7 @@ describe('WebUiModule observer flow (e2e)', () => {
 
   afterAll(async () => {
     await mod.stop();
-    await __resetSharedServerForTests();
+    await stopWebUiServer();
     rmSync(tmp, { recursive: true, force: true });
   });
 

@@ -13,7 +13,7 @@ import type { Membrane } from '@animalabs/membrane';
 import { LessonsModule } from '../src/modules/lessons-module.js';
 import { RetrievalModule } from '../src/modules/retrieval-module.js';
 import { handleCommand, handleExport } from '../src/commands.js';
-import { WebUiModule, __resetSharedServerForTests } from '../src/modules/web-ui-module.js';
+import { WebUiModule, stopWebUiServer } from '../src/modules/web-ui-module.js';
 
 type AnyObj = Record<string, any>;
 
@@ -610,7 +610,7 @@ describe('readers in other modules', () => {
       expect(msg.lessons.map((l: AnyObj) => [l.id, l.tags, l.confidence])).toEqual([['old1', [], 0.6], ['pct', ['x'], 1]]);
     } finally {
       await web.stop();
-      await __resetSharedServerForTests();
+      await stopWebUiServer();
       rmSync(dir, { recursive: true, force: true });
       h.cleanup();
     }

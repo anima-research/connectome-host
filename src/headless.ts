@@ -32,6 +32,7 @@ import { type IncomingCommand, matchesSubscription } from './modules/fleet-types
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 import { takeRecipeWarnings } from './recipe.js';
 import { workspaceReadFields } from './workspace-read-result.js';
+import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -108,6 +109,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   const pidPath = join(dataDir, 'headless.pid');
 
   mkdirSync(dataDir, { recursive: true });
+  // This process now has an exit path its supervisor restarts: the
+  // lifecycle module's self-restart may arm (src/self-restart.ts).
+  selfRestart.attachHeadless();
 
   // -- Redirect stdout/stderr writes BEFORE anything else here may log --
   // The IPC socket is the only structured output channel; direct
@@ -564,7 +568,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   });
 
   // -- Shutdown --
-  async function gracefulShutdown(reason: string): Promise<void> {
+  // `cleanExitCode` is what a clean stop exits with: 0, or
+  // SELF_RESTART_EXIT_CODE for an agent's self-restart. A failed
+  // framework.stop() exits 1 either way.
+  async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`shutdown: ${reason}`);
@@ -573,7 +580,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Give the exiting event a tick to flush onto the socket.
     await new Promise((r) => setTimeout(r, 50));
 
-    let exitCode = 0;
+    let exitCode = cleanExitCode;
     try { await app.framework.stop(); } catch (err) {
       exitCode = 1;
       log(`framework.stop() failed: ${String(err)}`);
@@ -581,6 +588,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     try { server.close(); } catch (err) { log(`server.close() failed: ${String(err)}`); }
     try { if (existsSync(socketPath)) unlinkSync(socketPath); } catch (err) { log(`socket unlink failed: ${String(err)}`); }
     try { if (existsSync(pidPath)) unlinkSync(pidPath); } catch (err) { log(`pid unlink failed: ${String(err)}`); }
+    // An armed self-restart learns how this process ended, whichever
+    // shutdown ended it (src/self-restart.ts); a no-op otherwise.
+    selfRestart.recordExit(reason, exitCode);
 
     // Exit once the log holds its last lines, a failed stop's included.
     void endHeadlessLog().then(() => process.exit(exitCode));
@@ -596,7 +606,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // `lifecycle:idle` fires on every work→quiescent transition so the parent
   // can implement fleet--await (block until child finished its task).
   // --exit-when-idle is a strict overlay: same detection, additionally
-  // shuts down on the transition.
+  // shuts down at the first quiet poll with no self-restart armed. While one
+  // is armed, quiet also means nothing in flight, and it exits 75 instead.
   //
   // `inference:speech` fires once per "final" inference round — the round
   // that completed without yielding tool calls.  It carries the accumulated
@@ -604,9 +615,28 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // to subscribe to the whole token stream.
   {
     const IDLE_CONFIRM_MS = 500;
+    // An agent's status reads idle while its turn assembles (context, hooks,
+    // the compile) and while a subagent runs, so an armed self-restart also
+    // waits for what the framework and the subagent module count as alive,
+    // and for events not yet taken off the framework's queue: a restart cuts
+    // nothing they hold. The quiet test holds this for IDLE_CONFIRM_MS too,
+    // since a subagent's end frees its slot a loop pass before the wake it
+    // pushes is pending.
+    const nothingInFlight = (): boolean => {
+      const host = app.framework.getHostModeStatus();
+      if (!host.drained || host.gatedRequests > 0 || host.backgroundScripts > 0) return false;
+      if (app.framework.getQueueDepth() > 0) return false;
+      const subagents = (app.framework.getAllModules().find((m) => m.name === 'subagent') as
+        | { getConcurrencyStatus(): { active: number; queued: number } }
+        | undefined)?.getConcurrencyStatus();
+      return !subagents || (subagents.active === 0 && subagents.queued === 0);
+    };
     const primaryAgentName = app.recipe.agent.name ?? 'agent';
     let hadAtLeastOneInference = false;
     let idleSince = 0;
+    // Whether the quiet window now running was measured with a restart armed:
+    // only such a window checked that nothing was in flight.
+    let windowArmed = false;
     let idleEmitted = false;
 
     // Speech accumulator for the primary agent.  Reset on inference:started
@@ -640,19 +670,37 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       if (shuttingDown) { clearInterval(idlePoll); return; }
       const agents = app.framework.getAllAgents();
       const allIdle = agents.every((a) => a.state.status === 'idle');
-      if (!hadAtLeastOneInference || !allIdle) {
+      // An armed request took a turn to make, even one that ran before this
+      // listener was attached.
+      const armed = selfRestart.isArmed();
+      if (armed) hadAtLeastOneInference = true;
+      // Arming (or a cancel) starts the window again, so a restart armed with
+      // no turn of its own, as by /puppet, still waits out the confirm.
+      if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; }
+      if (!hadAtLeastOneInference || !allIdle || (armed && !nothingInFlight())) {
         idleSince = 0;
         return;
       }
       if (idleSince === 0) { idleSince = Date.now(); return; }
-      if (Date.now() - idleSince >= IDLE_CONFIRM_MS && !idleEmitted) {
+      if (Date.now() - idleSince < IDLE_CONFIRM_MS) return;
+      if (!idleEmitted) {
         idleEmitted = true;
         log('quiescent — emitting lifecycle:idle');
         emit({ type: 'lifecycle', phase: 'idle' });
-        if (opts.exitWhenIdle) {
-          clearInterval(idlePoll);
-          void gracefulShutdown('exit-when-idle');
-        }
+      }
+      // An agent asked to restart (lifecycle--restart), every agent reads
+      // idle and nothing has been in flight for IDLE_CONFIRM_MS: exit for
+      // the supervisor to start us again. Checked on every quiet poll, so a
+      // restart armed while already quiet still goes. It takes
+      // --exit-when-idle's place, which a cancel gives back at a quiet poll.
+      if (armed) {
+        clearInterval(idlePoll);
+        void gracefulShutdown('self-restart', SELF_RESTART_EXIT_CODE);
+        return;
+      }
+      if (opts.exitWhenIdle) {
+        clearInterval(idlePoll);
+        void gracefulShutdown('exit-when-idle');
       }
     }, 100);
   }

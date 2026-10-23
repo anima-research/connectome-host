@@ -30,6 +30,7 @@
 import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync, fsyncSync } from 'node:fs';
 import type { CredentialResolver, CredentialContext } from '@animalabs/membrane';
 import type { CredentialSource } from './credential-state.js';
+import { parseHandWrittenJson } from './hand-written-json.js';
 
 /** Claude Code's public OAuth client id (it ships in the CLI binary). */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
@@ -234,11 +235,19 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   // ---------------------------------------------------------------------------
 
   private readFile(path: string): StoredCredential {
-    let parsed: unknown;
+    let text: string;
     try {
-      parsed = JSON.parse(readFileSync(path, 'utf8'));
+      text = readFileSync(path, 'utf8');
     } catch (err) {
       throw new Error(`cannot read Anthropic credentials file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = parseHandWrittenJson(text);
+    } catch {
+      // The parser's message can quote the file's text, which holds the
+      // token, so it isn't passed on.
+      throw new Error(`cannot read Anthropic credentials file ${path}: it isn't valid JSON`);
     }
     const root = (parsed ?? {}) as Record<string, unknown>;
     const nested = root.claudeAiOauth;
@@ -285,7 +294,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     // but never the stale token triple.
     let existing: Record<string, unknown> = {};
     try {
-      existing = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+      existing = parseHandWrittenJson(readFileSync(file, 'utf8')) as Record<string, unknown>;
       if (!existing || typeof existing !== 'object') existing = {};
     } catch {
       existing = {};
