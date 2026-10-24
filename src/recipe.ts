@@ -762,7 +762,10 @@ export interface RecipeWorkspaceMount {
    * a non-empty list of names, `*.ext` globs and `dir/**` globs. A file the
    * list doesn't cover is refused by reads and writes and left out of
    * listings and searches, and a pattern the framework can't read stops the
-   * recipe loading (validateRecipe).
+   * recipe loading (validateRecipe). agent-framework keeps its own files
+   * (spilled tool results, fetched references) only in a read-write mount
+   * without an include, the first one there is: a recipe whose every
+   * writable mount has one keeps none of them in a file.
    */
   include?: string[];
   watch?: 'always' | 'on-agent-action' | 'never';
@@ -843,6 +846,12 @@ export interface RecipeModules {
     reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   };
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
+  /**
+   * The workspace's mounts. `configMount: true` adds `_config`, the
+   * session's config directory, holding only files named `gate.json` or
+   * `gate.js`, at any depth (its include), with history in Chronicle; it isn't
+   * materialized on agent writes (buildWorkspaceMounts).
+   */
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
    * Shared operating instructions. OPT-IN — off by default. Reads a living

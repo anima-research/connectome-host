@@ -979,7 +979,8 @@ export class IdentityModule implements Module {
    * empty part right after the mount's name or a "." or ".." part, its mount
    * doesn't hold it (it leads out, lies in another mount's directory, falls
    * outside the include, or can't name a file there), or its mount is
-   * read-only. Null when none holds. Each
+   * read-only; and, the host's own refusal, a path in `_config`, which holds
+   * the gate's config. Null when none holds. Each other
    * refusal is one agent-framework's writeBinary makes too, after the request
    * has gone out (the include's from 0.24, the rest from 0.22.3): its path
    * parser reads what follows an empty part
@@ -992,16 +993,24 @@ export class IdentityModule implements Module {
    */
   private cannotKeep(workspace: WorkspaceModule, path: string): string | null {
     const mounts = workspace.getMounts();
-    const writable = mounts.filter((m) => m.mode === 'read-write').map((m) => m.name);
+    // The mounts a response can be kept in, each with the files its include
+    // covers, if it has one. Not `_config`: it holds the gate's config, and a
+    // response saved there would become gate.json or gate.js at the host's
+    // next materialize of the mount.
+    const writable = mounts.filter((m) => m.mode === 'read-write' && m.name !== '_config');
+    // Quoted, as the refusals quote a mount's name, so a mount named like a
+    // word ("files") reads as a name.
+    const named = writable.map((m) => (m.include ? `"${m.name}" for ${m.include.join(' or ')}` : `"${m.name}"`)).join(', ');
     const remedy = writable.length > 0
-      ? ` Pass \`saveAs\` a path in a mount it can write to (${writable.join(', ')}), as "<mount>/<file>", or leave it ` +
+      ? ` Pass \`saveAs\` a path in a mount it can write to (${named}), as "<mount>/<file>", or leave it ` +
         'out to have a text response returned to you.'
-      : ' The workspace has no mount it can write to, so leave `saveAs` out to have a text response returned to you.';
+      : ' The workspace has no mount a response can be kept in, so leave `saveAs` out to have a text response returned to you.';
     const slash = path.indexOf('/');
     const name = slash < 0 ? path : path.slice(0, slash);
     const mount = mounts.find((m) => m.name === name);
     if (!mount) return `\`saveAs\` names no mount the workspace has: "${path}".${remedy}`;
     if (slash < 0 || slash === path.length - 1) return `\`saveAs\` names the mount "${name}" but no file in it.${remedy}`;
+    if (name === '_config') return `\`saveAs\` names "_config", which holds the gate's config, where no response is kept.${remedy}`;
     if (path.slice(slash + 1).startsWith('/')) {
       return `\`saveAs\` "${path}" has an empty part right after the mount's name, which the workspace can't save to; name the file by its plain path.${remedy}`;
     }
@@ -1060,13 +1069,16 @@ export class IdentityModule implements Module {
       onDisk = err;
     }
     // A path no mount holds, or one leading out of its mount, has no copy
-    // anywhere. One in another mount's directory nested in it, or reached
+    // anywhere. One its mount's include doesn't cover (`outside_include`)
+    // has none an upload can read: the workspace's reads refuse it, a copy
+    // its history holds from before the include included. One in another
+    // mount's directory nested in it, or reached
     // through a link into one (`other_mount`, from
     // anima-research/agent-framework#460, and for a link from the release
     // with anima-research/agent-framework#468), is that mount's: the reason
     // names the mount and the path to use there, so the outer mount's
     // workspace isn't offered in its place.
-    if (['unknown_mount', 'traversal', 'other_mount'].includes(onDisk.code)) {
+    if (['unknown_mount', 'traversal', 'outside_include', 'other_mount'].includes(onDisk.code)) {
       return { refusal: `${nothingSent} ${sentence(onDisk.message)}` };
     }
     const diskReason = sentence(`${onDisk.message}${onDisk.errno ? ` (${onDisk.errno})` : ''}`);

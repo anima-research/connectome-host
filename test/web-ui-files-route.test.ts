@@ -217,6 +217,36 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
+  // A mount with an include, as `_config` has: a file it covers is served,
+  // and one it leaves out is forbidden, in the read's words, as every other
+  // boundary refusal is.
+  test("agent-framework's read: a file its mount's include leaves out is forbidden, and says so", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'webui-files-include-'));
+    const conf = join(dir, 'conf');
+    mkdirSync(conf);
+    writeFileSync(join(conf, 'gate.json'), '{"policies":[]}');
+    writeFileSync(join(conf, '#gate.json#'), 'an autosave');
+    const store = JsStore.openOrCreate({ path: join(dir, 'store') });
+    const real = new WorkspaceModule({
+      mounts: [{ name: 'conf', path: conf, mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] }],
+    });
+    real.initStore(store);
+    workspace = real;
+    try {
+      const covered = await fetch(`${baseUrl}/files/conf/gate.json`);
+      expect({ status: covered.status, body: await covered.text() }).toEqual({ status: 200, body: '{"policies":[]}' });
+      const read = await real.readFileFromDisk('conf/#gate.json#').then(() => null, (err: WorkspaceReadError) => err);
+      expect(read?.code).toBe('outside_include');
+      const left = await fetch(`${baseUrl}/files/conf/${encodeURIComponent('#gate.json#')}`);
+      expect({ status: left.status, body: await left.text() }).toEqual({ status: 403, body: read!.message });
+      expect(read!.message).toContain('"conf/#gate.json#" is outside the mount\'s include');
+    } finally {
+      workspace = standIn;
+      store.close?.();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // agent-framework 0.22.3's read looks for the file before it resolves the
   // mount's directory, so a directory already gone is no file there. From the
   // release with anima-research/agent-framework#533, the read checks the

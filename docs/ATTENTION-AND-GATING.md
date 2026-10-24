@@ -128,8 +128,10 @@ check is conservative, so no warning isn't proof of safety.
   file that fails to parse or validate is ignored: the previous rules stay in
   force and the error appears in `gate_status` under `errors`.
 - **Not `workspace--edit _config/gate.json`.** If your recipe sets
-  `modules.workspace.configMount: true`, the config directory also appears as
-  the `_config/` mount, and changes on disk are versioned into your chronicle.
+  `modules.workspace.configMount: true`, the config directory's `gate.json`
+  and `gate.js` also appear in the `_config/` mount, which holds only files
+  with those names, at any depth, and their changes on disk are versioned into your
+  chronicle.
   But that mount doesn't write through: a workspace edit stays chronicle-side and
   never reaches the file the gate reads until a branch-changing command
   re-materializes the mount — and the next disk write (a `wake_add_rule`, a
