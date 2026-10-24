@@ -408,8 +408,9 @@ export interface RecipeAgent {
      * Fable and Mythos. */
     display?: 'summarized' | 'omitted';
     /** Anthropic streaming effort baseline, independent of enabled. Explicit agent
-     * settings override it until reset; compression calls are unaffected. Other
-     * providers ignore this field; OpenAI uses responses.reasoningEffort. */
+     * settings override it until reset, from the point where they were set;
+     * compression calls are unaffected. Other providers ignore this field;
+     * OpenAI uses responses.reasoningEffort. */
     effort?: ReasoningEffort;
   };
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;

@@ -325,8 +325,11 @@ longer persona text, offer to put it where the agent can read it as material (a 
 
 For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
 set the recipe baseline; `enabled` is still required and can be `false`.
-Explicit `agent_settings` effort overrides the recipe until reset. Unrelated
-settings updates preserve the baseline, and compression calls are unaffected.
+Explicit `agent_settings` effort overrides the recipe until reset, from the
+point where it was set: a branch made before that point, such as an undo past
+the turn that set it, has the effort set there, or the recipe's where none was.
+Unrelated settings updates preserve the baseline, and compression calls are
+unaffected.
 A model that doesn't accept the effort level (Sonnet 4.5, Haiku 4.5, Claude 3
 models, and some levels on Opus 4.5 and 4.6) gets no effort, and its default
 applies, with a line on stderr.
