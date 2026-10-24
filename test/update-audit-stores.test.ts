@@ -2451,6 +2451,7 @@ describe('a host on trial, before its commit', () => {
     const framework = {
       start: () => { counts.started++; }, stop: async () => { counts.stopped++; }, getModule: () => null, listMcplServers: () => [],
       notifyOps: () => {},
+      getHostModeStatus: () => ({ quiesced: false }),
     } as never;
     return { framework, counts };
   }
@@ -2857,6 +2858,7 @@ describe('a host on trial, before its commit', () => {
     const sent: Array<{ kind: string; agent: string; message: string; data?: Record<string, unknown> }> = [];
     const framework = {
       start: () => {}, stop: async () => {}, getModule: () => null, listMcplServers: () => [],
+      getHostModeStatus: () => ({ quiesced: false }),
       // A method reading its own object, as agent-framework's is.
       sent,
       notifyOps(kind: string, agent: string, message: string, data?: Record<string, unknown>) { this.sent.push({ kind, agent, message, data }); },

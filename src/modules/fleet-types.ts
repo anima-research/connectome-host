@@ -49,7 +49,12 @@ export type IncomingCommand =
    * shared handler (`runPanelOp`), so a new panel surface needs no protocol
    * change to work across the fleet.
    */
-  | { type: 'panel-request'; op: string; params?: Record<string, unknown>; corrId?: string };
+  | { type: 'panel-request'; op: string; params?: Record<string, unknown>; corrId?: string }
+  /** A switch's request of a fleet child, from its parent's install host
+   *  (src/update/quiesce.ts): quiesce under the switch's reason and wait for
+   *  its turns, answering whether it drained and who holds a turn; or end the
+   *  switch's quiesce. Response is `update-response`. */
+  | { type: 'update-request'; request: import('../update/quiesce.js').SwitchRequest; corrId: string };
 
 // ---------------------------------------------------------------------------
 // Child → Parent: events
@@ -162,6 +167,17 @@ export interface PanelResponseEvent {
   ts?: number;
 }
 
+/** Response to a {type:'update-request'} request: `data` is
+ *  answerSwitchRequest's answer, or `error` says why there's none. */
+export interface UpdateResponseEvent {
+  type: 'update-response';
+  corrId: string;
+  ok: boolean;
+  data?: unknown;
+  error?: string;
+  ts?: number;
+}
+
 /** Response to a {type:'request-workspace-file'} request. */
 export interface WorkspaceFileSnapshotEvent {
   type: 'workspace-file-snapshot';
@@ -192,6 +208,7 @@ export type WireEvent =
   | WorkspaceFileSnapshotEvent
   | CancelSubagentResultEvent
   | PanelResponseEvent
+  | UpdateResponseEvent
   // Arbitrary framework TraceEvent passthrough. The child stamps every emitted
   // event with `ts: Date.now()` in `emit()` (see headless.ts), so ts is always
   // present on the wire even when the underlying TraceEvent doesn't declare it.

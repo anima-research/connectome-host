@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  ContractError, INSTALL_ROOT_ENV, JOURNAL_STEPS, PLACE_KINDS, RESTART_EXIT_CODE, appendJournal, childrenFilePath,
+  ContractError, INSTALL_ROOT_ENV, JOURNAL_STEPS, PLACE_KINDS, RESTART_EXIT_CODE, SWITCH_QUIESCE_PREFIX, appendJournal, childrenFilePath,
   copyItemName, copyLabelPath, goBackListPath, installPaths, installRootFromEnv, itemSetAsideDir, lastCopy, markSpent,
   moveCurrent, pendingGoBack, readCurrent, realOrResolved, readGoBackList, readJournal, readMark, readRecord, releaseDir, setAsideDir,
   trialPlaces, unfinishedTrial, writeJsonAtomic, type CopyLabel, type GoBackList, type JournalLine, type Mark,
@@ -58,7 +58,7 @@ describe('the update contract', () => {
     expect(installPaths('/r')).toEqual({
       root: '/r', releases: '/r/releases', current: '/r/current', install: '/r/install.json', mark: '/r/mark.json',
       journal: '/r/journal.jsonl', lock: '/r/lock.json', copy: '/r/copy', copyTmp: '/r/copy.tmp', copyPrev: '/r/copy.prev',
-      setAside: '/r/set-aside', midTurn: '/r/midturn.json',
+      setAside: '/r/set-aside',
     });
     expect(releaseDir('/r', '0.11.0')).toBe('/r/releases/0.11.0');
     expect(copyLabelPath('/r/copy.tmp')).toBe('/r/copy.tmp/copy.json');
@@ -67,7 +67,11 @@ describe('the update contract', () => {
     expect(childrenFilePath('/d')).toBe('/d/fleet-children.json');
     expect(INSTALL_ROOT_ENV).toBe('CONNECTOME_INSTALL_ROOT');
     expect(RESTART_EXIT_CODE).toBe(75);
-    expect(JOURNAL_STEPS).toEqual(['lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes']);
+    // The `notes` step and midturn.json, for notes to residents about a
+    // switch's stop, went: the update tells residents nothing, and no release
+    // wrote or read either, so nothing any release reads changed.
+    expect(JOURNAL_STEPS).toEqual(['lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back']);
+    expect(SWITCH_QUIESCE_PREFIX).toBe('connectome-host update: ');
     expect(goBackListPath('/r', 'm1')).toBe('/r/set-aside/m1/places.json');
     expect(PLACE_KINDS).toEqual(['dir', 'file', 'none']);
   });

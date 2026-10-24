@@ -98,6 +98,21 @@ function dispatch(msg: Record<string, unknown>): void {
     emit({ type: 'panel-response', corrId: msg.corrId, op, ok: true, data: { op, echo: msg.params ?? null } });
     return;
   }
+  if (t === 'update-request') {
+    // A switch's request (FleetModule.requestSwitch): a quiesce answers as a
+    // child whose agent 'mock' still holds a turn; a resume, resumed. Each
+    // answer echoes the request, and comes after a reply of another type
+    // carrying the same corrId, which the request mustn't take for its own.
+    const request = (msg.request ?? {}) as Record<string, unknown>;
+    emit({ type: 'panel-response', corrId: msg.corrId, op: 'not-this', ok: true, data: { decoy: true } });
+    emit({
+      type: 'update-response', corrId: msg.corrId, ok: true,
+      data: request.op === 'quiesce'
+        ? { drained: false, activeTurnAgents: ['mock'], backgroundScripts: 0, echo: request }
+        : { resumed: true, echo: request },
+    });
+    return;
+  }
   if (t === 'shutdown') {
     emit({ type: 'lifecycle', phase: 'exiting', reason: 'shutdown' });
     setTimeout(() => process.exit(0), 50);

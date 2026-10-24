@@ -3,12 +3,14 @@ import { FleetModule } from './modules/fleet-module.js';
 import type { ExtensionRegistry } from './extensions.js';
 import { auditBeforeCommit } from './update/audit-stores.js';
 import { commitRelease, currentForStart, type ReleaseHere } from './update/host.js';
+import { resumeIfSwitch } from './update/quiesce.js';
 
 /**
  * Start a framework's agents, and only then its fleet's autoStart children.
  * A child is a host with residents of its own, so none of them acts before
- * the parent's agents run. Every place the host starts a framework comes
- * through here: the start in main() and a session switch's.
+ * the parent's framework has started its agents, quiesced or not. Every
+ * place the host starts a framework comes through here: the start in main()
+ * and a session switch's.
  *
  * For a host an install's entry point started (`here`), this is also the
  * switch's commit point: the framework has opened its stores and tried its
@@ -29,9 +31,18 @@ import { commitRelease, currentForStart, type ReleaseHere } from './update/host.
  * creating it opened, such as its servers' processes, so none outlives the
  * host beside the release that starts next, and this throws (auditBeforeCommit
  * or commitRelease says why).
+ *
+ * A host the switch quiesced before its stop boots quiesced, the quiesce
+ * persisting through the restart, so its servers connect with their data
+ * planes paused and it commits as any start does. Once framework.start()
+ * has run, and before its fleet's children launch, that quiesce ends
+ * (resumeIfSwitch). A quiesce under any other reason stays. A resume
+ * agent-framework refuses leaves the host quiesced, and the operator is told
+ * (notifyOps); the children launch all the same, each a host that ends its
+ * own switch quiesce.
  */
 export async function startFramework(
-  framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers' | 'notifyOps'>,
+  framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers' | 'notifyOps' | 'quiesce' | 'resume' | 'getHostModeStatus'>,
   here: ReleaseHere | null,
   trial?: { dataDir: string; activeStore: string; places: () => string[] | null; extensions?: ExtensionRegistry },
 ): Promise<void> {
@@ -59,6 +70,8 @@ export async function startFramework(
     }
   }
   framework.start();
+  const resumed = await resumeIfSwitch(framework);
+  if (resumed.refused) framework.notifyOps('update-quiesce-stays', 'host', `This host's switch quiesce didn't end: ${resumed.why}`);
   const fleet = framework.getModule('fleet');
   if (fleet instanceof FleetModule) fleet.launchAutoStart();
 }

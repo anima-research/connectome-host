@@ -4,7 +4,9 @@
  * commits its release, keeps the children file its launcher reads, and
  * records a fleet child in its store from the child's spawn, synced, so a
  * parent killed then leaves the record. A root none of whose releases holds
- * it is refused before the host writes anything.
+ * it is refused before the host writes anything. A host and fleet child the
+ * switch quiesced before their stop boot quiesced, and the start ends the
+ * switch's quiesce, and only the switch's.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -17,8 +19,10 @@ import { connectWhenAccepting } from './ipc-connect.js';
 import { SessionManager } from '../src/session-manager.js';
 import {
   appendJournal, childrenFilePath, copyItemName, copyLabelPath, installPaths, moveCurrent, readCurrent, readJournal,
-  readRecord, writeJsonAtomic, type ChildrenFile,
+  readRecord, switchQuiesceReason, writeJsonAtomic, type ChildrenFile,
 } from '../src/update/contract.js';
+import type { SwitchRequest } from '../src/update/quiesce.js';
+import { hostModeRecord, writeHostModeRecord } from './host-mode-record.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -67,13 +71,17 @@ afterEach(async () => {
 });
 
 /** Start a host on `index`, as an install's entry point does when `root` is
- *  given, and otherwise as a host started on its own. */
+ *  given, and otherwise as a host started on its own. With `kid`, the host
+ *  is the fleet child's recipe on its data directory, started on its own. */
 function startHost(
   dir: string, index: string, root: string | null, modules: Record<string, unknown> = {}, recipeFields: Record<string, unknown> = {},
+  kid = false,
 ): { host: ChildProcess; stderr: () => string; exit: Promise<number | null> } {
-  const recipe = join(dir, 'recipe.json');
-  writeFileSync(recipe, JSON.stringify({ ...RECIPE, ...recipeFields, modules: { ...RECIPE.modules, ...modules } }));
-  const env: Record<string, string | undefined> = { ...process.env, ANTHROPIC_API_KEY: 'sk-test-update-commit', DATA_DIR: join(dir, 'data') };
+  const recipe = kid ? join(dir, 'kid.json') : join(dir, 'recipe.json');
+  if (!kid) writeFileSync(recipe, JSON.stringify({ ...RECIPE, ...recipeFields, modules: { ...RECIPE.modules, ...modules } }));
+  const env: Record<string, string | undefined> = {
+    ...process.env, ANTHROPIC_API_KEY: 'sk-test-update-commit', DATA_DIR: kid ? join(dir, 'data', 'kid') : join(dir, 'data'),
+  };
   if (root !== null) env.CONNECTOME_INSTALL_ROOT = root;
   else delete env.CONNECTOME_INSTALL_ROOT;
   const host = spawn('bun', [index, recipe, '--headless'], {
@@ -127,6 +135,58 @@ function onTrial(dir: string, root: string): void {
   const at = new Date().toISOString();
   writeJsonAtomic(copyLabelPath(copy), { v: 1, from: '9.9.8', at, items: [{ path: dataDir, name }], mark: 'm-1' });
   appendJournal(root, { at, step: 'trial-start', from: '9.9.8', to: '9.9.9', outcome: 'ok', mark: 'm-1' });
+}
+
+/** Ask a host over its socket what a fleet asks of its child for a switch
+ *  (src/update/quiesce.ts), and wait for its answer. The connection first
+ *  narrows its events to `lifecycle`, as a fleet's subscription can, and the
+ *  answer comes all the same. */
+async function askSwitch(socketPath: string, request: SwitchRequest): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }> {
+  const socket = await connectWhenAccepting(socketPath);
+  socket.setEncoding('utf8');
+  const corrId = `switch-${request.op}`;
+  try {
+    return await new Promise((done) => {
+      let buffer = '';
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
+          const line = buffer.slice(0, end);
+          buffer = buffer.slice(end + 1);
+          let event: { type?: string; corrId?: string };
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event.type === 'update-response' && event.corrId === corrId) done(event as never);
+        }
+      });
+      socket.write(JSON.stringify({ type: 'subscribe', events: ['lifecycle'] }) + '\n');
+      socket.write(JSON.stringify({ type: 'update-request', corrId, request }) + '\n');
+    });
+  } finally {
+    socket.destroy();
+  }
+}
+
+/** As the last start before a switch leaves them: the install's host and its
+ *  fleet child, each served on its own and stopped, quiesced either as the
+ *  switch's request quiesces a host, for a switch to 9.9.9, or as an
+ *  operator's quiesce leaves agent-framework's record, under `operator`. */
+async function quiesceAndStop(dir: string, index: string, operator?: string): Promise<void> {
+  for (const kid of [false, true]) {
+    const dataDir = kid ? join(dir, 'data', 'kid') : join(dir, 'data');
+    const { exit, stderr } = startHost(dir, index, null, {}, {}, kid);
+    const socketPath = join(dataDir, 'ipc.sock');
+    await until(() => existsSync(socketPath), 20_000, `the host serves its socket (stderr: ${stderr().slice(-1500)})`);
+    if (operator === undefined) {
+      expect(await askSwitch(socketPath, { op: 'quiesce', to: '9.9.9', waitMs: 5_000 }))
+        .toMatchObject({ ok: true, data: { answered: true, drained: true, activeTurnAgents: [] } });
+    }
+    const socket = await connectWhenAccepting(socketPath);
+    socket.write(JSON.stringify({ type: 'shutdown' }) + '\n');
+    expect(await exit).toBe(0);
+    socket.destroy();
+    if (operator !== undefined) writeHostModeRecord(dataDir, operator);
+    expect(hostModeRecord(dataDir)).toMatchObject({ quiesced: true, reason: operator ?? switchQuiesceReason('9.9.9') });
+  }
 }
 
 /** The children file's entry for the fleet child, if it lists one. */
@@ -245,4 +305,42 @@ describe('a host started from an install', () => {
     expect(existsSync(join(dir, 'data'))).toBe(false);
     expect(readCurrent(root)).toBeNull();
   }, 30_000);
+});
+
+describe('a host the switch quiesced before its stop', () => {
+  /** Start the trial with its fleet child, and stop it once the child serves
+   *  its socket, which it does only after its own start has resumed or not,
+   *  and after the parent's has, since the parent launches it after that. */
+  async function startTrial(dir: string, root: string, index: string, fleet: Record<string, unknown>): Promise<string> {
+    onTrial(dir, root);
+    const { stderr, exit } = startHost(dir, index, root, fleet);
+    await until(() => existsSync(join(dir, 'data', 'kid', 'ipc.sock')), 40_000, `the child serves its socket (stderr: ${stderr().slice(-1500)})`);
+    expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start', 'commit']);
+    expect(readCurrent(root)).toBe('9.9.9');
+    const socket = await connectWhenAccepting(join(dir, 'data', 'ipc.sock'));
+    socket.write(JSON.stringify({ type: 'shutdown' }) + '\n');
+    expect(await exit).toBe(0);
+    socket.destroy();
+    return stderr();
+  }
+
+  test("boots quiesced, commits, and ends the switch's quiesce once framework.start() has run, in its fleet child too", async () => {
+    const { dir, root, index, fleet } = install();
+    const reason = switchQuiesceReason('9.9.9');
+    await quiesceAndStop(dir, index);
+    const stderr = await startTrial(dir, root, index, fleet);
+    expect(stderr).toContain(`BOOTING QUIESCED (persisted: ${reason}`);
+    expect(hostModeRecord(join(dir, 'data'))?.quiesced).toBe(false);
+    expect(hostModeRecord(join(dir, 'data', 'kid'))?.quiesced).toBe(false);
+  }, 120_000);
+
+  test("an operator's quiesce stays through the switch's start, in its fleet child too", async () => {
+    const { dir, root, index, fleet } = install();
+    const reason = 'an operator checking the disk';
+    await quiesceAndStop(dir, index, reason);
+    const stderr = await startTrial(dir, root, index, fleet);
+    expect(stderr).toContain(`BOOTING QUIESCED (persisted: ${reason}`);
+    expect(hostModeRecord(join(dir, 'data'))).toMatchObject({ quiesced: true, reason });
+    expect(hostModeRecord(join(dir, 'data', 'kid'))).toMatchObject({ quiesced: true, reason });
+  }, 120_000);
 });

@@ -35,7 +35,8 @@ import { connect as netConnect, type Socket } from 'node:net';
 import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { uptime } from 'node:os';
-import { type IncomingCommand, type WireEvent, type PanelResponseEvent, matchesSubscription } from './fleet-types.js';
+import { type IncomingCommand, type WireEvent, type PanelResponseEvent, type UpdateResponseEvent, matchesSubscription } from './fleet-types.js';
+import type { SwitchRequest } from '../update/quiesce.js';
 import { loadRecipe } from '../recipe.js';
 import { REDUCER_REQUIRED_EVENTS } from '../state/agent-tree-reducer.js';
 import { parseCommand } from '../command-name.js';
@@ -535,7 +536,8 @@ export class FleetModule implements Module {
    * Launch the autoStart children that start() didn't adopt. The host calls
    * this once the parent's framework has started its agents, never while the
    * framework is still being built: a child is a host with residents of its
-   * own, and none of them should act before the parent's agents run. The
+   * own, and none of them should act before the parent's framework has
+   * started its agents, quiesced or not. The
    * launches run concurrently, and a failed one is logged without stopping
    * the others. It launches once, and nothing before start() has finished
    * adopting or once stop() has begun; handleLaunch refuses during a stop
@@ -2806,8 +2808,11 @@ export class FleetModule implements Module {
     catch { return false; }
   }
 
-  /** Monotonic corrId source for requestPanel. */
+  /** Monotonic corrId source for requestAnswer. */
   private panelSeq = 0;
+  /** The requests waiting on each child's connection, each ended at once
+   *  when it closes, through one listener for the connection. */
+  private readonly waitingOn = new WeakMap<Socket, Set<() => void>>();
 
   /**
    * Run one operator-panel op (see src/web/panel-data.ts) in a fleet child
@@ -2815,9 +2820,10 @@ export class FleetModule implements Module {
    * fire-and-forget request* verbs above: HTTP proxy routes need to await a
    * body, and the WS handlers are simpler for it too.
    *
-   * Never rejects — a dead child, send failure, or timeout resolves as
-   * `{ok:false, error, status}` (502 unreachable, 504 timeout), so callers
-   * translate straight into a response without try/catch.
+   * Never rejects — a dead child, a send failure, a connection that closes
+   * before the answer, or a timeout resolves as `{ok:false, error, status}`
+   * (502 unreachable, 504 timeout), so callers translate straight into a
+   * response without try/catch.
    */
   requestPanel(
     childName: string,
@@ -2825,40 +2831,93 @@ export class FleetModule implements Module {
     params?: Record<string, unknown>,
     timeoutMs = 30_000,
   ): Promise<{ ok: boolean; data?: unknown; error?: string; status?: number }> {
+    return this.requestAnswer(childName, `panel-${op}`, 'panel-response', `panel op '${op}'`, timeoutMs,
+      (corrId) => ({ type: 'panel-request', op, ...(params ? { params } : {}), corrId }));
+  }
+
+  /** The children a switch's quiesce reaches: each one that may be running,
+   *  which is each starting or ready, whether or not this host has a
+   *  connection to it. */
+  runningChildren(): Array<{ name: string }> {
+    return [...this.children.values()].filter((child) => child.status === 'starting' || child.status === 'ready')
+      .map((child) => ({ name: child.name }));
+  }
+
+  /** A switch's request of a child (src/update/quiesce.ts), answered like
+   *  requestPanel's: never rejects. */
+  requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
+      (corrId) => ({ type: 'update-request', request, corrId }));
+  }
+
+  /** Send a child the command `command` builds with a new corrId, and await
+   *  the `responseType` event carrying it. A dead child, a failed send, a
+   *  connection that closes before the answer, or no answer within
+   *  `timeoutMs` resolves as `{ok:false, error, status}` (502 unreachable,
+   *  504 timeout, 404 unknown). */
+  private requestAnswer(
+    childName: string,
+    corrPrefix: string,
+    responseType: 'panel-response' | 'update-response',
+    what: string,
+    timeoutMs: number,
+    command: (corrId: string) => IncomingCommand,
+  ): Promise<{ ok: boolean; data?: unknown; error?: string; status?: number }> {
     const child = this.children.get(childName);
     if (!child || !child.socket) {
       return Promise.resolve({
         ok: false,
-        error: child ? `child '${childName}' is ${child.status}, not running` : `unknown child: ${childName}`,
+        error: child ? `child '${childName}' ${this.unreachable(child)}` : `unknown child: ${childName}`,
         status: child ? 502 : 404,
       });
     }
-    const corrId = `panel-${op}-${++this.panelSeq}-${Date.now().toString(36)}`;
-    return new Promise((resolvePanel) => {
+    const corrId = `${corrPrefix}-${++this.panelSeq}-${Date.now().toString(36)}`;
+    const socket = child.socket;
+    let waiting = this.waitingOn.get(socket);
+    if (!waiting) {
+      const onSocket = new Set<() => void>();
+      socket.once('close', () => { for (const end of [...onSocket]) end(); });
+      this.waitingOn.set(socket, onSocket);
+      waiting = onSocket;
+    }
+    const waitingHere = waiting;
+    return new Promise((resolveAnswer) => {
       let settled = false;
       const finish = (result: { ok: boolean; data?: unknown; error?: string; status?: number }): void => {
         if (settled) return;
         settled = true;
         unsub();
         clearTimeout(timer);
-        resolvePanel(result);
+        waitingHere.delete(closed);
+        resolveAnswer(result);
       };
+      // The child answers on the connection the request came by, so once that
+      // closes, as when the child exits, no answer can come.
+      const closed = (): void => {
+        finish({
+          ok: false,
+          error: `${what} got no answer, since the connection to child '${childName}' closed before one came, so it may or ` +
+            'may not have taken effect',
+          status: 502,
+        });
+      };
+      waitingHere.add(closed);
       const unsub = this.onChildEvent(childName, (_name, evt) => {
-        if (evt.type !== 'panel-response') return;
-        const e = evt as unknown as PanelResponseEvent;
+        if (evt.type !== responseType) return;
+        const e = evt as unknown as PanelResponseEvent | UpdateResponseEvent;
         if (e.corrId !== corrId) return;
         finish({
           ok: e.ok === true,
           ...(e.data !== undefined ? { data: e.data } : {}),
           ...(typeof e.error === 'string' ? { error: e.error } : {}),
-          ...(typeof e.status === 'number' ? { status: e.status } : {}),
+          ...('status' in e && typeof e.status === 'number' ? { status: e.status } : {}),
         });
       });
       const timer = setTimeout(() => {
-        finish({ ok: false, error: `panel op '${op}' timed out after ${timeoutMs}ms (child '${childName}' unresponsive)`, status: 504 });
+        finish({ ok: false, error: `${what} timed out after ${timeoutMs}ms: child '${childName}' sent no answer in that time`, status: 504 });
       }, timeoutMs);
       try {
-        this.sendToChild(child, { type: 'panel-request', op, ...(params ? { params } : {}), corrId });
+        this.sendToChild(child, command(corrId));
       } catch (err) {
         finish({ ok: false, error: `send to child failed: ${err instanceof Error ? err.message : String(err)}`, status: 502 });
       }

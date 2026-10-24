@@ -205,6 +205,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     'workspace-file-snapshot',
     'cancel-subagent-result',
     'panel-response',
+    'update-response',
     'command-output',
   ]);
 
@@ -449,6 +450,16 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         const { runPanelOp } = await import('./web/panel-data.js');
         const result = await runPanelOp(app, op, cmd.params ?? {});
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
+        return;
+      }
+      case 'update-request': {
+        const { answerSwitchRequest } = await import('./update/quiesce.js');
+        try {
+          const data = await answerSwitchRequest(app.framework, cmd.request);
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
+        } catch (error) {
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
         return;
       }
       case 'cancel-subagent': {

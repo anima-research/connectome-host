@@ -75,7 +75,9 @@ reason string.
 JSON Lines in both directions, one object per `\n`-terminated line.
 
 - The child logs and drops malformed lines. Unknown `type`s and invalid fields
-  are logged and **get no reply**.
+  are logged and **get no reply**, except that a `panel-request` for an op the
+  child doesn't know or with params it can't read, and an `update-request` it
+  can't read, are answered `ok: false` with why.
 - Lines are dispatched as they arrive, without waiting for the previous one to
   finish: correlate replies by `corrId`, not by order.
 - Every outgoing object is stamped with `ts: Date.now()` (overwriting any `ts`
@@ -98,6 +100,7 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 | `request-workspace-file` | `path`, `corrId?` | → `workspace-file-snapshot` (≤5000 lines, with `truncated`, or `error`) |
 | `cancel-subagent` | `name`, `corrId?` | → `cancel-subagent-result`. The only way to stop a subagent that lives inside a child. |
 | `panel-request` | `op`, `params?`, `corrId?` | → `panel-response`, via the same `runPanelOp` the WebUI runs in-process (§3). |
+| `update-request` | `request`, `corrId` | → `update-response`. A switch's request from the install's host (`src/update/quiesce.ts`): `{op: 'quiesce', to, waitMs}` quiesces the child under the switch's reason for `to` and waits up to `waitMs` for its turns to end (a `waitMs` under a second still waits up to a second, agent-framework's least), answering whether it drained, which agents hold a turn and how many scripts run outside a turn, or, for a child whose quiesce was ended meanwhile, that it can't be counted; `{op: 'resume'}` ends the switch's quiesce, leaving any other. A request it can't read is answered `ok: false` with why. |
 
 ### 2.2 Child → parent
 
@@ -117,7 +120,7 @@ subject to the subscription filter: `inference:*`, `tool:*`, `usage:updated`,
 
 **Responses** — `snapshot`, `lessons-snapshot`, `workspace-mounts-snapshot`,
 `workspace-tree-snapshot`, `workspace-file-snapshot`, `cancel-subagent-result`,
-`panel-response` — each echo `corrId`; `command-output` lines answer a
+`panel-response`, `update-response` — each echo `corrId`; `command-output` lines answer a
 `command` and carry none. A response goes only to the connection that sent the
 request: if that connection closes or is replaced while the work is pending,
 the reply is dropped and `headless.log` records its type and the reason.
@@ -143,7 +146,7 @@ name it assigned.
 - `lifecycle` is one event type with a `phase` field — subscribe to
   `lifecycle`; `lifecycle:*` does **not** match it.
 
-The eight response types — the seven `corrId` replies and `command-output` —
+The nine response types — the eight `corrId` replies and `command-output` —
 bypass the filter, so a `command` gets its reply even under `[]`. `lifecycle`
 and `inference:speech` do **not**; a narrowed subscription must list them.
 
@@ -435,9 +438,9 @@ by a reducer.
   force-quits.
 - **WebUI `?scope=<child>`** — `/debug/context{,/makeup,/coverage,/curve,/preview,/maintenance}`,
   `/healthz`, `/quota` and `/media` accept `?scope=<child>` and are answered by
-  that child through `FleetModule.requestPanel()` (404 unknown child, 502 not
-  running, 504 after the 30 s default timeout; otherwise the child's own
-  status). WebSocket panel messages carry `scope` the same way, and the
+  that child through `FleetModule.requestPanel()` (404 unknown child, 502 for
+  a child it can't reach or whose connection closed before it answered, 504
+  after the 30 s default timeout; otherwise the child's own status). WebSocket panel messages carry `scope` the same way, and the
   sidebar's "inspecting:" selector drives it.
 
 ---

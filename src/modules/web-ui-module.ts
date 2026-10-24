@@ -805,8 +805,9 @@ export class WebUiModule implements Module {
 
     // Panel-op replies are consumed by FleetModule.requestPanel's own
     // corrId listener; they carry operator-panel payloads (settings, pins,
-    // health) and must never fan out as child-event telemetry.
-    if (eType === 'panel-response') return;
+    // health) and must never fan out as child-event telemetry. A switch's
+    // replies are requestSwitch's the same way.
+    if (eType === 'panel-response' || eType === 'update-response') return;
 
     // Roll up fleet-child session usage so the header total reflects every
     // process the operator is paying for, not just the parent. Children emit
@@ -1385,8 +1386,8 @@ export class WebUiModule implements Module {
   /** Forward one panel op to a fleet child and answer with its JSON, keeping
    *  only the strings `keptStrings` names when it's given (keepNamedStrings).
    *  Status mapping comes from the child (PanelError.status travels the
-   *  wire), with 502/504 supplied by requestPanel for unreachable/unresponsive
-   *  children. */
+   *  wire), with 502/504 supplied by requestPanel for a child it can't reach
+   *  or whose answer didn't come in time. */
   private async proxyPanelToChild(
     childName: string,
     op: string,

@@ -20,17 +20,13 @@
  * against a mistake, not a planned break.
  *
  * Who writes what:
- * - the host: the mark (Update, Go back), the record of who was cut off (a
- *   stop that couldn't wait for quiet), the fleet's children file, and the
+ * - the host: the mark (Update, Go back), the fleet's children file, and the
  *   commit, which moves `current`. It appends the journal's `commit` line
  *   after it moves `current`, never before, so a `commit` line always means
- *   `current` moved. It appends its `notes` line when it writes the
- *   residents' notes;
+ *   `current` moved;
  * - the launcher: every other journal line, the lock, the copy and its label,
  *   and what a restore sets aside;
  * - setup: the install record;
- * - whichever release starts next: the residents' notes from the record of who
- *   was cut off, which it then clears;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
@@ -85,8 +81,6 @@ export interface InstallPaths {
    *  (setAsideDir), kept, with a Go back's list of its places. A directory
    *  item's goes inside it (itemSetAsideDir). */
   setAside: string;
-  /** Who was cut off mid-turn (MidTurnRecord). Outside the data, so a restore can't take it back. */
-  midTurn: string;
 }
 
 export function installPaths(root: string): InstallPaths {
@@ -102,7 +96,6 @@ export function installPaths(root: string): InstallPaths {
     copyTmp: join(root, 'copy.tmp'),
     copyPrev: join(root, 'copy.prev'),
     setAside: join(root, 'set-aside'),
-    midTurn: join(root, 'midturn.json'),
   };
 }
 
@@ -202,12 +195,12 @@ export interface Mark {
 }
 
 export const JOURNAL_STEPS = [
-  'lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back', 'notes',
+  'lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back',
 ] as const;
 export type JournalStep = typeof JOURNAL_STEPS[number];
 
-/** One line of journal.jsonl, written by the launcher, except `commit` and
- *  `notes`, which the host writes. The journal carries each request from the
+/** One line of journal.jsonl, written by the launcher, except `commit`,
+ *  which the host writes. The journal carries each request from the
  *  first change to its data on, so the line that lets the data change goes in
  *  before it does: a switch's `trial-start` before its trial starts, and a Go
  *  back's `go-back` once the Go back has prepared and synced everything it
@@ -248,14 +241,25 @@ export interface LockRecord {
   at: string;
 }
 
-/** midturn.json, written by the host at a stop that couldn't wait for quiet. */
-export interface MidTurnRecord {
-  v: 1;
-  at: string;
-  from: string;
-  to: string;
-  /** The residents whose turn the stop cut off. */
-  residents: string[];
+/** The start of the reason a switch quiesces under. A quiesce's reason
+ *  outlives the process, so a start can tell the switch's own quiesce, which
+ *  it ends, from an operator's, which it leaves. Both releases of a switch
+ *  read it, so it never changes. A release that writes a switch's mark (its
+ *  Restart) ends this quiesce at its own start, and a switch goes only to
+ *  such a release: an Update's switch only to a release newer than the one
+ *  running, cut from the same line, and a Go back only to the release whose
+ *  Restart took the copy it goes back from. That is the rule a switch keeps,
+ *  so that none starts a release that leaves the quiesce in place. */
+export const SWITCH_QUIESCE_PREFIX = 'connectome-host update: ';
+
+/** The reason a switch to `to` quiesces under. */
+export function switchQuiesceReason(to: string): string {
+  return `${SWITCH_QUIESCE_PREFIX}stopping to switch to ${to}`;
+}
+
+/** Whether a quiesce's reason is a switch's. */
+export function isSwitchQuiesce(reason: string | undefined): boolean {
+  return typeof reason === 'string' && reason.startsWith(SWITCH_QUIESCE_PREFIX);
 }
 
 /** copy.json, the copy's label, written by the launcher as the last file of a

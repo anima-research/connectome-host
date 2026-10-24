@@ -235,8 +235,9 @@ Same server and auth; `agent` defaults to the recipe's root agent.
 
 `?scope=<child>` on any of these (and on `/debug/context`) forwards the request
 to that fleet child over the fleet IPC and returns its JSON: `404` if no fleet
-module is loaded or the child is unknown, `502` if the child isn't running or
-the send fails, `504` if it doesn't answer within 30 s.
+module is loaded or the child is unknown, `502` if the child isn't running,
+the send fails, or its connection closes before it answers (when the request
+may or may not have taken effect), `504` if it doesn't answer within 30 s.
 
 ## Troubleshooting
 
