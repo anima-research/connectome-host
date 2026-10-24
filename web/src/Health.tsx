@@ -24,6 +24,8 @@ import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@c
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt, type DebtTone } from '@conhost/web/compression-debt';
+import type { UpdateStatus, UpdateWay } from '@conhost/web/update-text';
+import { UpdateBlock } from './Update';
 
 /** One active operator alert, keyed `${agent}:${kind}`. `count` increments on
  *  every re-fire of the same key so a repeating klaxon reads as one row. */
@@ -95,6 +97,9 @@ export type LedgerRow = CallLedgerRow;
 export interface HealthSnapshot {
   at?: string;
   credential?: CredentialInfo;
+  /** The host's update (src/update/update.ts); absent before the host has
+   *  set it up. */
+  update?: UpdateStatus;
   contextComposition?: Record<string, ContextComposition>;
   /** The agents left out of contextComposition because their strategy keeps
    *  no render stats; absent when there are none. */
@@ -474,6 +479,11 @@ export function HealthPanel(props: {
   /** Credential state (live frame wins over the health poll) + action sink. */
   credential?: CredentialInfo | null;
   onCredentialAction?(actionId: string): void;
+  /** The local host's update, for the local scope only: a fleet child is
+   *  updated by its parent. */
+  update?: UpdateStatus | null;
+  /** Absent for an observer, who can't send commands. */
+  onUpdateWay?(way: UpdateWay): void;
 }) {
   const agents = () => props.health?.agents ?? [];
   // Each section is looked up by own key (healthEntry), so an agent whose name
@@ -542,6 +552,10 @@ export function HealthPanel(props: {
             <span>{props.health!.activeStreams!.length} streaming</span>
           </Show>
         </div>
+
+        <Show when={props.update}>
+          {(update) => <UpdateBlock status={update()} onWay={props.onUpdateWay} />}
+        </Show>
 
         <Show when={props.onCredentialAction}>
           <CredentialSection

@@ -81,7 +81,7 @@ afterEach(async () => {
 function startHost(
   dir: string, index: string, root: string | null, modules: Record<string, unknown> = {}, recipeFields: Record<string, unknown> = {},
   kid = false, more: Record<string, string> = {},
-): { host: ChildProcess; stderr: () => string; exit: Promise<number | null> } {
+): { host: ChildProcess; stderr: () => string; stdout: () => string; exit: Promise<number | null> } {
   const recipe = kid ? join(dir, 'kid.json') : join(dir, 'recipe.json');
   if (!kid) writeFileSync(recipe, JSON.stringify({ ...RECIPE, ...recipeFields, modules: { ...RECIPE.modules, ...modules } }));
   const env: Record<string, string | undefined> = {
@@ -95,14 +95,16 @@ function startHost(
     // cwd is the temp dir, so the default MCPL config path can't pick up a real one.
     cwd: dir,
     env,
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   hosts.push(host);
   let err = '';
+  let out = '';
   host.stderr!.on('data', (chunk) => { err += String(chunk); });
+  host.stdout!.on('data', (chunk) => { out += String(chunk); });
   // 'close' comes once the host has exited and its stderr is all read.
   const exit = new Promise<number | null>((done) => host.once('close', (code) => done(code)));
-  return { host, stderr: () => err, exit };
+  return { host, stderr: () => err, stdout: () => out, exit };
 }
 
 async function until(check: () => boolean, ms: number, label: string): Promise<void> {
@@ -441,6 +443,46 @@ describe("a host's update, on a real start", () => {
     expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update' });
     expect(hostModeRecord(join(dir, 'data'))).toMatchObject({ quiesced: true, reason: switchQuiesceReason('9.9.10') });
     expect(readCurrent(root)).toBe('9.9.9');
+  }, 60_000);
+
+  test("a Restart the Web UI sends, naming its release, brings the page the farewell, which the host sent before it exited 75", async () => {
+    const { dir, root, index } = install();
+    moveCurrent(root, '9.9.9');
+    const placed = join(root, 'releases', '9.9.10', 'node_modules', '@animalabs', 'connectome-host');
+    mkdirSync(join(placed, 'src', 'update'), { recursive: true });
+    writeFileSync(join(placed, 'package.json'), JSON.stringify({ version: '9.9.10' }));
+    writeFileSync(join(placed, 'src', 'index.ts'), '');
+    writeFileSync(join(placed, 'src', 'update', 'launcher.ts'), '');
+    const { stderr, stdout, exit } = startHost(dir, index, root, { webui: { host: '127.0.0.1', port: 0 } });
+    const listening = /\[webui\] listening on http:\/\/127\.0\.0\.1:(\d+)/;
+    await until(() => listening.test(stdout()), 30_000, `the host says where its Web UI listens (stderr: ${stderr().slice(-1500)})`);
+    const port = Number(listening.exec(stdout())![1]);
+    const frames: Array<{ type?: string; lines?: Array<{ text: string }> }> = [];
+    let closed = false;
+    const page = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    page.onmessage = (event) => { frames.push(JSON.parse(String(event.data))); };
+    page.onclose = () => { closed = true; };
+    await until(() => frames.some((frame) => frame.type === 'welcome'), 15_000, 'the Web UI welcomes the page');
+    // What the page's Restart sends: the release its dialog showed. One the
+    // host doesn't hold is refused, with the host still up.
+    page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.11' }));
+    const refusal = 'The release installed to restart onto is now 9.9.10, not 9.9.11, so nothing is restarting. Look at what ' +
+      '9.9.10 costs, then ask again.';
+    await until(() => frames.some((frame) => frame.lines?.some((line) => line.text === refusal)), 15_000, 'the refusal');
+    expect(closed).toBe(false);
+    page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.10' }));
+    expect(await exit).toBe(75);
+    // The page's socket closes with the host's process, which sends nothing
+    // once it has exited, so every frame the page has once it sees the close
+    // was sent before the exit.
+    await until(() => closed, 5_000, 'the page sees its connection close');
+    const answers = frames.filter((frame) => frame.type === 'command-result').flatMap((frame) => frame.lines!.map((l) => l.text));
+    expect(answers).toEqual([
+      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      refusal,
+      'Restarting unless refused: turns in progress get up to 2 min to end…',
+      "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
+    ]);
   }, 60_000);
 
   // Readline mode needs a terminal, which util-linux's `script` gives it; macOS's

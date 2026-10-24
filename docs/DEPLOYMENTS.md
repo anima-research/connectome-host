@@ -284,22 +284,40 @@ the arguments it gives the host now, and restart it. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
-**Updating.**
+**Updating.** Update, Restart with its three ways on when turns don't end,
+and Go back are each an `/update` command and, in the Web UI, a button.
+Restart's and Go back's buttons send the release their dialog showed
+(`/update restart 0.14.0`, `/update back keep 0.13.1`), and the host
+refuses, with nothing quiesced, when the release it would act on has
+become another since: read what the dialog shows for it, then ask again. Typed
+without a release, each acts on the one the host holds.
+A banner under the header shows the update's most pressing state, such as
+a restart waiting on turns, a release installed or one that's out, with
+its buttons. Health's update block shows what `/update` shows, with a
+button for each way open now, Go back's included. Restart and Go back say
+what they'll do before you confirm them. An observer whose grant holds
+`health` sees the words without the buttons, and without the errors and
+reasons unless the grant holds `ops` too.
 - **The notice:** the host reads npm's registry, or the one
   `npm_config_registry` names in its environment, at start and once a day.
   It doesn't read a registry set only in an `.npmrc`, and it sends no
   token, so for a mirror, set `npm_config_registry` in the service's
   environment; one that needs a token answers the read with its error,
   which `/update` shows. When a newer release
-  is out, its log, `/update` and the `update` section of `/healthz` say so,
+  is out, its log, `/update`, the Web UI's banner and the `update` section
+  of `/healthz` say so,
   with what the releases since cost: which are breaking, which write each
   resident's prompt cache in full once, and which say nothing of their cost.
   With `CONNECTOME_UPDATE_CHECK=0` or `NO_UPDATE_NOTIFIER` set, it doesn't read
   the registry on its own, and `/update` still does. A fleet child never does.
 - **Update,** `/update install`, installs the newest release that isn't
   deprecated beside the running one, with nothing stopped, once the Bun it
-  runs on meets that release's floor. Nothing else changes. When the floor
-  is above it, upgrade Bun and start the host again first.
+  runs on meets that release's floor. The running release runs on. Once the
+  install has switched release at least once, Update first removes each
+  release nothing needs any more, one installed earlier and not yet
+  restarted onto included. If the new install then fails, what it removed
+  isn't put back, and the next Update installs the newest release again.
+  When the floor is above it, upgrade Bun and start the host again first.
 - **Restart,** `/update restart`, quiesces the host and its fleet children,
   each as the web UI's Quiesce quiesces one host, and gives turns in
   progress two minutes to end. If some don't, it says who is still mid-turn,

@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -22,8 +22,11 @@ import {
   type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
 } from './Health';
 import { BranchPanel } from './Branches';
+import { UpdateBanner, UpdateDialog } from './Update';
+import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
+import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
   AGENT_TREE_SCOPES,
@@ -311,7 +314,8 @@ export function App() {
    *  without waiting for the next klaxon re-fire. */
   const [health, setHealth] = createSignal<HealthSnapshot | null>(null);
   const [healthErr, setHealthErr] = createSignal<string | null>(null);
-  let healthDenied = false;
+  /** The order of /healthz reads, and whether a refusal has stopped them. */
+  const healthReads = new HealthReads();
 
   const reconcileHealthAlerts = (h: HealthSnapshot): void => {
     applyCredentialState(h.credential, 'local');
@@ -329,26 +333,35 @@ export function App() {
    *  a host-level surface, and child agent names could collide with the
    *  parent's alert keys. */
   const loadHealth = async (force = false): Promise<void> => {
-    if (healthDenied && !force) return;
-    if (force) healthDenied = false;
+    if (healthReads.denied && !force) return;
+    if (force) healthReads.denied = false;
     const scope = panelScope();
     const frameSeqAtStart = credentialFrameSeq;
+    const asked = healthReads.ask();
     try {
       const res = await fetch(`/healthz${scopeQuery()}`, { credentials: 'same-origin' });
+      if (!passedGrant(res.status)) {
+        // A refusal stops the reads only while it's the newest word on the
+        // grant: one sent before an observer's cookie can answer after a
+        // later read that passed (healthReads).
+        if (healthReads.refused(asked)) setHealthErr('403');
+        return;
+      }
+      healthReads.answered(asked);
       if (!res.ok) {
-        if (res.status === 403 || res.status === 401) {
-          healthDenied = true;
-          setHealthErr('403');
-          return;
-        }
         const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
         throw new Error(healthReadError(res.status, body));
       }
       const h = (await res.json()) as HealthSnapshot;
       if (scope !== panelScope()) return; // scope switched mid-flight — stale
+      // A local read that answers after a later one went through is stale.
+      if (scope === 'local' && !healthReads.takeLocal(asked)) return;
       setHealth(h);
       setHealthErr(null);
-      if (scope === 'local') reconcileHealthAlerts(h);
+      if (scope === 'local') {
+        reconcileHealthAlerts(h);
+        takeLocalUpdate(h.update ?? null);
+      }
       // A child's health read is the freshest word on its credential: it
       // must replace the frame saved from an earlier child action, or the
       // Health tab keeps the old state and buttons (an API-key parent's own
@@ -365,13 +378,67 @@ export function App() {
    *  the strip's durable-state alerts (quarantine, inference-exhausted) are host-level
    *  and must keep reconciling regardless of what the Health tab inspects. */
   const reconcileLocalAlerts = async (): Promise<void> => {
-    if (healthDenied) return;
+    if (healthReads.denied) return;
+    const asked = healthReads.ask();
     try {
       const res = await fetch('/healthz', { credentials: 'same-origin' });
-      if (!res.ok) return; // auth handling lives on the loadHealth path
-      reconcileHealthAlerts((await res.json()) as HealthSnapshot);
+      if (passedGrant(res.status)) healthReads.answered(asked);
+      if (!res.ok) return; // a refusal is loadHealth's to count
+      const h = (await res.json()) as HealthSnapshot;
+      if (!healthReads.takeLocal(asked)) return;
+      reconcileHealthAlerts(h);
+      takeLocalUpdate(h.update ?? null);
     } catch { /* transient — next tick retries */ }
   };
+
+  // ---------------------------------------------------------------------------
+  // The host update (src/update/update.ts): the banner, Health's Update block
+  // and the Restart and Go back dialogs, all from the local /healthz, since a
+  // fleet child is updated by its parent and has no install of its own.
+  // ---------------------------------------------------------------------------
+
+  const [localUpdate, setLocalUpdate] = createSignal<UpdateStatus | null>(null);
+  /** The banner line the operator dismissed, until the banner says
+   *  something else (keptDismissal). */
+  const [dismissedUpdate, setDismissedUpdate] = createSignal<string | null>(null);
+  const [updateDialog, setUpdateDialog] = createSignal<'restart' | 'back' | null>(null);
+
+  /** Take what the newest local read of /healthz says of the update
+   *  (healthReads.takeLocal). An open dialog closes once its way isn't open. */
+  const takeLocalUpdate = (update: UpdateStatus | null): void => {
+    setLocalUpdate(update);
+    setDismissedUpdate((line) => keptDismissal(update, line));
+    setUpdateDialog((open) => dialogStill(open, update));
+  };
+
+  /** Send a way's `/update` command, as typed, naming the release the page
+   *  showed where the way is for one (commandFor). Its answer lands in the
+   *  conversation pane, shown as it's sent, and the page reads /healthz
+   *  again (onCommandAnswer). */
+  const sendUpdateWay = (way: UpdateWay): void => {
+    setUpdateDialog(null);
+    const status = localUpdate();
+    const command = status === null ? null : commandFor(way, status);
+    if (isObserver() || command === null) return;
+    setMainView('chat');
+    wire.send({ type: 'command', command });
+  };
+  /** A banner's or Health's button: Restart and Go back open their dialog. */
+  const runUpdateWay = (way: UpdateWay): void => {
+    if (way === 'restart' || way === 'back') setUpdateDialog(way);
+    else sendUpdateWay(way);
+  };
+  /** Read the local /healthz again, for the banner and Health. */
+  const refreshLocalUpdate = (): void => {
+    if (panelScope() === 'local') void loadHealth();
+    else void reconcileLocalAlerts();
+  };
+  // An observer's first read can come before its session cookie, which its
+  // acknowledgement sets, and be refused, which stops the poll: read again
+  // once it's acknowledged.
+  createEffect(on(() => wire.observerState(), (state) => {
+    if (state === 'observer') void loadHealth(true);
+  }));
 
   // ---------------------------------------------------------------------------
   // Branch panel — Chronicle lineage view, opened from the header branch chip.
@@ -1283,6 +1350,7 @@ export function App() {
         onSurgeryResult,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
+        onCommandAnswer: refreshLocalUpdate,
       });
     });
     onCleanup(() => {
@@ -1414,6 +1482,22 @@ export function App() {
         onDismiss={removeOpsAlert}
         onAction={(alert, id) => runCredentialAction(id, alert.scope ?? 'local')}
       />
+      <UpdateBanner
+        status={localUpdate()}
+        dismissed={dismissedUpdate()}
+        onDismiss={(line) => setDismissedUpdate(line)}
+        onWay={isObserver() ? undefined : runUpdateWay}
+      />
+      <Show when={!isObserver() && updateDialog() !== null && localUpdate()}>
+        {(status) => (
+          <UpdateDialog
+            kind={updateDialog()!}
+            status={status()}
+            onWay={sendUpdateWay}
+            onClose={() => setUpdateDialog(null)}
+          />
+        )}
+      </Show>
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
           <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
@@ -1737,6 +1821,8 @@ export function App() {
                 onRefresh={() => void loadHealth(true)}
                 credential={credentialForScope()}
                 onCredentialAction={(id) => runCredentialAction(id, panelScope())}
+                update={panelScope() === 'local' ? localUpdate() : null}
+                onUpdateWay={isObserver() ? undefined : runUpdateWay}
               />
             </Show>
           </div>
@@ -1819,6 +1905,9 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   /** An operator:action trace landed — refresh the log if it is on screen. */
   onOperatorAction: () => void;
+  /** A command answered: an `/update` answer can change what the update's
+   *  banner and block show, so the page reads /healthz again. */
+  onCommandAnswer: () => void;
 }
 
 /** True when a scope-stamped response belongs to a scope the operator has
@@ -1877,6 +1966,7 @@ function handleServerMessage(
         lines: msg.lines,
       });
       hooks.queueScroll();
+      hooks.onCommandAnswer();
       return;
     }
     case 'branch-changed':

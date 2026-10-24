@@ -69,6 +69,25 @@ describe("the page's wire", () => {
     expect(wire.observer()).toBeNull();
   });
 
+  test("an observer's session cookie is written before the page is told it's an observer", async () => {
+    // What reacts to the observer state reads /healthz at once (App.tsx), so
+    // the cookie it sends has to be there by then.
+    const doc = (globalThis as { document: { cookie: string } }).document;
+    const kept = Object.getOwnPropertyDescriptor(doc, 'cookie')!;
+    const statesAtWrite: string[] = [];
+    let wire: WireClient | null = null;
+    Object.defineProperty(doc, 'cookie', {
+      configurable: true,
+      get: () => '',
+      set: () => { statesAtWrite.push(wire?.observerState() ?? 'no wire yet'); },
+    });
+    cleanups.push(() => Object.defineProperty(doc, 'cookie', kept));
+    wire = connect({ scopes: ['health'] }).wire;
+    await until('the observer sign-in', () => wire!.observerState() === 'observer');
+    expect(statesAtWrite).toHaveLength(1);
+    expect(statesAtWrite[0]).not.toBe('observer');
+  });
+
   test('an observer that reconnects and is acked again stays an observer, with the new grant', async () => {
     const { host, wire } = connect({ scopes: ['messages'] });
     await until('the observer sign-in', () => wire.observerState() === 'observer');

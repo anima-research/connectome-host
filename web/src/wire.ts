@@ -117,10 +117,12 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
         void respondToAuthRequired(socket, parsed.host);
       } else if (parsed.type === 'observer-ack') {
         ackedThisSocket = true;
+        // Session cookie lets the SPA hit /debug/* and /healthz over HTTP.
+        // It's set before the state changes, since what reacts to the state
+        // runs inside that change and may read /healthz at once.
+        document.cookie = `fkm_obs=${parsed.sessionToken}; path=/; SameSite=Lax; max-age=${12 * 3600}`;
         setObserverState('observer');
         setObserver({ label: parsed.label, scopes: parsed.scopes });
-        // Session cookie lets the SPA hit /debug/* and /healthz over HTTP.
-        document.cookie = `fkm_obs=${parsed.sessionToken}; path=/; SameSite=Lax; max-age=${12 * 3600}`;
       } else if (parsed.type === 'welcome' && !ackedThisSocket) {
         // A full client's connection, whatever an earlier one on this page
         // signed in as: a password signed in from another tab since, say.

@@ -11,4 +11,9 @@
   last lines the new release kept of what it wrote. `/update back` goes back
   afterwards, keeping the newer data or restoring the copy taken at the
   switch, and `bun <root>/start.js --go-back` asks for that from a shell when
-  the new release keeps exiting.
+  the new release keeps exiting. The Web UI has a button for each `/update`
+  request: a banner under the header shows the update's most pressing state,
+  Health gains an update block with what `/update` shows, and Restart and Go
+  back each say what they'll do before you confirm them. Confirming one
+  sends the release it showed (`/update restart 0.14.0`, `/update back keep
+  0.13.1`), and the host refuses rather than switch to another.

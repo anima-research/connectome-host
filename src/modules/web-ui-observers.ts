@@ -938,8 +938,9 @@ export const CREDENTIAL_STRINGS = {
   lastAction: { id: true },
 } satisfies KeptStrings;
 
-/** The update section's strings that aren't failure text
- *  (src/update/update.ts): versions, times, and what a request and a host's
+/** The update section's strings that aren't failure text (its shape is
+ *  UpdateStatus, src/web/update-text.ts, which src/update/update.ts
+ *  builds): versions, times, and what a request and a host's
  *  state are named. A read's error, a refusal's reason, a failed trial's
  *  log, npm's deprecation message, the operator's quiesce reason and what
  *  couldn't be read are emptied. */

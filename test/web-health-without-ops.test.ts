@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { CREDENTIAL_STRINGS, HEALTH_STRINGS, QUOTA_STRINGS, keepNamedStrings, type KeptStrings } from '../src/modules/web-ui-observers.js';
-import type { UpdateStatus } from '../src/update/update.js';
+import { PAGE_WAYS, bannerOf, restartLines, statusLines, type UpdateStatus } from '../src/web/update-text.js';
 import { credentialNote, healthEntry, healthReadError, lastActionText, readFailureLine } from '../src/web/health-lookup.js';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt } from '../src/web/compression-debt.js';
 import type { CallLedgerRow, QuotaSnapshotData } from '../src/web/protocol.js';
@@ -197,5 +197,56 @@ describe("the update section, with health and without ops", () => {
   test("a read that failed keeps its time and empties its error", () => {
     const failed: UpdateStatus = { ...update, check: { at: '2026-10-22T12:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND registry.internal.example' } };
     expect(sent({ update: failed }, HEALTH_STRINGS).update.check).toEqual({ at: '2026-10-22T12:00:00.000Z', ok: false, error: '' });
+  });
+
+  // The page's words for what it was sent (src/web/update-text.ts): each fact
+  // the emptied text stood beside, with no clause for the text.
+  const secrets = ['E404', 'ECONNRESET', 'disk swap', 'sk-ant', 'journal.jsonl', 'store bug', 'ENOTFOUND', 'refused'];
+  const words = (status: UpdateStatus): string => {
+    const shown = sent({ update: status }, HEALTH_STRINGS).update;
+    return [...statusLines(shown, PAGE_WAYS), ...(restartLines(shown) ?? []), bannerOf(shown)?.line ?? ''].join('\n');
+  };
+
+  test("the page's words keep each fact, with no clause for the text emptied from it", () => {
+    const text = words(update);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    expect(text).toContain("- kid: can't be counted\n");
+    expect(text).toContain('This host is quiesced: a restart, or a Go back that keeps the data, keeps it so.');
+    expect(text).toContain("Last request: to 0.12.2, didn't go ahead at 2026-10-21T09:00:00.000Z.");
+    expect(text).toContain("1 part of this status couldn't be read.");
+    expect(text).toContain('This host is quiesced, and comes back quiesced.');
+    const failedInstall = words({ ...update, installing: null, restart: null });
+    expect(failedInstall).toContain('Installing 0.13.0 failed.');
+    expect(failedInstall).toContain("0.12.2 is installed, and the last request to switch to it didn't go ahead.");
+    expect(words({ ...update, check: { at: '2026-10-22T12:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND' } }))
+      .toContain('Reading the registry failed at 2026-10-22T12:00:00.000Z.\n');
+    const deprecated = { ...update.check!, candidate: null, costs: [] } as UpdateStatus['check'];
+    expect(words({ ...update, check: deprecated })).toContain('0.12.1 is deprecated on npm.\n');
+    // The banner's own line for it, with nothing else under way to show first.
+    const quiet: UpdateStatus = { ...update, check: deprecated, restart: null, installing: null, installed: null, lastInstall: null };
+    expect(bannerOf(sent({ update: quiet }, HEALTH_STRINGS).update)?.line).toBe('0.12.1 is deprecated on npm.');
+    // Emptied problems are counted, on a host that can update itself or not.
+    const two: UpdateStatus = { ...update, problems: ['the last switch: EACCES on journal.jsonl', 'the copy: ENOENT'] };
+    expect(words(two)).toContain("2 parts of this status couldn't be read.");
+    expect(words({ ...two, install: false })).toContain("2 parts of this status couldn't be read.");
+  });
+
+  test("a fallback's emptied lines read as none, pointing at the service's log", () => {
+    const fellBack: UpdateStatus = {
+      ...update, restart: null, installing: null,
+      lastSwitch: {
+        outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: '0.12.2 refused its store',
+        trialLog: ['Fatal error: Error: ANTHROPIC_API_KEY sk-ant-xyz was refused'],
+      },
+    };
+    const text = words(fellBack);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    expect(text).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:00:00.000Z, from a try of 0.12.2. ' +
+      "The service's log, or the terminal the host was started in, says more.");
+    // The banner and the Restart dialog point at the service's log too, since Health holds no lines for it.
+    expect(text).toContain("0.12.2 ended before its commit at its last try, so 0.12.1 came back. The service's log, or the " +
+      'terminal the host was started in, says more.');
+    expect(text).toContain("Its last try ended before its commit. The service's log, or the terminal the host was started " +
+      'in, says more.');
   });
 });

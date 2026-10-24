@@ -16,6 +16,7 @@
  * fallback.
  */
 import type { HostModeStatus } from '@animalabs/agent-framework';
+import type { HostQuiet } from '../web/update-text.js';
 import { isSwitchQuiesce, switchQuiesceReason } from './contract.js';
 
 /** What the switch's quiesce uses of a framework. Its status's
@@ -42,13 +43,6 @@ export interface SwitchFleet {
 /** A request the install's host makes of a fleet child (answerSwitchRequest):
  *  quiesce under the switch's reason for `to`, or end the switch's quiesce. */
 export type SwitchRequest = { op: 'quiesce'; to: string; waitMs: number } | { op: 'resume' };
-
-/** One host's state after the quiesce: `host` is "this host" or the child's
- *  name. A host that can't be counted, such as a child that didn't answer or
- *  a host serving again, says why. */
-export type HostQuiet =
-  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number }
-  | { host: string; answered: false; why: string };
 
 /** What quiesceForSwitch found: drained when every host answered drained. */
 export interface SwitchQuiet {

@@ -729,6 +729,7 @@ endpoints are covered in [`docs/webui-deployment.md`](docs/webui-deployment.md).
 - Live surgery: roll back to a message, suppress messages, quiesce/resume the host; every action is recorded in an operator log ([`docs/webui-live-surgery.md`](docs/webui-live-surgery.md))
 - Header branch chip opens the Chronicle branch lineage tree (checkout from the UI)
 - Ops alerts (compression quarantine, refusal streaks, inference-exhausted) render as persistent banner rows
+- The host update: a banner says when a newer release is out and what it costs, Update and Restart are buttons in the banner and in Health, and Go back is one in Health ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md))
 - Usage panel: per-agent costs and a billing-grade call ledger with cache verdicts; quota windows on subscriptions
 - `/healthz` (health JSON for doctor/fleet tooling), `/quota`, `/curve` (compression-curve visualization), `/debug/context/*` ([`docs/debug-context-api.md`](docs/debug-context-api.md)), `/debug/tool-classes` — authenticated like the rest of the surface, and answerable by a fleet child with `?scope=<child>`
 - `/debug/retrieval/view` — operator-only per-run lesson selection viewer (see `docs/retrieval-traces.md`)
@@ -774,7 +775,7 @@ headless socket.
 | `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
-| `/update [install\|restart [wait\|now\|resume]\|back [keep\|restore]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
+| `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
 `/branchto`, `/newtopic`) are refused while a turn is in flight.
