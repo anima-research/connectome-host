@@ -23,6 +23,7 @@
 import { readFileSync, renameSync, statSync, lstatSync, realpathSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createPublicKey, verify as cryptoVerify, randomBytes } from 'node:crypto';
+import { parseHandWrittenJson } from '../hand-written-json.js';
 
 /** Scope = event-family mask. See docs/observability.md §4. */
 export const OBSERVER_SCOPES = ['health', 'ops', 'messages', 'tools', 'thinking', 'debug'] as const;
@@ -137,7 +138,7 @@ export function readObserversFile(path: string): ObserversFileRead {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseHandWrittenJson(text);
   } catch (err) {
     // Only a syntax error can be a save read halfway. A parse that gives out
     // on a value nested too deep means the file can't be checked.
@@ -704,6 +705,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'gate:debounce-delivered': OPS,
   'gate:config-reloaded': OPS,
   'gate:decision': OPS,
+  'gate:wake-line-omitted': OPS,
   'mcpl:push-event-rejected': OPS,
   'mcpl:channel-incoming-rejected': OPS,
   'mcpl:empty-content-dropped': OPS,
@@ -936,6 +938,22 @@ export const CREDENTIAL_STRINGS = {
   lastAction: { id: true },
 } satisfies KeptStrings;
 
+/** The update section's strings that aren't failure text
+ *  (src/update/update.ts): versions, times, and what a request and a host's
+ *  state are named. A read's error, a refusal's reason, a failed trial's
+ *  log, npm's deprecation message, the operator's quiesce reason and what
+ *  couldn't be read are emptied. */
+export const UPDATE_STRINGS = {
+  running: true,
+  check: { at: true, candidate: true, costs: { version: true }, bunFloorUnmet: true },
+  installing: true,
+  lastInstall: { version: true, at: true },
+  installed: true,
+  goBack: { to: true, since: true },
+  restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
+  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
+} satisfies KeptStrings;
+
 /** `/healthz`'s strings that aren't failure text: agent-framework's
  *  healthSnapshot, and what buildHealthSnapshot adds. */
 export const HEALTH_STRINGS: KeptStrings = {
@@ -959,13 +977,26 @@ export const HEALTH_STRINGS: KeptStrings = {
     },
   },
   compressionDebt: { '*': { state: true, failure: true, mergeQuarantineKeys: true, mergeHeldIds: true } },
+  // A load-repair report holds no summary text: its strings are names, ids,
+  // reasons and times. Its branch is left out: welcome hides branch names
+  // without the messages scope, since a checkpoint's restore names its branch
+  // after the checkpoint, and this spec is what an observer without ops gets.
+  loadRepair: {
+    '*': {
+      namespace: true,
+      stateId: true,
+      dropped: { id: true, reason: true, sourceRange: { first: true, last: true, firstAt: true, lastAt: true } },
+    },
+  },
   contextComposition: {
     '*': { planVsActual: { solver: true, ceiling: true, foldDiff: { runs: { firstChunkId: true, lastChunkId: true } } } },
   },
+  contextCompositionNotKept: true,
   runtimeSettings: {
     '*': { sameRoundThinkTextPolicy: true, sameRoundThinkTextPolicySource: true, transition: true, transitionReason: true },
   },
   callLedger: LEDGER_STRINGS,
+  update: UPDATE_STRINGS,
 };
 
 /** `/quota`'s strings that aren't failure text: all but a read's `error`. */

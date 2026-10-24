@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { INSTALL_ROOT_ENV, installPaths, readJournal, releaseDir, writeJsonAtomic, type Mark } from '../src/update/contract.js';
+import {
+  INSTALL_ROOT_ENV, appendJournal, installPaths, moveCurrent, readJournal, readRecord, releaseDir, writeJsonAtomic, type Mark,
+} from '../src/update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST } from '../src/update/launcher.js';
 import { ENTRY_POINT, setup } from '../src/update/setup.js';
 
@@ -113,6 +115,45 @@ describe('a start, end to end', () => {
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(readFileSync(marker, 'utf-8'))).toMatchObject({ version: '0.11.0', pid: run.pid });
     expect(readJournal(root).map((l) => `${l.step} ${l.outcome}`)).toEqual(['copy ok', 'trial-start ok']);
+  });
+
+  test("after a committed switch each start names the shell's Go back, which asks the next start for it, and that start goes back", () => {
+    hostPackage(join(releaseDir(root, '0.11.0'), RELEASE_HOST), '0.11.0');
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', at: '2026-10-20T00:00:00Z', to: '0.11.0', why: 'update' } satisfies Mark);
+    // A trial's start names no Go back: the shell's would be refused while a trial is under way.
+    const trial = start();
+    expect(trial.exitCode).toBe(0);
+    expect(trial.stderr).not.toContain('--go-back');
+    // The stand-in host doesn't commit, so the test does as the real one would.
+    moveCurrent(root, '0.11.0');
+    appendJournal(root, { at: '2026-10-20T00:01:00Z', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+    const named = start();
+    expect(named.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(marker, 'utf-8')).version).toBe('0.11.0');
+    expect(named.stderr).toContain(`[update] Going back to 0.10.2 is offered, with the copy of its data taken `);
+    expect(named.stderr).toContain(`\`bun ${join(root, ENTRY_POINT)} --go-back\` asks the next start to go back`);
+
+    rmSync(marker);
+    const asked = start('--go-back', '--keep-data');
+    expect(asked.exitCode).toBe(0);
+    expect(asked.stderr).toContain('[update] The next start goes back to 0.10.2, keeping the newer data.');
+    expect(existsSync(marker)).toBe(false);
+    expect(readRecord<Mark>(installPaths(root).mark, 'mark')).toMatchObject({ to: '0.10.2', why: 'go-back', keepData: true });
+    expect(existsSync(installPaths(root).lock)).toBe(false);
+
+    const back = start();
+    expect(back.exitCode).toBe(0);
+    expect(back.stderr).not.toContain('Going back to');
+    expect(JSON.parse(readFileSync(marker, 'utf-8')).version).toBe('0.10.2');
+    expect(readJournal(root).map((l) => `${l.step} ${l.outcome}`).slice(-2)).toEqual(['go-back ok', 'trial-start ok']);
+  });
+
+  test('--go-back with no Go back offered asks for nothing, and starts nothing', () => {
+    const run = start('--go-back');
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain('[update] Nothing was asked for: no Go back is offered: 0.10.2 runs');
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
   });
 
   test('a release whose host is missing: says so, tagged, exits 1, and nothing started', () => {

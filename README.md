@@ -178,6 +178,26 @@ See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, and `docs/hybrid-prose-routing.md` for the
 full semantics of each mode.
 
+`agent.autoContinue` (off when omitted) keeps an agent going until it says
+it's done: a turn the model ends itself, with prose or with nothing, is
+followed by another turn straight away instead of a pause until the next
+event. The run stops when the agent calls `skip_reply` (or another tool that
+ends the turn), ends on a `>>skip_reply` / `>>>skip_reply` envelope, or has
+continued `maxConsecutive` times in a row (default 3, 1 to 20). Each next turn
+reads a short `[continue]` row naming `skip_reply` as the way to stop, with
+the count once the cap is near, and speaks in the same locus. Every
+continuation is a full inference, and in `locus` mode its prose is published,
+so keep the cap low. Ephemeral subagents don't inherit it: their streams run
+with it off, and a fork's or spawn's orientation lists `auto-continue` beside
+the parent's. It takes effect only with the agent-framework release that adds
+`AgentConfig.autoContinue` (agent-framework#744); with an earlier one, as this
+host's dependency is until it moves, the key validates but turns don't
+continue. See Agent Framework's `docs/auto-continue.md`.
+
+```json
+{ "agent": { "autoContinue": { "maxConsecutive": 3 } } }
+```
+
 ### Recipe loading
 
 | Command | Behavior |
@@ -778,6 +798,7 @@ headless socket.
 | `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
+| `/update [install\|restart [wait\|now\|resume]\|back [keep\|restore]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
 `/branchto`, `/newtopic`) are refused while a turn is in flight.

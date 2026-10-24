@@ -16,15 +16,21 @@ const VERSION = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
 
 export function bunFloorWarning(engines: unknown, bun: string | undefined, hostVersion: string | undefined): string | null {
   const declared = (engines as { bun?: unknown } | null | undefined)?.bun;
+  return bunBelowFloor(declared, bun) === true ? warning((declared as string).trim(), bun!, hostVersion) : null;
+}
+
+/** Whether `bun` is below the floor `declared` (an `engines.bun`), by the
+ *  rule above: null when either can't be read in that form. Update reads a
+ *  release's floor this way before installing it (src/update/update.ts). */
+export function bunBelowFloor(declared: unknown, bun: string | undefined): boolean | null {
   const floor = typeof declared === 'string' ? FLOOR.exec(declared) : null;
   const running = VERSION.exec(bun ?? '');
   if (!floor || !running) return null;
   for (let i = 1; i <= 3; i++) {
     const diff = Number(running[i]) - Number(floor[i]);
-    if (diff > 0) return null;
-    if (diff < 0) return warning(floor[0].trim(), bun!, hostVersion);
+    if (diff !== 0) return diff < 0;
   }
-  return running[4] ? warning(floor[0].trim(), bun!, hostVersion) : null;
+  return Boolean(running[4]);
 }
 
 function warning(floor: string, bun: string, hostVersion: string | undefined): string {

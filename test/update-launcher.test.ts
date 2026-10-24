@@ -20,8 +20,9 @@ import {
   moveCurrent, readJournal, readRecord, setAsideDir, writeJsonAtomic, type CopyLabel, type InstallRecord, type Mark,
 } from '../src/update/contract.js';
 import {
-  CHILDREN_WAIT_MS, HOST_ENTRY, LAUNCHER, dataItems, decide, itemStagingDir, linuxMountPoints, machineMountPoints,
-  machineOps, macMountPoints, type LauncherOps,
+  CHILDREN_WAIT_MS, GO_BACK_LOCK_WAIT_MS, HOST_ENTRY, KEEP_DATA_FLAG, LAUNCHER, LockHeld, dataItems, decide,
+  goBackFromShell, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
+  macMountPoints, shellWord, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
 
@@ -424,18 +425,18 @@ describe('a switch', () => {
     } },
   ];
   for (const r of refusals) {
-    test(`refused for ${r.name}: the data, the copy and the mark stay, and the release current names starts`, async () => {
+    test(`refused for ${r.name}: the data and the copy stay, the mark goes, and the release current names starts`, async () => {
       mark({ to: '0.11.0', why: 'update' });
       r.arrange();
       const before = read(installPaths(root).mark);
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
       expect(steps()).toEqual([`${r.step} refused ${JSON.parse(before).id}`]);
-      expect(read(installPaths(root).mark)).toBe(before);
+      expect(existsSync(installPaths(root).mark)).toBe(false);
       expect(store()).toBe('A wrote this');
       expect(existsSync(installPaths(root).copy)).toBe(false);
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toMatch(r.says);
-      expect(said).toContain(`removing ${installPaths(root).mark} drops it`);
+      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with /update restart.');
       expect(said).not.toContain('..');
     });
   }
@@ -464,13 +465,12 @@ describe('a switch', () => {
     expect(store()).toBe('A wrote this');
   });
 
-  test('refused when a check fails: the data, the copy and the mark stay, and the release current names starts', async () => {
+  test('refused when a check fails: the data and the copy stay, the mark goes, and the release current names starts', async () => {
     mark({ to: '0.11.0', why: 'update' });
-    const before = read(installPaths(root).mark);
     const o: LauncherOps = { ...ops(), freeBytes: () => { throw new Error('statfs failed'); } };
     expect(await decide(root, o)).toEqual({ release: '0.10.2', trial: false });
     expect(steps()).toEqual(['copy failed m1']);
-    expect(read(installPaths(root).mark)).toBe(before);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
     expect(existsSync(installPaths(root).copy)).toBe(false);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('checking it failed: statfs failed');
   });
@@ -568,7 +568,9 @@ describe('a switch', () => {
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
     expect(steps()).toEqual(['children-check refused m1']);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain("isn't JSON");
+    expect(existsSync(installPaths(root).mark)).toBe(false);
     rmSync(childrenFilePath(data));
+    mark({ to: '0.11.0', why: 'update' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: true });
     writeFileSync(childrenFilePath(data), 'not json');
     await expect(decide(root, ops())).rejects.toThrow(/ended before its commit, and it can't go on: The fleet's children file at .* isn't JSON.*repair it, or, with nothing it lists/);
@@ -756,6 +758,8 @@ describe('a switch', () => {
     }
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(`${kid} can't be read, written and searched`);
     reports = [];
+    // A refused request is dropped, so it is asked for again.
+    mark({ to: '0.11.0', why: 'update' });
     const ro = readOnlyFilesystem([data]);
     try {
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
@@ -915,6 +919,7 @@ describe('a switch', () => {
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
     expect(reports.find((l) => l.includes("didn't go ahead"))).toMatch(/needs .* GiB there, for a copy of the data and room to restore it/);
     free = need;
+    mark({ to: '0.11.0', why: 'update' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: true });
   });
 
@@ -966,7 +971,7 @@ describe('a switch', () => {
     expect(existsSync(copyPrev)).toBe(false);
   });
 
-  test("a copy that fails, and whose unfinished copy can't be removed: both are said, the mark stands, and the next start removes it", async () => {
+  test("a copy that fails, and whose unfinished copy can't be removed: both are said, the mark goes, and the next start removes it", async () => {
     await committedSwitch();
     release('0.12.0');
     mark({ id: 'm2', to: '0.12.0', why: 'update' });
@@ -989,14 +994,13 @@ describe('a switch', () => {
     expect(reports.find((l) => l.includes('Removing a copy a switch left unfinished'))).toContain('a later start tries again');
     expect(reports.at(-1)).toMatch(/the copy failed/);
     expect(existsSync(installPaths(root).copyTmp)).toBe(true);
-    expect(existsSync(installPaths(root).mark)).toBe(true);
-    rmSync(installPaths(root).mark);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
     reports = [];
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
     expect(existsSync(installPaths(root).copyTmp)).toBe(false);
   });
 
-  test('a copy that fails: the copy before it stays whole, the mark stands, and nothing of the new one stays', async () => {
+  test('a copy that fails: the copy before it stays whole, the mark goes, and nothing of the new one stays', async () => {
     await committedSwitch();
     release('0.12.0');
     mark({ id: 'm2', to: '0.12.0', why: 'update' });
@@ -1007,7 +1011,7 @@ describe('a switch', () => {
     expect(reports.at(-1)).toMatch(/the copy failed/);
     expect(lastCopy(root)).toMatchObject({ from: '0.10.2', mark: 'm1' });
     expect(existsSync(installPaths(root).copyTmp)).toBe(false);
-    expect(existsSync(installPaths(root).mark)).toBe(true);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
   });
 
   test('a start that finds the last copy moved aside and the new one not in place puts the last one back', async () => {
@@ -1285,6 +1289,8 @@ describe('a Go back', () => {
     expect(steps().slice(-1)).toEqual(['go-back failed g1']);
     expect(existsSync(kid)).toBe(false);
     expect(existsSync(setAsideDir(root, 'g1'))).toBe(false);
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     // Once it can, the Go back makes the place and fills it from the copy,
     // after its line: nothing is made before it.
     let madeByLine: boolean | null = null;
@@ -1481,6 +1487,7 @@ describe('a Go back', () => {
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
     expect(steps().at(-1)).toBe('go-back refused g1');
     expect(reports.find((l) => l.includes("didn't go ahead"))).toMatch(/0\.9\.0 isn't installed here/);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
   });
 
   test("a Go back refuses a file place that is a link now, and one it would take away that is a mount", async () => {
@@ -1503,6 +1510,8 @@ describe('a Go back', () => {
     symlinkSync(join(dir, 'nowhere.json'), statePath);
     writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] } satisfies InstallRecord);
     reports = [];
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(`${statePath} is a link now`);
     rmSync(statePath);
@@ -1513,6 +1522,7 @@ describe('a Go back', () => {
     writeFileSync(agent, '{"agent":1}');
     mounts = [agent];
     reports = [];
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(`${agent} is a mount, which a Go back can't take away`);
   });
@@ -1556,6 +1566,8 @@ describe('a Go back', () => {
     expect(steps().at(-1)).toBe('go-back refused g1');
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(`an earlier attempt's preparation under mark g1 is still at ${setAsideDir(root, 'g1')}`);
     rmSync(setAsideDir(root, 'g1'), { recursive: true });
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
   });
 
@@ -1674,6 +1686,8 @@ describe('a Go back', () => {
     expect(read(settings)).toBe('{"b":2}');
     // Its owner gives itself write for the write, so the same file it owns goes ahead.
     chmodSync(settings, 0o444);
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     expect(read(settings)).toBe('{"a":1}');
   });
@@ -1740,6 +1754,8 @@ describe('a Go back', () => {
     expect(read(agent)).toBe('{"agent":1}');
     // CAP_FOWNER takes it away whatever its owners, so the same Go back goes ahead holding it.
     reports = [];
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     await owned({ under: [work], others: [work, agent], sticky: [work], caps: FOWNER }, async () => {
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     });
@@ -1754,6 +1770,7 @@ describe('a Go back', () => {
     mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     for (const [self, caps] of [[4242, null], [4242, ''], [0, NO_CAPS]] as const) {
       reports = [];
+      mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
       await owned({ self, under: [work], others: [work, agent], sticky: [work], caps }, async () => {
         expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
       });
@@ -1761,6 +1778,7 @@ describe('a Go back', () => {
     }
     // Root, where /proc/self/status says no CapEff, goes ahead.
     reports = [];
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     await owned({ self: 0, under: [work], others: [work, agent], sticky: [work], caps: '' }, async () => {
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     });
@@ -1809,6 +1827,8 @@ describe('a Go back', () => {
     expect(store()).toBe('B wrote this');
     // The entries it owns move whatever the bit.
     reports = [];
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     await owned({ under: [data], others: [data], sticky: [data], caps: NO_CAPS }, async () => {
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     });
@@ -1831,6 +1851,8 @@ describe('a Go back', () => {
     expect(store()).toBe('B wrote this');
     // One it owns gets owner write for the move, so the same Go back goes ahead.
     reports = [];
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     await owned({ under: [data], unwritable: [sessions], caps: NO_CAPS }, async () => {
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     });
@@ -1901,7 +1923,7 @@ describe('a Go back', () => {
       });
       expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(says());
       expect(lastCopy(root)).toBe(null);
-      expect(existsSync(installPaths(root).mark)).toBe(true);
+      expect(existsSync(installPaths(root).mark)).toBe(false);
     });
   }
 
@@ -1972,6 +1994,8 @@ describe('a Go back', () => {
       expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(`${settings} is on a read-only filesystem, and the Go back would change it`);
       // The older content is already there: nothing to write.
       writeFileSync(settings, '{"a":1}');
+      // A refused request is dropped, so it is asked for again.
+      mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
       expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     } finally {
       ro.mockRestore();
@@ -2081,6 +2105,8 @@ describe('a Go back', () => {
     expect(read(join(stateDir, 'other.json'))).toBe('newer');
     // Its remedy: taken out of extraState, the Go back restores the copy's file.
     writeJsonAtomic(installPaths(root).install, { v: 1, dataDir: data, extraState: [] } satisfies InstallRecord);
+    // A refused request is dropped, so it is asked for again.
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
     expect(read(join(stateDir, 'config.json'))).toBe('{"a":1}');
   });
@@ -2121,6 +2147,7 @@ describe('a Go back', () => {
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: false });
     expect(reports.find((l) => l.includes("didn't go ahead"))).toMatch(/what the Go back stages and keeps, and what it and its fallback would write/);
     free = need;
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
   });
 
@@ -2391,5 +2418,247 @@ describe('leftovers', () => {
     }
     expect(existsSync(itemStagingDir(data, 'stale'))).toBe(true);
     expect(reports.find((l) => l.includes('under mark stale kept stays where it is'))).toContain('EACCES');
+  });
+});
+
+describe('a refused request', () => {
+  test("whose mark can't be removed says the next start tries it again", async () => {
+    mark({ to: '0.11.0', why: 'update' });
+    free = 1024;
+    const realRm = fs.rmSync;
+    const rm = spyOn(fs, 'rmSync').mockImplementation(((path: fs.PathLike, options?: fs.RmOptions) => {
+      if (String(path) === installPaths(root).mark) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      return realRm(path, options);
+    }) as typeof fs.rmSync);
+    try {
+      expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
+    } finally {
+      rm.mockRestore();
+    }
+    expect(existsSync(installPaths(root).mark)).toBe(true);
+    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(
+      `Its mark couldn't be removed (EACCES), so the next start tries it again: remove ${installPaths(root).mark} to drop it.`);
+  });
+
+  test("whose removal can't be synced says a power cut could bring the mark back", async () => {
+    mark({ to: '0.11.0', why: 'update' });
+    free = 1024;
+    const realOpen = fs.openSync;
+    let failed = false;
+    const open = spyOn(fs, 'openSync').mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+      if (!failed && String(path) === root && !existsSync(installPaths(root).mark)) {
+        failed = true;
+        throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      }
+      return (realOpen as (...args: unknown[]) => number)(path, ...rest);
+    }) as typeof fs.openSync);
+    try {
+      expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
+    } finally {
+      open.mockRestore();
+    }
+    expect(failed).toBe(true);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
+    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('The request is dropped: once what refused it has ' +
+      'cleared, ask again with /update restart. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
+      'for the next start to try the request once more.');
+  });
+
+  test('a refused Go back names the ways to ask for one again', async () => {
+    await committedSwitch();
+    mark({ to: '0.10.2', why: 'go-back' });
+    free = 1024;
+    await decide(root, ops());
+    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(
+      'once what refused it has cleared, ask again with /update back, or `--go-back` from a shell.');
+  });
+});
+
+describe('the lock', () => {
+  test('a stale lock another start takes first is put back, and this start finds it held', () => {
+    const { lock } = installPaths(root);
+    writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    let raced = false;
+    const racing: LauncherOps = {
+      ...ops(),
+      pidAlive: (pid) => {
+        if (pid === 4242 && !raced) {
+          // Between this start's read and its takeover, another takes the lock.
+          raced = true;
+          rmSync(lock);
+          writeJsonAtomic(lock, { v: 1, pid: 5151, bootId: boot, at: '2026-10-24T00:00:00Z' });
+          alive.add(5151);
+          return false;
+        }
+        return alive.has(pid);
+      },
+    };
+    expect(() => takeLock(root, racing)).toThrow(LockHeld);
+    expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(5151);
+    expect(readdirSync(dirname(lock)).filter((name) => name.includes('.stale'))).toEqual([]);
+  });
+
+  test('a stale lock another start took first under the same number, and one another removed first, are told apart', () => {
+    const { lock } = installPaths(root);
+    // The other start's number is the stale holder's own, reused; its time isn't.
+    writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    let raced = false;
+    const reused: LauncherOps = {
+      ...ops(),
+      pidAlive: (pid) => {
+        if (pid === 4242 && !raced) {
+          raced = true;
+          rmSync(lock);
+          writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-24T00:00:00Z' });
+          return false;
+        }
+        return raced && pid === 4242;
+      },
+    };
+    expect(() => takeLock(root, reused)).toThrow(LockHeld);
+    expect(readRecord<{ v: 1; at: string }>(lock, 'lock')?.at).toBe('2026-10-24T00:00:00Z');
+    // Removed by another start between this start's read and its takeover: this start takes it.
+    writeJsonAtomic(lock, { v: 1, pid: 4343, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    const removed: LauncherOps = { ...ops(), pidAlive: (pid) => { if (pid === 4343) rmSync(lock, { force: true }); return false; } };
+    takeLock(root, removed);
+    expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(process.pid);
+    expect(readdirSync(dirname(lock)).filter((name) => name.includes('.stale'))).toEqual([]);
+  });
+
+  test('a stale lock found alone is taken over', () => {
+    const { lock } = installPaths(root);
+    writeJsonAtomic(lock, { v: 1, pid: 4242, bootId: boot, at: '2026-10-20T00:00:00Z' });
+    takeLock(root, ops());
+    expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(process.pid);
+    expect(readdirSync(dirname(lock)).filter((name) => name.includes('.stale'))).toEqual([]);
+  });
+});
+
+describe('a Go back from a shell', () => {
+  const lockOf = (pid: number) => writeJsonAtomic(installPaths(root).lock, { v: 1, pid, bootId: boot, at: '2026-10-20T00:00:00Z' });
+
+  test("is offered while the copy holds another installed release's data, and each start's line names the command", async () => {
+    expect(goBackOffer(root, '0.10.2')).toBeNull();
+    await committedSwitch();
+    const offer = goBackOffer(root, '0.11.0');
+    expect(offer).toEqual({ to: '0.10.2', since: lastCopy(root)!.at });
+    expect(goBackOffer(root, '0.10.2')).toBeNull();
+    expect(goBackLine(root, offer!)).toContain(`\`bun ${join(root, 'start.js')} --go-back\` asks the next start to go back`);
+    rmSync(join(root, 'releases', '0.10.2'), { recursive: true });
+    expect(goBackOffer(root, '0.11.0')).toBeNull();
+  });
+
+  test("names a copy whose label gives no time, and quotes a root the shell would split", async () => {
+    await committedSwitch();
+    const label = JSON.parse(readFileSync(copyLabelPath(installPaths(root).copy), 'utf-8')) as Record<string, unknown>;
+    delete label.at;
+    writeJsonAtomic(copyLabelPath(installPaths(root).copy), label);
+    expect(goBackOffer(root, '0.11.0')).toEqual({ to: '0.10.2', since: "at a time its label doesn't say" });
+    expect(shellWord('/srv/connectome/start.js')).toBe('/srv/connectome/start.js');
+    expect(shellWord('/srv/my install/start.js')).toBe("'/srv/my install/start.js'");
+    expect(shellWord("/srv/it's/start.js")).toBe("'/srv/it'\\''s/start.js'");
+    expect(goBackLine('/srv/my install', { to: '0.10.2', since: 'then' })).toContain("`bun '/srv/my install/start.js' --go-back`");
+  });
+
+  test('waits for the lock a running host holds, then asks for nothing after a minute', async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    expect(goBackFromShell(root, [], ops())).toBe(1);
+    expect(slept).toBe(GO_BACK_LOCK_WAIT_MS);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
+    expect(readRecord<{ v: 1; pid: number }>(installPaths(root).lock, 'lock')?.pid).toBe(4242);
+    expect(reports[0]).toContain("Waiting up to 60 s for this install's host to give up its lock");
+    expect(reports.at(-1)).toMatch(/^\[update\] Nothing was asked for: this install's lock has been held for the last 60 s\. Another start .* holds its lock .*`\/update back`/);
+    expect(reports.at(-1)).toEndWith('Otherwise stop the service, run this again, and start the service.');
+  });
+
+  test('takes the lock a host that keeps exiting gives up, writes the mark, gives the lock up, and the next start goes back', async () => {
+    await committedSwitch();
+    lockOf(4242);
+    alive.add(4242);
+    const exiting: LauncherOps = { ...ops(), sleep: (ms) => { clock += ms; slept += ms; alive.delete(4242); } };
+    expect(goBackFromShell(root, [KEEP_DATA_FLAG], exiting)).toBe(0);
+    expect(readRecord<Mark>(installPaths(root).mark, 'mark')).toMatchObject({ v: 1, to: '0.10.2', why: 'go-back', keepData: true });
+    expect(existsSync(installPaths(root).lock)).toBe(false);
+    expect(reports.at(-1)).toMatch(/^\[update\] The next start goes back to 0\.10\.2, keeping the newer data\. Start the service/);
+    expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: true });
+    expect(store()).toBe('B wrote this');
+  });
+
+  test('restores the copy without --keep-data, and replaces a mark that stood', async () => {
+    await committedSwitch();
+    release('0.12.0');
+    mark({ id: 'm9', to: '0.12.0', why: 'update' });
+    expect(goBackFromShell(root, [], ops())).toBe(0);
+    const written = readRecord<Mark>(installPaths(root).mark, 'mark')!;
+    expect(written).toMatchObject({ to: '0.10.2', why: 'go-back' });
+    expect(written.keepData).toBeUndefined();
+    expect(written.id).not.toBe('m9');
+    expect(reports.at(-1)).toContain('restoring the copy of its data taken');
+    expect(reports.at(-1)).toContain('This replaces the request to 0.12.0 that stood');
+    // A standing mark this release can't read is replaced too, and named so.
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: '../x', at: '2026-10-20T00:00:00Z', to: '0.12.0', why: 'update' });
+    expect(goBackFromShell(root, [], ops())).toBe(0);
+    expect(reports.at(-1)).toContain("This replaces the request to a release this release can't read that stood");
+  });
+
+  test("names a failed sync of the mark it wrote, which still stands", async () => {
+    await committedSwitch();
+    // The directory's sync fails, after the rename has put the mark in place.
+    const rename = fs.renameSync;
+    const fsync = fs.fsyncSync;
+    let renamed = false;
+    const spies = [
+      spyOn(fs, 'renameSync').mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+        rename(from, to);
+        if (String(to) === installPaths(root).mark) renamed = true;
+      }),
+      spyOn(fs, 'fsyncSync').mockImplementation((fd: number) => {
+        if (renamed && fs.fstatSync(fd).isDirectory()) {
+          renamed = false;
+          throw new Error('EIO: i/o error, fsync');
+        }
+        fsync(fd);
+      }),
+    ];
+    let code;
+    try {
+      code = goBackFromShell(root, [], ops());
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(code).toBe(0);
+    expect(readRecord<Mark>(installPaths(root).mark, 'mark')).toMatchObject({ to: '0.10.2', why: 'go-back' });
+    expect(reports.at(-1)).toEndWith('The request is written, though syncing it to the disk failed (EIO: i/o error, fsync), ' +
+      'so a power cut could still undo it.');
+  });
+
+  test("asks for nothing at once when the lock can't be taken for any reason but a running holder", () => {
+    const gone = join(dir, 'no-such-root');
+    expect(goBackFromShell(gone, [], ops())).toBe(1);
+    expect(slept).toBe(0);
+    expect(reports).toEqual([expect.stringMatching(/^\[update\] Nothing was asked for: .*ENOENT/)]);
+  });
+
+  test('asks for nothing with no Go back offered, with a request under way, or given anything but --keep-data', async () => {
+    expect(goBackFromShell(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toContain('no Go back is offered: 0.10.2 runs');
+    expect(goBackFromShell(root, ['--now'], ops())).toBe(2);
+    expect(reports.at(-1)).toContain('--go-back takes only --keep-data, and was given --now');
+    mark({ to: '0.11.0', why: 'update' });
+    expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: true });
+    expect(goBackFromShell(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toContain('the request to 0.11.0 is under way');
+    expect(existsSync(installPaths(root).lock)).toBe(false);
+  });
+
+  test('asks for nothing while a Go back is under way', async () => {
+    await committedSwitch();
+    appendJournal(root, { at: '2026-10-21T00:00:00Z', step: 'go-back', from: '0.11.0', to: '0.10.2', outcome: 'ok', mark: 'm7' });
+    expect(goBackFromShell(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toContain('the request to 0.10.2 is under way');
+    expect(existsSync(installPaths(root).mark)).toBe(false);
   });
 });

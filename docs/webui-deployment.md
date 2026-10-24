@@ -250,10 +250,11 @@ emitted if the agent were activated right now** — the compiled messages,
 system prompt, model config, and filtered tool set. Useful for inspecting
 exactly what the model would see.
 
-**Transparent by default.** The endpoint runs no inference, writes no
-messages to Chronicle, and contacts no external MCPL server. It does run the
-same context compile the agent's next turn would, which can persist fold
-state and queue demanded summaries (details in the reference below). The cost
+**Transparent by default.** The endpoint runs no inference of its own, writes no
+messages to Chronicle, and contacts no external MCPL server. It compiles the
+context as the agent's next turn would, but dry, so it commits nothing of that
+compile's beyond releasing a compression hold whose deadline has passed
+(details in the reference below). The cost
 is that it omits the *dynamically-gathered* injections (lessons / retrieval /
 MCPL context), because gathering those is not transparent.
 

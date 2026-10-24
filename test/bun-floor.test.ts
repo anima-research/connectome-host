@@ -3,11 +3,23 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { bunFloorWarning } from '../src/bun-floor.js';
+import { bunBelowFloor, bunFloorWarning } from '../src/bun-floor.js';
 import { HOST_PACKAGE_JSON, checkBunFloor } from '../src/bun-floor-check.js';
 
 const engines = { node: '>=22.12.0', bun: '>=1.4.3' };
 const warned = (bun: string) => bunFloorWarning(engines, bun, '0.10.2') !== null;
+
+describe("whether a Bun is below a release's floor, as Update reads it", () => {
+  test('is true below it, false at or above it, and null for a floor or a Bun it can\'t read', () => {
+    expect(bunBelowFloor('>=1.4.3', '1.4.2')).toBe(true);
+    expect(bunBelowFloor('>=1.4.3', '1.4.3-canary.1')).toBe(true);
+    expect(bunBelowFloor('>=1.4.3', '1.4.3')).toBe(false);
+    expect(bunBelowFloor('>=1.4.3', '1.5.0-canary.1')).toBe(false);
+    expect(bunBelowFloor('^1.4.3', '1.0.0')).toBeNull();
+    expect(bunBelowFloor(null, '1.0.0')).toBeNull();
+    expect(bunBelowFloor('>=1.4.3', undefined)).toBeNull();
+  });
+});
 
 describe('the start-up warning for a Bun below the floor', () => {
   test('a Bun below the floor is named, with the floor and who acts', () => {

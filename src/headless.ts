@@ -33,6 +33,8 @@ import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 import { takeRecipeWarnings } from './recipe.js';
 import { workspaceReadFields } from './workspace-read-result.js';
 import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
+import { RESTART_EXIT_CODE } from './update/contract.js';
+import { hostUpdate } from './update/update.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -205,6 +207,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     'workspace-file-snapshot',
     'cancel-subagent-result',
     'panel-response',
+    'update-response',
     'command-output',
   ]);
 
@@ -451,6 +454,16 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }
+      case 'update-request': {
+        const { answerSwitchRequest } = await import('./update/quiesce.js');
+        try {
+          const data = await answerSwitchRequest(app.framework, cmd.request);
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
+        } catch (error) {
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
       case 'cancel-subagent': {
         const mod = app.framework.getAllModules().find((m) => m.name === 'subagent') as
           | { cancelSubagent(name: string): boolean }
@@ -598,6 +611,12 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
   process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+  // An update's Restart stops here, exiting for the supervisor to start the
+  // host again through the install's launcher (src/update/update.ts).
+  hostUpdate.attachStop({
+    supervised: true,
+    stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },
+  });
 
   // ------------------------------------------------------------------
   // Synthetic wire events: lifecycle:idle (quiescence) + inference:speech

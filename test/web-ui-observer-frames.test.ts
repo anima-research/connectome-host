@@ -201,6 +201,21 @@ describe('what each client is sent', () => {
     for (const conn of [c.reader, c.interior]) expect(conn.framesOf('usage')).toEqual([]);
   });
 
+  test("a child's answers to the fleet's own requests, a panel's or a switch's, reach no client", async () => {
+    const c = await everyone();
+    const fleetEvents = host.module as unknown as { handleFleetEvent(name: string, event: unknown): void };
+    fleetEvents.handleFleetEvent('kid', { type: 'panel-response', corrId: 'panel-health-1', op: 'health', ok: true, data: {} });
+    fleetEvents.handleFleetEvent('kid', { type: 'update-response', corrId: 'update-quiesce-2', ok: true, data: { drained: false, activeTurnAgents: ['kid'] } });
+    fleetEvents.handleFleetEvent('kid', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' });
+    await host.fence(Object.values(c));
+    for (const conn of Object.values(c)) {
+      expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('update-response');
+      expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('panel-response');
+    }
+    // The event after them arrives, so the two were dropped rather than not yet sent.
+    expect(c.operator.framesOf('child-event').at(-1)).toEqual({ type: 'child-event', childName: 'kid', event: { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' } });
+  });
+
   test("the host's own traces reach an observer only as its scopes cover what each carries", async () => {
     const c = await everyone();
     const traces = [

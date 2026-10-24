@@ -685,6 +685,8 @@ describe('scope filters', () => {
     // The operator log's entry, as request-operator-log gives ops.
     expect(traceScopes({ type: 'operator:action' })).toEqual(['ops']);
     expect(traceScopes({ type: 'mcpl:server-closed' })).toEqual(['ops']);
+    // A batched wake run without its gate line, which agent-framework adds after 0.26.0.
+    expect(traceScopes({ type: 'gate:wake-line-omitted' })).toEqual(['ops']);
     expect(traceScopes({ type: 'mcpl:speech-routed' })).toEqual(['messages', 'ops']);
     for (const type of ['inference:published', 'inference:published_complete']) {
       expect(traceScopes({ type })).toEqual(['messages']);
@@ -867,7 +869,7 @@ describe('scope filters', () => {
     expect(keepNamedStrings('text', true)).toBe('text');
   });
 
-  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text", () => {
+  test("HEALTH_STRINGS and QUOTA_STRINGS keep every name, id, code and time /healthz and /quota hold, and empty only their failure text and a load repair's branch", () => {
     const text = 'the provider said: overloaded';
     const cost = {
       input: 1, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 1, total: 2, currency: 'USD', grade: 'billing', pricingVersion: 'p1',
@@ -930,10 +932,18 @@ describe('scope filters', () => {
           },
         },
       },
+      contextCompositionNotKept: ['passthrough'],
       runtimeSettings: {
         main: {
           contextBudgetTokens: 1000, effectiveContextBudgetTokens: 1000, tailTokens: 10, transitionPaceTokens: 10,
           sameRoundThinkTextPolicy: 'keep', sameRoundThinkTextPolicySource: 'default', transition: 'blocked', transitionReason: 'transition_pace_too_small',
+        },
+      },
+      loadRepair: {
+        main: {
+          namespace: 'agents/main', branch: 'restore-before-the-move-1792', stateId: 'agents/main/autobio:summaries', sequenceBefore: 7,
+          dropped: [{ id: 'L2-x', level: 2, tokens: 50, reason: 'names-missing', sourceRange: { first: 'm1', last: 'm9', firstAt: '2026-10-01T10:00:00.000Z', lastAt: null } }],
+          droppedTokens: 50, emptyDropped: 0,
         },
       },
       readFailures: { main: { contextComposition: text } },
@@ -949,6 +959,8 @@ describe('scope filters', () => {
     main.lastInference.lastError = '';
     expected.compressionDebt.main.error = '';
     expected.readFailures.main.contextComposition = '';
+    // Welcome hides branch names without the messages scope.
+    expected.loadRepair.main.branch = '';
     Object.assign(expected.callLedger.rows[0]!, { cause: '', error: '' });
     expected.credential.message = '';
     expected.credential.lastAction.message = '';

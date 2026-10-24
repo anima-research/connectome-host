@@ -189,6 +189,13 @@ describe('evacuator participant naming', () => {
     expect(changed.stderr).toContain('Changing revival participant from "Custom Import" to "Other"');
   });
 
+  test('a prior recipe an editor saved with a byte order mark is compared, not reported as unreadable', async () => {
+    const result = await runEvacuator([], { existingOutput: '\uFEFF' + JSON.stringify({ agent: { name: 'Custom Import' } }) });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('Changing revival participant from "Custom Import" to "Claude"');
+    expect(result.stderr).not.toContain('Could not read the existing output recipe participant');
+  });
+
   test('an unreadable prior recipe is reported before replacement', async () => {
     const result = await runEvacuator([], { existingOutput: '{broken' });
     expect(result.exitCode).toBe(0);

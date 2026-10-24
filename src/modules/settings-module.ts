@@ -10,9 +10,12 @@
  * was tool bloat for one boolean + number).
  *
  * The host's adapter wrapper (LoggingAnthropicAdapter) reads `getReasoning()`
- * on each call and injects `thinking: {type:'enabled', budget_tokens: N}` into
- * the outgoing Anthropic request when enabled — keeping the cross-cutting
- * "request mutator" plumbing out of every call site.
+ * on each call and injects `thinking: {type: 'adaptive', display}` into the
+ * outgoing Anthropic request when enabled, on a model that takes adaptive
+ * thinking (withReasoning) — keeping the cross-cutting "request mutator"
+ * plumbing out of every call site. On a streamed call to a model that
+ * returns its notes as thinking blocks, it then sends display 'updates'
+ * where the request would leave 'omitted' (withProgressNotes).
  *
  * Designed to be extensible: new domains add their own slice in
  * `SettingsState` + a few tools + a typed accessor. Bundled with the host;
@@ -41,6 +44,10 @@ export interface ReasoningSettings {
    * empty `thinking` field with only the encrypted signature. Models 4.7+
    * default to 'omitted' server-side — we default to 'summarized' to restore
    * the pre-4.7 behavior (visible reasoning in stores, webui, estimators).
+   * On the models modelReturnsNotesInThinking lists, a streamed call through
+   * the Anthropic adapter sends 'omitted' as 'updates', so the notes between
+   * tool calls come back as text while reasoning stays hidden
+   * (LoggingAnthropicAdapter.withProgressNotes).
    */
   display: 'summarized' | 'omitted';
   /**
@@ -138,7 +145,11 @@ export class SettingsModule implements Module {
           description:
             "How your thinking is returned: 'summarized' (a readable summary of your reasoning " +
             "is recorded alongside the signature) or 'omitted' (signature only, slightly faster " +
-            'first token; your reasoning is not visible to anyone, including you on replay).',
+            'first token; no readable summary is recorded). Either way, when a thinking block is ' +
+            'sent back to you, you get your full reasoning, not the summary: this changes only what ' +
+            'is recorded as readable text. On Fable 5/5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5, the ' +
+            "notes you write between tool calls come back as thinking blocks, so 'omitted' is sent " +
+            "as 'updates' there: your reasoning stays unrecorded, and those notes are kept as text.",
         },
         reasoning_effort: {
           type: 'string',

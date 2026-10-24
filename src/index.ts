@@ -78,6 +78,9 @@ import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
+import { hostUpdate, hostVersionOf } from './update/update.js';
+import { armTrialLog } from './update/trial-log.js';
+import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName } from './synesthete.js';
@@ -96,11 +99,12 @@ import {
   resolveProvider,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, recipeModel } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, recipeModel, autoContinueSupportWarning } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
+import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions, type ExtensionRegistry } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
@@ -686,6 +690,10 @@ agents: [agentConfig],
     }
   }
 
+  // agent.autoContinue only takes effect on a framework that has it.
+  const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
+  if (autoContinueWarning) console.warn(autoContinueWarning);
+
   // Compression-quarantine klaxon → the framework's ops-alert channel
   // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
   // re-fires this every alarm interval for as long as ANY span is
@@ -708,6 +716,18 @@ agents: [agentConfig],
         notify(alert.kind, agentName, alert.message, alert.data);
       });
     }
+
+    // A load whose repair dropped summaries holding text → the same channel,
+    // so the agent's keeper hears that its memory changed rather than the
+    // agent noticing first. context-manager hands this any reports from the
+    // loads `create` already ran, then each later one; /healthz reads the
+    // latest from the strategy itself (getLatestLoadRepairReport), and the
+    // Health tab reads /healthz.
+    // Duck-typed as the quarantine alarm is. A conversation fork's strategy
+    // gets no handler, as it gets no quarantine alarm: it opens a namespace
+    // no fork has used before, so its load almost never has anything to
+    // repair.
+    wireLoadRepairAlert(strategy, framework, agentName, storePath);
   }
 
   if (subagentModule) {
@@ -901,6 +921,15 @@ async function runPiped(app: AppContext) {
       const result = handleCommand(trimmed, app);
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
+      // A command's follow-up, such as /update's answer, as the TUI and
+      // headless mode show it.
+      if (result.asyncWork) {
+        try {
+          for (const l of (await result.asyncWork).lines) console.log(l.text);
+        } catch (error) {
+          console.error(`${trimmed.split(/\s/)[0]} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       if (result.branchChanged) {
         const ws = app.framework.getModule('workspace');
         if (ws && 'materializeMount' in ws) {
@@ -958,6 +987,11 @@ async function runPiped(app: AppContext) {
 
   // Interactive TTY readline (fallback if --no-tui is explicit on a TTY)
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+  // An update's Restart ends readline mode as /quit does, and the operator
+  // starts the host again (src/update/update.ts). The command's answer,
+  // printed first, says so.
+  let restarting = false;
+  hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
   console.log('connectome-host (readline mode). Type /help for commands.');
   rl.prompt();
   rl.on('line', async (line: string) => {
@@ -967,6 +1001,14 @@ async function runPiped(app: AppContext) {
   await new Promise<void>(r => rl.on('close', r));
   console.log('\nShutting down...');
   await app.framework.stop();
+  // WebUiModule.stop() leaves the Web UI's server up, and it would keep the
+  // process, and with it the install's lock, so a Restart ends it too, as
+  // the TUI's end does.
+  if (restarting) {
+    await stopWebUiServer().catch((error: unknown) => {
+      console.error(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1053,9 @@ async function main() {
   // started has to be one of that install's releases, or it refuses to start
   // (releaseHere).
   installHere = releaseHere();
+  // A release on trial keeps its last lines, for the release that falls back
+  // if it ends before its commit (src/update/trial-log.ts).
+  if (installHere !== null) armTrialLog(installHere);
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
 
@@ -1462,6 +1507,20 @@ async function main() {
   });
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
+  // Update, Restart and Go back reach whatever framework the host runs now,
+  // and a batch run doesn't read the registry (src/update/update.ts).
+  hostUpdate.configure({
+    here: installHere,
+    running: hostVersionOf(HOST_PACKAGE_JSON),
+    host: {
+      framework: () => app.framework,
+      fleet: () => {
+        const fleet = app.framework.getModule('fleet');
+        return fleet instanceof FleetModule ? fleet : null;
+      },
+    },
+  });
+  if (!(noTui && !process.stdin.isTTY)) hostUpdate.startChecks();
   getWebUiModule(framework)?.setApp(app);
   for (const [kind, message, data] of queuedAlerts.splice(0)) {
     (framework as unknown as { notifyOpsAlert?: (k: string, a: string, m: string, d?: Record<string, unknown>) => void })

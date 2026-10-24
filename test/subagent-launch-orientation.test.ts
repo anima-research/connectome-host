@@ -979,8 +979,13 @@ describe('each agent setting is read from its own field', () => {
       [{ clock: { intervalSeconds: 60, precision: 'minutes' } }, 'clock rows', 'every 1 minute'],
       [{ clock: { intervalSeconds: 90, precision: 'seconds' } }, 'clock rows', 'every 90 seconds'],
       [{ clock: { intervalSeconds: 1, precision: 'seconds' } }, 'clock rows', 'every 1 second'],
+      [{ autoContinue: { maxConsecutive: 3 } }, 'auto-continue', 'on (up to 3 in a row)'],
+      [{ autoContinue: { maxConsecutive: 1 } }, 'auto-continue', 'on (up to 1 in a row)'],
     ];
     expect(new Set(cases.map(([, name]) => name))).toStrictEqual(new Set(Object.keys(base)));
+    // An agent-framework release without Agent.autoContinue leaves the field
+    // out, which reads as off.
+    expect(base['auto-continue']).toBe('off');
     for (const [agent, name, value] of cases) {
       const moved = agentSettingsOf(agent);
       expect(moved[name]).toBe(value);

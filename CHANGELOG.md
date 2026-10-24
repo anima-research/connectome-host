@@ -6,6 +6,115 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.13.1 — 2026-10-24
+
+### Added
+
+- When loading an agent's store makes context-manager's load repair drop
+  summaries that held text, the host tells the agent's keeper
+  (context-manager#175). It sends a `memory-load-repair` ops alert, to
+  `failures.log`, the ops trace and `CONNECTOME_OPS_WEBHOOK`, that says
+  which spans of time changed and at what level, how much summary text left
+  what the agent is shown, that the repair removed summaries and not
+  messages, which show raw or under the summaries that remain until
+  compression covers them again, that a repair can't be told apart from
+  damage, how to read the old summaries back from a copy of the store, and
+  words the keeper could pass on to the agent. `/healthz` and the Web UI's
+  Health tab show each agent's latest such repair for the session; an
+  observer without the `ops` scope gets it without its branch name. The
+  store audit an update runs says each load repair it causes in the same
+  words, since the start that opens the store next finds nothing left to
+  repair, and a host on trial also sends each through the ops path, whether
+  or not its commit then holds. A conversation fork's load sends no alert,
+  as it sends no compression-quarantine alarm, though the Health tab shows a
+  fork's repair too.
+
+### Changed
+
+- **Operators:** connectome-host now requires `@animalabs/agent-framework`
+  ^0.26.1 (was ^0.26.0) and `@animalabs/context-manager` ^0.20.1 (was
+  ^0.20.0), and both lockfiles hold them. What operators and agents meet, in
+  brief; each package's notes give it in full:
+  - **A reference in a module's content reaches a script without its URI.**
+    In a module's result that reaches a script, an RFC-005 reference in its
+    content blocks arrives without its URI, a `disposition: "never"` one
+    included, as an MCPL peer's already did, since what a script prints comes
+    back to the model. A result's `structuredContent` still reaches a script
+    whole, as before.
+  - **No repeated admissions.** A coalesced MCPL message whose receipt the
+    host couldn't write is no longer admitted again each time its server
+    retries it. On `channels/incoming`, an admitted message whose receipt
+    couldn't be written or made durable now fails the whole request with a
+    -32000 error, where it answered that message `accepted: false`, and the
+    messages after it in the request aren't admitted until they're sent
+    again.
+  - **A turn waiting for its continuation is alive.** While a budget
+    restart's or a tool-result guard's continuation waits to start, which a
+    provider's stated wait can make long, the Web UI's host-mode quiesce
+    waits for it, and the host's stop ends the turn as `shutdown` with the
+    continuation dropped.
+  - **Load repairs are reported.** context-manager 0.20.1 is the first
+    release that reports a load's repair of an agent's summaries, which the
+    `memory-load-repair` alert needs before it can send anything (its own
+    entry says when it does).
+  - **Compression.** A compression request no longer recalls summaries that
+    start after the history it summarizes; a summary that straddles that
+    history still brings its later part. After `/newtopic`, a compression or
+    merge request for history from before it gets the head that history
+    followed, not the new topic's opening (a source-only request carries no
+    head, as before).
+
+### Fixed
+
+- The Web UI's Health view and Context page say why an agent has no context composition (connectome-host#425). Since context-manager 0.19.0, an agent's render stats come only from a live compile since its context was loaded (the host's start, or a session or branch switch), and never under a strategy that keeps none, such as `passthrough`. Until then the Health view hid the composition block and the Context page showed "loading…". Now they say "No live compile since its context was loaded." or "This agent's strategy keeps no composition." `/healthz` adds `contextCompositionNotKept`, the names of the agents whose strategy keeps none, left out when there are none; `contextComposition` is unchanged. `/debug/context/makeup` adds `statsKept` for every agent.
+- The Health view's `last inference:` line no longer says "failed" for good after one failure. It read a `completedAt` agent-framework never sets. It now says "failed", "started" (still running) or "ended", by the latest start, end and failure, and reads a failure in the latest start's own millisecond as that inference's. The `last error:` line above it shows only while the `last inference:` line says "failed", where it showed the last failure's error for good.
+- The Context page's exact count is labelled as the next request as a preview builds it, without what modules add at each turn, and counted by `count_tokens` for the model it names. Where it wasn't counted, the page says why. Its breakdown is labelled "last live compile".
+
+- A JSON file a person writes or edits by hand now loads when their editor
+  saved it with a leading UTF-8 byte order mark. That covers the recipe, the
+  MCPL servers file and the agent overlay, the Anthropic credentials file
+  (`ANTHROPIC_OAUTH_CREDENTIALS_FILE`) and the observer grants
+  (`observers.json`). The recipe and the credentials file failed to load
+  with a parse error at a character the editor doesn't show, and the
+  servers file and the overlay with "isn't valid JSON". A Web UI started on
+  such a grants file admitted no observer. Now the observers it lists get
+  the access it grants them, as with the same file without the mark. A
+  grants file re-saved with a mark while the host ran kept its earlier
+  grants, so a revocation or a shortened expiry saved that way didn't take
+  effect; it now does at the next check. A save into such a servers file
+  or overlay, which was refused, now keeps the file's other keys. A
+  credentials file that an editor re-saved with a mark while the host ran
+  kept only the token triple at the next rotation or pasted token, dropping
+  its other keys, such as Claude Code's `scopes`. It now keeps them. A file
+  the host writes back, a grant or revoke's included, is written without
+  the mark. The module opt-in audit (`scripts/audit-module-optins.ts`) and
+  the evacuator's check of the recipe it replaces read such a recipe too.
+- A recipe or an Anthropic credentials file that isn't valid JSON is now
+  refused without repeating the JSON parser's message, which can quote the
+  file's text; the refusal names the file, or a fetched recipe's URL.
+- Codex's `auth.json`, when it isn't valid JSON, is now refused without
+  the parser's error as its cause; a read error keeps its code.
+
+- A recipe whose `agent.refusalHandling` is `true`, a number other than 0, a
+  non-empty string or an array, or whose `refusalHandling.autoRewind` is set
+  to something other than a boolean or `null`, is now refused when it loads,
+  naming the key. Since agent-framework 0.22.3 such a recipe loaded and then
+  stopped the host at start-up with agent-framework's own error. Leaving it
+  out, `false`, `null`, `0` and `""` still mean no refusal handling.
+
+- A Web UI observer with the `ops` scope gets the `gate:wake-line-omitted`
+  trace that agent-framework adds after 0.26.0, as it gets the gate's other
+  traces. Without an entry in the observers' trace table, it would reach
+  full clients only.
+
+- A fleet child's peek in the TUI shows a turn that a tool ended, that was
+  stopped or that failed as a subagent's peek does, where it showed a dim
+  `· <event>` line. A turn agent-framework ended as a failure reads
+  `✗ turn ended: <error>`, with its error, where it read
+  `· inference:exhausted`; a stopped turn reads `✗ turn aborted: <reason>`,
+  and one a tool ended reads `── turn ended by a tool ──`. A completed turn
+  keeps its `─ inference completed ─` line.
+
 ## 0.13.0 — 2026-10-23
 
 ### Added

@@ -22,11 +22,27 @@ export function effectiveContextBudgetTokens(recipe: Recipe): number {
   return recipe.agent.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS;
 }
 
+/**
+ * A startup warning for a recipe that turns `agent.autoContinue` on while the
+ * installed agent-framework predates the setting (agent-framework#744): the
+ * key passes through, the framework builds the agent without it, and turns
+ * end as before with no other sign. `agent` is the built agent
+ * (framework.getAgent); a framework that supports the setting gives it
+ * `autoContinue`, resolved. Undefined when the setting is off or supported.
+ */
+export function autoContinueSupportWarning(recipe: Recipe, agent: object | undefined): string | undefined {
+  if (!recipe.agent.autoContinue || !agent) return undefined;
+  if ((agent as { autoContinue?: unknown }).autoContinue !== undefined) return undefined;
+  return '[agent-settings] agent.autoContinue is set, but the installed agent-framework predates it ' +
+    '(agent-framework#744): turns end as before, without continuing, until it is upgraded.';
+}
+
 export type FrameworkAgentConfig = AgentConfig & {
   // Forward recipe fields that newer Agent Framework releases understand
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  autoContinue?: Recipe['agent']['autoContinue'];
 };
 
 /**
@@ -149,6 +165,9 @@ export function buildFrameworkAgentConfig(
       : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
+      : {}),
+    ...(recipe.agent.autoContinue !== undefined
+      ? { autoContinue: recipe.agent.autoContinue }
       : {}),
     // Ten-minute clock rows unless the recipe names its own or turns them off (false).
     ...(recipe.agent.clock === false ? {} : { clock: recipe.agent.clock ?? { ...DEFAULT_RECIPE_CLOCK } }),

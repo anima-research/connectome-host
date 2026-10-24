@@ -4,14 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { startFramework } from '../src/start-framework.js';
-import { installPaths, moveCurrent, readCurrent, readJournal } from '../src/update/contract.js';
+import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason } from '../src/update/contract.js';
 
 type Servers = Array<{ id: string; connected: boolean }>;
 
 /** A framework as startFramework uses one: `order` records what it starts,
- *  and when its stop, which takes a moment, has finished, or how it fails. */
-function framework(order: string[], options: { fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true } = {}) {
+ *  when its stop or its resume, which each take a moment, has finished, how
+ *  either fails, and what it tells the operator. */
+function framework(order: string[], options: {
+  fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
+} = {}) {
+  let quiesced = options.quiesceReason !== undefined;
   return {
+    getHostModeStatus: () => ({ quiesced, reason: options.quiesceReason }),
+    resume: async () => {
+      await Bun.sleep(20);
+      if (options.resumeFails) throw new Error('resume refused: returning to service would OverBudget-wedge');
+      quiesced = false;
+      order.push('the quiesce ends');
+      return {};
+    },
+    notifyOps: (kind: string, agent: string, message: string) => { order.push(`the operator is told (${kind}, of ${agent}): ${message}`); },
     start: () => { options.atStart?.(); order.push('framework starts its agents'); },
     stop: async () => {
       await Bun.sleep(20);
@@ -34,6 +47,37 @@ describe('startFramework', () => {
   test("starts the framework's agents before its fleet launches any autoStart child", async () => {
     const order: string[] = [];
     await startFramework(framework(order, { fleet: watchedFleet(order) }), null);
+    expect(order).toEqual(['framework starts its agents', 'fleet launches its autoStart children']);
+  });
+
+  test("ends the switch's quiesce once framework.start() has run, before any child launches", async () => {
+    const order: string[] = [];
+    await startFramework(framework(order, { fleet: watchedFleet(order), quiesceReason: switchQuiesceReason('0.11.0') }), null);
+    expect(order).toEqual(['framework starts its agents', 'the quiesce ends', 'fleet launches its autoStart children']);
+  });
+
+  test("a resume agent-framework refuses leaves the host quiesced, tells the operator, and the children launch all the same", async () => {
+    const order: string[] = [];
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await startFramework(framework(order, {
+        fleet: watchedFleet(order), quiesceReason: switchQuiesceReason('0.11.0'), resumeFails: true,
+      }), null);
+    } finally {
+      errors.mockRestore();
+    }
+    expect(order).toEqual([
+      'framework starts its agents',
+      "the operator is told (update-quiesce-stays, of host): This host's switch quiesce didn't end: it stays quiesced, since " +
+        'agent-framework refused its resume (resume refused: returning to service would OverBudget-wedge); a later resume, ' +
+        'such as try later or the next start, can succeed once that is resolved',
+      'fleet launches its autoStart children',
+    ]);
+  });
+
+  test("leaves a quiesce that isn't the switch's, such as an operator's", async () => {
+    const order: string[] = [];
+    await startFramework(framework(order, { fleet: watchedFleet(order), quiesceReason: 'operator: maintenance' }), null);
     expect(order).toEqual(['framework starts its agents', 'fleet launches its autoStart children']);
   });
 

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ContractError, INSTALL_ROOT_ENV, appendJournal, installPaths, installRootFromEnv, moveCurrent, readCurrent, syncDir,
 } from './contract.js';
+import { disarmTrialLog } from './trial-log.js';
 
 /** This host's package root: the directory its src/ is in. */
 export const HOST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -172,6 +173,8 @@ export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { fro
       : `This host couldn't record ${release} as the release the install at ${root} runs on, so none of its ` +
         `agents started, and the next start goes back to ${from}: ${said(error)}`);
   }
+  // Committed: what this release writes from here isn't a trial's to keep.
+  disarmTrialLog();
   const at = (check.now ?? new Date()).toISOString();
   try {
     appendJournal(root, { at, step: 'commit', from, to: release, outcome: 'ok' });

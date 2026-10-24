@@ -19,8 +19,10 @@
 import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
 import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
+import { healthComposition, lastInferenceLine, latestInferenceError } from './composition-text';
 import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
+import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt, type DebtTone } from '@conhost/web/compression-debt';
 
 /** One active operator alert, keyed `${agent}:${kind}`. `count` increments on
@@ -71,7 +73,7 @@ export const CREDENTIAL_ALERT_KINDS = [
   'quota-spent', 'quota-unreadable', 'auth-expiring', 'auth-expired', 'auth-rejected', 'auth-login-required',
 ] as const;
 
-/** Rendered composition of the last compile — what was actually SENT. */
+/** Rendered composition of the agent's last live compile. */
 export interface ContextComposition {
   head?: { messages: number; tokens: number };
   tail?: { messages: number; tokens: number };
@@ -86,13 +88,17 @@ export type LedgerRow = CallLedgerRow;
 
 /** Shape of GET /healthz — framework healthSnapshot() plus the host's
  *  extensions: credential, the per-agent compressionQuarantine,
- *  compressionDebt, contextComposition and runtimeSettings, readFailures,
+ *  compressionDebt, contextComposition and runtimeSettings,
+ *  contextCompositionNotKept, readFailures,
  *  and callLedger. All fields optional and defensively read: health
  *  rendering must survive version skew. */
 export interface HealthSnapshot {
   at?: string;
   credential?: CredentialInfo;
   contextComposition?: Record<string, ContextComposition>;
+  /** The agents left out of contextComposition because their strategy keeps
+   *  no render stats; absent when there are none. */
+  contextCompositionNotKept?: string[];
   uptimeSec?: number;
   gate?: Record<string, unknown> | null;
   pendingRequests?: number;
@@ -103,7 +109,7 @@ export interface HealthSnapshot {
     consecutiveInferenceFailures?: number;
     lastInference?: {
       startedAt?: number;
-      completedAt?: number;
+      endedAt?: number;
       failedAt?: number;
       lastError?: string;
     } | null;
@@ -117,12 +123,16 @@ export interface HealthSnapshot {
   /** Each agent's quarantine status: records (`count`) and their keys, and the
    *  quarantined spans (`spans`) when context-manager lists them. */
   compressionQuarantine?: Record<string, { count?: number; keys?: string[]; spans?: unknown[] }>;
+  /** Each agent's latest load repair that dropped summaries holding text,
+   *  for the life of its strategy (getLatestLoadRepairReport); an agent with
+   *  none is absent. */
+  loadRepair?: Record<string, LoadRepairReport>;
 
   /** cm's single-authority debt reduction (getCompressionDebt) — the QUEUE
 
    * of closed-but-uncompressed chunks. Distinct from contextComposition:
 
-   * composition says what the last compile RENDERED (summaries L1 = 0 there
+   * composition says what the last live compile RENDERED (summaries L1 = 0 there
 
    * means "no L1 tokens in the window", often healthy consolidation);
 
@@ -377,7 +387,7 @@ function CompositionBlock(props: { c: ContextComposition }) {
   return (
     <div>
       <div class="text-[10px] uppercase tracking-wider text-neutral-600 mb-1">
-        context composition (last compile)
+        context composition (last live compile)
       </div>
       <table class="w-full font-mono text-[10px]">
         <tbody>
@@ -469,10 +479,20 @@ export function HealthPanel(props: {
   // Each section is looked up by own key (healthEntry), so an agent whose name
   // is also an Object.prototype member reads as missing when it is.
   const quarantine = (name: string) => healthEntry(props.health?.compressionQuarantine, name);
+  const loadRepair = (name: string) => healthEntry(props.health?.loadRepair, name);
   const debt = (name: string) => healthEntry(props.health?.compressionDebt, name);
   const settings = (name: string) => healthEntry(props.health?.runtimeSettings, name);
-  const composition = (name: string) => healthEntry(props.health?.contextComposition, name);
   const failures = (name: string) => healthEntry(props.health?.readFailures, name);
+  // An agent's composition block, or the line in its place, if any.
+  const compositionView = (name: string) => healthComposition(props.health, name);
+  const compositionStats = (name: string) => {
+    const view = compositionView(name);
+    return view && 'stats' in view ? view.stats : undefined;
+  };
+  const compositionLine = (name: string) => {
+    const view = compositionView(name);
+    return view && 'line' in view ? view.line : undefined;
+  };
 
   const statusTone = (status?: string): string => {
     switch (status) {
@@ -542,18 +562,15 @@ export function HealthPanel(props: {
               </Show>
             </div>
 
-            <Show when={a.lastInference?.lastError}>
-              <div class="text-rose-300/80 truncate" title={a.lastInference!.lastError}>
-                last error: {a.lastInference!.lastError}
-              </div>
+            <Show when={latestInferenceError(a.lastInference)}>
+              {(error) => (
+                <div class="text-rose-300/80 truncate" title={error()}>
+                  last error: {error()}
+                </div>
+              )}
             </Show>
-            <Show when={a.lastInference?.completedAt || a.lastInference?.failedAt}>
-              <div class="text-neutral-500">
-                last inference:{' '}
-                {a.lastInference?.completedAt
-                  ? `ok ${fmtAgo(a.lastInference.completedAt)}`
-                  : `failed ${fmtAgo(a.lastInference!.failedAt!)}`}
-              </div>
+            <Show when={lastInferenceLine(a.lastInference, fmtAgo)}>
+              {(line) => <div class="text-neutral-500">{line()}</div>}
             </Show>
 
             <Show when={quarantine(a.name) && (quarantine(a.name)!.count ?? 0) > 0}>
@@ -566,6 +583,20 @@ export function HealthPanel(props: {
                   </div>
                 </Show>
               </div>
+            </Show>
+
+            {/* A load repair that dropped summaries holding text: memory that
+                changed at a load, kept here for this session with no dismiss,
+                since loads happen at starts, when nobody is usually watching. */}
+            <Show when={loadRepair(a.name)}>
+              {(r) => (
+                <div class="text-amber-200 bg-amber-950/30 border border-amber-900/50 rounded px-2 py-1 break-words space-y-1">
+                  <div>⚠ Memory load repair (latest this session)</div>
+                  <For each={loadRepairLines(r(), a.name)}>
+                    {(line) => <div>{line}</div>}
+                  </For>
+                </div>
+              )}
             </Show>
 
             {/* A section this agent couldn't be read for is missing from the
@@ -648,10 +679,22 @@ export function HealthPanel(props: {
               )}
             </Show>
 
-            {/* What was actually SENT, and how it split. Composition is
-                in-process render stats (free); call stats come from the ledger
-                the client already holds. */}
-            <Show when={composition(a.name)}>
+            {/* How the last live compile split. Composition is in-process
+                render stats (free), which context-manager keeps only from a
+                live compile since the agent's context was loaded, and only
+                for a strategy that keeps them, so where there's none a line
+                says which; a read that failed is named above. Call stats
+                come from the ledger the client already holds. */}
+            <Show
+              when={compositionStats(a.name)}
+              fallback={
+                <Show when={compositionLine(a.name)}>
+                  {(line) => (
+                    <div class="border-t border-neutral-900 pt-1.5 text-[10px] text-neutral-500">{line()}</div>
+                  )}
+                </Show>
+              }
+            >
               {(c) => (
                 <div class="border-t border-neutral-900 pt-1.5">
                   <CompositionBlock c={c()} />

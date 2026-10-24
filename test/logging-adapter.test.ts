@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
-import { cacheLineageKey } from '@animalabs/membrane';
+import { cacheLineageKey, Membrane, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
 import type { ModuleContext } from '@animalabs/agent-framework';
@@ -128,6 +128,208 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
   test('never sends a level outside the known set, whatever the model', () => {
     expect(withEffort('minimal')).toBe(fable);
     expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+  });
+});
+
+// On Fable 5/5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5 the notes the model
+// writes between tool calls come back as signed thinking blocks, empty under
+// display 'omitted', the default. The host never leaves them empty there.
+describe('LoggingAnthropicAdapter.withProgressNotes', () => {
+  type WithProgressNotes = { withProgressNotes(r: ProviderRequest): ProviderRequest };
+  const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
+  const notes = (req: ProviderRequest) => (adapter as unknown as WithProgressNotes).withProgressNotes(req);
+  const thinkingOf = (req: ProviderRequest) => (req.extra as { thinking?: unknown } | undefined)?.thinking;
+  const opus55: ProviderRequest = { ...baseRequest, model: 'claude-opus-5-5' };
+
+  test.each([
+    'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5',
+    'anthropic.claude-opus-5-5', 'anthropic/claude-sonnet-5-5', 'claude-opus-5-5[1m]',
+    // Dated snapshots, in the forms the repo uses elsewhere.
+    'claude-opus-5-5-20260301', 'claude-sonnet-5-5-20260101', 'claude-fable-5-1-20261001', 'claude-opus-5-5@20260301',
+  ])('sends adaptive thinking with display updates to %s when no config would be sent', (model) => {
+    const req = { ...baseRequest, model };
+    expect(thinkingOf(notes(req))).toEqual({ type: 'adaptive', display: 'updates' });
+    expect((req as { extra?: unknown }).extra).toBeUndefined();
+  });
+
+  test.each([
+    'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5',
+    'claude-mythos-5', 'claude-fable-5-2', 'claude-opus-5-6', 'claude-opus-5-50',
+    // A version after the listed one is another model, not a snapshot of it.
+    'claude-fable-5-10', 'claude-fable-5-1-1', 'claude-mythos-5-12',
+  ])('leaves %s untouched (same reference)', (model) => {
+    const req = { ...baseRequest, model };
+    expect(notes(req)).toBe(req);
+  });
+
+  test("turns an explicit 'omitted', in extra or top-level, into 'updates', keeping the config's other fields", () => {
+    const viaExtra = { ...opus55, extra: { keep: 1, thinking: { type: 'adaptive', display: 'omitted' } } } as ProviderRequest;
+    const out = notes(viaExtra);
+    expect(thinkingOf(out)).toEqual({ type: 'adaptive', display: 'updates' });
+    expect((out.extra as Record<string, unknown>).keep).toBe(1);
+    const binding = { prefix_mismatch_behavior: 'drop_block' };
+    const topLevel = { ...opus55, thinking: { type: 'adaptive', display: 'omitted', block_binding: binding } } as ProviderRequest;
+    expect(thinkingOf(notes(topLevel))).toEqual({ type: 'adaptive', display: 'updates', block_binding: binding });
+    // A top-level config with no display is the default ('omitted') too.
+    const noDisplay = { ...opus55, thinking: { type: 'adaptive', block_binding: binding } } as ProviderRequest;
+    expect(thinkingOf(notes(noDisplay))).toEqual({ type: 'adaptive', block_binding: binding, display: 'updates' });
+  });
+
+  test('extra.thinking wins over request.thinking, as in the adapter', () => {
+    const req = {
+      ...opus55,
+      thinking: { type: 'adaptive', display: 'summarized' },
+      extra: { thinking: { type: 'adaptive', display: 'omitted' } },
+    } as ProviderRequest;
+    expect(thinkingOf(notes(req))).toEqual({ type: 'adaptive', display: 'updates' });
+  });
+
+  test("leaves 'summarized' and 'updates' alone: both return the notes", () => {
+    for (const display of ['summarized', 'updates']) {
+      const req = { ...opus55, extra: { thinking: { type: 'adaptive', display } } } as ProviderRequest;
+      expect(notes(req)).toBe(req);
+    }
+  });
+
+  test("leaves a config of another type alone ('disabled', 'between_tools')", () => {
+    for (const type of ['disabled', 'between_tools']) {
+      const req = { ...baseRequest, model: 'claude-sonnet-5-5', extra: { thinking: { type } } } as ProviderRequest;
+      expect(notes(req)).toBe(req);
+    }
+  });
+
+  /** A real adapter whose SDK client records each streamed request's body and headers. */
+  const wireAdapter = (reasoning: () => { enabled: boolean; budgetTokens: number; display?: 'summarized' | 'omitted' }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const headers: Array<Record<string, string> | undefined> = [];
+    const live = new LoggingAnthropicAdapter({ apiKey: 'test', cacheKeepalive: { enabled: false } }, '/dev/null', reasoning);
+    (live as unknown as { client: unknown }).client = {
+      withOptions() { return this; },
+      messages: {
+        stream: async (body: Record<string, unknown>, opts?: { headers?: Record<string, string> }) => {
+          bodies.push(body);
+          headers.push(opts?.headers);
+          return {
+            controller: { abort() {} },
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'message_start', message: { model: body.model, usage: { input_tokens: 1 } } };
+              yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+              yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } };
+              yield { type: 'content_block_stop', index: 0 };
+              yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+            },
+          };
+        },
+      },
+    };
+    const send = (model: string) => live.stream(
+      { ...baseRequest, model, messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] } as ProviderRequest,
+      { onChunk: () => {} },
+    );
+    const betas = (i: number) => (headers[i]?.['anthropic-beta'] ?? '').split(',').filter(Boolean);
+    return { bodies, betas, send, live };
+  };
+
+  test('with reasoning off, the wire request still asks for updates, with the beta that needs (stream lane, through the real adapter)', async () => {
+    const wire = wireAdapter(disabled);
+    await wire.send('claude-opus-5-5');
+    await wire.send('claude-fable-5-1');
+    await wire.send('claude-opus-4-8');
+    // Every call reached the client, so the other model's omissions below aren't vacuous.
+    expect(wire.bodies).toHaveLength(3);
+    for (const i of [0, 1]) {
+      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+      // membrane >= 0.7.0 adds the beta 'updates' needs; without it the API refuses the value.
+      expect(wire.betas(i)).toContain('thinking-display-updates-2026-08-18');
+      // No binding controls were asked for, so none go, nor their beta.
+      expect(wire.betas(i)).not.toContain('thinking-binding-controls-2026-08-01');
+    }
+    // Another model gets neither.
+    expect(wire.bodies[2]?.thinking).toBeUndefined();
+    expect(wire.betas(2)).not.toContain('thinking-display-updates-2026-08-18');
+  });
+
+  test("with reasoning on, stream() applies the reasoning setting before the progress-note step", async () => {
+    // 'omitted' is turned into 'updates' only because withReasoning has run first.
+    const wire = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await wire.send('claude-opus-5-5');
+    await wire.send('claude-opus-4-8');
+    expect(wire.bodies).toHaveLength(2);
+    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.betas(0)).toContain('thinking-display-updates-2026-08-18');
+    // Elsewhere the chosen display goes as chosen.
+    expect(wire.bodies[1]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
+    // 'summarized' is left alone on the listed models, Fable's included: with
+    // reasoning on, the setting's config goes in `extra`, which membrane doesn't drop.
+    const summarized = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'summarized' as const }));
+    await summarized.send('claude-opus-5-5');
+    await summarized.send('claude-fable-5-1');
+    expect(summarized.bodies).toHaveLength(2);
+    for (const i of [0, 1]) {
+      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      expect(summarized.betas(i)).not.toContain('thinking-display-updates-2026-08-18');
+    }
+  });
+
+  test("through membrane, a recipe's 'summarized' goes as 'updates' wherever membrane sends no config for it, as chosen where it sends one, and the reasoning setting decides over it", async () => {
+    // membrane sends the Fable and Mythos family a thinking config only for
+    // binding controls or 'updates' (buildThinkingParam), and another model one
+    // only when the recipe's `enabled` is true. Where it sends none, the step
+    // adds 'updates' on the listed models. Mythos 5 isn't listed, so nothing
+    // goes there.
+    const recipeSend = (membrane: Membrane, model: string, enabled = true) => membrane.stream({
+      messages: [{ participant: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      config: { model, maxTokens: 64, thinking: { enabled, type: 'adaptive', display: 'summarized' } },
+    }, { onChunk: () => {} });
+    const updates = { type: 'adaptive', display: 'updates' };
+    const off = wireAdapter(disabled);
+    const viaOff = new Membrane(off.live, { formatter: new NativeFormatter() });
+    for (const model of ['claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1']) await recipeSend(viaOff, model);
+    await recipeSend(viaOff, 'claude-opus-5-5', false);
+    await recipeSend(viaOff, 'claude-opus-5-5');
+    await recipeSend(viaOff, 'claude-mythos-5');
+    expect(off.bodies).toHaveLength(6);
+    for (const i of [0, 1, 2, 3]) {
+      expect(off.bodies[i]?.thinking).toEqual(updates);
+      expect(off.betas(i)).toContain('thinking-display-updates-2026-08-18');
+    }
+    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(off.betas(4)).not.toContain('thinking-display-updates-2026-08-18');
+    expect(off.bodies[5]?.thinking).toBeUndefined();
+    // With reasoning on, the setting's display goes in place of the recipe's
+    // (on a model the step leaves alone, so only withReasoning acts).
+    const on = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await recipeSend(new Membrane(on.live, { formatter: new NativeFormatter() }), 'claude-opus-4-8');
+    expect(on.bodies).toHaveLength(1);
+    expect(on.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
+  });
+
+  test('complete() gets no progress-note step, and the reasoning setting still applies there', async () => {
+    const oneShot = (reasoning: () => { enabled: boolean; budgetTokens: number; display?: 'summarized' | 'omitted' }) => {
+      const bodies: Array<Record<string, unknown>> = [];
+      const live = new LoggingAnthropicAdapter({ apiKey: 'test', cacheKeepalive: { enabled: false } }, '/dev/null', reasoning);
+      (live as unknown as { client: unknown }).client = {
+        withOptions() { return this; },
+        messages: {
+          create: async (body: Record<string, unknown>) => {
+            bodies.push(body);
+            return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 1 } };
+          },
+        },
+      };
+      const send = () => live.complete({ ...opus55, messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] } as ProviderRequest);
+      return { bodies, send };
+    };
+    // With reasoning off, a one-shot call goes with no thinking config.
+    const off = oneShot(disabled);
+    await off.send();
+    expect(off.bodies).toHaveLength(1);
+    expect(off.bodies[0]?.thinking).toBeUndefined();
+    // With reasoning on, it carries the setting's config, 'omitted' left as chosen.
+    const on = oneShot(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
+    await on.send();
+    expect(on.bodies).toHaveLength(1);
+    expect(on.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
   });
 });
 

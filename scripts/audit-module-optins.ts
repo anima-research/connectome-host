@@ -36,6 +36,7 @@
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { parseHandWrittenJson } from '../src/hand-written-json.js';
 
 export const AUDITED_MODULES = ['subagents', 'lessons', 'retrieval'] as const;
 export type AuditedModule = (typeof AUDITED_MODULES)[number];
@@ -154,7 +155,9 @@ export function auditPaths(paths: string[]): { audits: RecipeAudit[]; unreadable
     seen.add(key);
     let raw: unknown;
     try {
-      raw = JSON.parse(readFileSync(file, 'utf-8'));
+      // A recipe an editor saved with a byte order mark is one the host
+      // loads, so it's audited too.
+      raw = parseHandWrittenJson(readFileSync(file, 'utf-8'));
     } catch {
       continue; // not JSON we can read — not our business to complain about
     }

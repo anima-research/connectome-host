@@ -3,7 +3,8 @@
  * while it is being built. The framework awaits every module's start() inside
  * AgentFramework.create(), before its own start() runs its agents, so a child
  * launched from the fleet's start() could have residents acting before the
- * parent's agents run. start() now only adopts living children, and the host
+ * parent's framework had started its agents. start() now only adopts living
+ * children, and the host
  * calls launchAutoStart() after framework.start() (src/start-framework.ts).
  */
 import { describe, test, expect, spyOn } from 'bun:test';

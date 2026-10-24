@@ -679,6 +679,11 @@ export function agentSettingsOf(agent: {
   toolWrapperProseGuard?: boolean;
   /** agent-framework's resolved `AgentConfig.clock` (`Agent.clock`). */
   clock?: { intervalSeconds: number; precision?: string } | undefined;
+  /** agent-framework's resolved `AgentConfig.autoContinue` (`Agent.autoContinue`,
+   *  agent-framework#744): the framework stores it resolved, `{ maxConsecutive }`
+   *  with the default filled in, never the recipe's raw `true` or `{}`.
+   *  Absent on releases without it, which read as off. */
+  autoContinue?: { maxConsecutive: number } | undefined;
   getRuntimeSettings?(): { sameRoundThinkTextPolicy?: string };
 }): AgentSettings {
   const onOff = (v: boolean | undefined) => (v ? 'on' : 'off');
@@ -696,6 +701,7 @@ export function agentSettingsOf(agent: {
     'tool-result guard': onOff(agent.toolResultGuard?.enabled),
     'tool-wrapper prose guard': onOff(agent.toolWrapperProseGuard),
     'clock rows': agent.clock ? clockRows(agent.clock) : 'off',
+    'auto-continue': agent.autoContinue ? `on (up to ${agent.autoContinue.maxConsecutive} in a row)` : 'off',
   };
 }
 
