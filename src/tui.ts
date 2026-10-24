@@ -48,6 +48,7 @@ import { handleCommand, resetBranchState } from './commands.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { takeRecipeWarnings } from './recipe.js';
 import { bunFloorNotice } from './bun-floor-check.js';
+import { hostUpdate } from './update/update.js';
 import { effectiveContextBudgetTokens } from './framework-agent-config.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
@@ -3097,6 +3098,16 @@ export async function runTui(app: AppContext): Promise<void> {
       rejectExit?.(error);
     });
   }
+
+  // An update's Restart stops the TUI as /quit does, and the operator starts
+  // the host again, since nothing restarts a TUI (src/update/update.ts). The
+  // stop waits a turn of the event loop, so the command's answer is drawn
+  // before the renderer goes, and the farewell goes to the terminal once
+  // the TUI has given it back.
+  hostUpdate.attachStop({
+    supervised: false,
+    stop: (_reason, farewell) => { setTimeout(() => { cleanup(); console.log(farewell); }, 0); },
+  });
 
   // The TUI ends with its renderer. OpenTUI destroys the renderer itself on
   // SIGTERM, SIGINT, SIGHUP and its other exit signals (the Web UI's own quit

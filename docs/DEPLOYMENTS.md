@@ -261,7 +261,96 @@ it, and what has to happen first. A pull doesn't stop for it. So:
 
 ## Updating an install
 
-An install of the published package (`npm install
+An install of the published package can update itself once it's set up: the
+host says when a newer release is out and what it costs, installs it beside
+the release it runs, and switches when you restart it, going back by itself
+if the new release fails before it starts its agents. Setting it up is one
+step by hand, after taking the release that brings it by hand as "By hand"
+below says. A clone updates by hand.
+
+**Setting it up, once.** In the directory the service runs the host in, with
+`DATA_DIR` as the service gives the host:
+
+```bash
+DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
+```
+
+It copies the install as the first release of an install root,
+`./connectome-host` unless `--root` names another, and writes the entry point
+`start.js` there. Give `--extra-state` for each place an MCPL server keeps its
+state outside the data directory, so each update copies it with the data.
+Then have the service start the host with `bun <root>/start.js`, followed by
+the arguments it gives the host now, and restart it. Setup says whether the
+service restarts the host when it exits with 75 and with 1, as a switch and
+its fallback need: systemd's `Restart=on-failure` does.
+
+**Updating.**
+- **The notice:** the host reads npm's registry, or the one
+  `npm_config_registry` names in its environment, at start and once a day.
+  It doesn't read a registry set only in an `.npmrc`, and it sends no
+  token, so for a mirror, set `npm_config_registry` in the service's
+  environment; one that needs a token answers the read with its error,
+  which `/update` shows. When a newer release
+  is out, its log, `/update` and the `update` section of `/healthz` say so,
+  with what the releases since cost: which are breaking, which write each
+  resident's prompt cache in full once, and which say nothing of their cost.
+  With `CONNECTOME_UPDATE_CHECK=0` or `NO_UPDATE_NOTIFIER` set, it doesn't read
+  the registry on its own, and `/update` still does. A fleet child never does.
+- **Update,** `/update install`, installs the newest release that isn't
+  deprecated beside the running one, with nothing stopped, once the Bun it
+  runs on meets that release's floor. Nothing else changes. When the floor
+  is above it, upgrade Bun and start the host again first.
+- **Restart,** `/update restart`, quiesces the host and its fleet children,
+  each as the web UI's Quiesce quiesces one host, and gives turns in
+  progress two minutes to end. If some don't, it says who is still mid-turn,
+  and you choose: wait up to ten minutes more (`/update restart wait`), stop
+  now and cut those turns off (`/update restart now`), or call it off
+  (`/update restart resume`, which also ends a switch's quiesce left on a
+  host after an earlier try). Scripts a turn left running in the background
+  aren't waited for, and the stop ends them. Then the host stops, and its
+  next start, which the service makes, copies the data, starts the new
+  release on trial, and commits once that release has opened its stores and
+  connected its servers. The host comes back quiesced and resumes once its
+  agents have started; one you'd quiesced yourself stays quiesced. A host
+  run in a terminal stops as `/quit` does: once it has stopped, start it
+  again.
+- **A release that ends before its commit** is undone at the next start: the
+  copy is restored, what the new release changed is kept aside, and the
+  release before starts. `/update` then says why, and shows the last 40
+  lines the new release wrote through console's `log`, `info`, `warn`,
+  `error` and `debug` and to its stdout and stderr, which it kept itself in
+  `trial-log.json` in the install root. The service's log, or the terminal
+  a host started by hand ran in, has what those leave out: console's other
+  methods, an error Bun reported itself, everything from a release a signal
+  ended (a stop, or the OOM killer) or whose code didn't load, and what its
+  servers' processes wrote.
+- **What each update copies:** the data directory, each fleet child's data
+  directory, the MCPL settings files in the working directory, and the
+  state setup recorded. A fleet child given `.` as its data directory makes
+  the whole working directory part of that, so keep the install root outside
+  it. The copy stays until the next switch replaces it.
+- **A request refused before anything changed,** such as one that finds a
+  fleet child still running or too little room for the copy, is dropped,
+  and the log and `/update` say why: ask again once that has cleared.
+- **Going back** after a commit: `/update back` says how old the copy is,
+  and offers keeping the newer data (`/update back keep`), which loses
+  residents nothing, or restoring the copy (`/update back restore`), which
+  sets everything since aside, not deleted, and brings the host back
+  quiesced or serving as the copy holds it, so a quiesce you made since
+  doesn't come back. Either way the host quiesces first, as Restart does. If the older release ends before its commit on
+  the newer data, as when its store audit refuses a store, the next start
+  puts the newer release and its data back by itself, and restoring the
+  copy is the way from there.
+- **When the new release keeps exiting after its commit,** it's never up to
+  ask. Each start's log names the command instead: `bun <root>/start.js
+  --go-back`, with `--keep-data` to keep the newer data. It waits up to a
+  minute for the host to give up the install's lock, which one that keeps
+  exiting does between starts, writes the request, and the service's next
+  start goes back. If the service isn't running, start it. A release that
+  stays up longer than a minute before each exit can hold the lock through
+  the wait: stop the service, run the command, and start the service.
+
+**By hand.** An install of the published package (`npm install
 @animalabs/connectome-host`, or `bun add`) changes version only when npm or
 bun is run to change it, `npm update` and `bun update` included, and a
 clone of connectome-host when you check out another tag. An install

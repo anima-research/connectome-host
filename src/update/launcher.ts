@@ -6,7 +6,8 @@
  * trial. It takes the install's lock, finishes or undoes whatever a start cut
  * off left, carries out a standing mark (a switch, or a Go back), and then
  * becomes the host it chose (execve), keeping the process, with the install's
- * root in CONNECTOME_INSTALL_ROOT.
+ * root in CONNECTOME_INSTALL_ROOT. While a Go back is offered, each start's
+ * log names the command that asks for it from a shell (goBackFromShell).
  *
  * Every step leaves an outcome the filesystem shows, and the journal says
  * which request is under way, so a start that finds a step cut off finishes
@@ -31,10 +32,10 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
   copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy, pendingGoBack,
   readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
-  unfinishedTrial, writeJsonAtomic,
+  unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
   type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type JournalLine, type LockRecord, type Mark,
   type PlaceKind,
 } from './contract.js';
@@ -209,12 +210,19 @@ function unwritableDirectory(dirs: string[]): string | null {
 // The lock
 // ---------------------------------------------------------------------------
 
+/** The lock is held by a process that's still running (takeLock). */
+export class LockHeld extends ContractError {}
+
 /** Take the install's lock, which stays with this process as its host. The
  *  lock file is made by a hard link of a whole record, so two starts can't
  *  both make it. A lock left by a process that has ended, or by an earlier
- *  boot, is removed and taken once more. Two starts that find the same stale
- *  lock at the same moment can each remove it in turn, which one service
- *  starting one install never does. */
+ *  boot, is removed and taken once more. A start and a Go back from a shell
+ *  can race for a stale lock, so the lock is renamed aside and removed only
+ *  if it is still the record found stale: one the other took meanwhile is put
+ *  back, and the next look finds it held. A third start racing in the same
+ *  moment, or a crash between the rename and the put back, can still leave
+ *  two holders, as removing a stale lock could before. A lock a running
+ *  process holds is a LockHeld. */
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -241,7 +249,7 @@ export function takeLock(root: string, ops: LauncherOps): void {
         return;
       }
       if (ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId)) {
-        throw new ContractError(
+        throw new LockHeld(
           `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
           'An install runs one host at a time. If that process is this install\'s host, stop it first; if it\'s ' +
           'something else that reused the number, remove the lock file.',
@@ -250,7 +258,25 @@ export function takeLock(root: string, ops: LauncherOps): void {
       if (attempt > 0) {
         throw new ContractError(`The lock at ${lock} was left by process ${holder.pid}, which has ended, and taking it over failed twice.`);
       }
-      rmSync(lock, { force: true });
+      const aside = `${lock}.${process.pid}.stale`;
+      try {
+        renameSync(lock, aside);
+      } catch (error) {
+        // Another start removed it first.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        continue;
+      }
+      const moved = readRecord<LockRecord>(aside, 'lock');
+      if (moved?.pid !== holder.pid || moved.at !== holder.at) {
+        // Another start took the stale lock between the read and the rename:
+        // its lock goes back, and the next attempt finds it held.
+        try {
+          linkSync(aside, lock);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        }
+      }
+      rmSync(aside, { force: true });
     }
   } finally {
     rmSync(mine, { force: true });
@@ -807,14 +833,32 @@ function line(ops: LauncherOps, fields: Omit<JournalLine, 'v' | 'at'>): Omit<Jou
 }
 
 /** A request refused before it touched the data: the journal says why, the
- *  mark stands, and the release that runs now starts as it was. */
+ *  mark is removed, and the release that runs now starts as it was. A mark
+ *  asks for the start right after the operator's Restart, or their Go back
+ *  from a shell, so one left standing would act at whichever start came
+ *  next, unquiesced: an agent's own restart, or a crash. The operator asks
+ *  again once what refused it has cleared. */
 function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], current: string, mark: Mark, reason: string,
   outcome: 'refused' | 'failed' = 'refused'): Start {
   appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id }));
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
+  const { mark: markPath } = installPaths(root);
+  const again = mark.why === 'go-back' ? `/update back, or \`${GO_BACK_FLAG}\` from a shell` : '/update restart';
+  let dropped = `The request is dropped: once what refused it has cleared, ask again with ${again}.`;
+  try {
+    rmSync(markPath, { force: true });
+  } catch (error) {
+    dropped = `Its mark couldn't be removed (${errorText(error)}), so the next start tries it again: remove ` +
+      `${markPath} to drop it.`;
+  }
+  try {
+    if (!existsSync(markPath)) syncPath(root);
+  } catch (error) {
+    dropped += ` Syncing its removal failed (${errorText(error)}), so a power cut could bring the mark back, for the ` +
+      'next start to try the request once more.';
+  }
   ops.report(`[update] The ${what} to ${mark.to} didn't go ahead, so ${current} starts as it was: ` +
-    `${reason.replace(/\.+$/, '')}. The request stands, and each start tries it again until it goes ahead, or until ` +
-    `removing ${installPaths(root).mark} drops it.`);
+    `${reason.replace(/\.+$/, '')}. ${dropped}`);
   return { release: current, trial: false };
 }
 
@@ -1297,6 +1341,139 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   return { release: current, trial: false };
 }
 
+// ---------------------------------------------------------------------------
+// Going back from a shell
+// ---------------------------------------------------------------------------
+
+/** The entry point's flag for a Go back asked from a shell, and its choice to
+ *  keep the newer data rather than restore the copy. */
+export const GO_BACK_FLAG = '--go-back';
+export const KEEP_DATA_FLAG = '--keep-data';
+
+/** How long a Go back from a shell waits for the install's lock. A host
+ *  that keeps exiting gives it up between its exit and the service's next
+ *  start, five seconds apart in the documented unit. */
+export const GO_BACK_LOCK_WAIT_MS = 60_000;
+
+/** The Go back an install offers while `running` runs: to the release the
+ *  copy holds the data of, with when the copy was taken, when that release
+ *  is another and is still installed, as the prune keeps it. Null when there
+ *  is none. A copy that can't be read throws (lastCopy). */
+export function goBackOffer(root: string, running: string): { to: string; since: string } | null {
+  const label = lastCopy(root);
+  if (label === null || typeof label.from !== 'string' || label.from === running) return null;
+  if (!existsSync(releaseEntry(root, label.from))) return null;
+  return { to: label.from, since: typeof label.at === 'string' ? label.at : 'at a time its label doesn\'t say' };
+}
+
+/** The line each start's log carries while a Go back is offered, naming the
+ *  way to it from a shell, since a release that keeps exiting after its
+ *  commit never stays up to offer it. */
+export function goBackLine(root: string, offer: { to: string; since: string }): string {
+  return `[update] Going back to ${offer.to} is offered, with the copy of its data taken ${offer.since}. If this ` +
+    `release keeps exiting, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}\` asks the next start to go ` +
+    `back, restoring that copy and keeping what changed since aside, or with ${KEEP_DATA_FLAG} keeping the newer data.`;
+}
+
+/** `word` as one word of a POSIX shell's command line: quoted when it holds
+ *  anything but letters, digits and `@%+=:,./_-`. */
+export function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * `start.js --go-back [--keep-data]`, run from a shell: ask the next start to
+ * go back, for an operator whose host doesn't stay up to ask it, as when the
+ * release it committed keeps exiting. Returns the exit status.
+ *
+ * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
+ * install's host holds while it runs. A host that keeps exiting gives it up
+ * between its exit and the service's next start. With the lock, it checks
+ * that a Go back is offered and that no request is under way, writes the
+ * mark, and gives the lock up: the service's next start goes back. A host
+ * that holds the lock the whole time is up, so its own Go back, which
+ * quiesces first, is the way: a mark ready for a running host's next start
+ * would switch it at a moment the operator didn't choose.
+ */
+export function goBackFromShell(root: string, args: string[], ops: LauncherOps): number {
+  const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
+  if (unknown.length > 0) {
+    ops.report(`[update] ${GO_BACK_FLAG} takes only ${KEEP_DATA_FLAG}, and was given ${unknown.join(' ')}. Nothing ` +
+      'was asked for.');
+    return 2;
+  }
+  const keepData = args.includes(KEEP_DATA_FLAG);
+  const until = ops.now().getTime() + GO_BACK_LOCK_WAIT_MS;
+  for (let waiting = false; ;) {
+    try {
+      takeLock(root, ops);
+      break;
+    } catch (error) {
+      if (!(error instanceof LockHeld)) {
+        ops.report(`[update] Nothing was asked for: ${errorText(error)}`);
+        return 1;
+      }
+      if (ops.now().getTime() >= until) {
+        ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`/update back\`, ` +
+          'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
+        return 1;
+      }
+      if (!waiting) {
+        waiting = true;
+        ops.report(`[update] Waiting up to ${GO_BACK_LOCK_WAIT_MS / 1000} s for this install's host to give up its ` +
+          'lock, as one that keeps exiting does between its exit and its next start.');
+      }
+      ops.sleep(1_000);
+    }
+  }
+  try {
+    const current = readCurrent(root);
+    if (current === null) throw new ContractError(`this install has no ${installPaths(root).current}; run setup again`);
+    const lines = readJournal(root);
+    const underWay = unfinishedTrial(lines, current) ?? pendingGoBack(lines);
+    if (underWay !== null) {
+      throw new ContractError(`the request to ${underWay.to} is under way, and the next start carries it on before ` +
+        'anything else. Start the service, then ask again if it\'s still needed');
+    }
+    const offer = goBackOffer(root, current);
+    if (offer === null) {
+      throw new ContractError(`no Go back is offered: ${current} runs, and the copy doesn't hold another installed ` +
+        'release\'s data');
+    }
+    // A mark standing, read or not, is replaced: this request is the operator's latest.
+    let standing: string | null;
+    try {
+      standing = readMark(root)?.to ?? null;
+    } catch {
+      standing = 'a release this release can\'t read';
+    }
+    const { mark, unsynced } = writeMark(root, { to: offer.to, why: 'go-back', keepData }, ops.now());
+    ops.report(`[update] The next start goes back to ${offer.to}, ` +
+      (keepData ? 'keeping the newer data' : `restoring the copy of its data taken ${offer.since}, with what ` +
+        'changed since kept aside') +
+      (standing !== null ? `. This replaces the request to ${standing} that stood` : '') +
+      `. Start the service if it isn't running, and it goes back as it starts (mark ${mark.id}).` +
+      (unsynced !== null ? ` ${unsyncedText(unsynced)}` : ''));
+    return 0;
+  } catch (error) {
+    ops.report(`[update] Nothing was asked for: ${errorText(error)}`);
+    return 1;
+  } finally {
+    releaseLock(root);
+  }
+}
+
+/** Give up the install's lock, when this process holds it. */
+function releaseLock(root: string): void {
+  const { lock } = installPaths(root);
+  try {
+    if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });
+  } catch {
+    // A lock this process can't read or remove frees itself once it ends.
+  }
+}
+
 /** The mount points in Linux's /proc/self/mountinfo, each with its escapes
  *  (`\040` for a space) read back. */
 export function linuxMountPoints(text: string): string[] {
@@ -1364,9 +1541,11 @@ export function machineOps(): LauncherOps {
 
 /** The entry point's call: decide, then become the release's host, keeping
  *  the process. When nothing can start, say why and exit non-zero, so the
- *  supervisor tries again. */
+ *  supervisor tries again. Given --go-back first, from a shell, it asks the
+ *  next start to go back instead (goBackFromShell) and exits. */
 export async function launch(root: string, argv: string[]): Promise<never> {
   const ops = machineOps();
+  if (argv[0] === GO_BACK_FLAG) process.exit(goBackFromShell(root, argv.slice(1), ops));
   if (typeof process.execve !== 'function') {
     ops.report(`[update] Nothing started: this runtime has no process.execve, which the launcher needs to become the host (Bun ${process.versions.bun}).`);
     process.exit(1);
@@ -1382,6 +1561,14 @@ export async function launch(root: string, argv: string[]): Promise<never> {
   if (!existsSync(entry)) {
     ops.report(`[update] Nothing started: ${start.release}'s host isn't at ${entry}.`);
     process.exit(1);
+  }
+  if (!start.trial) {
+    try {
+      const offer = goBackOffer(root, start.release);
+      if (offer !== null) ops.report(goBackLine(root, offer));
+    } catch (error) {
+      ops.report(`[update] Whether a Go back is offered can't be told: ${errorText(error)}`);
+    }
   }
   try {
     // The runtime's own flags, as the service gave them, go to the host too,

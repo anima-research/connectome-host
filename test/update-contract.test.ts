@@ -11,7 +11,7 @@ import {
   ContractError, INSTALL_ROOT_ENV, JOURNAL_STEPS, PLACE_KINDS, RESTART_EXIT_CODE, SWITCH_QUIESCE_PREFIX, appendJournal, childrenFilePath,
   copyItemName, copyLabelPath, goBackListPath, installPaths, installRootFromEnv, itemSetAsideDir, lastCopy, markSpent,
   moveCurrent, pendingGoBack, readCurrent, realOrResolved, readGoBackList, readJournal, readMark, readRecord, releaseDir, setAsideDir,
-  trialPlaces, unfinishedTrial, writeJsonAtomic, type CopyLabel, type GoBackList, type JournalLine, type Mark,
+  trialPlaces, unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark, type CopyLabel, type GoBackList, type JournalLine, type Mark,
 } from '../src/update/contract.js';
 
 let root: string;
@@ -58,7 +58,7 @@ describe('the update contract', () => {
     expect(installPaths('/r')).toEqual({
       root: '/r', releases: '/r/releases', current: '/r/current', install: '/r/install.json', mark: '/r/mark.json',
       journal: '/r/journal.jsonl', lock: '/r/lock.json', copy: '/r/copy', copyTmp: '/r/copy.tmp', copyPrev: '/r/copy.prev',
-      setAside: '/r/set-aside',
+      setAside: '/r/set-aside', trialLog: '/r/trial-log.json',
     });
     expect(releaseDir('/r', '0.11.0')).toBe('/r/releases/0.11.0');
     expect(copyLabelPath('/r/copy.tmp')).toBe('/r/copy.tmp/copy.json');
@@ -294,7 +294,7 @@ describe('the update contract', () => {
     expect(unfinishedTrial([line('trial-start'), line('commit'), later, { ...line('fallback'), to: '0.12.0' }], '0.11.0')).toBeNull();
   });
 
-  test('a mark is spent once its switch commits or a fallback for it succeeds, and stands while a switch is refused or its trial runs', () => {
+  test('a mark is spent once its switch commits or a fallback for it succeeds, and not by a refusal\'s line or a running trial', () => {
     expect(markSpent(mark, [], '0.10.2')).toBe(false);
     expect(markSpent(mark, [{ ...line('children-check', 'refused'), mark: mark.id }], '0.10.2')).toBe(false);
     expect(markSpent(mark, [{ ...line('trial-start'), mark: mark.id }], '0.10.2')).toBe(false);
@@ -310,6 +310,36 @@ describe('the update contract', () => {
     const restored = { ...line('go-back'), from: '0.11.0', to: '0.10.2', mark: 'g1', keptData: false };
     expect(markSpent(goBack, [restored], '0.11.0')).toBe(false);
     expect(markSpent(goBack, [restored], '0.10.2')).toBe(true);
+  });
+
+  test('writing a mark asks for the request with a new id, synced, in place of any that stood', () => {
+    const { mark: first, unsynced } = writeMark(root, { to: '0.11.0', why: 'update' }, new Date('2026-10-22T12:00:00Z'));
+    expect(first).toEqual({ v: 1, id: expect.stringMatching(/^[0-9a-f-]{36}$/), to: '0.11.0', why: 'update', at: '2026-10-22T12:00:00.000Z' });
+    expect(unsynced).toBeNull();
+    expect(readRecord(installPaths(root).mark, 'mark')).toEqual(first);
+    const { mark: second } = writeMark(root, { to: '0.10.2', why: 'go-back', keepData: true });
+    expect(second.id).not.toBe(first.id);
+    expect(readRecord(installPaths(root).mark, 'mark')).toEqual({ ...second, keepData: true });
+    expect(() => writeMark(root, { to: '../0.9.0', why: 'update' })).toThrow(ContractError);
+  });
+
+  test("a mark whose write fails once it's in place still asks, and one that failed before leaves the mark that stood", () => {
+    const { mark: path } = installPaths(root);
+    const { mark: standing } = writeMark(root, { to: '0.11.0', why: 'update' });
+    // Fails before its rename: the mark that stood stays, and the write throws.
+    const early = (() => { throw new Error('ENOSPC'); }) as typeof writeJsonAtomic;
+    expect(() => writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), early)).toThrow('ENOSPC');
+    expect(readRecord(path, 'mark')).toEqual(standing);
+    // Fails after its rename, as a directory sync that fails: the mark is in place, and asks, with the failure.
+    const late = ((at: string, value: unknown) => { writeJsonAtomic(at, value); throw new Error('EIO'); }) as typeof writeJsonAtomic;
+    const written = writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), late);
+    expect(readRecord(path, 'mark')).toEqual(written.mark);
+    expect(written.unsynced?.message).toBe('EIO');
+    expect(unsyncedText(written.unsynced!)).toBe('The request is written, though syncing it to the disk failed (EIO), so a power cut ' +
+      'could still undo it.');
+    // A file it can't read isn't its mark, so the write's own error stands.
+    const garbled = ((at: string) => { fs.writeFileSync(at, 'not json'); throw new Error('EIO'); }) as typeof writeJsonAtomic;
+    expect(() => writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), garbled)).toThrow('EIO');
   });
 
   test('reading the mark returns a standing one and removes a spent one, spent by a fallback or by its commit', () => {

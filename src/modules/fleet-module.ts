@@ -355,15 +355,19 @@ export function fleetChildDataDir(child: { name: string; dataDir?: string }): st
  *  an install's entry when the parent is the install's host; without the
  *  variable, releaseHere finds no install, so the child neither commits a
  *  release nor keeps the install's files (src/update/contract.ts), whoever
- *  set it. The store audit (src/update/audit-stores.ts) audits a child's
- *  stores in this environment too. */
+ *  set it. It doesn't read the registry for an update notice either
+ *  (CONNECTOME_UPDATE_CHECK=0), since its parent's install is what updates.
+ *  The store audit (src/update/audit-stores.ts) audits a child's stores in
+ *  this environment too. */
 export function fleetChildEnv(
   env: NodeJS.ProcessEnv,
   childEnv: Record<string, string> | undefined,
   timeZone: string,
   dataDir: string,
 ): NodeJS.ProcessEnv {
-  const childsEnv: NodeJS.ProcessEnv = { ...env, ...childEnv, AGENT_TIMEZONE: timeZone, DATA_DIR: dataDir };
+  const childsEnv: NodeJS.ProcessEnv = {
+    ...env, ...childEnv, AGENT_TIMEZONE: timeZone, DATA_DIR: dataDir, CONNECTOME_UPDATE_CHECK: '0',
+  };
   delete childsEnv[INSTALL_ROOT_ENV];
   delete childsEnv[FLEET_BEGIN_ENV];
   return childsEnv;

@@ -1257,6 +1257,11 @@ describe("the fleet's children file", () => {
     expect(env[FLEET_BEGIN_ENV]).toBeUndefined();
   });
 
+  test("a child doesn't read the registry for an update notice, whatever its host's or its entry's environment says", () => {
+    const env = fleetChildEnv({ CONNECTOME_UPDATE_CHECK: '1' }, { CONNECTOME_UPDATE_CHECK: '1' }, 'UTC', '/data');
+    expect(env.CONNECTOME_UPDATE_CHECK).toBe('0');
+  });
+
   test("a launch whose record the store can't take stops the child and fails, rather than leaving it running unwatched", async () => {
     const { fleet, input } = await startedFleet();
     const state = (fleet as unknown as { ctx: { setState: (next: Record_) => void } }).ctx;

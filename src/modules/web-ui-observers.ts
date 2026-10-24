@@ -938,6 +938,22 @@ export const CREDENTIAL_STRINGS = {
   lastAction: { id: true },
 } satisfies KeptStrings;
 
+/** The update section's strings that aren't failure text
+ *  (src/update/update.ts): versions, times, and what a request and a host's
+ *  state are named. A read's error, a refusal's reason, a failed trial's
+ *  log, npm's deprecation message, the operator's quiesce reason and what
+ *  couldn't be read are emptied. */
+export const UPDATE_STRINGS = {
+  running: true,
+  check: { at: true, candidate: true, costs: { version: true }, bunFloorUnmet: true },
+  installing: true,
+  lastInstall: { version: true, at: true },
+  installed: true,
+  goBack: { to: true, since: true },
+  restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
+  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
+} satisfies KeptStrings;
+
 /** `/healthz`'s strings that aren't failure text: agent-framework's
  *  healthSnapshot, and what buildHealthSnapshot adds. */
 export const HEALTH_STRINGS: KeptStrings = {
@@ -980,6 +996,7 @@ export const HEALTH_STRINGS: KeptStrings = {
     '*': { sameRoundThinkTextPolicy: true, sameRoundThinkTextPolicySource: true, transition: true, transitionReason: true },
   },
   callLedger: LEDGER_STRINGS,
+  update: UPDATE_STRINGS,
 };
 
 /** `/quota`'s strings that aren't failure text: all but a read's `error`. */

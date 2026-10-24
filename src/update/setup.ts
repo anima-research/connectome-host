@@ -28,18 +28,14 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ContractError, RESTART_EXIT_CODE, installPaths, moveCurrent, readCurrent, readJournal, readRecord, realOrResolved,
-  releaseDir, writeJsonAtomic,
+  ContractError, ENTRY_POINT, RESTART_EXIT_CODE, installPaths, moveCurrent, readCurrent, readJournal, readRecord,
+  realOrResolved, releaseDir, writeJsonAtomic,
   type InstallRecord, type JournalLine,
 } from './contract.js';
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
 
-/** The entry point setup writes in the install root: the service runs it as
- *  it ran the host, and it hands over to the launcher of the release
- *  `current` names. It stays as setup wrote it, so it does as little as it
- *  can. */
-export const ENTRY_POINT = 'start.js';
+export { ENTRY_POINT };
 
 /** What setup copies of the install as a release. */
 const RELEASE_FILES = ['package.json', 'package-lock.json', 'bun.lock', 'bun.lockb', 'node_modules'];

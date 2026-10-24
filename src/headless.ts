@@ -33,6 +33,8 @@ import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 import { takeRecipeWarnings } from './recipe.js';
 import { workspaceReadFields } from './workspace-read-result.js';
 import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
+import { RESTART_EXIT_CODE } from './update/contract.js';
+import { hostUpdate } from './update/update.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -609,6 +611,12 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
 
   process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
   process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+  // An update's Restart stops here, exiting for the supervisor to start the
+  // host again through the install's launcher (src/update/update.ts).
+  hostUpdate.attachStop({
+    supervised: true,
+    stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },
+  });
 
   // ------------------------------------------------------------------
   // Synthetic wire events: lifecycle:idle (quiescence) + inference:speech

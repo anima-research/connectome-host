@@ -20,28 +20,39 @@
  * against a mistake, not a planned break.
  *
  * Who writes what:
- * - the host: the mark (Update, Go back), the fleet's children file, and the
- *   commit, which moves `current`. It appends the journal's `commit` line
- *   after it moves `current`, never before, so a `commit` line always means
- *   `current` moved;
+ * - the host: the mark (Restart, and its Go back), the fleet's children
+ *   file, and the commit, which moves `current`. It appends the journal's
+ *   `commit` line after it moves `current`, never before, so a `commit` line
+ *   always means `current` moved; and, on trial, the trial log, readable by
+ *   this user alone, if it exits before its commit (trial-log.ts);
  * - the launcher: every other journal line, the lock, the copy and its label,
- *   and what a restore sets aside;
+ *   and what a restore sets aside; and, run from a shell with `--go-back`, a
+ *   Go back's mark (writeMark);
  * - setup: the install record;
  * - whichever half first reads a spent mark: removing it (readMark).
  *
  * The journal has one writer at a time: the launcher appends before it starts
- * a release and after one ends, and the host while it runs. A host writes a
- * mark only after its commit, so the launcher that acts on a mark is always
- * its own release's.
+ * a release and after one ends, and the host while it runs. A mark is written
+ * only after a commit, by the committed host or by the launcher of the
+ * release `current` names, so the launcher that acts on a mark is always the
+ * committed release's.
  */
+import { randomUUID } from 'node:crypto';
 import {
-  closeSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync,
-  truncateSync, unlinkSync, writeSync,
+  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync,
+  symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 /** The environment variable through which the entry point names the install's root. */
 export const INSTALL_ROOT_ENV = 'CONNECTOME_INSTALL_ROOT';
+
+/** The entry point setup writes in the install root: the service runs it as
+ *  it ran the host, and it hands over to the launcher of the release
+ *  `current` names. It stays as setup wrote it, so it does as little as it
+ *  can. Run from a shell with `--go-back`, the launcher asks the next start
+ *  for a Go back instead (launcher.ts). */
+export const ENTRY_POINT = 'start.js';
 
 /** The host's exit status when it stops so that its next start switches
  *  release or goes back: 75, EX_TEMPFAIL, "try again". It needs a supervisor
@@ -81,6 +92,9 @@ export interface InstallPaths {
    *  (setAsideDir), kept, with a Go back's list of its places. A directory
    *  item's goes inside it (itemSetAsideDir). */
   setAside: string;
+  /** The last lines a release on trial wrote, if it exited before its commit
+   *  (TrialLog, trial-log.ts). */
+  trialLog: string;
 }
 
 export function installPaths(root: string): InstallPaths {
@@ -96,6 +110,7 @@ export function installPaths(root: string): InstallPaths {
     copyTmp: join(root, 'copy.tmp'),
     copyPrev: join(root, 'copy.prev'),
     setAside: join(root, 'set-aside'),
+    trialLog: join(root, 'trial-log.json'),
   };
 }
 
@@ -180,7 +195,8 @@ export interface InstallRecord {
   extraState: string[];
 }
 
-/** mark.json, written by the host. */
+/** mark.json, written by the host's Restart, or by the launcher's Go back
+ *  from a shell (writeMark). */
 export interface Mark {
   v: 1;
   /** Names this request, so the journal lines that act on it can say so
@@ -427,11 +443,13 @@ function writeAll(fd: number, text: string): void {
 /** Write `value` as JSON at `path` so that a reader sees the old file or the
  *  new one, never part of either: a temporary file, synced, renamed over it.
  *  Each file has one writer at a time, so the temporary file's name is fixed,
- *  and one a crash left is overwritten by the next write. */
-export function writeJsonAtomic(path: string, value: unknown): void {
+ *  and one a crash left is overwritten by the next write. Given `mode`, the
+ *  file gets that mode whatever a temporary file a crash left had. */
+export function writeJsonAtomic(path: string, value: unknown, mode?: number): void {
   const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, 'w');
+  const fd = openSync(tmp, 'w', mode);
   try {
+    if (mode !== undefined) fchmodSync(fd, mode);
     writeAll(fd, `${JSON.stringify(value, null, 2)}\n`);
     fsyncSync(fd);
   } finally {
@@ -633,8 +651,10 @@ export function pendingGoBack(lines: JournalLine[]): JournalLine | null {
 
 /** Whether a mark's request has run its course: its switch committed, so
  *  `current` names its `to`, or a fallback that names it succeeded, so the
- *  same failing request isn't run again. A switch refused before its trial
- *  leaves the mark standing, and the next start tries it again. A Go back's
+ *  same failing request isn't run again. A request refused before it touched
+ *  the data isn't spent by its line: the launcher removes its mark once the
+ *  line is synced, and a start cut off between the two tries it once more,
+ *  still the start right after the host's stop. A Go back's
  *  `go-back` line doesn't spend its mark, since the Go back is under way from
  *  there, not done. Like any mark, it's spent by its commit, the older
  *  release's, or by a successful fallback that names it. It needs no clock,
@@ -678,6 +698,50 @@ export function readMark(root: string): Mark | null {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   return null;
+}
+
+/** Ask the next start for a switch or a Go back, and return the mark that
+ *  asks: one with a new id, written whole and synced in place of any mark
+ *  standing. Its writer then stops the host (Restart), or tells the operator
+ *  to start the service (the launcher's --go-back). A write that throws once
+ *  its rename has put the mark in place, as when syncing the directory fails,
+ *  has still asked: the mark is returned, since the next start reads it, with
+ *  that error as `unsynced`, which its writer tells the operator. A power cut
+ *  that loses the unsynced entry leaves what stood before the write: no
+ *  request, so the release that ran starts and ends the switch's quiesce, or
+ *  the request this one replaced. `write` is a test's seam. */
+export function writeMark(
+  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData'>, now: Date = new Date(), write = writeJsonAtomic,
+): { mark: Mark; unsynced: Error | null } {
+  const mark: Mark = {
+    v: 1, id: randomUUID(), to: segment(request.to, 'release'), why: request.why, at: now.toISOString(),
+    ...(request.keepData ? { keepData: true } : {}),
+  };
+  const path = installPaths(root).mark;
+  try {
+    write(path, mark);
+  } catch (error) {
+    let standing: Mark | null = null;
+    try {
+      standing = readRecord<Mark>(path, 'mark');
+    } catch {
+      // A file that isn't a record isn't this write's mark, which went in
+      // whole. One that can't be read at all is taken as not this write's
+      // either: reading a file this process has just renamed into place, its
+      // own descriptor closed, fails only on a filesystem that's failing.
+    }
+    if (standing?.id !== mark.id) throw error;
+    return { mark, unsynced: error instanceof Error ? error : new Error(String(error)) };
+  }
+  return { mark, unsynced: null };
+}
+
+/** What a mark's writer tells the operator when its write threw once the mark
+ *  was in place (writeMark's `unsynced`): the request stands, and may not
+ *  survive a power cut. */
+export function unsyncedText(error: Error): string {
+  return `The request is written, though syncing it to the disk failed (${error.message.replace(/\.+$/, '')}), so a ` +
+    'power cut could still undo it.';
 }
 
 /** The switch's copy, as its label says: the release whose data it holds,

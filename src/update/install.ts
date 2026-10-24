@@ -2,8 +2,9 @@
  * Installing a release beside the running one (contract.ts): the step of an
  * update that the host's Update takes while everything keeps running. It
  * installs one exact version of the package as `releases/<version>`, so the
- * release is there whole or isn't there at all, and writes no mark: Update
- * writes the mark once this returns.
+ * release is there whole or isn't there at all, and writes no mark: Restart
+ * writes it, once the host is quiet (update.ts), so no start before the
+ * operator's Restart switches release.
  *
  * Which version to install is Update's to decide, from the registry's
  * manifest of it: Update refuses a release deprecated on npm, one no newer
@@ -31,8 +32,9 @@ import { HOST_ENTRY, LAUNCHER, RELEASE_HOST } from './launcher.js';
 
 export const PACKAGE = '@animalabs/connectome-host';
 
-/** An exact version as npm publishes one: release numbers, then any prerelease. */
-const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/** An exact version as npm publishes one: release numbers, then any prerelease.
+ *  A release's directory in `releases/` is named by one. */
+export const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 /** The suffix of unfinished work in `releases/`: an install under way,
  *  setup's first copy, and a release renamed aside for its removal. */
@@ -77,7 +79,7 @@ function errorText(error: unknown): string {
  * place, and a retry reuses it and makes that sync again.
  */
 export async function installRelease(here: ReleaseHere, version: string, ops: InstallOps = machineInstallOps()): Promise<void> {
-  if (!EXACT.test(version)) {
+  if (!EXACT_VERSION.test(version)) {
     throw new ContractError(`${JSON.stringify(version)} isn't an exact version of ${PACKAGE}, such as 0.12.0.`);
   }
   if (version.endsWith(WORKING)) {
@@ -167,8 +169,9 @@ async function installInto(tmp: string, running: string, version: string, ops: I
 
 /** What keeps the host in `dir`, a release's directory, from being `version`'s,
  *  or null when nothing does: its package.json says `version`, and its entry
- *  and its launcher, which a switch imports (checkRelease), are there. */
-function hostProblem(dir: string, version: string): string | null {
+ *  and its launcher, which a switch imports (checkRelease), are there.
+ *  Restart switches only to a release this passes (update.ts). */
+export function hostProblem(dir: string, version: string): string | null {
   const manifest = join(dir, RELEASE_HOST, 'package.json');
   let installed: unknown;
   try {

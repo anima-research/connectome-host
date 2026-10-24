@@ -37,6 +37,7 @@ import {
   type ToolClassSource,
 } from '../tool-lifecycle-config.js';
 import { effectiveContextBudgetTokens } from '../framework-agent-config.js';
+import { hostUpdate } from '../update/update.js';
 
 /** Minimal slice of AppContext the panel layer needs. Both the WebUI host
  *  and the headless child runtime satisfy this structurally. */
@@ -942,6 +943,14 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   try {
     const ledger = app.callLedger?.snapshot();
     if (ledger) (snapshot as Record<string, unknown>).callLedger = ledger;
+  } catch {
+    // Health reads never throw.
+  }
+  // The host's update: a newer release and what it costs, what's installed,
+  // a restart under way, a Go back offered, and how the last switch ended
+  // (src/update/update.ts). Absent before main() sets it up.
+  try {
+    (snapshot as Record<string, unknown>).update = hostUpdate.status();
   } catch {
     // Health reads never throw.
   }

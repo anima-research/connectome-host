@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { CREDENTIAL_STRINGS, HEALTH_STRINGS, QUOTA_STRINGS, keepNamedStrings, type KeptStrings } from '../src/modules/web-ui-observers.js';
+import type { UpdateStatus } from '../src/update/update.js';
 import { credentialNote, healthEntry, healthReadError, lastActionText, readFailureLine } from '../src/web/health-lookup.js';
 import { debtNextStep, debtSummary, debtTone, type CompressionDebt } from '../src/web/compression-debt.js';
 import type { CallLedgerRow, QuotaSnapshotData } from '../src/web/protocol.js';
@@ -143,5 +144,58 @@ describe('the health panel, with health and without ops', () => {
     expect(lastActionText(bare.lastAction, '5s ago')).toBe('refresh FAILED 5s ago');
     expect(lastActionText({ id: 'recheck', ok: true, message: 'credential verified' }, '5s ago')).toBe('recheck ok 5s ago — credential verified');
     expect(lastActionText({ id: 'recheck', ok: true, message: '' }, '5s ago')).toBe('recheck ok 5s ago');
+  });
+});
+
+describe("the update section, with health and without ops", () => {
+  const update: UpdateStatus = {
+    running: '0.12.1', install: true, checks: true,
+    check: { at: '2026-10-22T12:00:00.000Z', ok: true, candidate: '0.13.0', costs: [{ version: '0.13.0', breaking: true, cacheWrite: null }], bunFloorUnmet: '>=1.5.0', runningDeprecated: 'use 0.12.2: a store bug' },
+    installing: '0.13.1',
+    lastInstall: { version: '0.13.0', at: '2026-10-22T12:01:00.000Z', ok: false, error: 'npm exited 1: E404 the registry said no' },
+    installed: '0.12.2',
+    goBack: { to: '0.12.0', since: '2026-10-20T10:00:00.000Z' },
+    restart: {
+      to: '0.12.2', why: 'update', keepData: false, phase: 'busy',
+      hosts: [
+        { host: 'this host', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 1 },
+        { host: 'kid', answered: false, why: 'the socket said ECONNRESET' },
+      ],
+    },
+    operatorQuiesced: 'maintenance: disk swap tonight',
+    switchQuiesceLeft: false,
+    lastSwitch: { outcome: 'refused', step: 'children-check', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: 'fleet children are still running: kid (pid 4242, ANTHROPIC_API_KEY sk-ant-xyz)' },
+    problems: ["the last switch: Line 3 of the journal at /srv/root/journal.jsonl isn't JSON"],
+  };
+  const bare = sent({ update }, HEALTH_STRINGS).update;
+
+  test('keeps the versions, times and names, and empties every reason, error and message', () => {
+    expect(bare).toEqual({
+      ...update,
+      check: { ...update.check!, runningDeprecated: '' } as UpdateStatus['check'],
+      lastInstall: { ...update.lastInstall!, error: '' },
+      restart: { ...update.restart!, hosts: [update.restart!.hosts[0]!, { host: 'kid', answered: false, why: '' }] },
+      operatorQuiesced: '',
+      lastSwitch: { ...update.lastSwitch!, reason: '' },
+      problems: [''],
+    });
+  });
+
+  test("a fallback keeps its versions and time, and empties the lines its trial kept", () => {
+    const fellBack: UpdateStatus = {
+      ...update,
+      lastSwitch: {
+        outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: '0.12.2 ended before its commit',
+        trialLog: ['Fatal error: Error: ANTHROPIC_API_KEY sk-ant-xyz was refused'],
+      },
+    };
+    expect(sent({ update: fellBack }, HEALTH_STRINGS).update.lastSwitch).toEqual({
+      outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-21T09:00:00.000Z', reason: '', trialLog: [''],
+    });
+  });
+
+  test("a read that failed keeps its time and empties its error", () => {
+    const failed: UpdateStatus = { ...update, check: { at: '2026-10-22T12:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND registry.internal.example' } };
+    expect(sent({ update: failed }, HEALTH_STRINGS).update.check).toEqual({ at: '2026-10-22T12:00:00.000Z', ok: false, error: '' });
   });
 });
