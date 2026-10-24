@@ -9,7 +9,9 @@
  *   - mcpl_unload {id}         → disconnect a server and remove its tools
  *
  * Persistence model (agent overlay):
- *   Agent deployments are written to `mcpl-servers.agent.json` (cwd), which
+ *   Agent deployments are written to `mcpl-servers.agent.json` (cwd), or a
+ *   fleet child's `mcpl-servers.agent.child.json` in its data directory
+ *   (DEFAULT_AGENT_OVERLAY_PATH), which
  *   index.ts merges over the recipe/file server list at startup — so agent
  *   deployments survive host restarts without touching human-owned recipe
  *   files or mcpl-servers.json. Unloading a recipe/file server writes a
@@ -62,7 +64,7 @@ import { shown } from './shown.js';
 export interface McplAdminModuleConfig {
   /** IANA zone propagated to newly deployed stdio servers. */
   timeZone?: string;
-  /** Path to the agent overlay file. Default: `mcpl-servers.agent.json` in cwd. */
+  /** Path to the agent overlay file. Default: DEFAULT_AGENT_OVERLAY_PATH, `mcpl-servers.agent.json` in cwd, or a fleet child's `mcpl-servers.agent.child.json` in its data directory. */
   overlayPath?: string;
   /** Path to the human-owned server config file (read-only here). */
   configPath?: string;
@@ -836,7 +838,7 @@ export class McplAdminModule implements Module {
       );
     }
 
-    const config = resolveOverlayEntry(id, entry, this.overlayPath) as unknown as McplServerConfig;
+    const config = resolveOverlayEntry(id, entry) as unknown as McplServerConfig;
     // The child's env as the boot composes it for every server
     // (composeMcplChildEnv): the entry's own env, with the host's
     // AGENT_TIMEZONE over it. agent-framework adds its reaction-suppression
@@ -1047,7 +1049,7 @@ export class McplAdminModule implements Module {
       typeof s.toolPrefix === 'string' ? s.toolPrefix : `mcpl--${s.id}`;
     // This deploy's entry replaces whatever `id` had, so only the others count.
     const others = Object.fromEntries(Object.entries(overlay).filter(([key]) => key !== id));
-    const nextStart = composeOverlay(this.operatorDefinitions, others, this.overlayPath);
+    const nextStart = composeOverlay(this.operatorDefinitions, others);
     const other = [...nextStart, ...framework.listMcplServers()].find((s) => s.id !== id && prefixOf(s) === prefix);
     return other ? `held by server "${other.id}"` : null;
   }

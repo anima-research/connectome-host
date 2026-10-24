@@ -160,14 +160,14 @@ describe('applyAgentOverlay', () => {
     });
   });
 
-  test('relative args resolve against the overlay directory', () => {
+  test('relative args resolve against the working directory, as mcpl_deploy tells the agent, wherever the overlay file is', () => {
     withTmp((dir) => {
+      // The overlay is in a directory of its own, as a fleet child's is in its data directory.
       const path = join(dir, 'overlay.json');
-      saveAgentOverlay(path, { mytool: { command: 'node', args: ['./servers/tool.js', '--flag'] } });
+      saveAgentOverlay(path, { mytool: { command: 'node', args: ['./servers/tool.js', '../up.js', '--flag'] } });
       const result = applyAgentOverlay(base, path);
       const tool = result.find(s => s.id === 'mytool') as { args: string[] };
-      expect(tool.args[0]).toBe(resolve(dir, './servers/tool.js'));
-      expect(tool.args[1]).toBe('--flag');
+      expect(tool.args).toEqual([resolve(process.cwd(), './servers/tool.js'), resolve(process.cwd(), '../up.js'), '--flag']);
     });
   });
 
@@ -185,17 +185,17 @@ describe('resolveOverlayEntry', () => {
   const BASELINE = [...AGENT_DEPLOY_DENIED_CAPABILITIES].sort();
 
   test('tombstones and empty entries resolve to null', () => {
-    expect(resolveOverlayEntry('x', { disabled: true }, '/tmp/o.json')).toBeNull();
-    expect(resolveOverlayEntry('x', {}, '/tmp/o.json')).toBeNull();
+    expect(resolveOverlayEntry('x', { disabled: true })).toBeNull();
+    expect(resolveOverlayEntry('x', {})).toBeNull();
   });
 
   test('url entries pass through with transport fields (plus the baseline capability mask)', () => {
-    const r = resolveOverlayEntry('ws', { url: 'wss://host/mcpl', transport: 'websocket', token: 't' }, '/tmp/o.json');
+    const r = resolveOverlayEntry('ws', { url: 'wss://host/mcpl', transport: 'websocket', token: 't' });
     expect(r).toEqual({ id: 'ws', url: 'wss://host/mcpl', transport: 'websocket', token: 't', reconnect: true, disabledCapabilities: BASELINE });
   });
 
   test('disabled flag is stripped from resolved config', () => {
-    const r = resolveOverlayEntry('s', { command: 'node', disabled: false }, '/tmp/o.json');
+    const r = resolveOverlayEntry('s', { command: 'node', disabled: false });
     expect(r).toEqual({ id: 's', command: 'node', disabledCapabilities: BASELINE });
   });
 
@@ -210,12 +210,12 @@ describe('resolveOverlayEntry', () => {
       disabledFeatureSets: [],
       enabledTools: [],
       disabledTools: [],
-    }, '/tmp/o.json');
+    });
     expect(r).toEqual({ id: 'e', url: 'wss://host/mcpl', reconnect: true, disabledCapabilities: BASELINE });
   });
 
   test('non-empty lists survive resolution', () => {
-    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', enabledFeatureSets: ['eidoverse.*'], enabledTools: ['*'] }, '/tmp/o.json');
+    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', enabledFeatureSets: ['eidoverse.*'], enabledTools: ['*'] });
     expect(r?.enabledFeatureSets).toEqual(['eidoverse.*']);
     expect(r?.enabledTools).toEqual(['*']);
   });
@@ -228,18 +228,18 @@ describe('resolveOverlayEntry', () => {
   // reconnect-defaulted-false left Mythos permanently severed from eidoverse
   // by a routine door deploy (2026-08-04) until his own next restart, days out.
   test('websocket entries default reconnect: true; explicit false is respected; stdio keeps no default', () => {
-    expect(resolveOverlayEntry('a', { url: 'wss://x/mcpl' }, '/tmp/o.json')?.reconnect).toBe(true);
-    expect(resolveOverlayEntry('b', { url: 'wss://x/mcpl', reconnect: false }, '/tmp/o.json')?.reconnect).toBe(false);
-    expect(resolveOverlayEntry('c', { command: 'node' }, '/tmp/o.json')?.reconnect).toBeUndefined();
+    expect(resolveOverlayEntry('a', { url: 'wss://x/mcpl' })?.reconnect).toBe(true);
+    expect(resolveOverlayEntry('b', { url: 'wss://x/mcpl', reconnect: false })?.reconnect).toBe(false);
+    expect(resolveOverlayEntry('c', { command: 'node' })?.reconnect).toBeUndefined();
   });
 
   test('entry-supplied disabledCapabilities union with the baseline, never replace it', () => {
-    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', disabledCapabilities: ['channels.streaming'] } as never, '/tmp/o.json');
+    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', disabledCapabilities: ['channels.streaming'] } as never);
     expect(r?.disabledCapabilities).toEqual(['channels.streaming', ...BASELINE].sort());
   });
 
   test('enabledCapabilities is dropped — the agent overlay narrows, never widens (a hand-written entry could re-grant a §13.4 deny-by-default path)', () => {
-    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', enabledCapabilities: ['contextHooks.beforeInference.inject.system'] } as never, '/tmp/o.json');
+    const r = resolveOverlayEntry('e', { url: 'wss://x/mcpl', enabledCapabilities: ['contextHooks.beforeInference.inject.system'] } as never);
     expect(r).not.toBeNull();
     expect('enabledCapabilities' in (r as object)).toBe(false);
   });
@@ -248,7 +248,7 @@ describe('resolveOverlayEntry', () => {
     const r = resolveOverlayEntry('e', {
       command: 'node', allowHostCommands: true, inheritEnv: true,
       enabledCapabilities: ['contextHooks.beforeInference.inject.system'], toolLifecycle: { observe: ['*'] },
-    } as never, '/tmp/o.json');
+    } as never);
     expect(r).not.toBeNull();
     // By name, so a field taken off the list fails here.
     for (const k of ['allowHostCommands', 'inheritEnv', 'enabledCapabilities', 'toolLifecycle']) {
@@ -496,7 +496,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
       // The boot: every operator definition stays, and nothing is added.
       expect(applyAgentOverlay(operator, path)).toEqual(operator);
       for (const [id, entry] of Object.entries(entries)) {
-        expect(resolveOverlayEntry(id, entry as AgentOverlayEntry, path)).toBeNull();
+        expect(resolveOverlayEntry(id, entry as AgentOverlayEntry)).toBeNull();
         expect(overlayEntryReplaces(entry)).toBe(false);
         expect(overlayEntryTombstones(entry)).toBe(false);
       }
@@ -640,7 +640,7 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     expect(overlayEntryProblem({ command: 'node', env: { BIG: Infinity } }, { strict: true }))
       .toBe("its env BIG isn't text, a finite number or true/false");
     expect(overlayEntryProblem({ command: 'node', args: ['--size', 1e400] })).toBeNull();
-    expect(resolveOverlayEntry('big', { command: 'node', args: ['--size', 1e400] } as AgentOverlayEntry, '/o.json')?.args)
+    expect(resolveOverlayEntry('big', { command: 'node', args: ['--size', 1e400] } as AgentOverlayEntry)?.args)
       .toEqual(['--size', 'Infinity']);
   });
 
@@ -696,8 +696,8 @@ describe('what an overlay replacement lacks of the operator definition', () => {
   // reaches a server, and the warnings name the refusal instead.
   test('an entry that names a url gets the reconnect default, as on main, and one the framework refuses is named as refused', () => {
     const both = { command: 'node', url: 'wss://w/mcpl', env: { SESSION_SERVER_TOKEN: 't' } };
-    expect(resolveOverlayEntry('shell', both, '/x/mcpl-servers.agent.json')!.reconnect).toBe(true);
-    expect(resolveOverlayEntry('shell', { command: 'node' }, '/x/mcpl-servers.agent.json')!.reconnect).toBeUndefined();
+    expect(resolveOverlayEntry('shell', both)!.reconnect).toBe(true);
+    expect(resolveOverlayEntry('shell', { command: 'node' })!.reconnect).toBeUndefined();
     expect(lostByReplacement(serverProvisions({ ...shell, token: 'tok' }), both)).toBeNull();
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');

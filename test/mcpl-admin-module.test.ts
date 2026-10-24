@@ -6,7 +6,7 @@
 import { test, expect, describe, beforeEach, afterEach, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
 
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.js';
@@ -38,13 +38,16 @@ interface StubServer {
 function makeStubFramework() {
   const servers = new Map<string, StubServer>();
   const calls: string[] = [];
+  // Each configuration a connect was given, as the framework would spawn it.
+  const connected: Array<{ id: string; command?: string; args?: string[] }> = [];
   // The host's modules by name, as agent-framework's getModule finds them.
   const modules = new Set(['mcpl-admin', 'workspace']);
   const stub = {
     getModule: (name: string) => (modules.has(name) ? { name } : null),
     listMcplServers: () => [...servers.values()],
-    connectMcplServer: async (config: { id: string; command?: string; url?: string; toolPrefix?: string }) => {
+    connectMcplServer: async (config: { id: string; command?: string; url?: string; toolPrefix?: string; args?: string[] }) => {
       calls.push(`connect:${config.id}`);
+      connected.push(config);
       if (servers.has(config.id)) throw new Error(`MCPL server "${config.id}" is already registered`);
       servers.set(config.id, {
         id: config.id,
@@ -94,7 +97,7 @@ function makeStubFramework() {
       });
     },
   };
-  return { stub: stub as unknown as AgentFramework, servers, calls, modules };
+  return { stub: stub as unknown as AgentFramework, servers, calls, modules, connected };
 }
 
 let dir: string;
@@ -136,6 +139,18 @@ function expectMalformed(text: unknown, problem: string): void {
 }
 
 describe('mcpl_deploy', () => {
+  test('a relative ./ arg is connected resolved against the working directory, wherever the overlay file is, and saved as given', async () => {
+    const { stub, connected } = makeStubFramework();
+    const mod = makeModule(stub);
+
+    const result = await call(mod, 'mcpl_deploy', { id: 'mytool', command: 'node', args: ['./tool.js', '../up.js', '--flag'] });
+
+    expect(result.success).toBe(true);
+    // The overlay is in a directory of its own here, as a fleet child's is.
+    expect(connected.find((c) => c.id === 'mytool')?.args).toEqual([resolve(process.cwd(), './tool.js'), resolve(process.cwd(), '../up.js'), '--flag']);
+    expect(readAgentOverlay(overlayPath).mytool).toEqual({ command: 'node', args: ['./tool.js', '../up.js', '--flag'] });
+  });
+
   test('deploys a new server: connects it and persists to the overlay', async () => {
     const { stub, servers, calls } = makeStubFramework();
     const mod = makeModule(stub);

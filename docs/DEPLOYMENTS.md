@@ -205,7 +205,8 @@ it, and what has to happen first. A pull doesn't stop for it. So:
   what each agent keeps while it's stopped: its data directory
   (`DATA_DIR`, or `./data` in its working directory), its fleet children's
   data directories (`data/<child>` under its working directory, unless the
-  recipe's entry for the child or a launch named another), the MCPL
+  recipe's entry for the child or a launch named another), which hold each
+  child's own `mcpl-servers.agent.child.json`, the MCPL
   server settings it saves in its working directory (`mcpl-servers.json`
   and `mcpl-servers.agent.json`), and the files its MCPL servers keep
   their state in, such as heartbeat-mcpl's `HEARTBEAT_CONFIG_FILE` and
