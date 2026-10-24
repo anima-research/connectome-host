@@ -11,18 +11,19 @@
  * ($0.20 and $0.10/MTok). Those exceptions are not cosmetic for long-lived
  * agents — a resident re-reading a 260k prefix on every call spends most of
  * its bill on cache reads, so charging them at 0.1x overstates its total two-
- * to fourfold. This table gives the first three their rates, and Sonnet 5.5
- * 0.1x: see the Sonnet 5 entry.
+ * to fourfold.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
- * Snapshot: 2026-10-19 (Haiku 5.5 added; it had matched no entry and went
- * unpriced). Keep the version string/date auditable; silently changing
+ * Snapshot: 2026-10-20 (Sonnet 5.5's 0.05x reads, as the page gave them when
+ * read on 2026-10-17 and 2026-10-19; it had matched the Sonnet 5 prefix and
+ * read at 0.1x. 2026-10-19 added Haiku 5.5, which had matched no entry and
+ * went unpriced). Keep the version string/date auditable; silently changing
  * historical prices would make old JSONL replay disagree with bills.
  */
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
-export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-19';
+export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-20';
 
 /** Cache reads bill at this multiple of base input on every model that does
  *  not override it. */
@@ -132,14 +133,9 @@ function anthropicBaseRate(model: string, promptTokens: number): BaseRate | unde
   // Sonnet 5 ... is now the standard price. The previously scheduled increase
   // to $3/$15 ... on September 1, 2026 will not occur." (pricing page, read
   // 2026-09-21.) So there is no cutoff; every call is $2/$10.
-  //
-  // Sonnet 5.5 matches this prefix too, so it's priced at $2/$10 with 0.1x
-  // reads, where the pricing page gives its cache reads 0.05x ($0.10/MTok),
-  // and the ledger overstates them twofold. The same multiple is the
-  // kv-unified solver's cache-read price (anthropicCacheReadMultiplier, read
-  // by standardKvUnifiedConfig), so giving Sonnet 5.5 0.05x here also changes
-  // what the solver weighs for a Sonnet 5.5 agent, which can change the layout
-  // it picks and rewrite that agent's prompt cache.
+  // Sonnet 5.5 before it, since 'claude-sonnet-5' matches it too: the same
+  // $2/$10, but cache reads at 0.05x ($0.10).
+  if (starts(model, 'claude-sonnet-5-5')) return rate(2, 10, 0.05);
   if (starts(model, 'claude-sonnet-5')) return rate(2, 10);
 
   if (starts(model,
