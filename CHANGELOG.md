@@ -6,6 +6,53 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.13.2 — 2026-10-24
+
+### Added
+
+- An npm install of connectome-host can update itself once a one-time setup
+  has wrapped it: "Updating an install" in docs/DEPLOYMENTS.md says how. The
+  host reads the registry at start and once a day, and says when a newer
+  release is out and what the releases since cost, in its log, `/update` and
+  `/healthz`'s new `update` section (`CONNECTOME_UPDATE_CHECK=0` or
+  `NO_UPDATE_NOTIFIER` turns that off). `/update install` installs it beside
+  the running release. `/update restart` quiesces the host and its fleet
+  children, then stops it for the service's next start to switch, on trial
+  until the new release has opened its stores and connected its servers,
+  going back by itself if it ends before that, and `/update` then shows the
+  last lines the new release kept of what it wrote. `/update back` goes back
+  afterwards, keeping the newer data or restoring the copy taken at the
+  switch, and `bun <root>/start.js --go-back` asks for that from a shell when
+  the new release keeps exiting. The Web UI has a button for each `/update`
+  request: a banner under the header shows the update's most pressing state,
+  Health gains an update block with what `/update` shows, and Restart and Go
+  back each say what they'll do before you confirm them. Confirming one
+  sends the release it showed (`/update restart 0.14.0`, `/update back keep
+  0.13.1`), and the host refuses rather than switch to another.
+
+### Changed
+
+- The Web UI's panels and media for a fleet child the host has no connection
+  to say why, in the words `fleet--send` gives, instead of "is ready, not
+  running"; for a child that doesn't answer in time, that it "sent no answer
+  in that time", instead of calling it unresponsive; and a request whose
+  child's connection closes before it answers is answered then, instead of
+  when its wait is up.
+
+### Fixed
+
+- A Web UI page signed in as an observer stopped reading `/healthz` when its
+  first read, sent before its session cookie was set, was refused: its alert
+  strip stopped updating, and Health showed the refusal until its Refresh.
+  The page now reads again once the observer is signed in, and a refused
+  read stops the page's reads only when no later read has passed.
+
+- In readline and batch mode (`--no-tui`, or input that isn't a terminal), a
+  slash command's later lines are printed when they come, and in batch mode
+  the next line of input, and the batch's stop, wait for them. `/auth`'s
+  actions, `/puppet`, `/undo`, `/redo`, `/restore`, `/fleet stop` and
+  `/fleet restart` printed only their first lines there before.
+
 ## 0.13.1 — 2026-10-24
 
 ### Added
