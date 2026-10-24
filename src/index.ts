@@ -525,6 +525,7 @@ async function createFramework(
       keyPath: process.env.IDENTITY_KEY_FILE || resolve(config.dataDir, 'identity-key.pem'),
       home: idCfg.home ?? process.env.IDENTITY_HOME ?? 'id.animalabs.ai',
       ...(idCfg.audience ? { defaultAudience: idCfg.audience } : {}),
+      ...(idCfg.mcpl && typeof idCfg.mcpl === 'object' ? { mcpl: idCfg.mcpl } : {}),
     });
     moduleInstances.push(identityModule);
   }

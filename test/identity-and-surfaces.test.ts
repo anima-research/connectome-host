@@ -192,6 +192,57 @@ describe('identity module', () => {
     expect(directoryFetches).toBeGreaterThan(fetchesBefore);
   });
 
+  it('mcplEndpointFor: the home node publishes MCPL endpoints by audience, wss only, and a new one resolves without a restart', async () => {
+    const dir = tempDir('ident-');
+    let mcpl: Record<string, string> = { body: 'wss://body.test:8865/', plain: 'ws://10.0.0.7:8765/', odd: 'https://odd.test' };
+    let directoryFetches = 0;
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      mcpl: { local: 'wss://local.test/mcpl' },
+      fetchImpl: (async (url: any) => {
+        const u = String(url);
+        if (u === 'https://id.test/services') {
+          directoryFetches++;
+          return new Response(JSON.stringify({ home: 'id.test', services: {}, mcpl }), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test:8865/');
+    // not wss: never handed to a dial that carries a credential
+    expect(await mod.mcplEndpointFor('plain')).toBeUndefined();
+    expect(await mod.mcplEndpointFor('odd')).toBeUndefined();
+    // recipe config over the directory, as for services
+    expect(await mod.mcplEndpointFor('local')).toBe('wss://local.test/mcpl');
+    // a name every object inherits is not an endpoint
+    expect(await mod.mcplEndpointFor('toString')).toBeUndefined();
+
+    // a door that opens after the directory was cached is found at once: an unknown name re-asks
+    const before = directoryFetches;
+    mcpl = { ...mcpl, games: 'wss://games.test/mcpl' };
+    expect(await mod.mcplEndpointFor('games')).toBe('wss://games.test/mcpl');
+    expect(directoryFetches).toBeGreaterThan(before);
+  });
+
+  it('mcplEndpointFor: a home node that cannot be reached leaves the last directory, or nothing, never a throw', async () => {
+    const dir = tempDir('ident-');
+    let up = true;
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: (async (url: any) => {
+        if (!up) throw new Error('ECONNREFUSED');
+        if (String(url).includes('/services')) return new Response(JSON.stringify({ services: {}, mcpl: { body: 'wss://body.test/' } }), { status: 200 });
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test/');
+    up = false;
+    expect(await mod.mcplEndpointFor('body')).toBe('wss://body.test/');
+    expect(await mod.mcplEndpointFor('nowhere')).toBeUndefined();
+  });
+
   it('request: a home node that cannot be reached degrades to the built-in map, never to an outage', async () => {
     const dir = tempDir('ident-');
     const mod = new IdentityModule({

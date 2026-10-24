@@ -136,6 +136,13 @@ export interface IdentityModuleConfig {
    * animalabs services.
    */
   services?: Record<string, string>;
+  /**
+   * MCPL endpoints by audience name, for `mcpl_deploy {access}` with no url:
+   * merged over the home node's `mcpl` directory, as `services` is over its
+   * `services`. Explicit local config wins, for testing and for hosts
+   * anchored elsewhere.
+   */
+  mcpl?: Record<string, string>;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -269,6 +276,9 @@ export class IdentityModule implements Module {
 
   /** Last good service directory from the home node, and when we got it. */
   private servicesFromHome: Record<string, string> = {};
+  /** The home node's MCPL directory (audience → wss endpoint), fetched with
+   *  the service directory. */
+  private mcplFromHome: Record<string, string> = {};
   private servicesFetchedAt = 0;
   private servicesInflight: Promise<void> | null = null;
 
@@ -692,12 +702,20 @@ export class IdentityModule implements Module {
             signal: AbortSignal.timeout(SERVICES_TIMEOUT_MS),
           });
           if (!res.ok) throw new Error(`status ${res.status}`);
-          const json = (await res.json()) as { services?: Record<string, unknown> };
+          const json = (await res.json()) as { services?: Record<string, unknown>; mcpl?: Record<string, unknown> };
           const map: Record<string, string> = {};
           for (const [name, base] of Object.entries(json.services ?? {})) {
             if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
           }
+          // wss only, as the home node publishes it: the resident's
+          // credential goes on this dial, and mcpl_deploy refuses to send
+          // one over ws:// to another machine.
+          const mcpl: Record<string, string> = {};
+          for (const [name, url] of Object.entries(json.mcpl ?? {})) {
+            if (typeof url === 'string' && /^wss:\/\//.test(url)) mcpl[name] = url;
+          }
           this.servicesFromHome = map;
+          this.mcplFromHome = mcpl;
           this.servicesFetchedAt = Date.now();
         } catch (err) {
           // Keep whatever we had; note it once per failure for the operator.
@@ -715,6 +733,29 @@ export class IdentityModule implements Module {
 
   private layerServices(): Record<string, string> {
     return { ...DEFAULT_SERVICES, ...this.servicesFromHome, ...this.config.services };
+  }
+
+  /** The MCPL endpoint the home node publishes for an audience, so a
+   *  resident can dial a service by the name of its access grant and never
+   *  hold, or judge, an address: the directory is the operator's word that
+   *  the endpoint is safe to dial with a credential. Resolved from the
+   *  directory at runtime (fetched with the services, same cache), recipe
+   *  `mcpl` over it. A name not in the cached directory re-asks once, as
+   *  `request` does for a service, so a door that opened since the last
+   *  refresh is dialled at once. Undefined when no endpoint is published,
+   *  or when the home node can't be reached and none was cached. */
+  async mcplEndpointFor(audience: string): Promise<string | undefined> {
+    const lookup = (): string | undefined => {
+      const map = { ...this.mcplFromHome, ...this.config.mcpl };
+      return Object.hasOwn(map, audience) ? map[audience] : undefined;
+    };
+    await this.resolveServices();
+    let url = lookup();
+    if (!url) {
+      await this.resolveServices({ force: true });
+      url = lookup();
+    }
+    return url;
   }
 
   /** The agent-facing HTTP seam for non-MCPL services (Orrery et al.): the
