@@ -8,6 +8,21 @@
 // `## X.Y.Z — YYYY-MM-DD` section, deletes the consumed fragments, and
 // leaves a fresh empty `## Unreleased` above it. Refuses to release when
 // there is nothing to release, or when the input's shape is ambiguous.
+//
+// It also writes the release's own fields into package.json, which npm's full
+// manifest of the version (what `npm view` reads) keeps, as
+// `connectomeRelease`:
+// - `breaking`: whether anything is breaking since the last final release
+//   below it in the changelog, which holds the history of the branch it's cut
+//   on: the new section, or any section between them, has a Breaking
+//   subsection with anything in it, as release-bump.mjs reads a pending
+//   breaking change. A line's breaking entries are folded into its
+//   prereleases, which npm may not hold, so the final release says so too;
+// - `cacheWrite`: whether an update from that last final release changes what
+//   each resident's requests carry before its newest turn, so that each one's
+//   next request writes its prompt cache in full, from RELEASE_CACHE_WRITE
+//   (`yes@<version>` or `no@<version>`, naming the version being cut); left
+//   out when it's unset, so a release nobody measured says nothing of its cost.
 import {
   existsSync,
   readdirSync,
@@ -152,10 +167,61 @@ function mergeFragments(body: string, frags: Fragment[]): string {
   return chunks.join("\n\n");
 }
 
+/** Whether a section has a Breaking subsection with anything in it, read as
+ *  release-bump.mjs reads a pending breaking change: subsection by subsection,
+ *  any non-blank line under a title that starts with "breaking". */
+function hasBreaking(section: string): boolean {
+  let title: string | null = null;
+  for (const line of section.split("\n")) {
+    const h = line.match(/^###\s+(.*)$/);
+    if (h) title = (h[1] ?? "").trim();
+    else if (title !== null && title.toLowerCase().startsWith("breaking") && line.trim() !== "") return true;
+  }
+  return false;
+}
+
+/** The sections cut since the last final release, from the changelog below
+ *  Unreleased, newest first: the prereleases', in practice. They end at the
+ *  first final release's heading, a version with no prerelease after it
+ *  (`## 1.1.0 — …`, a bare `## 1.1.0`). Every other heading counts, so one
+ *  edited by hand errs toward `breaking` true. */
+function sectionsSinceFinal(rest: string): string[] {
+  const sections: string[] = [];
+  for (const part of rest.split(/^(?=## )/m)) {
+    if (/^## \d+\.\d+\.\d+(?![-.\d])/.test(part)) break;
+    sections.push(part);
+  }
+  return sections;
+}
+
+/** RELEASE_CACHE_WRITE as the release's `cacheWrite`: `yes@<version>` or
+ *  `no@<version>`, naming the version being cut, so a value left in a shell
+ *  from an earlier cut is refused; nothing recorded when it's unset. */
+function cacheWriteOf(value: string | undefined, version: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const m = /^(yes|no)@(.+)$/.exec(value);
+  if (!m) {
+    return fail(
+      `RELEASE_CACHE_WRITE is ${JSON.stringify(value)}: give yes@${version} if this release changes what each ` +
+        `resident's requests carry before its newest turn, so that each one's next request writes its prompt ` +
+        `cache in full, or no@${version} if it doesn't, or leave it unset to record nothing of its cost.`,
+    );
+  }
+  if (m[2] !== version) {
+    return fail(
+      `RELEASE_CACHE_WRITE is ${JSON.stringify(value)}, which names ${m[2]}, but this cut is ${version}: give ` +
+        `yes@${version} or no@${version} for this release, or leave it unset to record nothing of its cost.`,
+    );
+  }
+  return m[1] === "yes";
+}
+
 function main(): void {
-  const { version } = JSON.parse(readFileSync("package.json", "utf8")) as {
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as Record<string, unknown> & {
     version: string;
   };
+  const { version } = pkg;
+  const cacheWrite = cacheWriteOf(process.env.RELEASE_CACHE_WRITE, version);
   const text = readFileSync(CHANGELOG, "utf8");
   const fragments = collectFragments();
 
@@ -177,7 +243,9 @@ function main(): void {
   const headerIndex = header.index ?? 0;
 
   const escaped = version.replace(/[.]/g, "\\.");
-  if (new RegExp(`^## ${escaped}([^0-9]|$)`, "m").test(text)) {
+  // The version ends at whitespace or the line's end, so 1.1.0 is neither
+  // 1.1.01 nor its own prerelease 1.1.0-0, which a final release follows.
+  if (new RegExp(`^## ${escaped}([ \\t]|$)`, "m").test(text)) {
     fail(`a '## ${version}' section already exists.`);
   }
 
@@ -194,6 +262,12 @@ function main(): void {
     );
   }
 
+  // The release's own fields (header comment), after every refusal. They
+  // replace an earlier release's; JSON leaves out a cacheWrite that's unset.
+  const breaking = [merged, ...sectionsSinceFinal(rest)].some(hasBreaking);
+  pkg.connectomeRelease = { breaking, cacheWrite };
+  writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+
   // Spliced by index rather than string-replaced: `text.replace("## Unreleased", …)`
   // would hit the first *substring* occurrence, which is not necessarily the
   // heading the regex matched (an inline mention of `## Unreleased` in prose
@@ -209,6 +283,10 @@ function main(): void {
   console.log(
     `${CHANGELOG}: released '## ${version} — ${date}' from ${fragments.length} ` +
       "fragment(s) plus the Unreleased section.",
+  );
+  console.log(
+    `package.json: connectomeRelease records breaking ${breaking} and ` +
+      `${cacheWrite === undefined ? "nothing of its cache cost (RELEASE_CACHE_WRITE unset)" : `cacheWrite ${cacheWrite}`}.`,
   );
 }
 
