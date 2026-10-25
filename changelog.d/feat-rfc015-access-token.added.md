@@ -8,5 +8,3 @@
   Nothing is wired without an explicit grant (no wildcard or parent counts)
   or without a registered identity, and servers the agent deploys for itself
   never get it. Takes effect with an agent-framework that implements RFC-015.
-- Per-server `toolHints` (MCPL RFC-014 opt-in) in recipes and
-  `mcpl-servers.json`, passed through to agent-framework.

@@ -534,20 +534,12 @@ export interface RecipeMcpServer {
    * granting it means "this server acts as your agent". Only the exact path
    * grants it, never a wildcard or a parent (`access.*`, `*.token`,
    * `access`), and only a host whose identity module holds a registration
-   * answers. See the README's "Delegated access and tool hints".
+   * answers. See the README's "Delegated access".
    */
   enabledCapabilities?: string[];
   /** Capability deny-list; wins over enabledCapabilities on overlap, and a
    *  pattern naming a parent denies everything beneath it. */
   disabledCapabilities?: string[];
-  /**
-   * MCPL RFC-014 opt-in: whether this host advertises `toolHints` to the
-   * server, so it lists every tool with its presence (static or dynamic),
-   * visibility and toolset, instead of tailoring its list to a host that
-   * reads no hints. Hints confer no authority. Passed through to
-   * agent-framework; omitted, the framework's default applies.
-   */
-  toolHints?: boolean;
   /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
@@ -2658,9 +2650,6 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
         throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
-      }
-      if (server.toolHints !== undefined && typeof server.toolHints !== 'boolean') {
-        throw new Error(`mcpServers.${id}.toolHints must be true or false`);
       }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {

@@ -32,11 +32,9 @@ import { AccessRefusedError, type AccessTokenRequest } from '../src/af-access-sh
 import {
   AGENT_DEPLOY_DENIED_CAPABILITIES,
   applyAgentOverlay,
-  loadMcplServers,
   mergeRecipeServers,
   resolveOverlayEntry,
 } from '../src/mcpl-config.ts';
-import { validateRecipe } from '../src/recipe.ts';
 
 const PRINCIPAL = 'agent:example@id.example';
 const HOME = 'id.example';
@@ -225,33 +223,6 @@ describe('wiring: only an explicit grant, only with an identity', () => {
     writeFileSync(overlayPath, JSON.stringify({ mcplServers: { own: { command: 'node', enabledCapabilities: ['access.token'] } } }));
     const replaced = applyAgentOverlay(merged, overlayPath).find((s) => s.id === 'own')!;
     expect(accessTokenGrant(replaced).granted).toBe(false);
-  });
-});
-
-describe('toolHints (RFC-014 opt-in)', () => {
-  it('is a per-server boolean in the recipe, passed through, and refused as anything else', () => {
-    const recipe = (toolHints: unknown) => ({
-      name: 'hints',
-      agent: { systemPrompt: 'sys' },
-      mcpServers: { surfaces: { command: 'node', toolHints } },
-    });
-    expect(validateRecipe(recipe(true)).mcpServers!.surfaces.toolHints).toBe(true);
-    expect(validateRecipe(recipe(false)).mcpServers!.surfaces.toolHints).toBe(false);
-    expect(() => validateRecipe(recipe('true'))).toThrow('mcpServers.surfaces.toolHints must be true or false');
-  });
-
-  it('comes from mcpl-servers.json, and a recipe naming the server may override it', () => {
-    const dir = tempDir('deleg-file-');
-    const path = join(dir, 'mcpl-servers.json');
-    writeFileSync(path, JSON.stringify({ mcplServers: { surfaces: { command: 'node', toolHints: true }, other: { command: 'node' } } }));
-    const loaded = loadMcplServers(path);
-    expect(loaded.find((s) => s.id === 'surfaces')!.toolHints).toBe(true);
-    expect('toolHints' in loaded.find((s) => s.id === 'other')!).toBe(false);
-    const merged = mergeRecipeServers({ surfaces: { toolHints: false }, other: {} }, loaded as never);
-    expect(merged.find((s) => s.id === 'surfaces')!.toolHints).toBe(false);
-
-    writeFileSync(path, JSON.stringify({ mcplServers: { surfaces: { command: 'node', toolHints: 'yes' } } }));
-    expect(() => loadMcplServers(path)).toThrow('mcplServers.surfaces.toolHints must be true or false');
   });
 });
 

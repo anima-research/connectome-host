@@ -240,7 +240,7 @@ loads only when a recipe names its id. For a named id the registry supplies
 the command, args and env, and the recipe entry may carry only policy fields —
 no `command` or `url` needed: `channelSubscription`, `toolPrefix`, feature-set
 and tool toggles, reconnect settings, WebSocket transport, `access`,
-`toolLifecycle`, `toolHints` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
+`toolLifecycle` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
 `src/mcpl-config.ts`).
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
@@ -327,7 +327,7 @@ To check what each tool ended up as, and which of the three sources decided it, 
 
 Servers an agent deploys for itself (`mcpl-servers.agent.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
 
-### Delegated access and tool hints (MCPL RFC-015 / RFC-014)
+### Delegated access (MCPL RFC-015)
 
 **`access.token` means "this server acts as your agent".** A server granted it may ask the host, at any time, for a short-lived credential that identifies the agent to another service: a surface server that mounts a remote game, a proxy, an adapter calling an HTTP API as the agent. It can ask for **any** audience the agent's identity can obtain; there is no per-service list, and what the agent's identity service lets the agent reach is the only bound. Grant it only to a server you'd trust with the agent's actions, data and spend at those services.
 
@@ -337,8 +337,7 @@ It's granted by naming the exact path in the server's `enabledCapabilities`, on 
 "mcpServers": {
   "surfaces": {
     "url": "wss://surfaces.example/mcpl",
-    "enabledCapabilities": ["channels", "pushEvents", "access.token"],
-    "toolHints": true
+    "enabledCapabilities": ["channels", "pushEvents", "access.token"]
   }
 }
 ```
@@ -351,9 +350,7 @@ It's granted by naming the exact path in the server's `enabledCapabilities`, on 
 - Refusals carry a `kind`: `no_identity` (not registered, or the key or record can't be loaded), `host_policy` (no `bearer` among the server's `schemes`), `provider_refused` (the identity service answered 4xx), `rate_limited` (429), or `unavailable` (5xx, unreachable, no answer in time, or no usable expiry).
 - Every request is appended to `$DATA_DIR/access-audit.jsonl`: time, server, audience, the endpoint cut to scheme, host, port and path, purpose, outcome, the refusal's kind and reason, `expiresAt`. The credential is never recorded, logged, or shown to the agent.
 
-`toolHints` (per server, `true` or `false`) is the RFC-014 opt-in. With it, the host advertises `toolHints` to that server, which then lists every tool with hints saying whether it's static or dynamic, visible, and in which toolset. Hints confer no authority. It can be set in the recipe, or in `mcpl-servers.json` for a server the recipe names.
-
-Both take effect with an agent-framework that implements RFC-015 and RFC-014 (`accessToken` and `toolHints` on `McplServerConfig`); older ones ignore them.
+It takes effect with an agent-framework that implements RFC-015 (`accessToken` on `McplServerConfig`); older ones ignore it.
 
 ### Included recipes
 

@@ -1,6 +1,6 @@
 /**
  * TEMPORARY SHIM — REMOVE once @animalabs/agent-framework ships MCPL RFC-015
- * (its `McplServerConfig.accessToken` and `toolHints`, and its exported
+ * (its `McplServerConfig.accessToken`, and its exported
  * `AccessRefusedError`). Then import `AccessRefusedError` and the request and
  * result types from '@animalabs/agent-framework' where this file is imported,
  * and delete this file.
