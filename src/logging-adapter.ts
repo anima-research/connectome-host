@@ -141,8 +141,9 @@ const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for
 
 /** How many runs of failures an adapter remembers, those begun latest. A run
  *  is a cache lineage's failed calls until a call on it succeeds or an hour
- *  passes with none failing (FAILING_RUN_GAP_MS); keepalive pokes count for
- *  neither. */
+ *  passes with none failing (FAILING_RUN_GAP_MS); keepalive pokes, cancelled
+ *  calls, and failed calls whose request is missing or can't be serialized
+ *  count for neither. */
 const FAILING_RUNS_REMEMBERED = 256;
 
 /** The most of its failing requests one log can write in full at once, in
@@ -796,9 +797,11 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
    *  that copy's record's `requestSha256`), as a cancelled call (membrane's `abort`) always does, since a
    *  cancellation is never the request's doing; it leaves its lineage's run
    *  as it was. A request with no lineage is held to the budget alone. Each
-   *  error record whose request can be serialized carries `requestSha256`,
-   *  so identical requests show as such. `remember` is what to note once the record is appended
-   *  whole. LLM_CALLS_FULL_PAYLOADS=1 keeps every call's request, this one included. */
+   *  complete or stream error record whose request can be serialized
+   *  carries `requestSha256`, unless the line bound cuts it to its head, so
+   *  identical requests show as such. `remember` is what to note once the
+   *  record is appended whole. LLM_CALLS_FULL_PAYLOADS=1 keeps every call's
+   *  request, this one included. */
   private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
     fields: Record<string, unknown>;
     remember?: Written;

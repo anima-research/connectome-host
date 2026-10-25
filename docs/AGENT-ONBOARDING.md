@@ -823,7 +823,8 @@ blocks; expect folds to interact with this on the next model generation.
   `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), and on the first failure of
   each kind of error (its type, or for an untyped error its name, with its HTTP status when it has
   one) in a run of failures on a cache lineage, until a call on it succeeds or an hour passes with
-  no failed call on it, keepalive pokes and cancelled calls counting for neither (later failures of
+  no failed call on it, keepalive pokes, cancelled calls, and failed calls whose request is missing or
+  can't be serialized counting for neither (later failures of
   that kind carry `requestSha256`, the request's size under `rawRequestOmitted`, and, once that
   kind's copy is written, the run's copy's hash as
   `rawRequestOmitted.copySha256`, its record's `requestSha256`; the latest 256 lineages' runs are

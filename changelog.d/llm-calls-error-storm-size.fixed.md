@@ -2,8 +2,9 @@
   first failure of each kind of error (its type, or for an untyped error its
   name, with its HTTP status when it has one) in a run of failures on its
   cache lineage (model, system and tools); a call's success on that lineage,
-  or an hour with no failed call on it, ends the run, and keepalive pokes and
-  cancelled calls count for neither.
+  or an hour with no failed call on it, ends the run, and keepalive pokes,
+  cancelled calls, and failed calls whose request is missing or can't be
+  serialized count for neither.
   The run's later failures of that kind, such as each retry or each turn of
   a rate-limit storm, record the request's size under `rawRequestOmitted`,
   with the hash of the run's copy of that kind as `copySha256` once that

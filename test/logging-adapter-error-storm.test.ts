@@ -70,7 +70,7 @@ for (const kind of ['complete', 'stream'] as const) {
     for (const rec of repeats) {
       expect(rec.rawRequest).toBeUndefined();
       expect(rec.requestSha256).toBe(sha(BIG));
-      expect(String((rec.rawRequestOmitted as { reason?: unknown }).reason)).toContain('keeps the full request of every call, successes and keepalive pokes included');
+      expect(String((rec.rawRequestOmitted as { reason?: unknown }).reason)).toContain("keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on");
       expect(rec.rawRequestOmitted).toMatchObject({ bytes: JSON.stringify(BIG).length, reason: expect.stringContaining('LLM_CALLS_FULL_PAYLOADS=1') });
       expect(JSON.stringify(rec).length).toBeLessThan(10_000);
     }
@@ -143,12 +143,14 @@ test('a kind is the error type, or an untyped error\'s name, with its HTTP statu
   const kept: boolean[] = [];
   // membrane types every 5xx as server: a 500 after 529s is another kind. Two
   // types that share a status are two kinds too.
-  const errors = [serverError('529 overloaded', 529), serverError('529 overloaded', 529), serverError('500 invalid_request_error', 500), invalidRequestError('400 roles must alternate'), contextLengthError('400 prompt is too long'), new Error('socket hang up'), new TypeError('x is not a function'), new TypeError('y is not a function')];
+  // An untyped error's status tells kinds apart too.
+  const withStatus = (status: number) => Object.assign(new Error(`bad gateway ${status}`), { httpStatus: status });
+  const errors = [serverError('529 overloaded', 529), serverError('529 overloaded', 529), serverError('500 invalid_request_error', 500), invalidRequestError('400 roles must alternate'), contextLengthError('400 prompt is too long'), new Error('socket hang up'), new TypeError('x is not a function'), new TypeError('y is not a function'), withStatus(502), withStatus(502), withStatus(503)];
   for (const [n, err] of errors.entries()) {
     failWith(err, ofLineage('a', `turn ${n}`));
     kept.push((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest !== undefined);
   }
-  expect(kept).toEqual([true, false, true, true, true, true, true, false]);
+  expect(kept).toEqual([true, false, true, true, true, true, true, false, true, false, true]);
 });
 
 test('a run ends once more than an hour has passed since its last failed call, and a failure within the hour keeps it going', async () => {
@@ -289,7 +291,7 @@ test('a request with no lineage is held to the budget alone', async () => {
   expect(records[2].rawRequestOmitted).toMatchObject({ reason: expect.stringContaining('has no room for this one') });
 });
 
-test('LLM_CALLS_FULL_PAYLOADS=1 keeps every copy', async () => {
+test('LLM_CALLS_FULL_PAYLOADS=1 keeps every failing request whole', async () => {
   process.env.LLM_CALLS_FULL_PAYLOADS = '1';
   failWith(rateLimitError('429'));
   const records = await errorRecords('stream', 2);
@@ -345,7 +347,7 @@ test('failures that each succeed on retry spend the budget, which refills over a
     expect(kept).toEqual([true, true, true, false, false]);
     expect(told.filter((l) => l.includes('the budget for failing requests in full'))).toHaveLength(1);
     expect(told.find((l) => l.includes('the budget for failing requests'))).toContain('LLM_CALLS_FULL_PAYLOADS=1');
-    expect(told.find((l) => l.includes('the budget for failing requests'))).toContain('keeps the full request of every call, successes and keepalive pokes included');
+    expect(told.find((l) => l.includes('the budget for failing requests'))).toContain("keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on");
     // A day later, the budget has refilled: a failure the request caused is kept.
     now += 24 * 60 * 60 * 1000;
     setSystemTime(new Date(now));
@@ -490,6 +492,30 @@ test("a clock stepped back doesn't move a run's latest failure back, so the run 
     // Put right, a minute after the first failure: the run goes on.
     now += 2 * 60 * 60_000 + 60_000;
     expect(await fail('12:01')).toBe(false);
+  } finally {
+    setSystemTime();
+  }
+});
+
+test('a clock stepped back from a full budget takes nothing from it', async () => {
+  const adapter = newAdapter();
+  const size = Buffer.byteLength(JSON.stringify(ofLineage('a', 'x'.repeat(1000))), 'utf8');
+  (adapter as unknown as { failedCopyBudget: number }).failedCopyBudget = size;
+  let now = Date.parse('2026-10-25T12:00:00Z');
+  const keep = async (name: string) => {
+    setSystemTime(new Date(now));
+    failWith(rateLimitError('429'), ofLineage(name, 'x'.repeat(1000)));
+    return (await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest !== undefined;
+  };
+  try {
+    await stderrOf(async () => {
+      // The budget's first use, then a step back of two hours: the whole room
+      // is still there for a copy of its whole size.
+      setSystemTime(new Date(now));
+      expect((adapter as unknown as { failedCopyRoomNow(): number }).failedCopyRoomNow()).toBe(size);
+      now -= 2 * 60 * 60_000;
+      expect(await keep('a')).toBe(true);
+    });
   } finally {
     setSystemTime();
   }
