@@ -16,4 +16,4 @@
   it, and a cancelled call (membrane's `abort`) keeps none. One OAuth 429
   storm had grown a single log to 687MB. A request membrane rejects before sending (such as an unsupported
   prefill) is now kept too, from the error. `LLM_CALLS_FULL_PAYLOADS=1`
-  still keeps every copy.
+  still keeps the full request of every call, failures included.

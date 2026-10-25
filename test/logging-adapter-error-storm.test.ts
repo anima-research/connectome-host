@@ -70,6 +70,7 @@ for (const kind of ['complete', 'stream'] as const) {
     for (const rec of repeats) {
       expect(rec.rawRequest).toBeUndefined();
       expect(rec.requestSha256).toBe(sha(BIG));
+      expect(String((rec.rawRequestOmitted as { reason?: unknown }).reason)).toContain('keeps the full request of every call, successes and keepalive pokes included');
       expect(rec.rawRequestOmitted).toMatchObject({ bytes: JSON.stringify(BIG).length, reason: expect.stringContaining('LLM_CALLS_FULL_PAYLOADS=1') });
       expect(JSON.stringify(rec).length).toBeLessThan(10_000);
     }
@@ -344,6 +345,7 @@ test('failures that each succeed on retry spend the budget, which refills over a
     expect(kept).toEqual([true, true, true, false, false]);
     expect(told.filter((l) => l.includes('the budget for failing requests in full'))).toHaveLength(1);
     expect(told.find((l) => l.includes('the budget for failing requests'))).toContain('LLM_CALLS_FULL_PAYLOADS=1');
+    expect(told.find((l) => l.includes('the budget for failing requests'))).toContain('keeps the full request of every call, successes and keepalive pokes included');
     // A day later, the budget has refilled: a failure the request caused is kept.
     now += 24 * 60 * 60 * 1000;
     setSystemTime(new Date(now));
@@ -467,6 +469,27 @@ test('however long the budget sits, it refills only to its whole', async () => {
       now += 2 * 24 * 60 * 60 * 1000;
       expect([await keep('d'), await keep('e'), await keep('f')]).toEqual([true, true, false]);
     });
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("a clock stepped back doesn't move a run's latest failure back, so the run goes on once the clock is put right", async () => {
+  const adapter = newAdapter();
+  let now = Date.parse('2026-10-25T12:00:00Z');
+  const fail = async (content: string) => {
+    setSystemTime(new Date(now));
+    failWith(rateLimitError('429'), ofLineage('a', content));
+    return (await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest !== undefined;
+  };
+  try {
+    expect(await fail('12:00')).toBe(true);
+    // The clock steps back two hours: the same run, so its repeat is noted.
+    now -= 2 * 60 * 60_000;
+    expect(await fail('10:00')).toBe(false);
+    // Put right, a minute after the first failure: the run goes on.
+    now += 2 * 60 * 60_000 + 60_000;
+    expect(await fail('12:01')).toBe(false);
   } finally {
     setSystemTime();
   }

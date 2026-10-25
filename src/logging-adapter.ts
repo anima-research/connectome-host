@@ -798,7 +798,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
    *  as it was. A request with no lineage is held to the budget alone. Each
    *  error record whose request can be serialized carries `requestSha256`,
    *  so identical requests show as such. `remember` is what to note once the record is appended
-   *  whole. LLM_CALLS_FULL_PAYLOADS=1 keeps every copy. */
+   *  whole. LLM_CALLS_FULL_PAYLOADS=1 keeps every call's request, this one included. */
   private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
     fields: Record<string, unknown>;
     remember?: Written;
@@ -816,7 +816,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         requestSha256,
         rawRequestOmitted: {
           bytes,
-          reason: `${because}; LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps every copy (within the 16 MiB line bound)`,
+          reason: `${because}; LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on`,
         },
       },
     });
@@ -841,9 +841,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   /** A lineage's run, if one is going on: one whose last failure is older
-   *  than FAILING_RUN_GAP_MS has ended. A failed call counts as the run's
-   *  latest whether or not its request is kept; a keepalive poke's failure
-   *  doesn't come here. */
+   *  than FAILING_RUN_GAP_MS has ended. A failed call that comes here counts
+   *  as the run's latest whether or not its request is kept. A cancelled
+   *  call, one whose request is missing or can't be serialized, a keepalive
+   *  poke's failure, and every call with LLM_CALLS_FULL_PAYLOADS=1 don't
+   *  come here. Its latest failure never moves back: a clock stepped back
+   *  would otherwise end the run early once it came forward again. */
   private failingRun(lineage: string): FailingRun | undefined {
     const run = this.failingRuns.get(lineage);
     if (!run) return undefined;
@@ -852,7 +855,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       this.failingRuns.delete(lineage);
       return undefined;
     }
-    run.lastFailureAt = now;
+    run.lastFailureAt = Math.max(run.lastFailureAt, now);
     return run;
   }
 
@@ -880,8 +883,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     try {
       console.error(`[llm-calls] ${new Date().toISOString()} the budget for failing requests in full `
         + `(${this.failedCopyBudget} bytes, refilled at that much a day) has no room: failing requests are recorded `
-        + 'by size and hash until it refills. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps every copy '
-        + '(within the 16 MiB line bound).');
+        + 'by size and hash until it refills. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
+        + "of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, "
+        + 'not for leaving on.');
     } catch { /* never throw from logging */ }
   }
 
