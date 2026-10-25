@@ -3015,7 +3015,7 @@ export class WebUiModule implements Module {
     }
 
     // Branch-change side effects parity with TUI / runPiped: materialize the
-    // _config mount so gate.json and gate.js stay in sync, then refresh every
+    // _config mount so the gate's files stay in sync, then refresh every
     // welcomed client by re-sending welcome with the new branch's messages.
     if (result.branchChanged) {
       await this.materializeConfigMount();

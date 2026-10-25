@@ -995,8 +995,8 @@ export class IdentityModule implements Module {
     const mounts = workspace.getMounts();
     // The mounts a response can be kept in, each with the files its include
     // covers, if it has one. Not `_config`: it holds the gate's config, and a
-    // response saved there would become gate.json or gate.js at the host's
-    // next materialize of the mount.
+    // response saved there would become one of the gate's files at the
+    // host's next materialize of the mount.
     const writable = mounts.filter((m) => m.mode === 'read-write' && m.name !== '_config');
     // Quoted, as the refusals quote a mount's name, so a mount named like a
     // word ("files") reads as a name.

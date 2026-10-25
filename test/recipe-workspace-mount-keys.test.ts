@@ -143,6 +143,16 @@ describe('workspace mount keys', () => {
     }
   });
 
+  test("refuses a mount of the recipe's own named _config, the host's own mount's name, with configMount or without", () => {
+    for (const configMount of [undefined, false, true]) {
+      const workspace = { mounts: [mount(), mount({ name: '_config', path: './config' })], ...(configMount === undefined ? {} : { configMount }) };
+      expect(() => validateRecipe(recipe(workspace)))
+        .toThrow(/^workspace\.mounts\[1\] is named "_config", the name of the host's own mount of the session's config directory, which configMount: true adds\. Give this mount another name\.$/);
+    }
+    // Another spelling is another name.
+    expect(() => validateRecipe(recipe({ mounts: [mount({ name: '_Config', path: './config' })] }))).not.toThrow();
+  });
+
   test('refuses a key the workspace does not have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMounts: true })))
       .toThrow(/^workspace has unknown key "configMounts" \(did you mean "configMount"\?\); known: mounts, configMount$/);
@@ -293,8 +303,8 @@ describe('workspace mount keys', () => {
     };
     expect(() => validateRecipe(recipe(workspace))).not.toThrow();
     // What the host built for this recipe before #275, key by key, but for
-    // `_config`, which now says its backend and holds only the gate's two
-    // config files (#278).
+    // `_config`, which now says its backend and holds only files with the gate's files' names
+    // (#278).
     expect(buildWorkspaceMounts(workspace as never, '/store')).toEqual([
       {
         name: 'notes', path: resolve('./notes'), mode: 'read-only', watch: 'on-agent-action', ignore: ['node_modules'],
@@ -303,7 +313,7 @@ describe('workspace mount keys', () => {
       { name: 'out', path: resolve('./out'), mode: 'read-write', watch: 'never', wakeOnChange: true },
       {
         name: '_config', path: resolve('/store/config'), mode: 'read-write', backend: 'chronicle', watch: 'always',
-        include: ['gate.json', 'gate.js'],
+        include: ['gate.json', 'gate.js', 'gate.recipe.json'],
       },
     ]);
   });

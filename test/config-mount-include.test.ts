@@ -1,7 +1,9 @@
 /**
  * The `_config` mount, as buildWorkspaceMounts makes it, on the
- * agent-framework this host installs: it holds files named `gate.json` or
- * `gate.js`, the gate's, and nothing else beside them (connectome-host#278).
+ * agent-framework this host installs: it holds files named `gate.json`,
+ * `gate.js` or `gate.recipe.json`, the names of the gate's files, and nothing
+ * else beside them (connectome-host#278), and every file agent-framework's
+ * gate leaves there on the starts the host makes.
  * An editor's autosave or swap file and a copy kept for an operator are left
  * out by a sync, by the watcher the host runs it with, and by an agent's
  * write; a materialize writes back only files of those names, leaves every
@@ -9,15 +11,15 @@
  * that history held from before it.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
-import { WorkspaceModule } from '@animalabs/agent-framework';
+import { EventGate, WorkspaceModule } from '@animalabs/agent-framework';
 import type { MountConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from '../src/workspace-mounts.js';
 
-/** What an editor or the framework leaves beside the config: none of it is the mount's. */
+/** What an editor or an operator leaves beside the config: none of it is the mount's. */
 const LEFT_OUT = ['#gate.json#', '.gate.json.swp', '.gate.json.swo', 'gate.json~', 'gate.json.unreadable-1', 'notes.txt'];
 
 type Event = { type: string; paths?: string[]; mount?: string };
@@ -67,10 +69,11 @@ function setUp() {
 }
 
 describe("the _config mount's include", () => {
-  test('a sync takes in the files named gate.json or gate.js and passes over what lies beside them', async () => {
+  test('a sync takes in the files named gate.json, gate.js or gate.recipe.json and passes over what lies beside them', async () => {
     const { root, storePath, cfg } = setUp();
     writeFileSync(join(cfg, 'gate.json'), '{}\n');
     writeFileSync(join(cfg, 'gate.js'), 'export default () => true;\n');
+    writeFileSync(join(cfg, 'gate.recipe.json'), '{}\n');
     for (const name of LEFT_OUT) writeFileSync(join(cfg, name), `${name}\n`);
     // An include's name covers that name in a directory beneath too.
     mkdirSync(join(cfg, 'old'));
@@ -78,9 +81,36 @@ describe("the _config mount's include", () => {
     writeFileSync(join(cfg, 'old', 'notes.txt'), 'old notes\n');
     const { call } = await started(root, configMount(storePath));
     const synced = (await call('sync', {})).data as { results: Array<{ synced: string[] }> };
-    expect(synced.results.flatMap((r) => r.synced).sort()).toEqual(['gate.js', 'gate.json', 'old/gate.json']);
+    expect(synced.results.flatMap((r) => r.synced).sort()).toEqual(['gate.js', 'gate.json', 'gate.recipe.json', 'old/gate.json']);
     const listed = (await call('ls', { path: '_config' })).data as { entries: Array<{ name: string }> };
-    expect(listed.entries.map((e) => e.name).sort()).toEqual(['gate.js', 'gate.json', 'old']);
+    expect(listed.entries.map((e) => e.name).sort()).toEqual(['gate.js', 'gate.json', 'gate.recipe.json', 'old']);
+  }, 30_000);
+
+  test('a sync takes in every file the gate leaves in the config directory on the starts the host makes: with the recipe\'s wake rules, with them changed, and with none', async () => {
+    const { root, storePath, cfg } = setUp();
+    // The host's starts (index.ts gives the gate this path, and the recipe's
+    // wake config where the recipe has wake rules, which agent-framework
+    // passes on as initialConfig): the second after the recipe changed, so a
+    // gate that keeps a record of the recipe it last applied writes it, and
+    // the third with none. On an agent-framework whose gate leaves another
+    // file here on these starts, this fails until the include names it.
+    const recipeWake = (names: string[]) => ({
+      policies: names.map((name) => ({ name, match: { scope: ['external-message'] }, behavior: 'always' })),
+    });
+    for (const names of [['a', 'b'], ['a', 'c'], undefined]) {
+      new EventGate({
+        configPath: join(cfg, 'gate.json'), ...(names ? { initialConfig: recipeWake(names) as never } : {}),
+        emitTrace: () => {}, addMessage: () => '', requestInference: () => {}, getAgentNames: () => ['agent'],
+      });
+    }
+    const left = (readdirSync(cfg, { recursive: true, withFileTypes: true }) as Array<{ isFile(): boolean; name: string; parentPath?: string; path?: string }>)
+      .filter((e) => e.isFile())
+      .map((e) => relative(cfg, join(e.parentPath ?? e.path ?? cfg, e.name)))
+      .sort();
+    expect(left).toContain('gate.json');
+    const { call } = await started(root, configMount(storePath));
+    const synced = (await call('sync', {})).data as { results: Array<{ synced: string[] }> };
+    expect(synced.results.flatMap((r) => r.synced).sort()).toEqual(left);
   }, 30_000);
 
   test("the watcher takes in a new gate.js and nothing written beside it", async () => {
@@ -107,7 +137,7 @@ describe("the _config mount's include", () => {
     const { call } = await started(root, configMount(storePath));
     const res = await call('write', { path: '_config/notes.txt', content: 'a note' });
     expect(res.success).toBe(false);
-    expect(String(res.error)).toContain('"_config/notes.txt" is outside the mount\'s include: mount "_config" holds only gate.json, gate.js.');
+    expect(String(res.error)).toContain('"_config/notes.txt" is outside the mount\'s include: mount "_config" holds only gate.json, gate.js, gate.recipe.json.');
     expect(existsSync(join(cfg, 'notes.txt'))).toBe(false);
   }, 30_000);
 
@@ -138,8 +168,8 @@ describe("the _config mount's include", () => {
     expect((await call('write', { path: '_config/gate.json', content: '{"v":2}\n' })).success).toBe(true);
     expect(readFileSync(join(cfg, 'gate.json'), 'utf8')).toBe('{"v":1}\n');
     await workspace.materializeMount('_config');
-    // The files beside the config stay as they were, as they do on a mount
-    // with no include: the include takes nothing off disk.
+    // The files beside the config stay on disk as they were: the include
+    // takes nothing off disk.
     expect(readFileSync(join(cfg, 'gate.json'), 'utf8')).toBe('{"v":2}\n');
     expect(statSync(join(cfg, 'gate.json')).mode & 0o777).toBe(0o600);
     expect(readFileSync(join(cfg, 'gate.json.unreadable-1'), 'utf8')).toBe('kept for the operator\n');

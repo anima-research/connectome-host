@@ -855,7 +855,7 @@ describe('identity: what the agent reads when a call fails', () => {
       mounts: [
         { name: 'files', path: join(dir, 'files'), mode: 'read-write', watch: 'never', include: ['*.md', '*.txt'] },
         { name: 'notes', path: join(dir, 'notes'), mode: 'read-write', watch: 'never' },
-        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] },
+        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js', 'gate.recipe.json'] },
       ],
     });
     const store = JsStore.openOrCreate({ path: join(dir, 'store') });
@@ -888,7 +888,7 @@ describe('identity: what the agent reads when a call fails', () => {
     const workspace = new WorkspaceModule({
       mounts: [
         { name: 'docs', path: join(dir, 'docs'), mode: 'read-only', watch: 'never' },
-        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js'] },
+        { name: '_config', path: join(dir, 'config'), mode: 'read-write', watch: 'never', include: ['gate.json', 'gate.js', 'gate.recipe.json'] },
       ],
     });
     const store = JsStore.openOrCreate({ path: join(dir, 'store') });

@@ -54,15 +54,20 @@ export function buildWorkspaceMounts(
     ];
   }
 
-  // Config mount: version-controls the gate's config files, gate.json and
-  // gate.js, the two agent-framework reads from this directory, via
-  // Chronicle. Opt-in via recipe: workspace.configMount = true. Its include
-  // holds the mount to files of those two names, so nothing else left beside
-  // them is versioned or written back: an editor's autosave or swap file, or
-  // a copy kept for an operator (anima-research/connectome-host#278). An
-  // include's name covers that name in any directory beneath too, as no form
-  // of agent-framework's include names the root alone. A config file the
-  // host adds here later is added to the include. NOTE: this
+  // Config mount: version-controls the gate's files in this directory via
+  // Chronicle: gate.json, gate.js, and gate.recipe.json, the recipe a start
+  // last applied to gate.json, which agent-framework writes beside it from
+  // anima-research/agent-framework#677 on (not in 0.26.x) and reads at the
+  // next start, so a rewind must take it back with gate.json. Opt-in via recipe:
+  // workspace.configMount = true. Its include holds the mount to files of
+  // those names, so nothing else left beside them is versioned or written
+  // back: an editor's autosave or swap file, or a copy kept for an operator
+  // under another name (anima-research/connectome-host#278). An include's name covers that name
+  // in any directory beneath too, as no form of agent-framework's include
+  // names the root alone. A file the gate starts writing here is added to
+  // the include: config-mount-include.test.ts starts the gate as the host
+  // does and fails, on an agent-framework whose gate leaves another file
+  // here on those starts, until it is. NOTE: this
   // mount is deliberately NOT autoMaterialize — the host re-materializes it
   // explicitly after branch-changing commands, and ordinary agent edits stay
   // Chronicle-side until then. Anything that assumes `_config` disk content
@@ -78,7 +83,7 @@ export function buildWorkspaceMounts(
       mode: 'read-write',
       backend: 'chronicle',
       watch: 'always',
-      include: ['gate.json', 'gate.js'],
+      include: ['gate.json', 'gate.js', 'gate.recipe.json'],
     });
   }
 

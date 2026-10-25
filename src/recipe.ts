@@ -847,9 +847,13 @@ export interface RecipeModules {
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   /**
    * The workspace's mounts. `configMount: true` adds `_config`, the
-   * session's config directory, holding only files named `gate.json` or
-   * `gate.js`, at any depth (its include), with history in Chronicle; it isn't
-   * materialized on agent writes (buildWorkspaceMounts).
+   * session's config directory, holding only files named `gate.json`,
+   * `gate.js` or `gate.recipe.json`, the names of the gate's files, at any
+   * depth (its include), with history in Chronicle; it isn't materialized
+   * on agent writes (buildWorkspaceMounts). Since it has an include,
+   * agent-framework keeps none of its own files there: a recipe whose other
+   * mounts are all read-only keeps no over-cap tool result or fetched
+   * reference in a file. No mount of the recipe's own is named `_config`.
    */
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
@@ -2794,6 +2798,13 @@ export function validateRecipe(raw: unknown): Recipe {
         const where = `workspace.mounts[${i}]`;
         if (!m || typeof m !== 'object') {
           throw new Error(`${where} must be an object`);
+        }
+        // The host takes a mount named _config for its own, the session's
+        // config directory that configMount adds, by the name alone: saveAs
+        // refuses it, an instructions path can't read through it, and a
+        // branch command re-materializes it. So the name is the host's.
+        if (m.name === '_config') {
+          throw new Error(`${where} is named "_config", the name of the host's own mount of the session's config directory, which configMount: true adds. Give this mount another name.`);
         }
         for (const key of Object.keys(m)) {
           if (Object.hasOwn(MOUNT_KEY_CHECKS, key)) continue;

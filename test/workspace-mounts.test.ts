@@ -67,9 +67,9 @@ describe('buildWorkspaceMounts', () => {
     expect(config.autoMaterialize).toBeUndefined();
     expect(config.path).toBe(resolve('/store/config'));
     expect(config.watch).toBe('always');
-    // It holds the gate's two config files and nothing beside them
+    // It holds files with the gate's files' names and nothing beside them
     // (connectome-host#278; test/config-mount-include.test.ts).
-    expect(config.include).toEqual(['gate.json', 'gate.js']);
+    expect(config.include).toEqual(['gate.json', 'gate.js', 'gate.recipe.json']);
     // Undo and redo rewind it through materializeMount, which only a
     // chronicle mount has history for, whatever the framework's default.
     expect(config.backend).toBe('chronicle');
