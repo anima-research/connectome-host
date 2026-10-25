@@ -65,6 +65,7 @@ import { ChannelModeModule } from './modules/channel-mode-module.js';
 import { WebUiModule, stopWebUiServer } from './modules/web-ui-module.js';
 import { ObserversModule } from './modules/observers-module.js';
 import { IdentityModule } from './modules/identity-module.js';
+import { ACCESS_AUDIT_FILE, delegatedAccessFor, wireAccessTokens } from './delegated-access.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
@@ -637,6 +638,17 @@ async function createFramework(
     // agent-framework warns when it connects (serverConfigWarnings).
     return withEnv;
   });
+
+  // Delegated access (MCPL RFC-015): a server the recipe grants
+  // `access.token` by name may ask for short-lived credentials acting as the
+  // agent, minted by the identity module and audited in the data dir. Wired
+  // only for such a server, and only while the agent holds a registration to
+  // mint from; agent-framework advertises `access` to exactly the servers
+  // wired, so every other server never asks (src/delegated-access.ts).
+  const delegatedAccess = delegatedAccessFor(identityModule, {
+    auditPath: resolve(config.dataDir, ACCESS_AUDIT_FILE),
+  });
+  for (const line of wireAccessTokens(finalServers, delegatedAccess)) console.warn(line);
 
   // No server augmentation needed — gate is wired via FrameworkConfig.gate
 

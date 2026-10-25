@@ -673,6 +673,11 @@ export const AGENT_DEPLOY_DENIED_CAPABILITIES: readonly string[] = [
   // arguments) is an operator grant. The bare parent masks both leaves, so a
   // toolLifecycle block the agent writes cannot re-grant them either.
   'toolLifecycle',
+  // MCPL RFC-015: `access.token` lets a server act as the agent elsewhere,
+  // which only the operator grants, by name, in the recipe. The overlay
+  // drops enabledCapabilities already; the bare parent denies the path (and
+  // any later one beneath it) whatever else an entry says.
+  'access',
 ];
 
 /** The allow/deny list fields where an EMPTY array carries no intent (see

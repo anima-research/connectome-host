@@ -114,10 +114,44 @@ function diskRemedy(error: WorkspaceReadError): string {
  * credentials.
  */
 export class IdentityError extends Error {
-  constructor(message: string, readonly forAgent: string) {
+  constructor(
+    message: string,
+    readonly forAgent: string,
+    /** What failed, for a reader that branches on it rather than reading it:
+     *  delegated access (src/delegated-access.ts) maps it to a refusal kind.
+     *  Set where access was asked for and where the key or record can't be
+     *  had; absent elsewhere. */
+    readonly failure?: IdentityFailure,
+    /** The failure as one clause naming no host path and no credential, for
+     *  a party other than the agent or the operator: a server the host
+     *  refuses delegated access to. */
+    readonly clause?: string,
+  ) {
     super(message);
     this.name = 'IdentityError';
   }
+}
+
+/**
+ * What an access exchange's IdentityError says failed:
+ * - `not_registered`: no registration is recorded or held on this host;
+ * - `unloaded`: this host's key or registration record can't be had;
+ * - `refused`: the identity service answered with a 4xx other than 429;
+ * - `rate_limited`: it answered 429;
+ * - `unavailable`: no reply in time, a 5xx or another status, or a 200 whose
+ *   reply couldn't be read;
+ * - `no_audience`: access was asked for without naming an audience.
+ */
+export type IdentityFailure = 'not_registered' | 'unloaded' | 'refused' | 'rate_limited' | 'unavailable' | 'no_audience';
+
+/** A credential the identity service minted, as delegated access reads it:
+ *  `exp` as the service gave it (seconds since the epoch from
+ *  archipelago-home; anything else is the reader's to refuse), and the
+ *  principal it names, where the reply or this host's record names one. */
+export interface MintedAccess {
+  token: string;
+  exp: unknown;
+  sub: string | null;
 }
 
 export interface IdentityModuleConfig {
@@ -257,6 +291,10 @@ function shown(value: unknown): string {
 const IDENTITY_UNLOADED =
   'this host\'s identity couldn\'t be loaded. It\'s the host\'s to fix: ask your operator, who can find the reason in ' +
   'the host\'s log';
+
+/** The clause a party other than the agent and the operator reads when the
+ *  key or the record can't be had: the operator's log has why. */
+const UNLOADED_CLAUSE = 'the host\'s identity couldn\'t be loaded';
 
 /** What status and a second registration say of a registration held in memory. */
 const HELD_NOTE =
@@ -415,14 +453,59 @@ export class IdentityModule implements Module {
    */
   async accessFor(audience?: string): Promise<string> {
     const aud = audience ?? this.config.defaultAudience;
-    const home = this.config.home;
     if (!aud) {
       throw new IdentityError(
         'access was asked for without naming an audience, and the identity module sets no default ' +
           '(modules.identity.audience in the recipe)',
         'this host asked for access without naming a service. It\'s the host\'s to fix: ask your operator',
+        'no_audience',
+        'the host asked for access without naming a service',
       );
     }
+    return (await this.exchange(aud)).token;
+  }
+
+  /**
+   * Delegated access (MCPL RFC-015 §8.1): a credential for `audience`, minted
+   * as accessFor's is, asking the identity service for the lifetime `ttl`
+   * (archipelago-home's duration form, such as "15m", which can only shorten
+   * the principal's own), within `timeoutMs`. Returns the service's `exp` as
+   * it gave it, for the caller to check, and the principal the credential
+   * names. Never defaults the audience: a server names the one it needs.
+   * Throws accessFor's IdentityErrors, each with its `failure` and `clause`.
+   */
+  async mint(audience: string, opts: { ttl?: string; timeoutMs?: number } = {}): Promise<MintedAccess> {
+    const { token, json } = await this.exchange(audience, opts);
+    let sub: string | null = typeof json.sub === 'string' ? json.sub : null;
+    if (sub === null) {
+      try {
+        sub = this.record()?.sub ?? null;
+      } catch {
+        // The exchange read the record a moment ago; a credential minted
+        // since stands without the principal's name.
+      }
+    }
+    return { token, exp: json.exp, sub };
+  }
+
+  /** The home node this identity is anchored at, for a refusal's words. */
+  get home(): string {
+    return this.config.home;
+  }
+
+  /**
+   * One key-proof exchange at the identity service's `/token`: accessFor's
+   * per dial, and mint's for delegated access, which may ask for a shorter
+   * lifetime (`ttl`, outside the signed statement, which the service lets
+   * only shorten) and a tighter bound than IDENTITY_TIMEOUT_MS. Every
+   * IdentityError it throws carries its `failure` and a `clause` naming no
+   * host path; the messages are accessFor's.
+   */
+  private async exchange(
+    aud: string,
+    opts: { ttl?: string; timeoutMs?: number } = {},
+  ): Promise<{ token: string; json: Record<string, unknown> }> {
+    const home = this.config.home;
     if (!this.record()) {
       // What the host knows: a registration it lost the record of reads the
       // same as none, short of asking the service.
@@ -432,34 +515,45 @@ export class IdentityModule implements Module {
         `${none}; registering takes an invitation code, which the agent redeems through identity--accept_invite`,
         `${none}. Registering takes an invitation code from your operator: run identity--accept_invite through utils ` +
           'with the code and a name',
+        'not_registered',
+        none,
       );
     }
     const timestamp = new Date().toISOString();
     const { id, proof } = this.prove(`archipelago-token|v1|${home}|${aud}|${timestamp}`);
     let reply: { status: number; json: Record<string, unknown> };
     try {
-      reply = await this.post('/token', { id, audience: aud, timestamp, proof });
+      reply = await this.post(
+        '/token',
+        { id, audience: aud, timestamp, proof, ...(opts.ttl !== undefined ? { ttl: opts.ttl } : {}) },
+        opts.timeoutMs,
+      );
     } catch (err) {
       const unreachable = `the identity service at ${home} couldn't be reached for access to "${aud}" (${errorText(err)})`;
-      throw new IdentityError(unreachable, `${unreachable}. Try again shortly`);
+      throw new IdentityError(unreachable, `${unreachable}. Try again shortly`, 'unavailable', unreachable);
     }
     const { status, json } = reply;
-    if (status === 200 && typeof json.token === 'string') return json.token;
+    if (status === 200 && typeof json.token === 'string') return { token: json.token, json };
     if (status === 200) {
       // The service answered that it gave access, but its reply couldn't be read.
       const unread = `the identity service at ${home} answered 200 for access to "${aud}", but its reply couldn't be read`;
-      throw new IdentityError(unread, `${unread}. Try again shortly`);
+      throw new IdentityError(unread, `${unread}. Try again shortly`, 'unavailable', unread);
     }
     const error = String(json.error ?? 'no reason given');
     if (transient(status)) {
       const busy = `the identity service at ${home} couldn't give access to "${aud}" just now (${status}: ${error})`;
-      throw new IdentityError(busy, `${busy}. Try again shortly`);
+      throw new IdentityError(busy, `${busy}. Try again shortly`, status === 429 ? 'rate_limited' : 'unavailable', busy);
     }
     const refused = `the identity service at ${home} refused access to "${aud}" (${status}: ${error})`;
     throw new IdentityError(
       refused,
       `${refused}. identity--status shows this host's registration. If this host should have that access, ask your ` +
         'operator, giving them the reason',
+      // A refusal is the service's 4xx. Any other status (a redirect not
+      // followed, a 2xx other than 200) is no usable answer, which a later
+      // try may get.
+      status >= 400 && status < 500 ? 'refused' : 'unavailable',
+      refused,
     );
   }
 
@@ -493,6 +587,8 @@ export class IdentityModule implements Module {
             `purpose, ${rotate} with an invitation code; the service keeps the old registration, so the new one needs ` +
             'a name the old one doesn\'t hold',
           IDENTITY_UNLOADED,
+          'unloaded',
+          UNLOADED_CLAUSE,
         );
       }
     }
@@ -508,6 +604,8 @@ export class IdentityModule implements Module {
     return new IdentityError(
       `this host's identity key at ${this.config.keyPath} couldn't be read, made or used: ${errorText(err)}`,
       IDENTITY_UNLOADED,
+      'unloaded',
+      UNLOADED_CLAUSE,
     );
   }
 
@@ -599,6 +697,8 @@ export class IdentityModule implements Module {
         'registered is unknown until it is fixed or restored',
       'this host\'s registration record couldn\'t be read, so whether this host is registered is unknown. It\'s the ' +
         'host\'s to fix: ask your operator, who can find the reason in the host\'s log',
+      'unloaded',
+      UNLOADED_CLAUSE,
     );
   }
 
@@ -618,13 +718,19 @@ export class IdentityModule implements Module {
     renameSync(this.recordPath + '.tmp', this.recordPath);
   }
 
-  private async post(path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+  /** POST to the identity service, given `timeoutMs` (IDENTITY_TIMEOUT_MS
+   *  unless a caller bounds it tighter) for the reply, its body included. */
+  private async post(
+    path: string,
+    body: unknown,
+    timeoutMs: number = IDENTITY_TIMEOUT_MS,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
     const f = this.config.fetchImpl ?? fetch;
     const res = await f(`https://${this.config.home}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(IDENTITY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     // A reply whose body isn't a JSON object (none, unreadable, null, an
     // array) reads as one with no fields: its readers then find no id or

@@ -522,6 +522,25 @@ export interface RecipeMcpServer {
   /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
   /**
+   * The server's capability grant (MCPL §5.4): dotted capability paths, `*`
+   * standing for one segment, passed to agent-framework as written. Read
+   * only on a server the recipe defines itself, with its own `command` or
+   * `url` and an id mcpl-servers.json doesn't define: neither that file nor a
+   * recipe's override of one of its servers passes it on, and the agent's
+   * overlay drops it.
+   *
+   * `"access.token"` (MCPL RFC-015) lets the server ask this host for
+   * short-lived credentials acting as the agent toward other services:
+   * granting it means "this server acts as your agent". Only the exact path
+   * grants it, never a wildcard or a parent (`access.*`, `*.token`,
+   * `access`), and only a host whose identity module holds a registration
+   * answers. See the README's "Delegated access".
+   */
+  enabledCapabilities?: string[];
+  /** Capability deny-list; wins over enabledCapabilities on overlap, and a
+   *  pattern naming a parent denies everything beneath it. */
+  disabledCapabilities?: string[];
+  /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
    * If set, only matching tools are exposed to the model AND callable at dispatch.
