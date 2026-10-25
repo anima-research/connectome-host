@@ -522,6 +522,33 @@ export interface RecipeMcpServer {
   /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
   /**
+   * The server's capability grant (MCPL §5.4): dotted capability paths, `*`
+   * standing for one segment, passed to agent-framework as written. Read
+   * only on a server the recipe defines itself, with its own `command` or
+   * `url` and an id mcpl-servers.json doesn't define: neither that file nor a
+   * recipe's override of one of its servers passes it on, and the agent's
+   * overlay drops it.
+   *
+   * `"access.token"` (MCPL RFC-015) lets the server ask this host for
+   * short-lived credentials acting as the agent toward other services:
+   * granting it means "this server acts as your agent". Only the exact path
+   * grants it, never a wildcard or a parent (`access.*`, `*.token`,
+   * `access`), and only a host whose identity module holds a registration
+   * answers. See the README's "Delegated access and tool hints".
+   */
+  enabledCapabilities?: string[];
+  /** Capability deny-list; wins over enabledCapabilities on overlap, and a
+   *  pattern naming a parent denies everything beneath it. */
+  disabledCapabilities?: string[];
+  /**
+   * MCPL RFC-014 opt-in: whether this host advertises `toolHints` to the
+   * server, so it lists every tool with its presence (static or dynamic),
+   * visibility and toolset, instead of tailoring its list to a host that
+   * reads no hints. Hints confer no authority. Passed through to
+   * agent-framework; omitted, the framework's default applies.
+   */
+  toolHints?: boolean;
+  /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
    * If set, only matching tools are exposed to the model AND callable at dispatch.
@@ -2631,6 +2658,9 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (server.inheritEnv !== undefined && typeof server.inheritEnv !== 'boolean') {
         throw new Error(`mcpServers.${id}.inheritEnv must be a boolean`);
+      }
+      if (server.toolHints !== undefined && typeof server.toolHints !== 'boolean') {
+        throw new Error(`mcpServers.${id}.toolHints must be true or false`);
       }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {

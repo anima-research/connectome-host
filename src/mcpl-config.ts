@@ -67,6 +67,8 @@ export interface ServerFileEntry {
   access?: string;
   /** MCPL tool lifecycle (RFC-007) policy — see RecipeMcpServer.toolLifecycle. */
   toolLifecycle?: RecipeToolLifecycle;
+  /** MCPL RFC-014 opt-in — see RecipeMcpServer.toolHints. */
+  toolHints?: boolean;
 }
 
 export interface McplServersFile {
@@ -117,6 +119,7 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       disabledTools: entry.disabledTools,
       channelSubscription: entry.channelSubscription,
       ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
+      ...(entry.toolHints !== undefined ? { toolHints: checkedToolHints(entry.toolHints, id) } : {}),
     });
   }
 
@@ -125,6 +128,11 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
 
 function checkedInheritEnv(value: unknown, where: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${where}.inheritEnv must be a boolean`);
+  return value;
+}
+
+function checkedToolHints(value: unknown, id: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`mcpl-servers.json: mcplServers.${id}.toolHints must be true or false`);
   return value;
 }
 
@@ -147,6 +155,9 @@ export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   // MCPL RFC-007: observation of the agent's other tool calls is per-recipe
   // policy, like tool toggles — not a property of where the server came from.
   'toolLifecycle',
+  // MCPL RFC-014: whether the host reads the server's tool hints is how the
+  // agent is shown its tools, which is the recipe's to decide.
+  'toolHints',
 ] as const;
 
 /** A file-defined server with the recipe's policy overrides applied. */
@@ -673,6 +684,11 @@ export const AGENT_DEPLOY_DENIED_CAPABILITIES: readonly string[] = [
   // arguments) is an operator grant. The bare parent masks both leaves, so a
   // toolLifecycle block the agent writes cannot re-grant them either.
   'toolLifecycle',
+  // MCPL RFC-015: `access.token` lets a server act as the agent elsewhere,
+  // which only the operator grants, by name, in the recipe. The overlay
+  // drops enabledCapabilities already; the bare parent denies the path (and
+  // any later one beneath it) whatever else an entry says.
+  'access',
 ];
 
 /** The allow/deny list fields where an EMPTY array carries no intent (see
