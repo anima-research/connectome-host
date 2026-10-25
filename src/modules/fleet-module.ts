@@ -32,7 +32,7 @@ import type {
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 import { execFile, spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { connect as netConnect, type Socket } from 'node:net';
-import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, rmdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { uptime } from 'node:os';
 import { type IncomingCommand, type WireEvent, type PanelResponseEvent, type UpdateResponseEvent, matchesSubscription } from './fleet-types.js';
@@ -1893,7 +1893,6 @@ export class FleetModule implements Module {
 
     // dataDir is the agent's own argument, so a directory this host can't
     // create is the agent's to choose again.
-    const dataDirExisted = existsSync(dataDir);
     try {
       mkdirSync(dataDir, { recursive: true });
     } catch (err) {
@@ -1909,21 +1908,27 @@ export class FleetModule implements Module {
     // name the working directory's never has, so it's the child's own
     // whatever its data directory, and reads it from MCPL_AGENT_OVERLAY_FILE.
     // Before children had their own, each read the overlay in the working
-    // directory it shares with this host, so a child whose data directory was
-    // there before this launch starts from a copy of that, and a new child
-    // from an empty one. Either is written by a launch that finds no file
-    // there, and is the child's from then on.
+    // directory it shares with this host, by that name (MCPL_AGENT_OVERLAY_FILE
+    // is new with them), so a child launched into this data directory before
+    // starts from a copy of that, which is what it would have loaded, and a
+    // new child from an empty one. A launch was made here where startup.log
+    // is, which every launch tries to open here before its spawn (below),
+    // whether or not the spawn then works: a directory made ahead of time,
+    // empty or holding anything else, is a new child's, which a copy would
+    // hand this host's deploys and their tokens. A child from before this
+    // version with no startup.log, deleted or never opened, starts empty and
+    // loses its deploys, and one that can't be looked at counts as none:
+    // either way nothing is copied. The child's overlay, copied or empty, is
+    // written by a launch that finds none there, and is the child's from then
+    // on, until it's deleted. A new child's launch whose seed fails leaves no
+    // startup.log, so the next one asks the same question again.
+    const ranHere = existsSync(join(dataDir, 'startup.log'));
     const overlayPath = join(dataDir, CHILD_AGENT_OVERLAY_FILE_NAME);
     const workingOverlay = resolve(process.cwd(), AGENT_OVERLAY_FILE_NAME);
     try {
-      seedChildAgentOverlay(overlayPath, workingOverlay, dataDirExisted);
+      seedChildAgentOverlay(overlayPath, workingOverlay, ranHere);
     } catch (err) {
-      // A directory this launch made goes again, if it's still empty, so the
-      // next launch doesn't take it for one a child has used.
-      if (!dataDirExisted) {
-        try { rmdirSync(dataDir); } catch { /* not empty, or already gone */ }
-      }
-      const copying = dataDirExisted && existsSync(workingOverlay);
+      const copying = ranHere && existsSync(workingOverlay);
       return {
         success: false, isError: true,
         error: `Nothing was launched: this host couldn't write the agent overlay of child '${input.name}', ${overlayPath}` +

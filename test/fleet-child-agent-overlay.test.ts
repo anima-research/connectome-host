@@ -2,17 +2,17 @@
  * A fleet child keeps its own agent overlay (mcpl-servers.agent.child.json) in
  * its data directory, where every reader of the overlay finds it, and a host
  * outside a fleet keeps its own (mcpl-servers.agent.json) in its working
- * directory. A child starts
- * from an empty overlay, or, where its data directory was there before its
- * launch, from a copy of the working directory's, which every child read as
- * its own before children had their own.
+ * directory. A child starts from an empty overlay, or, where it was
+ * launched into its data directory before (its startup.log is there), from
+ * a copy of the working directory's, which every child read as its own
+ * before children had their own.
  */
 import { describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FleetModule } from '../src/modules/fleet-module.js';
+import { FleetModule, fleetChildEnv } from '../src/modules/fleet-module.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const CHILD = join(TEST_DIR, 'mock-overlay-env-child.ts');
@@ -51,10 +51,14 @@ async function withChild(home: string, name: string, dataDir: string, then: (rec
 }
 
 describe("a fleet child's agent overlay", () => {
-  test('a new child gets an empty overlay of its own in its data directory, as private as the working directory\'s, and every reader of the overlay takes its path', async () => {
+  test('a new child gets an empty overlay of its own in its data directory, its owner\'s alone whatever the working directory\'s mode, and every reader of the overlay takes its path', async () => {
     const { home, overlay, text } = parentHome();
+    // The working directory's overlay as the host writes it under a common
+    // umask, readable by others; and no umask now, so the mode the seed asks
+    // for is the mode the file gets.
+    const umask = process.umask(0);
     try {
-      chmodSync(overlay, 0o600);
+      chmodSync(overlay, 0o644);
       const dataDir = join(home, 'data', 'child-1');
       const own = join(dataDir, CHILD_OVERLAY);
       await withChild(home, 'child-1', dataDir, (recorded) => {
@@ -64,11 +68,12 @@ describe("a fleet child's agent overlay", () => {
       expect(statSync(own).mode & 0o777).toBe(0o600);
       expect(readFileSync(overlay, 'utf8')).toBe(text);
     } finally {
+      process.umask(umask);
       rmSync(home, { recursive: true, force: true });
     }
   }, 60_000);
 
-  test('a child gets its own overlay\'s path though the parent\'s environment names another, as an operator\'s shell can', async () => {
+  test('a child gets its own overlay\'s path though the parent\'s environment or a recipe entry\'s env names another', async () => {
     const { home, overlay, text } = parentHome();
     const inherited = process.env.MCPL_AGENT_OVERLAY_FILE;
     // The parent's environment names the parent's own overlay, which the
@@ -82,6 +87,9 @@ describe("a fleet child's agent overlay", () => {
         expect(recorded.overlay).toBe(own);
         expect(recorded.admin).toBe(own);
       });
+      // A recipe's entry for the child gives its launch an env of its own,
+      // which an agent's launch can't (the fleet strips it).
+      expect(fleetChildEnv({ MCPL_AGENT_OVERLAY_FILE: overlay }, { MCPL_AGENT_OVERLAY_FILE: overlay }, 'UTC', dataDir).MCPL_AGENT_OVERLAY_FILE).toBe(own);
       expect(readFileSync(overlay, 'utf8')).toBe(text);
     } finally {
       if (inherited === undefined) delete process.env.MCPL_AGENT_OVERLAY_FILE;
@@ -90,12 +98,15 @@ describe("a fleet child's agent overlay", () => {
     }
   }, 60_000);
 
-  test('a child whose data directory was there before its launch starts from a copy of the working directory\'s overlay, once, and keeps it as its own', async () => {
+  test('a child launched into its data directory before starts from a copy of the working directory\'s overlay, once, its owner\'s alone, and keeps it as its own', async () => {
     const { home, overlay, text } = parentHome();
+    const umask = process.umask(0);
     try {
-      chmodSync(overlay, 0o600);
+      chmodSync(overlay, 0o644);
       const dataDir = join(home, 'data', 'child-1');
       mkdirSync(dataDir, { recursive: true });
+      // Every launch opens startup.log in the data directory before its spawn.
+      writeFileSync(join(dataDir, 'startup.log'), '--- launch\n');
       const own = join(dataDir, CHILD_OVERLAY);
       await withChild(home, 'child-1', dataDir, (recorded) => {
         expect(recorded.overlay).toBe(own);
@@ -115,16 +126,18 @@ describe("a fleet child's agent overlay", () => {
       });
       expect(readFileSync(own, 'utf8')).toBe(childsOwn);
     } finally {
+      process.umask(umask);
       rmSync(home, { recursive: true, force: true });
     }
   }, 60_000);
 
-  test('a child whose data directory was there, with no overlay in the working directory, starts from an empty one, which a later launch keeps', async () => {
+  test('a child launched into its data directory before, with no overlay in the working directory, starts from an empty one, which a later launch keeps', async () => {
     const { home, overlay } = parentHome();
     try {
       rmSync(overlay);
       const dataDir = join(home, 'data', 'child-1');
       mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, 'startup.log'), '--- launch\n');
       const own = join(dataDir, CHILD_OVERLAY);
       await withChild(home, 'child-1', dataDir, () => {});
       expect(JSON.parse(readFileSync(own, 'utf8'))).toEqual({ mcplServers: {} });
@@ -144,8 +157,9 @@ describe("a fleet child's agent overlay", () => {
     symlinkSync(home, join(links, 'home'));
     try {
       const own = join(realpathSync(home), CHILD_OVERLAY);
-      // As for a child an earlier version launched there, the directory is
-      // there before the launch, so the child starts from a copy.
+      // As for a child an earlier version launched there, whose launch left
+      // its startup.log there, the child starts from a copy.
+      writeFileSync(join(home, 'startup.log'), '--- launch\n');
       await withChild(home, 'child-1', home, (recorded) => {
         expect(recorded.env).toBe(join(home, CHILD_OVERLAY));
         expect(realpathSync(recorded.overlay)).toBe(own);
@@ -191,8 +205,26 @@ describe("a fleet child's agent overlay", () => {
     }
   }, 90_000);
 
+  test('a new child given a directory made ahead of time, holding anything but a startup.log, starts from an empty overlay, not from a copy', async () => {
+    const { home, overlay, text } = parentHome();
+    try {
+      const dataDir = join(home, 'data', 'child-1');
+      // As a volume's root or an entrypoint's mkdir leaves it.
+      mkdirSync(join(dataDir, 'lost+found'), { recursive: true });
+      writeFileSync(join(dataDir, '.gitkeep'), '');
+      const own = join(dataDir, CHILD_OVERLAY);
+      await withChild(home, 'child-1', dataDir, (recorded) => {
+        expect(recorded.overlay).toBe(own);
+      });
+      expect(JSON.parse(readFileSync(own, 'utf8'))).toEqual({ mcplServers: {} });
+      expect(readFileSync(overlay, 'utf8')).toBe(text);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   // Root writes into a directory whatever its mode, so there the seed can't be made to fail.
-  test.skipIf(process.getuid?.() === 0)('a new child whose overlay can\'t be written leaves no data directory behind, so its next launch starts it empty',
+  test.skipIf(process.getuid?.() === 0)('a new child whose overlay can\'t be written leaves no startup.log, so a later launch starts it empty, not from a copy',
     async () => {
       const { home } = parentHome();
       try {
@@ -215,7 +247,11 @@ describe("a fleet child's agent overlay", () => {
           process.umask(umask);
           await fleet.stop();
         }
-        expect(existsSync(dataDir)).toBe(false);
+        expect(existsSync(join(dataDir, 'startup.log'))).toBe(false);
+        // Once its directory can be written, a launch takes it for a new
+        // child's, though the directory is there and the working directory
+        // holds an overlay.
+        chmodSync(dataDir, 0o755);
         await withChild(home, 'child-1', dataDir, (recorded) => {
           expect(recorded.overlay).toBe(join(dataDir, CHILD_OVERLAY));
         });
@@ -230,8 +266,9 @@ describe("a fleet child's agent overlay", () => {
       const { home, overlay, text } = parentHome();
       const dataDir = join(home, 'data', 'child-1');
       try {
-        // There before the launch, and empty, so only the launch's own care keeps it.
+        // A former child's, by its startup.log, and unwritable.
         mkdirSync(dataDir, { recursive: true });
+        writeFileSync(join(dataDir, 'startup.log'), '--- launch\n');
         chmodSync(dataDir, 0o555);
         const fleet = new FleetModule({
           childIndexPath: CHILD, socketWaitTimeoutMs: 15_000, readyTimeoutMs: 10_000, gracefulShutdownMs: 3_000, sigtermEscalationMs: 1_000,
@@ -291,8 +328,8 @@ describe("a fleet child's agent overlay", () => {
     const { seedChildAgentOverlay } = await import('../src/mcpl-config.js');
     const home = mkdtempSync(join(tmpdir(), 'fleet-child-overlay-kept-'));
     try {
-      // A copy from a directory fails on its source (ENOTSUP in Bun 1.4.3),
-      // not with EEXIST, while the child's own file is there.
+      // A copy whose source is a directory would fail on it, while the
+      // child's own file is there.
       mkdirSync(join(home, 'source-dir'));
       const childsOwn = JSON.stringify({ mcplServers: { 'child-notes': { command: 'notes-server' } } }, null, 2) + '\n';
       writeFileSync(join(home, 'own.json'), childsOwn);
@@ -304,6 +341,33 @@ describe("a fleet child's agent overlay", () => {
       expect(lstatSync(join(home, 'link.json')).isSymbolicLink()).toBe(true);
       expect(existsSync(join(home, 'nowhere.json'))).toBe(false);
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('a seed\'s copy is never wider than the original, and a source it can\'t read, a directory or a file it may not read, makes no file', async () => {
+    const { seedChildAgentOverlay } = await import('../src/mcpl-config.js');
+    const home = mkdtempSync(join(tmpdir(), 'fleet-child-overlay-mode-'));
+    const umask = process.umask(0);
+    try {
+      const text = '{ "mcplServers": {} }\n';
+      writeFileSync(join(home, 'readonly.json'), text);
+      chmodSync(join(home, 'readonly.json'), 0o400);
+      seedChildAgentOverlay(join(home, 'copy.json'), join(home, 'readonly.json'), true);
+      expect(readFileSync(join(home, 'copy.json'), 'utf8')).toBe(text);
+      expect(statSync(join(home, 'copy.json')).mode & 0o777).toBe(0o400);
+      mkdirSync(join(home, 'source-dir'));
+      expect(() => seedChildAgentOverlay(join(home, 'none.json'), join(home, 'source-dir'), true)).toThrow();
+      expect(existsSync(join(home, 'none.json'))).toBe(false);
+      // Root reads a file whatever its mode.
+      if (process.getuid?.() !== 0) {
+        writeFileSync(join(home, 'shut.json'), text);
+        chmodSync(join(home, 'shut.json'), 0o000);
+        expect(() => seedChildAgentOverlay(join(home, 'none2.json'), join(home, 'shut.json'), true)).toThrow();
+        expect(existsSync(join(home, 'none2.json'))).toBe(false);
+      }
+    } finally {
+      process.umask(umask);
       rmSync(home, { recursive: true, force: true });
     }
   });

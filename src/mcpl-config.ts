@@ -4,8 +4,9 @@
  * Reads/writes `mcpl-servers.json` (CC `.mcp.json` shape), keyed by server ID.
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, lstatSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, lstatSync, unlinkSync, openSync, fstatSync, closeSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { agentOverlayPath } from './update/agent-overlay-path.js';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
@@ -200,8 +201,7 @@ export function mergeRecipeServers(
 // Agent overlay — servers the agent deployed/unloaded for itself at runtime
 // ---------------------------------------------------------------------------
 
-/** The agent overlay's file name in the working directory. */
-export const AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.json';
+export { AGENT_OVERLAY_FILE_NAME, AGENT_OVERLAY_FILE_ENV } from './update/agent-overlay-path.js';
 
 /** A fleet child's own agent overlay's file name, in its data directory. It's
  *  never the working directory's name, so a child's overlay is never its
@@ -209,20 +209,13 @@ export const AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.json';
  *  included, unless someone links the one to the other on purpose. */
 export const CHILD_AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.child.json';
 
-/** The environment variable naming the agent overlay's path. A fleet sets it
- *  for each child, to the child's own overlay in its data directory
- *  (fleet-module.ts), so the servers each child deploys and unloads for
- *  itself go into a file of its own. */
-export const AGENT_OVERLAY_FILE_ENV = 'MCPL_AGENT_OVERLAY_FILE';
-
 /**
  * The agent's own overlay: the path MCPL_AGENT_OVERLAY_FILE names, resolved
- * from cwd, else mcpl-servers.agent.json in cwd. Every reader of the overlay
+ * from cwd, else mcpl-servers.agent.json in cwd (agentOverlayPath, which the
+ * launcher's switch and Go back take it by too). Every reader of the overlay
  * takes it from here: the boot, mcpl-admin's deploy and unload, and /bug.
  */
-export const DEFAULT_AGENT_OVERLAY_PATH = process.env[AGENT_OVERLAY_FILE_ENV]
-  ? resolve(process.cwd(), process.env[AGENT_OVERLAY_FILE_ENV])
-  : resolve(process.cwd(), AGENT_OVERLAY_FILE_NAME);
+export const DEFAULT_AGENT_OVERLAY_PATH = agentOverlayPath(process.cwd(), process.env);
 
 /**
  * An overlay entry is either a full server definition (agent-deployed, loads
@@ -633,42 +626,49 @@ export function overlayEntryTombstones(entry: unknown): boolean {
 }
 
 /**
- * Write a fleet child's own agent overlay at `childPath`, once, before the
- * first start that reads it there. Where `copy` is set, it's a copy of
- * `fromPath`, the working directory's overlay, which every child read as its
- * own before children had their own: byte for byte, tombstones and all, with
- * no wider permission bits than the original, since it can hold tokens. Its
- * relative args mean the same from either file, since they resolve against
- * the working directory (resolveOverlayEntry), and a file the boot stops on
+ * Write a fleet child's own agent overlay at `childPath`, before a start that
+ * reads it there finds none. Where `copy` is set, it's a copy of `fromPath`,
+ * the working directory's overlay, which every child read as its own before
+ * children had their own: byte for byte, tombstones and all. Its relative
+ * args mean the same from either file, since they resolve against the
+ * working directory (resolveOverlayEntry), and a file the boot stops on
  * stops the child's boot, as the original did. Otherwise, and where
- * `fromPath` is missing, it's an overlay with no entries, with `fromPath`'s
- * permission bits where it exists, so a child's tokens are kept as privately
- * as the working directory's overlay keeps them. Anything already at
+ * `fromPath` is missing, it's an overlay with no entries. Either is its
+ * owner's alone from the moment it exists: an empty one is made with mode
+ * 0600, and a copy with the original's owner read and write bits, so it's
+ * never wider than 0600, and a copy never wider than the original, whatever
+ * mode the working directory's overlay has (the umask's, as the host writes
+ * it). It can hold tokens, and the child's data directory is where the host
+ * keeps its other secrets at 0600 (saveRecipe). So a copy reads the
+ * original's bytes, and its mode, from one open of it before making the
+ * file, and a read that fails makes nothing. Anything already at
  * `childPath`, whoever wrote it, a link included, is left as it is, before
- * the copy or the write begins: a copy can fail on its source while the
- * child's own file is there (Bun 1.4.3 then reports the source's error, not
- * EEXIST). A write or a copy that fails after making the file, as on a full
+ * the write begins. A write that fails after making the file, as on a full
  * disk, removes it again, since the next launch would keep it and the
- * child's boot would stop on it: Bun leaves a failed copy's first part
- * (1.4.3). The file is written in place, as saveAgentOverlay writes it, so a
- * crash in the middle of it can still leave it truncated, and the child's
- * boot then stops on it, naming it.
+ * child's boot would stop on it. The file is written in place, as
+ * saveAgentOverlay writes it, so a crash in the middle of it can still leave
+ * it truncated, and the child's boot then stops on it, naming it.
  */
 export function seedChildAgentOverlay(childPath: string, fromPath: string, copy: boolean): void {
   if (lstatSync(childPath, { throwIfNoEntry: false }) !== undefined) return;
-  try {
-    if (copy && existsSync(fromPath)) {
-      copyFileSync(fromPath, childPath, constants.COPYFILE_EXCL);
-    } else {
-      const mode = existsSync(fromPath) ? { mode: statSync(fromPath).mode & 0o777 } : {};
-      writeFileSync(childPath, JSON.stringify({ mcplServers: {} }, null, 2) + '\n', { encoding: 'utf-8', flag: 'wx', ...mode });
+  let content: string | Buffer = JSON.stringify({ mcplServers: {} }, null, 2) + '\n';
+  let mode = 0o600;
+  if (copy && existsSync(fromPath)) {
+    // The bytes and the mode from one open, so they're one file's.
+    const fd = openSync(fromPath, 'r');
+    try {
+      mode = fstatSync(fd).mode & 0o600;
+      content = readFileSync(fd);
+    } finally {
+      closeSync(fd);
     }
+  }
+  try {
+    writeFileSync(childPath, content, { flag: 'wx', mode });
   } catch (error) {
     // Made since the look above, by whoever else writes it: theirs.
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
-    // Nothing was there when this call looked, so a file there now is the one
-    // its copy or write began, unless someone made one in between and the
-    // copy then failed on its source, which Bun reports in place of EEXIST.
+    // The write made the file or nothing, so a file there now is its own.
     try { unlinkSync(childPath); } catch { /* never made */ }
     throw error;
   }

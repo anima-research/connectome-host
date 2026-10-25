@@ -46,6 +46,7 @@ const ops = (): LauncherOps => ({
   now: () => new Date(clock),
   report: (line) => { reports.push(line); },
   dataDir: () => data,
+  agentOverlay: () => join(work, 'mcpl-servers.agent.json'),
   cwd: () => work,
   bootId: () => boot,
   // kill(0) and kill(-n) answer for a group of this process's own, so a pid
@@ -257,6 +258,30 @@ describe('what a switch copies', () => {
       present: [data, join(dir, 'kid'), join(dir, 'state.json'), settings, join(work, 'mcpl-servers.agent.json')].sort(),
       absent: [join(dir, 'gone.json')],
     });
+  });
+
+  test('the agent overlay the host reads, where MCPL_AGENT_OVERLAY_FILE names one outside the working directory and the data', () => {
+    const elsewhere = join(dir, 'overlays', 'host.json');
+    mkdirSync(dirname(elsewhere));
+    writeFileSync(elsewhere, '{"agent":1}');
+    writeFileSync(join(work, 'mcpl-servers.agent.json'), '{"not read":1}');
+    const o = { ...ops(), agentOverlay: () => elsewhere };
+    const items = dataItems(root, { v: 1, dataDir: data, extraState: [] }, o);
+    expect(items.present).toContain(elsewhere);
+    expect(items.present).not.toContain(join(work, 'mcpl-servers.agent.json'));
+
+    // The machine's own takes it as the host does: the variable from the
+    // working directory, else the file there.
+    const named = process.env.MCPL_AGENT_OVERLAY_FILE;
+    try {
+      process.env.MCPL_AGENT_OVERLAY_FILE = join('overlays', 'host.json');
+      expect(machineOps().agentOverlay()).toBe(join(process.cwd(), 'overlays', 'host.json'));
+      delete process.env.MCPL_AGENT_OVERLAY_FILE;
+      expect(machineOps().agentOverlay()).toBe(join(process.cwd(), 'mcpl-servers.agent.json'));
+    } finally {
+      if (named === undefined) delete process.env.MCPL_AGENT_OVERLAY_FILE;
+      else process.env.MCPL_AGENT_OVERLAY_FILE = named;
+    }
   });
 
   test("a child's data directory written relative to the working directory is the one there", () => {

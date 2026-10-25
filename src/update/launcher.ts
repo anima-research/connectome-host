@@ -43,6 +43,7 @@ import {
   PRIVATE_DIR_MODE, copyTree, drive, exists, keepFile, makeDirs, putFileBack, removeTree, replaceFile, sameContent,
   spaceTaken, syncEntries, syncPath, type FileKeep,
 } from './data-swap.js';
+import { agentOverlayPath } from './agent-overlay-path.js';
 
 /** Where a release's host is inside its directory, one npm install of the
  *  package. The entry point imports the launcher from here, so neither path
@@ -62,6 +63,10 @@ export interface LauncherOps {
   report(line: string): void;
   /** The data directory a host started here would serve. */
   dataDir(): string;
+  /** The agent overlay a host started here would read and write
+   *  (agentOverlayPath, by the host's own environment, which the host is
+   *  started with). */
+  agentOverlay(): string;
   cwd(): string;
   bootId(): string | null;
   pidAlive(pid: number): boolean;
@@ -394,8 +399,10 @@ function waitForChildren(record: InstallRecord, ops: LauncherOps, what: string):
 }
 
 /** Everything a switch copies, as real paths: the data directory, each fleet
- *  child's, the MCPL settings files in the working directory, and the extra
- *  state setup recorded. `present` are those there now, none inside another,
+ *  child's, the MCPL settings file in the working directory, the agent
+ *  overlay the host reads (in the working directory, unless
+ *  MCPL_AGENT_OVERLAY_FILE names another), and the extra state setup
+ *  recorded. `present` are those there now, none inside another,
  *  since copying the outer one covers it. `absent` are those that aren't,
  *  none inside a present one or another absent one, which a restore keeps
  *  empty of whatever a trial makes there. */
@@ -405,7 +412,7 @@ export function dataItems(root: string, record: InstallRecord, ops: LauncherOps)
   for (const child of Array.isArray(children?.children) ? children.children.filter(isChildEntry) : []) {
     candidates.push(resolve(ops.cwd(), child.dataDir));
   }
-  candidates.push(join(ops.cwd(), 'mcpl-servers.json'), join(ops.cwd(), 'mcpl-servers.agent.json'), ...record.extraState);
+  candidates.push(join(ops.cwd(), 'mcpl-servers.json'), ops.agentOverlay(), ...record.extraState);
   const there = new Set<string>();
   const missing = new Set<string>();
   for (const path of candidates) {
@@ -1519,6 +1526,7 @@ export function machineOps(): LauncherOps {
     now: () => new Date(),
     report: (text) => { writeSync(2, `${text}\n`); },
     dataDir: () => resolve(process.env.DATA_DIR || './data'),
+    agentOverlay: () => agentOverlayPath(process.cwd(), process.env),
     cwd: () => process.cwd(),
     bootId: () => {
       try {
