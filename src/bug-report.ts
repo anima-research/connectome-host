@@ -152,7 +152,7 @@ const ERROR_CLASSES = new Set([
  * named; every other tag is counted as "other".
  */
 export const HOST_LOG_TAGS = new Set([
-  'agent-settings', 'anthropic-credentials', 'autobiographical', 'batch', 'budget-preflight',
+  'access', 'agent-settings', 'anthropic-credentials', 'autobiographical', 'batch', 'budget-preflight',
   'cache-keepalive', 'channel', 'cm-cache', 'coalescing', 'compression-quarantine', 'context-maintenance',
   'credential', 'credential-monitor', 'deprecated', 'diagnostics', 'discord', 'discord-awareness', 'echo',
   'estimator-calibration', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
