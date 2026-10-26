@@ -96,6 +96,17 @@ describe('Anthropic per-call pricing', () => {
     expect(priceAnthropicCall('claude-opus-5', timestamp, usage({ inputTokens: 1_000_000 }))?.total).toBe(5);
   });
 
+  test('Sonnet 5.5 reads from cache at 0.05x, and Sonnet 5 still at 0.1x', () => {
+    const sonnet55 = priceAnthropicCall('claude-sonnet-5-5', timestamp, usage({ inputTokens: 1_000_000, cacheReadTokens: 1_000_000, outputTokens: 1_000_000 }));
+    const sonnet5 = priceAnthropicCall('claude-sonnet-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(sonnet55?.input).toBe(2);
+    expect(sonnet55?.output).toBeCloseTo(10, 9);
+    expect(sonnet55?.cacheRead).toBeCloseTo(0.1, 9);
+    expect(sonnet5?.cacheRead).toBeCloseTo(0.2, 9);
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.05);
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5')).toBe(0.1);
+  });
+
   test('prices Haiku 5.5 by prompt length, up to 100,000 tokens at $0.10/$0.50 and over that at $0.50/$2.50', () => {
     // the prompt is input, cache reads and both cache writes; output doesn't count
     const prompt = { cacheReadTokens: 50_000, cacheWrite5mTokens: 5_000, cacheWrite1hTokens: 5_000, outputTokens: 1_000_000 };
@@ -137,10 +148,7 @@ describe('Anthropic per-call pricing', () => {
     expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-1')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-4-6')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('claude-haiku-5-5')).toBe(0.1);
-    // The pricing page reads Sonnet 5.5 at 0.05x, but the table leaves it at
-    // the Sonnet 5 entry's 0.1x, and this is the solver's price for it too:
-    // see that entry's comment before changing it.
-    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.1);
+    expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.05);
     expect(anthropicCacheReadMultiplier('some-unknown-model')).toBe(0.1);
   });
 
