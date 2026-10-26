@@ -192,6 +192,15 @@ interface CallProgress {
   changed: boolean;
 }
 
+/** What the identity module lends a deploy: the credential an `access`
+ *  grant resolves to, at each dial, and, where the host has one, the MCPL
+ *  endpoint the home node publishes for that grant, so a deploy with
+ *  `access` and no `url` can dial by name. */
+export interface DeployIdentity {
+  accessFor(audience?: string): Promise<string>;
+  mcplEndpointFor?(audience: string): Promise<string | undefined>;
+}
+
 export class McplAdminModule implements Module {
   readonly name = MODULE_NAME;
 
@@ -218,8 +227,8 @@ export class McplAdminModule implements Module {
    *  the identity module): lets deployed servers name an `access` grant that
    *  the host turns into a per-dial credential provider. The agent names the
    *  access; credentials never surface. */
-  private identity: { accessFor(audience?: string): Promise<string> } | null = null;
-  setIdentity(identity: { accessFor(audience?: string): Promise<string> } | null): void {
+  private identity: DeployIdentity | null = null;
+  setIdentity(identity: DeployIdentity | null): void {
     this.identity = identity;
   }
 
@@ -373,9 +382,9 @@ export class McplAdminModule implements Module {
             command: { type: 'string', description: 'Executable to spawn (stdio transport). Mutually exclusive with url.' },
             args: { type: 'array', items: { type: 'string' }, description: 'Arguments for the command.' },
             env: { type: 'object', description: 'Environment variables for the spawned process.' },
-            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command. A user, password or `token` parameter in it is a credential, which mcpl_deploy takes only over wss://, or ws:// to this machine (for example, localhost or a loopback address).' },
+            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command. A user, password or `token` parameter in it is a credential, which mcpl_deploy takes only over wss://, or ws:// to this machine (for example, localhost or a loopback address). With `access`, leave it out to dial the endpoint the home node publishes for that access, if it publishes one.' },
             token: { type: 'string', description: 'Token for WebSocket auth, sent as the url\'s `token` parameter (only when the operator hands you one — prefer `access`). mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
-            access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle. mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
+            access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle. mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address). Given alone, with no `url` or `command`, the host dials the endpoint the home node publishes for that access, so a service in the home node\'s directory needs no address from you.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
             reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
@@ -706,11 +715,35 @@ export class McplAdminModule implements Module {
       Array.isArray(v) ? v.map((x) => (typeof x === 'number' || typeof x === 'boolean' ? String(x) : x)) : v;
 
     const command = givenText(input.command) ? input.command : undefined;
-    const url = givenText(input.url) ? input.url : undefined;
+    let url: unknown = givenText(input.url) ? input.url : undefined;
+    // A deploy with `access` and neither `url` nor `command` dials the
+    // endpoint the home node publishes for that access: the directory is
+    // the operator's word that the endpoint takes a credential safely (it
+    // publishes wss only), so a resident who is their own operator never
+    // has to be handed an address, or judge a network. The url found is
+    // saved in the entry like a given one, so the next host start dials it
+    // without the directory, and a service that moves is a deploy again. A
+    // directory that can't be read, or publishes nothing for the name, is a
+    // url not given, refused below with the rest.
+    const accessName = typeof input.access === 'string' ? input.access.trim() : '';
+    let fromDirectory = false;
+    if (command === undefined && url === undefined && accessName !== '' && this.identity?.mcplEndpointFor) {
+      try {
+        const found = await this.identity.mcplEndpointFor(accessName);
+        if (typeof found === 'string' && found !== '') { url = found; fromDirectory = true; }
+      } catch {
+        // Not found, for a deploy: the identity module reports the directory's failure itself.
+      }
+    }
     if (command === undefined && url === undefined) {
       problems.push(
         'Neither `command` nor `url` was given, or both were empty: give `command`, the executable to spawn for a ' +
-        'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.',
+        'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.' +
+        (accessName !== '' && this.identity?.mcplEndpointFor
+          ? ` The home node publishes no MCPL endpoint for the access grant ${JSON.stringify(accessName)}, so there's ` +
+            'no url to find for it: give `url`, or ask the service\'s operator to publish its endpoint in the home ' +
+            'node\'s directory.'
+          : ''),
       );
     } else if (command !== undefined && url !== undefined) {
       problems.push(
@@ -811,7 +844,11 @@ export class McplAdminModule implements Module {
         `Nothing was deployed: ${cleartextCarrierText(cleartext.carrier, entry.access)} would go to ${cleartext.host} ` +
         'over unencrypted ws://, where anyone on the network between can read it, so nothing was saved.' +
         (configured ? ` The server already configured as "${id}" is unchanged.` : '') +
-        ' Use a wss:// url, or, if that network is private, ask your operator to add the server to the recipe.',
+        ' Use a wss:// url, or, if that network is private, ask your operator to add the server to the recipe.' +
+        (cleartext.carrier === 'access' && this.identity?.mcplEndpointFor
+          ? ' Or leave `url` out: with `access` alone, the deploy dials the endpoint the home node publishes for that ' +
+            'access, if it publishes one.'
+          : ''),
       );
     }
 
@@ -881,7 +918,12 @@ export class McplAdminModule implements Module {
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}. ` +
-      `Persisted to your agent overlay (survives host restarts).${note}`,
+      `Persisted to your agent overlay (survives host restarts).` +
+      (fromDirectory
+        ? ` Its url, ${String(url)}, is the endpoint the home node publishes for the access grant ` +
+          `${JSON.stringify(accessName)}, saved with the entry; if the service moves, deploy it again.`
+        : '') +
+      note,
     );
   }
 
