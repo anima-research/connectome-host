@@ -32,7 +32,7 @@ import type {
   ContextManager,
 } from '@animalabs/agent-framework';
 import type { Agent, AgentFramework, AgentRecord } from '@animalabs/agent-framework';
-import { AgentStoppedError, KnowledgeStrategy, taskForkSpec, workerSpec } from '@animalabs/agent-framework';
+import { AgentStoppedError, KnowledgeStrategy, storeOwnRow, taskForkSpec, workerSpec } from '@animalabs/agent-framework';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../state/stream-usage.js';
@@ -3779,9 +3779,12 @@ export class SubagentModule implements Module {
           // turn after the cap; the anthropic-xml and openai-responses
           // formatters send them as two consecutive user turns. The delivery
           // check below refuses a stream that wouldn't read either whole.
+          // Each is the stream's own row (storeOwnRow), as the framework's
+          // seed rows are: stamped for it alone, and presented in its window
+          // when its run takes it on (#291), since no turn of it is alive yet.
           const orientation = this.orientationFor(launch, agent, { kind: 'none', reason: 'spawn' });
-          contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-          contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
 
           // The stream must read what the launch promises: refuse it when
           // its orientation or its whole task isn't in the launch's compile
@@ -4065,13 +4068,15 @@ export class SubagentModule implements Module {
                 )
               : null;
 
+            // The copy is the stream's own rows (storeOwnRow), as a spawn's seed
+            // rows are: presented in its window when its run takes it on (#291).
             const seen = new Set<string>();
             const addMsg = (msg: { participant: string; content: ContentBlock[] }) => {
               const key = msg.participant + '\0' + JSON.stringify(msg.content);
               if (seen.has(key)) return;
               seen.add(key);
               const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
-              contextManager.addMessage(participant, msg.content);
+              storeOwnRow(agent, participant, msg.content);
             };
 
             if (transformed) {
@@ -4104,13 +4109,13 @@ export class SubagentModule implements Module {
 
               const fallbackForkId = `fork-${input.name}-${crypto.randomUUID()}`;
               const atStart = orient({ kind: 'compiled-at-start', reason: callToolUseId ? 'call-not-in-context' : 'no-call-id' });
-              contextManager.addMessage(agentName, [{
+              storeOwnRow(agent, agentName, [{
                 type: 'tool_use',
                 id: fallbackForkId,
                 name: 'subagent--fork',
                 input: { name: input.name, task: input.task },
               }] as ContentBlock[]);
-              contextManager.addMessage('user', [{
+              storeOwnRow(agent, 'user', [{
                 type: 'tool_result',
                 toolUseId: fallbackForkId,
                 toolName: 'subagent--fork',
@@ -4133,8 +4138,8 @@ export class SubagentModule implements Module {
             // and the task check measures the task itself.
             const orientation = `${orient({ kind: 'none', reason: 'no-parent' })}\n\n` +
               'When this intention is complete, return your findings via subagent--return. Your intention for this stream follows.';
-            contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-            contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
             delivery = { kind: 'message', orientation, taskBlock: input.task };
           }
 

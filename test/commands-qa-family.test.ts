@@ -13,6 +13,12 @@ import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
 // - head-moving commands ran while a generation was in flight, letting
 //   the streaming reply commit onto the wrong branch (orphaned nodes);
 // - /budget displayed small values as "0k" (50 → "0k") while rejecting 0.
+//
+// Since agent-framework #291 /undo and /redo are the framework's undo and
+// redo on the agent's window, and /checkout, /restore and /branchto its
+// switchBranch and rollbackToMessage. The stub framework below answers them
+// over the stub ContextManager; commands-branch-framework.test.ts runs them
+// on a real framework.
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
@@ -50,11 +56,20 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
     { id: 'bbbb2222', name: 'other', manuallyNamed: true, createdAt: 't', lastAccessedAt: 't', messageCount: 1 },
   ];
 
+  const undone: string[] = [];
   const app = {
     framework: {
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
+      undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
+      redo: () => ({ redone: false }),
+      switchBranch: (name: string) => cm.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     sessionManager: {
       listSessions: () => sessions,
@@ -74,7 +89,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
 
   const text = (r: { lines: Array<{ text: string }> }) => r.lines.map(l => l.text).join('\n');
 
-  return { cm, app, addMessage, deleted, text, currentName: () => currentName };
+  return { cm, app, addMessage, deleted, undone, text, currentName: () => currentName };
 }
 
 describe('multi-word names: rest-of-line parsing', () => {
@@ -145,17 +160,19 @@ describe('in-flight guard on head-moving commands', () => {
   }
 
   test('/undo proceeds when idle', () => {
-    const { app, addMessage, text } = makeStubWorld('idle');
+    const { app, addMessage, undone, text } = makeStubWorld('idle');
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows).");
+    expect(undone).toEqual(['stub-agent']);
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, text } = makeStubWorld(undefined);
+    const { app, addMessage, undone, text } = makeStubWorld(undefined);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain('Undone');
+    expect(undone).toEqual(['stub-agent']);
   });
 });
 

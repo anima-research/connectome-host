@@ -7,6 +7,13 @@ import { handleCommand, createBranchState } from '../src/commands.js';
 // back nothing, silently. These tests run over a stub ContextManager that
 // mimics Chronicle's contract: branchAt resolves ids against the CURRENT
 // branch's view of the log and throws for unreachable ids.
+//
+// Since agent-framework #291 /restore goes through the framework: its
+// rollbackToMessage (branchAt and a switch, with every agent sharing the
+// store idle), whose 'unknown-message' refusal sends it to the checkpoint's
+// branch head through the framework's switchBranch. The stub framework below
+// does what those two do over the stub ContextManager; commands-branch-
+// framework.test.ts runs them on a real framework.
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
@@ -41,8 +48,17 @@ function makeStubWorld() {
   const app = {
     framework: {
       getAgent: () => undefined,
-      getAllAgents: () => [{ getContextManager: () => cm }],
+      getAllAgents: () => [{ name: 'stub-agent', getContextManager: () => cm }],
       getAllModules: () => [],
+      switchBranch: (name: string) => cm.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        if (!messagesByBranch.get(currentName)!.some(m => m.id === opts.messageId)) {
+          throw Object.assign(new Error(`Message ${opts.messageId} is not on the active branch`), { code: 'unknown-message' });
+        }
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     branchState: createBranchState(),
     userMessageCount: 0,

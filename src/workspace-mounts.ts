@@ -60,9 +60,10 @@ export function buildWorkspaceMounts(
   // explicitly after branch-changing commands, and ordinary agent edits stay
   // Chronicle-side until then. Anything that assumes `_config` disk content
   // tracks agent edits is wrong (see the instructions-path validation). Its
-  // backend is said, not left to the framework's default: undo and redo
-  // rewind it through materializeMount, which only a 'chronicle' mount has
-  // history for.
+  // backend is said, not left to the framework's default: a branch switch or
+  // a rollback rewinds it through materializeMount, which only a 'chronicle'
+  // mount has history for. An undo moves no branch (agent-framework #291),
+  // so it leaves the mount as it is.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({

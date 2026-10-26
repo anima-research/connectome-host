@@ -2,13 +2,14 @@
  * Slash command handler for Chronicle-backed reversibility.
  *
  * Commands:
- *   /undo          — Revert to state before last agent turn
- *   /redo          — Re-apply last undone action
+ *   /undo          — Take the agent's last turn out of its window (the record keeps it)
+ *   /redo          — Put the turn /undo took out back in the agent's window
  *   /nudge [agent] — Run inference on current context (no new events)
- *   /checkpoint N  — Save current state as named checkpoint
- *   /restore N     — Branch from checkpoint, switch to it
+ *   /checkpoint N  — Save current position as named checkpoint
+ *   /restore N     — Roll the record back to a checkpoint, on a new branch
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
+ *   /branchto M    — Roll the record back to a message, on a new branch
  *   /history       — Show recent state transitions
  *   /lessons       — Show current lesson library
  *   /status        — Show agent/module status
@@ -29,7 +30,7 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { AgentFramework } from '@animalabs/agent-framework';
+import { asOwnRow, type Agent, type AgentFramework, type OperatorRequester } from '@animalabs/agent-framework';
 import type { ContextManager } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import type { CredentialActionId, CredentialState } from './credential-state.js';
@@ -69,17 +70,16 @@ interface AppContext {
 /** Re-exported for code that imports it from here. */
 export type { Line };
 
-// Undo/redo stacks: track (branchName, messageId) pairs for time-travel.
+// A checkpoint: a (branchName, messageId) position for time-travel.
 //
 // Earlier shape had a separate `branchId: string` field alongside
-// `branchName`. After the fix for `/redo` / `/restore` / `/checkout` (which
-// required these handlers to pass a NAME to `switchBranch`), every write
-// stored a name in both fields and every read preferred branchName. The
-// field name was actively lying: the next reader naturally fills
-// `branchId` with `branch.id` and reintroduces the exact bug the rename
-// is meant to prevent. Collapsed to a single `branchName` so the type
-// system enforces the actual contract — `switchBranch` only accepts
-// names; nothing else is a valid identifier here.
+// `branchName`. After the fix for `/restore` / `/checkout` (which required
+// these handlers to pass a NAME to `switchBranch`), every write stored a name
+// in both fields and every read preferred branchName. The field name was
+// actively lying: the next reader naturally fills `branchId` with `branch.id`
+// and reintroduces the exact bug the rename is meant to prevent. Collapsed to
+// a single `branchName` so the type system enforces the actual contract —
+// `switchBranch` only accepts names; nothing else is a valid identifier here.
 export interface StatePoint {
   branchName: string;
   messageId?: string;
@@ -88,24 +88,20 @@ export interface StatePoint {
 /**
  * Mutable branch-related state. Lives on AppContext so it can be
  * reset consistently on session switch, MCPL branch operations, etc.
+ * /undo and /redo keep no stacks here: since agent-framework #291 they are
+ * the framework's undo and redo on the agent's window, which keep their own.
  */
 export interface BranchState {
-  undoStack: StatePoint[];
-  redoStack: StatePoint[];
   checkpoints: Map<string, StatePoint>;
 }
 
 export function createBranchState(): BranchState {
   return {
-    undoStack: [],
-    redoStack: [],
     checkpoints: new Map(),
   };
 }
 
 export function resetBranchState(bs: BranchState): void {
-  bs.undoStack.length = 0;
-  bs.redoStack.length = 0;
   bs.checkpoints.clear();
 }
 
@@ -139,6 +135,24 @@ function getAgentCM(framework: AgentFramework, agentName?: string): ContextManag
 }
 
 /**
+ * The agent a command acts for: the one the host resolved (app.agentName),
+ * else the framework's primary, else the first registered.
+ */
+function commandAgent(app: AppContext): Agent | undefined {
+  const framework = app.framework;
+  const named = app.agentName ? framework.getAgent(app.agentName) : null;
+  if (named) return named;
+  const primary = typeof framework.getPrimaryAgentName === 'function' ? framework.getPrimaryAgentName() : null;
+  return (primary ? framework.getAgent(primary) : null) ?? framework.getAllAgents()[0];
+}
+
+/** Who asked, in the framework's operator log: an operator's command. */
+const HOST_COMMAND: OperatorRequester = { via: 'host-console' };
+
+/** A thrown error's message. */
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
  * Refuse head-moving commands while the main agent's turn is in flight.
  *
  * Moving the Chronicle head (undo/redo/checkout/restore/branchto/newtopic)
@@ -149,13 +163,16 @@ function getAgentCM(framework: AgentFramework, agentName?: string): ContextManag
  * move is issued from a second client on the same session. The supported
  * sequence is: stop the generation, then move the head.
  *
+ * This checks the agent the command acts for, so the refusal comes at once.
+ * The framework, which each of these commands goes through, refuses a branch
+ * move or a rollback while any agent sharing the store has a turn alive, and
+ * an undo or a redo while the agent's own has.
+ *
  * Returns null when the command may proceed. Agents without a state field
  * (stubs, minimal harnesses) are treated as idle.
  */
 function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
-  const framework = app.framework;
-  const agent = (app.agentName ? framework.getAgent(app.agentName) : undefined)
-    ?? framework.getAllAgents()[0];
+  const agent = commandAgent(app);
   const status = (agent as { state?: { status?: string } } | undefined)?.state?.status;
   if (status === undefined || status === 'idle') return null;
   return {
@@ -199,17 +216,17 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /clear                 Clear this client\'s display (history/context are kept)', style: 'system' },
           { text: '  /lessons               Show lesson library', style: 'system' },
           { text: '  /export                Export lessons to ./output/ (JSON + markdown)', style: 'system' },
-          { text: '  /undo                  Revert last agent turn', style: 'system' },
-          { text: '  /redo                  Re-apply undone action', style: 'system' },
+          { text: '  /undo                  Take the agent\'s last turn out of its window (the record keeps it)', style: 'system' },
+          { text: '  /redo                  Put the turn /undo took out back in its window', style: 'system' },
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
           { text: '  /puppet <tool> [json]  Admin: execute a tool AS the agent, store the pair', style: 'system' },
           { text: '  /checkpoint [name]     Save current state (no name: list checkpoints)', style: 'system' },
-          { text: '  /restore [name]        Restore to checkpoint (no name: list checkpoints)', style: 'system' },
+          { text: '  /restore [name]        Roll back to a checkpoint, on a new branch (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
           { text: '  /history [n]           Show state transitions (last n)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
-          { text: '  /branchto <msgId>      Branch from a specific message', style: 'system' },
+          { text: '  /branchto <msgId>      Roll back to a message, on a new branch', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
           { text: '  /mcp add <id> <cmd>    Add/overwrite server', style: 'system' },
           { text: '  /mcp remove <id>       Remove a server', style: 'system' },
@@ -278,7 +295,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return handleBranches(app);
 
     case 'checkout':
-      return inFlightGuard(app, cmd) ?? handleCheckout(framework, args.join(' ') || undefined);
+      return inFlightGuard(app, cmd) ?? handleCheckout(app, args.join(' ') || undefined);
 
     case 'history':
       return handleHistory(framework, args[0]);
@@ -1028,92 +1045,48 @@ function handleNudge(app: AppContext, agentName?: string): CommandResult {
   };
 }
 
+/**
+ * /undo: the framework's undo on the agent's window (agent-framework #291,
+ * decision 4). The agent's last turn leaves its window, its own rows as
+ * undone and the others' to be shown again at its next turn, and nothing
+ * else changes: the record keeps the turn, no branch moves, and the
+ * workspace and `_config` mounts, MCPL checkpoints and the inference log
+ * stay as they are. Another agent's turn, newer or not, is left alone.
+ * /branchto reverts the record.
+ */
 function handleUndo(app: AppContext): CommandResult {
-  const { framework, branchState: bs } = app;
-  const cm = getAgentCM(framework);
-  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
-
-  const { messages } = cm.queryMessages({});
-  if (messages.length === 0) {
-    return { lines: [{ text: 'Nothing to undo.', style: 'system' }] };
-  }
-
-  // Find the last agent message (working backwards)
-  let undoPoint: string | undefined;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.participant !== 'user') {
-      // Found an agent message — undo to the message before it
-      undoPoint = i > 0 ? messages[i - 1]!.id : undefined;
-      break;
-    }
-  }
-
-  if (!undoPoint) {
-    return { lines: [{ text: 'Nothing to undo (no agent messages found).', style: 'system' }] };
-  }
-
-  // Snapshot the current branch's NAME so /redo can return here. Chronicle's
-  // switchBranch is keyed by name, not the internal numeric id.
-  const currentBranch = cm.currentBranch();
-  const newBranchName = `undo-${Date.now()}`;
-
-  let createdBranchName: string;
+  const agent = commandAgent(app);
+  if (!agent) return { lines: [{ text: 'No agent.', style: 'system' }] };
+  let undone: ReturnType<AgentFramework['undoLastTurn']>;
   try {
-    // branchAt returns the new branch's NAME (the only thing switchBranch accepts).
-    createdBranchName = cm.branchAt(undoPoint, newBranchName);
+    undone = app.framework.undoLastTurn(agent.name, HOST_COMMAND);
   } catch (err) {
-    return { lines: [{ text: `Undo failed (branchAt): ${err}`, style: 'system' }] };
+    return { lines: [{ text: `Undo failed: ${messageOf(err)}`, style: 'system' }] };
   }
-
-  bs.redoStack.push({ branchName: currentBranch.name });
-  bs.undoStack.push({
-    branchName: createdBranchName,
-    messageId: undoPoint,
-  });
-
-  // switchBranch is async — it re-initializes the strategy on the new branch
-  // (autobio reloads its persisted summaries / pins / mergeQueue). Without
-  // awaiting, the next /compile or send-message could see stale strategy
-  // state from the prior branch.
-  const asyncWork = Promise.resolve(cm.switchBranch(createdBranchName))
-    .then(() => ({
-      lines: [{ text: `Undone. Switched to branch "${createdBranchName}".`, style: 'system' as const }],
-      branchChanged: true,
-    }))
-    .catch(err => ({
-      lines: [{ text: `Undo failed (switchBranch): ${err}`, style: 'system' as const }],
-    }));
-
+  if (!undone.undone) return { lines: [{ text: 'Nothing to undo.', style: 'system' }] };
+  const rows = undone.window?.retracted ?? 0;
   return {
-    lines: [{ text: `Undoing → branch "${createdBranchName}"...`, style: 'system' }],
-    asyncWork,
+    lines: [
+      { text: `Undone: ${agent.name}'s last turn left its window (${rows} row${rows === 1 ? '' : 's'}).`, style: 'system' },
+      { text: '  The record keeps it, and no branch moved: /redo puts it back, /branchto <msgId> reverts the record.', style: 'system' },
+    ],
   };
 }
 
+/** /redo: the framework's redo of the agent's last undo, on its window: the undone turn's rows enter it again. */
 function handleRedo(app: AppContext): CommandResult {
-  const { framework, branchState: bs } = app;
-  const cm = getAgentCM(framework);
-  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
-
-  if (bs.redoStack.length === 0) {
-    return { lines: [{ text: 'Nothing to redo.', style: 'system' }] };
+  const agent = commandAgent(app);
+  if (!agent) return { lines: [{ text: 'No agent.', style: 'system' }] };
+  let redone: ReturnType<AgentFramework['redo']>;
+  try {
+    redone = app.framework.redo(agent.name, HOST_COMMAND);
+  } catch (err) {
+    return { lines: [{ text: `Redo failed: ${messageOf(err)}`, style: 'system' }] };
   }
-
-  const point = bs.redoStack.pop()!;
-  const target = point.branchName;
-
-  const asyncWork = Promise.resolve(cm.switchBranch(target))
-    .then(() => ({
-      lines: [{ text: `Redone. Switched to branch "${target}".`, style: 'system' as const }],
-      branchChanged: true,
-    }))
-    .catch(err => ({
-      lines: [{ text: `Redo failed: ${err}`, style: 'system' as const }],
-    }));
-
+  if (!redone.redone) return { lines: [{ text: 'Nothing to redo.', style: 'system' }] };
+  const rows = redone.window?.represented ?? 0;
   return {
-    lines: [{ text: `Redoing → branch "${target}"...`, style: 'system' }],
-    asyncWork,
+    lines: [{ text: `Redone: ${agent.name}'s undone turn is back in its window (${rows} row${rows === 1 ? '' : 's'}).`, style: 'system' }],
   };
 }
 
@@ -1132,7 +1105,7 @@ function handleCheckpoint(app: AppContext, name?: string): CommandResult {
     };
   }
 
-  const cm = getAgentCM(app.framework);
+  const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const branch = cm.currentBranch();
@@ -1166,16 +1139,16 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
     return { lines: [{ text: `Checkpoint "${name}" not found.`, style: 'system' }] };
   }
 
-  const cm = getAgentCM(app.framework);
-  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
+  const agent = commandAgent(app);
+  const cm = agent?.getContextManager();
+  if (!agent || !cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
-  // Restore to the recorded *position*. If the checkpoint captured a message
-  // id, branch at that message (same machinery as /undo) — switching to the
-  // stored branch name alone would land on its head, which by now may
-  // include everything the user wanted to roll back. Checkpoints from before
-  // the messageId field (or taken on an empty branch) fall back to the head.
-  let target = point.branchName;
-  let exact = false;
+  // Restore to the recorded *position*: the framework's rollback to the
+  // checkpoint's message, on a new branch, which it moves the store to with
+  // every agent sharing it idle (rollbackToMessage). Switching to the stored
+  // branch name alone would land on its head, which by now may include
+  // everything the user wanted to roll back. Checkpoints taken on an empty
+  // branch fall back to the head.
   if (point.messageId) {
     // A checkpoint is a POSITION, so position equality is the whole
     // "already there" test. Comparing branch names too would kill the guard
@@ -1188,39 +1161,47 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
     if (atCheckpoint) {
       return { lines: [{ text: `Already at checkpoint "${name}".`, style: 'system' }] };
     }
-    try {
-      // branchAt returns the new branch's NAME (the only thing switchBranch accepts).
-      target = cm.branchAt(point.messageId, `restore-${name}-${Date.now()}`);
-      exact = true;
-      // The record follows the position: keep the newest branch that holds
-      // the checkpoint message as the fallback for future restores.
-      app.branchState.checkpoints.set(name, { branchName: target, messageId: point.messageId });
-    } catch {
-      // branchAt resolves ids against the CURRENT branch's view of the log;
-      // after e.g. /undo the checkpoint message may not be reachable from
-      // here. Degrade to the checkpoint's branch head (the pre-messageId
-      // behavior) rather than failing the restore outright.
-      target = point.branchName;
-    }
   }
 
-  // switchBranch is async — strategy reinit needs to complete before next op.
-  const asyncWork = Promise.resolve(cm.switchBranch(target))
+  const toHead = (note: boolean): Promise<CommandResult> => app.framework.switchBranch(point.branchName)
     .then(() => ({
       lines: [
-        { text: `Restored to checkpoint "${name}" (branch: ${target}).`, style: 'system' as const },
-        ...(point.messageId && !exact
+        { text: `Restored to checkpoint "${name}" (branch: ${point.branchName}).`, style: 'system' as const },
+        ...(note
           ? [{ text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }]
           : []),
       ],
       branchChanged: true,
-    }))
-    .catch(err => ({
-      lines: [{ text: `Restore failed: ${err}`, style: 'system' as const }],
+    }));
+  const asyncWork = (point.messageId
+    ? app.framework.rollbackToMessage(agent.name, {
+        messageId: point.messageId,
+        requester: HOST_COMMAND,
+        branchName: `restore-${name}-${Date.now()}`,
+        note: `/restore ${name}`,
+      }).then((rolled): CommandResult => {
+        // The record follows the position: keep the newest branch that holds
+        // the checkpoint message as the fallback for future restores.
+        app.branchState.checkpoints.set(name, { branchName: rolled.targetBranch, messageId: point.messageId });
+        return {
+          lines: [{ text: `Restored to checkpoint "${name}" (branch: ${rolled.targetBranch}).`, style: 'system' }],
+          branchChanged: true,
+        };
+      }, (err: unknown) => {
+        // The rollback resolves the id against the CURRENT branch's view of
+        // the log; after e.g. /branchto the checkpoint message may not be
+        // reachable from here. Degrade to the checkpoint's branch head (the
+        // pre-messageId behavior) rather than failing the restore outright.
+        if ((err as { code?: unknown } | null)?.code === 'unknown-message') return toHead(true);
+        throw err;
+      })
+    : toHead(false))
+    .catch((err: unknown) => ({
+      lines: [{ text: `Restore failed: ${messageOf(err)}`, style: 'system' as const }],
     }));
 
   return {
-    lines: [{ text: `Restoring → branch "${target}"...`, style: 'system' }],
+    lines: [{ text: `Restoring to checkpoint "${name}"...`, style: 'system' }],
     asyncWork,
   };
 }
@@ -1257,12 +1238,12 @@ function handleBranches(app: AppContext): CommandResult {
   return { lines };
 }
 
-function handleCheckout(framework: AgentFramework, name?: string): CommandResult {
+function handleCheckout(app: AppContext, name?: string): CommandResult {
   if (!name) {
     return { lines: [{ text: 'Usage: /checkout <branch-name>', style: 'system' }] };
   }
 
-  const cm = getAgentCM(framework);
+  const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const branches = cm.listBranches();
@@ -1271,17 +1252,17 @@ function handleCheckout(framework: AgentFramework, name?: string): CommandResult
     return { lines: [{ text: `Branch "${name}" not found. Use /branches to list.`, style: 'system' }] };
   }
 
-  // switchBranch only accepts the branch name (chronicle is name-keyed).
-  // It's also async — re-initializes the strategy on the new branch so any
-  // persistent strategy state (autobio summaries / pins / mergeQueue) is
-  // reloaded for the destination branch's chronicle view.
-  const asyncWork = Promise.resolve(cm.switchBranch(target.name))
+  // The framework's switch (chronicle is name-keyed, so it takes the name):
+  // the branch moves under every agent sharing the store, so it is refused
+  // unless every one of them is idle, and each agent's context and the
+  // `_config` mount follow it.
+  const asyncWork = app.framework.switchBranch(target.name)
     .then(() => ({
       lines: [{ text: `Switched to branch ${target.name}.`, style: 'system' as const }],
       branchChanged: true,
     }))
-    .catch(err => ({
-      lines: [{ text: `Checkout failed: ${err}`, style: 'system' as const }],
+    .catch((err: unknown) => ({
+      lines: [{ text: `Checkout failed: ${messageOf(err)}`, style: 'system' as const }],
     }));
 
   return {
@@ -1313,29 +1294,35 @@ function handleFind(framework: AgentFramework, needle: string): CommandResult {
   return { lines };
 }
 
+/**
+ * /branchto: the framework's rollback to a message (rollbackToMessage): the
+ * message becomes the tail of a new branch, which the store moves to with
+ * every agent sharing it idle; the old branch keeps everything after it.
+ * Logged as an operator's rollback.
+ */
 function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
-  const cm = getAgentCM(app.framework);
-  if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
+  const agent = commandAgent(app);
+  const cm = agent?.getContextManager();
+  if (!agent || !cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
   if (!messageId) return { lines: [{ text: 'Usage: /branchto <messageId>', style: 'system' }] };
   const { messages } = cm.queryMessages({});
   const target = messages.find(m => String(m.id) === String(messageId));
   if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
   const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
-  let createdBranchName: string;
-  try {
-    createdBranchName = cm.branchAt(String(messageId), newBranchName);
-  } catch (err) {
-    return { lines: [{ text: `branchto failed (branchAt): ${err}`, style: 'system' }] };
-  }
-  const asyncWork = Promise.resolve(cm.switchBranch(createdBranchName))
-    .then(() => ({
-      lines: [{ text: `Branched at [${messageId}] -> "${createdBranchName}" and switched. Everything after [${messageId}] is dropped on this branch; old branch preserved.`, style: 'system' as const }],
+  const asyncWork = app.framework.rollbackToMessage(agent.name, {
+    messageId: String(messageId),
+    requester: HOST_COMMAND,
+    branchName: newBranchName,
+    note: `/branchto ${messageId}`,
+  })
+    .then((rolled) => ({
+      lines: [{ text: `Branched at [${rolled.tailMessageId}] -> "${rolled.targetBranch}" and switched. Everything after [${rolled.tailMessageId}] is dropped on this branch; old branch preserved.`, style: 'system' as const }],
       branchChanged: true,
     }))
     .catch((err: unknown) => ({
-      lines: [{ text: `branchto failed (switchBranch): ${err}`, style: 'system' as const }],
+      lines: [{ text: `branchto failed: ${messageOf(err)}`, style: 'system' as const }],
     }));
-  return { lines: [{ text: `Branching at [${messageId}] -> "${createdBranchName}"...`, style: 'system' }], asyncWork };
+  return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 
 function handleHistory(framework: AgentFramework, countArg?: string): CommandResult {
@@ -1368,12 +1355,17 @@ function handleHistory(framework: AgentFramework, countArg?: string): CommandRes
 // ---------------------------------------------------------------------------
 
 function handleNewTopic(app: AppContext, args: string[]): CommandResult {
-  const cm = getAgentCM(app.framework);
-  if (!cm) return { lines: [{ text: 'No context manager.', style: 'system' }] };
+  const agent = commandAgent(app);
+  const cm = agent?.getContextManager();
+  if (!agent || !cm) return { lines: [{ text: 'No context manager.', style: 'system' }] };
 
   const userContext = args.join(' ').trim() || undefined;
 
-  const asyncWork = cm.resetHeadWindow(userContext).then(summary => ({
+  // The transition is the agent's own row (agent-framework #291): stamped for
+  // it alone, so no other resident sharing the slot is shown it, and
+  // presented as context-manager stores it, so the head window starts at a
+  // row the agent's window holds. The agent is idle (inFlightGuard).
+  const asyncWork = cm.resetHeadWindow(userContext, { metadata: asOwnRow(undefined, agent.name) }).then(summary => ({
     lines: [
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
       { text: summary.slice(0, 300) + (summary.length > 300 ? '...' : ''), style: 'system' as const },

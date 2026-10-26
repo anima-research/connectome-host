@@ -332,7 +332,7 @@ export interface PerAgentCost {
   inferenceCount: number;
 }
 
-/** Sent when the active branch changes (undo/redo/checkout). Clients should
+/** Sent when the active branch changes (checkout, restore, branchto, a rollback). Clients should
  *  re-fetch their conversation by reconnecting or treating subsequent traces
  *  as authoritative. */
 export interface BranchChangedMessage {

@@ -72,7 +72,7 @@ function fakeFramework(options: {
   const status = (): HostModeStatus => {
     const drained = drainedNow || reads >= (options.drainAfter ?? 0);
     return {
-      ...mode, drained, activeTurns: 0, parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0, deferredWrites: 0,
+      ...mode, drained, activeTurns: 0, parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0,
       activeTurnAgents: drained ? [] : options.holders ?? [],
     } as HostModeStatus;
   };

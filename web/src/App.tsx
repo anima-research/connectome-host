@@ -1890,7 +1890,7 @@ interface HandlerHooks {
   onOpsAlert: (event: { [k: string]: unknown }) => void;
   /** Apply a branches-list response. */
   setBranchesList: (branches: BranchRow[], currentId: string) => void;
-  /** React to a server-side branch switch (undo/redo/checkout). */
+  /** React to a server-side branch switch (checkout, restore, branchto, a rollback). */
   onBranchChanged: (branch: { id: string; name: string }) => void;
   /** Host serving state (welcome, host-mode frames). */
   setHostMode: (hostMode: HostModeSnapshot | null) => void;
@@ -2629,9 +2629,9 @@ const COMMANDS: CommandHint[] = [
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
   { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
-  { name: '/restore', blurb: 'switch to checkpoint' },
-  { name: '/undo', blurb: 'revert before last agent turn' },
-  { name: '/redo', blurb: 're-apply last undone action' },
+  { name: '/restore', blurb: 'roll back to checkpoint, on a new branch' },
+  { name: '/undo', blurb: "take the agent's last turn out of its window" },
+  { name: '/redo', blurb: 'put the undone turn back in its window' },
   { name: '/nudge', blurb: 'run inference on current context, no new events' },
   { name: '/history', blurb: 'recent messages' },
   { name: '/lessons', blurb: 'list active lessons' },

@@ -292,7 +292,13 @@ function summarize(e: OperatorLogEntryWire): string {
   switch (e.kind) {
     case 'rollback': return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? '?')} msgs)`;
     case 'suppress': return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? (Array.isArray(p.messageIds) ? p.messageIds.length : '?'))} msgs)`;
-    case 'undo-turn': case 'redo-turn': return `→ ${String(r.targetBranch ?? '?')}`;
+    // An undo on the agent's window (agent-framework #291) moves no branch: say how many rows left it or entered it again.
+    case 'undo-turn': case 'redo-turn': {
+      const w = r.window as { retracted?: unknown; represented?: unknown } | undefined;
+      return w && typeof w === 'object'
+        ? `window −${String(w.retracted ?? 0)} +${String(w.represented ?? 0)}`
+        : `→ ${String(r.targetBranch ?? '?')}`;
+    }
     case 'hide': return `−${String(r.hidden ?? '?')} on ${String(r.branch ?? '?')}`;
     case 'settings-update': { try { return JSON.stringify(p.patch ?? {}); } catch { return ''; } }
     case 'settings-reset': return `keys: ${Array.isArray(p.keys) ? p.keys.join(',') : String(p.keys ?? 'all')}`;

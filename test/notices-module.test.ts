@@ -60,7 +60,8 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
         return { success: true };
       },
     },
-    getAgent: () => ({ getContextManager: () => ({ addMessage: (_p: string, content: Array<{ text: string }>) => { markers.push(content[0]!.text); return 'id'; } }) }),
+    // Only whether the agent is registered: the marker is written through the module's context (ctx, below).
+    getAgent: (name: string) => (name === 'clerk' ? {} : null),
   };
   let t = 0;
   const module = new NoticesModule({
@@ -73,7 +74,20 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
     },
     ...cfg,
   });
-  const ctx = { getState: () => null, setState: () => {}, getModule: () => undefined } as unknown as ModuleContext;
+  // Since agent-framework #291 the marker is a row for the agent written
+  // through the module's context, stamped for it and presented at its points,
+  // not a row stored straight into its context manager.
+  const markerWrites: Array<{ participant: string; metadata: unknown; opts: unknown }> = [];
+  const ctx = {
+    getState: () => null,
+    setState: () => {},
+    getModule: () => undefined,
+    addMessage: (participant: string, content: Array<{ text: string }>, metadata?: unknown, opts?: unknown) => {
+      markers.push(content[0]!.text);
+      markerWrites.push({ participant, metadata, opts });
+      return 'id';
+    },
+  } as unknown as ModuleContext;
   const emit = (e: Record<string, unknown>) => listener!(e as unknown as TraceEvent);
   const incoming = (channelId: string) => module.onProcess({ type: 'mcpl:channel-incoming', channelId } as never, {} as never);
   const alert = (kind: string, message = kind, data?: Record<string, unknown>, agentName = 'clerk') =>
@@ -84,7 +98,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const setTime = (ms: number) => { t = ms; };
   /** Make the next post to a channel wait until the returned release runs. */
   const hold = (channelId: string) => { let release!: () => void; holds.set(channelId, new Promise<void>((r) => { release = r; })); return release; };
-  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken, calls };
+  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, markerWrites, timers, broken, calls };
 }
 
 async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[]; refusal?: (server: string, channelId: string) => Refusal } = {}) {
@@ -137,6 +151,11 @@ describe('reactive replies', () => {
     expect(h.posts[0]!.text).not.toContain('weekly'); // no raw message in public channels
     expect(h.markers.length).toBe(1);
     expect(h.markers[0]).toContain('[host-notice]');
+    expect(h.markerWrites).toEqual([{
+      participant: 'user',
+      metadata: { system: true, kind: 'host-notice', alertKind: 'quota-spent', channelId: 'zulip:ops' },
+      opts: { forAgent: 'clerk' },
+    }]);
     h.alert('quota-spent-clear', 'anthropic credential ok');
     await h.settle();
     expect(h.module.episodeState()).toEqual([]);

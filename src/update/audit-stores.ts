@@ -15,12 +15,14 @@
  * In each store, the audit opens what a start of this release opens through
  * context-manager: the agent's namespace as agent-framework's createAgent
  * opens it, and, when the recipe enables the subconscious, its namespace as
- * createSubconsciousAgent does, while the agent's is open. It does so for
+ * createSubconsciousAgent does, while the agent's is open, each with the
+ * options agent-framework opens it with (residentContextOptions and
+ * subconsciousContextOptions), which its own opens use too. It does so for
  * each session the directory's index lists, since a session switch opens the
  * others too, under `agents/<name>` with each name a start can resolve, since
  * a start keeps its name through switches (residentOf), with the
  * resident's own strategy, built from the recipe a start would load as a
- * start builds it, and with the framework's view of the resident's messages.
+ * start builds it, and with the framework's view of each one's messages.
  * agent-framework's own state in the store isn't read. Each fleet entry of a
  * directory's recipe whose directory exists is that directory's child, and
  * its audit runs in a process of its own, as the fleet launches the child:
@@ -41,11 +43,11 @@
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { resolveTimeZone, type ContextStrategy } from '@animalabs/agent-framework';
-import { JsStore } from '@animalabs/chronicle';
 import {
-  ContextManager, StoreTopologyError, WindowedPassthroughStrategy, type StoredMessage,
-} from '@animalabs/context-manager';
+  residentContextOptions, resolveTimeZone, subconsciousContextOptions, type ContextManagerOpenOptions, type ContextStrategy,
+} from '@animalabs/agent-framework';
+import { JsStore } from '@animalabs/chronicle';
+import { ContextManager, StoreTopologyError } from '@animalabs/context-manager';
 import type { Membrane } from '@animalabs/membrane';
 import { resolveAgentName } from '../agent-name.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../web/load-repair-alert.js';
@@ -85,14 +87,6 @@ const FLEET_CHILD_LOAD_REPAIR = '--fleet-child load repair';
 const FINISHED_LINE = new RegExp(`^${FLEET_CHILD_FINISHED}: ([01])$`);
 const USAGE = `Usage: ${AUDIT_STORES_FLAG} [${RECIPE_OPTION} <recipe>] <data directory>…, with one data directory ` +
   `when a recipe is given`;
-
-/** agent-framework's view of a resident's messages (createAgent, in
- *  framework.ts): a message a tune-out diverted never enters it, so the
- *  strategy never chunks one into its pyramid. agent-framework 0.24.0
- *  doesn't export it, so this is a copy, and test/update-audit-stores.test.ts
- *  opens the same stores through agent-framework's own path to keep the two
- *  in step. */
-const residentView = (message: StoredMessage): boolean => !message.metadata?.tuneOut;
 
 /** A membrane for one open that gives no model: each of its methods a
  *  strategy calls, complete, stream, streamYielding or any other, throws, so
@@ -321,12 +315,18 @@ export interface AuditRepair {
   store: string;
 }
 
-/** What the audit opens in a store: the agent's namespace, its strategy, and
- *  the subconscious's namespace, when the recipe enables it. */
+/** What the audit opens in a store: the agent's namespace with the options
+ *  agent-framework opens it with, its strategy, and the subconscious's, when
+ *  the recipe enables it. */
 interface Resident {
   namespace: string;
+  /** residentContextOptions: the namespace and the resident's view of the residents' slot. */
+  options: ContextManagerOpenOptions;
   strategy: () => ContextStrategy;
-  subconscious?: { namespace: string; reAnchorFraction?: number };
+  /** subconsciousContextOptions for the resident's subconscious, given the
+   *  resident's strategy's message cap, which the framework mirrors: its own
+   *  slot, the residents' merged beside it, its view and a new strategy. */
+  subconscious?: { namespace: string; options: (maxMessageTokens: number | undefined) => ContextManagerOpenOptions };
 }
 
 /** What the audit opens in one data directory: each session's store, as a
@@ -746,9 +746,7 @@ async function auditNamespace(store: JsStore, resident: Resident, repairs: LoadR
   const opens: Array<{ namespace: string; model: ReturnType<typeof noModel>; open: (membrane: Membrane) => Promise<ContextManager> }> = [{
     namespace: resident.namespace,
     model: noModel(),
-    open: (membrane) => ContextManager.open({
-      store, namespace: resident.namespace, strategy, membrane, viewFilter: residentView,
-    }),
+    open: (membrane) => ContextManager.open({ store, ...resident.options, strategy, membrane }),
   }];
   const { subconscious } = resident;
   if (subconscious !== undefined) {
@@ -757,13 +755,7 @@ async function auditNamespace(store: JsStore, resident: Resident, repairs: LoadR
       model: noModel(),
       open: (membrane) => ContextManager.open({
         store,
-        namespace: subconscious.namespace,
-        isolate: true,
-        auxiliaryMessageViews: [{}],
-        strategy: new WindowedPassthroughStrategy({
-          reAnchorFraction: subconscious.reAnchorFraction,
-          maxMessageTokens: (strategy as { maxMessageTokens?: number }).maxMessageTokens,
-        }),
+        ...subconscious.options((strategy as { maxMessageTokens?: number }).maxMessageTokens),
         membrane,
       }),
     });
@@ -1228,21 +1220,27 @@ async function residentOf(dataDir: string, read: RecipeRead, loaded?: ExtensionR
     stores,
     names,
     indexed,
-    as: (name) => ({
-      namespace: `agents/${name}`,
-      strategy,
-      // A persistent reader has a re-anchor fraction; reader forks (Dendrite) have none.
-      ...(subconscious?.enabled
-        ? {
-            subconscious: {
-              namespace: `subconscious/${name}`,
-              ...('reAnchorFraction' in subconscious && subconscious.reAnchorFraction !== undefined
-                ? { reAnchorFraction: subconscious.reAnchorFraction }
-                : {}),
-            },
-          }
-        : {}),
-    }),
+    as: (name) => {
+      const options = residentContextOptions(name);
+      // A persistent reader has a name of its own and a re-anchor fraction;
+      // reader forks (Dendrite) have neither.
+      const reader = subconscious?.enabled
+        ? (maxMessageTokens: number | undefined) => subconsciousContextOptions({
+            serves: name,
+            ...('name' in subconscious && subconscious.name !== undefined ? { name: subconscious.name } : {}),
+            ...('reAnchorFraction' in subconscious && subconscious.reAnchorFraction !== undefined
+              ? { reAnchorFraction: subconscious.reAnchorFraction }
+              : {}),
+            ...(maxMessageTokens !== undefined ? { maxMessageTokens } : {}),
+          })
+        : undefined;
+      return {
+        namespace: options.namespace!,
+        options,
+        strategy,
+        ...(reader ? { subconscious: { namespace: reader(undefined).namespace!, options: reader } } : {}),
+      };
+    },
   };
 }
 

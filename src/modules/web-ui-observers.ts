@@ -641,7 +641,7 @@ const ALL_BUT_DEBUG: FrameScopes = AGENT_TREE_SCOPES;
  * are 'ops' alerts, as request-operator-log is. A trace type not here goes to
  * full clients alone, so a framework release's new types reach no observer
  * until they're given an entry; a test reads the installed framework's types
- * and fails on one without.
+ * and fails on one without, and on an entry for a type it no longer defines.
  */
 export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // The conversation and its turns.
@@ -651,9 +651,9 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'inference:turn_ended': MESSAGES,
   // The messages injected into a turn.
   'inference:stream_resumed': MESSAGES,
-  // Branch names, as request-branches.
-  'undo:completed': MESSAGES,
-  'redo:completed': MESSAGES,
+  // An undo or a redo on an agent's window (#291): how many rows left it or
+  // entered it again. No branch moves, so it carries no branch name.
+  'window:undone': MESSAGES,
   // A turn's end, and a restart for its context budget, carry token counts.
   'inference:completed': ['messages', 'health'],
   'inference:stream_restarted': ['messages', 'health'],
@@ -719,12 +719,27 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'dendrite:agent-reparented': ['health', 'ops'],
   'dendrite:activation-cancelled': ['health', 'ops'],
   'dendrite:mail-held': OPS,
+  // Mail held in memory behind a live surgery, stored at its release.
   'dendrite:mail-deferred': OPS,
   'dendrite:mail-delivered': OPS,
   'tune-out:reader-fork': OPS,
   // A reader fork whose framing, derive or run threw before it reported; its messages go back to the channel's next reader (agent-framework #793).
   'tune-out:reader-fork-failed': OPS,
   'tune-out:reader-prose-delivered': ['messages', 'ops'],
+  // Where the persistent subconscious's window starts, as an index ordinal.
+  'tune-out:subconscious-window': OPS,
+  // The presentation index (agent-framework #291): which stored rows enter
+  // each agent's window, and when. They carry agent names, counts, ids and
+  // slots, never content: what entered a window, a stamp no reader of its
+  // slot can read, a presentation that failed, a hand-off whose rows weren't
+  // the stream's, and rows taken out of a window. Own rows found out of the
+  // window at boot or when an agent is taken on are the host's health too.
+  'presentation:presented': OPS,
+  'presentation:repaired': ['health', 'ops'],
+  'presentation:unreadable-audience': OPS,
+  'presentation:failed': OPS,
+  'presentation:hand-off-mismatch': OPS,
+  'presentation:retracted': OPS,
   'gate:wake-line-omitted': OPS,
   'mcpl:push-event-rejected': OPS,
   'mcpl:channel-incoming-rejected': OPS,

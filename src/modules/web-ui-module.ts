@@ -1751,7 +1751,11 @@ export class WebUiModule implements Module {
     if (!fw || typeof fw.getHostModeStatus !== 'function') return null;
     try {
       // agent-framework HostModeStatus (#122): { quiesced, drained, reason?,
-      // since?, activeTurns, gatedRequests, backgroundScripts }. A quiesce
+      // since?, activeTurns, parkedAdmissions, gatedRequests,
+      // backgroundScripts, activeTurnAgents, ... }, passed through whole as
+      // `detail`; the page reads mode, since, reason and activeTurns. Its
+      // deferredWrites, deprecated since #291, counts the writes a live
+      // surgery holds in memory: a quiesce no longer queues any. A quiesce
       // that is still draining turns reads as 'quiescing'.
       const s = (fw.getHostModeStatus() ?? {}) as Record<string, unknown>;
       const mode = typeof s.mode === 'string' ? s.mode

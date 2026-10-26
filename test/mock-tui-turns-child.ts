@@ -84,7 +84,7 @@ let endSwitch!: (outcome: 'switched' | 'failed') => void;
 const app = {
   membrane: {},
   recipe: { name: 'tui-turns-test', agent: { name: 'agent' } },
-  branchState: { undoStack: [], redoStack: [], checkpoints: new Map() },
+  branchState: { checkpoints: new Map() },
   sessionManager: {
     getActiveSession: () => active,
     findSession: (nameOrId: string) => sessions.find(s => s.id === nameOrId || s.name === nameOrId) ?? null,

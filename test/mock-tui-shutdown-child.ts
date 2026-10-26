@@ -102,7 +102,7 @@ let switchDone: Promise<unknown> = Promise.resolve();
 const app = {
   membrane: {},
   recipe: { name: 'tui-shutdown-test', agent: { name: 'agent' } },
-  branchState: { undoStack: [], redoStack: [], checkpoints: new Map() },
+  branchState: { checkpoints: new Map() },
   sessionManager: {
     getActiveSession: () => { if (stopSignalled) activeAfterStop++; return null; },
     findSession: (name: string) => (name === 'other' ? { id: 'other-id', name: 'other' } : undefined),

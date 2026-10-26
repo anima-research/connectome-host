@@ -174,7 +174,7 @@ export class RetrievalModule implements Module {
         return [];
       }
 
-      const recent = this.getRecentContext();
+      const recent = this.getRecentContext(agentName);
       if (!recent) {
         trace?.finish('no-recent-context');
         return [];
@@ -450,16 +450,18 @@ export class RetrievalModule implements Module {
   // Helpers
   // =========================================================================
 
-  private getRecentContext(): RecentRetrievalContext | null {
+  private getRecentContext(agentName: string): RecentRetrievalContext | null {
     if (!this.ctx) return null;
 
-    // Get the last few messages of the conversation the residents see. A row
-    // marked `held: true` is a write the framework still holds: it reaches the
-    // agent at a later boundary, not in the request these lessons go into. A
-    // row marked `heldFromResidents` arrived in a tuned-out channel, and no
-    // resident is shown it. So the window keeps to the stored rows the
-    // residents are shown.
-    const { messages } = this.ctx.queryMessages({});
+    // Get the last few messages of the conversation the agent gathering is
+    // shown: each agent's context follows its own window (agent-framework
+    // #291), so the read is that agent's, not the primary's. A row marked
+    // `held: true` is stored and not in that agent's window: it arrived while
+    // its turn was alive and enters the window at a later point, not in the
+    // request these lessons go into, or it is an undone turn's. A row marked
+    // `heldFromResidents` arrived in a tuned-out channel, and no resident is
+    // shown it. So the window keeps to the stored rows the agent is shown.
+    const { messages } = this.ctx.queryMessages({}, { forAgent: agentName });
     const shown = messages.filter(m => m.held !== true && m.heldFromResidents !== true);
     if (shown.length === 0) return null;
 

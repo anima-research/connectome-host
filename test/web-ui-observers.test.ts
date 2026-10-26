@@ -691,11 +691,25 @@ describe('scope filters', () => {
     for (const type of ['inference:published', 'inference:published_complete']) {
       expect(traceScopes({ type })).toEqual(['messages']);
     }
+    // The presentation index (agent-framework #291): ids, counts and slots,
+    // never content, so ops; own rows repaired at boot are health too. An
+    // undo on a window is a message frame, as the branch-moving undo's was,
+    // whose undo:completed and redo:completed agent-framework no longer
+    // defines.
+    for (const type of [
+      'presentation:presented', 'presentation:unreadable-audience', 'presentation:failed',
+      'presentation:hand-off-mismatch', 'presentation:retracted', 'tune-out:subconscious-window',
+    ]) {
+      expect(traceScopes({ type })).toEqual(['ops']);
+    }
+    expect(traceScopes({ type: 'presentation:repaired' })).toEqual(['health', 'ops']);
+    expect(traceScopes({ type: 'window:undone' })).toEqual(['messages']);
+    for (const type of ['undo:completed', 'redo:completed']) expect(traceScopes({ type })).toBe(FULL_CLIENTS_ONLY);
     expect(traceScopes({ type: 'a-trace-added-later' })).toBe(FULL_CLIENTS_ONLY);
     expect(traceScopes({ type: 'toString' })).toBe(FULL_CLIENTS_ONLY);
   });
 
-  test("every trace type the installed agent-framework defines has an entry in the table", () => {
+  test("every trace type the installed agent-framework defines has an entry in the table, and no other type has one", () => {
     // Read the source the runtime resolves the package to from here, as the host loads it, wherever
     // it's installed: in this repository's node_modules, or in one above it, as a hoisted install or a
     // linked checkout leaves it. Its exports give Bun the index of that source.
@@ -704,6 +718,9 @@ describe('scope filters', () => {
     const types = [...new Set([...source.matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!))].sort();
     expect(types.length).toBeGreaterThan(50);
     expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
+    // And the table names no type the framework has dropped, such as the
+    // branch-moving undo's undo:completed and redo:completed (#291).
+    expect(Object.keys(TRACE_SCOPES).filter((type) => !types.includes(type))).toEqual([]);
   });
 
   test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {

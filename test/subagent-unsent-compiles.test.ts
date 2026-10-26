@@ -25,6 +25,7 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
+import { presentedRow } from './presented-host.js';
 
 type Compiled = { messages: Array<{ content: unknown }> };
 type Compile = (budget?: unknown, injections?: unknown, opts?: { dryRun?: boolean }) => Promise<Compiled>;
@@ -91,10 +92,12 @@ describe("a peek's and a fork's read of another context are dry; launch checks a
   test("a fork compiles its parent's context dry and seeds its stream from that compile; its launch check is a real compile", async () => {
     const h = await harness();
     try {
-      const parentCM = h.framework.getAgent('parent')!.getContextManager() as unknown as { compile: Compile; addMessage: (p: string, c: unknown) => void };
+      const parentCM = h.framework.getAgent('parent')!.getContextManager() as unknown as Parameters<typeof presentedRow>[0] & { compile: Compile };
       const input = { name: 'probe', task: 'say done', model: 'mock-child', sync: true };
-      parentCM.addMessage('user', [{ type: 'text', text: 'please look into it: the ledger total is 4,212' }]);
-      parentCM.addMessage('parent', [{ type: 'tool_use', id: 'toolu_probe', name: 'subagent--fork', input }]);
+      // Presented as well as stored: since agent-framework #291 the parent's
+      // compile reads its window, which holds only presented rows.
+      presentedRow(parentCM, 'user', [{ type: 'text', text: 'please look into it: the ledger total is 4,212' }]);
+      presentedRow(parentCM, 'parent', [{ type: 'tool_use', id: 'toolu_probe', name: 'subagent--fork', input }]);
       record(parentCM, 'parent', h.seen);
 
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_probe', input));

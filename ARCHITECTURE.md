@@ -315,16 +315,20 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 
 ## Reversibility
 
-- **Host commands** — `/undo`, `/redo`, `/checkpoint`, `/restore`,
-  `/branches`, `/checkout`, `/branchto`, `/newtopic` move the head over
-  Chronicle branches. They are refused while a turn is in flight. Checkpoints
-  are held in memory for the session.
+- **Host commands** — `/checkpoint`, `/restore`, `/branches`, `/checkout`,
+  `/branchto` move the head over Chronicle branches, through the framework's
+  `switchBranch` and `rollbackToMessage`, which reserve the store for every
+  agent sharing it. `/undo` and `/redo` are the framework's `undoLastTurn` and
+  `redo`, on the agent's window: no branch moves (agent-framework #291).
+  `/newtopic` resets the agent's head window at a transition row of its own.
+  They are refused while a turn is in flight. Checkpoints are held in memory
+  for the session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages
   by forking and switching branches; quiesce/resume the host. Every action is
   appended to `sessions/<id>/operator-actions.jsonl`.
 
-The two mechanisms coexist: the host's `/undo` predates the framework's
-surgery and still uses its own branch stacks.
+Both go through the framework, so each move of the branch is in the
+operator log and waits for every agent to be idle.
 
 ## Failure handling and observability
 

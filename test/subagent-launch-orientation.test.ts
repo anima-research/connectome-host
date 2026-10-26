@@ -29,6 +29,10 @@ import type { Recipe } from '../src/recipe.js';
 import {
   SubagentModule, type SubagentModuleConfig, type SubagentLaunch, agentSettingsOf, describeSubagentStart, toolDifferences, undeliveredLaunchParts,
 } from '../src/modules/subagent-module.js';
+// The parent's context these tests seed is written straight into its context
+// manager, so each row is presented too (presentedRow): since agent-framework
+// #291 a fork inherits the parent's window, which holds only presented rows.
+import { presentedRow } from './presented-host.js';
 
 // Most tests here build subagent harnesses and run launches through them,
 // which is CPU work that a busy machine can slow many times over. The limit
@@ -212,8 +216,8 @@ function call(name: 'fork' | 'spawn', id: string, input: Record<string, unknown>
  *  path finds it. */
 function seedForkCall(framework: AgentFramework, id: string, input: Record<string, unknown>, agent = 'parent'): void {
   const cm = framework.getAgent(agent)!.getContextManager();
-  cm.addMessage('user', [{ type: 'text', text: 'please look into it' }]);
-  cm.addMessage(agent, [{ type: 'tool_use', id, name: 'subagent--fork', input }] as never);
+  presentedRow(cm, 'user', [{ type: 'text', text: 'please look into it' }]);
+  presentedRow(cm, agent, [{ type: 'tool_use', id, name: 'subagent--fork', input }] as never);
 }
 
 /** The structural path's inheritance, as materialiseStructuralFork does it. */
@@ -454,7 +458,7 @@ describe('fork orientation', () => {
   test('a fork call with no id inherits the whole context, and says why', async () => {
     const h = await makeHarness({});
     try {
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
       const input = { name: 'blind', task: 'look around' };
       const res = await h.subagent.handleToolCall({ name: 'fork', input, callerAgentName: 'parent' } as unknown as ToolCall);
       expect(res.success).toBe(true);
@@ -1048,7 +1052,7 @@ describe('a queued launch', () => {
       // message lands after the call.
       h.framework.getAgent('parent')!.maxStreamTokens = 777_000;
       await h.framework.addModule(toolModule('gauge', 1));
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
 
       h.releaseHeld();
       await h.asyncPromise('first');
@@ -1076,18 +1080,18 @@ describe('a queued launch', () => {
     try {
       const input = { name: 'kept', task: 'check the boundary' };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
-      cm.addMessage('parent', [
+      presentedRow(cm, 'user', [{ type: 'text', text: 'BEFORE_THE_CALL' }]);
+      presentedRow(cm, 'parent', [
         { type: 'tool_use', id: 'toolu_kept', name: 'subagent--fork', input },
         { type: 'tool_use', id: 'toolu_sibling', name: 'subagent--fork', input: { name: 'sibling', task: 'other' } },
         { type: 'text', text: 'BESIDE_THE_CALL' },
       ] as never);
-      cm.addMessage('user', [
+      presentedRow(cm, 'user', [
         { type: 'tool_result', toolUseId: 'toolu_kept', content: 'the receipt' },
         { type: 'tool_result', toolUseId: 'toolu_sibling', content: 'SIBLING_RESULT' },
         { type: 'text', text: 'BESIDE_THE_RESULT' },
       ] as never);
-      cm.addMessage('user', [{ type: 'text', text: 'AFTER_THE_EXCHANGE' }]);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'AFTER_THE_EXCHANGE' }]);
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_kept', input));
       expect(res.success).toBe(true);
       await h.asyncPromise('kept');
@@ -1112,7 +1116,7 @@ describe('a queued launch', () => {
       const second = { name: 'second', task: 'queued fallback' };
       const res = await h.subagent.handleToolCall(call('fork', 'toolu_second', second));
       const block = launchBlock(res.data as string);
-      h.framework.getAgent('parent')!.getContextManager().addMessage('user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
+      presentedRow(h.framework.getAgent('parent')!.getContextManager(), 'user', [{ type: 'text', text: 'POST_CALL_ARRIVAL' }]);
       h.releaseHeld();
       await h.asyncPromise('first');
       await h.asyncPromise('second');
@@ -1484,8 +1488,8 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'long-structural', task: LONG_TASK, model: 'mock-structural', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
       const result = await h.subagent.handleToolCall({ id: 'fork-point', name: 'fork', input, callerAgentName: 'parent' } as never);
       expect(result.success).toBe(true);
       const wire = JSON.stringify(h.requestFor('mock-structural')!.messages);
@@ -1557,8 +1561,8 @@ describe('what a stream first reads is what its launch promises', () => {
         const input = { name: `sized-idle-${kind}`, task: 'short', model: `mock-sized-idle-${kind}`, sync: true, ...(kind === 'spawn' ? { systemPrompt: 'p' } : {}) };
         if (kind === 'fork') {
           const cm = h.framework.getAgent('parent')!.getContextManager();
-          cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-          cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
+          presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+          presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input }] as never);
         }
         const result = await h.subagent.handleToolCall({ id: 'fork-point', name: kind, input, callerAgentName: 'parent' } as never);
         expect(result.success).toBe(false);
@@ -1576,8 +1580,8 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'sized-no-spawn', task: 'short', model: 'mock-sized-no-spawn', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-no-spawn', name: 'subagent--fork', input }] as never);
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-no-spawn', name: 'subagent--fork', input }] as never);
       const result = await h.subagent.handleToolCall({ id: 'fork-no-spawn', name: 'fork', input, callerAgentName: 'parent' } as never);
       expect(result.success).toBe(false);
       expect(String(result.error)).toMatch(new RegExp(
@@ -1596,10 +1600,10 @@ describe('what a stream first reads is what its launch promises', () => {
       try {
         const input = { name: `stale-${canSpawn}`, task: 'the task this call carries', model: `mock-stale-${canSpawn}`, sync: true };
         const cm = h.framework.getAgent('parent')!.getContextManager();
-        cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
+        presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
         // The stored call carries another task, so the fork's own call
         // doesn't carry this one: the delivery check's 'call' part.
-        cm.addMessage('parent', [{ type: 'tool_use', id: 'fork-stale', name: 'subagent--fork', input: { ...input, task: 'an earlier task' } }] as never);
+        presentedRow(cm, 'parent', [{ type: 'tool_use', id: 'fork-stale', name: 'subagent--fork', input: { ...input, task: 'an earlier task' } }] as never);
         const result = await h.subagent.handleToolCall({ id: 'fork-stale', name: 'fork', input, callerAgentName: 'parent' } as never);
         expect(result.success).toBe(false);
         expect(String(result.error)).toBe(
@@ -1622,7 +1626,7 @@ describe('what a stream first reads is what its launch promises', () => {
       try {
         const input = { name: `xml-${path}`, task: 'short', model: `mock-xml-${path}`, sync: true };
         const cm = h.framework.getAgent('parent')!.getContextManager();
-        cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
+        presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
         if (path === 'structural') {
           // As agent-framework 0.22.3 stores an XML round: each call carries
           // the round's raw text, a sibling fork's included, and each result
@@ -1631,12 +1635,12 @@ describe('what a stream first reads is what its launch promises', () => {
           const raw = '<function_calls>\n<invoke name="files--read">\n<parameter name="path">notes</parameter>\n</invoke>\n' +
             `<invoke name="subagent--fork">\n<parameter name="task">${sibling.task}</parameter>\n</invoke>\n` +
             `<invoke name="subagent--fork">\n<parameter name="task">${input.task}</parameter>\n</invoke>\n</function_calls>`;
-          cm.addMessage('parent', [
+          presentedRow(cm, 'parent', [
             { type: 'tool_use', id: 'read-x', name: 'files--read', input: { path: 'notes' }, rawXml: raw },
             { type: 'tool_use', id: 'fork-sibling', name: 'subagent--fork', input: sibling, rawXml: raw },
             { type: 'tool_use', id: 'fork-x', name: 'subagent--fork', input, rawXml: raw },
           ] as never);
-          cm.addMessage('user', [
+          presentedRow(cm, 'user', [
             { type: 'tool_result', toolUseId: 'read-x', toolName: 'files--read', content: 'NOTES' },
             { type: 'tool_result', toolUseId: 'fork-sibling', toolName: 'subagent--fork', content: 'accepted' },
             { type: 'tool_result', toolUseId: 'fork-x', toolName: 'subagent--fork', content: 'accepted' },
@@ -1708,12 +1712,12 @@ describe('what a stream first reads is what its launch promises', () => {
     try {
       const input = { name: 'after-a-read', task: 'short', model: 'mock-after-a-read', sync: true };
       const cm = h.framework.getAgent('parent')!.getContextManager();
-      cm.addMessage('user', [{ type: 'text', text: 'begin' }]);
-      cm.addMessage('parent', [
+      presentedRow(cm, 'user', [{ type: 'text', text: 'begin' }]);
+      presentedRow(cm, 'parent', [
         { type: 'tool_use', id: 'read-1', name: 'files--read', input: { path: 'big' } },
         { type: 'tool_use', id: 'fork-point', name: 'subagent--fork', input },
       ] as never);
-      cm.addMessage('user', [
+      presentedRow(cm, 'user', [
         { type: 'tool_result', toolUseId: 'read-1', content: 'x'.repeat(45_000) },
         { type: 'tool_result', toolUseId: 'fork-point', content: 'forked' },
       ] as never);

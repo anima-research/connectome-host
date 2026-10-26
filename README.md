@@ -776,13 +776,13 @@ headless socket.
 | `/newtopic [context]` | Reset the head window for a new topic |
 | `/nudge [agent]` | Run inference on the current context without a new event |
 | `/puppet <tool> [json]` | Admin: execute a tool as the agent and store the call/result pair |
-| `/undo` | Revert to state before last agent turn |
-| `/redo` | Re-apply undone action |
+| `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
+| `/redo` | Put the turn `/undo` took out back in the agent's window |
 | `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Restore to checkpoint |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
-| `/branchto <msgId>` | Branch from a specific message |
+| `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
 | `/history [n]` | Show recent state transitions |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
@@ -798,7 +798,11 @@ headless socket.
 | `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
-`/branchto`, `/newtopic`) are refused while a turn is in flight.
+`/branchto`, `/newtopic`) are refused while a turn is in flight. `/checkout`,
+`/restore` and `/branchto` go through agent-framework's branch switch and
+rollback, which are refused unless every agent sharing the store is idle and
+are written to the operator log; `/undo` and `/redo` are its undo and redo on
+the agent's window.
 
 ## TUI controls
 

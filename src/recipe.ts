@@ -997,7 +997,7 @@ export interface RecipeModules {
    * What the remote index holds: with `includePrivateTools` at the
    * framework default (true), the agent's think/journal/skip_reply prose is
    * indexed too. Search hits are checked against the CURRENT branch, so
-   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * /branchto, /checkout etc. hide rolled-back turns from results, but the remote
    * copy stays; `/session delete` removes only the local store, not the
    * remote namespace (the client has no namespace delete).
    */

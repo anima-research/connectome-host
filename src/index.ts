@@ -1214,12 +1214,11 @@ async function main() {
   // multi-agent process (whose debt would we even claim?), no strategy — the
   // header is simply not sent: an unstamped call is honest, a guessed one lies.
   let appRefForDebt: AppContext | null = null;
-  // The resident whose turn/debt we stamp. TODO(agent-framework ≥0.14): use a
-  // public getPrimaryAgentName() accessor instead of the private field read.
+  // The resident whose turn/debt we stamp: the framework's primary.
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);

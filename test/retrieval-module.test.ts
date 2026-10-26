@@ -370,15 +370,23 @@ describe('RetrievalModule observability', () => {
     // A stored row carries no `held`. A row with `held: false` counts as
     // stored too, so only `held: true` leaves the window.
     const stored = Array.from({ length: 11 }, (_, i) => row(`m${i + 1}`, `stored message ${i + 1}.`, i % 2 === 0 ? undefined : false));
+    const reads: unknown[] = [];
     (mod as unknown as { ctx: unknown }).ctx = {
       getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
-      queryMessages: () => ({
-        messages: [...stored, row('h1', 'held message A.', true), row('h2', 'held message B.', true)],
-        totalCount: 13,
-      }),
+      queryMessages: (_filter: unknown, opts?: unknown) => {
+        reads.push(opts);
+        return {
+          messages: [...stored, row('h1', 'held message A.', true), row('h2', 'held message B.', true)],
+          totalCount: 13,
+        };
+      },
     };
 
     expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    // Since agent-framework #291 every row is stored at once, and `held`
+    // marks one not in the window of the agent the read is for, so the read
+    // names that agent.
+    expect(reads).toEqual([{ forAgent: TEST_AGENT }]);
     expect(h.calls).toHaveLength(1);
     const sent = JSON.stringify(h.calls[0].messages);
     for (let i = 2; i <= 11; i++) expect(sent).toContain(`stored message ${i}.`);
@@ -398,9 +406,10 @@ describe('RetrievalModule observability', () => {
     const row = (id: string, text: string, extra: Record<string, unknown> = {}) =>
       ({ id, participant: 'user', content: [{ type: 'text', text }], ...extra });
     const shown = Array.from({ length: 10 }, (_, i) => row(`m${i + 1}`, `shown message ${i + 1}.`));
+    const reads: unknown[] = [];
     (mod as unknown as { ctx: unknown }).ctx = {
       getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
-      queryMessages: () => ({
+      queryMessages: (_filter: unknown, opts?: unknown) => (reads.push(opts), {
         messages: [
           ...shown.slice(0, 5),
           row('t1', 'tuned-out message A.', { heldFromResidents: true }),
@@ -413,6 +422,7 @@ describe('RetrievalModule observability', () => {
     };
 
     expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(reads).toEqual([{ forAgent: TEST_AGENT }]);
     expect(h.calls).toHaveLength(1);
     const sent = JSON.stringify(h.calls[0].messages);
     for (let i = 1; i <= 10; i++) expect(sent).toContain(`shown message ${i}.`);
@@ -427,16 +437,19 @@ describe('RetrievalModule observability', () => {
     const rows: Array<Record<string, unknown>> = [
       { id: 'm1', participant: 'user', content: [{ type: 'text', text: 'Please recall the memory detail.' }] },
     ];
+    const reads: unknown[] = [];
     (mod as unknown as { ctx: unknown }).ctx = {
       getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
-      queryMessages: () => ({ messages: [...rows], totalCount: rows.length }),
+      queryMessages: (_filter: unknown, opts?: unknown) => (reads.push(opts), { messages: [...rows], totalCount: rows.length }),
     };
 
     const first = await mod.gatherContext(TEST_AGENT);
     expect(first).toHaveLength(1);
+    // Stored at once while the agent's turn was alive, and not in its window yet.
     rows.push({ id: 'h1', participant: 'user', content: [{ type: 'text', text: 'A message that arrived mid-turn.' }], held: true });
     const second = await mod.gatherContext(TEST_AGENT);
 
+    expect(reads).toEqual([{ forAgent: TEST_AGENT }, { forAgent: TEST_AGENT }]);
     expect(second).toEqual(first);
     expect(h.calls).toHaveLength(1);
     expect(mod.getRetrievalTraces()[0].outcome).toBe('cache-hit');
@@ -445,17 +458,40 @@ describe('RetrievalModule observability', () => {
   test('finds no recent context when every row is still held', async () => {
     const h = harness([], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
+    const reads: unknown[] = [];
     (mod as unknown as { ctx: unknown }).ctx = {
       getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
-      queryMessages: () => ({
+      queryMessages: (_filter: unknown, opts?: unknown) => (reads.push(opts), {
         messages: [{ participant: 'user', content: [{ type: 'text', text: 'held message.' }], held: true }],
         totalCount: 1,
       }),
     };
 
     expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    expect(reads).toEqual([{ forAgent: TEST_AGENT }]);
     expect(h.calls).toHaveLength(0);
     expect(mod.getRetrievalTraces()[0].outcome).toBe('no-recent-context');
+  });
+
+  // Each agent's context follows its own window (agent-framework #291): what
+  // one agent is shown isn't what the primary is, so lessons are chosen from
+  // the window of the agent whose request they go into.
+  test('chooses from the window of the agent it gathers for, not the primary\'s', async () => {
+    const h = harness(['[]'], [lesson('l1', 'memory detail')]);
+    const mod = new RetrievalModule({ membrane: h.membrane });
+    const windows: Record<string, string> = { primary: 'the primary was asked about the release.', helper: 'the helper was asked about the ledger.' };
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => [lesson('l1', 'memory detail')] } : null,
+      queryMessages: (_filter: unknown, opts?: { forAgent?: string }) => ({
+        messages: [{ id: 'm1', participant: 'user', content: [{ type: 'text', text: windows[opts?.forAgent ?? 'primary'] }] }],
+        totalCount: 1,
+      }),
+    };
+
+    await mod.gatherContext('helper');
+    const sent = JSON.stringify(h.calls[0]!.messages);
+    expect(sent).toContain('asked about the ledger');
+    expect(sent).not.toContain('asked about the release');
   });
 
   test('malformed mixed wrapper retains historical fail-open behavior', async () => {

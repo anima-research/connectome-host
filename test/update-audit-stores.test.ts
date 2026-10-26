@@ -13,9 +13,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import { AgentFramework, resolveTimeZone } from '@animalabs/agent-framework';
+import { AgentFramework, resolveTimeZone, storeOwnRow } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
-import { AutobiographicalStrategy, ContextManager } from '@animalabs/context-manager';
+import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@animalabs/context-manager';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { buildFrameworkAgentConfig, recipeModel } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy, standardKvUnifiedConfig } from '../src/framework-strategy.js';
@@ -495,6 +495,86 @@ describe('the store audit', () => {
     }
     expect(said["a subconscious whose context a start can't read"]!.audit).toContain(' (subconscious/agent): refused: ');
   }, 90_000);
+
+  test("each namespace is opened with the options agent-framework's own opens use, and reads the window its agents left", async () => {
+    // Each agent's context follows its own window (agent-framework #291), and
+    // the audit's opens must read what the agents' compiles read: the same
+    // slots, view and window. agent-framework exports the options it opens a
+    // resident and the subconscious with (residentContextOptions,
+    // subconsciousContextOptions), and the audit opens with them. This
+    // records each ContextManager.open a start and the audit make, and the
+    // window each opened manager holds, over a store a start left presented.
+    const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, systemPrompt: 'attend to the agent', name: 'Muse' } };
+    const recipe = validateRecipe(structuredClone(raw));
+    const opened: Array<{ config: Record<string, unknown>; window: string[]; mode: string }> = [];
+    const open = ContextManager.open.bind(ContextManager);
+    const spy = spyOn(ContextManager, 'open').mockImplementation((async (config: Parameters<typeof ContextManager.open>[0]) => {
+      const manager = await open(config);
+      opened.push({
+        config: config as unknown as Record<string, unknown>,
+        window: manager.getPresentedMessages().map((m) => m.id),
+        mode: manager.windowMode(),
+      });
+      return manager;
+    }) as typeof ContextManager.open);
+    const live: Record<string, string[]> = {};
+    try {
+      const { dir } = await makeDataDirWith('parity', [async (store) => {
+        const model = recipeModel(recipe, process.env.MODEL);
+        const strategy = buildFrameworkStrategy(recipe, model, resolveTimeZone(recipe.agent.timezone));
+        const framework = await AgentFramework.create({
+          storePath: store,
+          membrane: new Membrane(new MockAdapter()),
+          agents: [buildFrameworkAgentConfig(recipe, 'agent', model, strategy)],
+          modules: [],
+          subconscious: recipe.subconscious!,
+        });
+        const agent = framework.getAgent('agent')!;
+        // One row in the agent's window, and one stored past the framework, out of it.
+        storeOwnRow(agent, 'agent', [{ type: 'text', text: 'presented as it was written' }]);
+        agent.getContextManager().addMessage('user', [{ type: 'text', text: 'stored and not presented' }]);
+        live['agents/agent'] = agent.getContextManager().getPresentedMessages().map((m) => m.id);
+        live['subconscious/agent'] = framework.getAgent('Muse')!.getContextManager().getPresentedMessages().map((m) => m.id);
+        await framework.stop();
+      }]);
+      saveRecipe(dir, raw as never);
+      const started = opened.splice(0);
+      const { status, failed } = await audit([dir]);
+      expect({ status, failed }).toEqual({ status: 0, failed: [] });
+      const audited = opened.splice(0);
+
+      // What each open's view keeps of a plain row, a row a tune-out holds,
+      // and the stored context injections of the agent, the subconscious and
+      // another resident.
+      const injection = (agent: string) => ({ contextInjection: { agent, namespace: 'probe', contentHash: 'h', part: 0, parts: 1 } });
+      const samples = [{}, { tuneOut: { epochId: 'e' } }, injection('agent'), injection('Muse'), injection('other')]
+        .map((metadata, i) => ({ id: `s${i}`, participant: 'user', content: [], metadata, sequence: i, timestamp: 0 }) as unknown as StoredMessage);
+      const shape = (config: Record<string, unknown>) => ({
+        isolate: config.isolate,
+        auxiliaryMessageViews: config.auxiliaryMessageViews,
+        strategy: (config.strategy as object | undefined)?.constructor.name,
+        view: samples.map((m) => (config.viewFilter as ((m: StoredMessage) => boolean) | undefined)?.(m) ?? true),
+      });
+      for (const namespace of ['agents/agent', 'subconscious/agent']) {
+        const start = started.find((o) => o.config.namespace === namespace);
+        const audit = audited.find((o) => o.config.namespace === namespace);
+        expect(start, namespace).toBeDefined();
+        expect(audit, namespace).toBeDefined();
+        const { strategy: _resident, ...auditShape } = shape(audit!.config);
+        const { strategy: _theirs, ...startShape } = shape(start!.config);
+        // The resident's strategy is the recipe's, built for each open; the subconscious's comes with its options.
+        expect(namespace === 'agents/agent' ? auditShape : shape(audit!.config), namespace)
+          .toEqual(namespace === 'agents/agent' ? startShape : shape(start!.config));
+        expect({ mode: audit!.mode, window: audit!.window }, namespace).toEqual({ mode: 'presented', window: live[namespace]! });
+      }
+      expect(live['agents/agent']).toHaveLength(1);
+      // The resident's view leaves out held traffic and another agent's injections; the subconscious's only the latter.
+      expect(shape(audited.find((o) => o.config.namespace === 'agents/agent')!.config).view).toEqual([true, false, true, false, false]);
+      expect(shape(audited.find((o) => o.config.namespace === 'subconscious/agent')!.config).view).toEqual([true, true, false, true, false]);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60_000);
 
   test("a crossed store opens under a resident's kv-unified block that keeps gap-bearing summaries, as at its start", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);

@@ -2,7 +2,8 @@
  * SettingsModule — runtime-tunable host settings the agent can toggle for
  * itself. State persists to chronicle via ModuleContext (`setState`/`getState`)
  * so changes survive restarts, and it's read there at each use, so it follows
- * the store's branches through undo, redo and checkout.
+ * the store's branches through rollbacks and checkouts. An undo moves no
+ * branch (agent-framework #291), so it leaves the settings as they are.
  *
  * First domain: **reasoning** (Anthropic extended thinking), surfaced to the
  * agent as `agent_settings` fields (reasoning_enabled /
@@ -86,8 +87,8 @@ export class SettingsModule implements Module {
 
   /**
    * The current branch's reasoning settings, and the effort the agent chose
-   * there, read from module state at each call: undo, redo and checkout move
-   * to another branch without restarting modules.
+   * there, read from module state at each call: a rollback or a checkout
+   * moves to another branch without restarting modules.
    */
   private current(): { reasoning: ReasoningSettings; effortOverride: ReasoningEffort | undefined } {
     const saved = this.ctx?.getState<{ reasoning?: unknown }>()?.reasoning;
@@ -102,6 +103,22 @@ export class SettingsModule implements Module {
   /** Read accessor for external consumers (e.g., the LLM adapter wrapper). */
   getReasoning(): ReasoningSettings {
     return this.current().reasoning;
+  }
+
+  /**
+   * Tell an agent, in its context, that an operator changed its settings
+   * (the panel's opt-in notice, notifyAgentOfSettingsChange). The row is
+   * written through this module's context for that agent (`forAgent`), so
+   * it is stamped for it alone and enters its window as any row for it does
+   * (agent-framework #291): at once while no turn of it is alive, and
+   * otherwise at a point of its turn that can carry it, never between rounds
+   * a request didn't carry. No inference is requested. False when the module
+   * isn't started, as between a session's stop and the next start.
+   */
+  noteForAgent(agentName: string, text: string): boolean {
+    if (!this.ctx) return false;
+    this.ctx.addMessage('Context Manager', [{ type: 'text', text }], { system: true }, { forAgent: agentName });
+    return true;
   }
 
   /** No standalone tools — reasoning controls live inside the framework's

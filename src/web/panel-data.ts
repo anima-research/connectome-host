@@ -502,6 +502,12 @@ export function applySettingsCancelTransition(app: PanelAppRef, agentName: strin
  * into the very context being tuned: it invalidates the KV prefix and is
  * itself classifier-visible. The zero-cost alternative the agent always has
  * is to PULL via its `agent_settings` tool.
+ *
+ * Written through the settings module's context for the agent
+ * (SettingsModule.noteForAgent), so it is stamped for that agent and enters
+ * its window at the agent's presentation points (agent-framework #291); a
+ * host without the module (SettingsModule is in every host this one builds)
+ * gets no notice.
  */
 export function notifyAgentOfSettingsChange(
   app: PanelAppRef,
@@ -519,8 +525,10 @@ export function notifyAgentOfSettingsChange(
         + (budget !== undefined ? ` — budget ${budget}` : '')
         + (tail !== undefined ? `, tail ${tail}` : '')
         + (transition === 'converging' ? ' (converging gradually)' : '');
-    const cm = app.framework.getAgent(agentName)?.getContextManager();
-    cm?.addMessage('Context Manager', [{ type: 'text', text }], { system: true });
+    const settings = app.framework.getModule('settings') as { noteForAgent?: (agent: string, text: string) => boolean } | null;
+    if (typeof settings?.noteForAgent !== 'function' || !settings.noteForAgent(agentName, text)) {
+      console.warn(`[settings] notify skipped (change still applied): no started settings module to write ${agentName}'s notice through`);
+    }
   } catch (err) {
     // A failed notice must never fail the apply that already succeeded.
     console.warn('[settings] notify failed (change still applied):', err);
