@@ -35,7 +35,7 @@ All cloned as siblings under `~/connectome-local/`:
 | `agent-framework` | `anima-research/agent-framework` | `main` | 0.21.0 | host runtime: gate, MCPL orchestration, locus routing, `think` |
 | `discord-mcpl` | `anima-research/discord-mcpl` | `main` | 0.1.4 † | Discord surface (MCPL server) |
 | `heartbeat-mcpl` | `anima-research/heartbeat-mcpl` | `main` | 0.1.3 † | periodic self-wake (MCPL server) |
-| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 1.6.0 † | shell: session daemon (ws://localhost:3100) + per-agent MCP stdio frontend |
+| `terminal-sessions-mcp` | `antra-tess/terminal-sessions-mcp` ⚠️ | `main` | 2.0 | shell: the session daemon `termd` (ws://127.0.0.1:3101), which each agent's host dials over MCPL |
 | `membrane` | `antra-tess/membrane` ⚠️ | `main` | 0.5.86 | LLM client lib — **single shared instance required** |
 | `context-manager` | `anima-research/context-manager` | `main` | 0.13.0 | context compilation / autobiographical memory |
 | `chronicle` | `anima-research/chronicle` | `main` | 0.4.0 | record / chronicle store (Rust, napi-rs bindings) |
@@ -100,7 +100,9 @@ What "build" means differs by package:
   the npm package ships prebuilt binaries (macOS arm64/x64, Linux arm64/x64
   glibc, Windows x64).
 - **MCPL servers** (`discord-mcpl`, `heartbeat-mcpl`, `terminal-sessions-mcp`)
-  — `npm install && npm run build`; recipes run their `dist/` under node.
+  — `npm install && npm run build`. Recipes run discord-mcpl's and
+  heartbeat-mcpl's `dist/` under node; terminal-sessions-mcp's daemon, `termd`
+  (built into `next/dist/`), runs under its own supervisor instead (§4).
 - **`connectome-host`** — no `main` and no build step: bun runs `src/`
   directly. `bun install` runs `postinstall`, which builds the WebUI SPA into
   `dist/web` (`bun run build:web` to rebuild it).
@@ -159,19 +161,41 @@ done
 
 ## 4. Shell daemon (terminal-sessions-mcp)
 
-The shell tool is two parts: a **per-agent MCP stdio frontend** (spawned by the
-recipe) that connects over WebSocket to a **shared session daemon**. Run the daemon
-as a supervised, token-protected service on `localhost:3100`:
+The shell tool is a **session daemon, `termd`**, which each agent's host
+dials over a loopback WebSocket as an MCPL server (the recipe's `shell` entry,
+§5); there is no process per agent. Each user on the box runs one termd: the
+agents that run as that user share it, each with a token of its own, and an
+agent that runs as a user of its own (as AGENT-ONBOARDING sets one up) has its
+own termd, on a port of its own. Keep the tokens in a file only you can read,
+and run the daemon supervised, here on `127.0.0.1:3101`:
 
 ```bash
-node ~/connectome-local/terminal-sessions-mcp/dist/src/server/start-session-server.js \
-  --host localhost --headless --token <SESSION_SERVER_TOKEN>
+# { "<token>": "agent:<agent>@<domain>", ... }: one token per agent this daemon serves.
+# umask 077 creates the file owner-only, before the token is in it.
+(umask 077; printf '{ "%s": "agent:<agent>@<domain>" }\n' "$(openssl rand -hex 32)" > ~/.tsm-tokens.json)
+/bin/sh ~/connectome-local/terminal-sessions-mcp/next/config/termd-launch.sh \
+  --port 3101 --tokens-file ~/.tsm-tokens.json --retention-days 30
 ```
-- Supervise it: launchd `com.terminal-sessions.server` (macOS) /
-  systemd-user `terminal-sessions.service` (Linux, needs `loginctl enable-linger`).
-- The token is required — each agent's shell frontend must present it as
-  `SESSION_SERVER_TOKEN` or the daemon closes the socket ("Connection lost").
-- Each host/box runs its OWN daemon + token (don't share tokens across machines).
+- Supervise it with the units terminal-sessions-mcp ships in `next/config/`:
+  `termd.service` (systemd user unit; Linux needs `loginctl enable-linger`) or
+  `com.animalabs.termd.plist` (launchd). Each runs `termd-launch.sh`; add the
+  flags above to its command line, with the tokens file's full path, since
+  neither expands `~`: `%h/.tsm-tokens.json` in the systemd unit, an absolute
+  path in the plist.
+- Start it from a shell where no agent's `.env` is exported, a 1.x one
+  included: termd also reads `TSM_PORT`, and `TSM_TOKEN` as one shared token,
+  from its own environment, and 1.x's `SESSION_SERVER_PORT` and
+  `SESSION_SERVER_TOKEN` where those are unset.
+- For each further agent the daemon serves, add an entry of its own to the
+  file; writing it as above again would replace the first.
+- The tokens file is required here: with one, termd refuses a connection
+  without a known token, and it refuses a file that group or others can read.
+  Without one, termd accepts every local connection as your user. Each agent's
+  recipe presents its token as `TSM_TOKEN` (§5). `--token` works too, but puts
+  the secret on the command line, where every local user can read it.
+- `--retention-days 30` is this guide's choice: termd keeps every session's
+  history on disk forever unless told otherwise. Change it to suit you.
+- Each host/box runs its OWN daemon + tokens (don't share tokens across machines).
 
 ---
 
@@ -181,7 +205,7 @@ Separate from the code — holds config + data, references code by absolute path
 
 ```
 <agent>-cm/
-  recipes/<agent>.json   # agent def, mcpServers (ABSOLUTE paths to each dist/),
+  recipes/<agent>.json   # agent def, mcpServers (ABSOLUTE paths to each stdio server's dist/),
                          #   wake-gate policies, modules, strategy
   .env                   # secrets + paths (see below)
   data/                  # chronicle store + per-session config/gate.json
@@ -195,7 +219,8 @@ DISCORD_TOKEN=...
 DISCORD_GUILD_ID=...                 # comma-separated; empty = all guilds
 DISCORD_MCPL_DEBUG_LOG=<abs>/data/discord-mcpl-debug.log
 DISCORD_SUBSCRIPTIONS_FILE=<abs>/data/discord-subscriptions.json
-SESSION_SERVER_TOKEN=<same token the shell daemon was started with>
+TSM_TOKEN=<this agent's token in the shell daemon's tokens file>
+TSM_PORT=<the shell daemon's port>
 HEARTBEAT_CONFIG_FILE=<abs>/data/heartbeat-config.json
 ```
 
@@ -247,7 +272,7 @@ systemd user unit in your home directory.
 
 ## Gotchas (carry these over)
 
-1. **Recipe MCP paths are absolute.** Each `mcpServers.*.args[0]` points at a
+1. **Recipe MCP paths are absolute.** Each stdio server's `mcpServers.*.args[0]` points at a
    `dist/src/index.js` by absolute path — they must match the new env's checkout
    location, or templatize them.
 2. **`gate.json` is per-session and append-only.** The recipe's `modules.wake`
