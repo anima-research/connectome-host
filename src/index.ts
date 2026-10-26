@@ -1343,10 +1343,6 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
-    // Recipe-level retry policy (agent.retry) over the host's default, which
-    // retries a 529 as any other retryable failure rather than on membrane's
-    // ten-minute overloaded schedule inside each framework attempt (see
-    // membrane-retry.ts).
     retry: hostMembraneRetry(recipe.agent.retry),
     formatter: recipeFormatter(recipe, provider, resolveModel(recipe)),
     // Caching default for internal callers (autobio compression,

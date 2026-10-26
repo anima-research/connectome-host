@@ -250,8 +250,9 @@ servers; those are kept in `mcpl-servers.agent.json` and load regardless of
 the recipe.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools, and `agent.retry` passes a Membrane retry policy
-through for flaky gateways.
+by default) for slow tools. `agent.retry` sets a Membrane retry policy for
+the host's own provider calls, such as compression and retrieval; an agent's
+turns are retried by agent-framework itself.
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 

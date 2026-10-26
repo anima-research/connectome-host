@@ -40,13 +40,15 @@ export interface RecipeStrategy {
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
   maxMessageTokens?: number;
-  /** Maximum live image count, newest-first (default 6). Zero disables the count limit. */
+  /** Maximum live image count, newest-first (default 6). Zero means up to
+   * context-manager's image ceiling, 500, and a larger value is held to it. */
   maxLiveImages?: number;
   /** Token depth from the tail beyond which images become placeholders (default 30000).
    * Zero disables depth-based stripping; surrounding text stays verbatim. */
   imageStripDepthTokens?: number;
   /** Cumulative base64 byte budget for live images (default 20 MiB).
-   * Zero disables the byte limit. Count and depth limits still apply. */
+   * Zero means up to context-manager's byte ceiling, 24 MiB, and a larger
+   * value is held to it. Count and depth limits still apply. */
   maxLiveImageBytes?: number;
   overBudgetGraceRatio?: number;
   // Compression/merge tuning passed through to the underlying
@@ -265,15 +267,17 @@ export interface RecipeAgent {
    * prompting structure intact. */
   formatter?: 'native' | 'anthropic-xml';
   /**
-   * Membrane retry policy for this agent's provider calls, over the host's
+   * Membrane retry policy for the host's own provider calls: compression and
+   * merging, retrieval, session naming and the TUI's status line.
+   * agent-framework retries the agent's turns itself, on membrane's default
+   * schedules, so this policy doesn't reach them. It applies over the host's
    * default (`hostMembraneRetry`): membrane's base schedule (3 sends, 1 s then
    * 2 s, for a retryable failure before anything was delivered) with its
    * overloaded schedule off, so a 529 is retried as any other retryable
    * failure. `{ "maxRetries": 4 }` rides out longer blips with exponential
    * backoff (retryDelayMs 1000, x2, capped at maxRetryDelayMs 30000 by
-   * default), and `overloaded` brings back a patient schedule for 529s. Passed
-   * to Membrane over that default; see membrane's `RetryConfigInput` for every
-   * field.
+   * default), and `overloaded` brings back a patient schedule for 529s. See
+   * membrane's `RetryConfigInput` for every field.
    */
   retry?: import('@animalabs/membrane').MembraneConfig['retry'];
   /** Prefill scaffold user message appended after the conversation (e.g.
@@ -2503,7 +2507,6 @@ export function validateRecipe(raw: unknown): Recipe {
     // receive their own config verbatim and may use different conventions.
     const strategyType = strategy.type ?? 'autobiographical';
     if (strategyType === 'autobiographical' || strategyType === 'frontdesk') {
-      // Context Manager uses zero to disable each image limit independently.
       for (const key of ['maxLiveImages', 'imageStripDepthTokens', 'maxLiveImageBytes'] as const) {
         const value = strategy[key];
         if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) {

@@ -252,9 +252,14 @@ impressionistic with age and depth.
   placeholder *even while the surrounding words remain verbatim*. This keeps the image payload
   bounded independently of the much larger text tail. Your recipe may change
   all three limits under `agent.strategy` for autobiographical and frontdesk
-  strategies; zero disables that limit while the others still apply, and larger
-  limits can exceed the provider's request-size cap. If an image matters beyond
-  the moment, describe it in text or save it to your workspace.
+  strategies. A depth of zero turns depth stripping off. A count or byte limit
+  of zero means up to context-manager's ceilings, 500 images and 24 MiB, and a
+  larger one is held to them. Images at the byte ceiling leave 4 MiB of
+  membrane's default 28 MiB cap on a request's messages for everything else,
+  and membrane refuses a turn whose messages pass that cap before sending it,
+  except an XML-mode continuation round on a provider other than
+  Anthropic's. If an image matters beyond the moment, describe it in text or
+  save it to your workspace.
 
 ## Finding your own settings
 

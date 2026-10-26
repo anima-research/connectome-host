@@ -33,7 +33,7 @@ describe('live-image recipe limits', () => {
       }
     });
 
-    test(`${type} preserves zero to disable each limit`, () => {
+    test(`${type} passes zero through unchanged`, () => {
       const built = config({
         type, maxLiveImages: 0, imageStripDepthTokens: 0, maxLiveImageBytes: 0,
       });

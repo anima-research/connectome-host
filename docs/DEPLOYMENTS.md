@@ -522,7 +522,9 @@ ambient channel chatter enters context without waking.
    provider's per-image limit still 400s the request while it stays live —
    the poison-history breaker only sheds newest exchanges. Recipes can tune
    the three image keys under `agent.strategy` (autobiographical and
-   frontdesk; zero disables each limit independently). (Stopgap: a per-install
+   frontdesk). A depth of zero turns depth stripping off; a count or byte
+   limit of zero means up to context-manager's ceilings, 500 images and
+   24 MiB, and a larger one is held to them. (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 
 ## Helper scripts (per install dir)

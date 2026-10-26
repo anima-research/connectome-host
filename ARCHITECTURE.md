@@ -193,7 +193,9 @@ conditions are required so the headers can never reach a vendor endpoint.
   `foldingStrategy: "kv-stable"`. About 48 further context-manager keys pass
   through verbatim, among them the live-image limits `maxLiveImages`,
   `imageStripDepthTokens` and `maxLiveImageBytes` (context-manager defaults
-  6, 30000 and 20 MiB; zero disables each).
+  6, 30000 and 20 MiB; a depth of zero turns depth stripping off, and a
+  count or byte limit of zero means up to context-manager's ceilings, 500
+  images and 24 MiB).
 - **`frontdesk`** (`src/strategies/frontdesk-strategy.ts`) — the same, plus
   channel provenance headers, topic-aware chunk boundaries and preservation of
   unanswered questions and @mentions. For agents that staff a channel.
