@@ -479,7 +479,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
     expect(JSON.stringify(internals.requestSummary(baseRequest, raw))).not.toContain('do not log me');
   });
 
-  test('retains the raw request only for refusals', () => {
+  test('of calls that get a response, retains the raw request only for refusals', () => {
     const rawRequest = { messages: ['forensic context'] };
     const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
     const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;
