@@ -484,6 +484,8 @@ const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
 const THINKING_DIM = '#8a7aa8';
+/** The prefix of a history line whose row an undo took out of the agent's window. */
+const UNDONE_MARK = '(undone) ';
 const THINKING_PREFIX = '💭 ';
 
 /** Block kinds the membrane can route into a stream lane. */
@@ -1000,6 +1002,11 @@ export async function runTui(app: AppContext): Promise<void> {
     const all = cm.getAllMessages();
     if (all.length === 0) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
+    // The history is the record. A row an undo took out of the agent's
+    // window (agent-framework #291) is still in it: drawn dim and marked,
+    // since the agent's next request is built without it.
+    const undone = (id: string): boolean =>
+      typeof cm.windowStatusOf === 'function' && cm.windowStatusOf(id) === 'undone';
 
     addLine(messages.length < all.length
       ? `── session history (last ${messages.length} of ${all.length} messages — full history in the web UI) ──`
@@ -1007,13 +1014,15 @@ export async function runTui(app: AppContext): Promise<void> {
 
     for (const msg of messages) {
       const toolNames: string[] = [];
+      const out = undone(msg.id);
+      const mark = out ? UNDONE_MARK : '';
 
       for (const block of msg.content) {
         if (block.type === 'text' && (block as { text: string }).text.trim()) {
           if (msg.participant === 'user') {
-            addLine(`You: ${(block as { text: string }).text}`, GREEN);
+            addLine(`${mark}You: ${(block as { text: string }).text}`, out ? DIM_GRAY : GREEN);
           } else {
-            addLine((block as { text: string }).text, WHITE);
+            addLine(`${mark}${(block as { text: string }).text}`, out ? DIM_GRAY : WHITE);
           }
         } else if (block.type === 'thinking') {
           const t = (block as { thinking?: string }).thinking;
@@ -1030,11 +1039,23 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       if (toolNames.length > 0) {
-        addLine(`[tools] ${toolNames.join(', ')}`, YELLOW);
+        addLine(`${mark}[tools] ${toolNames.join(', ')}`, out ? DIM_GRAY : YELLOW);
       }
     }
 
     addLine(`── end history ──`, DIM_GRAY);
+  }
+
+  /** Draw the session history again, as an undo or a redo on the root
+   *  agent's window marks it (window:undone), and leave the rest as it is. */
+  function redrawHistory() {
+    const children = [...scrollBox.getChildren()];
+    for (const child of children) {
+      scrollBox.remove(child.id);
+      child.destroy();
+    }
+    messageCounter = 0;
+    loadSessionHistory();
   }
 
   /**
@@ -2239,6 +2260,15 @@ export async function runTui(app: AppContext): Promise<void> {
           const short = shortAgentName(agent);
           addEvent(`  [${short}] tool error: ${tool}: ${error}`, RED);
         }
+        break;
+      }
+
+      case 'window:undone': {
+        // An undo or a redo on the root agent's window, from here or from
+        // another client: the history marks its rows again. Not while a
+        // stream is being drawn, whose lines a redraw would take down; the
+        // next redraw marks them.
+        if (agent === rootAgentName && !streaming) redrawHistory();
         break;
       }
 

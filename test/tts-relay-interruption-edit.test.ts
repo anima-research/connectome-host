@@ -12,24 +12,30 @@ import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
 type Interruption = { channelId: string; spokenText: string; reason: 'user_speech' | 'manual' | 'timeout'; timestamp: number };
 
 /** The module on a context whose callTool answers `answer`, with one published
- *  message posted to Discord channel 42, and the notes it gives the agent. */
-function relayWith(answer: Record<string, unknown>) {
+ *  message posted to Discord channel 42 by `speaker`, and the notes it gives
+ *  the agent, each with the agent it was written for. */
+function relayWith(answer: Record<string, unknown>, opts: { agents?: string[]; speaker?: string } = {}) {
   const notes: string[] = [];
+  const noteFor: Array<string | undefined> = [];
   const calls: Array<{ name: string; input: unknown }> = [];
   const ctx = {
     callTool: async (call: { name: string; input: unknown }) => { calls.push({ name: call.name, input: call.input }); return answer; },
-    addMessage: (_role: string, content: Array<{ text: string }>) => { notes.push(content.map((b) => b.text).join('')); },
+    addMessage: (_role: string, content: Array<{ text: string }>, _metadata?: unknown, target?: { forAgent?: string }) => {
+      notes.push(content.map((b) => b.text).join(''));
+      noteFor.push(target?.forAgent);
+    },
+    getAgents: () => (opts.agents ?? ['fable']).map((name) => ({ name })),
   } as unknown as ModuleContext;
   const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
   const inner = module as unknown as {
     ctx: ModuleContext;
-    published: Array<{ rawChannelId: string; mcplChannelId: string; messageId?: string; text: string; at: number }>;
+    published: Array<{ agentName: string; rawChannelId: string; mcplChannelId: string; messageId?: string; text: string; at: number }>;
     handleInterruption(ev: Interruption): Promise<void>;
   };
   inner.ctx = ctx;
-  inner.published.push({ rawChannelId: '42', mcplChannelId: 'discord:42', messageId: 'm-1', text: 'The ferry leaves at noon, and the bridge is closed.', at: 1 });
+  inner.published.push({ agentName: opts.speaker ?? 'fable', rawChannelId: '42', mcplChannelId: 'discord:42', messageId: 'm-1', text: 'The ferry leaves at noon, and the bridge is closed.', at: 1 });
   const interrupt = () => inner.handleInterruption({ channelId: '42', spokenText: 'The ferry leaves at noon', reason: 'user_speech', timestamp: 2 });
-  return { notes, calls, interrupt };
+  return { notes, noteFor, calls, interrupt };
 }
 
 describe('an interruption\'s edit of the posted message', () => {
@@ -47,6 +53,24 @@ describe('an interruption\'s edit of the posted message', () => {
   });
 });
 
+// Residents sharing a slot (agent-framework #291) are each shown a row
+// stamped for them: one written for no agent is shown to every resident, so
+// another agent's next request would carry "Your message was interrupted".
+describe('whom the interruption note is for', () => {
+  test('the agent whose published message was voiced, among several', async () => {
+    const { noteFor, interrupt } = relayWith({ success: true }, { agents: ['clerk', 'mira'], speaker: 'mira' });
+    await interrupt();
+    expect(noteFor).toEqual(['mira']);
+  });
+
+  test('no agent, when the one that spoke is no longer registered and none was voiced before', async () => {
+    const { notes, noteFor, interrupt } = relayWith({ success: true }, { agents: ['clerk'], speaker: 'gone' });
+    await interrupt();
+    expect(notes).toHaveLength(1);
+    expect(noteFor).toEqual([undefined]);
+  });
+});
+
 // The edit target is a message the agent's prose published, as
 // agent-framework's `inference:published` reports it. agent-framework 0.24's
 // notes say `mcpl:speech-routed` also reports the `sleep` tool's announcement
@@ -58,6 +82,7 @@ describe('what an interruption may edit', () => {
     const ctx = {
       callTool: async (call: { name: string; input: unknown }) => { calls.push({ name: call.name, input: call.input }); return { success: true }; },
       addMessage: () => {},
+      getAgents: () => [{ name: 'fable' }],
     } as unknown as ModuleContext;
     const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
     const inner = module as unknown as {

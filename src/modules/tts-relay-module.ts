@@ -220,6 +220,8 @@ interface ActivationState {
 /** A message the agent's prose recently published: the edit target for an
  *  interruption. */
 interface PublishedMessage {
+  /** The agent whose prose this is, who is told when its voicing is cut off. */
+  agentName: string;
   rawChannelId: string;
   mcplChannelId: string;
   messageId?: string;
@@ -356,6 +358,7 @@ export class TtsRelayModule implements Module {
         // aren't this prose, such as the `sleep` tool's announcement and a
         // subconscious's `speak_in_channel`, which no interruption edits.
         this.published.push({
+          agentName: event.agentName,
           rawChannelId: rawChannelId(event.channelId),
           mcplChannelId: event.channelId,
           messageId: event.messageId,
@@ -469,12 +472,25 @@ export class TtsRelayModule implements Module {
     // Tell the agent she was cut off — otherwise her next turn believes the
     // whole paragraph was heard. Plain context note, no inference request:
     // the voice client's transcript of what the human said is the activation.
+    // It is for the agent that spoke (#291): with residents sharing a slot,
+    // an untargeted note would be shown to every one of them.
     if (this.config.notifyOnInterruption !== false) {
       const note = edited
         ? `[voice] Your message was interrupted by ${ev.reason.replace('_', ' ')} — only this much was voiced, and the posted message was trimmed to match: "${ev.spokenText}"`
         : `[voice] Your reply was interrupted by ${ev.reason.replace('_', ' ')} after: "${ev.spokenText}" (the posted message could not be trimmed)`;
-      this.ctx?.addMessage('user', [{ type: 'text', text: note }]);
+      const speaker = this.speakerOf(target);
+      this.ctx?.addMessage('user', [{ type: 'text', text: note }], undefined, speaker ? { forAgent: speaker } : undefined);
     }
+  }
+
+  /** The agent an interruption cut off: the one whose matched message it
+   *  was, else the first agent the relay voiced, while it is registered; else
+   *  none, and the note is untargeted, as before. */
+  private speakerOf(target: PublishedMessage | null): string | undefined {
+    const ctx = this.ctx;
+    if (!ctx) return undefined;
+    const registered = new Set(ctx.getAgents().map((agent) => agent.name));
+    return [target?.agentName, this.agentName].find((name): name is string => !!name && registered.has(name));
   }
 
   /**

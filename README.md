@@ -798,11 +798,20 @@ headless socket.
 | `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
-`/branchto`, `/newtopic`) are refused while a turn is in flight. `/checkout`,
-`/restore` and `/branchto` go through agent-framework's branch switch and
-rollback, which are refused unless every agent sharing the store is idle and
-are written to the operator log; `/undo` and `/redo` are its undo and redo on
-the agent's window.
+`/branchto`, `/newtopic`) are refused while a turn is in flight. A bare
+`/newtopic` writes its summary first, and if a turn starts meanwhile, stores
+the transition once that turn has ended. `/checkout`, `/restore` and
+`/branchto` go through agent-framework's branch switch and rollback, which are
+refused unless every agent sharing the store is idle, take every agent's
+context to the new branch, and are written to the operator log (as a
+`checkout` or a `rollback`). A rollback says which rows after its message it
+kept: rows one write showed the agent together with the message stay in its
+window after it (suppress or hide them to take them out), and rows stored
+before the message was shown and shown after it stay in the record and enter
+the window at the agent's next turn. `/undo` and `/redo` are its undo and
+redo on the agent's window; the TUI's history and the Web UI's transcript
+mark an undone turn's rows, and the Web UI's context panels read the window
+again.
 
 ## TUI controls
 

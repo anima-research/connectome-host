@@ -318,17 +318,23 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 - **Host commands** — `/checkpoint`, `/restore`, `/branches`, `/checkout`,
   `/branchto` move the head over Chronicle branches, through the framework's
   `switchBranch` and `rollbackToMessage`, which reserve the store for every
-  agent sharing it. `/undo` and `/redo` are the framework's `undoLastTurn` and
-  `redo`, on the agent's window: no branch moves (agent-framework #291).
-  `/newtopic` resets the agent's head window at a transition row of its own.
-  They are refused while a turn is in flight. Checkpoints are held in memory
-  for the session.
+  agent sharing it and take every agent's context to the new branch. On a
+  presented window a rollback cuts at the write that showed its message, and
+  the command says which rows after it stay (`returnedToArrivals`,
+  `keptInWindowAfterTarget`). `/undo` and `/redo` are the framework's
+  `undoLastTurn` and `redo`, on the agent's window: no branch moves
+  (agent-framework #291); the transcripts mark the undone rows, which the
+  record keeps, on the `window:undone` trace. `/newtopic` resets the agent's
+  head window at a transition row of its own, stored only while the agent has
+  no turn alive. They are refused while a turn is in flight. Checkpoints are
+  held in memory for the session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages
   by forking and switching branches; quiesce/resume the host. Every action is
   appended to `sessions/<id>/operator-actions.jsonl`.
 
 Both go through the framework, so each move of the branch is in the
-operator log and waits for every agent to be idle.
+operator log (`checkout`, `rollback`, `suppress`) and waits for every agent to
+be idle.
 
 ## Failure handling and observability
 

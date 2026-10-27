@@ -31,7 +31,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { asOwnRow, type Agent, type AgentFramework, type OperatorRequester } from '@animalabs/agent-framework';
-import type { ContextManager } from '@animalabs/context-manager';
+import { isResettableStrategy, type ContextManager, type MessageMetadata, type StrategyContext } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import type { CredentialActionId, CredentialState } from './credential-state.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
@@ -1163,7 +1163,10 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
     }
   }
 
-  const toHead = (note: boolean): Promise<CommandResult> => app.framework.switchBranch(point.branchName)
+  const toHead = (note: boolean): Promise<CommandResult> => app.framework.switchBranch(point.branchName, {
+    requester: HOST_COMMAND,
+    note: `/restore ${name}`,
+  })
     .then(() => ({
       lines: [
         { text: `Restored to checkpoint "${name}" (branch: ${point.branchName}).`, style: 'system' as const },
@@ -1184,7 +1187,10 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
         // the checkpoint message as the fallback for future restores.
         app.branchState.checkpoints.set(name, { branchName: rolled.targetBranch, messageId: point.messageId });
         return {
-          lines: [{ text: `Restored to checkpoint "${name}" (branch: ${rolled.targetBranch}).`, style: 'system' }],
+          lines: [
+            { text: `Restored to checkpoint "${name}" (branch: ${rolled.targetBranch}).`, style: 'system' },
+            ...rollbackKeptLines(rolled, agent.name),
+          ],
           branchChanged: true,
         };
       }, (err: unknown) => {
@@ -1254,9 +1260,11 @@ function handleCheckout(app: AppContext, name?: string): CommandResult {
 
   // The framework's switch (chronicle is name-keyed, so it takes the name):
   // the branch moves under every agent sharing the store, so it is refused
-  // unless every one of them is idle, and each agent's context and the
-  // `_config` mount follow it.
-  const asyncWork = app.framework.switchBranch(target.name)
+  // unless every one of them is idle; each agent's context follows it (its
+  // strategy initialized again on the branch, its window written down there
+  // if the branch predates it), and so does the `_config` mount. The
+  // operator log records it as a checkout.
+  const asyncWork = app.framework.switchBranch(target.name, { requester: HOST_COMMAND, note: `/checkout ${name}` })
     .then(() => ({
       lines: [{ text: `Switched to branch ${target.name}.`, style: 'system' as const }],
       branchChanged: true,
@@ -1295,10 +1303,51 @@ function handleFind(framework: AgentFramework, needle: string): CommandResult {
 }
 
 /**
+ * What a rollback kept of the rows after its target, on a presented window
+ * (agent-framework #291, decided answer 5 and DQ-1): the lines an operator
+ * reads after `/branchto` or `/restore`, none when it kept nothing. The cut
+ * is at the write that presented the target, so
+ * - rows stored before that write and shown after it (`returnedToArrivals`)
+ *   stay in the record: they wait out of the agent's window until its next
+ *   turn starts, which presents them after what the window holds then;
+ * - rows that one write presented with the target
+ *   (`keptInWindowAfterTarget`) stay in the window after it, since a branch
+ *   cut can't separate them, until a suppression or a hide takes them out.
+ */
+function rollbackKeptLines(
+  rolled: { tailMessageId: string; returnedToArrivals?: number; keptInWindowAfterTarget?: number },
+  agentName: string,
+): Line[] {
+  const at = `[${rolled.tailMessageId}]`;
+  const lines: Line[] = [];
+  const returned = rolled.returnedToArrivals ?? 0;
+  if (returned > 0) {
+    lines.push({
+      text: returned === 1
+        ? `  1 row after ${at} stays in the record: stored before ${agentName} was shown ${at}, it is out of its window until its next turn starts, and enters it then.`
+        : `  ${returned} rows after ${at} stay in the record: stored before ${agentName} was shown ${at}, they are out of its window until its next turn starts, and enter it then.`,
+      style: 'system',
+    });
+  }
+  const kept = rolled.keptInWindowAfterTarget ?? 0;
+  if (kept > 0) {
+    const remedy = "The Web UI's suppress, or a hide by Discord message id,";
+    lines.push({
+      text: kept === 1
+        ? `  1 row after ${at} stays in ${agentName}'s window: one write showed it with ${at}, and a branch cut can't separate them. ${remedy} takes it out.`
+        : `  ${kept} rows after ${at} stay in ${agentName}'s window: one write showed them with ${at}, and a branch cut can't separate them. ${remedy} takes them out.`,
+      style: 'system',
+    });
+  }
+  return lines;
+}
+
+/**
  * /branchto: the framework's rollback to a message (rollbackToMessage): the
  * message becomes the tail of a new branch, which the store moves to with
  * every agent sharing it idle; the old branch keeps everything after it.
- * Logged as an operator's rollback.
+ * On a presented window some rows after the message can stay, and the
+ * answer says which (rollbackKeptLines). Logged as an operator's rollback.
  */
 function handleBranchTo(app: AppContext, messageId: string | undefined): CommandResult {
   const agent = commandAgent(app);
@@ -1315,10 +1364,19 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
     branchName: newBranchName,
     note: `/branchto ${messageId}`,
   })
-    .then((rolled) => ({
-      lines: [{ text: `Branched at [${rolled.tailMessageId}] -> "${rolled.targetBranch}" and switched. Everything after [${rolled.tailMessageId}] is dropped on this branch; old branch preserved.`, style: 'system' as const }],
-      branchChanged: true,
-    }))
+    .then((rolled) => {
+      const kept = rollbackKeptLines(rolled, agent.name);
+      const after = kept.length === 0
+        ? `Everything after [${rolled.tailMessageId}] is dropped on this branch`
+        : `${rolled.messagesRemoved} message${rolled.messagesRemoved === 1 ? '' : 's'} after [${rolled.tailMessageId}] ${rolled.messagesRemoved === 1 ? 'is' : 'are'} dropped on this branch`;
+      return {
+        lines: [
+          { text: `Branched at [${rolled.tailMessageId}] -> "${rolled.targetBranch}" and switched. ${after}; old branch preserved.`, style: 'system' as const },
+          ...kept,
+        ],
+        branchChanged: true,
+      };
+    })
     .catch((err: unknown) => ({
       lines: [{ text: `branchto failed: ${messageOf(err)}`, style: 'system' as const }],
     }));
@@ -1364,8 +1422,15 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
   // The transition is the agent's own row (agent-framework #291): stamped for
   // it alone, so no other resident sharing the slot is shown it, and
   // presented as context-manager stores it, so the head window starts at a
-  // row the agent's window holds. The agent is idle (inFlightGuard).
-  const asyncWork = cm.resetHeadWindow(userContext, { metadata: asOwnRow(undefined, agent.name) }).then(summary => ({
+  // row the agent's window holds. Given its text, resetHeadWindow stores and
+  // presents it before it first awaits, so here, where inFlightGuard has
+  // just found the agent idle. A bare /newtopic writes the summary first,
+  // and the agent can start a turn meanwhile (newTopicOnceIdle).
+  const metadata = asOwnRow(undefined, agent.name);
+  const reset = userContext !== undefined
+    ? cm.resetHeadWindow(userContext, { metadata })
+    : newTopicOnceIdle(app.framework, agent.name, cm, metadata);
+  const asyncWork = reset.then(summary => ({
     lines: [
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
       { text: summary.slice(0, 300) + (summary.length > 300 ? '...' : ''), style: 'system' as const },
@@ -1380,6 +1445,78 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
       : 'Generating transition summary...', style: 'system' }],
     asyncWork,
   };
+}
+
+/** How long a bare /newtopic waits, once its summary is written, for a turn of the agent to end. */
+const NEWTOPIC_IDLE_WAIT_MS = 10 * 60_000;
+/** How often it looks. */
+const NEWTOPIC_IDLE_POLL_MS = 100;
+
+/** Whether the agent is idle with no turn alive: no turn token, and no
+ *  continuation or retry of its turn on its way (getHostModeStatus's
+ *  activeTurnAgents, which the framework's own refusals read). */
+function idleWithNoTurn(framework: AgentFramework, agentName: string): boolean {
+  const agent = framework.getAgent(agentName) as { state?: { status?: string } } | null | undefined;
+  if (agent?.state?.status !== undefined && agent.state.status !== 'idle') return false;
+  const status = typeof framework.getHostModeStatus === 'function' ? framework.getHostModeStatus() : undefined;
+  return !status?.activeTurnAgents.includes(agentName);
+}
+
+/**
+ * A bare /newtopic's transition (#291, J-H3): the strategy's summary of the
+ * head window is written first, an LLM call during which a turn of the agent
+ * can start, and the transition is stored and presented only once the agent
+ * is idle with no turn alive, by a resetHeadWindow with the summary as its
+ * text in the same step that finds it so. Stored inside a turn, the row would
+ * enter the agent's window between rounds its requests were sent without,
+ * past the framework's turn gate. A turn that started meanwhile is waited for,
+ * up to NEWTOPIC_IDLE_WAIT_MS, so the transition follows it in the window.
+ * Nothing is stored if the agent is still busy then, if it has gone, or if
+ * the branch or the strategy changed since the summary was begun: the
+ * summary is of the head window that was there.
+ *
+ * The summary is the one resetHeadWindow writes for itself, from the
+ * manager's own strategy context: context-manager has no public call that
+ * writes it without storing it, so this reaches the manager's
+ * createStrategyContext, and says so if a context-manager without it is
+ * installed.
+ */
+async function newTopicOnceIdle(
+  framework: AgentFramework,
+  agentName: string,
+  cm: ContextManager,
+  metadata: MessageMetadata,
+): Promise<string> {
+  const strategy = cm.getStrategy();
+  if (!isResettableStrategy(strategy)) throw new Error('Active strategy does not support head window reset');
+  const contextOf = (cm as unknown as { createStrategyContext?: () => StrategyContext }).createStrategyContext;
+  if (typeof contextOf !== 'function') {
+    throw new Error(
+      "this context-manager can't write a transition summary apart from storing it; " +
+        'give the transition yourself: /newtopic <text>',
+    );
+  }
+  const branch = cm.currentBranch().id;
+  const summary = await strategy.generateTransitionSummary(contextOf.call(cm));
+  const deadline = Date.now() + NEWTOPIC_IDLE_WAIT_MS;
+  const nothingStored = 'nothing was stored';
+  for (;;) {
+    if (framework.getAgent(agentName)?.getContextManager() !== cm) {
+      throw new Error(`${agentName} is no longer registered with this context; ${nothingStored}`);
+    }
+    if (cm.getStrategy() !== strategy || cm.currentBranch().id !== branch) {
+      throw new Error(`the branch or the strategy changed since the transition summary was begun; ${nothingStored}`);
+    }
+    // No await from this check to the store: no turn starts between them.
+    if (idleWithNoTurn(framework, agentName)) return cm.resetHeadWindow(summary, { metadata });
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${agentName} still had a turn alive ${Math.round(NEWTOPIC_IDLE_WAIT_MS / 1000)} s after the transition summary ` +
+          `was written, and ${nothingStored}. To store it, run /newtopic with it as the text:\n${summary}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, NEWTOPIC_IDLE_POLL_MS));
+  }
 }
 
 // ---------------------------------------------------------------------------

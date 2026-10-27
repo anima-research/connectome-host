@@ -10,13 +10,23 @@
  *   co-resident's newer row is left alone;
  * - /checkout is the framework's switchBranch, and /branchto and /restore
  *   its rollbackToMessage: each is refused while any agent sharing the store
- *   has a turn alive, and each is in the operator log.
+ *   has a turn alive, and each is in the operator log;
+ * - after each, every resident's context follows the store's branch, so an
+ *   autobiographical resident's next turn is served (J-AF1, J-H9: before
+ *   agent-framework re-initialized every live context at a branch move, a
+ *   resident whose context didn't make the move failed every turn until a
+ *   restart);
+ * - a rollback on a presented window says which rows after its target it
+ *   kept (J-H6): rows that wait out of the window until the agent's next
+ *   turn starts, and rows one write showed with the target.
  *
  * Each runs a real AgentFramework (test/presented-host.ts).
  */
 import { describe, test, expect, setDefaultTimeout } from 'bun:test';
+import { AutobiographicalStrategy } from '@animalabs/context-manager';
+import type { ContentBlock } from '@animalabs/membrane';
 import { createBranchState, handleCommand, type CommandResult } from '../src/commands.js';
-import { bootPresentedHost, until } from './presented-host.js';
+import { bootPresentedHost, until, type PresentedHost } from './presented-host.js';
 
 setDefaultTimeout(30_000);
 
@@ -122,6 +132,125 @@ describe('/checkout, /branchto and /restore', () => {
 
       const rollbacks = h.framework.getOperatorLog().filter((e) => e.kind === 'rollback' && !e.error);
       expect(rollbacks.map((e) => [e.agent, e.requester?.via])).toEqual([['clerk', 'host-console'], ['clerk', 'host-console']]);
+      // agent-framework writes the switch to the operator log as a checkout
+      // (J-H7), with the host's requester and the command, and a refused one
+      // with its error.
+      const checkouts = h.framework.getOperatorLog().filter((e) => e.kind === 'checkout');
+      expect(checkouts.map((e) => [e.requester?.via, e.note, e.result?.targetBranch, !!e.error])).toEqual([
+        ['host-console', `/checkout ${branch}`, undefined, true],
+        ['host-console', `/checkout ${branch}`, branch, false],
+      ]);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+/** Nudge `agent` and wait for its request or its failure; the inference
+ *  failures traced meanwhile, and whether a request was made. */
+async function served(h: PresentedHost, agent: string): Promise<{ requested: boolean; failures: string[] }> {
+  const calls = h.adapter.callsFor(agent);
+  const failed = () => h.traces.filter((t) => t.type === 'inference:failed' && t.agentName === agent);
+  const failuresBefore = failed().length;
+  const nudged = h.framework.nudgeAgent(agent, 'test');
+  if (!nudged.ok) throw new Error(nudged.error);
+  await until(() => h.adapter.callsFor(agent) > calls || failed().length > failuresBefore, `${agent}'s request or failure`);
+  await h.settled(agent);
+  return {
+    requested: h.adapter.callsFor(agent) > calls,
+    failures: failed().slice(failuresBefore).map((t) => String((t as { error?: unknown }).error)),
+  };
+}
+
+describe('after /checkout, /restore and /branchto', () => {
+  // The host's default strategy is the autobiographical one, which refuses
+  // to compile on a branch generation it wasn't initialized on.
+  test('every autobiographical resident is served its next turn, whichever agent the command was for', async () => {
+    const h = await bootPresentedHost({
+      agents: ['clerk', 'mira'],
+      agentConfig: () => ({ strategy: new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }) }),
+      prefix: 'cmd-branch-autobio-',
+    });
+    try {
+      await h.turn('clerk');
+      await h.turn('mira');
+      await h.turn('clerk');
+      const clerk = h.framework.getAgent('clerk')!.getContextManager();
+      const first = h.rowWith('clerk', 'clerk reply 1')!;
+      const store = h.framework.getStore();
+      const main = store.currentBranch().name;
+      const side = clerk.branchAt(first.id, 'side');
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+      // A checkpoint with no message: /restore takes the branch's head, through switchBranch.
+      app.branchState.checkpoints.set('main-head', { branchName: main });
+
+      for (const command of [`/checkout ${side}`, '/restore main-head', `/branchto ${first.id}`]) {
+        const { follow } = await run(command, app);
+        expect(follow?.branchChanged, `${command}: ${follow?.lines.map((l) => l.text).join(' | ')}`).toBe(true);
+        for (const agent of ['clerk', 'mira']) {
+          expect(await served(h, agent), `${agent} after ${command}`).toEqual({ requested: true, failures: [] });
+        }
+      }
+      expect(store.currentBranch().name).toStartWith(`rollback-at-${first.id}-`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe('/branchto on a presented window', () => {
+  /** A Discord message stored past the framework, in no window until presented, as a test's stand-in for an arrival. */
+  const arrival = (h: PresentedHost, text: string): string =>
+    h.framework.getAgent('clerk')!.getContextManager().addMessage('someone', [{ type: 'text', text } as ContentBlock], {
+      serverId: 'discord', channelId: 'discord:g1:c1', messageId: `d-${text}`,
+    });
+
+  test('says a row one write showed with the target stays in the window after it, and how to take it out', async () => {
+    const h = await bootPresentedHost({ agents: ['clerk'], prefix: 'cmd-branchto-batch-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      // Two messages that arrived while clerk was busy, shown together, then a third on its own.
+      const a = arrival(h, 'A');
+      const b = arrival(h, 'B');
+      cm.presentRows([a, b]);
+      cm.presentRows([arrival(h, 'R')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+
+      const { follow } = await run(`/branchto ${a}`, app);
+      const said = follow!.lines.map((l) => l.text);
+      expect(said[0]).toContain(`1 message after [${a}] is dropped on this branch; old branch preserved.`);
+      expect(said[0]).not.toContain('Everything after');
+      expect(said.slice(1)).toEqual([
+        `  1 row after [${a}] stays in clerk's window: one write showed it with [${a}], and a branch cut can't separate them. ` +
+          "The Web UI's suppress, or a hide by Discord message id, takes it out.",
+      ]);
+      expect(cm.getPresentedMessages().map((m) => m.id)).toEqual([a, b]);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('says a row stored before the target was shown, and shown after it, stays in the record and enters the window at the next turn', async () => {
+    const h = await bootPresentedHost({ agents: ['clerk'], prefix: 'cmd-branchto-returned-' });
+    try {
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const t = arrival(h, 'T');
+      const r = arrival(h, 'R'); // stored before T was shown, shown after it
+      cm.presentRows([t]);
+      cm.presentRows([r]);
+      cm.presentRows([arrival(h, 'Z')]);
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+
+      const { follow } = await run(`/branchto ${t}`, app);
+      const said = follow!.lines.map((l) => l.text);
+      expect(said[0]).toContain(`1 message after [${t}] is dropped on this branch; old branch preserved.`);
+      expect(said.slice(1)).toEqual([
+        `  1 row after [${t}] stays in the record: stored before clerk was shown [${t}], it is out of its window until its next turn starts, and enters it then.`,
+      ]);
+      expect(cm.windowStatusOf(r)).toBe('out');
+      // The Web UI's operator log says so too (Surgery.tsx reads these).
+      const entry = h.framework.getOperatorLog().find((e) => e.kind === 'rollback' && !e.error)!;
+      expect([entry.result?.returnedToArrivals, entry.result?.keptInWindowAfterTarget]).toEqual([1, 0]);
     } finally {
       await h.cleanup();
     }

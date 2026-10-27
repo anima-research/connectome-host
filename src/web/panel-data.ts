@@ -652,6 +652,9 @@ export function buildPinsSnapshot(
  * Recent pinnable messages with REAL store ids. Mirrors the client-side
  * candidate list the local panel builds from its own message window — a
  * remote (fleet-child) panel has no such window, so the snapshot carries one.
+ * A row an undo took out of the agent's window (agent-framework #291,
+ * windowStatusOf 'undone') isn't one: the fold plan a pin constrains is the
+ * window's, so a pin on it would hold nothing.
  */
 function buildPinCandidates(
   app: PanelAppRef,
@@ -664,6 +667,7 @@ function buildPinCandidates(
       getMessageWindow?: (
         offset: number, limit: number, opts?: { resolveBlobs?: boolean },
       ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+      windowStatusOf?: (id: string) => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
       return [];
@@ -674,6 +678,7 @@ function buildPinCandidates(
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
     win.messages.forEach((m, i) => {
       if (!m.id) return;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') return;
       let text = '';
       if (Array.isArray(m.content)) {
         for (const b of m.content as Array<Record<string, unknown>>) {

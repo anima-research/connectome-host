@@ -94,6 +94,9 @@ function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
 
 export function ContextDocument(props: {
   scope?: string;
+  /** Changes when the agent's window does without a new compile (an undo or
+   *  a redo on it, DQ-4): the document reads its context again. */
+  refreshKey?: number;
   scrollRoot?: () => HTMLElement | undefined;
   /** Show "roll back to here" on raw-message boxes (host supports it, local scope, operator). */
   canRollback?: boolean;
@@ -137,6 +140,9 @@ export function ContextDocument(props: {
     setMsgs([]); setStats(null); setExact(null); setErr(null);
     void load();
   }));
+  // An undo or a redo moves the window the document is compiled from: read
+  // it again, keeping the old one on screen until the new one comes.
+  createEffect(on(() => props.refreshKey, () => void load(), { defer: true }));
 
   // Zone boundaries from the makeup counts (render order: head | middle | tail).
   const headN = () => stats()?.head.messages ?? 0;

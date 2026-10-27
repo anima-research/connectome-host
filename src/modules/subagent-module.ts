@@ -3170,16 +3170,29 @@ export class SubagentModule implements Module {
         console.error(`[subagent] ${name}'s result by its route: ${err instanceof Error ? err.message : String(err)}; delivering to ${parentAgentName} directly`);
       }
     }
+    const reader = this.noteReader(parentAgentName);
     this.ctx.addMessage('user', [{
       type: 'text',
       text: `[Subagent '${name}' returned]\n\n${result.summary}`,
-    }]);
+    }], undefined, reader ? { forAgent: reader } : undefined);
     this.ctx.pushEvent({
       type: 'inference-request',
-      agentName: parentAgentName,
+      agentName: reader ?? parentAgentName,
       reason: `subagent-completed:${name}`,
       source: 'subagent',
     });
+  }
+
+  /** Whom a run's result or failure, told directly, is written for (#291):
+   *  the agent that started the run while it's registered, so the row enters
+   *  that agent's window and no other resident's sharing its slot, where an
+   *  untargeted write is shown to every one of them; else the module's own
+   *  agent, while it is; else none, an untargeted write, as before. A write
+   *  for an agent that isn't registered throws. */
+  private noteReader(parentAgentName: string): string | undefined {
+    const fw = this.framework;
+    if (!fw) return undefined;
+    return [parentAgentName, this.config.parentAgentName].find((name): name is string => !!name && !!fw.getAgent(name));
   }
 
   private deliverAsyncError(name: string, err: unknown, parentAgentName: string): void {
@@ -3205,14 +3218,16 @@ export class SubagentModule implements Module {
         }
       }
     }
-    const started = parentAgentName !== this.config.parentAgentName ? ` (started by ${parentAgentName})` : '';
+    const reader = this.noteReader(parentAgentName);
+    // Who started it, when the row is for another agent than that one.
+    const started = parentAgentName !== this.config.parentAgentName && reader !== parentAgentName ? ` (started by ${parentAgentName})` : '';
     this.ctx.addMessage('user', [{
       type: 'text',
       text: `[Subagent '${name}'${started} failed]\n\nError: ${message}`,
-    }]);
+    }], undefined, reader ? { forAgent: reader } : undefined);
     this.ctx.pushEvent({
       type: 'inference-request',
-      agentName: parentAgentName,
+      agentName: reader ?? parentAgentName,
       reason: `subagent-failed:${name}`,
       source: 'subagent',
     });

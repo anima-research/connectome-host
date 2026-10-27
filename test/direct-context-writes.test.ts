@@ -14,6 +14,12 @@
  * an agent's own rows with agent-framework's storeOwnRow, which the list
  * below names with why each is safe where it is.
  *
+ * A module's write that names no agent (`ctx.addMessage` without
+ * `forAgent`) is stamped for every agent that takes untargeted inbound in
+ * the slot it lands in: on a residents' host, every resident. So each such
+ * write is listed too, as a row meant for every one of them; a row about
+ * one agent's work names that agent.
+ *
  * The scan reads each source file under src/ as Bun transpiles it, so
  * comments and types are gone, and finds every call of a context manager's
  * writing or branch-moving methods by its receiver.
@@ -40,14 +46,49 @@ function throughTheFramework(receiver: string, method: string): boolean {
   return false;
 }
 
-/** The writes the host makes past the framework, each counted, with why it is safe. */
+/** The argument text of the call whose opening parenthesis ends at `from`:
+ *  up to its closing parenthesis, strings skipped whole. */
+function argumentsAt(code: string, from: number): string {
+  let depth = 1;
+  for (let i = from; i < code.length; i++) {
+    const c = code[i]!;
+    if (c === '"' || c === "'" || c === '`') {
+      for (i++; i < code.length && code[i] !== c; i++) if (code[i] === '\\') i++;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) return code.slice(from, i);
+  }
+  return code.slice(from);
+}
+
+/** A module context's addMessage that names no agent for its row. */
+const untargeted = (receiver: string, method: string, args: string): boolean =>
+  method === 'addMessage' && /(^|\.)ctx$/.test(receiver.replace(/\?/g, '')) && !/\bforAgent\b/.test(args);
+
+/** The writes the host makes past the framework, and its untargeted writes through it, each counted, with why it is safe. */
 const ALLOWED: Array<{ file: string; call: string; count: number; why: string }> = [
   {
     file: 'src/commands.ts',
     call: 'cm.resetHeadWindow',
+    count: 2,
+    why: "/newtopic's transition, given its text or after its summary, stamped as the agent's own row (asOwnRow). " +
+      'context-manager presents it as it stores it, ' +
+      "before the head window starts at it, and the command stores it only where it has found the agent idle with no turn " +
+      'alive, with no await between: at once given its text, and for a bare /newtopic once the summary is written and any ' +
+      'turn that started meanwhile has ended.',
+  },
+  {
+    file: 'src/modules/time-module.ts',
+    call: 'ctx.addMessage (untargeted)',
     count: 1,
-    why: "/newtopic's transition, stamped as the agent's own row (asOwnRow). context-manager presents it as it stores it, " +
-      "before the head window starts at it, and the command is refused while the agent's turn is alive.",
+    why: "The session's start time, once per session: meant for every resident.",
+  },
+  {
+    file: 'src/modules/lifecycle-module.ts',
+    call: 'ctx.addMessage (untargeted)',
+    count: 1,
+    why: 'The note after a self-restart, saying who asked, when, why and when the host came back: meant for every resident.',
   },
   {
     file: 'src/modules/subagent-module.ts',
@@ -77,7 +118,9 @@ function scan(): Map<string, number> {
     const code = transpilers[path.endsWith('.tsx') ? 'tsx' : 'ts'].transformSync(readFileSync(path, 'utf8'));
     for (const match of code.matchAll(CALL)) {
       const [, receiver, method] = match;
-      if (!throughTheFramework(receiver!, method!)) count(`${file} ${receiver!.replace(/\?/g, '')}.${method}`);
+      const call = `${receiver!.replace(/\?/g, '')}.${method}`;
+      if (!throughTheFramework(receiver!, method!)) count(`${file} ${call}`);
+      else if (untargeted(receiver!, method!, argumentsAt(code, match.index! + match[0].length))) count(`${file} ${call} (untargeted)`);
     }
     for (const _ of code.matchAll(/(?<![\w$.])storeOwnRow\(/g)) count(`${file} storeOwnRow`);
   }
@@ -90,6 +133,20 @@ describe('direct context writes', () => {
     const listed = new Map(ALLOWED.map((entry) => [`${entry.file} ${entry.call}`, entry.count]));
     // Each found call is listed, as many times as it is found; each listed one is still there.
     expect(Object.fromEntries(found)).toEqual(Object.fromEntries(listed));
+  });
+
+  test("the scan tells a module context's write that names its agent from one that names none", () => {
+    const transpiler = new Bun.Transpiler({ loader: 'ts' });
+    const code = transpiler.transformSync([
+      'export class C { m(ctx: any, name: string, note: string) {',
+      "this.ctx?.addMessage('user', [{ type: 'text', text: `[x] (${name}) done` }]);",
+      "this.ctx.addMessage('user', [{ type: 'text', text: note }], undefined, { forAgent: name });",
+      "ctx.addMessage('user', [], {}, name ? { forAgent: name } : undefined);",
+      "ctx.addMessage('user', [{ type: 'text', text: 'a ) in a string' }]);",
+      '} }',
+    ].join('\n'));
+    const calls = [...code.matchAll(CALL)].map((match) => untargeted(match[1]!, match[2]!, argumentsAt(code, match.index! + match[0].length)));
+    expect(calls).toEqual([true, false, false, true]);
   });
 
   test('the scan finds a direct write and a branch move by their receivers, and passes a module context and the framework', () => {

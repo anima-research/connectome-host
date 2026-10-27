@@ -39,6 +39,8 @@ describe('what each client is sent', () => {
   };
   // Told of each windowed read, before it's answered: where it begins and how many slots it asks for.
   let onRead: ((offset: number, limit: number) => void) | undefined;
+  // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
+  let undone = new Set<string>();
   // The store's windowed reads, which the welcome and history pages take, and
   // its listener, which message-appended comes from.
   const cm = {
@@ -57,6 +59,7 @@ describe('what each client is sent', () => {
       return () => { if (appended === listener) appended = undefined; };
     },
     currentBranch: () => branch,
+    windowStatusOf: (id: string) => (undone.has(id) ? 'undone' : transcript.some((m) => m.id === id) ? 'in' : 'absent'),
     getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
     getStrategy: () => ({
       getCompressionQuarantineStatus: () => ({
@@ -630,6 +633,43 @@ describe('what each client is sent', () => {
     const read = c.reader.framesOf('welcome').at(-1)!;
     expect(read.branch).toEqual({ id: 'b2', name: 'experiment' });
     expect(read.session).toEqual({ id: 's1', name: 'Debugging the bridge', autoNamed: true });
+  });
+
+  // DQ-4: the transcript shows the record, which keeps an undone turn's rows,
+  // and marks them as out of the agent's window.
+  test("an undo or a redo on the transcript agent's window marks its rows again for clients that hold messages, and a welcome and a history page carry the marks", async () => {
+    transcript = [
+      { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+      { id: 'a1', participant: 'assistant', content: [{ type: 'text', text: 'three' }] },
+    ];
+    undone = new Set(['a1']);
+    try {
+      const c = await everyone();
+      const marks = (entries: unknown) => (entries as Array<{ id?: string; undone?: boolean }>).map((e) => [e.id, e.undone ?? false]);
+      for (const conn of [c.operator, c.reader]) expect(marks(conn.framesOf('welcome').at(-1)!.messages)).toEqual([['u1', false], ['a1', true]]);
+
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      // Another agent's window is not the transcript's.
+      host.emitTrace({ type: 'window:undone', agentName: 'someone-else', retracted: 1 });
+      await host.fence(Object.values(c));
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        expect(conn.framesOf('undone-marks')).toEqual([
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        ]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+
+      undone = new Set(['u1']);
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-undone', beforeIndex: 2, limit: 10 }));
+      const page = await c.operator.until('history-page', (f) => f.corrId === 'h-undone');
+      expect(marks(page.entries)).toEqual([['u1', true], ['a1', false]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
   });
 
   test("pins and context settings reach full clients alone, a child's as well as the host's, and credential state, the host's and a child's, reaches clients that hold health", async () => {

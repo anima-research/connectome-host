@@ -27,6 +27,19 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
   let currentName = 'main';
   let msgCounter = 0;
 
+  // The store the context reads. agent-framework's switchBranch moves it,
+  // past every context on it (each live one then follows the move), where a
+  // context's own switchBranch also initializes that context's strategy
+  // again, as a rollback's switch does for its agent. The stub framework's
+  // switchBranch moved the store through the context's, so it modelled a
+  // switch that re-initialized the strategy, which the real one didn't (J-H9).
+  const store = {
+    switchBranch: (name: string): void => {
+      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
+      currentName = name;
+    },
+  };
+
   const cm = {
     currentBranch: () => ({ id: currentName, name: currentName, head: messagesByBranch.get(currentName)!.length }),
     listBranches: () => [...messagesByBranch.keys()].map(name => ({ id: name, name, head: messagesByBranch.get(name)!.length })),
@@ -38,10 +51,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
       messagesByBranch.set(newName, msgs.slice(0, idx + 1));
       return newName;
     },
-    switchBranch: async (name: string): Promise<void> => {
-      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
-      currentName = name;
-    },
+    switchBranch: async (name: string): Promise<void> => store.switchBranch(name),
   };
 
   const agent = {
@@ -64,7 +74,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
       getAllModules: () => [],
       undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
       redo: () => ({ redone: false }),
-      switchBranch: (name: string) => cm.switchBranch(name),
+      switchBranch: async (name: string) => store.switchBranch(name),
       rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
         const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
         await cm.switchBranch(targetBranch);

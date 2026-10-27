@@ -224,3 +224,23 @@ describe("the TUI's subagent exhaustion, through runTui", () => {
     expect(times(at('after switch').frame, `${web}after switch`)).toBe(1);
   }, 40000);
 });
+
+// The history is the record, which keeps an undone turn (agent-framework
+// #291): it marks the rows an undo took out of the agent's window, and draws
+// itself again at each undo or redo on that window (DQ-4).
+describe("the TUI's history after an undo", () => {
+  test("marks the rows an undo took out of the root agent's window, unmarks them at a redo, and leaves another agent's undo alone", async () => {
+    const steps = await play('undone');
+    const frameAt = (name: string): string => {
+      const step = steps.get(name);
+      if (!step) throw new Error(`no step ${name}`);
+      return step.frame;
+    };
+    expect(frameAt('history')).toContain('three ledgers');
+    expect(frameAt('history')).not.toContain('(undone)');
+    expect(frameAt('undone')).toContain('(undone) three ledgers');
+    expect(frameAt('undone')).not.toContain('(undone) You: count the ledgers');
+    expect(frameAt('redone')).not.toContain('(undone)');
+    expect(frameAt('another agent')).not.toContain('(undone)');
+  }, 40000);
+});

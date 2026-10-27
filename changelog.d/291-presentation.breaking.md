@@ -1,7 +1,7 @@
 - **Operators: `/undo` and `/redo` act on the agent's window, and `/checkout`,
   `/restore` and `/branchto` go through agent-framework** (agent-framework
-  #291, whose release this one needs; the dependency ranges rise with it and
-  with context-manager's window release). Every agent's context now follows a
+  #291, whose release this one needs: see the 291-dependency-ranges entry).
+  Every agent's context now follows a
   window of its own over the one store, the rows it was shown in the order its
   requests carried them, so a command that moved the store's branch through
   one agent's context manager would leave the other agents' windows behind.
@@ -17,21 +17,38 @@
     `/branchto` its `rollbackToMessage`: a new branch whose last row is the
     checkpoint's or the given message, and the store moved to it. Each is
     refused unless every agent sharing the store is idle, where before only
-    the command's agent was checked. The operator log records `/restore` and
-    `/branchto` as `rollback`, and `/undo` and `/redo` as `undo-turn` and
-    `redo-turn`, each with the requester `host-console`. `/branchto` at the
-    branch's last message is refused, as there is nothing after it to roll
-    back.
+    the command's agent was checked, and each takes every agent's context to
+    the new branch. The operator log records `/restore` and `/branchto` as
+    `rollback`, `/checkout` and a `/restore` to a branch's head as
+    `checkout`, and `/undo` and `/redo` as `undo-turn` and `redo-turn`, each
+    with the requester `host-console`. `/branchto` at the branch's last
+    message is refused, as there is nothing after it to roll back.
+  - A rollback cuts at the write that showed the agent its message, so rows
+    after the message can stay, and `/branchto`, `/restore` and the Web UI's
+    rollback say so where they used to say everything after it was dropped:
+    rows one write showed together with the message stay in the window after
+    it, for a suppression or a hide to take out, and rows stored before the
+    message was shown and shown after it stay in the record, out of the
+    window until the agent's next turn starts. The Web UI's `surgery-result`
+    frame carries them as `keptInWindowAfterTarget` and `returnedToArrivals`,
+    and the Surgery panel's log summarizes a rollback's and a checkout's.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
-    changes what the agent is sent next, not the transcript.
+    changes what the agent is sent next, not the transcript; both mark the
+    rows an undo took out (dimmed, and `(undone)` in the TUI), and the Web
+    UI's context panels (makeup and coverage, the compiled context, the
+    pins) read the window again at each undo or redo. The pin picker leaves
+    undone rows out.
 - **Web UI observers:** the trace frames of agent-framework's presentation
   index, `presentation:presented`, `presentation:unreadable-audience`,
   `presentation:failed`, `presentation:hand-off-mismatch`,
   `presentation:retracted` and `tune-out:subconscious-window`, need the `ops`
   scope, and `presentation:repaired` needs `health` and `ops`. They carry
   agent names, counts, ids and slots, never content. `window:undone`, an undo
-  or a redo on a window, needs `messages`. `undo:completed` and
-  `redo:completed` are gone, with agent-framework's branch-moving undo.
+  or a redo on a window, needs `messages`, and so does the new
+  `undone-marks` frame, which names the transcript's rows an undo took out
+  of the conversation agent's window, as a welcome's and a history page's
+  entries mark them (`undone: true`). `undo:completed` and `redo:completed`
+  are gone, with agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
   an earlier release compiles the record in that order, so the agent's next

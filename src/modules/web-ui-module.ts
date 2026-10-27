@@ -337,6 +337,8 @@ interface SurgeryCapableFramework {
     targetBranch: string;
     messagesRemoved: number;
     lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+    returnedToArrivals?: number;
+    keptInWindowAfterTarget?: number;
   }>;
   suppressMessages?: (
     agentName: string,
@@ -363,6 +365,8 @@ interface WindowCapableCm {
     opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
   ): { messages: unknown[]; startIndex: number; totalCount: number };
   onMessage?(listener: (event: { type: string; message?: unknown }) => void): () => void;
+  /** Where a row stands in the agent's window (#291): 'in', 'out', 'undone' or 'absent'. */
+  windowStatusOf?(id: string): string;
 }
 
 /**
@@ -1009,6 +1013,35 @@ export class WebUiModule implements Module {
           ? { perAgentCost: sharedServer!.latestPerAgentCost }
           : {}),
       });
+    }
+    // An undo or a redo on the window of the agent whose record the
+    // transcript shows: the transcript's rows are marked again.
+    if (event.type === 'window:undone') this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+  }
+
+  /** After an undo or a redo on `agentName`'s window (agent-framework #291,
+   *  the `window:undone` trace), when that agent's record is the
+   *  transcript's: which rows of the welcome's tail are now out of its
+   *  window as undone (UndoneMarksMessage). A page marks them, and a row the
+   *  frame doesn't name from `fromIndex` on is no longer marked. Rows before
+   *  the tail are marked when a history page reads them. */
+  private broadcastUndoneMarks(agentName: unknown): void {
+    const agent = sharedServer?.app?.framework.getAllAgents()[0];
+    if (!agent || agent.name !== agentName) return;
+    const cmw = agent.getContextManager() as unknown as WindowCapableCm | undefined;
+    if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.getMessageWindow !== 'function') return;
+    try {
+      const total = cmw.getMessageCount();
+      const start = Math.max(0, total - WELCOME_HISTORY_LIMIT);
+      const win = cmw.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
+      // By each row's id, a shard's too: a page's entry for a sharded body
+      // carries its first shard's.
+      const undone = (win.messages as Array<{ id?: unknown }>)
+        .map((m) => m.id)
+        .filter((id): id is string => typeof id === 'string' && cmw.windowStatusOf!(id) === 'undone');
+      this.broadcast({ type: 'undone-marks', agent: agent.name, fromIndex: win.startIndex, undone });
+    } catch (err) {
+      console.error('[webui] undone marks failed:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -1827,10 +1860,17 @@ export class WebUiModule implements Module {
             requester,
             ...(note ? { note } : {}),
           });
+      // A rollback on a presented window (#291) can keep rows after its
+      // target: rows that wait out of the window until the agent's next turn
+      // starts, and rows one write showed with the target. The frame says how
+      // many of each, so the panel doesn't call them gone.
+      const kept = r as { returnedToArrivals?: number; keptInWindowAfterTarget?: number };
       this.send(client, {
         type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
         sourceBranch: r.sourceBranch, targetBranch: r.targetBranch,
         messagesRemoved: r.messagesRemoved, lastVisible: r.lastVisible ?? null,
+        ...(kept.returnedToArrivals ? { returnedToArrivals: kept.returnedToArrivals } : {}),
+        ...(kept.keptInWindowAfterTarget ? { keptInWindowAfterTarget: kept.keptInWindowAfterTarget } : {}),
       });
       // Same follow-through as a /checkout: config mount, branch chip,
       // fresh tail for every welcomed client, as its scopes allow.
@@ -3350,14 +3390,14 @@ export class WebUiModule implements Module {
           resolveBlobs: false,
           alignToBodyGroups: true,
         });
-        messages = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+        messages = markUndone(coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex), cmw);
         history = { startIndex: win.startIndex, totalCount: win.totalCount };
       } else {
         // Facade skew (older @animalabs/context-manager without windowed
         // reads): fall back to the historical full walk, sliced locally.
         const all = cm.getAllMessages() as unknown as MessageLike[];
         const start = Math.max(0, all.length - WELCOME_HISTORY_LIMIT);
-        messages = coalesceAndFlatten(all.slice(start), start);
+        messages = markUndone(coalesceAndFlatten(all.slice(start), start), cmw);
         history = { startIndex: start, totalCount: all.length };
       }
     }
@@ -3804,6 +3844,20 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
 }
 
 /**
+ * Mark each entry whose row is out of the transcript agent's window as
+ * undone (agent-framework #291: windowStatusOf 'undone'), in place. A
+ * coalesced shard run goes by its first shard, whose id it carries. A
+ * context-manager without window reads marks none.
+ */
+function markUndone(entries: WelcomeMessageEntry[], cmw: WindowCapableCm | undefined): WelcomeMessageEntry[] {
+  if (typeof cmw?.windowStatusOf !== 'function') return entries;
+  for (const entry of entries) {
+    if (entry.id && cmw.windowStatusOf(entry.id) === 'undone') entry.undone = true;
+  }
+  return entries;
+}
+
+/**
  * A page of history ending just before `beforeIndex`: one window of about
  * `limit` slots, widened to whole bodies (alignToBodyGroups), for a full
  * client (`scopes` null). An observer's page leaves out the entries its
@@ -3828,7 +3882,7 @@ function readHistory(
       resolveBlobs: false,
       alignToBodyGroups: true,
     });
-    let entries = coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex);
+    let entries = markUndone(coalesceAndFlatten(win.messages as unknown as MessageLike[], win.startIndex), cmw);
     if (scopes !== null) {
       entries = entries
         .map((e) => filterEntryForScopes(e, scopes))

@@ -836,11 +836,14 @@ export function frameScopes(frame: WebUiServerMessage): FrameScopes {
     case 'host-mode':
       return ['health'];
     // An incoming message's excerpt, as the `message:added` trace it comes
-    // from, a branch's name, as request-branches, and that a streamed turn
-    // ended, which is the conversation's shape.
+    // from, a branch's name, as request-branches, that a streamed turn
+    // ended, which is the conversation's shape, and which of the
+    // transcript's rows an undo took out of the agent's window, by id, as
+    // the welcome's entries mark them.
     case 'inbound-trigger':
     case 'branch-changed':
     case 'stream-ended':
+    case 'undone-marks':
       return ['messages'];
     default:
       return FULL_CLIENTS_ONLY;

@@ -5,7 +5,8 @@
  * one, and its abortInference aborts only once told an agent's model call is
  * in flight, then sends `inference:aborted` alone, as agent-framework
  * 0.22.3's does. In the `subagents` and `subagent-exhausted` scenarios its
- * subagent module stands in for the host's.
+ * subagent module stands in for the host's. In `undone` the agent's record
+ * holds two rows, and its window's undone ones are the test's to set.
  * Prints one `TUI_STEP` line of JSON per step: the frame's text and the
  * aborts asked for so far.
  */
@@ -41,6 +42,16 @@ const subagents = {
   cancelAll() { aborts.push('cancelAll'); return 1; },
 };
 
+/** The agent's record in `undone`, and which of its rows an undo took out of its window. */
+const history = [
+  { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+  { id: 'a1', participant: 'agent', content: [{ type: 'text', text: 'three ledgers' }] },
+];
+const undoneRows = new Set<string>();
+const contextManager = () => (scenario === 'undone'
+  ? { getAllMessages: () => history, windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in') }
+  : { getAllMessages: () => [] });
+
 function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
   const abortable = new Set<string>();
@@ -57,7 +68,7 @@ function fakeFramework(name: string) {
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
-      ? { name: 'agent', state: { status: 'idle' }, getContextManager: () => ({ getAllMessages: () => [] }) }
+      ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
       : undefined,
     onTrace(listener: Listener) {
       listeners.add(listener);
@@ -307,6 +318,23 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'undone') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    await step('history');
+    // An undo on the agent's window: the history marks its rows.
+    undoneRows.add('a1');
+    first.send('window:undone', { retracted: 1 });
+    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    await step('undone');
+    // A redo puts the row back.
+    undoneRows.clear();
+    first.send('window:undone', { retracted: 0, represented: 1 });
+    await until(async () => !(await frame()).includes('(undone)'), 'the mark to go');
+    await step('redone');
+    // Another agent's window isn't the history's.
+    undoneRows.add('a1');
+    first.send('window:undone', { agentName: 'other', retracted: 1 });
+    await step('another agent');
   } else {
     throw new Error(`unknown scenario ${scenario}`);
   }

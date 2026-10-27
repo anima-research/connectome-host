@@ -35,6 +35,7 @@ import {
   type WelcomeMessage,
   type WelcomeMessageEntry,
   type HistoryPageMessage,
+  type UndoneMarksMessage,
   type MessageBlock,
   type TokenUsage,
   type QuotaSnapshotData,
@@ -94,6 +95,10 @@ interface Message {
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   /** True if the message is mid-stream — render with a cursor cue. */
   streaming?: boolean;
+  /** The row left the conversation agent's window by an undo
+   *  (agent-framework #291): the record keeps it, its next request is built
+   *  without it. From the welcome, a history page or an undone-marks frame. */
+  undone?: boolean;
   /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
     origin: string;
@@ -118,6 +123,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
     timestamp: e.timestamp,
+    ...(e.undone ? { undone: true } : {}),
   };
 }
 
@@ -672,6 +678,28 @@ export function App() {
   const refreshPins = (): void => {
     setPinsLoaded(false);
     wire.send({ type: 'request-pins', scope: panelScope() });
+  };
+
+  /** Bumped at each undo or redo on an agent's window (the window:undone
+   *  trace, DQ-4): the panels built from what a window holds (Context's
+   *  makeup and coverage, the compiled context) read again when it moves,
+   *  and so do the pins, whose candidates leave an undone row out. */
+  const [windowEpoch, setWindowEpoch] = createSignal(0);
+  const onWindowUndone = (): void => {
+    setWindowEpoch((n) => n + 1);
+    if (sidebarTab() === 'pins') refreshPins();
+  };
+  /** Mark the transcript's rows from `fromIndex` on as the server says an
+   *  undo left them: in the conversation agent's window, or out of it. */
+  const applyUndoneMarks = (marks: UndoneMarksMessage): void => {
+    const undone = new Set(marks.undone);
+    setMessages(produce((arr) => {
+      for (const m of arr) {
+        if (!m.storeId || typeof m.index !== 'number' || m.index < marks.fromIndex) continue;
+        if (undone.has(m.storeId)) m.undone = true;
+        else if (m.undone) delete m.undone;
+      }
+    }));
   };
 
   /** Workspace files panel state — mounts list + per-mount tree cache. */
@@ -1351,6 +1379,8 @@ export function App() {
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
         onCommandAnswer: refreshLocalUpdate,
+        onWindowUndone,
+        applyUndoneMarks,
       });
     });
     onCleanup(() => {
@@ -1606,6 +1636,7 @@ export function App() {
             <For each={messages}>{(m) => (
               <MessageRow
                 storeId={m.storeId}
+                undone={!!m.undone}
                 canRollback={canRollback() && !!m.storeId}
                 canSuppress={canSuppress() && !!m.storeId}
                 selecting={selecting()}
@@ -1622,6 +1653,7 @@ export function App() {
             </Show>}>
               <ContextDocument
                 scope={panelScope()}
+                refreshKey={windowEpoch()}
                 canRollback={canRollback() && panelScope() === 'local'}
                 onRollback={(id, preview) => beginRollback(id, preview)}
               />
@@ -1787,7 +1819,8 @@ export function App() {
                 agent={pinsState()?.agent}
                 candidates={panelScope() === 'local'
                   ? messages
-                      .filter((m) => m.index !== undefined && m.id)
+                      // A row an undo took out of the window: a pin on it would hold nothing.
+                      .filter((m) => m.index !== undefined && m.id && !m.undone)
                       .map<PinCandidate>((m) => ({
                         id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
                       }))
@@ -1811,7 +1844,7 @@ export function App() {
               />
             </Show>
             <Show when={sidebarTab() === 'context'}>
-              <ContextPanel scope={panelScope()} />
+              <ContextPanel scope={panelScope()} refreshKey={windowEpoch()} />
             </Show>
             <Show when={sidebarTab() === 'health'}>
               <HealthPanel
@@ -1908,6 +1941,10 @@ interface HandlerHooks {
   /** A command answered: an `/update` answer can change what the update's
    *  banner and block show, so the page reads /healthz again. */
   onCommandAnswer: () => void;
+  /** An undo or a redo on an agent's window: the panels built from it read again. */
+  onWindowUndone: (agentName: string | undefined) => void;
+  /** Apply an undone-marks frame to the transcript. */
+  applyUndoneMarks: (marks: UndoneMarksMessage) => void;
 }
 
 /** True when a scope-stamped response belongs to a scope the operator has
@@ -1971,6 +2008,9 @@ function handleServerMessage(
     }
     case 'branch-changed':
       hooks.onBranchChanged(msg.branch);
+      return;
+    case 'undone-marks':
+      hooks.applyUndoneMarks(msg);
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
@@ -2150,6 +2190,8 @@ type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
  */
 function MessageRow(props: {
   storeId?: string;
+  /** The row left the conversation agent's window by an undo: dimmed and labelled. */
+  undone?: boolean;
   canRollback: boolean;
   canSuppress: boolean;
   selecting: boolean;
@@ -2163,7 +2205,13 @@ function MessageRow(props: {
   // off the row's left edge, where the scroll pane's overflow clipping made
   // it all but invisible — hover affordances must be inside the clip box.
   return (
-    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''} ${props.undone ? 'opacity-50' : ''}`}>
+      <Show when={props.undone}>
+        <div
+          class="text-[10px] font-mono text-amber-300/80 mb-0.5"
+          title="An undo took this out of the agent's context: its next request is built without it. The record keeps it; /redo puts it back."
+        >undone · not in the agent's context</div>
+      </Show>
       <Show when={actionable()}>
         <div class={`absolute right-0 top-0 z-10 flex gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
           <Show when={props.canRollback && !props.selecting}>

@@ -10,10 +10,14 @@
  *   agent's window at once while it is idle, or where its turn can carry
  *   them, and no other resident's;
  * - /newtopic's transition is the agent's own row, presented as it is
- *   written, so the head window starts at a row the window holds;
+ *   written, so the head window starts at a row the window holds, and
+ *   never while a turn of the agent is alive, a bare /newtopic's included,
+ *   whose summary a turn can start during;
  * - a subagent's seed rows (its orientation and task, or a fork's copy of
  *   its parent's context) are the child's own rows, in its window once its
- *   run takes it on.
+ *   run takes it on;
+ * - a subagent's result or failure told straight to the agent that started
+ *   it is written for that agent, so no other resident is shown it.
  *
  * Each runs a real AgentFramework (test/presented-host.ts) and reads the
  * agents' windows and the requests the provider receives.
@@ -145,6 +149,96 @@ describe('/newtopic', () => {
       await h.turn('mira');
       expect(h.inWindow('mira', row!.id)).toBe(false);
       expect(h.adapter.wireOf('mira').join('\n')).not.toContain('[Topic Transition]');
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe('a bare /newtopic', () => {
+  // Its summary is an LLM call, and the agent can start a turn during it
+  // (J-H3). Stored then, the transition entered the window inside the turn,
+  // between rounds its requests were sent without.
+  test('whose summary a turn started during stores its transition once the turn has ended, after it in the window, and the next request carries it', async () => {
+    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
+    let releaseSummary!: () => void;
+    const summaryGate = new Promise<void>((resolve) => { releaseSummary = resolve; });
+    (strategy as unknown as { generateTransitionSummary: () => Promise<string> }).generateTransitionSummary = async () => {
+      await summaryGate;
+      return 'The ledger work is done; next is the release.';
+    };
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix: 'newtopic-bare-' });
+    try {
+      await h.turn('clerk');
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
+      const result = handleCommand('/newtopic', app);
+      expect(result.lines[0]!.text).toBe('Generating transition summary...');
+
+      // A turn starts while the summary is written, and waits in a tool call.
+      h.adapter.script('clerk', { wait: 'g' }, { text: 'after the tool' });
+      h.framework.nudgeAgent('clerk', 'test');
+      await until(() => h.gates.entered.has('g'), "clerk's tool call");
+      const before = h.adapter.callsFor('clerk');
+      releaseSummary();
+      // The summary is in; the turn is alive, so nothing is stored yet.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+
+      h.gates.release('g');
+      const outcome = await result.asyncWork!;
+      expect(outcome.lines.map((l) => l.text)).toEqual(['Topic reset. Transition summary:', 'The ledger work is done; next is the release.']);
+      const row = h.rowWith('clerk', '[Topic Transition]')!;
+      expect(audienceOf(row.metadata)).toEqual({ audience: ['clerk'], ownRowOf: 'clerk' });
+      // The turn's requests went without it, and it follows the turn's rows.
+      const sent = h.adapter.wireOf('clerk').slice(before);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const wire of sent) expect(wire).not.toContain('[Topic Transition]');
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const window = cm.getPresentedMessages();
+      expect(window.at(-1)!.id).toBe(row.id);
+      expect(textOf(window.at(-2)!)).toBe('after the tool');
+      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+
+      await h.turn('clerk');
+      expect(h.adapter.wireOf('clerk').at(-1)).toContain('The ledger work is done');
+      expect(h.inWindow('mira', row.id)).toBe(false);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe("a subagent's result or failure told directly", () => {
+  // The fallbacks for a run with no route to its caller (J-H4): an
+  // untargeted write is stamped for every resident sharing the slot, so
+  // another resident's next request carried mira's subagent's failure.
+  test("is in the window of the agent that started it, and no other resident's", async () => {
+    const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'clerk', defaultModel: 'model-kid', maxRetries: 0 });
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], modules: [subagent as unknown as Module], prefix: 'subagent-told-' });
+    subagent.setFramework(h.framework);
+    try {
+      await h.turn('clerk');
+      await h.turn('mira');
+      const inner = subagent as unknown as {
+        deliverAsyncError(name: string, err: unknown, parent: string): void;
+        deliverAsyncResult(name: string, result: { summary: string }, parent: string): void;
+      };
+      inner.deliverAsyncError('scout', new Error('the search index is down'), 'mira');
+      inner.deliverAsyncResult('surveyor', { summary: 'Three ledgers, all balanced.' }, 'mira');
+      const failed = h.rowWith('mira', "[Subagent 'scout' failed]")!;
+      const returned = h.rowWith('mira', "[Subagent 'surveyor' returned]")!;
+      for (const row of [failed, returned]) {
+        expect(audienceOf(row.metadata)).toEqual({ audience: ['mira'] });
+        expect(h.inWindow('mira', row.id)).toBe(true);
+        expect(h.inWindow('clerk', row.id)).toBe(false);
+      }
+      // Each woke mira; clerk's next request carries neither.
+      await until(() => h.adapter.wireOf('mira').some((wire) => wire.includes('Three ledgers')), "mira's request with the result");
+      await h.settled('mira');
+      await h.turn('clerk');
+      const clerkWire = h.adapter.wireOf('clerk').at(-1)!;
+      expect(clerkWire).not.toContain('the search index is down');
+      expect(clerkWire).not.toContain('Three ledgers');
     } finally {
       await h.cleanup();
     }

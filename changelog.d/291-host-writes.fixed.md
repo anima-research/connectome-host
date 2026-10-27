@@ -9,7 +9,18 @@
     operator changed the agent's context settings, through the settings
     module.
   - `/newtopic`'s `[Topic Transition]` row is the agent's own row: in its
-    window, where its head window starts, and in no other resident's.
+    window, where its head window starts, and in no other resident's. A
+    bare `/newtopic` writes its summary first and stores the row only while
+    the agent has no turn alive: a turn that started during the summary
+    used to get the row in its window between rounds its requests were sent
+    without, and now the row follows the turn. If the agent is still busy
+    ten minutes later, or the branch moved meanwhile, nothing is stored and
+    the answer gives the summary to pass as `/newtopic <text>`.
+  - A subagent's result or failure told straight to the agent that started
+    it, when the run has no route of its own, is written for that agent, and
+    tts-relay's note that a voiced reply was interrupted is written for the
+    agent that spoke. Each was written for no agent, so every resident
+    sharing the slot was shown it.
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.
