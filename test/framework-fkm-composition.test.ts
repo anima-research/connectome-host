@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
-import { loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
+import { DEFAULT_RECIPE_CLOCK, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
 
 function recipe(agent: Record<string, unknown> = {}) {
   return {
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe('framework FKM composition', () => {
-  test('preserves the pre-merge AgentConfig shape field-for-field when FKM additions are omitted', () => {
+  test('preserves the pre-merge AgentConfig shape field-for-field when FKM additions are omitted, but for the default recipe clock', () => {
     const parsed = validateRecipe(recipe({
       provider: 'openai-responses',
       maxTokens: 4_096,
@@ -83,19 +83,11 @@ describe('framework FKM composition', () => {
         autoRewind: true,
         maxRewinds: 2,
       },
-      // The one FKM addition a recipe gets without naming it: ten-minute clock
-      // rows (DEFAULT_RECIPE_CLOCK), off only with agent.clock: false.
-      clock: { intervalMinutes: 10 },
+      clock: DEFAULT_RECIPE_CLOCK,
     });
   });
 
   test('loads a recipe that still sets refusalHandling.announceHumanTurns, and hands the framework its refusalHandling as written', () => {
-    // Among refusalHandling's keys, validateRecipe refuses only
-    // primarySummaryFallback, and an autoRewind that isn't a boolean or null
-    // (test/recipe-refusal-handling.test.ts has the values it refuses).
-    // This pins that a recipe still setting announceHumanTurns, which no
-    // agent-framework release reads, keeps loading, and that the host passes
-    // the key on with the rest.
     const parsed = validateRecipe(recipe({
       refusalHandling: { autoRewind: false, announceHumanTurns: true },
     }));
@@ -132,8 +124,6 @@ describe('framework FKM composition', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'connectome-fkm-'));
     tempDirs.push(dir);
-    // Saving an already-resolved recipe through the new unresolved-snapshot
-    // path is legal: substitution over resolved content is a no-op.
     saveRecipe(dir, parsed as unknown as Record<string, unknown>);
     const reloaded = await loadSavedRecipe(dir);
     expect(reloaded).not.toBeNull();

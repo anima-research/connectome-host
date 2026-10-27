@@ -1,12 +1,3 @@
-/**
- * `agent.provider: 'openai-compatible'` — membrane has shipped a generic
- * OpenAI chat-completions adapter (Ollama, vLLM, Together, Groq, local
- * servers...) that no host wired. The recipe must name the endpoint and the
- * model, and both must be checked at load time: a missing baseUrl would
- * otherwise surface as a fetch to `undefined/chat/completions` at first
- * inference, and a missing model as whatever the endpoint's default happens
- * to be.
- */
 import { describe, expect, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 

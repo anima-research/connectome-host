@@ -129,8 +129,6 @@ describe('checkRetirement', () => {
   });
 
   test('does not false-positive on prefix collisions in plausible future names', () => {
-    // A future `claude-21-...` (whatever that may be) must NOT be confused with
-    // claude-2.1; substring-based matching used to make that mistake.
     expect(checkRetirement('claude-21-orion').retired).toBe(false);
   });
 
@@ -239,7 +237,6 @@ describe('composeRecipe', () => {
     expect(composed).toContain('<persistent_memories>');
     expect(composed).toContain('remembered text');
     expect(composed).toContain('</persistent_memories>');
-    // Order: base prompt, then memories, then addendum.
     expect(composed.indexOf('base prompt')).toBeLessThan(composed.indexOf('<persistent_memories>'));
     expect(composed.indexOf('</persistent_memories>')).toBeLessThan(composed.indexOf('addendum'));
   });
@@ -341,7 +338,6 @@ describe('constants', () => {
     for (const [key, meta] of Object.entries(RETIRED_MODELS)) {
       for (const alt of meta.closestLiving ?? []) {
         expect(checkRetirement(alt).retired).toBe(false);
-        // Sanity: closestLiving shouldn't repeat the retired prefix
         expect(alt.startsWith(key)).toBe(false);
       }
     }

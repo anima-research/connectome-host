@@ -1,12 +1,3 @@
-/**
- * A real host launches its fleet's autoStart children through both places it
- * starts a framework: at its own start, and after a session switch, whose new
- * framework launches them again once the old one has stopped them. Each
- * place goes through startFramework, which starts the agents and then the
- * children (test/start-framework.test.ts pins that order). A Web UI client
- * welcomed again at the switch is told each child's recipe, as on `main`,
- * though the launches begin only as the Web UI is bound.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,7 +9,6 @@ import { connectWhenAccepting } from './ipc-connect.js';
 
 const INDEX_PATH = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'src', 'index.ts');
 
-// No MCP servers, workspace or optional modules: both hosts start offline.
 const RECIPE = {
   name: 'AutoStart host',
   agent: { name: 'parent', systemPrompt: 'never asked to infer in this test' },
@@ -27,10 +17,8 @@ const RECIPE = {
 
 const dirs: string[] = [];
 const hosts: ChildProcess[] = [];
-/** Each child's pid file. A child writes its own as it starts, and removes it as it shuts down. */
 const pidFiles: string[] = [];
 
-/** The pid a pid file holds, or null when there's none, including one its child removes as it's read. */
 function pidIn(pidFile: string): string | null {
   try {
     return readFileSync(pidFile, 'utf8').trim() || null;
@@ -41,14 +29,13 @@ function pidIn(pidFile: string): string | null {
 
 afterEach(() => {
   for (const host of hosts.splice(0)) {
-    try { if (host.exitCode === null) host.kill('SIGKILL'); } catch { /* gone */ }
+    try { if (host.exitCode === null) host.kill('SIGKILL'); } catch { }
   }
   // SIGKILL skips the host's exit handler, which stops its children, and a
-  // child runs detached, so one a failed run leaves is stopped here, once it
-  // has written its pid file.
+  // detached child outlives it.
   for (const pidFile of pidFiles.splice(0)) {
     const pid = Number(pidIn(pidFile));
-    try { if (pid > 0) process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+    try { if (pid > 0) process.kill(pid, 'SIGKILL'); } catch { }
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -61,7 +48,6 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
   }
 }
 
-/** Lines of command output the host sends on the socket. */
 function outputs(socket: Socket): string[] {
   const lines: string[] = [];
   let buffer = '';
@@ -75,7 +61,7 @@ function outputs(socket: Socket): string[] {
       try {
         const event = JSON.parse(line) as { type?: string; text?: string };
         if (event.type === 'command-output' && typeof event.text === 'string') lines.push(event.text);
-      } catch { /* not ours */ }
+      } catch { }
     }
   });
   return lines;
@@ -97,7 +83,6 @@ describe('a host with autoStart children', () => {
       },
     }));
     const host = spawn('bun', [INDEX_PATH, recipe, '--headless'], {
-      // cwd is the temp dir, so the default MCPL config path can't pick up a real one.
       cwd: dir,
       env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-autostart-host', DATA_DIR: join(dir, 'data') },
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -115,7 +100,6 @@ describe('a host with autoStart children', () => {
 
     const socketPath = join(dir, 'data', 'ipc.sock');
     await until(() => existsSync(socketPath), 15_000, 'the host serves its socket');
-    // A Web UI client, connected once the host is up, and the children each welcome lists with their recipes.
     const listening = /\[webui\] listening on http:\/\/127\.0\.0\.1:(\d+)/;
     await until(() => listening.test(printed), 10_000, 'the host says where its Web UI listens');
     const port = Number(listening.exec(printed)![1]);
@@ -134,7 +118,6 @@ describe('a host with autoStart children', () => {
     socket.write(JSON.stringify({ type: 'command', command: '/session new' }) + '\n');
     await until(() => lines.includes('Session switched.'), 20_000, 'the session switch');
     await until(() => pidNow() !== null && pidNow() !== first, 20_000, "the new session's framework launches the child again");
-    // The new framework's welcome lists the child with its recipe.
     await until(() => welcomes.length === 2, 10_000, 'the Web UI welcomes the client again after the switch');
     expect(welcomes[1]).toEqual([{ name: 'kid', recipe: 'AutoStart child' }]);
     page.close();

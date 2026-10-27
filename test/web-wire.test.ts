@@ -1,18 +1,10 @@
-/**
- * The page's wire (web/src/wire.ts): what it takes the page's observer
- * sign-in to be, connection by connection. The host acks an observer before
- * its welcome, so a welcome on a socket that got no observer-ack is a full
- * client's, a refused connection holds no grant, and a sign-in that finishes
- * after its connection closed leaves the next connection's state alone. A
- * scripted host stands in for the real one, as the page's own browser runs do.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { createWireClient, type WireClient } from '../web/src/wire.js';
 
 type Socket = { send(data: string): void; close(code?: number): void };
 
-// The observer-ack stores the page's session cookie, which a page keeps in
-// its document; this stands in for it.
+// Bun has no document, whose cookie a page keeps its session in; this stands
+// in for it.
 (globalThis as { document?: { cookie: string } }).document ??= { cookie: '' };
 
 const cleanups: Array<() => void> = [];
@@ -20,11 +12,6 @@ afterEach(() => { while (cleanups.length > 0) cleanups.pop()!(); });
 
 type Host = { ack: { scopes: string[] } | null; signIn: string | null; sockets: Set<Socket> };
 
-/** A page's wire to a host that asks each connection to sign in as an
- *  observer for `host.signIn` while that's set, and sends it nothing more, as
- *  the real host does until a hello. Otherwise the host acks each connection
- *  as an observer granted `host.ack.scopes` while `host.ack` is set, and
- *  welcomes it either way. */
 function connect(ack: { scopes: string[] } | null, signIn: string | null = null): { host: Host; wire: WireClient } {
   const host: Host = { ack, signIn, sockets: new Set<Socket>() };
   const server = Bun.serve({
@@ -70,8 +57,6 @@ describe("the page's wire", () => {
   });
 
   test("an observer's session cookie is written before the page is told it's an observer", async () => {
-    // What reacts to the observer state reads /healthz at once (App.tsx), so
-    // the cookie it sends has to be there by then.
     const doc = (globalThis as { document: { cookie: string } }).document;
     const kept = Object.getOwnPropertyDescriptor(doc, 'cookie')!;
     const statesAtWrite: string[] = [];
@@ -108,10 +93,8 @@ describe("the page's wire", () => {
   });
 
   test("a sign-in that finishes after its connection closed leaves the next connection's state alone", async () => {
-    // The page keeps its device key in IndexedDB, which bun doesn't have. This
-    // stand-in holds the key's opening until the test fails it, so the first
-    // connection's sign-in finishes, with no key, once the next connection has
-    // been welcomed.
+    // Bun has no IndexedDB, where the page keeps its device key; this stands in
+    // for it.
     const opening: { fail?: () => void } = {};
     const scope = globalThis as { indexedDB?: unknown };
     scope.indexedDB = {
@@ -133,7 +116,7 @@ describe("the page's wire", () => {
     await until("the full client's welcome", () => wire.observerState() === 'none');
 
     opening.fail!();
-    // What's left of that sign-in is promise steps, all run before a timer fires.
+    // Promise steps all run before a timer fires.
     await Bun.sleep(10);
     expect(warn).toHaveBeenCalledWith('[observer] device key unavailable:', expect.any(Error));
     expect(wire.observerState()).toBe('none');

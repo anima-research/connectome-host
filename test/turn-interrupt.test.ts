@@ -1,14 +1,6 @@
-/**
- * TurnInterrupts: an operator's interrupt aborts a turn at once when the
- * framework can abort it, and otherwise is kept until the turn's first trace
- * that comes once it can be, or forgotten when the turn settles.
- */
 import { describe, expect, test } from 'bun:test';
 import { TurnInterrupts, interruptSubagents } from '../src/state/turn-interrupt.js';
 
-/** A framework stand-in: abortInference succeeds for the agents in
- *  `abortable`, as agent-framework 0.22.3's does once a turn holds its model
- *  call or its stream, and records each call. */
 function harness() {
   const abortable = new Set<string>();
   const calls: string[] = [];
@@ -20,7 +12,6 @@ function harness() {
   return { abortable, calls, interrupts, trace };
 }
 
-/** A kept interrupt's abort runs on a microtask, after the trace. */
 const settle = () => new Promise<void>((resolve) => queueMicrotask(resolve));
 
 describe('TurnInterrupts', () => {
@@ -38,7 +29,6 @@ describe('TurnInterrupts', () => {
     trace('inference:started');
     expect(interrupts.interrupt('main', 'interrupted')).toBe('deferred');
     expect(interrupts.isPending('main')).toBe(true);
-    // Still compiling: a trace that comes then tries again, and keeps it.
     trace('inference:usage');
     await settle();
     expect(interrupts.isPending('main')).toBe(true);
@@ -93,7 +83,6 @@ describe('TurnInterrupts', () => {
     const { abortable, interrupts, trace } = harness();
     trace('inference:started');
     trace('inference:failed');
-    // Held for the retry: nothing in flight to abort.
     expect(interrupts.interrupt('main', 'r')).toBe('deferred');
     trace('inference:started');
     await settle();
@@ -176,7 +165,6 @@ describe('TurnInterrupts', () => {
       interrupts.onTrace({ type: 'inference:started', agentName: 'main' });
       expect(interrupts.interrupt('main', 'r')).toBe('deferred');
       inFlight = true;
-      // Two traces whose aborts throw: tried at each, logged once.
       interrupts.onTrace({ type: 'inference:tokens', agentName: 'main' });
       await settle();
       interrupts.onTrace({ type: 'inference:tokens', agentName: 'main' });
@@ -188,7 +176,6 @@ describe('TurnInterrupts', () => {
       await settle();
       expect(interrupts.isPending('main')).toBe(false);
       expect(calls).toEqual(['abort main', 'abort main', 'abort main', 'abort main']);
-      // A later interrupt whose abort throws is logged again.
       throws = true;
       interrupts.onTrace({ type: 'inference:started', agentName: 'main' });
       expect(interrupts.interrupt('main', 'r')).toBe('deferred');
@@ -223,7 +210,6 @@ describe('TurnInterrupts', () => {
     trace('inference:started');
     expect(interrupts.interrupt('main', 'r')).toBe('deferred');
     abortable.add('main');
-    // The trace queues the abort; the turn ends before it runs.
     trace('inference:tokens');
     trace('inference:completed');
     await settle();
@@ -246,7 +232,6 @@ describe('TurnInterrupts', () => {
     expect(interrupts.isRunning('main')).toBe(false);
     trace('inference:started');
     expect(interrupts.isRunning('main')).toBe(true);
-    // A failed attempt may be tried again: the turn is still running.
     trace('inference:failed');
     expect(interrupts.isRunning('main')).toBe(true);
     expect(interrupts.isRunning('other')).toBe(false);
@@ -283,8 +268,6 @@ describe('interruptSubagents', () => {
   test("each subagent's turn goes to the follower before the runs are stopped: a streaming one is aborted, a compiling one kept", async () => {
     const order: string[] = [];
     let runsStopped = false;
-    // A streaming turn can be aborted until the module's stop has cancelled
-    // its stream and left the agent idle.
     const streaming = new Set(['sub-streaming']);
     const interrupts = new TurnInterrupts((agentName) => {
       order.push(`abort ${agentName}`);

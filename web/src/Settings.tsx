@@ -1,20 +1,3 @@
-/**
- * Context settings panel — live control of the agent's compile window.
- *
- * Replaces the stop → edit the `framework/state` Chronicle slot → start dance.
- * Three things this panel is deliberately honest about, because getting any of
- * them wrong would mislead an operator into an outage:
- *
- *  1. RAISING the budget applies at once; LOWERING starts a PACED convergence
- *     that can sit in `converging` for many turns, and can be cancelled. Apply
- *     is not "done" the moment it returns.
- *  2. Only a few keys are hot. Chunk size, head window, merge threshold and
- *     friends are recipe-and-restart-only — shown, but not offered as controls.
- *  3. Preview requires a context-manager build with dry-run support. When the
- *     resolved build lacks it we say so, rather than rendering an empty result
- *     that looks like "nothing would change".
- */
-
 import { createSignal, Show, For } from 'solid-js';
 
 export interface SettingsSnapshot {
@@ -37,11 +20,9 @@ export interface SettingsState {
 }
 
 /**
- * Honest budget accounting from the server.
- *
  * `preview.fits` from context-manager means "would not throw OverBudgetError",
  * which on a recipe with a grace ratio is NOT the same as "fits the budget you
- * typed". These three flags keep the questions separate.
+ * typed".
  */
 interface PreviewAccounting {
   requestedBudgetTokens: number;
@@ -50,7 +31,6 @@ interface PreviewAccounting {
   rejectionBudgetTokens?: number;
   fitsRequested: boolean;
   withinGrace?: boolean;
-  /** Picker exhausted AND still over the request — this budget cannot be reached. */
   unreachable: boolean;
 }
 
@@ -69,8 +49,6 @@ interface PreviewResult {
   producedCount: number;
 }
 
-/** Settings the strategy reads only at construction — surfaced so an operator
- *  can see them without being invited to "change" them from here. */
 const RESTART_ONLY = [
   'targetChunkTokens',
   'headWindowTokens',
@@ -91,9 +69,6 @@ const TRANSITION_HELP: Record<string, string> = {
 export function SettingsPanel(props: {
   loaded: boolean;
   state: SettingsState | null;
-  /** Inspection scope ('local' or fleet-child name) — routes the preview
-   *  fetch through the host's ?scope= proxy so the DRY RUN compiles in the
-   *  same process whose settings this panel is editing. */
   scope?: string;
   onRefresh(): void;
   onApply(patch: {
@@ -106,7 +81,6 @@ export function SettingsPanel(props: {
   }): void;
   onReset(keys: string[] | undefined, persist: boolean): void;
   onCancelTransition(): void;
-  /** Hand a rendered dry context to the main pane for display. */
   onDryContext?(ctx: { entries: unknown[]; stats?: unknown; label: string }): void;
 }) {
   const [budget, setBudget] = createSignal<string>('');
@@ -126,7 +100,6 @@ export function SettingsPanel(props: {
   const s = () => props.state?.settings;
   const isHot = (k: string) => props.state?.hotKeys.includes(k) ?? false;
 
-  /** Prefill the inputs from live values so the operator edits from reality. */
   const syncFromLive = () => {
     const cur = s();
     if (!cur) return;
@@ -142,15 +115,9 @@ export function SettingsPanel(props: {
   };
 
   /**
-   * Explicit dry run. NOT wired to input events on purpose.
-   *
-   * A dry run is a real compile: seconds on a large store, and the compile is
-   * synchronous, so it briefly blocks the agent's event loop — no heartbeat, no
-   * Discord, no MCPL for the duration. An earlier version of this panel fired it
-   * on every keystroke (debounced), which stacked agent stalls and made the UI
-   * look hung. The operator asks for it now.
-   *
-   * `render` also fetches the resulting context for the main pane.
+   * Not wired to input events: a dry run is a real compile, and
+   * context-manager's previewContext runs synchronously, so the host's event
+   * loop, and the agent with it, waits while it runs.
    */
   const runDryRun = async (render: boolean) => {
     if (!props.state?.previewAvailable || previewing()) return;
@@ -170,7 +137,6 @@ export function SettingsPanel(props: {
       if (!res.ok) {
         setPreview(null);
         setAcct(null);
-        // 429 is the single-flight / cooldown guard, not a failure.
         setPreviewErr(body?.error ?? `HTTP ${res.status}`);
         return;
       }
@@ -253,7 +219,6 @@ export function SettingsPanel(props: {
       </Show>
 
       <Show when={props.state}>
-        {/* ---- transition status: the thing an operator most needs to see ---- */}
         <Show when={s()!.transition !== 'stable'}>
           <div
             class={`mb-2 px-2 py-1.5 rounded border text-[11px] ${
@@ -286,7 +251,6 @@ export function SettingsPanel(props: {
           </div>
         </Show>
 
-        {/* ---- live values ---- */}
         <table class="w-full mb-3 font-mono text-[11px]">
           <tbody>
             <For each={[
@@ -312,7 +276,6 @@ export function SettingsPanel(props: {
           </tbody>
         </table>
 
-        {/* ---- editors ---- */}
         <div class="space-y-1.5 mb-2">
           <For each={[
             ['budget', 'contextBudgetTokens', budget, setBudget] as const,
@@ -400,7 +363,6 @@ export function SettingsPanel(props: {
           </button>
         </div>
 
-        {/* ---- preview ---- */}
         <div class="border-t border-neutral-800 pt-2">
           <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold">
@@ -455,9 +417,6 @@ export function SettingsPanel(props: {
           <Show when={preview()}>
             {(p) => (
               <div>
-                {/* Three distinct verdicts. Collapsing "fits your budget" into
-                    "wouldn't throw" is how a 35%-grace recipe reports an
-                    unreachable budget as fine — so they are kept apart. */}
                 <div
                   class={`px-2 py-1 rounded mb-1.5 text-[11px] border ${
                     acct()?.fitsRequested
@@ -548,7 +507,6 @@ export function SettingsPanel(props: {
           </Show>
         </div>
 
-        {/* ---- restart-only knobs, shown but not offered ---- */}
         <div class="border-t border-neutral-800 mt-3 pt-2">
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
             restart only

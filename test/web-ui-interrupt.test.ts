@@ -1,9 +1,3 @@
-/**
- * The Web UI's interrupt: each agent's turn goes to the turn follower, which
- * aborts it through the framework at once, or as soon as it can be, and an
- * agent with no turn running is left as it is. The subagents' turns go
- * first, then their runs are stopped, then every other agent's turn.
- */
 import { describe, expect, test } from 'bun:test';
 import { interruptPage, interruptReply } from '../src/modules/web-ui-module.js';
 import { TurnInterrupts, interruptAgents } from '../src/state/turn-interrupt.js';
@@ -24,7 +18,6 @@ describe('interruptAgents', () => {
       'abortInference compiling (interrupted from the Web UI)',
       'abortInference idle (interrupted from the Web UI)',
     ]);
-    // The compiling turn's call goes out: it's aborted at its next trace.
     inFlight.add('compiling');
     interrupts.onTrace({ type: 'inference:tokens', agentName: 'compiling' });
     await new Promise<void>((resolve) => queueMicrotask(resolve));
@@ -53,9 +46,6 @@ describe('interruptAgents', () => {
 });
 
 describe('interruptPage', () => {
-  /** The page's agents: the root, a subagent whose stream is open, and one
-   *  still compiling. stopRuns stands in for the subagent module's
-   *  cancelAll, which cancels an open stream and leaves the agent idle. */
   function page() {
     const order: string[] = [];
     let runsStopped = false;
@@ -75,8 +65,6 @@ describe('interruptPage', () => {
     const reply = interruptPage(['main', 'spawn-streaming', 'spawn-compiling'], isSubagent, interrupts, stopRuns);
     expect(order).toEqual(['abort spawn-streaming', 'abort spawn-compiling', 'stop runs', 'abort main']);
     expect(reply).toBe('interrupted — 2 subagent(s) stopped; spawn-compiling stopping as soon as its turn can be aborted');
-    // The compiling subagent's turn goes on past its run's stop: it's aborted
-    // once it can be.
     expect(interrupts.isPending('spawn-compiling')).toBe(true);
     expect(interrupts.isPending('spawn-streaming')).toBe(false);
   });
@@ -89,7 +77,6 @@ describe('interruptPage', () => {
   test('a subagent its runs\' stop lets go of at once is still taken once, before the stop', () => {
     const { order, interrupts } = page();
     let stopped = false;
-    // A subagent module that drops its index at once when it stops the runs.
     const isLive = (name: string) => !stopped && name.startsWith('spawn-');
     const reply = interruptPage(['main', 'spawn-compiling'], isLive, interrupts, () => { order.push('stop runs'); stopped = true; return 1; });
     expect(order).toEqual(['abort spawn-compiling', 'stop runs', 'abort main']);

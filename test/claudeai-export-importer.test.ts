@@ -43,11 +43,6 @@ describe('linearize', () => {
   });
 
   test('at a single fork, picks the subtree with the latest-leaf timestamp', () => {
-    // Tree:        a
-    //             / \
-    //            b   c
-    //            |   |
-    //            b2  c2  (c2 is more recent → expect a, c, c2)
     const msgs = [
       mkMsg({ uuid: 'a', parent: ROOT, created: '2026-01-01T00:00:01Z' }),
       mkMsg({ uuid: 'b', parent: 'a', created: '2026-01-01T00:00:02Z' }),
@@ -61,8 +56,6 @@ describe('linearize', () => {
   });
 
   test('with multiple forks at tied depths, picks deterministically by timestamp', () => {
-    // a -> {b -> b2 @ T=5, c -> c2 @ T=10}
-    // Both subtrees are depth 2; c-side has the later leaf, so we pick c.
     const msgs = [
       mkMsg({ uuid: 'a', parent: ROOT, created: '2026-01-01T00:00:01Z' }),
       mkMsg({ uuid: 'b', parent: 'a', created: '2026-01-01T00:00:02Z' }),
@@ -265,7 +258,6 @@ describe('transformContent — null tool IDs', () => {
 
 describe('splitMixedToolMessages', () => {
   function mkBlocks(spec: string): ContentBlock[] {
-    // shorthand: 't' = text, 'u' = tool_use, 'r' = tool_result
     return spec.split('').map((c, i) => {
       if (c === 't') return { type: 'text', text: `t${i}` };
       if (c === 'u') return { type: 'tool_use', id: `u${i}`, name: 'fn', input: {} };
@@ -337,7 +329,6 @@ describe('splitMixedToolMessages', () => {
   test('handles multiple alternating cycles in one message', () => {
     const blocks = mkBlocks('urur');
     const out = splitMixedToolMessages(blocks, 'agent');
-    // [u]-[r]-[u]-[r] → 4 messages: agent, user, agent, user
     expect(out.map((m) => m.participant)).toEqual(['agent', 'user', 'agent', 'user']);
     expect(out.flatMap((m) => m.content.map((b) => b.type))).toEqual([
       'tool_use', 'tool_result', 'tool_use', 'tool_result',
@@ -371,7 +362,6 @@ describe('parseToggleSpec', () => {
   test('clamps to [1, max]', () => {
     const s = parseToggleSpec('0-3 8-99', 5);
     expect([...s].sort((a, b) => a - b)).toEqual([1, 2, 3]);
-    // 8-99 → low bound > max, nothing added
   });
 
   test('ignores non-numeric junk', () => {

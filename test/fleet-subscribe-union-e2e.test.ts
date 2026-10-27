@@ -1,14 +1,3 @@
-/**
- * End-to-end check that FleetModule's reducer-required-events union actually
- * reaches the wire. Uses the headless child's own log — it writes a
- * `subscription set: ...` line whenever a subscribe command is processed.
- *
- * Without this guarantee, a recipe like triumvirate.json that subscribes only
- * to ['lifecycle', 'inference:completed', ...] would silently disable the
- * unified-tree rendering: subagent discovery never fires, tool events have
- * nowhere to route, and the parent's tree drifts. The chokepoint in
- * FleetModule.sendToChild forces the missing events back in.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,17 +57,15 @@ describe('FleetModule subscribe union e2e', () => {
         name: 'kill',
         input: { name: 'narrow-child' },
       });
-    } catch { /* noop */ }
+    } catch { }
     await new Promise((r) => setTimeout(r, 500));
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
     if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = previousApiKey;
   });
 
   test('narrow recipe subscription gets reducer-required events forced in by FleetModule', async () => {
     const dataDir = join(tmpDir, 'narrow-child-data');
-    // The narrow subscription that broke triumvirate's rendering — missing
-    // inference:tool_calls_yielded and tool:started among others.
     const narrowSubscription = [
       'lifecycle',
       'inference:completed',
@@ -101,9 +88,6 @@ describe('FleetModule subscribe union e2e', () => {
 
     const logPath = join(dataDir, 'headless.log');
     await waitFor(() => existsSync(logPath), 15_000, 'headless.log appears');
-    // Wait until the child has actually applied a subscribe. The headless
-    // logs `subscription set: ...` on every subscribe; the most recent line
-    // is what's currently active.
     await waitFor(
       () => existsSync(logPath) && /subscription set: .*inference:tool_calls_yielded/.test(readFileSync(logPath, 'utf-8')),
       15_000,
@@ -111,14 +95,11 @@ describe('FleetModule subscribe union e2e', () => {
     );
 
     const log = readFileSync(logPath, 'utf-8');
-    // Pull the most recent `subscription set:` line — that's what's effective now.
     const subLines = log.split('\n').filter(l => l.includes('subscription set:'));
     expect(subLines.length).toBeGreaterThan(0);
     const lastSet = subLines[subLines.length - 1]!;
-    // The recipe-specified events are still there:
     expect(lastSet).toContain('lifecycle');
     expect(lastSet).toContain('inference:speech');
-    // The reducer-required events that the recipe omitted have been forced in:
     expect(lastSet).toContain('inference:tool_calls_yielded');
     expect(lastSet).toContain('inference:started');
     expect(lastSet).toContain('inference:tokens');

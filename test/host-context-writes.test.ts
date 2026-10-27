@@ -211,7 +211,9 @@ describe('a bare /newtopic', () => {
 describe("a subagent's result or failure told directly", () => {
   // The fallbacks for a run with no route to its caller (J-H4): an
   // untargeted write is stamped for every resident sharing the slot, so
-  // another resident's next request carried mira's subagent's failure.
+  // another resident's next request carried mira's subagent's failure. Main's
+  // addForLauncher (#467) writes it for the launcher and names the launcher
+  // when it isn't the module's agent, so the rows read ", for 'mira'".
   test("is in the window of the agent that started it, and no other resident's", async () => {
     const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'clerk', defaultModel: 'model-kid', maxRetries: 0 });
     const h = await bootPresentedHost({ agents: ['clerk', 'mira'], modules: [subagent as unknown as Module], prefix: 'subagent-told-' });
@@ -225,8 +227,8 @@ describe("a subagent's result or failure told directly", () => {
       };
       inner.deliverAsyncError('scout', new Error('the search index is down'), 'mira');
       inner.deliverAsyncResult('surveyor', { summary: 'Three ledgers, all balanced.' }, 'mira');
-      const failed = h.rowWith('mira', "[Subagent 'scout' failed]")!;
-      const returned = h.rowWith('mira', "[Subagent 'surveyor' returned]")!;
+      const failed = h.rowWith('mira', "[Subagent 'scout' failed, for 'mira']")!;
+      const returned = h.rowWith('mira', "[Subagent 'surveyor' returned, for 'mira']")!;
       for (const row of [failed, returned]) {
         expect(audienceOf(row.metadata)).toEqual({ audience: ['mira'] });
         expect(h.inWindow('mira', row.id)).toBe(true);

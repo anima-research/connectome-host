@@ -133,7 +133,7 @@ The `mount` field matches the mount name; `pathGlob` matches any of the event's 
 
 The gate file lives on disk at `<DATA_DIR>/sessions/<session-id>/config/gate.json` — one per session. It is seeded from the recipe's `modules.wake` when the session first starts, then reconciled additively on every later start: recipe policies missing from the file are appended by name, while policies already there — including ones you added or edited — are left as they are (so is `default`). The gate re-reads the file when its mtime changes, checked at most once a second.
 
-To change rules at runtime, prefer the framework's `wake_add_rule` / `wake_remove_rule` tools: they validate the rule, apply it immediately and persist it to that file. Recipes with `modules.workspace.configMount: true` (Miner and Clerk) also show the agent the directory as `_config/`, but that mount does not auto-materialize — a `workspace--edit _config/gate.json` stays in Chronicle and doesn't reach the file the gate reads until the mount is materialized.
+To change rules at runtime, prefer the framework's `wake_add_rule` / `wake_remove_rule` tools: they validate the rule, apply it immediately and persist it to that file. Recipes with `modules.workspace.configMount: true` (Miner and Clerk) also show the agent the gate's files in that directory (`gate.json`, `gate.js`, and `gate.recipe.json` where agent-framework writes it) as `_config/`, but that mount does not auto-materialize — a `workspace--edit _config/gate.json` stays in Chronicle and doesn't reach the file the gate reads until the mount is materialized.
 
 ### 4. Who wakes whom
 

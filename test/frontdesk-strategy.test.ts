@@ -6,10 +6,6 @@ import type {
 } from '@animalabs/context-manager';
 import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 let idCounter = 0;
 function msg(
   participant: string,
@@ -42,7 +38,6 @@ function makeStore(messages: StoredMessage[]): MessageStoreView {
   };
 }
 
-// Expose protected methods for focused testing
 class TestFrontdesk extends FrontdeskStrategy {
   public pub_wrapProvenance(entry: ContextEntry, store: MessageStoreView) {
     return this.wrapProvenance(entry, store);
@@ -60,7 +55,6 @@ class TestFrontdesk extends FrontdeskStrategy {
     return this.chunkBoundaryHint(a, b);
   }
   public pub_compressionInstruction(chunkMessages: StoredMessage[], target: number) {
-    // Build a minimal Chunk shape sufficient for getCompressionInstruction
     const chunk = {
       index: 0,
       startIndex: 0,
@@ -83,10 +77,6 @@ function makeStrategy(): TestFrontdesk {
     timeZone: 'UTC',
   });
 }
-
-// ---------------------------------------------------------------------------
-// Feature 1: Provenance wrapping
-// ---------------------------------------------------------------------------
 
 describe('provenance wrapping', () => {
   test('wraps a Zulip MCPL-originated entry with a full header', () => {
@@ -147,7 +137,6 @@ describe('provenance wrapping', () => {
     const s = makeStrategy();
     const m = msg('User', 'x', {
       serverId: 'zulip',
-      // no channelId, no topic, no author, no messageId
     });
     const header = s.pub_buildHeader(m);
     expect(header).not.toBeNull();
@@ -158,7 +147,7 @@ describe('provenance wrapping', () => {
 
   test('pass-through (unchanged) when no serverId (e.g. TUI-origin or summary)', () => {
     const s = makeStrategy();
-    const m = msg('User', 'typed from tui', {}); // no serverId
+    const m = msg('User', 'typed from tui', {});
     expect(s.pub_buildHeader(m)).toBeNull();
 
     const store = makeStore([m]);
@@ -192,20 +181,14 @@ describe('provenance wrapping', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Feature 2: Topic-aware chunking (boundary detection)
-// ---------------------------------------------------------------------------
-
 describe('server-attributed messages (zulip-mcp `attributed` stamp)', () => {
-  // What zulip-mcp delivers once it renders who/where/when into the body:
-  // the prefix is in the stored text, and the metadata says so exactly.
   const HEAD = '[2026-09-14T11:42:52+03:00 id=17206924] [#qa > how to deploy?] Mykhailo Buialo: ';
   function attributed(body: string, extra: Record<string, unknown> = {}): StoredMessage {
     return msg('User', `${HEAD}${body}`, {
       serverId: 'zulip',
       channelId: 'zulip:qa',
       topic: 'how to deploy?',
-      authorName: 'Mykhailo Buialo', // push/event origin shape: no `author` object
+      authorName: 'Mykhailo Buialo',
       messageId: '17206924',
       attributed: true,
       attributionHeader: HEAD,
@@ -229,11 +212,10 @@ describe('server-attributed messages (zulip-mcp `attributed` stamp)', () => {
     expect((wrapped.content[0] as { text: string }).text).toBe(`${HEAD}thanks, done`);
   });
 
-  test('an unstamped MCPL message still gets the header (other servers, older zulip-mcp)', () => {
+  test('an unstamped MCPL message still gets the header (other servers, older zulip-mcp), as does one whose attributed flag is a string', () => {
     const s = makeStrategy();
     const m = msg('User', 'hello', { serverId: 'zulip', channelId: 'zulip:qa', author: { name: 'bob' } });
     expect(s.pub_buildHeader(m)).toContain('@bob');
-    // Only the boolean counts: a string is not the stamp.
     const loose = msg('User', 'hello', { serverId: 'zulip', channelId: 'zulip:qa', attributed: 'true' });
     expect(s.pub_buildHeader(loose)).not.toBeNull();
   });
@@ -246,6 +228,32 @@ describe('server-attributed messages (zulip-mcp `attributed` stamp)', () => {
     const state = (s as unknown as { salientSourceIds: Set<string> }).salientSourceIds;
     expect(state.has(statement.id)).toBe(false);
     expect(state.has(question.id)).toBe(true);
+  });
+
+  test('salience passes over a stored injection, even one holding a "?"', () => {
+    const s = makeStrategy();
+    const lessons = msg('system_context:retrieval', '## Retrieved Knowledge\n- [90%] Which env? Staging. (tags: env)', {
+      system: true, kind: 'context-injection',
+      contextInjection: { agent: 'Claude', namespace: 'retrieval', contentHash: 'h1', part: 0, parts: 1 },
+    });
+    const question = attributed('which env do I use?');
+    s.pub_updateSalience(makeStore([lessons, question]));
+    const state = (s as unknown as { salientSourceIds: Set<string> }).salientSourceIds;
+    expect(state.has(lessons.id)).toBe(false);
+    expect(state.has(question.id)).toBe(true);
+  });
+
+  test('stored injections don\'t count toward the rows an answer is looked for in', () => {
+    const s = makeStrategy();
+    const question = attributed('which env do I use?');
+    const injected = Array.from({ length: 8 }, (_, i) => msg('system_context:retrieval', `## Retrieved Knowledge\n- [90%] lesson ${i}`, {
+      system: true, kind: 'context-injection',
+      contextInjection: { agent: 'Claude', namespace: 'retrieval', contentHash: `h${i}`, part: 0, parts: 1 },
+    }));
+    const answer = msg('Claude', 'Staging.');
+    s.pub_updateSalience(makeStore([question, ...injected, answer]));
+    const state = (s as unknown as { salientSourceIds: Set<string> }).salientSourceIds;
+    expect(state.has(question.id)).toBe(false);
   });
 
   test('the compression instruction quotes the open question without the prefix', () => {
@@ -297,10 +305,6 @@ describe('topic boundary detection', () => {
     expect(s.pub_isTopicBoundary(a, b)).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Feature 3: Salience + compression instruction + L1 selection
-// ---------------------------------------------------------------------------
 
 describe('question/mention salience', () => {
   test('marks a user question as salient when no assistant reply follows', () => {
@@ -355,7 +359,6 @@ describe('compression instruction', () => {
     const s = makeStrategy();
     const q = msg('User', 'where are the packet retry constants defined?', {});
     const noise = msg('User', 'ok thanks', {});
-    // Run salience first so the question is marked salient
     s.pub_updateSalience(makeStore([q, noise]));
     const instr = s.pub_compressionInstruction([q, noise], 2000);
     expect(instr).toContain('packet retry constants');
@@ -364,11 +367,6 @@ describe('compression instruction', () => {
 });
 
 describe('chunk boundary hint (topic-aware chunking via the base seam)', () => {
-  // The chunking mechanics — record persistence, minimum-size, tool-pairing
-  // guard — are context-manager's contract, gated by its
-  // chunk-boundary-hook tests. What is conhost's to pin is the hint policy:
-  // frontdesk hints exactly at topic boundaries.
-
   test('hints a close when adjacent messages change topic on one channel', () => {
     const s = makeStrategy();
     const a = msg('User', 'x', { serverId: 'zulip', channelId: 'zulip:eng', topic: 'retries' });

@@ -1,9 +1,3 @@
-/**
- * What the fleet tools tell an agent when a call can't do what it asked.
- * Where a refusal's facts depend on the host's state, such as which children
- * it has, how a child stopped, or what a child's subscription carries, these
- * pin those facts and the tool the agent can call next.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -11,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createServer, type Server } from 'node:net';
 import { tmpdir, uptime } from 'node:os';
 import { join, resolve } from 'node:path';
-import { FleetModule, type FleetModuleConfig } from '../src/modules/fleet-module.js';
+import { CLOCK_SLACK_MS, FleetModule, type FleetModuleConfig } from '../src/modules/fleet-module.js';
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -20,8 +14,6 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A fleet of lifecycle mock children, each told what to do by the options
- *  its launch writes as its recipe. */
 function setup(config: FleetModuleConfig = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-error-wording-'));
   dirs.push(dir);
@@ -42,7 +34,6 @@ function setup(config: FleetModuleConfig = {}) {
   return { fleet, dir, call, launch };
 }
 
-/** Polls until `ready` holds, for state a child's process or socket changes. */
 async function until(ready: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await ready())) {
@@ -51,13 +42,6 @@ async function until(ready: () => boolean | Promise<boolean>, timeoutMs = 5_000)
   }
 }
 
-/** A fleet restored from state holding child 'leaf' as ready, whose files
- *  are still in its data directory but whose socket is a regular file, so
- *  the probe fails, and whose pid (the runner's own) is alive, so nothing
- *  shows the files are a stopped child's. It stays recorded as starting,
- *  unattached. `recorded` is how the record writes its data directory,
- *  `pid` replaces the runner's, and with `leftover` false the directory is
- *  empty, as a child's is before it has written its files. */
 async function restored({ recorded = (dataDir: string) => dataDir, pid = process.pid, leftover = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-error-wording-'));
   dirs.push(dir);
@@ -105,7 +89,6 @@ describe('fleet refusals name what the agent can do', () => {
       "Nothing was sent: child 'leaf' has crashed (launch failed: the child exited with code 1 before its socket " +
       "appeared (exit: code=1)), so it isn't running. fleet--restart for 'leaf' starts it again.",
     );
-    // A signal leaves no exit code; the record names the signal.
     expect((await launch('killed')).success).toBe(true);
     process.kill((await call('status', { name: 'killed' })).data.pid, 'SIGKILL');
     await until(async () => (await call('status', { name: 'killed' })).data.status === 'crashed');
@@ -116,7 +99,6 @@ describe('fleet refusals name what the agent can do', () => {
 
   test('a child this host has no connection to is described by its state', async () => {
     const { fleet, call, launch } = setup();
-    // Ready, but the child closed the connection without exiting.
     expect((await launch('dropped')).success).toBe(true);
     expect((await call('command', { name: 'dropped', command: '/drop' })).success).toBe(true);
     await until(() => fleet.getChildren().get('dropped')!.socket === null);
@@ -125,7 +107,6 @@ describe('fleet refusals name what the agent can do', () => {
       "been seen yet, so it may be exiting. fleet--status for 'dropped' shows its state; if it still shows ready, " +
       "fleet--restart for 'dropped' stops it and starts it again.",
     );
-    // Still starting: a launch that hasn't connected yet.
     const pending = launch('slow', { noSocket: true });
     await until(() => fleet.getChildren().get('slow')?.process != null);
     expect((await call('send', { name: 'slow', content: 'hi' })).error).toBe(
@@ -147,13 +128,7 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // canRetryAdoption reads a restored record's reason by its prefix, so a
-  // later launch, or a later host's start, probes again a record whose
-  // adoption was left unresolved.
   test('the reason a restore leaves on an unresolved adoption is one a later launch probes again', async () => {
-    // Its leader has ended, and its group still has a process, so the record
-    // isn't retired (a record whose group has been found empty isn't
-    // adopted again: fleet-children-file.test.ts).
     const ended = spawn('sh', ['-c', 'sleep 60 & exit 0'], { detached: true, stdio: 'ignore' });
     await new Promise((r) => ended.once('exit', r));
     try {
@@ -162,7 +137,7 @@ describe('fleet refusals name what the agent can do', () => {
       expect(record.status).toBe('crashed');
       expect((fleet as unknown as { canRetryAdoption(r: object): boolean }).canRetryAdoption(record)).toBe(true);
     } finally {
-      try { process.kill(-ended.pid!, 'SIGKILL'); } catch { /* the group has ended */ }
+      try { process.kill(-ended.pid!, 'SIGKILL'); } catch { }
     }
   });
 
@@ -172,13 +147,11 @@ describe('fleet refusals name what the agent can do', () => {
     await until(async () => (await call('peek', { name: 'done' })).data.events
       .some((e: { phase?: string }) => e.phase === 'idle'));
     expect((await launch('gone', { crashBeforeSocket: true })).success).toBe(false);
-    // Ended before the wait began.
     expect((await call('await', { names: ['done', 'gone'] })).error).toBe(
       "Child 'gone' has crashed (launch failed: the child exited with code 1 before its socket appeared " +
       "(exit: code=1)), so there's no idle to wait for. Idle so far: 'done'. fleet--peek for 'gone' shows its " +
       "last events, and fleet--restart for 'gone' starts it again.",
     );
-    // Ended during the wait.
     const trigger = join(dir, 'crash-now');
     expect((await launch('busy', { crashOnFile: trigger })).success).toBe(true);
     const waiting = call('await', { names: ['busy'], timeoutMs: 10_000 });
@@ -187,8 +160,6 @@ describe('fleet refusals name what the agent can do', () => {
       "Child 'busy' has crashed (code=1), so there's no idle to wait for. Idle so far: none. fleet--peek for " +
       "'busy' shows its last events, and fleet--restart for 'busy' starts it again.",
     );
-    // Gone idle, then crashed: neither it nor another awaited child that did
-    // the same is named idle.
     for (const name of ['idler', 'idler-2']) {
       const idleThenCrash = join(dir, `crash-${name}`);
       expect((await launch(name, { idle: true, crashOnFile: idleThenCrash })).success).toBe(true);
@@ -203,8 +174,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   }, 20_000);
 
-  // The exit handler schedules autoRestart's retry, perhaps after the error
-  // is written, so the error says one may come and how to stop it.
   test('a failed launch with autoRestart says the child may be started again by itself', async () => {
     const { call, launch } = setup();
     expect((await launch('leaf', { crashBeforeSocket: true }, { autoRestart: true })).error).toStartWith(
@@ -215,8 +184,6 @@ describe('fleet refusals name what the agent can do', () => {
     expect((await call('kill', { name: 'leaf' })).success).toBe(true);
   });
 
-  // Once its automatic restarts have ended, such as at the flap cap when the
-  // exit handler ran first, no retry is coming, so the error promises none.
   test('a failed launch whose automatic restarts have ended promises no retry', async () => {
     const { fleet } = setup();
     const ended = spawn(process.execPath, ['-e', 'process.exit(1)']);
@@ -251,8 +218,6 @@ describe('fleet refusals name what the agent can do', () => {
     expect((await call('launch', { name: null, recipe: 'r' })).error).toEndWith('; it got null.');
     expect((await call('launch', { name: ['a'], recipe: 'r' })).error).toEndWith('; it got a list.');
     expect((await call('launch', { name: { a: 1 }, recipe: 'r' })).error).toEndWith('; it got an object.');
-    // Optional arguments of another type, which threw or, for a string
-    // subscription, were split into characters.
     expect((await call('launch', { name: 'leaf', recipe: 'r', dataDir: 5 })).error).toBe(
       'Nothing was launched: fleet--launch\'s "dataDir", when given, is the child\'s data directory as a string, ' +
       'absolute or relative to this host\'s working directory, such as "data/reviewer"; it got the number 5.',
@@ -286,8 +251,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // The floor the host adds to every subscription leaves inference:speech
-  // out, so a child launched without it never reports a reply to relay.
   test('a relay from a child whose subscription leaves out inference:speech says so', async () => {
     const { call, launch } = setup();
     expect((await launch('src', {}, { subscription: ['lifecycle'] })).success).toBe(true);
@@ -303,8 +266,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // env reaches a child only from this host's recipe, and fleet--launch
-  // can't pass it, so a kill and relaunch would lose it.
   test("a relay from a child started with the recipe's env points to the recipe, not to a relaunch", async () => {
     const { fleet, dir, call, launch } = setup();
     const recipe = join(dir, 'env-recipe.json');
@@ -323,10 +284,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // For a child whose subscription carries its replies, a reply can come only
-  // from one this host can reach. For one it can, the error names both steps,
-  // since nothing marks the start of a child's work, so an idle event can be
-  // older than the work a send gave it.
   test('a relay from a child with no finished reply says what would bring one', async () => {
     const { fleet, call, launch } = setup();
     const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host began ` +
@@ -339,7 +296,6 @@ describe('fleet refusals name what the agent can do', () => {
     await until(async () => (await call('peek', { name: 'idle' })).data.events
       .some((e: { phase?: string }) => e.phase === 'idle'));
     expect((await call('relay', { from: 'idle', to: 'dst' })).error).toBe(steps('idle'));
-    // A ready child whose connection has closed can't send one.
     expect((await launch('dropped')).success).toBe(true);
     expect((await call('command', { name: 'dropped', command: '/drop' })).success).toBe(true);
     await until(() => fleet.getChildren().get('dropped')!.socket === null);
@@ -349,7 +305,6 @@ describe('fleet refusals name what the agent can do', () => {
       "fleet--status for 'dropped' shows its state; if it still shows ready, fleet--restart for 'dropped' stops it " +
       'and starts it again.',
     );
-    // One that has exited gives none.
     expect((await call('kill', { name: 'busy' })).success).toBe(true);
     expect((await call('relay', { from: 'busy', to: 'dst' })).error).toBe(
       "Nothing was relayed: 'busy' hasn't finished a reply since this host began tracking it, and it has exited " +
@@ -357,8 +312,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // Such as one under a directory that doesn't exist at the root, for a host
-  // that isn't root: the file system's own message reached the agent.
   test('a data directory the host cannot create is refused with its error code', async () => {
     const { fleet, dir, call } = setup();
     const recipe = join(dir, 'recipe.json');
@@ -372,16 +325,12 @@ describe('fleet refusals name what the agent can do', () => {
         `Nothing was launched: this host couldn't create the data directory ${dataDir} (EACCES). Give ` +
         'fleet--launch another dataDir, or ask whoever runs this host to check that path.',
       );
-      // Refused before the record is made, so no starting record blocks the name.
       expect(fleet.getChildren().has('leaf')).toBe(false);
     } finally {
       mkdir.mockRestore();
     }
   });
 
-  // A child takes its socket and pid file in its data directory and unlinks
-  // a socket it finds as it starts, so two can't share one. One still
-  // starting may not have written its files yet.
   test("a launch into a starting child's data directory is refused, however the path is written", async () => {
     const { dir, call, launch } = setup();
     const shared = join(dir, 'shared');
@@ -395,7 +344,6 @@ describe('fleet refusals name what the agent can do', () => {
     expect((await first).success).toBe(false);
   });
 
-  // An earlier version recorded an absolute data directory as it was given.
   test('a launch into the directory of a restored record written another way is refused', async () => {
     const { fleet, dataDir } = await restored({ recorded: (dir) => `${dir}/` });
     const recipe = join(dataDir, '..', 'recipe.json');
@@ -419,8 +367,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // A restored record's status is what an earlier host saw, so its pid tells
-  // whether its process may still be running there.
   test('a restored record whose process has since gone no longer holds its data directory', async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     try {
@@ -438,9 +384,6 @@ describe('fleet refusals name what the agent can do', () => {
     }
   });
 
-  // A record's pid tells only while its status says starting or ready, and a
-  // record with no usable pid, such as one whose spawn threw, has no process
-  // at all, so a restore marks it crashed.
   test('a record that has exited, or that has no usable pid, holds neither its name nor its directory', async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     try {
@@ -469,8 +412,6 @@ describe('fleet refusals name what the agent can do', () => {
           'adoption unresolved; fleet--restart of it, or fleet--launch with its recipe and dataDir, probes it again',
         );
       }
-      // As a launch whose spawn reported an error is until its socket wait
-      // next looks: starting, with no pid.
       (fleet as unknown as { children: Map<string, object> }).children.set('spawn-failed', {
         ...fleet.getChildren().get('exited')!, name: 'spawn-failed', dataDir: join(dir, 'spawn-failed'),
         socketPath: join(dir, 'spawn-failed', 'ipc.sock'), pid: null, status: 'starting', exitedAt: null,
@@ -487,13 +428,8 @@ describe('fleet refusals name what the agent can do', () => {
     }
   }, 20_000);
 
-  // No process outlives a boot, so a record from an earlier boot has none,
-  // whatever holds its pid now: after a reboot, a daemon often does. pid 1
-  // stands in for it, since it's always in use. A socket that a power loss
-  // left, beside a pid a process of this user took, gets as far as a
-  // reattach, which fails. Where the record and the host both have a boot
-  // id, it decides, whatever the clock says, as on a machine whose clock
-  // stepped forward after it booted; otherwise the record's start time does.
+  // pid 1 stands in for a pid something took after a reboot, since it's always
+  // in use.
   test('a record from an earlier boot holds neither its name nor its directory', async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     const servers: Server[] = [];
@@ -511,8 +447,7 @@ describe('fleet refusals name what the agent can do', () => {
       const state = { children: {
         old: record('old', 1, beforeBoot),
         recent: record('recent', 1, Date.now()),
-        // Within the minute of slack, a record counts as this boot's.
-        edge: record('edge', 1, Date.now() - uptime() * 1000 - 30_000),
+        edge: record('edge', 1, Date.now() - uptime() * 1000 - CLOCK_SLACK_MS / 2),
         skewed: record('skewed', 1, beforeBoot, 'this-boot'),
         'other-boot': record('other-boot', 1, Date.now(), 'an-earlier-boot'),
         'old-socket': record('old-socket', helper.pid!, beforeBoot),
@@ -543,12 +478,10 @@ describe('fleet refusals name what the agent can do', () => {
         ['old', 'crashed'], ['recent', 'starting'], ['edge', 'starting'], ['skewed', 'starting'], ['other-boot', 'crashed'],
         ['old-socket', 'crashed'], ['recent-socket', 'starting'],
       ]);
-      // The two with a socket got as far as a reattach, which failed.
       expect(reattaches).toBe(2);
       for (const name of ['old-socket', 'recent-socket']) {
         expect(fleet.getChildren().get(name)!.exitReason).toBe('adopt failed: connection refused');
       }
-      // The restore keeps a record's boot id when it saves the records again.
       expect(saved!.children.skewed.bootId).toBe('this-boot');
       expect(saved!.children.old).not.toHaveProperty('bootId');
       let calls = 0;
@@ -556,7 +489,6 @@ describe('fleet refusals name what the agent can do', () => {
         input: { name, recipe, dataDir: join(dir, into) } });
       expect((await launch('old-sharer', 'old')).success).toBe(true);
       expect((await launch('old', 'old-again')).success).toBe(true);
-      // A launch records the boot it started under.
       expect(saved!.children.old.bootId).toBe('this-boot');
       expect((await launch('old-socket', 'old-socket-again')).success).toBe(true);
       expect((await launch('other-boot', 'other-boot-again')).success).toBe(true);
@@ -570,9 +502,6 @@ describe('fleet refusals name what the agent can do', () => {
     }
   }, 20_000);
 
-  // A reattach that fails once the child has gone leaves nothing running,
-  // and a host without a boot id reads every record by its start time,
-  // whatever boot id the record carries.
   test("a failed reattach to a child that has gone, and a host with no boot id, read as no process and the clock", async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     const server = createServer();
@@ -597,7 +526,6 @@ describe('fleet refusals name what the agent can do', () => {
       const fleet = new FleetModule({ childIndexPath: join(import.meta.dir, 'mock-fleet-lifecycle-child.ts') });
       fleets.push(fleet);
       spyOn(fleet as unknown as { bootId(): string | undefined }, 'bootId').mockReturnValue(undefined);
-      // The child dies while the host reattaches.
       const refused = spyOn(fleet as unknown as { connectChildSocket(): Promise<void> }, 'connectChildSocket')
         .mockImplementation(async () => {
           const exited = new Promise((ended) => helper.once('exit', ended));
@@ -626,10 +554,6 @@ describe('fleet refusals name what the agent can do', () => {
     expect((fleet as unknown as { bootId(): string | undefined }).bootId()).toBe(expected);
   });
 
-  // A host that came back while a child it left running was still starting
-  // restores it as starting, before the child answers on its socket. While
-  // its pid is in use, a launch of its name would start a second process
-  // beside it or, in another dataDir, leave it running untracked.
   test('a launch of a restored child that may still be starting is refused while its pid is in use', async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     try {
@@ -647,7 +571,6 @@ describe('fleet refusals name what the agent can do', () => {
         "there, and a launch now would leave that process running untracked. fleet--restart for 'leaf' reattaches " +
         `to it once it answers on its socket, and fleet--kill can stop it then. If it keeps refusing, pid ` +
         `${helper.pid} may belong to another process: ask whoever runs this host to check it.`;
-      // With its own recipe and directory, after the probe finds no socket.
       expect((await relaunch('same', { recipe: 'mock-recipe', dataDir })).error).toBe(refusal);
       expect((await relaunch('elsewhere', { recipe, dataDir: join(dataDir, '..', 'elsewhere') })).error).toBe(refusal);
       expect(fleet.getChildren().get('leaf')!.process).toBeNull();
@@ -659,8 +582,6 @@ describe('fleet refusals name what the agent can do', () => {
     }
   });
 
-  // A host's start launches every recipe child it didn't adopt, so one a
-  // detached host left still starting would get a second copy beside it.
   test("a host's start doesn't start a second copy of a child it couldn't adopt yet", async () => {
     const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     const logged = spyOn(console, 'error').mockImplementation(() => {});
@@ -681,7 +602,6 @@ describe('fleet refusals name what the agent can do', () => {
       fleets.push(fleet);
       await fleet.start({ getState: () => state, setState: () => {} } as unknown as Parameters<FleetModule['start']>[0]);
       fleet.launchAutoStart();
-      // launchAutoStart() doesn't wait for its launches; this one is refused.
       await until(() => logged.mock.calls.some(([line]) => String(line).startsWith('[fleet] autoStart "leaf" failed: ' +
         "Nothing was launched: child 'leaf' is recorded as starting")));
       expect(fleet.getChildren().get('leaf')!.process).toBeNull();
@@ -692,15 +612,11 @@ describe('fleet refusals name what the agent can do', () => {
     }
   });
 
-  // A child closes its client when another connects, so a launch refused
-  // for another child's directory mustn't reattach through its socket first.
   test("a launch refused for another child's data directory doesn't connect to that child", async () => {
     const { fleet, dir, launch } = setup();
     const shared = join(dir, 'shared');
     const connections = join(dir, 'connections');
     expect((await launch('other', { connections }, { dataDir: shared })).success).toBe(true);
-    // A record of 'leaf' there that an earlier host couldn't adopt, whose pid
-    // is in use, so a launch of it would otherwise probe the socket.
     const recipe = join(dir, 'leaf-recipe.json');
     writeFileSync(recipe, '{}');
     (fleet as unknown as { children: Map<string, object> }).children.set('leaf', {
@@ -719,8 +635,6 @@ describe('fleet refusals name what the agent can do', () => {
     expect(readFileSync(connections, 'utf8')).toBe('connected\n');
   });
 
-  // Nothing awaits between the check and the new record, so of two launches
-  // entering together, the second sees the first's record.
   test('of two launches into one data directory entering together, one is refused', async () => {
     const { dir, fleet, call, launch } = setup();
     const shared = join(dir, 'shared');
@@ -741,13 +655,11 @@ describe('fleet refusals name what the agent can do', () => {
     expect((await launches[started]).success).toBe(false);
   });
 
-  // Files another child of this host left in the directory are that child's,
-  // so the refusal names it rather than saying no child has a record there.
   test('files another child left in its data directory name that child', async () => {
     const { dir, call, launch } = setup();
     const shared = join(dir, 'shared');
     expect((await launch('first', {}, { dataDir: shared })).success).toBe(true);
-    // Killed outright, it leaves its socket and pid file behind.
+    // A SIGKILL runs no cleanup, so the socket and pid file stay.
     process.kill((await call('status', { name: 'first' })).data.pid, 'SIGKILL');
     await until(async () => (await call('status', { name: 'first' })).data.status === 'crashed');
     expect((await launch('second', {}, { dataDir: shared })).error).toBe(
@@ -757,8 +669,6 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 
-  // A record of the name in that directory is one a later launch can
-  // reattach to or clear up after, so the refusal points to it.
   test('files left by an earlier run of a tracked child point to its record', async () => {
     const { fleet, dataDir } = await restored();
     const result = await fleet.handleToolCall({ id: 'tracked', name: 'launch', input: { name: 'leaf', recipe: 'mock-recipe', dataDir } });

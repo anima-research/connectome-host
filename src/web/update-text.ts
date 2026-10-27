@@ -1,22 +1,5 @@
-/**
- * The host update's words (src/update/update.ts), for `/update` and for the
- * Web UI, which imports them as `@conhost/web/update-text`: what the update
- * section of /healthz holds, the notice, the status, the Go back's two ways,
- * who is still busy, what a Restart will do, and the Web UI's banner.
- *
- * Each way on is named as its caller names it (UpdateWays): `/update`'s words
- * name its commands, and the page's name its buttons.
- *
- * An observer whose grant holds 'health' and not 'ops' gets the section with
- * its failure text emptied (UPDATE_STRINGS, web-ui-observers.ts): a read's
- * error, a refusal's reason, npm's deprecation message, the operator's
- * quiesce reason, a host's reason it couldn't be counted, what couldn't be
- * read, and the failed trial's lines. The words then leave out the clause
- * that text would fill, as readFailureLine does.
- */
-
 /** What one version in an update's range records of its cost: null where it
- *  records nothing (releases.ts, Release). */
+ *  records nothing. */
 export interface Cost {
   version: string;
   breaking: boolean | null;
@@ -29,8 +12,8 @@ export interface ReadCheck {
   ok: true;
   /** The release Update would install, or null when none is newer. */
   candidate: string | null;
-  /** Every version after the running one up to the candidate, oldest first
-   *  (rangeOf). */
+  /** Every version after the running one up to the candidate, oldest
+   *  first. */
   costs: Cost[];
   /** The candidate's Bun floor when this Bun is below it. */
   bunFloorUnmet: string | null;
@@ -42,16 +25,16 @@ export interface ReadCheck {
 export type Check = ReadCheck | { at: string; ok: false; error: string };
 
 /** How the last switch or Go back ended, by the journal. A fallback carries
- *  the last lines the failed release kept itself (trial-log.ts), or null when
- *  it kept none. */
+ *  the last lines the failed release kept itself, or null when it kept
+ *  none. */
 export type SwitchOutcome =
   | { outcome: 'committed'; from: string; to: string; at: string }
   | { outcome: 'fell-back'; from: string; to: string; at: string; reason: string; trialLog: string[] | null }
   | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string };
 
-/** One host's state after a switch's quiesce (quiesce.ts): `host` is "this
- *  host" or the child's name. A host that can't be counted, such as a child
- *  that didn't answer or a host serving again, says why. */
+/** One host's state after a switch's quiesce: `host` is "this host" or the
+ *  child's name. A host that can't be counted, such as a child that didn't
+ *  answer or a host serving again, says why. */
 export type HostQuiet =
   | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number }
   | { host: string; answered: false; why: string };
@@ -93,7 +76,6 @@ export interface UpdateStatus {
   problems: string[];
 }
 
-/** How the words name each way on: a command, or a button. */
 export interface UpdateWays {
   install: string;
   restart: string;
@@ -106,7 +88,6 @@ export interface UpdateWays {
   check: string;
 }
 
-/** `/update`'s commands. */
 export const COMMAND_WAYS: UpdateWays = {
   install: '/update install',
   restart: '/update restart',
@@ -119,7 +100,6 @@ export const COMMAND_WAYS: UpdateWays = {
   check: '/update',
 };
 
-/** The Web UI's buttons. */
 export const PAGE_WAYS: UpdateWays = {
   install: 'Update',
   restart: 'Restart',
@@ -132,19 +112,18 @@ export const PAGE_WAYS: UpdateWays = {
   check: 'Check now',
 };
 
-/** Where a release's notes are: its CHANGELOG at its tag. */
 function notesUrl(version: string): string {
   return `https://github.com/anima-research/connectome-host/blob/v${version}/CHANGELOG.md`;
 }
 
 export const NOT_AN_INSTALL = 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
-  'docs/DEPLOYMENTS.md, "Updating an install", says how to update it by hand, and how one setup makes an install ' +
-  'update itself from then on.';
+  'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
+  'the host in and with the DATA_DIR you start it with (`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` ' +
+  'when it\'s installed there); setup then says how to start the host. A clone updates by hand: ' +
+  'docs/DEPLOYMENTS.md, "Updating an install", "By hand".';
 
-/** What status() names an unreadable Go back offer by. */
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
 
-/** What a restart is doing, in each phase but busy, which says more. */
 export const PHASE: Record<Exclude<RestartState['phase'], 'busy'>, string> = {
   quiescing: 'waiting for turns to end, with new turns held',
   stopping: 'stopping the host, for its next start',
@@ -153,25 +132,17 @@ export const PHASE: Record<Exclude<RestartState['phase'], 'busy'>, string> = {
 
 const list = (versions: string[]): string => versions.join(', ');
 
-/** What a restart under way is, by what it was asked for: "the restart to
- *  0.14.0" or "the Go back to 0.13.1", or "The …" to open a sentence. */
 export function restartName(restart: Pick<RestartState, 'to' | 'why'>, opening = false): string {
   const name = restart.why === 'go-back' ? `the Go back to ${restart.to}` : `the restart to ${restart.to}`;
   return opening ? name.charAt(0).toUpperCase() + name.slice(1) : name;
 }
 
-/** `head`, then `: text` when there is text, or `end` alone when an observer
- *  without 'ops' got the text emptied. */
 const told = (head: string, text: string | undefined, end = '.'): string =>
   text ? `${head}: ${text}` : `${head}${end}`;
 
-/** That the running release is deprecated, with npm's message when it was
- *  sent. */
 export const deprecatedLine = (running: string, message: string): string =>
   `${running} is deprecated on npm${message ? ` (${message})` : ''}.`;
 
-/** What the releases in `costs` record of their cost, one line for each kind,
- *  and none for a kind none of them has. */
 function costLines(costs: Cost[]): string[] {
   const where = (pick: (cost: Cost) => boolean) => costs.filter(pick).map((cost) => cost.version);
   const breaking = where((c) => c.breaking === true);
@@ -187,7 +158,6 @@ function costLines(costs: Cost[]): string[] {
   return lines;
 }
 
-/** The notice for a check that found a newer release. */
 export function noticeLines(check: ReadCheck, running: string, install: boolean, ways: UpdateWays = COMMAND_WAYS): string[] {
   if (check.candidate === null) return [];
   const lines = [`connectome-host ${check.candidate} is out; this host runs ${running}.`];
@@ -201,7 +171,6 @@ export function noticeLines(check: ReadCheck, running: string, install: boolean,
   return lines;
 }
 
-/** Who is still busy after a quiesce, and the operator's three ways on. */
 export function busyLines(restart: RestartState, waitedMs: number, ways: UpdateWays = COMMAND_WAYS): string[] {
   return [
     `Turns didn't all end within ${Math.round(waitedMs / 60_000)} min, so ${restartName(restart)} is waiting, with ` +
@@ -212,7 +181,6 @@ export function busyLines(restart: RestartState, waitedMs: number, ways: UpdateW
   ];
 }
 
-/** A line for each host that didn't drain. */
 function busyHostLines(hosts: HostQuiet[]): string[] {
   const lines: string[] = [];
   for (const host of hosts) {
@@ -225,7 +193,7 @@ function busyHostLines(hosts: HostQuiet[]): string[] {
         host.activeTurnAgents.length > 0
           ? `mid-turn: ${list(host.activeTurnAgents)}`
           : 'not drained, though no agent holds a turn: a wake is waiting on an auxiliary call before its turn starts',
-        // Drain doesn't wait for them, and the stop ends them.
+        // Drain doesn't wait for them.
         ...(host.backgroundScripts > 0
           ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'}, which a stop ends`]
           : []),
@@ -236,7 +204,6 @@ function busyHostLines(hosts: HostQuiet[]): string[] {
   return lines;
 }
 
-/** The status's text: `/update`'s, and the Web UI's Health block. */
 export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
   const lines = [`connectome-host ${status.running}.`];
   const check = status.check;
@@ -257,7 +224,6 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   if (status.installing !== null) lines.push(`Installing ${status.installing}.`);
   else if (status.lastInstall?.ok === false) lines.push(failedInstall(status.lastInstall));
   if (status.installed !== null) {
-    // A release whose trial just ended before its commit is still in place, and a retry is the operator's to ask.
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
       : `${status.installed} is installed: ${ways.restart} switches to it.`);
@@ -269,7 +235,6 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const restart = status.restart;
   if (restart !== null) {
     if (restart.phase === 'busy') {
-      // The list is as the wait found it when it ran out.
       lines.push(`${restartName(restart, true)} is waiting on turns to end, with new turns held. Busy when its wait ` +
         'ran out:', ...busyHostLines(restart.hosts), `${ways.wait}, ${ways.now} or ${ways.resume}.`);
     } else {
@@ -287,8 +252,6 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   if (last?.outcome === 'committed') lines.push(`Last switch: ${last.from} to ${last.to}, committed at ${last.at}.`);
   if (last?.outcome === 'refused') lines.push(told(`Last request: to ${last.to}, didn't go ahead at ${last.at}`, last.reason));
   if (last?.outcome === 'fell-back') {
-    // The reason says what happened to the release tried: a switch's trial
-    // ended before its commit, or a Go back's release couldn't start.
     const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}` +
       (last.reason ? `: ${last.reason}.` : '.');
     const kept = keptLines(last);
@@ -303,30 +266,20 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   return [...lines, ...problemLines(status.problems)];
 }
 
-/** The last install, which failed: its error, which names the release
- *  (installRelease's own refusals do, and HostUpdate.install words any other
- *  as "Installing 0.14.0 failed: …"), or the release when an observer got the
- *  error emptied. */
 function failedInstall(install: { version: string; error?: string }): string {
   return install.error ? `Last install: ${install.error}` : `Installing ${install.version} failed.`;
 }
 
-/** Where to read more of how a try ended than the status holds. */
 const MORE_IN_LOG = 'The service\'s log, or the terminal the host was started in, says more.';
 
-/** The lines a fallen-back trial kept, or none: lines all emptied went to an
- *  observer without 'ops', and read as none. */
 function keptLines(last: Extract<SwitchOutcome, { outcome: 'fell-back' }>): string[] {
   return last.trialLog !== null && last.trialLog.some((line) => line !== '') ? last.trialLog : [];
 }
 
-/** Whether the installed release is the one whose trial last fell back. */
 function retrying(status: UpdateStatus): boolean {
   return status.lastSwitch?.outcome === 'fell-back' && status.lastSwitch.to === status.installed;
 }
 
-/** What couldn't be read, each with its error, or how many when the errors
- *  were emptied. */
 function problemLines(problems: string[]): string[] {
   const said = problems.filter((problem) => problem !== '');
   const unsaid = problems.length - said.length;
@@ -334,9 +287,6 @@ function problemLines(problems: string[]): string[] {
     : [...said, `${unsaid} part${unsaid === 1 ? '' : 's'} of this status couldn't be read.`];
 }
 
-/** What the Go back shows before the yes. The page offers it only where a Go
- *  back is offered, and never to an observer, whose emptied problems it
- *  couldn't tell an unread offer by. */
 export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
   if (!status.install) return [NOT_AN_INSTALL];
   if (status.goBack === null) {
@@ -357,9 +307,6 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   ];
 }
 
-/** What the Restart shows before the yes: the release it switches to, and
- *  what the releases up to it cost, from the registry's last read. Null when
- *  nothing is installed to restart onto. */
 export function restartLines(status: UpdateStatus): string[] | null {
   const to = status.installed;
   if (to === null) return null;
@@ -372,8 +319,6 @@ export function restartLines(status: UpdateStatus): string[] | null {
     ? costLines(check.costs.slice(0, upTo + 1))
     : [`What the releases up to ${to} cost wasn't read from the registry, so read the notes before restarting.`]));
   const last = status.lastSwitch;
-  // A switch's fallback says only that its release ended before its commit,
-  // so what the trial wrote, in Health when it kept any, is what says why.
   if (retrying(status) && last?.outcome === 'fell-back') {
     lines.push(keptLines(last).length > 0
       ? `Its last try ended before its commit: Health shows what ${to} wrote last.`
@@ -390,55 +335,34 @@ export function restartLines(status: UpdateStatus): string[] | null {
 
 export type UpdateWay = keyof UpdateWays;
 
-/** Whether Update would install something: the last read found a release
- *  newer than the running one and other than the installed one, which this
- *  Bun runs.
- *  A failed install leaves such a read, since Update reads before it
- *  installs. */
 function updateOffered(status: UpdateStatus): boolean {
   const check = status.check;
   return status.install && check?.ok === true && check.candidate !== null && check.candidate !== status.installed &&
     check.bunFloorUnmet === null;
 }
 
-/** The ways on the status offers now, as the Health block shows them: Go
- *  back and Restart open their dialogs, and each other way is its command.
- *  Each is one the status doesn't rule out, and the host's answer says why
- *  when it refuses one all the same. */
 export function openWays(status: UpdateStatus): UpdateWay[] {
   const restart = status.restart;
   if (restart !== null) return restart.phase === 'busy' ? ['wait', 'now', 'resume'] : [];
-  // A quiesce left standing holds new turns, whatever else is under way.
   const ways: UpdateWay[] = status.switchQuiesceLeft ? ['resume'] : [];
   if (status.installing !== null) return ways;
   if (updateOffered(status)) ways.push('install');
-  // A host that isn't an install has neither (status()).
   if (status.installed !== null) ways.push('restart');
   if (status.goBack !== null) ways.push('back');
   ways.push('check');
   return ways;
 }
 
-/** The dialog to keep open once the page has read `status`: the one open,
- *  while the status still leaves its way open (openWays), else none. */
 export function dialogStill(open: 'restart' | 'back' | null, status: UpdateStatus | null): 'restart' | 'back' | null {
   return open !== null && status !== null && openWays(status).includes(open) ? open : null;
 }
 
-/** The command a way sends, as typed. Restart and Go back's two ways name
- *  the release the page showed, so the host refuses rather than act on
- *  another one if its own has changed since. Null when the status names no
- *  such release. */
 export function commandFor(way: UpdateWay, status: UpdateStatus): string | null {
   if (way === 'restart') return status.installed === null ? null : `${COMMAND_WAYS.restart} ${status.installed}`;
   if (way === 'keep' || way === 'restore') return status.goBack === null ? null : `${COMMAND_WAYS[way]} ${status.goBack.to}`;
   return COMMAND_WAYS[way];
 }
 
-/** The Web UI's banner: the most pressing of the update's states, the ways on
- *  it offers there (PAGE_WAYS), and whether the operator may dismiss it. A
- *  restart under way and a quiesce left standing hold new turns, so they
- *  stay. */
 export interface Banner {
   line: string;
   ways: Array<'install' | 'restart' | 'wait' | 'resume'>;
@@ -464,8 +388,6 @@ export function bannerOf(status: UpdateStatus): Banner | null {
   if (status.installing !== null) return { line: `Installing ${status.installing}.`, ways: [], dismissable: false };
   if (status.installed !== null) {
     const last = status.lastSwitch;
-    // A switch's fallback says only that its release ended before its
-    // commit, so what the trial wrote, in Health when it kept any, says why.
     const line = retrying(status) && last?.outcome === 'fell-back'
       ? `${status.installed} ended before its commit at its last try, so ${last.from} came back. ` +
         (keptLines(last).length > 0 ? 'Health shows what it wrote last.' : MORE_IN_LOG)
@@ -494,16 +416,11 @@ export function bannerOf(status: UpdateStatus): Banner | null {
   return null;
 }
 
-/** The banner the page shows: bannerOf's, unless the operator dismissed its
- *  line (`dismissed`, keptDismissal's). */
 export function shownBanner(status: UpdateStatus | null, dismissed: string | null): Banner | null {
   const banner = status === null ? null : bannerOf(status);
   return banner !== null && !(banner.dismissable && banner.line === dismissed) ? banner : null;
 }
 
-/** The dismissed line to keep once the page has read `status`: a dismissal
- *  lasts until the banner says something else, so a line that comes back
- *  later shows again. */
 export function keptDismissal(status: UpdateStatus | null, dismissed: string | null): string | null {
   return dismissed !== null && status !== null && bannerOf(status)?.line === dismissed ? dismissed : null;
 }

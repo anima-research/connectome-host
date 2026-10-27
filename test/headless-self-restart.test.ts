@@ -41,7 +41,6 @@ async function runFixture(mode: Mode, hold?: string) {
 function expectSelfRestart(dir: string, result: { code: number | null; signal: string | null }, output: string) {
   expect({ code: result.code, signal: result.signal, output: result.code === SELF_RESTART_EXIT_CODE ? '' : output })
     .toEqual({ code: SELF_RESTART_EXIT_CODE, signal: null, output: '' });
-  // The stop came after the turn ended and with nothing in flight.
   expect(readFileSync(join(dir, 'stopped'), 'utf-8')).toBe('idle');
   const request = JSON.parse(readFileSync(join(dir, SELF_RESTART_FILE), 'utf-8'));
   expect(request).toMatchObject({ reason: 'fixture restart', requestedBy: 'fixture', exitReason: 'self-restart', exitCode: SELF_RESTART_EXIT_CODE });

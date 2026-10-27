@@ -1,12 +1,3 @@
-/**
- * Unit tests for AgentTreeReducer.
- *
- * Strategy: feed representative trace event sequences and assert the resulting
- * tree state matches the canonical fold currently scattered across tui.ts and
- * subagent-module.ts. These streams are hand-built rather than recorded so the
- * test stays stable across framework changes — but the event shapes mirror
- * agent-framework/src/types/trace.ts exactly.
- */
 import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer, REDUCER_REQUIRED_EVENTS } from '../src/state/agent-tree-reducer.js';
 
@@ -101,7 +92,6 @@ describe('AgentTreeReducer', () => {
     expect(r.getNode('a')!.toolCallsCount).toBe(1);
 
     r.applyEvent({ type: 'tool:completed', callId: 'c1', tool: 'files--read', module: 'files', durationMs: 5, timestamp: ts(4) });
-    // tool:completed does NOT transition phase (matches tui.ts behavior)
     expect(r.getNode('a')!.phase).toBe('executing');
 
     r.applyEvent({ type: 'inference:completed', agentName: 'a', durationMs: 10, timestamp: ts(5) });
@@ -119,14 +109,6 @@ describe('AgentTreeReducer', () => {
   });
 
   test('inference:aborted produces terminal cancelled state (P1 #3 — distinct from failed)', () => {
-    // Postmortem 2026-05-28 P1 #3: inference:aborted = user cancel /
-    // zombie-reclaim / supersession / agent reboot. Not strictly a fault. The
-    // previous regression guard (pre-2026-05-28) flipped status to 'failed'
-    // because the fleet-child-agent renderer was status-keyed and aborts left
-    // it stuck on 'running'. The right answer is a third terminal state,
-    // 'cancelled' — terminal (renderer must not show as 'running'), but
-    // neutral (renderer must not paint red). Both fields settle to 'cancelled'
-    // so consumers of either status or phase get the same answer.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'user', timestamp: ts(1) });
@@ -137,9 +119,6 @@ describe('AgentTreeReducer', () => {
   });
 
   test('inference:exhausted ends a node as failed, after a failure and alone', () => {
-    // From agent-framework 0.22.3 a stop and a shutdown end a turn with
-    // inference:aborted alone, so exhausted means the turn failed for good:
-    // its retries were spent, or its stream was aborted for another reason.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:failed', agentName: 'a', error: 'overloaded', timestamp: ts(1) });
@@ -155,10 +134,6 @@ describe('AgentTreeReducer', () => {
   });
 
   test('an inference:exhausted after inference:aborted leaves the stop cancelled until the next start', () => {
-    // Before agent-framework 0.22.3 a stop through abortInference sent
-    // inference:aborted and then inference:exhausted. A fleet child this host
-    // adopted may still run such a version, and the fleet tree folds its
-    // events through this reducer.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'user', timestamp: ts(1) });
@@ -168,7 +143,6 @@ describe('AgentTreeReducer', () => {
     expect(node.status).toBe('cancelled');
     expect(node.completedAt).toBe(ts(1));
     expect(node.lastEventAt).toBe(ts(2));
-    // The next turn starts afresh, so an exhausted there fails it.
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(3) });
     r.applyEvent({ type: 'inference:exhausted', agentName: 'a', error: 'overloaded', timestamp: ts(4) });
     node = r.getNode('a')!;
@@ -178,11 +152,6 @@ describe('AgentTreeReducer', () => {
   });
 
   test('inference:turn_ended is terminal in its own right (AF PR #55: no trailing exhausted)', () => {
-    // endTurn = the agent deliberately ended its turn — a successful
-    // terminal. Before AF PR #55 the terminal state of endTurn'd agents came
-    // from the SPURIOUS inference:exhausted the framework emitted right
-    // after; ≥ 0.6.5 no longer sends it, so without this transition an
-    // endTurn'd agent would sit in the tree as 'running' forever.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:turn_ended', agentName: 'a', timestamp: ts(1) });
@@ -192,12 +161,6 @@ describe('AgentTreeReducer', () => {
     expect(node.completedAt).toBe(ts(1));
   });
 
-  // Postmortem 2026-05-28 F1: the reducer never transitions status to 'completed'.
-  // inference:completed only sets phase='done', leaving status='running' for the
-  // entire lifetime of the agent — which is fine until a later aborted/exhausted/
-  // failed event latches status='failed', at which point only a fresh
-  // inference:started can clear it. For ephemeral subagents whose terminal event
-  // is a benign abort, terminal RED is then permanent.
   test('inference:completed sets status=completed (F1 — closes one-way failed latch)', () => {
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
@@ -213,17 +176,11 @@ describe('AgentTreeReducer', () => {
   });
 
   test('inference:completed after a prior aborted clears the cancelled status (F1 — recovery un-latches)', () => {
-    // The "successful turn clears earlier transient terminal status" behavior.
-    // Without this, the admin UI shows long-running agents non-running for
-    // hours after a single transient cancel even though they have since
-    // completed many turns. Combined with the P1 #3 cancelled-vs-failed split
-    // (the prior aborted now lands as 'cancelled', not 'failed').
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'cancel', timestamp: ts(1) });
     expect(r.getNode('a')!.status).toBe('cancelled');
 
-    // A subsequent successful round should heal the latch.
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(2) });
     r.applyEvent({
       type: 'inference:completed',
@@ -235,18 +192,10 @@ describe('AgentTreeReducer', () => {
   });
 
   test('REDUCER_REQUIRED_EVENTS is derived from the dispatch table — every entry actually does something', () => {
-    // Forward direction: each event listed in the constant must observably
-    // affect a fresh reducer (i.e. it has a real handler, not a stale entry).
-    // This catches "constant added but handler never written" and also makes
-    // the derived-from-handler-keys design self-checking.
     for (const eventType of REDUCER_REQUIRED_EVENTS) {
       const r = new AgentTreeReducer();
       const event = makeRepresentativeEvent(eventType);
       r.applyEvent(event as never);
-      // We expect either a node was created/mutated, or a callId mapping was
-      // installed. The simplest observable: a non-empty getNodes() OR a
-      // tool-event ref that wouldn't have been routable without
-      // tool_calls_yielded establishing the index.
       const nodes = r.getNodes();
       const observable = nodes.length > 0 || hasCallIdSideEffect(eventType);
       expect(observable).toBe(true);
@@ -254,11 +203,7 @@ describe('AgentTreeReducer', () => {
   });
 });
 
-/** Synthesize a minimal valid event of the given type for the invariant test. */
 function makeRepresentativeEvent(eventType: string): Record<string, unknown> {
-  // Tool events route via callId, not agentName. Pre-establish a binding by
-  // priming the reducer with a tool_calls_yielded that sets up an index — the
-  // test driver below handles this case separately.
   switch (eventType) {
     case 'inference:tool_calls_yielded':
       return {
@@ -303,12 +248,6 @@ function makeRepresentativeEvent(eventType: string): Record<string, unknown> {
   }
 }
 
-/** Tool events that arrive without a prior tool_calls_yielded just no-op. We
- *  don't pre-prime the reducer in the invariant test, so for tool:* events the
- *  observable check is the inverse: the reducer correctly does nothing when
- *  the callId is unknown. We accept that as "wired up" because the no-op path
- *  itself proves the case is in the dispatch table — falling through to
- *  default would never reach the lookup. */
 function hasCallIdSideEffect(eventType: string): boolean {
   return eventType === 'tool:started' || eventType === 'tool:completed' || eventType === 'tool:failed';
 }
@@ -316,8 +255,6 @@ function hasCallIdSideEffect(eventType: string): boolean {
 describe('AgentTreeReducer (continued)', () => {
 
   test('usage samples are running totals: each call counts once, and input is its prompt', () => {
-    // agent-framework forwards membrane's cumulative sample after each call
-    // (see stream-usage.ts); test/stream-usage.test.ts drives a real stream.
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({
@@ -333,7 +270,7 @@ describe('AgentTreeReducer (continued)', () => {
       timestamp: ts(2),
     });
     const tokens = r.getNode('a')!.tokens;
-    expect(tokens.input).toBe(500 + 100 + 50); // the second call's prompt: fresh + cache read + cache write
+    expect(tokens.input).toBe(500 + 100 + 50);
     expect(tokens.output).toBe(80);
     expect(tokens.cacheRead).toBe(300);
     expect(tokens.cacheWrite).toBe(150);
@@ -360,7 +297,7 @@ describe('AgentTreeReducer (continued)', () => {
     expect(tokens.output).toBe(30);
     expect(tokens.cacheRead).toBe(50);
     expect(tokens.cacheWrite).toBe(10);
-    // A completion that repeats the last sample, as agent-framework's does, changes nothing.
+    // agent-framework's completion repeats the last sample.
     r.applyEvent({ type: 'inference:completed', agentName: 'a', durationMs: 100, tokenUsage: { input: 700, output: 30, cacheRead: 50, cacheCreation: 10 }, timestamp: ts(3) });
     expect(r.getNode('a')!.tokens).toEqual(tokens);
   });
@@ -469,7 +406,6 @@ describe('AgentTreeReducer (continued)', () => {
     expect(recovered.tokens.input).toBe(5000);
     expect(recovered.toolCallsCount).toBe(3);
 
-    // Tool events for callIds in the snapshot's callIdIndex should still route correctly.
     r.applyEvent({ type: 'tool:started', callId: 'pre-existing-call', tool: 'x', module: 'm', timestamp: ts(101) });
     expect(r.getNode('new-agent')!.toolCallsCount).toBe(4);
   });

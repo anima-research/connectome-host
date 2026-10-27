@@ -1,18 +1,11 @@
-/**
- * connectWhenAccepting, the IPC tests' connect: it waits out a socket path that
- * exists before anything accepts on it, as a headless process's can while it
- * starts, and gives up at its deadline.
- */
 import { afterEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connectWhenAccepting } from './ipc-connect.js';
+import { connectWhenAccepting, RETRY_PAUSE_MS } from './ipc-connect.js';
 
-/** What a connect to a path nothing accepts on fails with: ECONNREFUSED under
- *  Node and Bun 1.4, ENOENT under Bun 1.3. */
 const REFUSALS = ['ECONNREFUSED', 'ENOENT'];
 const codeOf = (err: Error): string => (err as NodeJS.ErrnoException).code ?? String(err);
 
@@ -34,8 +27,8 @@ async function listening(path: string): Promise<Server> {
   return server;
 }
 
-/** A socket path that exists with nothing accepting on it: a child listened
- *  there and was killed, which leaves the path behind. */
+/** A socket path with nothing accepting on it: a listener killed outright
+ *  leaves its path behind. */
 async function refusingPath(): Promise<string> {
   const path = join(tempDir(), 'ipc.sock');
   const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(path)}); setInterval(() => {}, 1000)`], { stdio: 'ignore' });
@@ -65,10 +58,8 @@ test('a connect refused, then failing on a path not there yet, is tried again un
       (unlinked ? absent : refused)();
     },
   });
-  // The server comes up only after a connect has been refused, and then one
-  // has found no path at all. This continuation runs as soon as the refusal
-  // is heard, before the helper's timer for its next connect can fire, so the
-  // path is gone before that connect.
+  // This continuation runs as soon as the refusal is heard, before the
+  // helper's timer for its next connect can fire.
   await sawRefusal;
   unlinkSync(path);
   unlinked = true;
@@ -90,11 +81,9 @@ test('a connect still refused at its deadline fails with the last error, trying 
   expect(failure).toBe(heard.at(-1)!.err);
   expect(REFUSALS).toContain(codeOf(failure!));
   expect(waited).toBeGreaterThanOrEqual(1_000);
-  // Each try after the first waits out the pause, 20 ms, where a loop
-  // without it tries again at once.
   expect(heard.length).toBeGreaterThan(1);
   const gaps = heard.slice(1).map((h, i) => h.at - heard[i]!.at);
-  expect(Math.min(...gaps)).toBeGreaterThanOrEqual(15);
+  expect(Math.min(...gaps)).toBeGreaterThanOrEqual(RETRY_PAUSE_MS - 5);
 }, 15_000);
 
 test('with no deadline given, a connect still refused fails after about 3 s', async () => {
@@ -104,7 +93,6 @@ test('with no deadline given, a connect still refused fails after about 3 s', as
   const waited = Date.now() - started;
   expect(REFUSALS).toContain(codeOf(failure!));
   expect(waited).toBeGreaterThanOrEqual(3_000);
-  // Far enough past 3 s for a loaded host, and short of a 10 s default.
   expect(waited).toBeLessThan(8_000);
 }, 15_000);
 

@@ -1,41 +1,11 @@
-/**
- * Resolve which participant name an agent should use when several sources
- * (CLI flag, import-source sidecar, hard-coded default) disagree.
- *
- * Centralising this priority is load-bearing: warmup and conhost agree on
- * the name → strategy state lives at the same Chronicle namespace → the
- * live agent reads what warmup wrote. The original bug
- * (`agents/agent/autobio:summaries` empty vs `default/autobio:summaries`
- * populated) was caused by exactly this resolution drifting between two
- * scripts that defaulted differently and never compared notes.
- */
-
-/** Which input the chosen name came from, for log lines and warnings. */
 export type AgentNameSource = 'explicit' | 'sidecar' | 'default';
 
 export interface ResolvedAgentName {
   name: string;
   source: AgentNameSource;
-  /**
-   * Set when both `explicit` and `sidecar` were provided and disagree.
-   * Callers should warn on this — the agent will use `explicit` (because
-   * an operator override beats a stored record) but the disagreement
-   * means some other consumer (e.g. warmup that wrote summaries under
-   * `sidecar`) has produced artifacts the live agent can't reach.
-   */
   mismatch?: { explicit: string; sidecar: string };
 }
 
-/**
- * Priority: `explicit` (CLI flag or provided recipe field) > `sidecar`
- * (per-session record written by the importer) > `default` (caller's
- * context-specific fallback — `"Claude"` for the claudeai-revival
- * scripts, `"agent"` for native conhost sessions).
- *
- * Empty strings on `explicit` or `sidecar` are treated as absent so an
- * accidental `--agent ""` or a sidecar with `"agentName": ""` doesn't
- * silently override the chain.
- */
 export function resolveAgentName(inputs: {
   explicit?: string;
   sidecar?: string;

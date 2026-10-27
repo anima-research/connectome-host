@@ -1,9 +1,3 @@
-/**
- * Lessons stored without usable content or tags, as an earlier version could
- * write them and a hand edit of the shared lessons file can: every reader
- * reads that field as empty, the agent's list says what to fix, the operator's
- * log names each one once per load, and the stored record stays as stored.
- */
 import { describe, test, expect, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,9 +16,8 @@ const call = (name: string, input: AnyObj = {}): ToolCall => ({ id: `t-${name}`,
 const stored = (id: string, fields: AnyObj): AnyObj =>
   ({ id, confidence: 0.6, evidence: [], created: 1, updated: 1, deprecated: false, ...fields });
 
-/** The module's store (chronicle's setStateJson) refuses a number JSON can't
- *  hold, with this error (receipt chronicle-infinity-probe.txt); the
- *  stand-in context refuses it too, so no test holds state no host can. */
+/** chronicle's setStateJson refuses a number JSON can't hold, with this
+ *  error. */
 function storable(s: unknown): unknown {
   JSON.stringify(s, (_key, value: unknown) => {
     if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Failed to convert js number to serde_json::Number');
@@ -144,7 +137,6 @@ describe('a lesson stored without usable content or tags', () => {
     try {
       expect((await h.m.handleToolCall(call('query', { tags: ['x'] }))).success).toBe(true);
       expect(h.warnings[0]).toContain('"shared"');
-      // Saving another lesson writes the file again, with this one as written.
       await h.m.handleToolCall(call('boost', { id: 'local' }));
       expect(h.file().lessons.find(l => l.id === 'shared')).toEqual(written);
     } finally { h.cleanup(); }
@@ -176,19 +168,15 @@ describe('a lesson stored with a confidence outside 0 to 1, or one that isn\'t a
       expect(listed.negative!.needsFix).toStartWith('Stored with confidence -0.5, outside 0 to 1:');
       expect(listed.whole!.needsFix).toBeUndefined();
 
-      // Ranked clamped: 85 counts as 1, no more, and one that isn't a number as 0.
       const ranked = (await h.m.handleToolCall(call('query', { tags: ['process'] }))).data as { lessons: AnyObj[] };
       expect(ranked.lessons.map(l => l.id)).toEqual(['percent', 'whole', 'nan', 'negative']);
       expect(ranked.lessons[0]).toMatchObject({ confidence: 85, needsFix: expect.stringContaining('confidence 85, outside 0 to 1') });
       const sure = (await h.m.handleToolCall(call('query', { minConfidence: 0.9 }))).data as { lessons: AnyObj[] };
       expect(sure.lessons.map(l => l.id).sort()).toEqual(['percent', 'whole']);
-      // At 0, every lesson's ranked value passes, -0.5 and null included,
-      // where their stored values wouldn't.
       const all = (await h.m.handleToolCall(call('query', { minConfidence: 0 }))).data as { lessons: AnyObj[] };
       expect(all.lessons.map(l => l.id).sort()).toEqual(['nan', 'negative', 'percent', 'whole']);
       expect(Object.fromEntries(h.m.getLessons().map(l => [l.id, l.confidence]))).toEqual({ percent: 1, nan: 0, negative: 0, whole: 0.95 });
 
-      // The stored record stays as written until the lesson is updated.
       expect(h.stored().find(l => l.id === 'percent')!.confidence).toBe(85);
       await h.m.handleToolCall(call('update', { id: 'percent', confidence: 0.85 }));
       const after = ((await h.m.handleToolCall(call('list'))).data as { lessons: AnyObj[] }).lessons.find(l => l.id === 'percent')!;
@@ -237,14 +225,12 @@ describe('a lesson stored with a confidence outside 0 to 1, or one that isn\'t a
       expect((await h.m.handleToolCall(call('demote', { id: 'word' }))).error).toEndWith('then demote it.');
       expect((await h.m.handleToolCall(call('demote', { id: 'negative' }))).success).toBe(false);
       expect((await h.m.handleToolCall(call('demote', { id: 'nan' }))).success).toBe(false);
-      // The records the module holds are as they were, updated included.
       expect(live()).toEqual(before);
       const records = Object.fromEntries(h.stored().map(l => [l.id, l.confidence]));
       expect(records.percent).toBe(85);
       expect(records.word).toBe('high');
       expect(records.negative).toBe(-0.5);
       expect(records.nan).toBeNull();
-      // One from 0 to 1 still moves.
       expect(((await h.m.handleToolCall(call('boost', { id: 'whole' }))).data as AnyObj).confidence).toBeCloseTo(0.955);
     } finally { h.cleanup(); }
   });
@@ -312,7 +298,6 @@ describe('a confidence stored as text, or out of range', () => {
       expect(listed.huge).toEqual([null, mark]);
       expect(listed.tiny).toEqual([null, mark]);
       expect(h.warnings).toEqual([`[lessons] lesson "huge": ${mark}`, `[lessons] lesson "tiny": ${mark}`]);
-      // The file keeps 1e999 until a save writes the lessons as the module holds them.
       expect(h.fileText()).toContain('1e999');
       await h.m.handleToolCall(call('boost', { id: 'local' }));
       expect(h.file().lessons.find(l => l.id === 'huge')!.confidence).toBeNull();
@@ -388,15 +373,11 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
         text: ['https://example.com/a', 's:1'],
         mixed: ['s:0', 7, 's:1', 'https://example.com/a'],
       });
-      // No mark or log line: nothing ranks, filters or searches by evidence.
       expect(h.warnings).toEqual([]);
     } finally { h.cleanup(); }
   });
 
   test('a bare value already in the module\'s own state is listed, marked and logged as a lesson no call can name', async () => {
-    // main's merge could have saved any value but null from the shared file
-    // into the state: it threw reading a null entry's id before saving it.
-    // Such a value is left there, and read rather than thrown on.
     for (const value of [5, 'note', true, []]) {
       const h = await loaded([value] as unknown as AnyObj[]);
       try {
@@ -411,7 +392,6 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
           needsFix: 'Stored without an id, so no lesson tool can name it.',
         }]);
         expect((await h.m.handleToolCall(call('query', { tags: ['x'], text: 'y' }))).success).toBe(true);
-        // Readers get its read fields alone: no index keys from text or a list.
         expect(h.m.getLessons()).toEqual([{ content: '', tags: [], evidence: [], confidence: 0 }]);
         expect(h.warnings).toEqual(['[lessons] a lesson: Stored without an id, so no lesson tool can name it.']);
         expect(h.stored()).toEqual([value]);
@@ -431,13 +411,9 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
   });
 
   test('one the module\'s own state also holds stays in the file once after a save, with the lessons this host holds', async () => {
-    // An older host's merge saved the file's 5 into the module's state. This
-    // load keeps the file's copy as it is, and a save writes that copy back;
-    // the state's own 5 has no named id, so it isn't written beside it.
     const h = await loaded([5, stored('local', { content: 'here', tags: ['x'] })] as unknown as AnyObj[],
       [5, stored('shared', { content: 'from the file', tags: ['x'] })] as AnyObj[]);
     try {
-      // The carried entry's line, then the state's 5's own, each once.
       expect(h.warnings).toHaveLength(2);
       expect(h.warnings[0]).toMatch(/has 1 entry that isn't a lesson \(not an object\)\. It's kept in the file, and this host doesn't load it\.$/);
       expect(h.warnings[1]).toBe('[lessons] a lesson: Stored without an id, so no lesson tool can name it.');
@@ -459,7 +435,6 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
     try {
       const listed = ((await h.m.handleToolCall(call('list'))).data as { lessons: AnyObj[] }).lessons;
       expect(listed.map(l => [l.id, l.needsFix])).toEqual([[undefined, marks[0]], ['', marks[1]], [5, marks[2]], ['withid', withId]]);
-      // Three unnamed lines, then the named lesson's own, each once.
       expect(h.warnings).toEqual([...marks.map(m => `[lessons] a lesson: ${m}`), `[lessons] lesson "withid": ${withId}`]);
     } finally { h.cleanup(); }
   });
@@ -504,7 +479,6 @@ describe('evidence, and entries in the shared file that aren\'t lessons', () => 
           expect(r.error).toStartWith(`Nothing was ${done}: ${why}. lessons--list shows lessons with their ids`);
         }
       }
-      // Nothing was changed by any of them.
       expect(h.m.getLessonRecords().map(r => r.stored)).toEqual(before);
     } finally { h.cleanup(); }
   });
@@ -566,9 +540,6 @@ describe('/export', () => {
   });
 });
 
-// HO-git's regression case, from a pull request to this repository that
-// first reported and fixed this crash: a store saved with a lesson that has
-// no tags. Here it's read with none and left as stored.
 describe('a store saved with a lesson that has no tags', () => {
   test('reads it with no tags beside a tagged one, and a list by tag works', async () => {
     const h = await loaded([
@@ -618,8 +589,6 @@ describe('readers in other modules', () => {
 });
 
 describe('retrieval', () => {
-  /** What retrieval injects for these lessons when the recent context asks
-   *  about memory: its entries, and the retrieval module for its traces. */
   async function retrieve(h: Awaited<ReturnType<typeof loaded>>) {
     const responses = ['["memory"]'];
     const membrane = {
@@ -647,7 +616,6 @@ describe('retrieval', () => {
     try {
       const { retrieval, entries } = await retrieve(h);
       expect(entries).toEqual(['- [60%] memory detail (tags: memory)']);
-      // Its evidence, stored as 5, reaches the trace as none.
       const [run] = retrieval.getRetrievalTraces();
       expect(run!.outcome).toBe('injected');
       expect(run!.injected.lessons.map(l => [l.id, l.evidence])).toEqual([['whole', []]]);

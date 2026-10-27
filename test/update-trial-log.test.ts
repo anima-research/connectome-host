@@ -1,12 +1,3 @@
-/**
- * A release on trial keeps the last lines it writes through console and
- * process.stdout/stderr.write, passed on unchanged, and writes them to the
- * install's trial log if it exits before its commit; the commit disarms it,
- * and a start that isn't a trial keeps nothing (src/update/trial-log.ts).
- * The release that falls back reads the log for its fallback alone. Each run
- * that arms is a process of its own, since arming wraps the process's console
- * and writes. /update's lines are in update-host-update.test.ts.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -23,8 +14,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** An install whose `current` names 0.12.1, with 0.13.0 on trial under mark
- *  m1 when `trial`, as the launcher leaves it before it starts the trial. */
 function install(trial = true): string {
   const root = mkdtempSync(join(tmpdir(), 'trial-log-'));
   dirs.push(root);
@@ -34,8 +23,6 @@ function install(trial = true): string {
   return root;
 }
 
-/** Run `body` in a process of its own, as release 0.13.0 of `root`, after
- *  arming the trial log. */
 function run(root: string, body: string): { status: number | null; stdout: string; stderr: string } {
   const script = join(root, 'run.ts');
   writeFileSync(script, [
@@ -52,13 +39,11 @@ const kept = (root: string) => readRecord<TrialLog>(installPaths(root).trialLog,
 describe('a release on trial', () => {
   test('that ends before its commit keeps what it wrote, which still reaches its stdout and stderr, readable by this user alone', () => {
     const root = install();
-    // A temporary file a crash left, readable by others, doesn't make the log so.
     writeFileSync(`${installPaths(root).trialLog}.tmp`, '', { mode: 0o644 });
     const { status, stdout, stderr } = run(root, [
       "console.log('one', 2);",
       "process.stdout.write('three ');",
       "process.stdout.write(new TextEncoder().encode('four\\nfive'));",
-      // A console line after a write that left its line open starts its own.
       "console.error(new Error('six'));",
       "process.stderr.write('err-partial');",
       "throw new Error('Bun reports this itself');",
@@ -70,7 +55,7 @@ describe('a release on trial', () => {
     expect(log).toMatchObject({ v: 1, release: '0.13.0', mark: 'm1' });
     expect(log.lines.slice(0, 4)).toEqual(['one 2', 'three four', 'five', 'Error: six']);
     expect(log.lines.at(-1)).toBe('err-partial');
-    // An error nothing caught is Bun's to report, past console: the service's log alone has it.
+    // Bun reports an error nothing caught itself, past console.
     expect(stderr).toContain('Bun reports this itself');
     expect(log.lines.join('\n')).not.toContain('Bun reports this itself');
     expect(statSync(installPaths(root).trialLog).mode & 0o777).toBe(0o600);
@@ -91,12 +76,10 @@ describe('a release on trial', () => {
     expect(status).toBe(1);
     expect(stdout).toContain('around\nwith a callback\n');
     expect(stderr).toContain('{"calledBack":true,"returned":true}');
-    // A wrapper that returned nothing would give undefined here.
     expect(kept(root)!.lines).toEqual(['info', 'warn', 'debug', 'around', 'with a callback', '{"calledBack":true,"returned":true}']);
   });
 
   test('keeps only its last lines, from the end of what it wrote, and writes them at process.exit too', () => {
-    // The bounds the change promises: 40 lines, from at most 64 KiB.
     expect([TRIAL_LOG_LINES, TRIAL_LOG_CHARS]).toEqual([40, 64 * 1024]);
     const root = install();
     const { status } = run(root, [
@@ -107,7 +90,6 @@ describe('a release on trial', () => {
     const lines = kept(root)!.lines;
     expect(lines).toHaveLength(TRIAL_LOG_LINES);
     expect(lines[0]).toBe('line 10');
-    // A line longer than what's kept keeps its end, and what came after it.
     const long = install();
     run(long, [
       "console.log('before it');",

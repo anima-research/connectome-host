@@ -95,7 +95,6 @@ describe('subagent allowed-tools inheritance', () => {
         const agent = h.captured.at(-1)!;
         expect(agent.canUseTool('probe--allowed')).toBe(false);
         expect(agent.canUseTool('probe--denied')).toBe(true);
-        // Omit identity rather than using the call helper's default.
         expect((await h.subagent.handleToolCall({ id: 'absent', name: kind, input: {
           name: `absent-${kind}`, task: 'inspect', systemPrompt: 'inert', sync: true,
         } } as ToolCall)).success).toBe(true);
@@ -164,7 +163,7 @@ describe('subagent allowed-tools inheritance', () => {
           expect(accepted.success).toBe(true);
           expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 1 });
           const pending = (h.subagent as unknown as { asyncHandles: Map<string, { promise: Promise<unknown> }> }).asyncHandles.get('queued-worker')!.promise;
-          // Observe rejection immediately so the red run has no unhandled promise.
+          // Observed at once: bun test fails on a rejection with no handler yet, even one handled later.
           const settled = pending.then(() => null, error => error);
           if (caller.agent.allowedTools !== 'all') caller.agent.allowedTools.push('probe--denied');
           caller.agent.allowedTools = 'all';
@@ -173,7 +172,6 @@ describe('subagent allowed-tools inheritance', () => {
           caller.cleanup();
           expect(h.framework.getAgent(caller.agent.name)).toBeNull();
           expect(JSON.stringify((await caller.contextManager.compile()).messages)).toContain('unique queued parent history');
-          // Defaults are scalar snapshots, while history stays compiled at execution.
           (caller.agent as unknown as { systemPrompt: string }).systemPrompt = 'changed after admission';
           presentedRow(caller.contextManager, 'user', [{ type: 'text', text: 'history added after admission' }]);
           unblock();
@@ -193,7 +191,7 @@ describe('subagent allowed-tools inheritance', () => {
       } finally { unblock(); await blocker?.catch(() => {}); await h.cleanup(); }
     });
 
-    test(`${kind} retry reuses admission tools after ephemeral caller exit`, async () => {
+    test(`${kind} retry reuses admission tools after ephemeral caller exit, untouched by what the first attempt and the caller changed`, async () => {
       const h = await harness('all', 3, 1);
       try {
         await h.framework.start();
@@ -207,7 +205,6 @@ describe('subagent allowed-tools inheritance', () => {
           histories.push(JSON.stringify((await agent.getContextManager().compile()).messages));
           if (h.captured.length === 1) {
             expect(agent.canUseTool('probe--denied')).toBe(false);
-            // An attempt must not own the accepted array used by later attempts.
             if (agent.allowedTools !== 'all') agent.allowedTools.push('probe--denied');
             if (caller.agent.allowedTools !== 'all') caller.agent.allowedTools.push('probe--denied');
             caller.agent.allowedTools = 'all';
@@ -341,8 +338,6 @@ describe('subagent allowed-tools inheritance', () => {
   });
 });
 
-// This is the public read-only catalogue contract added by Framework #220.
-// Inject that contract so this Host suite also runs with published older releases.
 describe('maximum-depth utility permissions', () => {
   const utilityNames = probeUtilityNames.map(name => `probe--${name}`);
   const surface = (framework: AgentFramework, utilities = true) => {

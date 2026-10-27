@@ -20,7 +20,6 @@ describe('autoContinue recipe wiring', () => {
     expect(built(false)).toBe(false);
     expect(built({})).toEqual({});
     expect(built({ maxConsecutive: 5 })).toEqual({ maxConsecutive: 5 });
-    // The bounds themselves are accepted.
     expect(built({ maxConsecutive: 1 })).toEqual({ maxConsecutive: 1 });
     expect(built({ maxConsecutive: 20 })).toEqual({ maxConsecutive: 20 });
     const reloaded = validateRecipe(JSON.parse(JSON.stringify(validateRecipe(base({ maxConsecutive: 2 })))));
@@ -41,11 +40,8 @@ describe('autoContinue recipe wiring', () => {
 
   test('warns at startup when the installed framework predates the setting', () => {
     const on = validateRecipe(base({ maxConsecutive: 2 }));
-    // A framework without the setting builds an agent with no autoContinue.
     expect(autoContinueSupportWarning(on, {})).toMatch(/^\[agent-settings\] agent\.autoContinue is set, but the installed agent-framework predates it/);
-    // One that has it stores it resolved.
     expect(autoContinueSupportWarning(on, { autoContinue: { maxConsecutive: 2 } })).toBeUndefined();
-    // Off, or no agent built: nothing to say.
     expect(autoContinueSupportWarning(validateRecipe(base(false)), {})).toBeUndefined();
     expect(autoContinueSupportWarning(validateRecipe(base()), {})).toBeUndefined();
     expect(autoContinueSupportWarning(on, undefined)).toBeUndefined();

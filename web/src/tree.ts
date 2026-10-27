@@ -1,16 +1,3 @@
-/**
- * Client-side tree state — re-uses the AgentTreeReducer from conhost via the
- * @conhost/state path alias, fed by `trace` and `child-event` messages over
- * WS. Same reducer, four call sites now (parent-local, parent-per-child,
- * child-side describe handler, the browser).
- *
- * The browser presents a *single unified tree* mirroring the TUI's fleet
- * view: one synthetic parent-process root, with local framework agents and
- * subagents inline, plus each fleet child as a folder-like node containing
- * its own subtree. The per-scope reducers under the hood are an implementation
- * detail — `buildUiTree()` weaves their roots into one hierarchy.
- */
-
 import { createSignal, type Accessor } from 'solid-js';
 import { AgentTreeReducer, type AgentNode, type AgentTreeSnapshot } from '@conhost/state/agent-tree-reducer';
 import type { WebUiServerMessage } from '@conhost/web/protocol';
@@ -23,30 +10,23 @@ export type ScopeId = 'local' | string;
 export type UiNodeKind = 'process' | 'framework' | 'subagent' | 'fleet-child';
 
 export interface UiNode {
-  /** Stable id used as expand/collapse key and React-style key. */
   id: string;
   kind: UiNodeKind;
   label: string;
-  /** Underlying reducer node, when this UI node represents an agent. */
   agent?: AgentNode;
-  /** For 'fleet-child', the child-process name (used by stop/restart). */
   fleetChildName?: string;
   streamSource: StreamSource;
   children: UiNode[];
 }
 
 export interface TreeStore {
-  /** Reactive accessor — fires whenever any reducer's state changes. */
   build: Accessor<UiNode[]>;
-  /** Apply a server message; idempotent for non-tree messages. */
   ingest(msg: WebUiServerMessage): void;
 }
 
 interface ScopeState {
   reducer: AgentTreeReducer;
-  /** asOfTs of the last applied snapshot; events older than this are dropped. */
   lastSnapshotTs: number;
-  /** True once we've ever applied a snapshot; gates stale-event filtering. */
   hasSnapshot: boolean;
 }
 
@@ -54,7 +34,6 @@ export function createTreeStore(): TreeStore {
   const states = new Map<ScopeId, ScopeState>();
   const [version, setVersion] = createSignal(0);
   let parentLabel = 'parent';
-  /** The welcome's first agent, whose stream the main view shows. */
   let conversationAgent: string | undefined;
 
   const ensureScope = (scope: ScopeId): ScopeState => {
@@ -76,8 +55,6 @@ export function createTreeStore(): TreeStore {
 
   const applyEvent = (scope: ScopeId, event: { type: string; [k: string]: unknown }): void => {
     const s = ensureScope(scope);
-    // Drop stale events that pre-date the most recent snapshot — they're
-    // already reflected in its state. Mirrors FleetTreeAggregator dedup logic.
     const ts = typeof event.timestamp === 'number' ? event.timestamp
              : typeof (event as { ts?: unknown }).ts === 'number' ? ((event as unknown) as { ts: number }).ts
              : undefined;
@@ -206,9 +183,6 @@ function buildAgentSubtree(
   };
 }
 
-/** Walk a UiNode tree depth-first, honoring an expanded-id set, and produce a
- *  flat list with depth info for rendering. The tree is small enough that
- *  flattening per render is fine. */
 export interface FlatUiNode {
   node: UiNode;
   depth: number;
@@ -227,19 +201,12 @@ export function flattenUiTree(roots: UiNode[], expanded: Set<string>): FlatUiNod
 }
 
 export interface AggregateTokens {
-  /** Sum of current context window sizes across descendants. Useful as a
-   *  "total active memory burden" indicator for aggregate nodes; for a single
-   *  agent it equals that agent's current input. */
   input: number;
-  /** Cumulative output across descendants. */
   output: number;
   cacheRead: number;
   cacheWrite: number;
 }
 
-/** Walk a UiNode subtree and aggregate token counts. Cumulative fields
- *  (output / cache) sum across descendants; input also sums since each
- *  agent's input is its own current ctx and they don't overlap. */
 export function aggregateTokens(node: UiNode): AggregateTokens {
   const agg: AggregateTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const visit = (n: UiNode): void => {

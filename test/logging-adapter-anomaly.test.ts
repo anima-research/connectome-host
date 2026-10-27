@@ -1,12 +1,3 @@
-/**
- * Anomalous responses in llm-calls: a response that carries a client tool_use
- * block under a stop reason other than 'tool_use' keeps its full raw request,
- * names the anomaly, and prints one timestamped stderr line that says whether
- * the row with the request was written. Rows also keep the provider's message
- * and request ids where the response (or a failed call's error) has them.
- * Driven end to end through a local Anthropic-shaped server, so the rows are
- * the ones the real adapter writes.
- */
 import { describe, test, expect, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +21,6 @@ const request: ProviderRequest = {
 
 type Block = Record<string, unknown>;
 
-/** An Anthropic SSE body for one message with the given blocks and stop reason. */
 function sse(blocks: Block[], stopReason: string | null, id = 'msg_fixture_stream'): string {
   const events: Array<[string, unknown]> = [
     ['message_start', {
@@ -61,7 +51,6 @@ function sse(blocks: Block[], stopReason: string | null, id = 'msg_fixture_strea
   return events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
 }
 
-/** An Anthropic Messages JSON body for complete(). */
 function message(blocks: Block[], stopReason: string | null, id = 'msg_fixture_complete'): Record<string, unknown> {
   return {
     id, type: 'message', role: 'assistant', model: 'claude-opus-5', content: blocks,
@@ -74,10 +63,6 @@ function message(blocks: Block[], stopReason: string | null, id = 'msg_fixture_c
 const THINK: Block = { type: 'tool_use', id: 'toolu_fixture1', name: 'think', input: { content: 'a long private note' } };
 const TEXT: Block = { type: 'text', text: 'plain answer' };
 
-/** Run one call against a local server answering `body` (with `status`),
- *  return its llm-calls row (undefined when none was written), stderr
- *  lines, and the error the call threw, if any. `logPath` places the log
- *  somewhere else in the run's directory (an unwritable path, say). */
 async function oneCall(
   kind: 'stream' | 'complete',
   body: string | Record<string, unknown>,
@@ -197,17 +182,14 @@ describe('responseAnomaly', () => {
   });
 
   test("doesn't read a raw `anomalies` list: nothing writes one at this layer", () => {
-    // membrane#168 records its anomalies on the Membrane-level response
+    // membrane records its anomalies on the Membrane-level response
     // (`details.anomalies`), which a provider adapter never returns.
     expect(responseAnomaly({ raw: { content: [TEXT], stop_reason: 'end_turn', anomalies: [{ kind: 'x' }] } })).toBeUndefined();
   });
 
   test('a missing stop reason reads as membrane\'s defaulted end_turn on both shapes, the provider\'s as null', () => {
-    // complete(): the raw response is the API message (stop_reason null),
-    // membrane's normalized reason is the default.
     expect(responseAnomaly({ raw: { content: [THINK], stop_reason: null }, stopReason: 'end_turn', providerStopReason: undefined }))
       .toEqual({ kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', providerStopReason: null, toolNames: ['think'] });
-    // stream(): membrane's raw already carries the default.
     expect(responseAnomaly({ raw: { content: [THINK], stop_reason: 'end_turn' }, stopReason: 'end_turn', providerStopReason: undefined }))
       .toEqual({ kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', providerStopReason: null, toolNames: ['think'] });
   });
@@ -256,7 +238,6 @@ describe('anomalyLogLine', () => {
 
 describe('an anomalous row the log could not keep whole', () => {
   test("a failed write: the alert says the request couldn't be saved, not that it was kept", async () => {
-    // A path under a directory that doesn't exist: the append fails.
     const { row, anomalyLines } = await oneCall('stream', sse([THINK], 'end_turn'), {
       logPath: (dir) => join(dir, 'missing-dir', 'llm-calls.test.jsonl'),
     });
@@ -285,7 +266,6 @@ describe('an anomalous row the log could not keep whole', () => {
       type: 'call', kind: 'stream', timestamp: 't', durationMs: 1,
       messageId: 'msg_a', requestId: 'req_a',
       anomaly: { kind: 'tool_use_with_stop_reason', stopReason: 'end_turn', providerStopReason: null, toolNames: ['think', 'y'.repeat(5_000)] },
-      // A summary too big for any step but the last.
       requestSummary: { model: 'z'.repeat(MAX_RECORD_BYTES) },
       rawRequest: { a: 1 }, rawResponse: { b: 2 },
     };

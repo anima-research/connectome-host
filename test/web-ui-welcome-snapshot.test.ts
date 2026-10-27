@@ -1,11 +1,3 @@
-/**
- * The welcome reads its state after its awaits, and nothing yields from
- * that read to marking the client welcomed. A client skips live events until
- * then, so state copied before an await would miss whatever landed during it.
- * A fleet child's usage sample missed that way leaves the client's copy of the
- * stream one call behind, and its next sample would show two calls' prompts as
- * one context size.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +12,6 @@ import type { FleetEventCallback } from '../src/modules/fleet-module.js';
 
 let webUiModule: WebUiModule;
 
-/** A fleet with one child, `c`, whose events the test emits by hand. */
 function fakeFleet() {
   const listeners = new Map<string, FleetEventCallback[]>();
   return {
@@ -75,7 +66,6 @@ describe('the welcome', () => {
     });
     fleet.emit({ type: 'inference:started', agentName: 'worker', ts: ts + 1, timestamp: ts + 1 });
 
-    // The recipe load is the welcome's await: a call ends while it's out.
     (webUiModule as unknown as { loadChildRecipeInfo: () => Promise<undefined> }).loadChildRecipeInfo = async () => {
       fleet.emit({
         type: 'inference:usage',
@@ -86,7 +76,6 @@ describe('the welcome', () => {
       });
       return undefined;
     };
-    // A client as the server keeps one, read through what it was sent.
     const sent: Array<Record<string, unknown>> = [];
     const client = { id: 1, ws: { send: (raw: string) => { sent.push(JSON.parse(raw)); } }, welcomed: false, auth: 'full', scopes: null };
     await (webUiModule as unknown as { sendWelcome(client: unknown): Promise<void> }).sendWelcome(client);
@@ -100,9 +89,6 @@ describe('the welcome', () => {
     expect(worker?.streamUsage).toEqual({ input: 120, output: 30, cacheRead: 0, cacheCreation: 4000 });
   });
 
-  /** Bind the Web UI to a fleet with `records` and the autoStart `launching`, as setApp does at a start or a
-   *  session switch. `recorded` stands for the fleet's wait for those launches to record their children, and
-   *  the answer counts the binds that asked for it. */
   function bindFleet(
     records: Map<string, { status: string; recipePath: string }>, launching: Set<string>, recorded: () => Promise<void>,
   ): { asked: () => number } {
@@ -113,7 +99,6 @@ describe('the welcome', () => {
         getAllModules: () => [{
           name: 'fleet',
           getChildren: () => records,
-          // A copy, as the fleet's own is, so nothing here reads a set it kept.
           autoStartLaunching: () => new Set(launching),
           autoStartRecorded: () => { asked++; return recorded(); },
           onChildEvent: () => () => {},
@@ -127,7 +112,6 @@ describe('the welcome', () => {
     return { asked: () => asked };
   }
 
-  /** The children a welcome sent now lists, each with the recipe it carries, if any. */
   async function welcomeNow(id: number): Promise<Array<{ name: string; recipe?: Record<string, string> }>> {
     const sent: Array<Record<string, unknown>> = [];
     const client = { id, ws: { send: (raw: string) => { sent.push(JSON.parse(raw)); } }, welcomed: false, auth: 'full', scopes: null };
@@ -136,8 +120,6 @@ describe('the welcome', () => {
   }
 
   test('waits for the autoStart launches under way to record their children, so it carries their recipes', async () => {
-    // As at a session switch: the Web UI is bound just after the agents start,
-    // while the fleet's autoStart launches are still loading their recipes.
     const dir = mkdtempSync(join(tmpdir(), 'welcome-autostart-'));
     try {
       const recipe = join(dir, 'kid.json');
@@ -151,11 +133,8 @@ describe('the welcome', () => {
         record = () => { records.set('kid', { status: 'starting', recipePath: recipe }); launching.delete('kid'); done(); };
       });
       bindFleet(records, launching, () => recorded);
-      // The earlier test replaced the recipe loader; this one uses the real one,
-      // which reads a recipe only through a record.
       delete (webUiModule as unknown as { loadChildRecipeInfo?: unknown }).loadChildRecipeInfo;
       setTimeout(record, 50);
-      // The whole summary the recipe pane shows: name, description and model.
       expect(await welcomeNow(2)).toEqual([expect.objectContaining({
         name: 'kid', recipe: { name: 'Kid', description: 'Watches the parent', agentModel: 'claude-kid-model' },
       })]);
@@ -167,14 +146,9 @@ describe('the welcome', () => {
   test('waits once per bind, a second at most: a launch not recorded by then is listed by name, and later welcomes do not wait', async () => {
     const launching = new Set(['kid']);
     delete (webUiModule as unknown as { loadChildRecipeInfo?: unknown }).loadChildRecipeInfo;
-    // Taken before the bind, which starts the wait's timer, so the wait can't
-    // look shorter than it was.
     const started = Date.now();
-    // A launch whose recipe fetch stalls never records its child.
     const binding = bindFleet(new Map(), launching, () => new Promise<void>(() => {}));
-    // Two clients welcomed at the bind wait on the one wait.
     const [first, second] = await Promise.all([welcomeNow(3), welcomeNow(4)]);
-    // About the second, once: two waits one after the other would take two.
     const waited = Date.now() - started;
     expect(waited).toBeGreaterThanOrEqual(950);
     expect(waited).toBeLessThan(1_900);
@@ -182,14 +156,10 @@ describe('the welcome', () => {
       expect(listed.map((t) => t.name)).toEqual(['kid']);
       expect(listed[0]?.recipe).toBeUndefined();
     }
-    // A client that connects once the wait is over, with the launch still
-    // stalled, doesn't wait again: a wait of its own would take a second, and
-    // would ask the fleet again.
     const later = Date.now();
     const listed = await welcomeNow(5);
     expect(Date.now() - later).toBeLessThan(900);
     expect(listed.map((t) => t.name)).toEqual(['kid']);
-    // A refused launch ends with no record, so the next welcome doesn't list it.
     launching.delete('kid');
     expect(await welcomeNow(6)).toEqual([]);
     expect(binding.asked()).toBe(1);
@@ -201,7 +171,6 @@ describe('the welcome', () => {
     const sent: Array<Record<string, unknown>> = [];
     const client = { id: 7, ws: { send: (raw: string) => { sent.push(JSON.parse(raw)); } }, welcomed: false, auth: 'full', scopes: null };
     const waiting = (webUiModule as unknown as { sendWelcome(client: unknown): Promise<void> }).sendWelcome(client);
-    // A session switch while that welcome waits on the stalled launch.
     bindFleet(new Map(), new Set(), () => { throw new Error('nothing is launching, so nothing should wait'); });
     await waiting;
     expect(sent.filter((m) => m.type === 'welcome')).toEqual([]);
@@ -209,7 +178,6 @@ describe('the welcome', () => {
   });
 
   test('a welcome that a newer bind superseded while it loaded recipes sends nothing', async () => {
-    // Nothing is launching, so the welcome's first await is its recipe load.
     bindFleet(new Map([['c', { status: 'ready', recipePath: '/unused/c.json' }]]), new Set(), () => {
       throw new Error('nothing is launching, so nothing should wait');
     });
@@ -219,7 +187,6 @@ describe('the welcome', () => {
     const sent: Array<Record<string, unknown>> = [];
     const client = { id: 8, ws: { send: (raw: string) => { sent.push(JSON.parse(raw)); } }, welcomed: false, auth: 'full', scopes: null };
     const welcoming = (webUiModule as unknown as { sendWelcome(client: unknown): Promise<void> }).sendWelcome(client);
-    // A session switch while that welcome loads its recipes.
     bindFleet(new Map(), new Set(), () => { throw new Error('nothing is launching, so nothing should wait'); });
     loaded();
     await welcoming;
@@ -230,10 +197,7 @@ describe('the welcome', () => {
 
   test("doesn't wait when nothing is launching, whatever the bind before was waiting for", async () => {
     bindFleet(new Map(), new Set(['kid']), () => new Promise<void>(() => {}));
-    // A session switch to a framework whose fleet launches nothing.
     bindFleet(new Map(), new Set(), () => { throw new Error('nothing is launching, so nothing should wait'); });
-    // Waiting on the bind before would take about the second its wait has
-    // left, so a welcome that ends well inside it didn't wait.
     const started = Date.now();
     expect(await welcomeNow(6)).toEqual([]);
     expect(Date.now() - started).toBeLessThan(900);
@@ -246,7 +210,6 @@ describe('the welcome', () => {
       writeFileSync(recipe, JSON.stringify({ name: 'Child', agent: { name: 'c', systemPrompt: 'never asked' } }));
       const launching = new Set(['kid']);
       bindFleet(new Map([['c', { status: 'ready', recipePath: recipe }]]), launching, () => Promise.resolve());
-      // The recipe load is the welcome's await: the launch is refused while it's out.
       const loader = webUiModule as unknown as { loadChildRecipeInfo: (...args: unknown[]) => Promise<unknown> };
       const real = WebUiModule.prototype as unknown as typeof loader;
       loader.loadChildRecipeInfo = async (...args: unknown[]) => {

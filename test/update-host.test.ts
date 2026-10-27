@@ -15,7 +15,6 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-/** A release as an npm install lays it out: the host's package inside it. */
 function release(name: string): string {
   const host = join(root, 'releases', name, 'node_modules', 'connectome-host');
   mkdirSync(host, { recursive: true });
@@ -35,14 +34,13 @@ describe('releaseHere', () => {
     expect(releaseHere(env, host)).toEqual({ root, release: '0.11.0' });
     moveCurrent(root, '0.11.0');
     expect(releaseHere(env, join(root, 'current', 'node_modules', 'connectome-host'))).toEqual({ root, release: '0.11.0' });
-    // Setup may wrap an install that already ran as a link to it.
     const wrapped = join(dir, 'old-install');
     mkdirSync(join(wrapped, 'node_modules', 'connectome-host'), { recursive: true });
     symlinkSync(wrapped, join(root, 'releases', '0.9.0'));
     expect(releaseHere(env, join(wrapped, 'node_modules', 'connectome-host'))).toEqual({ root, release: '0.9.0' });
   });
 
-  test('refuses an install none of whose releases holds the host, with or without a releases directory', () => {
+  test('refuses an install none of whose releases holds the host, with or without a releases directory, and a sibling whose name starts with a release\'s is not inside it', () => {
     const env = { CONNECTOME_INSTALL_ROOT: root };
     const refusal = new ContractError(
       `CONNECTOME_INSTALL_ROOT names the install at ${root}, but none of its releases holds this host (${realpathSync(HOST_ROOT)}). ` +
@@ -50,7 +48,6 @@ describe('releaseHere', () => {
     );
     expect(() => releaseHere(env, HOST_ROOT)).toThrow(refusal);
     release('0.11.0');
-    // A sibling whose name the release's starts with isn't inside it.
     mkdirSync(join(root, 'releases', '0.11.0-other'));
     expect(() => releaseHere(env, HOST_ROOT)).toThrow(refusal);
     expect(releaseHere(env, join(root, 'releases', '0.11.0-other'))).toEqual({ root, release: '0.11.0-other' });
@@ -73,7 +70,6 @@ describe('releaseHere', () => {
   test("refuses, naming the error, when the releases directory or an entry of it can't be read", () => {
     const host = release('0.11.0');
     const env = { CONNECTOME_INSTALL_ROOT: root };
-    // A link that leads to itself can't be resolved, and might have held the host.
     symlinkSync(join(root, 'releases', 'loop'), join(root, 'releases', 'loop'));
     expect(() => releaseHere(env, host)).toThrow(new RegExp(
       `^CONNECTOME_INSTALL_ROOT names the install at ${root}, and the entry loop of ${join(root, 'releases')} can't be ` +
@@ -192,7 +188,6 @@ describe('commitRelease', () => {
 
   test("a move that fails before its rename says the release wasn't recorded", () => {
     moveCurrent(root, '0.10.2');
-    // Where the move's temporary link goes, a directory with something in it.
     mkdirSync(join(`${installPaths(root).current}.tmp`, 'in-the-way'), { recursive: true });
     expect(() => commitRelease(here, { now: at })).toThrow(
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +
@@ -203,7 +198,6 @@ describe('commitRelease', () => {
   });
 
   test("a `current` that can't be read starts nothing, and says each start reads it again", () => {
-    // A file where the link goes, which readlink refuses.
     writeFileSync(installPaths(root).current, '0.10.2');
     expect(() => commitRelease(here, { now: at })).toThrow(new Error(
       `This host couldn't read which release the install at ${root} runs on, so none of its agents started: ` +

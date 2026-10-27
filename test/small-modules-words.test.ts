@@ -1,9 +1,3 @@
-/**
- * What the agent reads from the smaller modules' refusals: what was wrong,
- * with the value given and what to give instead, whether anything changed,
- * and, for a tool name a module doesn't have, the tools it does have. Each
- * case pins the parts the agent acts on, not every word.
- */
 import { describe, test, expect } from 'bun:test';
 import type { ModuleContext, ToolCall } from '@animalabs/agent-framework';
 import { ActivityModule } from '../src/modules/activity-module.js';
@@ -38,9 +32,6 @@ describe('activity', () => {
 });
 
 describe('channel-mode', () => {
-  /** A module whose framework and tools stand in for the host's: the
-   *  tools named in `failing` fail, the gate refuses a rule when `gateFails`,
-   *  and removing a rule finds one when `ruleExists`. */
   function wired(opts: { failing?: string[]; gateFails?: boolean; ruleExists?: boolean; config?: ConstructorParameters<typeof ChannelModeModule>[0] } = {}) {
     const failing = opts.failing ?? ['channel_open'];
     const m = new ChannelModeModule(opts.config);
@@ -255,7 +246,6 @@ describe('lessons', () => {
     const huge = await m.handleToolCall(call('create', { content: 'Ask before merging.', tags: ['process'], confidence: Infinity }));
     expect(huge.error).toContain('confidence must be a number from 0 to 1, such as 0.8, not Infinity');
     expect(m.getLessons()).toEqual([]);
-    // Both ends of the range are a confidence.
     for (const confidence of [0, 1]) {
       expect((await m.handleToolCall(call('create', { content: `at ${confidence}`, tags: ['process'], confidence }))).success).toBe(true);
     }
@@ -263,8 +253,6 @@ describe('lessons', () => {
     expect((await m.handleToolCall(call('query', { text: 'merging', tags: ['process'] }))).success).toBe(true);
   });
 
-  // HO-git's regression cases, from a pull request to this repository that
-  // first reported and fixed this crash, adapted to refusing bad tags.
   test('a lesson created without tags, or with null or junk tags, is refused, and queries and lists by tag still work', async () => {
     const m = new LessonsModule();
     await m.start({ getState: () => null, setState: () => {} } as unknown as ModuleContext);
@@ -291,7 +279,6 @@ describe('lessons', () => {
     const both = await m.handleToolCall(call('update', { id: 'nope', content: '' }));
     expect(both.error).toStartWith('Nothing was updated: no lesson has the id "nope"; content is blank');
     expect((await m.handleToolCall(call('update', { id, confidence: 0.9 }))).success).toBe(true);
-    // null is no value: on update, a field left out keeps its own.
     const nulls = await m.handleToolCall(call('update', { id, content: null, confidence: null, evidence: null }));
     expect(nulls.error).toContain('content must be the lesson as text, or leave it out to keep the current text, not null');
     expect(nulls.error).toContain('confidence must be a number from 0 to 1, such as 0.8, not null');
@@ -376,12 +363,9 @@ describe('modules that offer no tools of their own', () => {
       'Your instructions are read from the workspace file shared/AGENTS.md each turn and put in your context ' +
       'under the heading "# Shared operating instructions (live document)", so the text there is the current one.',
     );
-    // The module fails open, so the hint can't promise the text is there.
     expect(r.error).toContain(
       "If that heading is missing from your context, the file couldn't be read, and whoever runs this host can see why in its log.",
     );
-    // workspace--read serves the workspace's stored copy, which a read-only
-    // mount doesn't update from disk (README, "Who edits, and how it propagates").
     expect(r.error).toContain("workspace--read shows the workspace's stored copy, which on a read-only mount can be older than the file; on a mount running direct it reads the file itself.");
     expect(r.error).toContain('workspace--edit');
 

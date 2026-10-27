@@ -1,17 +1,5 @@
-/**
- * Observer identity (docs/observability.md M2) — unit tests for the pure
- * layer (verifyHello, scope filters, sessions, file ops) plus an end-to-end
- * WS drill against a real WebUiModule:
- *
- *   no grants → everything behaves as pre-observer builds (401s)
- *   grant hot-appears → static goes public, unauthenticated WS upgrade OK
- *   signed hello → observer-ack with the grant's scopes + session token
- *   session cookie → /healthz by scope, /debug still denied without 'debug'
- *   wrong key / stale timestamp / wrong host → rejected
- *   observer is read-only (user-message → forbidden)
- */
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, utimesSync, statSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
@@ -45,10 +33,6 @@ import {
 import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, type WelcomeMessageEntry } from '../src/web/protocol.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
-
-// ---------------------------------------------------------------------------
-// Unit: registry verification
-// ---------------------------------------------------------------------------
 
 describe('ObserverRegistry.verifyHello', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'observers-unit-'));
@@ -99,9 +83,8 @@ describe('ObserverRegistry.verifyHello', () => {
     expect(loadObserversFile(path)).not.toBeNull();
     writeFileSync(path, '{not json');
     expect(loadObserversFile(path)).toBeNull();
-    // registry still holds the last good state
     expect(registry.verifyHello(helloFor(kp, HOST), HOST)).not.toBeNull();
-    saveObserversFile(path, file); // restore
+    saveObserversFile(path, file);
   });
 });
 
@@ -127,14 +110,13 @@ describe('ObserverRegistry when the grants file is removed', () => {
       expect(admits()).toBe(true);
       rmSync(path);
       await until(() => !registry.active());
-      for (let i = 0; i < 5; i++) check(registry); // five more checks find it gone
+      for (let i = 0; i < 5; i++) check(registry);
       expect(admits()).toBe(false);
       expect(registry.active()).toBe(false);
       expect(lines.filter((l) => l.includes('admitting no grants'))).toEqual([gone]);
       saveObserversFile(path, grants);
       await until(() => registry.active());
       expect(admits()).toBe(true);
-      // Removed again after a good read, it's said again.
       rmSync(path);
       await until(() => !registry.active());
       expect(lines.filter((l) => l.includes('admitting no grants'))).toEqual([gone, gone]);
@@ -183,7 +165,7 @@ describe('ObserverRegistry checks', () => {
     const path = join(tmp, 'observers.json');
     const lines: string[] = [];
     const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
-    const registry = new ObserverRegistry(path, 60_000); // checks driven by hand
+    const registry = new ObserverRegistry(path, 60_000);
     const done = () => { registry.stop(); spy.mockRestore(); rmSync(tmp, { recursive: true, force: true }); };
     return { tmp, path, lines, registry, done };
   };
@@ -205,7 +187,7 @@ describe('ObserverRegistry checks', () => {
       saveObserversFile(path, { observers: [{ key: kp.id, label: 'device', scopes: ['health'] }] });
       registry.start();
       rmSync(path);
-      check(registry); // the first check to miss it takes nothing away
+      check(registry);
       expect(registry.grants().map((g) => g.label)).toEqual(['device']);
       saveObserversFile(path, { observers: [{ key: kp.id, label: 'device', scopes: ['health'] }] });
       check(registry);
@@ -243,7 +225,6 @@ describe('ObserverRegistry checks', () => {
       utimesSync(path, was, was);
       check(registry);
       expect(registry.grants().map((g) => g.label)).toEqual(['a']);
-      // Between two checks, a file with other grants and the same mtime.
       saveObserversFile(path, { observers: [{ key: b.id, label: 'b', scopes: ['health'] }] });
       utimesSync(path, was, was);
       check(registry);
@@ -253,8 +234,8 @@ describe('ObserverRegistry checks', () => {
 
   test('a file that can\'t be reached from the start is named once', () => {
     const { tmp, lines, done } = setup();
-    // A name longer than a directory entry can be fails the stat with
-    // ENAMETOOLONG, which a test can make without chmod, as root too.
+    // A name longer than a directory entry can take fails the stat with
+    // ENAMETOOLONG.
     const path = join(tmp, 'x'.repeat(300), 'observers.json');
     const registry = new ObserverRegistry(path, 60_000);
     try {
@@ -296,12 +277,10 @@ describe('ObserverRegistry checks', () => {
   });
 });
 
-/** Run one of the registry's checks now, as its timer would. */
 function check(registry: ObserverRegistry): void {
   (registry as unknown as { check(): void }).check();
 }
 
-/** Wait until `done` holds, up to `ms`. */
 async function waitUntil(done: () => boolean, ms = 10_000): Promise<void> {
   const end = Date.now() + ms;
   while (!done() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
@@ -314,11 +293,9 @@ describe('observer sessions and connections end with their grant', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'observers-sessions-'));
     const path = join(tmp, 'observers.json');
     saveObserversFile(path, { observers: [{ key: K, label: 'phone', scopes: ['health', 'ops'] }] });
-    const registry = new ObserverRegistry(path, 60_000); // checks driven by hand
+    const registry = new ObserverRegistry(path, 60_000);
     const sessions = new ObserverSessions();
     let now = Date.now();
-    // One check of the file, then of the sessions, as the web UI's hook runs
-    // after each; it returns how many sessions the check ended.
     const checked = () => { check(registry); return sessions.narrowToGrants((key) => registry.liveScopes(key, now)); };
     const write = (observers: ObserversFile['observers']) => { saveObserversFile(path, { observers }); return checked(); };
     const spy = spyOn(console, 'error').mockImplementation(() => {});
@@ -329,17 +306,14 @@ describe('observer sessions and connections end with their grant', () => {
 
       expect(write([{ key: K, label: 'phone', scopes: ['health'] }])).toBe(0);
       expect([...sessions.lookup(token)!.scopes]).toEqual(['health']);
-      // Widened again: the narrowing stays, and the next hello takes up the wider grant.
       expect(write([{ key: K, label: 'phone', scopes: ['health', 'ops'] }])).toBe(0);
       expect([...sessions.lookup(token)!.scopes]).toEqual(['health']);
 
       expect(write([])).toBe(1);
       expect(sessions.lookup(token)).toBeNull();
-      // Granting the key again doesn't bring it back: that takes a new hello.
       expect(write([{ key: K, label: 'phone', scopes: ['health', 'ops'] }])).toBe(0);
       expect(sessions.lookup(token)).toBeNull();
 
-      // A grant that keeps none of the session's scopes ends it.
       const opsLess = sessions.mint(new Set(['health'] as ObserverScope[]), { key: K });
       expect(write([{ key: K, label: 'phone', scopes: ['ops'] }])).toBe(1);
       expect(sessions.lookup(opsLess)).toBeNull();
@@ -355,11 +329,10 @@ describe('observer sessions and connections end with their grant', () => {
       expect(write([{ key: K, label: 'phone', scopes: ['health'] }])).toBe(0);
       const removed = sessions.mint(new Set(['health'] as ObserverScope[]), { key: K });
       rmSync(path);
-      expect(checked()).toBe(0); // a removal counts at the second check that misses the file
+      expect(checked()).toBe(0);
       expect(checked()).toBe(1);
       expect(sessions.lookup(removed)).toBeNull();
 
-      // A password session has no grant to end with.
       const password = sessions.mint(new Set(), { full: true });
       expect(checked()).toBe(0);
       expect(sessions.lookup(password)?.full).toBe(true);
@@ -381,7 +354,6 @@ describe('observer sessions and connections end with their grant', () => {
     try {
       registry.start();
       const token = sessions.mint(new Set(['health'] as ObserverScope[]), { key: K });
-      // An unknown scope makes the entry one the viewer can't use.
       saveObserversFile(path, { observers: [{ key: K, label: 'phone', scopes: ['health', 'everything' as ObserverScope] }] });
       check(registry);
       expect(registry.liveScopes(K)).toBeNull();
@@ -397,12 +369,10 @@ describe('observer sessions and connections end with their grant', () => {
   test("a session already past its 12 hours isn't counted among those a check ended", () => {
     const sessions = new ObserverSessions();
     const token = sessions.mint(new Set(['health'] as ObserverScope[]), { key: K });
-    // Its 12 hours are up, and no mint has swept it since.
     const held = (sessions as unknown as { sessions: Map<string, { expiresAt: number }> }).sessions;
     held.get(token)!.expiresAt = Date.now() - 1;
     expect(sessions.narrowToGrants(() => null)).toBe(0);
     expect(sessions.lookup(token)).toBeNull();
-    // It's left for the next mint to sweep.
     expect(held.has(token)).toBe(true);
     sessions.mint(new Set(), { full: true });
     expect(held.has(token)).toBe(false);
@@ -423,7 +393,7 @@ describe('observer sessions and connections end with their grant', () => {
       registry.start();
       unreadable();
       check(registry);
-      expect(registry.liveScopes(K)).not.toBeNull(); // one failed read changes nothing
+      expect(registry.liveScopes(K)).not.toBeNull();
       readable();
       check(registry);
       expect(registry.liveScopes(K)).not.toBeNull();
@@ -476,7 +446,6 @@ describe('observer sessions and connections end with their grant', () => {
         'gone:4401:observer grant gone or expired',
         'keyless:4401:observer grant gone or expired',
       ]);
-      // The socket whose close threw isn't counted, and it's named.
       expect(swept).toBe(3);
       expect(lines).toEqual(["[webui-observers] observer connection couldn't be closed: throws (socket); each check tries again while its grant is gone, expired or narrowed"]);
     } finally { spy.mockRestore(); }
@@ -574,7 +543,7 @@ describe('observer sessions and connections end with their grant', () => {
       });
       await waitUntil(() => calls >= 2);
       saveObserversFile(path, { observers: [] });
-      revoked = true; // in the same turn as the write, before any check can run
+      revoked = true;
       const at = calls;
       await waitUntil(() => calls >= at + 3);
       expect(calls).toBeGreaterThanOrEqual(at + 3);
@@ -587,10 +556,6 @@ describe('observer sessions and connections end with their grant', () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Unit: scope filters + sessions
-// ---------------------------------------------------------------------------
 
 describe('scope filters', () => {
   const entry: WelcomeMessageEntry = {
@@ -655,7 +620,7 @@ describe('scope filters', () => {
     expect(f).toEqual(entry);
   });
 
-  test("a trace needs every scope whose data it carries, a token or block its block's too, and any type not in the table goes to full clients alone", () => {
+  test("a trace needs every scope whose data it carries, a token or block its block's too, a server's refusal before any model ops alone, and any type not in the table goes to full clients alone", () => {
     expect(traceScopes({ type: 'message:added' })).toEqual(['messages']);
     expect(traceScopes({ type: 'inference:tokens', blockType: 'text' })).toEqual(['messages']);
     expect(traceScopes({ type: 'inference:tokens', blockType: 'thinking' })).toEqual(['messages', 'thinking']);
@@ -664,11 +629,9 @@ describe('scope filters', () => {
     expect(traceScopes({ type: 'inference:tokens', blockType: 'a-block-added-later' })).toBe(FULL_CLIENTS_ONLY);
     expect(traceScopes({ type: 'inference:tool_calls_yielded' })).toEqual(['messages', 'tools']);
     expect(traceScopes({ type: 'tool:completed' })).toEqual(['messages', 'tools']);
-    // A failed or dropped call's error, and an operator's call for the agent.
     for (const type of ['tool:failed', 'tool:result_dropped', 'puppet:tool-call']) {
       expect(traceScopes({ type })).toEqual(['messages', 'tools', 'ops']);
     }
-    // Whole process events and module responses.
     for (const type of ['process:received', 'process:completed']) {
       expect(traceScopes({ type })).toEqual(['messages', 'thinking', 'tools', 'health', 'ops']);
     }
@@ -677,16 +640,31 @@ describe('scope filters', () => {
     expect(traceScopes({ type: 'host:quiesce' })).toEqual(['health']);
     expect(traceScopes({ type: 'inference:failed' })).toEqual(['ops']);
     expect(traceScopes({ type: 'inference:exhausted' })).toEqual(['ops']);
-    // Why a turn was stopped is ops; that it ended reaches messages as stream-ended.
     expect(traceScopes({ type: 'inference:aborted' })).toEqual(['messages', 'ops']);
     for (const type of ['inbound:observer-failed', 'mcpl:request-handler-error', 'prose:drafts-held', 'prose:draft-resent', 'prose:drafts-dismissed']) {
       expect(traceScopes({ type })).toEqual(['ops']);
     }
-    // The operator log's entry, as request-operator-log gives ops.
     expect(traceScopes({ type: 'operator:action' })).toEqual(['ops']);
     expect(traceScopes({ type: 'mcpl:server-closed' })).toEqual(['ops']);
-    // A batched wake run without its gate line, which agent-framework adds after 0.26.0.
+    // agent-framework's trace for a batched wake run without its gate line.
     expect(traceScopes({ type: 'gate:wake-line-omitted' })).toEqual(['ops']);
+    for (const type of [
+      'gate:policy-added', 'gate:policy-removed', 'gate:config-reconciled', 'gate:shadow-warnings',
+      'mcpl:channels-register', 'mcpl:channel-descriptor-rejected', 'mcpl:channels-changed', 'mcpl:channels-incoming',
+      'mcpl:channel-reconcile-failed', 'mcpl:channel-open-substituted',
+      'mcpl:channel-reconcile-skipped', 'mcpl:channel-opened-by-send', 'mcpl:channel-open-failed',
+      'mcpl:state_registered', 'mcpl:checkpoint_recorded', 'mcpl:state_rollback', 'mcpl:push_event',
+      'tune-out:entered', 'tune-out:cancelled', 'tune-out:timer-failed', 'tune-out:ack-failed',
+    ]) {
+      expect(traceScopes({ type })).toEqual(['ops']);
+    }
+    expect(traceScopes({ type: 'mcpl:channel-lazy-registered' })).toEqual(['messages', 'ops']);
+    for (const type of ['mcpl:inference_start', 'mcpl:inference_fail', 'mcpl:inference_complete']) {
+      expect(traceScopes({ type })).toEqual(['health', 'ops']);
+    }
+    expect(traceScopes({ type: 'mcpl:inference_fail', model: 'claude-sonnet-4-5' })).toEqual(['health', 'ops']);
+    expect(traceScopes({ type: 'mcpl:inference_fail', model: null })).toEqual(['ops']);
+    expect(childEventScopes({ type: 'mcpl:inference_fail', model: null } as never)).toEqual(['ops']);
     expect(traceScopes({ type: 'mcpl:speech-routed' })).toEqual(['messages', 'ops']);
     for (const type of ['inference:published', 'inference:published_complete']) {
       expect(traceScopes({ type })).toEqual(['messages']);
@@ -710,17 +688,23 @@ describe('scope filters', () => {
   });
 
   test("every trace type the installed agent-framework defines has an entry in the table, and no other type has one", () => {
-    // Read the source the runtime resolves the package to from here, as the host loads it, wherever
-    // it's installed: in this repository's node_modules, or in one above it, as a hoisted install or a
-    // linked checkout leaves it. Its exports give Bun the index of that source.
+    // Bun resolves the package through its exports to the index of its source,
+    // wherever it's installed; the trace types sit beside it.
     const index = Bun.resolveSync('@animalabs/agent-framework', import.meta.dir);
     const source = readFileSync(join(dirname(index), 'types', 'trace.ts'), 'utf-8');
     const types = [...new Set([...source.matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!))].sort();
     expect(types.length).toBeGreaterThan(50);
     expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
     // And the table names no type the framework has dropped, such as the
-    // branch-moving undo's undo:completed and redo:completed (#291).
-    expect(Object.keys(TRACE_SCOPES).filter((type) => !types.includes(type))).toEqual([]);
+    // branch-moving undo's undo:completed and redo:completed (#291). The gate,
+    // MCPL and tune-out traces main's table gives entries (#462) are emitted
+    // where they're raised, outside trace.ts's union, so this reads every
+    // `type:` literal in the framework's source.
+    const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? sources(join(dir, entry.name)) : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
+    const emitted = new Set(sources(dirname(index)).flatMap((path) =>
+      [...readFileSync(path, 'utf-8').matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!)));
+    expect(Object.keys(TRACE_SCOPES).filter((type) => !emitted.has(type))).toEqual([]);
   });
 
   test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
@@ -741,6 +725,7 @@ describe('scope filters', () => {
   test('a frame sent to more than one client needs what its welcome field or request needs, and any other goes to full clients alone', () => {
     const scopesOf = (frame: Record<string, unknown>) => frameScopes(frame as never);
     expect(scopesOf({ type: 'trace', event: { type: 'tool:started' } })).toEqual(['messages', 'tools']);
+    expect(scopesOf({ type: 'trace', event: { type: 'mcpl:inference_fail', model: null } })).toEqual(['ops']);
     expect(scopesOf({ type: 'child-event', childName: 'kid', event: { type: 'lifecycle' } })).toEqual(['health']);
     for (const type of ['usage', 'call-ledger', 'credential-state', 'host-mode']) expect(scopesOf({ type })).toEqual(['health']);
     for (const type of ['inbound-trigger', 'branch-changed', 'stream-ended', 'undone-marks']) expect(scopesOf({ type })).toEqual(['messages']);
@@ -788,21 +773,16 @@ describe('scope filters', () => {
     expect(w.localTree.nodes).toEqual([]);
     expect(w.childTrees).toEqual([]);
     expect(w.history.startIndex).toBe(240);
-    expect(w.usage.input).toBe(1); // structure/usage survive
-    // An auto-named session's name summarizes the conversation, and branch
-    // names are request-branches' tier; the ids stay, as the client's key.
+    expect(w.usage.input).toBe(1);
     expect(w.session).toEqual({ id: 's1', name: '', autoNamed: true });
     expect(w.branch).toEqual({ id: 'b1', name: '' });
     const reader = scopeWelcome(welcome, new Set<ObserverScope>(['messages']));
     expect(reader.session).toEqual(welcome.session);
     expect(reader.branch).toEqual(welcome.branch);
-    expect(welcome.session.name).toBe('Debugging the bridge'); // never mutated
+    expect(welcome.session.name).toBe('Debugging the bridge');
   });
 
-  // Health-gated telemetry must be masked exactly like its live frames:
-  // `usage`, `call-ledger` and `host-mode` pushes require the 'health' scope,
-  // so the welcome cannot hand the same data to a messages-only observer.
-  test('scopeWelcome without health strips callLedger/perAgentCost/hostMode and zeroes usage', () => {
+  test('scopeWelcome without health strips callLedger/perAgentCost/hostMode and zeroes usage, and with health alone empties the ledger strings LEDGER_STRINGS does not name', () => {
     const welcome = {
       type: 'welcome', protocolVersion: WEB_PROTOCOL_VERSION,
       messages: [entry],
@@ -824,27 +804,22 @@ describe('scope filters', () => {
     expect(w.perAgentCost).toBeUndefined();
     expect(w.hostMode).toBeUndefined();
     expect(w.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-    expect(w.messages.length).toBe(1); // messages scope still gets content
-    // No trace of the ledger anywhere in the serialized frame.
+    expect(w.messages.length).toBe(1);
     expect(JSON.stringify(w)).not.toContain('secret-model');
     expect(JSON.stringify(w)).not.toContain('raw provider error');
 
-    // Same masking on the no-messages branch (e.g. ops-only observer).
     const opsOnly = scopeWelcome(welcome, new Set<ObserverScope>(['ops']));
     expect(opsOnly.callLedger).toBeUndefined();
     expect(opsOnly.perAgentCost).toBeUndefined();
     expect(opsOnly.hostMode).toBeUndefined();
     expect(opsOnly.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
-    // An observer with health and ops keeps the telemetry verbatim.
     const h = scopeWelcome(welcome, new Set<ObserverScope>(['health', 'ops']));
     expect(h.callLedger).toEqual(welcome.callLedger);
     expect(h.perAgentCost).toEqual(welcome.perAgentCost);
     expect(h.hostMode).toEqual(welcome.hostMode);
     expect(h.agents).toEqual(welcome.agents);
     expect(h.usage).toEqual(welcome.usage);
-    // With health alone the rest is the same, and the ledger keeps only the
-    // strings LEDGER_STRINGS names: none, in this shape.
     const healthOnly = scopeWelcome(welcome, new Set<ObserverScope>(['health']));
     expect(JSON.parse(JSON.stringify(healthOnly.callLedger))).toEqual({ calls: [{ model: '', error: '', costUsd: 0.42 }] });
     expect(healthOnly.perAgentCost).toEqual(welcome.perAgentCost);
@@ -852,14 +827,13 @@ describe('scope filters', () => {
     expect(healthOnly.agents).toEqual(welcome.agents);
     expect(healthOnly.usage).toEqual(welcome.usage);
 
-    // Input welcome is never mutated (shared across clients in sendWelcome).
     expect(welcome.callLedger).toBeDefined();
     expect(welcome.hostMode).toBeDefined();
     expect(welcome.usage.input).toBe(1);
   });
 
   test("keepNamedStrings empties each string its spec doesn't keep, and keeps numbers, flags, nulls, every key and each list's length", () => {
-    // From JSON, as a payload comes, so an agent named `__proto__` is an own key.
+    // JSON.parse makes a `__proto__` key an own key, as a payload brings it.
     const value = JSON.parse(`{
       "name": "main", "note": "free text", "count": 2, "ok": true, "none": null,
       "byAgent": { "alice": { "state": "healthy", "error": "it broke" }, "__proto__": { "state": "degraded", "error": "also broke" } },
@@ -880,7 +854,6 @@ describe('scope filters', () => {
       "rows": [{ "verdict": "ERROR", "cause": "" }, { "verdict": "HIT", "cause": "90% from cache" }],
       "whole": { "anything": "kept", "deep": ["x"] }
     }`)));
-    // A value that isn't an object or a string comes back as it is.
     expect(keepNamedStrings(3, undefined)).toBe(3);
     expect(keepNamedStrings('text', undefined)).toBe('');
     expect(keepNamedStrings('text', true)).toBe('text');
@@ -897,7 +870,6 @@ describe('scope filters', () => {
       tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, cost, cache: { breakpoints: 2, ttls: ['5m', '1h'], effectiveTtl: '5m' },
       verdict: 'HIT', cause: '90% from cache', stopReason: 'end_turn',
     };
-    // agent-framework 0.24.0's healthSnapshot, and every section the host adds, with a value in each place.
     const health = {
       at: '2026-10-22T06:00:00.000Z',
       uptimeSec: 5,
@@ -976,7 +948,6 @@ describe('scope filters', () => {
     main.lastInference.lastError = '';
     expected.compressionDebt.main.error = '';
     expected.readFailures.main.contextComposition = '';
-    // Welcome hides branch names without the messages scope.
     expected.loadRepair.main.branch = '';
     Object.assign(expected.callLedger.rows[0]!, { cause: '', error: '' });
     expected.credential.message = '';
@@ -1044,23 +1015,18 @@ describe('ObserverSessions', () => {
     expect(s.lookup(token)!.full).toBe(false);
     expect(s.lookup('0'.repeat(64))).toBeNull();
     expect(s.lookup(null)).toBeNull();
-    // Narrowing a session at a check leaves the set it was minted with alone, which the hello's connection holds too.
     const wide = new Set<ObserverScope>(['health', 'ops']);
     const wideToken = s.mint(wide, { key: 'k' });
     expect(s.narrowToGrants(() => new Set<ObserverScope>(['health']))).toBe(0);
     expect([...s.lookup(wideToken)!.scopes]).toEqual(['health']);
     expect([...wide].sort()).toEqual(['health', 'ops']);
 
-    // Full sessions (password sign-in path) carry operator authority.
     const fullToken = s.mint(new Set(), { full: true });
     expect(s.lookup(fullToken)!.full).toBe(true);
   });
 });
 
-// ---------------------------------------------------------------------------
-// End-to-end over a live module: empty grants → historical behavior; grant
-// hot-appears → observer flow works.
-// ---------------------------------------------------------------------------
+const PAST_THE_GATE_WITH_NO_APP = 503;
 
 describe('WebUiModule observer flow (e2e)', () => {
   let tmp: string;
@@ -1075,7 +1041,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     mkdirSync(staticRoot, { recursive: true });
     writeFileSync(join(staticRoot, 'index.html'), '<!doctype html><title>t</title>');
     observersPath = join(tmp, 'observers.json');
-    saveObserversFile(observersPath, { observers: [] }); // present but EMPTY
+    saveObserversFile(observersPath, { observers: [] });
 
     mod = new WebUiModule({
       port: 0,
@@ -1095,9 +1061,6 @@ describe('WebUiModule observer flow (e2e)', () => {
   });
 
   const base = () => `http://127.0.0.1:${port}`;
-  /** The static shell's status once it is `want`, or the last one seen when
-   *  `ms` runs out: the registry's checks come on its own timer, which a
-   *  loaded host can delay. */
   const shellStatusBecomes = async (want: number, ms = 12_000): Promise<number> => {
     const end = Date.now() + ms;
     for (;;) {
@@ -1119,16 +1082,11 @@ describe('WebUiModule observer flow (e2e)', () => {
     saveObserversFile(observersPath, {
       observers: [{ key: kp.id, label: 'e2e-device', scopes: ['health', 'ops', 'debug'] }],
     });
-    // The registry's next check, within about 3 s, admits it, and the static
-    // app shell, which carries no data, is public from then on.
     expect(await shellStatusBecomes(200)).toBe(200);
-    // But data routes still gated — including the credential state, scoped
-    // to a fleet child or not (it can carry a pending device-code login).
     expect((await fetch(`${base()}/healthz`)).status).toBe(401);
     expect((await fetch(`${base()}/credential`)).status).toBe(401);
     expect((await fetch(`${base()}/credential?scope=child-a`)).status).toBe(401);
 
-    // Unauthenticated WS: auth-required → signed hello → ack.
     const host = `127.0.0.1:${port}`;
     const ws = new WebSocket(`ws://${host}/ws`);
     const frames: Record<string, unknown>[] = [];
@@ -1153,12 +1111,10 @@ describe('WebUiModule observer flow (e2e)', () => {
     expect(ack.label).toBe('e2e-device');
     expect((ack.scopes as string[]).sort()).toEqual(['debug', 'health', 'ops']);
 
-    // Read-only: mutating messages are refused.
     ws.send(JSON.stringify({ type: 'user-message', content: 'hi' }));
     const errFrame = await got('error');
     expect(String(errFrame.message)).toContain('forbidden');
 
-    // Branch listing rides the 'messages' scope, which this grant lacks.
     ws.send(JSON.stringify({ type: 'request-branches' }));
     const branchErr = await new Promise<Record<string, unknown>>((resolvePromise, reject) => {
       const t = setTimeout(() => reject(new Error('timeout waiting for request-branches refusal')), 5000);
@@ -1172,39 +1128,30 @@ describe('WebUiModule observer flow (e2e)', () => {
     });
     expect(String(branchErr.message)).toContain('forbidden');
 
-    // Session cookie: ordinary debug is allowed by scope, but retrieval traces
-    // remain operator-only because they can expose lessons and opt-in inputs.
     const cookie = `fkm_obs=${ack.sessionToken}`;
-    // 503 means authorization passed but this harness has no bound app.
-    expect((await fetch(`${base()}/healthz`, { headers: { cookie } })).status).toBe(503);
-    expect((await fetch(`${base()}/credential`, { headers: { cookie } })).status).toBe(503);
-    expect((await fetch(`${base()}/debug/context`, { headers: { cookie } })).status).toBe(503);
+    expect((await fetch(`${base()}/healthz`, { headers: { cookie } })).status).toBe(PAST_THE_GATE_WITH_NO_APP);
+    expect((await fetch(`${base()}/credential`, { headers: { cookie } })).status).toBe(PAST_THE_GATE_WITH_NO_APP);
+    expect((await fetch(`${base()}/debug/context`, { headers: { cookie } })).status).toBe(PAST_THE_GATE_WITH_NO_APP);
     expect((await fetch(`${base()}/debug/retrieval`, { headers: { cookie } })).status).toBe(401);
     expect((await fetch(`${base()}/debug/retrieval/view`, { headers: { cookie } })).status).toBe(401);
-    // Basic auth still works for everything.
-    expect((await fetch(`${base()}/healthz`, { headers: { authorization: BASIC } })).status).toBe(503);
+    expect((await fetch(`${base()}/healthz`, { headers: { authorization: BASIC } })).status).toBe(PAST_THE_GATE_WITH_NO_APP);
 
     ws.close();
   }, 25_000);
 
   test('password sign-in mints a full-session cookie the WS upgrade honors', async () => {
-    // /auth/basic with valid credentials → 302 + full-session cookie.
     const res = await fetch(`${base()}/auth/basic`, { headers: { authorization: BASIC }, redirect: 'manual' });
     expect(res.status).toBe(302);
     const m = /fkm_obs=([a-f0-9]{64})/.exec(res.headers.get('set-cookie') ?? '');
     expect(m).not.toBeNull();
 
-    // A WS upgrade carrying ONLY the cookie (no Authorization — the Chrome
-    // situation) must be treated as a FULL client: no observer-auth-required
-    // demand. (Full clients are parked silently in this app-less harness;
-    // the observer path would send auth-required immediately.)
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { cookie: `fkm_obs=${m![1]}` } } as never);
     const firstFrame = await Promise.race([
       new Promise<string>((r) => ws.addEventListener('message', (ev) => r(String((ev as MessageEvent).data)))),
       new Promise<string>((r) => setTimeout(() => r('SILENCE'), 1500)),
     ]);
     ws.close();
-    expect(firstFrame).toBe('SILENCE'); // not observer-auth-required
+    expect(firstFrame).toBe('SILENCE');
   }, 10_000);
 
   test('wrong key: hello rejected and socket closed', async () => {
@@ -1212,8 +1159,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     const host = `127.0.0.1:${port}`;
     const ws = new WebSocket(`ws://${host}/ws`);
     const closed = new Promise<number>((r) => ws.addEventListener('close', (ev) => r(ev.code)));
-    // An upgrade refused (no grant active yet) closes without opening; say so
-    // rather than wait for an open that won't come.
+    // A refused upgrade closes without opening.
     const opened = await new Promise<boolean>((r) => {
       ws.addEventListener('open', () => r(true));
       ws.addEventListener('close', () => r(false));
@@ -1223,11 +1169,9 @@ describe('WebUiModule observer flow (e2e)', () => {
     expect(await closed).toBe(4401);
   }, 10_000);
 
-  // It takes the grants away; the case after it writes its own.
   test('file removed (hot-reload): the static shell needs the password again', async () => {
     expect((await fetch(`${base()}/`)).status).toBe(200);
     rmSync(observersPath);
-    // Two checks 3 s apart take the grants away.
     expect(await shellStatusBecomes(401)).toBe(401);
   }, 20_000);
 
@@ -1242,8 +1186,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     const fakeWs = {
       data: { id, authed: false, host },
       send: (s: string) => { sent.push(s); return s.length; },
-      // A close that succeeds runs the server's close handler inside it, as
-      // Bun's does (receipt ws-close-timing-bun-1.4.3-and-1.3.14.txt).
+      // Bun runs the server's close handler inside a close() that succeeds.
       close: (code?: number) => {
         if (throws-- > 0) throw new Error('socket');
         closes.push(code!);
@@ -1261,7 +1204,6 @@ describe('WebUiModule observer flow (e2e)', () => {
 
       saveObserversFile(observersPath, { observers: [] });
       await waitUntil(() => closes.length > 0, 15_000);
-      // The revoke's check named it, and a later check closed it.
       expect(closes).toEqual([4401]);
       expect(lines.filter((l) => l.startsWith('[webui-observers] observer connection'))).toEqual([
         "[webui-observers] observer connection couldn't be closed: unclosable (socket); each check tries again while its grant is gone, expired or narrowed",
@@ -1277,7 +1219,6 @@ describe('WebUiModule observer flow (e2e)', () => {
     const kp3 = makeKeypair();
     const host = `127.0.0.1:${port}`;
     const sockets: WebSocket[] = [];
-    // Says hello on a new socket and resolves with the ack and the socket's close code.
     const connect = async () => {
       const ws = new WebSocket(`ws://${host}/ws`);
       sockets.push(ws);
@@ -1295,23 +1236,18 @@ describe('WebUiModule observer flow (e2e)', () => {
       return { ack: await frame('observer-ack'), closed };
     };
     const debug = async (cookie: string) => (await fetch(`${base()}/debug/state`, { headers: { cookie } })).status;
-    // Whether the static shell is served without the password: some grant is in.
     const shellOpen = async () => (await fetch(`${base()}/`)).status === 200;
     const spy = spyOn(console, 'error').mockImplementation(() => {});
     try {
       saveObserversFile(observersPath, { observers: [{ key: kp3.id, label: 'narrowed', scopes: ['health', 'debug'] }] });
-      // The next check admits it: the static shell no longer asks for the password.
       for (const end = Date.now() + 8000; !(await shellOpen()) && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
       const kept = await connect();
       expect(kept.ack.scopes).toEqual(['health', 'debug']);
       const keptCookie = `fkm_obs=${kept.ack.sessionToken}`;
 
-      // Narrowed at a check, while nothing uses the kept session.
       saveObserversFile(observersPath, { observers: [{ key: kp3.id, label: 'narrowed', scopes: ['health'] }] });
       expect(await kept.closed).toBe(4403);
 
-      // Widened again: a new hello gets debug back once a check reads it,
-      // and until then gets the narrowed grant.
       saveObserversFile(observersPath, { observers: [{ key: kp3.id, label: 'narrowed', scopes: ['health', 'debug'] }] });
       let fresh = await connect();
       for (const end = Date.now() + 8000; !(fresh.ack.scopes as string[]).includes('debug') && Date.now() < end;) {
@@ -1322,14 +1258,10 @@ describe('WebUiModule observer flow (e2e)', () => {
       expect(fresh.ack.scopes).toEqual(['health', 'debug']);
       expect(await debug(`fkm_obs=${fresh.ack.sessionToken}`)).not.toBe(401);
 
-      // The kept session, first used now, stays as the check narrowed it:
-      // refused debug, and still past the health gate it kept, which answers
-      // 503 here with no app, where an ended session would get 401.
       expect(await debug(keptCookie)).toBe(401);
-      expect((await fetch(`${base()}/healthz`, { headers: { cookie: keptCookie } })).status).toBe(503);
+      expect((await fetch(`${base()}/healthz`, { headers: { cookie: keptCookie } })).status).toBe(PAST_THE_GATE_WITH_NO_APP);
     } finally {
       for (const ws of sockets) ws.close();
-      // Leave the file with no grants, as the next case expects, once a check has read it.
       saveObserversFile(observersPath, { observers: [] });
       for (const end = Date.now() + 8000; (await shellOpen()) && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
       spy.mockRestore();
@@ -1341,7 +1273,6 @@ describe('WebUiModule observer flow (e2e)', () => {
     const host = `127.0.0.1:${port}`;
     const lines: string[] = [];
     const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
-    // Says hello on a new socket and resolves with the ack and the socket's close code.
     const connect = async () => {
       const ws = new WebSocket(`ws://${host}/ws`);
       const frames: Record<string, unknown>[] = [];
@@ -1361,18 +1292,17 @@ describe('WebUiModule observer flow (e2e)', () => {
     const debug = async (cookie: string) => (await fetch(`${base()}/debug/state`, { headers: { cookie } })).status;
     try {
       saveObserversFile(observersPath, { observers: [{ key: kp2.id, label: 'to-revoke', scopes: ['health', 'debug'] }] });
-      // The next check admits it: the static shell no longer asks for the password.
       const shellOpen = async () => (await fetch(`${base()}/`)).status === 200;
       for (const end = Date.now() + 8000; !(await shellOpen()) && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
 
       const first = await connect();
       const cookie = `fkm_obs=${first.ack.sessionToken}`;
-      expect(await healthz(cookie)).toBe(503);
+      expect(await healthz(cookie)).toBe(PAST_THE_GATE_WITH_NO_APP);
       expect(await debug(cookie)).not.toBe(401);
 
       saveObserversFile(observersPath, { observers: [{ key: kp2.id, label: 'to-revoke', scopes: ['health'] }] });
       expect(await first.closed).toBe(4403);
-      expect(await healthz(cookie)).toBe(503);
+      expect(await healthz(cookie)).toBe(PAST_THE_GATE_WITH_NO_APP);
       expect(await debug(cookie)).toBe(401);
       const second = await connect();
       expect(second.ack.scopes).toEqual(['health']);
@@ -1385,8 +1315,6 @@ describe('WebUiModule observer flow (e2e)', () => {
         '[webui-observers] closed 1 observer connection(s) whose grant is gone, expired or narrowed, and ended 2 observer session(s) whose grant is gone, expired or keeps none of their scopes',
       ]);
 
-      // The second cookie wasn't used while the grant was gone. It ended at
-      // that check all the same, and granting the key again doesn't bring it back.
       saveObserversFile(observersPath, { observers: [{ key: kp2.id, label: 'to-revoke', scopes: ['health'] }] });
       for (const end = Date.now() + 8000; !(await shellOpen()) && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
       expect(await shellOpen()).toBe(true);

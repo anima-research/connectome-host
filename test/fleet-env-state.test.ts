@@ -68,7 +68,7 @@ describe('Fleet child environment stays outside Chronicle state', () => {
     expect(await restoredEnv([{ ...configured, dataDir: 'data/other' }])).toBeUndefined();
   });
 
-  test('identity mismatch warns about withheld restart overrides without logging values', () => {
+  test('identity mismatch warns about withheld restart overrides without logging values, and a matching or absent declaration warns nothing', () => {
     const configured = {
       name: 'leaf', recipe: 'test/mock-recipe.json',
       env: { TOKEN: 'current-secret' }, autoStart: false,
@@ -88,7 +88,6 @@ describe('Fleet child environment stays outside Chronicle state', () => {
           `[fleet] child "leaf": configured identity mismatch (${fields}); environment overrides withheld for restarts. Check child configuration and host working directory.`,
         );
       }
-      // Matching and absent declarations are not identity mismatches.
       for (const autoStart of [[configured], []]) {
         const fleet = new FleetModule({ autoStart });
         (fleet as any).reconstructOrphan(legacyChild());
@@ -132,7 +131,6 @@ describe('Fleet child environment stays outside Chronicle state', () => {
       first.setDetachMode(true);
       await first.stop();
 
-      // Adoption uses current configuration even when autoStart is disabled.
       second = new FleetModule({ ...options, autoStart: [{ ...config, autoStart: false, env: { TOKEN: 'current-secret' } }] });
       await second.start(store.ctx);
       const adopted = second.getChildren().get('leaf')!;
@@ -146,7 +144,6 @@ describe('Fleet child environment stays outside Chronicle state', () => {
       }
     } finally {
       await second?.stop();
-      // first retains the spawned-process handle, including on failed adoption.
       first.setDetachMode(false);
       await first.stop();
       rmSync(dir, { recursive: true, force: true });

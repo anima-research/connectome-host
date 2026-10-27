@@ -1,13 +1,6 @@
 /**
- * Usage samples are a stream's running total, so each provider call counts
- * once and the context size is the prompt of the latest call.
- *
- * The stream below runs through a real AgentFramework and a real Membrane,
- * with a small adapter that reports fixed usage per call, cache included
- * (membrane's own MockAdapter reports no cache tokens). So the reducer and
- * the subagent module fold the samples membrane actually emits:
- * `TurnUsageAccumulator.addRound` adds each call into the stream's totals and
- * agent-framework forwards the sum as `inference:usage`.
+ * membrane's own MockAdapter reports no cache tokens, so the stream below
+ * runs through a small adapter that reports them.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -23,7 +16,6 @@ import { SubagentModule, type SubagentStreamEvent } from '../src/modules/subagen
 
 interface CallUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }
 
-/** Three provider calls: two that call a tool, then a text answer. */
 const CALLS: CallUsage[] = [
   { inputTokens: 120, outputTokens: 30, cacheReadTokens: 0, cacheCreationTokens: 4000 },
   { inputTokens: 80, outputTokens: 25, cacheReadTokens: 4000, cacheCreationTokens: 150 },
@@ -32,8 +24,6 @@ const CALLS: CallUsage[] = [
 const prompt = (c: CallUsage) => c.inputTokens + c.cacheReadTokens + c.cacheCreationTokens;
 const sum = (k: keyof CallUsage) => CALLS.reduce((n, c) => n + c[k], 0);
 
-/** Answers each streamed call from its script, in order, with that call's
- *  usage: every call but the last calls the probe's tool. */
 class MeteredAdapter implements ProviderAdapter {
   readonly name = 'metered';
   readonly usageCacheConvention = 'cache-excluded' as const;
@@ -75,8 +65,6 @@ class ProbeTools implements Module {
   }
 }
 
-/** Add one call's usage to every `inference:completed` the listeners see,
- *  as a completion carrying a call no sample reported would. */
 function widenCompletions(framework: AgentFramework, extra: CallUsage): void {
   const onTrace = framework.onTrace.bind(framework);
   (framework as unknown as { onTrace: typeof onTrace }).onTrace = (listener) => onTrace((event) => {
@@ -123,8 +111,6 @@ async function harness(script: CallUsage[] = CALLS, opts: { completionAdds?: Cal
   return { adapter, framework, subagent, traces, cleanup };
 }
 
-/** A stream for `name` from `script` (the three-call one by default), run to
- *  completion; returns its traces. */
 async function runStream(name: string, script: CallUsage[] = CALLS, agentConfig: { maxStreamTokens?: number } = {}) {
   const h = await harness(script);
   try {
@@ -137,9 +123,8 @@ async function runStream(name: string, script: CallUsage[] = CALLS, agentConfig:
     await new Promise<void>((resolve) => setImmediate(resolve));
     const mine = h.traces.filter((e) => e.agentName === name);
     const byAgent = h.framework.getSessionUsage().byAgent;
-    // agent-framework #558 counts every ephemeral agent in one shared entry,
-    // marked ephemeral; before it, each had an entry under its own name. This
-    // harness runs one ephemeral agent, so either entry is its tally.
+    // agent-framework counts every ephemeral agent in one shared entry, marked
+    // ephemeral.
     const tracked = (byAgent.find((a) => a.agentName === name)
       ?? byAgent.find((a) => (a as { ephemeral?: true }).ephemeral === true))?.usage;
     return { calls: h.adapter.calls, events: mine, tracked };
@@ -158,10 +143,6 @@ describe('usage samples from a real stream', () => {
     const run = await runStream('worker');
     expect(run.calls).toBe(3);
     const usage = run.events.filter((e) => e.type === 'inference:usage').map((e) => e.tokenUsage as UsageSample);
-    // In this stream no call has read the cache by the first sample. There,
-    // membrane 0.5.87, which this repository locks, leaves cacheRead out,
-    // and membrane #104 reports 0, so the first sample takes either until the
-    // membrane floor rises to a release with #104, which pins 0.
     expect([undefined, 0]).toContain(usage[0]?.cacheRead);
     expect(usage.map((u, i) => (i === 0 ? { ...u, cacheRead: 0 } : u))).toEqual([
       { input: 120, output: 30, cacheCreation: 4000, cacheRead: 0 },
@@ -188,9 +169,7 @@ describe('usage samples from a real stream', () => {
     });
   });
 
-  test('a second stream counts from zero after its inference:started', async () => {
-    // Its first call is above the first stream's totals in every count, so
-    // only its inference:started says the counts began again.
+  test('a second stream counts from zero after its inference:started, though its first call is above the first stream in every count', async () => {
     const big: CallUsage[] = [
       { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 10000, cacheCreationTokens: 5000 },
       { inputTokens: 900, outputTokens: 150, cacheReadTokens: 15000, cacheCreationTokens: 300 },
@@ -208,11 +187,7 @@ describe('usage samples from a real stream', () => {
     });
   });
 
-  test('a context-budget restart starts a new stream that counts from zero', async () => {
-    // The first call's 120 fresh tokens pass maxStreamTokens, so the framework
-    // restarts at the tool boundary. The new stream's first call is larger in
-    // every count than the old stream's total, so only its inference:started
-    // tells the fold that the counts began again.
+  test('a context-budget restart starts a new stream that counts from zero, though its first call is above the old stream in every count', async () => {
     const script: CallUsage[] = [
       { inputTokens: 120, outputTokens: 30, cacheReadTokens: 0, cacheCreationTokens: 4000 },
       { inputTokens: 130, outputTokens: 40, cacheReadTokens: 4000, cacheCreationTokens: 4100 },
@@ -221,8 +196,6 @@ describe('usage samples from a real stream', () => {
     expect(run.calls).toBe(2);
     expect(run.events.map((e) => e.type).filter((t) => /^inference:(started|usage|stream_restarted)$/.test(String(t))))
       .toEqual(['inference:started', 'inference:usage', 'inference:stream_restarted', 'inference:started', 'inference:usage']);
-    // agent-framework v0.21's tracker leaves the restarted stream out (#207
-    // counts it), so this test checks the calls themselves.
     expect(fold(run.events).getNode('worker')!.tokens).toEqual({
       input: prompt(script[1]!), output: 70, cacheRead: 4000, cacheWrite: 8100,
     });
@@ -243,7 +216,6 @@ describe('usage samples from a real stream', () => {
     const run = await runStream('worker');
     const cut = run.events.findIndex((e) => e.type === 'inference:usage') + 1;
     const before = fold(run.events.slice(0, cut));
-    // Over the wire: the describe reply and the web welcome send nodes as JSON.
     const snapshot = JSON.parse(JSON.stringify(before.getSnapshot()));
     const after = new AgentTreeReducer();
     after.applySnapshot(snapshot);
@@ -260,7 +232,6 @@ describe('usage samples from a real stream', () => {
       r.applyEvent(e as never);
       if (e.type === 'inference:usage') seen.push(r.getNode('worker')!.tokens.input);
     }
-    // Its first sample spans calls 1 and 2, so it isn't one call's prompt.
     expect(seen).toEqual([0, prompt(CALLS[2]!)]);
     expect(r.getNode('worker')!.tokens.output).toBe(sum('outputTokens'));
   });
@@ -286,11 +257,7 @@ describe('usage samples from a real stream', () => {
     });
   }
 
-  test("a subagent's restarted stream counts from zero, so its context size is the new call's prompt", async () => {
-    // The first call's fresh input passes the subagent's 500k maxStreamTokens,
-    // so the framework restarts it at the tool boundary. The new stream's call
-    // is above the first in every count: only the subagent's inference:started
-    // reset makes its sample one call.
+  test("a subagent's restarted stream counts from zero though its call is above the first in every count, so its context size is the new call's prompt", async () => {
     const script: CallUsage[] = [
       { inputTokens: 600_000, outputTokens: 30, cacheReadTokens: 100, cacheCreationTokens: 4000 },
       { inputTokens: 600_100, outputTokens: 40, cacheReadTokens: 4100, cacheCreationTokens: 4100 },

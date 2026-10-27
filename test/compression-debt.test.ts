@@ -1,18 +1,9 @@
-/**
- * One agent's compression debt in the Health tab's words and tone. Since
- * anima-research/context-manager#272, a report that couldn't read something
- * names which read failed (`failure`), says in `error` what happened, what it
- * means and what to do, and gives `null` for each count it couldn't compute.
- * A report from a context-manager before #272 reads as the tab wrote it, but
- * for an age past two hours, now in hours.
- */
 import { describe, expect, test } from 'bun:test';
 import { debtAge, debtNextStep, debtSummary, debtTone, type CompressionDebt } from '../src/web/compression-debt.js';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-/** context-manager #272's message for a ledger the store couldn't read. */
 const ledgerError = [
   'Compression of new conversation has stalled.',
   "Cause: the store couldn't read this agent's compression quarantine ledger (EACCES: permission denied).",
@@ -20,7 +11,6 @@ const ledgerError = [
   'Fix: fix what the cause names; compression then resumes by itself.',
 ].join('\n');
 
-/** A report that failed outright, as the new getCompressionDebt() gives it. */
 const failed: CompressionDebt = {
   state: 'unknown',
   error: [
@@ -37,7 +27,6 @@ const failed: CompressionDebt = {
   compressionQuarantineCount: null,
 };
 
-/** A report that couldn't read only the quarantine ledger. */
 const ledger = (over: Partial<CompressionDebt>): CompressionDebt => ({
   state: 'unknown',
   error: ledgerError,

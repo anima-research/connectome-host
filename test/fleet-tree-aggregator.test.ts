@@ -1,21 +1,8 @@
-/**
- * Unit tests for FleetTreeAggregator using a mock FleetModule.
- *
- * The aggregator's job is to:
- *   1. Maintain a per-child AgentTreeReducer.
- *   2. Request describe on lifecycle:ready (cold start + restart).
- *   3. Apply snapshots, reseed reducers, drop stale events.
- *   4. Notify listeners on tree changes.
- *
- * These tests drive a fake FleetModule API to assert that orchestration
- * happens correctly, without actually spawning child processes.
- */
 import { describe, test, expect } from 'bun:test';
 import { FleetTreeAggregator } from '../src/state/fleet-tree-aggregator.js';
 import type { FleetEventCallback } from '../src/modules/fleet-module.js';
 import type { WireEvent } from '../src/modules/fleet-types.js';
 
-// Minimal stub: only the surface FleetTreeAggregator actually touches.
 interface FakeChild { name: string; status: string }
 
 class FakeFleet {
@@ -42,7 +29,6 @@ class FakeFleet {
     return this.children.some(c => c.name === name);
   }
 
-  /** Drive an event from a child (for test injection). */
   emit(name: string, event: WireEvent): void {
     const subs = this.subscribers.get(name);
     if (!subs) return;
@@ -112,11 +98,9 @@ describe('FleetTreeAggregator', () => {
     const agg = new FleetTreeAggregator(fake as never);
     agg.registerChild('miner');
 
-    // Snapshot at t=1000 with toolCallsCount=3
     fake.emit('miner', makeSnapshot(1000, [{ name: 'commander', toolCalls: 3 }]));
     expect(agg.getChildNodes('miner')[0]!.toolCallsCount).toBe(3);
 
-    // Stale tool event (t=500 < snapshot t=1000) — should be dropped
     fake.emit('miner', {
       type: 'inference:tool_calls_yielded',
       agentName: 'commander',
@@ -125,9 +109,8 @@ describe('FleetTreeAggregator', () => {
       ts: 500,
     } as WireEvent);
     fake.emit('miner', { type: 'tool:started', callId: 'old-c1', tool: 'x', module: 'm', ts: 500 } as WireEvent);
-    expect(agg.getChildNodes('miner')[0]!.toolCallsCount).toBe(3); // unchanged
+    expect(agg.getChildNodes('miner')[0]!.toolCallsCount).toBe(3);
 
-    // Fresh tool event (t=2000 > snapshot t=1000) — applied
     fake.emit('miner', {
       type: 'inference:tool_calls_yielded',
       agentName: 'commander',
@@ -150,7 +133,6 @@ describe('FleetTreeAggregator', () => {
       type: 'inference:started',
       agentName: 'lazy-agent',
       timestamp: 5000,
-      // No ts field on the wrapper
     } as WireEvent);
     const nodes = agg.getChildNodes('miner');
     expect(nodes.find(n => n.name === 'lazy-agent')).toBeDefined();
@@ -163,14 +145,11 @@ describe('FleetTreeAggregator', () => {
     agg.registerChild('miner');
     expect(fake.describeRequests.length).toBe(1);
 
-    // Second lifecycle:ready before snapshot returns: should NOT re-request.
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
     expect(fake.describeRequests.length).toBe(1);
 
-    // After snapshot arrives, in-flight clears.
     fake.emit('miner', makeSnapshot(1000, []));
 
-    // A subsequent lifecycle:ready (e.g. after parent reconnect) DOES re-request.
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
     expect(fake.describeRequests.length).toBe(2);
   });
@@ -198,7 +177,6 @@ describe('FleetTreeAggregator', () => {
 
     agg.unregisterChild('miner');
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp', ts: 9999 } as WireEvent);
-    // After unregister, child is gone; getChildNodes returns empty.
     expect(agg.getChildNodes('miner')).toEqual([]);
   });
 

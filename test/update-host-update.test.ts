@@ -1,9 +1,3 @@
-/**
- * The host's update (src/update/update.ts): the notice, Update's checks and
- * install, Restart's quiesce, mark and stop, Go back, and the status that
- * /healthz and /update show, on an install root in a temporary directory,
- * with the registry, the package manager and the framework stood in for.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -27,8 +21,6 @@ import {
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-/** A release's directory as an install holds it: its own package.json, and
- *  the host's package.json, entry and launcher under node_modules. */
 function placeRelease(root: string, version: string): void {
   const release = join(root, 'releases', version);
   const host = join(release, RELEASE_HOST);
@@ -39,7 +31,6 @@ function placeRelease(root: string, version: string): void {
   writeFileSync(join(host, 'src', 'update', 'launcher.ts'), 'export function launch() {}');
 }
 
-/** An install root running `running`, with `others` installed beside it. */
 function install(running: string, others: string[] = []): { root: string; dataDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'host-update-'));
   dirs.push(root);
@@ -50,7 +41,6 @@ function install(running: string, others: string[] = []): { root: string; dataDi
   return { root, dataDir };
 }
 
-/** A copy whose label says it holds `from`'s data dir, taken under `mark`. */
 function placeCopy(root: string, dataDir: string, from: string, mark: string): void {
   const { copy } = installPaths(root);
   mkdirSync(join(copy, '0-data'), { recursive: true });
@@ -58,9 +48,6 @@ function placeCopy(root: string, dataDir: string, from: string, mark: string): v
   writeFileSync(copyLabelPath(copy), JSON.stringify(label));
 }
 
-/** A framework as Restart uses one: `holders` hold a turn until the quiesce
- *  has been read `drainAfter` times, or until drain(). A quiesce waits for
- *  `held` when given, and records the wait it was given. */
 function fakeFramework(options: {
   holders?: string[]; drainAfter?: number; quiesced?: string; quiesceFails?: Error; resumeFails?: Error; held?: Promise<unknown>;
 } = {}) {
@@ -96,8 +83,6 @@ function fakeFramework(options: {
   return { framework, calls, timeouts, drain: () => { drainedNow = true; } };
 }
 
-/** A package manager whose install waits for finish(), with `entered`
- *  settling once the install has reached it. */
 function heldManager() {
   const inner = manager();
   let finish: () => void = () => {};
@@ -110,7 +95,6 @@ function heldManager() {
   return { ops, runs: inner.runs, entered, finish: () => finish() };
 }
 
-/** A registry whose manifest lists `versions`, each with its own fields. */
 function registry(versions: Record<string, Record<string, unknown>>, status = 200) {
   const asked: string[] = [];
   const fetchManifest = (async (url: string | URL | Request) => {
@@ -120,7 +104,6 @@ function registry(versions: Record<string, Record<string, unknown>>, status = 20
   return { fetchManifest, asked };
 }
 
-/** A package manager that puts `version`'s host in place, as npm would. */
 function manager(): { ops: InstallOps; runs: string[] } {
   const runs: string[] = [];
   return {
@@ -172,8 +155,7 @@ test("the suite runs with the notice off, so the hosts its tests start don't rea
 });
 
 
-/** Make the first directory sync after a rename onto `path` fail, as a disk
- *  might once the rename has put the file in place. */
+/** A disk can fail a directory's sync once a rename has put the file in place. */
 function failSyncAfterRenameTo(path: string) {
   const rename = fs.renameSync;
   const fsync = fs.fsyncSync;
@@ -221,7 +203,6 @@ describe('the notice', () => {
       '[update] Notes: https://github.com/anima-research/connectome-host/blob/v0.13.1/CHANGELOG.md',
       expect.stringContaining('This host wasn\'t started through an install\'s entry point'),
     ]);
-    // The same release isn't noticed again.
     await update.readRegistry();
     expect(log).toHaveLength(7);
   });
@@ -256,7 +237,6 @@ describe('the notice', () => {
       update.startChecks();
       expect(asked).toHaveLength(1);
       expect(update.status().checks).toBe(true);
-      // One timer, once a day, which reads again.
       expect(timers).toHaveBeenCalledTimes(1);
       const [daily, every] = timers.mock.calls[0]! as unknown as [() => void, number];
       expect(every).toBe(24 * 60 * 60 * 1000);
@@ -355,24 +335,19 @@ describe('Update', () => {
     const { update } = hostUpdate({ root, dataDir, installOps: failing, fetchManifest: registry({ '0.13.0': {} }).fetchManifest });
     expect((await update.install()).done).toBe(false);
     expect(update.status()).toMatchObject({ installing: null, lastInstall: { version: '0.13.0', ok: false } });
-    // The install's own error names the release, so the line leads with it.
     expect(statusLines(update.status()).some((line) => line.startsWith("Last install: Installing 0.13.0 failed, so it isn't installed: ")))
       .toBe(true);
-    // An error that isn't the installer's own refusal, which doesn't name it, is given the release.
     const broke: InstallOps = { run: async () => { throw new Error('EIO: i/o error, write'); }, report: () => {} };
     const raw = hostUpdate({ root, dataDir, installOps: broke, fetchManifest: registry({ '0.13.0': {} }).fetchManifest }).update;
     expect(await raw.install()).toEqual({ done: false, lines: ['Installing 0.13.0 failed: EIO: i/o error, write'] });
     expect(raw.status().lastInstall).toMatchObject({ ok: false, error: 'Installing 0.13.0 failed: EIO: i/o error, write' });
-    // An install under way hides the last one that failed.
     expect(statusLines({ ...raw.status(), installing: '0.13.0' }).some((line) => line.startsWith('Last install:'))).toBe(false);
   });
 });
 
 describe('Restart', () => {
-  test('quiesces, and once drained writes the mark and stops the host', async () => {
+  test('quiesces, and once drained writes the mark and stops the host, for the newest exact version whose host is in place', async () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0', '0.13.0-rc.1', '0.11.0']);
-    // A newer entry whose host isn't in place there is no release to switch
-    // to, and an entry not named by an exact version is no release at all.
     mkdirSync(join(root, 'releases', '0.14.0'));
     placeRelease(root, 'latest');
     const { framework, calls } = fakeFramework();
@@ -406,12 +381,10 @@ describe('Restart', () => {
     expect(busy.lines).toContain('- this host: mid-turn: alice');
     expect(readMark(root)).toBeNull();
     expect(update.status().restart).toMatchObject({ phase: 'busy', hosts: [{ host: 'this host', drained: false, activeTurnAgents: ['alice'] }] });
-    // Its own quiesce, which it carries out, isn't one left standing.
     expect(update.status().switchQuiesceLeft).toBe(false);
     expect((await update.restartToInstalled()).lines).toEqual(['The restart to 0.13.0 is waiting on turns to end: /update ' +
       'restart wait, /update restart now or /update restart resume.']);
     const waiting = update.waitLonger();
-    // Quiescing again, it shows no busy list from before, and its wait hasn't run out.
     expect(update.status().restart).toMatchObject({ phase: 'quiescing', hosts: [] });
     expect((await update.stopNow()).lines).toEqual(["No restart's wait for turns to end has run out, so there is nothing to wait longer for or stop now."]);
     expect((await waiting).done).toBe(false);
@@ -419,7 +392,6 @@ describe('Restart', () => {
     expect(resumed).toEqual({ done: true, lines: ['The restart to 0.13.0 is called off, and nothing switches.'] });
     expect(calls.at(-1)).toBe('resume');
     expect(update.status().restart).toBeNull();
-    // Again, then stop now: the mark, then the stop, with the turn still held.
     await update.restartToInstalled();
     expect(await update.stopNow()).toMatchObject({ done: true });
     expect(readMark(root)?.to).toBe('0.13.0');
@@ -453,7 +425,6 @@ describe('Restart', () => {
     expect((await first).done).toBe(true);
     expect((await update.restartToInstalled()).lines).toEqual(["The restart to 0.13.0 is stopping the host, for its next start."]);
     expect((await update.install()).lines).toEqual(['The restart to 0.13.0 is under way.']);
-    // A Go back under way is named as one in the answers too.
     const back = install('0.13.0', ['0.12.1']);
     placeCopy(back.root, back.dataDir, '0.12.1', 'm1');
     let releaseBack: () => void = () => {};
@@ -548,7 +519,6 @@ describe('Restart', () => {
     expect(calls).toEqual(['resume']);
     expect(update.status().switchQuiesceLeft).toBe(false);
     expect(await update.resume()).toEqual({ done: true, lines: ['No restart is waiting, and no host was quiesced for a switch.'] });
-    // One a resume can't end says so, and how else it ends.
     const stuck = fakeFramework({ quiesced: switchQuiesceReason('0.13.0'), resumeFails: new Error('it would wedge') });
     const failing = hostUpdate({ root, dataDir, framework: stuck.framework }, { supervised: true }).update;
     expect(await failing.resume()).toEqual({ done: false, lines: [
@@ -556,7 +526,6 @@ describe('Restart', () => {
       expect.stringMatching(/^this host: it stays quiesced, since agent-framework refused its resume \(it would wedge\)/),
       "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
     ] });
-    // Ended on one host and not another, it says both.
     const kid: SwitchFleet = { runningChildren: () => [{ name: 'kid' }], requestSwitch: async () => ({ ok: true, data: { resumed: true } }) };
     const partly = hostUpdate({ root, dataDir, framework: stuck.framework, fleet: kid }, { supervised: true }).update;
     expect(await partly.resume()).toEqual({ done: false, lines: [
@@ -564,7 +533,6 @@ describe('Restart', () => {
       expect.stringMatching(/^this host: it stays quiesced, since agent-framework refused its resume \(it would wedge\)/),
       "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
     ] });
-    // A fleet child has no restart of its own: its parent's quiesce isn't one left standing.
     expect(hostUpdate({ framework: stuck.framework }).update.status().switchQuiesceLeft).toBe(false);
   });
 
@@ -599,7 +567,7 @@ describe('Restart', () => {
 
   test("the busy lines and try later's say what each host's own answer says", async () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
-    // Undrained with no agent listed: a wake parked on provider admission.
+    // agent-framework is undrained with no agent listed while a wake is parked on provider admission.
     const { framework } = fakeFramework({ holders: [], drainAfter: Infinity, resumeFails: new Error('a resume is under way') });
     const fleet: SwitchFleet = {
       runningChildren: () => [{ name: 'kid' }, { name: 'busy' }, { name: 'gone' }],
@@ -636,7 +604,6 @@ describe('Restart', () => {
 
   test("a mark that can't be written calls the restart off and ends the switch's quiesce", async () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
-    // A directory in the mark's place, which the mark's rename can't replace.
     mkdirSync(join(installPaths(root).mark, 'in-the-way'), { recursive: true });
     const { framework, calls } = fakeFramework();
     const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
@@ -652,7 +619,6 @@ describe('Restart', () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
     const { framework, calls } = fakeFramework();
     const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
-    // The directory's sync fails, after the rename has put the mark in place.
     const spies = failSyncAfterRenameTo(installPaths(root).mark);
     let answer;
     try {
@@ -718,7 +684,6 @@ describe('Restart', () => {
     expect((await update.restartToInstalled()).lines).toEqual(['An install of 0.13.1 is under way. Restart once it has ended.']);
     slow.finish();
     await installing;
-    // What says which release runs, which releases are installed, or what Go back offers, can't be read.
     rmSync(installPaths(root).current);
     writeFileSync(installPaths(root).current, '0.12.1');
     expect((await update.restartToInstalled()).lines[0]).toStartWith("Which release the install runs on can't be read: ");
@@ -796,7 +761,6 @@ describe('Go back', () => {
     ]);
     expect(statusLines(update.status())).toContain('Going back to 0.12.1 is offered, with the copy of its data taken ' +
       '2026-10-20T10:00:00.000Z: /update back says what each way does.');
-    // A copy whose label can't be read says so, rather than that none is offered.
     writeFileSync(copyLabelPath(installPaths(root).copy), 'not json');
     expect(goBackLines(update.status())).toEqual([expect.stringMatching(/^Whether a Go back is offered can't be told: ./)]);
     placeCopy(root, dataDir, '0.12.1', 'm1');
@@ -846,7 +810,6 @@ describe('the last switch', () => {
     });
     expect(statusLines(status)).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:00:00.000Z, from a ' +
       "try of 0.13.0: 0.13.0 ended before its commit. The service's log, or the terminal the host was started in, says more.");
-    // One it kept with no lines says the same.
     writeJsonAtomic(installPaths(root).trialLog, { v: 1, release: '0.13.0', mark: 'm1', lines: [] });
     const empty = hostUpdate({ root, dataDir }).update.status();
     expect(empty.lastSwitch).toMatchObject({ outcome: 'fell-back', trialLog: [] });
@@ -888,7 +851,6 @@ test('nothing it reads can make the status throw', () => {
   expect(status.lastSwitch).toBeNull();
   expect(status.problems).toEqual([expect.stringContaining("the last switch: Line 1 of the journal")]);
   expect(readFileSync(installPaths(root).journal, 'utf-8')).toBe('not json\n');
-  // Nor what the framework, releases/ or the copy's label say.
   const framework: QuiesceFramework = { ...fakeFramework().framework, getHostModeStatus: () => { throw new Error('it has stopped'); } };
   rmSync(join(root, 'releases'), { recursive: true });
   writeFileSync(join(root, 'releases'), '');
@@ -912,13 +874,11 @@ test("/update's text names an install and a restart under way, and what's instal
   expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
     .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.']);
-  // One whose trial just ended before its commit is still installed, and a restart tries it again.
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
   expect(statusLines({ ...base, installed: '0.12.2', lastSwitch: fellBack })).toContain(
     '0.12.2 is installed, and ended before its commit at its last try: /update restart tries it again.');
   expect(statusLines({ ...base, installed: '0.12.3', lastSwitch: fellBack })).toContain('0.12.3 is installed: /update restart switches to it.');
   const restart = { to: '0.13.0', why: 'update', keepData: false, hosts: [] } as const;
-  // A restart waiting on turns says who is still busy, as its answer did.
   const busy: HostQuiet[] = [
     { host: 'this host', answered: true, drained: false, activeTurnAgents: ['alice'], backgroundScripts: 1 },
     { host: 'kid', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 },
@@ -933,7 +893,6 @@ test("/update's text names an install and a restart under way, and what's instal
   expect(statusLines({ ...base, restart: { ...restart, phase: 'ending' } }).at(-1)).toBe("The restart to 0.13.0 is being called off, ending the switch's quiesce.");
   expect(statusLines({ ...base, restart: { ...restart, why: 'go-back', phase: 'stopping' } }).at(-1))
     .toBe('The Go back to 0.13.0 is stopping the host, for its next start.');
-  // The registry's error, npm's deprecation message and a committed switch, as /update shows them.
   expect(statusLines({ ...base, check: { at: '2026-10-24T05:00:00.000Z', ok: false, error: 'getaddrinfo ENOTFOUND' } })[1])
     .toBe('Reading the registry failed at 2026-10-24T05:00:00.000Z: getaddrinfo ENOTFOUND');
   const deprecated = { at: '2026-10-24T05:00:00.000Z', ok: true, candidate: null, costs: [], bunFloorUnmet: null, runningDeprecated: 'use 0.12.2' } as const;
@@ -973,9 +932,6 @@ describe('/update', () => {
       spyOn(theHostUpdate, 'goBack').mockImplementation(async (keepData, expected) => { calls.push(`back ${keepData} ${expected}`); return answer; }),
     ];
     try {
-      // What the page sends (commandFor): each way but Go back, which opens its
-      // dialog, and Check now, which is /update itself (above). Restart and
-      // Go back's two ways name the release the page showed.
       const shown: UpdateStatus = {
         running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: '0.13.1',
         goBack: { to: '0.12.0', since: 'then' }, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null,
@@ -984,7 +940,6 @@ describe('/update', () => {
       const ways = (Object.keys(COMMAND_WAYS) as UpdateWay[]).filter((way) => way !== 'back' && way !== 'check');
       for (const way of ways) expect((await run(commandFor(way, shown)!)).at(-1)).toBe('answered');
       expect(calls).toEqual(['install', 'restart 0.13.1', 'wait', 'now', 'resume', 'back true 0.12.0', 'back false 0.12.0']);
-      // Typed without a release, they act on whatever the host holds; a prerelease is a release too.
       for (const line of ['/update restart', '/update back keep', '/update restart 0.13.1-rc.1', '/update back restore 0.12.0-rc.2']) {
         expect((await run(line)).at(-1)).toBe('answered');
       }

@@ -1,16 +1,3 @@
-/**
- * RetrievalModule — LLM-as-retriever for semantic memory.
- *
- * Three-step retrieval pipeline running in gatherContext():
- *   1. Flag concepts: identify concepts being discussed that might benefit
- *      from background knowledge
- *   2. Mechanical query: keyword-match against LessonsModule
- *   3. Validate relevance: filter to actually relevant lessons
- *
- * Steps 1 and 3 use the configured retrieval model and optional reasoning.
- * Results are cached to avoid redundant calls on unchanged context.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -23,17 +10,14 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
-import type { ContextInjection } from '@animalabs/context-manager';
+import { bodyBoundsIn, type BodyShard, type ContextInjection } from '@animalabs/context-manager';
 import type { LessonsModule, Lesson } from './lessons-module.js';
+import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 import {
   RetrievalTraceStore,
   type RetrievalTraceListOptions,
   type RetrievalTraceRun,
 } from './retrieval-trace.js';
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
 
 export type RetrievalReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -45,24 +29,34 @@ interface RecentRetrievalContext {
   text: string;
   messageCount: number;
   messageIds: string[];
+  opening: OpeningMessage | undefined;
 }
+
+interface OpeningMessage {
+  key: string | null;
+  excerpt: string | undefined;
+}
+
+interface TurnBlock {
+  key: string | null;
+  injections: ContextInjection[];
+  lessonIds: string[];
+  lessons: Lesson[];
+  sourceTraceId: number | undefined;
+}
+
+const TURN_BLOCKS_MAX = 64;
+
+const EXCERPT_CHARS = 60;
 
 export interface RetrievalModuleConfig {
-  /** Membrane instance for retrieval calls */
   membrane: Membrane;
-  /** Model to use for retrieval calls (default: claude-haiku-4-5-20251001) */
   retrievalModel?: string;
-  /** Optional OpenAI reasoning effort, applied to both retrieval LLM stages. */
   retrievalReasoning?: RetrievalReasoningConfig;
-  /** Max lessons to inject (default: 5) */
   maxInjectedLessons?: number;
-  /** Minimum lesson confidence for injection (default: 0.3) */
+  maxMessageTokens?: number;
   minConfidence?: number;
 }
-
-// ---------------------------------------------------------------------------
-// Prompts
-// ---------------------------------------------------------------------------
 
 const CONCEPT_FLAG_PROMPT = `You are a knowledge retrieval assistant. Given the recent conversation below, identify concepts, entities, topics, or themes that might benefit from background knowledge or lessons learned from previous research.
 
@@ -76,20 +70,109 @@ Return ONLY a JSON array of lesson IDs that are relevant, nothing else. Example:
 
 If none are relevant, return an empty array: []`;
 
-// ---------------------------------------------------------------------------
-// Module
-// ---------------------------------------------------------------------------
+
+interface ShownRow {
+  id?: unknown;
+  participant: string;
+  content: ReadonlyArray<{ type: string; text?: unknown }>;
+  metadata?: unknown;
+  bodyGroupId?: unknown;
+  shardIndex?: unknown;
+}
+
+// context-manager's shard group id names the text, so two messages of the
+// same text share it: `bodyBoundsIn` tells them apart by store order and
+// shard index.
+function bodyShardsOf(shown: readonly ShownRow[]): BodyShard[] {
+  return shown.map(r => ({
+    bodyGroupId: typeof r.bodyGroupId === 'string' ? r.bodyGroupId : undefined,
+    shardIndex: typeof r.shardIndex === 'number' ? r.shardIndex : undefined,
+  }));
+}
+
+const holdsATool = (row: ShownRow): boolean => row.content.some(b => b.type === 'tool_use' || b.type === 'tool_result');
+
+const SELF_WAKE_SOURCE = 'gate:self-wake';
+
+function openingMessageOf(shown: readonly ShownRow[], agentName: string): OpeningMessage | undefined {
+  const bodies = bodyShardsOf(shown);
+  for (let i = shown.length - 1; i >= 0; i--) {
+    const row = shown[i]!;
+    const { from, to } = bodyBoundsIn(bodies, i);
+    if (!isAMessageTo(row, agentName) || shown.slice(from, to + 1).some(holdsATool)) {
+      i = from;
+      continue;
+    }
+    let id: unknown;
+    try {
+      id = row.id;
+    } catch {
+      return undefined;
+    }
+    if (typeof id !== 'string' && typeof id !== 'number') return undefined;
+    return { key: String(id), excerpt: excerptOf(textOfMessage(shown, bodyBoundsIn(bodies, i))) };
+  }
+  return { key: null, excerpt: undefined };
+}
+
+function isAMessageTo(row: ShownRow, agentName: string): boolean {
+  if (row.participant === agentName || row.participant === 'system') return false;
+  const metadata = row.metadata as { system?: unknown; source?: unknown } | undefined;
+  return metadata?.system !== true && metadata?.source !== SELF_WAKE_SOURCE;
+}
+
+function textOfMessage(shown: readonly ShownRow[], { from, to }: { from: number; to: number }): string {
+  const textOf = (r: ShownRow): string => r.content
+    .filter(b => b.type === 'text' && typeof b.text === 'string')
+    .map(b => b.text as string)
+    .join(' ');
+  return shown.slice(from, to + 1).map(textOf).join('');
+}
+
+function lessonLine(l: Lesson): string {
+  return `- [${(l.confidence * 100).toFixed(0)}%] ${l.content} (tags: ${l.tags.join(', ')})`;
+}
+
+// Tokens are counted as context-manager's estimateTextOnlyTokens counts a
+// text block (its length in UTF-16 code units / 4, rounded up), and a cap
+// that isn't a positive number is none, as its capContent reads it, so the
+// block fits exactly when the strategy wouldn't cut it.
+function fitUnderCap(heading: string, lessons: Lesson[], cap: number | undefined): { text: string; lessons: Lesson[] } {
+  const compose = (kept: string[], leftOut: number): string => [
+    heading,
+    ...kept,
+    ...(leftOut > 0 ? [`(${leftOut} more relevant lesson${leftOut === 1 ? '' : 's'} left out, to keep this message under its size limit)`] : []),
+  ].join('\n');
+  const fits = (text: string): boolean => !(cap !== undefined && cap > 0) || Math.ceil(text.length / 4) <= cap;
+  const all = compose(lessons.map(lessonLine), 0);
+  if (fits(all)) return { text: all, lessons };
+  const kept: Lesson[] = [];
+  const lines: string[] = [];
+  for (const lesson of lessons) {
+    const line = lessonLine(lesson);
+    if (fits(compose([...lines, line], lessons.length - kept.length - 1))) {
+      kept.push(lesson);
+      lines.push(line);
+    }
+  }
+  return { text: compose(lines, lessons.length - kept.length), lessons: kept };
+}
+
+function excerptOf(text: string): string | undefined {
+  const line = text.replace(/\s+/g, ' ').trim();
+  if (line === '') return undefined;
+  const chars = Array.from(line);
+  return chars.length <= EXCERPT_CHARS ? line : `${chars.slice(0, EXCERPT_CHARS).join('').trimEnd()}…`;
+}
 
 export class RetrievalModule implements Module {
   readonly name = 'retrieval';
 
   private ctx: ModuleContext | null = null;
   private config: RetrievalModuleConfig;
-  private lastContextHash = '';
-  private cachedInjections: ContextInjection[] = [];
-  private cachedLessonIds: string[] = [];
-  private cachedLessons: Lesson[] = [];
-  private cachedSourceTraceId: number | undefined;
+  private readonly turnBlocks = new Map<string, TurnBlock>();
+  private starts = 0;
+  private readonly latestStarts = new Map<string, number>();
   private readonly traceStore = new RetrievalTraceStore();
 
   constructor(config: RetrievalModuleConfig) {
@@ -105,7 +188,6 @@ export class RetrievalModule implements Module {
   }
 
   getTools(): ToolDefinition[] {
-    // RetrievalModule is passive — no tools, only gatherContext
     return [];
   }
 
@@ -117,7 +199,6 @@ export class RetrievalModule implements Module {
     return {};
   }
 
-  /** Recent retrieval runs, newest first. Exact conversation inputs are opt-in. */
   getRetrievalTraces(options?: RetrievalTraceListOptions) {
     return this.traceStore.list(options);
   }
@@ -141,10 +222,17 @@ export class RetrievalModule implements Module {
     }
   }
 
-  /**
-   * Run the 3-step retrieval pipeline before each inference.
-   */
   async gatherContext(agentName: string): Promise<ContextInjection[]> {
+    const start = ++this.starts;
+    this.latestStarts.set(agentName, start);
+    try {
+      return await this.gather(agentName, start);
+    } finally {
+      if (this.latestStarts.get(agentName) === start) this.latestStarts.delete(agentName);
+    }
+  }
+
+  private async gather(agentName: string, start: number): Promise<ContextInjection[]> {
     const trace = this.beginTrace(agentName);
     if (!this.ctx) {
       trace?.finish('not-started');
@@ -153,19 +241,14 @@ export class RetrievalModule implements Module {
 
     let lessons: Lesson[];
     let recentMessages: string;
-    let contextHash: string;
+    let opening: OpeningMessage | undefined;
     try {
-      // These lookups, eligibility checks, context rendering, and hashing are
-      // pre-existing throwing paths. Record their failure, then preserve the
-      // upstream rejection rather than applying the provider-stage fail-open.
       const lessonsModule = this.ctx.getModule<LessonsModule>('lessons');
       if (!lessonsModule) {
         trace?.finish('no-lessons-module');
         return [];
       }
 
-      // A lesson with no content has nothing to inject, though its tags
-      // could still match: it would be injected as a blank entry.
       lessons = lessonsModule.getLessons().filter(
         l => !l.deprecated && l.confidence >= (this.config.minConfidence ?? 0.3) && l.content.trim() !== ''
       );
@@ -180,19 +263,16 @@ export class RetrievalModule implements Module {
         return [];
       }
       recentMessages = recent.text;
+      opening = recent.opening;
 
-      // Check cache: if context hasn't changed, reuse cached results.
-      contextHash = this.hashContext(recentMessages);
-      trace?.setContext(contextHash, recentMessages, recent.messageCount, recent.messageIds);
-      if (contextHash === this.lastContextHash && this.cachedInjections.length > 0) {
-        trace?.recordCacheHit(
-          this.cachedSourceTraceId,
-          this.cachedLessonIds,
-          this.cachedLessons,
-          this.cachedInjections,
-        );
+      trace?.setContext(this.hashContext(recentMessages), recentMessages, recent.messageCount, recent.messageIds);
+      const kept = this.turnBlocks.get(agentName);
+      if (opening && kept && kept.key === opening.key) {
+        this.turnBlocks.delete(agentName);
+        this.turnBlocks.set(agentName, kept);
+        trace?.recordCacheHit(kept.sourceTraceId, kept.lessonIds, kept.lessons, kept.injections);
         trace?.finish('cache-hit');
-        return this.cachedInjections;
+        return kept.injections;
       }
     } catch (error) {
       trace?.finish('error', error);
@@ -200,97 +280,72 @@ export class RetrievalModule implements Module {
     }
 
     try {
-      // Step 1: Flag concepts
       const concepts = await this.flagConcepts(recentMessages, trace);
-      if (concepts.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
+      if (concepts === null || concepts.length === 0) {
+        if (concepts !== null) this.keepTurnBlock(agentName, start, opening, [], []);
         trace?.finish('no-concepts');
         return [];
       }
 
-      // Step 2: Mechanical query (keyword matching)
       const candidates = this.queryCandidates(concepts, lessons);
       trace?.recordCandidates(concepts, candidates);
       if (candidates.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
+        this.keepTurnBlock(agentName, start, opening, [], []);
         trace?.finish('no-candidates');
         return [];
       }
 
-      // Step 3: Validate relevance
-      const relevant = await this.validateRelevance(recentMessages, candidates, trace);
+      const { lessons: relevant, validated } = await this.validateRelevance(recentMessages, candidates, trace);
       trace?.recordRelevant(relevant);
 
-      // Build injection
       const maxLessons = this.config.maxInjectedLessons ?? 5;
       const injected = relevant.slice(0, maxLessons);
 
       if (injected.length === 0) {
-        this.lastContextHash = contextHash;
-        this.cachedInjections = [];
-        this.cachedLessonIds = [];
-        this.cachedLessons = [];
-        this.cachedSourceTraceId = undefined;
+        if (validated) this.keepTurnBlock(agentName, start, opening, [], []);
         trace?.finish('no-relevant-lessons');
         return [];
       }
 
-      const text = injected
-        .map(l => `- [${(l.confidence * 100).toFixed(0)}%] ${l.content} (tags: ${l.tags.join(', ')})`)
-        .join('\n');
-
+      const heading = opening?.excerpt !== undefined
+        ? `## Retrieved Knowledge, for the message beginning "${opening.excerpt}"`
+        : '## Retrieved Knowledge';
+      const fitted = fitUnderCap(heading, injected, this.config.maxMessageTokens);
+      if (fitted.lessons.length === 0) {
+        if (validated) this.keepTurnBlock(agentName, start, opening, [], []);
+        trace?.finish('too-large');
+        return [];
+      }
       const injections: ContextInjection[] = [{
         namespace: 'retrieval',
-        // 'afterUser', NOT 'system': retrieval content changes with recent
-        // context (contextHash above), so injecting it into the system prompt
-        // churns the very front of the KV cache and invalidates the entire
-        // prefix every turn. Tail injection keeps the stable prefix cached.
+        // Not 'system': this changes every turn, and a provider caches a prompt
+        // by its prefix, so a changing system prompt would lose the whole
+        // cached prefix each turn.
         position: 'afterUser',
-        content: [{ type: 'text', text: `## Retrieved Knowledge\n${text}` }],
+        content: [{ type: 'text', text: fitted.text }],
       }];
 
-      this.lastContextHash = contextHash;
-      this.cachedInjections = injections;
-      this.cachedLessons = this.safeLessonSnapshots(injected);
-      this.cachedLessonIds = this.safeLessonIds(this.cachedLessons);
-      this.cachedSourceTraceId = trace?.id;
-      trace?.recordInjection(injected, injections);
+      if (validated) this.keepTurnBlock(agentName, start, opening, injections, this.safeLessonSnapshots(fitted.lessons), trace?.id);
+      trace?.recordInjection(fitted.lessons, injections);
       trace?.finish('injected');
       return injections;
     } catch (err) {
-      // Fail open — don't block inference if retrieval fails
       trace?.finish('error', err);
       console.error('RetrievalModule: retrieval failed:', err);
       return [];
     }
   }
 
-  // =========================================================================
-  // Pipeline Steps
-  // =========================================================================
-
-  /** Build OpenAI request parameters for configured retrieval reasoning effort. */
   private retrievalProviderParams(): Record<string, unknown> | undefined {
     const reasoning = this.config.retrievalReasoning;
     if (!reasoning) return undefined;
     return { reasoning: { effort: reasoning.effort } };
   }
 
-  /**
-   * Step 1: Use the configured retrieval model to identify concepts that might benefit from background knowledge.
-   */
   private async flagConcepts(
     recentContext: string,
     trace?: RetrievalTraceRun,
-  ): Promise<string[]> {
+  ): Promise<string[] | null> {
     const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
     const providerParams = this.retrievalProviderParams();
     const input = `Recent conversation:\n${recentContext}`;
@@ -329,7 +384,6 @@ export class RetrievalModule implements Module {
       }
       trace?.finishConceptExtraction(text, [], 'invalid', response.content);
     } catch {
-      // Try to extract an array from a prose/markdown wrapper.
       const match = text.match(/\[([^\]]*)\]/);
       if (match) {
         try {
@@ -337,21 +391,15 @@ export class RetrievalModule implements Module {
           if (Array.isArray(parsed)) {
             const traceValues = parsed.filter((value): value is string => typeof value === 'string');
             trace?.finishConceptExtraction(text, traceValues, 'array-extraction', response.content);
-            // Preserve the historical malformed-wrapper behavior exactly: mixed
-            // arrays proceed to queryCandidates(), which then fails open rather
-            // than silently becoming a different, partially valid concept set.
             return parsed as string[];
           }
-        } catch { /* fall through */ }
+        } catch { }
       }
       trace?.finishConceptExtraction(text, [], 'invalid', response.content);
     }
-    return [];
+    return null;
   }
 
-  /**
-   * Step 2: Mechanical keyword matching against lessons.
-   */
   private queryCandidates(concepts: string[], lessons: Lesson[]): Lesson[] {
     const seen = new Set<string>();
     const candidates: Lesson[] = [];
@@ -365,7 +413,6 @@ export class RetrievalModule implements Module {
         const text = lesson.content.toLowerCase();
         const tags = lesson.tags.map(t => t.toLowerCase());
 
-        // Match if any keyword appears in content or tags
         const matches = keywords.some(kw =>
           text.includes(kw) || tags.some(tag => tag.includes(kw))
         );
@@ -377,23 +424,18 @@ export class RetrievalModule implements Module {
       }
     }
 
-    // Sort by confidence
     candidates.sort((a, b) => b.confidence - a.confidence);
-    return candidates.slice(0, 20); // Cap at 20 candidates for validation
+    return candidates.slice(0, 20);
   }
 
-  /**
-   * Step 3: Use the configured retrieval model to validate which candidates are actually relevant.
-   */
   private async validateRelevance(
     recentContext: string,
     candidates: Lesson[],
     trace?: RetrievalTraceRun,
-  ): Promise<Lesson[]> {
+  ): Promise<{ lessons: Lesson[]; validated: boolean }> {
     if (candidates.length <= 3) {
-      // If only a few candidates, skip validation — they're probably all relevant.
       trace?.recordRelevanceSkipped('three-or-fewer-candidates');
-      return candidates;
+      return { lessons: candidates, validated: true };
     }
 
     const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
@@ -435,37 +477,54 @@ export class RetrievalModule implements Module {
         const parsedIds = parsed.filter((value): value is string => typeof value === 'string');
         trace?.finishRelevance(text, parsedIds, 'json', response.content);
         const relevantIds = new Set(parsedIds);
-        return candidates.filter(l => relevantIds.has(l.id));
+        return { lessons: candidates.filter(l => relevantIds.has(l.id)), validated: true };
       }
     } catch {
-      // Fall through to confidence-ordered fallback.
     }
 
     const fallback = candidates.slice(0, 5);
     trace?.finishRelevance(text, [], 'fallback', response.content);
-    return fallback;
+    return { lessons: fallback, validated: false };
   }
 
-  // =========================================================================
-  // Helpers
-  // =========================================================================
+  private keepTurnBlock(
+    agentName: string,
+    start: number,
+    opening: OpeningMessage | undefined,
+    injections: ContextInjection[],
+    lessons: Lesson[],
+    sourceTraceId?: number,
+  ): void {
+    if (!opening || this.latestStarts.get(agentName) !== start) return;
+    this.turnBlocks.delete(agentName);
+    this.turnBlocks.set(agentName, {
+      key: opening.key,
+      injections,
+      lessons,
+      lessonIds: this.safeLessonIds(lessons),
+      sourceTraceId,
+    });
+    while (this.turnBlocks.size > TURN_BLOCKS_MAX) {
+      const oldest = this.turnBlocks.keys().next().value as string;
+      this.turnBlocks.delete(oldest);
+    }
+  }
 
   private getRecentContext(agentName: string): RecentRetrievalContext | null {
     if (!this.ctx) return null;
 
-    // Get the last few messages of the conversation the agent gathering is
-    // shown: each agent's context follows its own window (agent-framework
-    // #291), so the read is that agent's, not the primary's. A row marked
-    // `held: true` is stored and not in that agent's window: it arrived while
-    // its turn was alive and enters the window at a later point, not in the
-    // request these lessons go into, or it is an undone turn's. A row marked
-    // `heldFromResidents` arrived in a tuned-out channel, and no resident is
-    // shown it. So the window keeps to the stored rows the agent is shown.
+    // Each agent's context follows its own window (agent-framework #291), so
+    // the read is the gathering agent's. agent-framework marks a stored row
+    // that is not in that agent's window `held` (it enters at a later point,
+    // or it is an undone turn's), and a row a tune-out holds from the
+    // residents `heldFromResidents` (stamped `metadata.tuneOut`), and shows a
+    // resident neither.
     const { messages } = this.ctx.queryMessages({}, { forAgent: agentName });
-    const shown = messages.filter(m => m.held !== true && m.heldFromResidents !== true);
+    const shown = messages.filter(m =>
+      m.held !== true && m.heldFromResidents !== true && !(m.metadata as { tuneOut?: unknown } | undefined)?.tuneOut
+      && storedInjectionMarkOf(m.metadata) === undefined);
     if (shown.length === 0) return null;
 
-    // Take the last 10 of them for context.
     const recent = shown.slice(-10);
     const text = recent
       .map(m => {
@@ -483,12 +542,11 @@ export class RetrievalModule implements Module {
           ? [String(candidate)]
           : [];
       } catch {
-        // Trace-only metadata must never alter retrieval behavior.
         return [];
       }
     });
 
-    return { text, messageCount: recent.length, messageIds };
+    return { text, messageCount: recent.length, messageIds, opening: openingMessageOf(shown, agentName) };
   }
 
   private safeLessonIds(lessons: Lesson[]): string[] {
@@ -497,7 +555,6 @@ export class RetrievalModule implements Module {
       try {
         if (typeof lesson.id === 'string') ids.push(lesson.id);
       } catch {
-        // Cache provenance is observability metadata; omit unreadable IDs.
       }
     }
     return ids;
@@ -521,14 +578,12 @@ export class RetrievalModule implements Module {
             : {}),
         });
       } catch {
-        // Trace-only lesson snapshots must not alter retrieval behavior.
       }
     }
     return snapshots;
   }
 
   private hashContext(text: string): string {
-    // Simple hash for cache invalidation
     let hash = 0;
     for (let i = 0; i < text.length; i++) {
       const chr = text.charCodeAt(i);

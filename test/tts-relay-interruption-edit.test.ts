@@ -1,9 +1,6 @@
 /**
- * TtsRelayModule's answer to an interruption: it edits the posted message down
- * to the voiced words, and tells the agent whether that edit went through.
- * From agent-framework 0.22.3 a module's `callTool` gets an MCPL server's error
- * result as a failure (`success: false`, `isError: true`, its text as `error`),
- * where it got one as a success, so a refused edit now reads as not trimmed.
+ * agent-framework hands a module's callTool an MCPL server's error result as a
+ * failure: `success: false`, `isError: true`, its text as `error`.
  */
 import { describe, expect, test } from 'bun:test';
 import type { ModuleContext } from '@animalabs/agent-framework';
@@ -71,11 +68,6 @@ describe('whom the interruption note is for', () => {
   });
 });
 
-// The edit target is a message the agent's prose published, as
-// agent-framework's `inference:published` reports it. agent-framework 0.24's
-// notes say `mcpl:speech-routed` also reports the `sleep` tool's announcement
-// and a subconscious's `speak_in_channel`, which an interruption must never
-// edit.
 describe('what an interruption may edit', () => {
   function relayOnTraces() {
     const calls: Array<{ name: string; input: unknown }> = [];

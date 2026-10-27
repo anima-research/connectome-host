@@ -171,9 +171,7 @@ never do.
   and bun's, stop there, in the publish job and by hand alike, unless
   scripts are off (`--ignore-scripts`, which skips the release holds
   too). The
-  root `postinstall` builds the Web UI only in a checkout, where `web/` is:
-  the package doesn't ship `web/`, so on a registry install it does
-  nothing. When the check fails on a tag, the
+  package has no install script, so a registry install runs nothing. When the check fails on a tag, the
   notes are out and npm isn't. Re-run the failed jobs first: a registry or
   network blip, or a timeout, passes then. If it fails the same way again,
   fix the break, which can be a dependency's new release, and release the
@@ -225,6 +223,7 @@ never do.
 
 ```bash
 bun install
+bun run build:web   # the Web UI, which nothing builds on install
 bun test            # test suite
 bunx tsc --noEmit   # typecheck the host's source (src/)
 (cd web && bunx tsc --noEmit)   # typecheck the web app

@@ -1,17 +1,3 @@
-/**
- * Two recipe knobs that expose configuration the stack already had underneath
- * but the host never surfaced:
- *
- * - `agent.retry` → Membrane's retry policy. Membrane's default retries
- *   generic retryable errors zero times (only 529/overloaded_error gets the
- *   patient schedule), so a gateway 502 killed the turn on first failure with
- *   no recipe-side remedy.
- * - `mcpServers.<id>.requestTimeoutMs` → the framework's per-server JSON-RPC
- *   timeout (default 60s), which slow tools such as image generation exceed.
- *
- * Both must validate at recipe-load time — a typo should fail loudly there,
- * not as a silently-ignored field at first inference.
- */
 import { describe, expect, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 

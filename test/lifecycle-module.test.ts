@@ -110,7 +110,6 @@ describe('LifecycleModule', () => {
     const byOther = await module.handleToolCall(call({ cancel: true }, 'helper'));
     expect(String(byOther.data)).toContain('Cancelled the restart main asked for');
 
-    // A request whose file is already gone cancels all the same.
     await module.handleToolCall(call({ reason: 'once more' }));
     unlinkSync(join(dataDir, SELF_RESTART_FILE));
     const gone = await module.handleToolCall(call({ cancel: true }));
@@ -181,7 +180,6 @@ describe('LifecycleModule', () => {
     const last = JSON.parse(readFileSync(join(before.dataDir, SELF_RESTART_LAST_FILE), 'utf-8'));
     expect(last).toMatchObject({ reason: 'pick up the new recipe', exitCode: 75, exitReason: 'self-restart', backAt: '2026-10-20T12:00:45.000Z', cleanExit: true });
 
-    // A second start in the same process (a session switch) adds nothing.
     await after.module.start(after.ctx);
     expect(after.added).toHaveLength(1);
   });

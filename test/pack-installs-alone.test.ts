@@ -1,11 +1,5 @@
-// Black-box coverage of scripts/pack-installs-alone.mjs: each case runs the
-// real script under node, as the publish workflow runs it, in a throwaway
-// stand-in for the host. The stand-in has no dependencies, so npm packs and
-// installs it offline with its own cache. Its tree has the built Web UI,
-// dist/web/index.html, which its `files` lists as the host's does, and its
-// src/index.ts answers the smoke run as batch mode with the mock recipe
-// does: '> line' for each line it reads, then the mock agent's queued reply,
-// and only with the Web UI off and the mock's echo off.
+// The stand-in has no dependencies, so npm packs and installs it offline with
+// its own cache.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -15,9 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/pack-installs-alone.mjs", import.meta.url));
-// The node on PATH, which runs the script as the workflows do (under
-// `bun test`, process.execPath is bun). Found once, since a case may hand
-// the script a PATH without it.
+// Under `bun test`, process.execPath is bun, so node is found on PATH.
 const NODE = execFileSync("sh", ["-c", "command -v node"], { encoding: "utf8" }).trim();
 const TIMEOUT_MS = 60_000;
 
@@ -35,10 +27,6 @@ if (recipe.agent?.name !== "zz-agent") { console.error("zz: the recipe's agent s
 const queue = [...(recipe.agent?.mock?.responseQueue ?? [])];
 for (const line of readFileSync(0, "utf8").split("\\n").filter(Boolean)) console.log(\`> \${line}\\n\\n\${helper(queue.shift() ?? "")}\`);
 `;
-/** A stand-in host: package.json from `pkg` (its `files` listing src,
- *  recipes, the built Web UI and tsconfig.json unless `pkg` says otherwise),
- *  and its files, `index` being src/index.ts's text, the built Web UI and
- *  tsconfig.json among them. */
 function standIn(pkg: Record<string, unknown>, index = HOST, extra: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "pack-installs-alone-test-"));
   made.push(dir);
@@ -84,9 +72,6 @@ function check(dir: string, env: Record<string, string> = {}): Promise<{ code: n
   });
 }
 
-/** A directory holding an `npm` that runs `body` with `args` (its
- *  arguments), `fs`, `bin` (this directory) and `pass()`, which runs the
- *  real npm with the same arguments. */
 function npmShim(body: string): string {
   const bin = mkdtempSync(join(tmpdir(), "pack-installs-alone-npm-"));
   made.push(bin);
@@ -115,8 +100,8 @@ test("a package that carries its Web UI, installs alone, resolves and gives its 
 }, TIMEOUT_MS);
 
 test("npm pack's JSON is read in npm 12's shape too, and a prepack's output doesn't break it", async () => {
-  // npm 12 prints an object keyed by package name: a shim in front of the
-  // real npm rewrites npm 11's array that way, and passes npm 12's through.
+  // npm 12 prints the pack's JSON as an object keyed by package name, npm 11 as
+  // an array.
   const bin = mkdtempSync(join(tmpdir(), "pack-installs-alone-npm12-"));
   made.push(bin);
   const realNpm = execFileSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).trim();
@@ -245,8 +230,6 @@ test("a working tree that differs from HEAD gets a warning, and is checked as it
   git("-c", "user.name=zz", "-c", "user.email=zz@zz.invalid", "add", "-A");
   git("-c", "user.name=zz", "-c", "user.email=zz@zz.invalid", "commit", "-q", "-m", "zz");
   const files = (out: string) => Number(/\((\d+) files\)/.exec(out)?.[1]);
-  // Committed with the built Web UI ignored, as the host's .gitignore has it:
-  // no warning for dist/web.
   const clean = await check(dir);
   assert.equal(clean.code, 0, clean.stderr);
   assert.doesNotMatch(clean.stderr, /warning/);
@@ -257,7 +240,6 @@ test("a working tree that differs from HEAD gets a warning, and is checked as it
     result.stderr,
     /^pack-installs-alone: warning: the working tree differs from HEAD in 1 path \(src\/untracked\.ts\)\. npm pack packs the working tree, so this run checks whichever of them the package includes, where the publish workflow packs a clean checkout\.$/m,
   );
-  // The untracked file went into the package that was checked.
   assert.equal(files(result.stdout), files(clean.stdout) + 1);
 }, TIMEOUT_MS * 2);
 
@@ -273,7 +255,6 @@ test("@opentui/core must load in the installed tree, its native package with it"
   assert.match(loads.stdout, /src\/index\.ts's imports resolve, @opentui\/core loads, and the offline smoke run answered\.$/m);
   const missing = await check(standIn(pkg, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(missing.code, 1);
-  // Listed as an optional dependency, it's probed all the same.
   const optional = { optionalDependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
   const optionalMissing = await check(standIn(optional, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(optionalMissing.code, 1);
@@ -284,8 +265,6 @@ test("@opentui/core must load in the installed tree, its native package with it"
   );
 }, TIMEOUT_MS * 3);
 
-// A child that ignores SIGTERM and would end on its own only after 90 s, so
-// a check that only asked it to stop at its limit would take that long.
 const DEAF = `process.on("SIGTERM", () => {});\nawait new Promise((resolve) => setTimeout(resolve, 90_000));\n`;
 
 test("a smoke run that doesn't finish is stopped at its limit, even one that ignores SIGTERM, and the limit must be a number", async () => {
@@ -313,8 +292,6 @@ test("an install that fails once and then succeeds passes on its second attempt"
 test("an install that runs out of time, even one that ignores SIGTERM, fails at once, saying so, without another attempt", async () => {
   const slow = npmShim(`if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\nelse pass();`);
   const start = Date.now();
-  // The real npm pack runs under this limit too, so it leaves pack room on a
-  // loaded runner.
   const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "10000" });
   assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
   assert.equal(result.code, 1);

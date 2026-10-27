@@ -1,6 +1,6 @@
 - **Installers and packagers:** connectome-host now declares
-  `@animalabs/agent-framework` `^0.28.0` (was `^0.26.1`),
-  `@animalabs/context-manager` `^0.23.0` (was `^0.20.1`) and
+  `@animalabs/agent-framework` `^0.28.0` (was `^0.27.0`),
+  `@animalabs/context-manager` `^0.23.0` (was `^0.22.1`) and
   `@animalabs/chronicle` `^0.5.0` (was `^0.4.0`): the releases that carry
   agent-framework #291's presentation index and the exports this release
   imports (`asOwnRow`, `storeOwnRow`, `residentContextOptions`,

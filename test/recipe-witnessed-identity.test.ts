@@ -1,8 +1,3 @@
-/**
- * A resident with reviewed inherited history: the recipe's witnessed and
- * live reminders reach the context-manager strategy unchanged
- * (witnessedIdentityReminder / identityReminder / identityReminderSilent).
- */
 import { describe, expect, test } from 'bun:test';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { validateRecipe } from '../src/recipe.js';

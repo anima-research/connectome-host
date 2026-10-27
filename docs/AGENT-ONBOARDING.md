@@ -22,7 +22,7 @@ A connectome agent is:
 - an **`.env`** with secrets and per-deploy config;
 - a **chronicle** (`data/`) — the event-sourced memory store, optionally seeded by importing
   a prior conversation;
-- run by the **connectome-host** (`bun src/index.ts <recipe> --headless`);
+- run by the **connectome-host** (`bun <the host's src/index.ts> <recipe> --headless`, §4);
 - under a **systemd --user** service, with a sibling **terminal-sessions** daemon for the shell tool.
 
 It reaches the model through **membrane** (Anthropic-format adapter; can target a gateway via
@@ -179,7 +179,8 @@ or their box owner if unsure):
   auth. If a `git clone` / `bun install` fails on access, check whether the repo moved
   rather than assuming a permissions gate.
 
-The repos (clone all as siblings under one dir, canonically `~/connectome-local/`):
+The repos, which the local-checkout route below clones as siblings under one dir, canonically
+`~/connectome-local/` (the stock route clones none of them):
 
 | repo | URL |
 |---|---|
@@ -195,25 +196,29 @@ The repos (clone all as siblings under one dir, canonically `~/connectome-local/
 
 Two ways to install — pick based on whether the user needs released or unreleased code:
 
-- **Stock (simplest, released versions):** clone just **connectome-host**, then inside it
-  `bun install` (pulls the `@animalabs/*` libs, chronicle's prebuilt native binary included;
-  its postinstall builds the web UI with npm). That postinstall swallows failures, so if
-  `dist/web/` is missing afterwards, run `npm run build:web`. Run with
-  `bun src/index.ts <recipe> --headless`. Its `README.md` quick-start documents exactly this.
-  Installed from npm instead, the package carries the web UI built.
+- **Stock (simplest, released versions):** install the released host from npm into the agent's
+  install dir (§5), with no clone: `mkdir -p ~/<agent>-cm && cd ~/<agent>-cm && bun add
+  @animalabs/connectome-host`. That pulls the `@animalabs/*` libs from npm too, chronicle's
+  prebuilt native binary included, into the install dir's own `node_modules`, and the package
+  carries the web UI built. Run it with `bun node_modules/@animalabs/connectome-host/src/index.ts
+  <recipe> --headless` from the install dir. An install from npm can update itself once it's set
+  up (`DEPLOYMENTS.md`, "Updating an install"). The host's `README.md` quick-start documents
+  the same install.
 - **Local-checkout / dev (what production boxes actually run):** clone **all** the repos above
   as siblings, build bottom-up (`npm install && npm run build` in each, order: `mcpl-core-ts` →
   `membrane`, `chronicle` → `context-manager` → `agent-framework` → the MCP servers;
   chronicle's build is `napi build …`), then `bun install` in `connectome-host` — the host
-  runs from source under Bun and has **no `build` script** (`npm run build` fails there; its
-  postinstall / `npm run build:web` builds only the web UI), then **wire the single-instance
+  runs from source under Bun and has **no `build` script** (`npm run build` fails there;
+  `bun run build:web` builds the web UI, and nothing builds it on install), then **wire the single-instance
   `@animalabs/*` symlinks** so every component shares ONE copy of each shared lib. **The repo's
   own `docs/DEV-ENVIRONMENT.md` is the authoritative step-by-step** for this (exact clone lines,
   build order, the symlink commands, runtime notes) — follow it rather than improvising. Use
   this path only when you need unreleased branches.
 
-Sanity: connectome-host is healthy once `bun src/index.ts <recipe> --headless` boots without
-errors and logs `[webui] listening`. Then continue with the per-agent install dir (§5).
+Sanity: connectome-host is healthy once `bun <the host's src/index.ts> <recipe> --headless`
+(stock: `node_modules/@animalabs/connectome-host/src/index.ts` in the install dir;
+local-checkout: `connectome-local/connectome-host/src/index.ts`) boots without errors and logs
+`[webui] listening`. Then continue with the per-agent install dir (§5).
 
 **Pick non-colliding ports.** Every agent on the box needs a unique:
 - **shell-daemon port** (`SESSION_SERVER_PORT`, default 3100)
@@ -233,11 +238,18 @@ Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
 
 ## 5. Phase 3 — Scaffold the install dir
 
-Create `/home/<agent>/<agent>-cm/` with: `recipes/`, `data/`, `files/`, `notes/`, `scripts/`,
-and `node_modules/@animalabs/` symlinks so your import/maintenance scripts resolve the libs:
+Create `/home/<agent>/<agent>-cm/` with: `recipes/`, `data/`, `files/`, `notes/`, `scripts/`.
+On the local-checkout route, add `node_modules/@animalabs/` symlinks so your import/maintenance
+scripts resolve the libs. A stock install's `node_modules` already holds them, so skip the
+symlinks there:
 
 ```bash
 mkdir -p ~/<agent>-cm/{recipes,data,files,notes,scripts,logs}
+```
+
+Local-checkout route only:
+
+```bash
 mkdir -p ~/<agent>-cm/node_modules/@animalabs
 ln -sfn ../../../connectome-local/context-manager  ~/<agent>-cm/node_modules/@animalabs/context-manager
 ln -sfn ../../../connectome-local/membrane          ~/<agent>-cm/node_modules/@animalabs/membrane
@@ -616,8 +628,10 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
 
 1. **`terminal-sessions.service`** — the shell daemon, `--host localhost --headless --token
    ${SESSION_SERVER_TOKEN}`, env `SESSION_SERVER_PORT`. `enable` + `start` it first.
-2. **`<agent>-agent.service`** — `bun .../connectome-host/src/index.ts
-   .../recipes/<agent>.json --headless`, `WorkingDirectory=<agent>-cm` (the host reads
+2. **`<agent>-agent.service`** — `bun <the host's src/index.ts>
+   .../recipes/<agent>.json --headless` (§4; on the stock route, once update setup has run, the
+   start line setup prints in its place, `bun connectome-host/start.js` under its default root, as
+   `DEPLOYMENTS.md` says), `WorkingDirectory=<agent>-cm` (the host reads
    `mcpl-servers.json` and the agent's overlay from it), `EnvironmentFile=...env`,
    `Environment=PATH=<node bin>:<bun bin>:...`, `After=/Wants=terminal-sessions.service`,
    `Restart=always`.
@@ -811,8 +825,9 @@ blocks; expect folds to interact with this on the next model generation.
 
 ## Appendix — quick reference
 
-- **Run host:** `bun connectome-host/src/index.ts <recipe.json> --headless` (legacy
-  checkouts may still name the directory `forking-knowledge-miner`)
+- **Run host:** stock, from the install dir: `bun node_modules/@animalabs/connectome-host/src/index.ts
+  <recipe.json> --headless`; local-checkout: `bun connectome-host/src/index.ts <recipe.json>
+  --headless` (legacy checkouts may still name the directory `forking-knowledge-miner`)
 - **Reach loopback webui:** `ssh -L <port>:localhost:<port> <login-user>@<box>` → `http://localhost:<port>`
 - **Live makeup:** `GET /debug/context/makeup` (basic auth) — segments + exact total tokens
 - **Compiled context:** `GET /debug/context`
@@ -832,7 +847,7 @@ blocks; expect folds to interact with this on the next model generation.
   timing, error classification, `anomaly`, `messageId` and `requestId`, and `truncated` says what was dropped. Treat the log as diagnostics, not as a
   complete copy of any payload.
 - **Topology audit / repair (context-manager ≥ 0.12, §11.8):**
-  `bun src/index.ts --audit-stores [--recipe <recipe>] <data directory>` (exit 1 = some store
+  `bun <the host's src/index.ts> --audit-stores [--recipe <recipe>] <data directory>` (exit 1 = some store
   refused or not audited, a line on stderr for each store under each agent name it opens it under, or one for a store it doesn't open) opens every session's store and its
   recipe's fleet children's in place, after a copy, as a start opens the agent's in it, but one
   that reaches past what an update copies, of which it says why not, and one not there yet. A

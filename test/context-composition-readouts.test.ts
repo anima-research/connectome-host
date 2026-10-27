@@ -1,16 +1,8 @@
 /**
- * The context composition readouts where an agent has no composition
- * (connectome-host#425), and the Health view's last-inference line.
  * context-manager gives an agent's render stats only from a live compile
- * since its context was loaded, and only for a strategy that keeps them, so
- * the views say which of the two it is. agent-framework keeps an agent's
- * last inference start, end and failure each until the next of its kind, so
- * the last-inference line names a failure only when it came at or after the
- * latest start, and the last-error line shows only then.
- *
- * web/src/composition-text.ts is imported inside each test that uses it, so
- * that run against main's sources, where it doesn't exist, each such test
- * fails on its own.
+ * since its context was loaded, and only for a strategy that keeps them.
+ * agent-framework keeps an agent's last inference start, end and failure each
+ * until the next of its kind.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
@@ -45,14 +37,11 @@ describe('the line where an agent has no composition', () => {
     expect(healthComposition(health, 'waiting')).toEqual({ line: 'No live compile since its context was loaded.' });
     expect(healthComposition(health, 'passthrough')).toEqual({ line: "This agent's strategy keeps no composition." });
     expect(healthComposition(health, 'broken')).toBeNull();
-    // Another section's failure says nothing about this one.
     expect(healthComposition(health, 'other')).toEqual({ line: 'No live compile since its context was loaded.' });
     // Read by own key: a name Object.prototype also has is an agent with none.
     const parsed = JSON.parse(JSON.stringify(health)) as typeof health;
     expect(healthComposition(parsed, 'toString')).toEqual({ line: 'No live compile since its context was loaded.' });
-    // With no agent kept out, the key is absent.
     expect(healthComposition({ contextComposition: {} }, 'waiting')).toEqual({ line: 'No live compile since its context was loaded.' });
-    // A section that wasn't read, or no snapshot at all, shows nothing.
     expect(healthComposition({ contextCompositionNotKept: ['passthrough'] }, 'passthrough')).toBeNull();
     expect(healthComposition(null, 'compiled')).toBeNull();
   });
@@ -87,7 +76,6 @@ describe("the Health view's last-inference line", () => {
 
   test('a success then a later failure reads as failed', async () => {
     const { lastInferenceState } = await words();
-    // A failed inference may have an end too, before or after its failure.
     expect(lastInferenceState({ startedAt: 200, failedAt: 230, endedAt: 231 })).toEqual({ word: 'failed', at: 230 });
     expect(lastInferenceState({ startedAt: 200, endedAt: 229, failedAt: 230 })).toEqual({ word: 'failed', at: 230 });
   });
@@ -108,11 +96,8 @@ describe("the Health view's last-inference line", () => {
 
   test("the tie rule's cost: a start in the millisecond of the one before's failure, then a success, still reads as failed", async () => {
     const { lastInferenceState, latestInferenceError } = await words();
-    // The record can't tell this from a failure of the latest inference
-    // followed by its own end, so it reads as failed until the next start.
     expect(lastInferenceState({ failedAt: 200, startedAt: 200, endedAt: 260 })).toEqual({ word: 'failed', at: 200 });
     expect(latestInferenceError({ failedAt: 200, lastError: 'earlier', startedAt: 200, endedAt: 260 })).toBe('earlier');
-    // A start in any later millisecond reads as its own.
     expect(lastInferenceState({ failedAt: 200, startedAt: 201, endedAt: 260 })).toEqual({ word: 'ended', at: 260 });
   });
 
@@ -128,13 +113,10 @@ describe("the Health view's last-inference line", () => {
   test("the last error shows only while the latest inference is the one that failed", async () => {
     const { latestInferenceError } = await words();
     const lastError = 'overloaded_error';
-    // A failure then a later success, or a later start still running: no error line.
     expect(latestInferenceError({ failedAt: 105, lastError, startedAt: 200, endedAt: 260 })).toBeUndefined();
     expect(latestInferenceError({ failedAt: 105, lastError, startedAt: 200 })).toBeUndefined();
-    // A success then a later failure, or a failure in its start's millisecond: the error.
     expect(latestInferenceError({ startedAt: 200, endedAt: 229, failedAt: 230, lastError })).toBe(lastError);
     expect(latestInferenceError({ startedAt: 200, failedAt: 200, lastError })).toBe(lastError);
-    // An observer without 'ops' gets the text empty, so there's no line to show.
     expect(latestInferenceError({ startedAt: 200, failedAt: 230, lastError: '' })).toBeUndefined();
     expect(latestInferenceError(null)).toBeUndefined();
   });
@@ -172,8 +154,6 @@ describe('the makeup endpoint', () => {
   const priorModel = process.env.COUNT_TOKENS_MODEL;
   const realFetch = globalThis.fetch;
   beforeAll(() => {
-    // The Claude-model path counts through a fetch stub; the other path is
-    // a model count_tokens doesn't take.
     globalThis.fetch = (async () => new Response(JSON.stringify({ input_tokens: 4_242 }), { status: 200 })) as unknown as typeof fetch;
   });
   afterAll(() => {
@@ -255,7 +235,6 @@ describe("the health snapshot's contextComposition and contextCompositionNotKept
     ]));
     expect(snapshot.contextComposition).toEqual({});
     expect(snapshot.contextCompositionNotKept).toEqual(['passthrough']);
-    // Other sections that ask the strategy fail for it too; this one's is named.
     expect((snapshot.readFailures as Record<string, Record<string, string>>).broken!.contextComposition).toBe('not ready');
   });
 
@@ -269,7 +248,6 @@ describe("the health snapshot's contextComposition and contextCompositionNotKept
     const sent = JSON.parse(JSON.stringify(keepNamedStrings(snapshot, HEALTH_STRINGS)));
     expect(healthComposition(sent, 'passthrough')).toEqual({ line: "This agent's strategy keeps no composition." });
     expect(healthComposition(sent, 'waiting')).toEqual({ line: 'No live compile since its context was loaded.' });
-    // A failed read comes with its text emptied, and still shows nothing.
     expect(sent.readFailures.broken.contextComposition).toBe('');
     expect(healthComposition(sent, 'broken')).toBeNull();
   });

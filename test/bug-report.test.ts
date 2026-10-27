@@ -1,10 +1,3 @@
-/**
- * `/bug`: a report for connectome-host's public issues that can't carry
- * conversation text. The guarantee is checked by canaries: one in every
- * source of text a session writes and in every field a user can set. None
- * may reach the report, its title, its link, the command's output or the
- * file it saves.
- */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -42,12 +35,8 @@ import { createBranchState, handleCommand } from '../src/commands.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NOW = new Date('2026-10-11T23:50:00.000Z');
-/** Spelled so no casing of the report's own words can contain it. */
 const CANARY = 'zqxcanaryzqx';
-/** This process's call log, by name, in the canary data directory. */
 const CALL_LOG = 'llm-calls.2026-10-11T23-00-00-000Z.jsonl';
-/** A scope for made-up frames: the paths are taken as real, the checkout
- *  tracks everything, and agent-framework is installed under ROOT. */
 function fakeScope(realpath: (file: string) => string | null = (file) => file): FrameScope {
   return {
     hostRoot: ROOT,
@@ -56,14 +45,12 @@ function fakeScope(realpath: (file: string) => string | null = (file) => file): 
     realpath,
   };
 }
-/** A data directory under the checkout, as DATA_DIR's default puts it. */
 const SESSION_FILE_DIR = join(ROOT, `data-bug-probe-${process.pid}`, 'workspace');
 
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), 'bug-report-'));
 }
 
-/** A data directory holding a canary in every source of text. */
 function canaryDataDir(): string {
   const dir = scratch();
   mkdirSync(SESSION_FILE_DIR, { recursive: true });
@@ -74,11 +61,9 @@ function canaryDataDir(): string {
     response: { content: [{ type: 'text', text: `reply ${CANARY}` }] },
     ...fields,
   });
-  // An older process's call log, newer by name than this one's: never read.
   writeFileSync(join(dir, 'llm-calls.2026-10-12T00-00-00-000Z.jsonl'), call({ type: 'error', httpStatus: 500 }) + '\n');
   writeFileSync(join(dir, CALL_LOG), [
     call({ type: 'call' }),
-    // The Anthropic and Bedrock writers put no provider key on a record.
     call({
       type: 'error', httpStatus: 529, errorType: 'server', retryable: true,
       providerErrorCode: 'overloaded_error', error: `Overloaded while answering "${CANARY}"`,
@@ -104,8 +89,6 @@ function canaryDataDir(): string {
     `Zqxcanaryzqx${'Error'}: a class name the user's code made up`,
     `    at handleBug (${join(ROOT, 'src/commands.ts')}:40:9)`,
     `    at forged (${join(ROOT, `src/${CANARY}.ts`)}:1:1)`,
-    // A file a session wrote under the checkout's data directory, with a
-    // name from the conversation: it exists, but isn't our code.
     'ReferenceError: x is not defined',
     `    at run (${join(SESSION_FILE_DIR, `${CANARY}-scene.js`)}:3:1)`,
     `a quoted message: "${CANARY}"`,
@@ -113,7 +96,6 @@ function canaryDataDir(): string {
   return dir;
 }
 
-/** A recipe with a canary in every field a user can set. */
 function canaryRecipe(model = `${CANARY}-finetune`) {
   return {
     name: `${CANARY} recipe`,
@@ -134,7 +116,6 @@ function canaryRecipe(model = `${CANARY}-finetune`) {
     extensions: { [`${CANARY}Ext`]: { path: `/home/${CANARY}/ext.js` } },
     mcpServers: {
       [`${CANARY}-server`]: { command: `/home/${CANARY}/bin/server`, args: [CANARY], env: { TOKEN: CANARY } },
-      // A name under our scope that isn't one of our servers is still a name someone chose.
       scoped: { command: 'node', source: { npm: `@animalabs/${CANARY}@1.0.0` } },
       discord: { command: 'node', args: ['x'], source: { npm: '@animalabs/discord-mcpl@1.2.3' } },
       other: { command: 'npx', args: [`${CANARY}-mcp`], source: { npm: `${CANARY}-mcp@1.0.0` } },
@@ -181,7 +162,6 @@ describe('the guarantee', () => {
       ] as const) {
         expectNoCanary(text, where);
       }
-      // What the shapes do say, from the same sources.
       expect(full.report).toContain('provider: openai-compatible · model: custom');
       expect(full.report).toContain('modules: subagents, wake · custom: 2');
       expect(full.report).toContain('server 1: a local command · stdio · legacy · connected · 4 tools');
@@ -190,7 +170,6 @@ describe('the guarantee', () => {
       expect(full.report).toContain('server 3: a registry package · stdio · legacy · connected · 2 tools');
       expect(full.report).toContain('server 4: a url server · websocket · legacy · refused · 0 tools');
       expect(full.report).toContain('Provider calls, last hour: 3, 2 failed');
-      // No provider key, and the setup's provider isn't one whose writer omits it.
       expect(full.report).toContain('2026-10-11T23:40:00Z stream ? 529 server retryable overloaded_error');
       expect(full.report).toContain('2026-10-11T23:45:00Z stream ? 400 ? not retryable other');
       expect(full.report).toContain('tags: mcpl 2, routing 1, other 1');
@@ -198,7 +177,6 @@ describe('the guarantee', () => {
       expect(full.report).toContain('connectome-host/src/commands.ts:12');
       expect(full.report).toContain('another error class ×1');
       expect(full.report).toContain('connectome-host/src/commands.ts:40');
-      // The session's file is no frame: the error is named, with no location.
       expect(full.report).toMatch(/ReferenceError ×1 · sig [0-9a-f]{8}\n\n/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -223,12 +201,10 @@ describe('the guarantee', () => {
         branchState: createBranchState(),
         switchSession: async () => {},
       };
-      // Read as any command is: the first character dropped, then the name.
       const result = handleCommand('/ bug  It froze when the Discord server reconnected.', app);
       const output = result.lines.map((line) => line.text).join('\n');
       expectNoCanary(output.replace(dir, '<dir>'), 'the command output');
       expect(output).toContain('nothing has been sent');
-      // The running setup: the live agent's fields and the registered modules.
       expect(output).toContain('maxTokens: 4096');
       expect(output).toContain('proseRouting: hybrid · thinking: off');
       expect(output).toContain('modules: wake, subscription-gc, webui · custom: 1');
@@ -252,7 +228,6 @@ describe('the guarantee', () => {
     expect(publicModelId('openai-codex', 'o3')).toBe('o3');
     expect(publicModelId('openrouter', 'anthropic/claude-sonnet-4.5')).toBe('anthropic/claude-sonnet-4.5');
     expect(publicModelId('openrouter', 'meta-llama/llama-3.1-70b-instruct')).toBe('meta-llama/llama-3.1-70b-instruct');
-    // A user's words after a public-looking prefix, or an unknown vendor.
     expect(publicModelId('anthropic', `claude-${CANARY}`)).toBe('custom');
     expect(publicModelId('bedrock', `anthropic.claude-${CANARY}`)).toBe('custom');
     expect(publicModelId('openai-responses', `gpt-${CANARY}`)).toBe('custom');
@@ -310,7 +285,6 @@ describe('the shapes', () => {
       ['an unnamed error', 1, ['connectome-host/src/e.ts:5', '@animalabs/agent-framework/dist/src/framework.js:9']],
     ]);
     expect(parsed.errors[0]!.signature).toMatch(/^[0-9a-f]{8}$/);
-    // The same shape gives the same signature: a repeat is one search away.
     expect(parseErrorLog(session, fakeScope()).errors[0]!.signature).toBe(parsed.errors[0]!.signature);
   });
 
@@ -324,15 +298,12 @@ describe('the shapes', () => {
       `    at d (${join(ROOT, 'node_modules/left-pad/index.js')}:3:1)`,
     ].join('\n'), scope);
     expect(parsed.errors[0]!.frames).toEqual(['connectome-host/src/commands.ts:3']);
-    // A directory merely named node_modules/@animalabs/<package>/src, made
-    // by a session somewhere else, isn't where the package is installed.
     const fake = join(SESSION_FILE_DIR, 'node_modules/@animalabs/agent-framework/src');
     mkdirSync(fake, { recursive: true });
     writeFileSync(join(fake, `${CANARY}-client.js`), '// a session wrote this\n');
     const elsewhere = parseErrorLog(['TypeError: x', `    at a (${join(fake, `${CANARY}-client.js`)}:1:1)`].join('\n'), scope);
     expect(elsewhere.errors[0]!.frames).toEqual([]);
-    // The scope found where agent-framework is actually installed, wherever
-    // the install put it (a workspace may hoist it above the checkout).
+    // A workspace install may hoist agent-framework above the checkout.
     const installed = scope.packageRoots.get('agent-framework');
     expect(installed).toBeDefined();
     expect(installed).toBe(realpathSync(installed!));
@@ -388,7 +359,6 @@ describe('the shapes', () => {
       line('2026-10-11T23:10:00.000Z', { type: 'call' }),
       line('2026-10-11T23:20:00.000Z', { type: 'error', provider: 'bedrock', httpStatus: 429, errorType: 'rate_limit', retryable: true, providerErrorCode: 'ThrottlingException' }),
       line('2026-10-11T23:30:00.000Z', { type: 'error', httpStatus: 9999, errorType: 'made-up', providerErrorCode: 'whatever the provider said' }),
-      // A cache keepalive poke the provider rejected.
       line('2026-10-11T23:35:00.000Z', { type: 'error', kind: 'keepalive', httpStatus: 400 }),
       'not json',
       JSON.stringify({ type: 'error', timestamp: 'yesterday' }),
@@ -417,8 +387,6 @@ describe('the shapes', () => {
       { kind: 'unknown', transport: 'unknown', family: 'unknown', connected: false, retrying: false, refused: false, toolCount: 0 },
     ]);
     expectNoCanary(JSON.stringify(rows), 'the rows');
-    // agent-framework #262 gives a refused server null family and transport:
-    // it has none it could use, whatever its configuration says.
     const [refused] = serverRows(
       [{ id: 'r', family: null, transport: null, refused: 'a sentence', url: 'x' }],
       () => ({ url: 'wss://h/x' }),
@@ -432,8 +400,6 @@ describe('the shapes', () => {
       const file = join(dir, 'mcpl-servers.json');
       const overlay = join(dir, 'mcpl-servers.agent.json');
       writeFileSync(file, JSON.stringify({ mcplServers: { adopted: { command: 'node', transport: 'stdio' } } }));
-      // A recipe adopting a file server may move it to WebSocket; a server
-      // the recipe defines itself keeps its own fields, its source included.
       const recipe = {
         adopted: { url: 'wss://h/x', transport: 'websocket' },
         ours: { command: 'node', source: { npm: '@animalabs/discord-mcpl@1.2.3' } },
@@ -442,10 +408,8 @@ describe('the shapes', () => {
       expect(before.notes).toEqual([]);
       expect(serverRows([{ id: 'adopted' }], before.configFor)[0]).toMatchObject({ kind: 'a url server', transport: 'websocket' });
       expect(serverRows([{ id: 'ours' }], before.configFor)[0]!.kind).toBe('@animalabs/discord-mcpl@1.2.3');
-      // An overlay entry that replaces a server is its whole configuration.
       writeFileSync(overlay, JSON.stringify({ mcplServers: { ours: { command: '/usr/local/bin/my-own' } } }));
       expect(serverRows([{ id: 'ours' }], composedServerConfigs(recipe, file, overlay).configFor)[0]!.kind).toBe('a local command');
-      // A file that can't be read is named, without its path.
       writeFileSync(overlay, '{ not json');
       expect(composedServerConfigs(recipe, file, overlay).notes).toEqual(["the agent overlay couldn't be read"]);
     } finally {
@@ -477,8 +441,6 @@ describe('the shapes', () => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
         else if (/\.tsx?$/.test(entry.name)) {
-          // Any string our code begins with a bracketed tag: a log call's, a
-          // logger's, or a constant's.
           for (const match of readFileSync(path, 'utf8').matchAll(/[`'"]\[([a-z0-9:_-]{1,40})\][ `'"]/gi)) {
             tags.add(match[1]!.toLowerCase());
           }
@@ -567,24 +529,19 @@ describe('the mode', () => {
 });
 
 describe('who runs it', () => {
-  test('the fleet tool refuses /bug, so a session never files one, in a child or here', async () => {
+  test('the fleet tool refuses any line a child would run as /bug, whatever its first character, so a session never files one, in a child or here', async () => {
     const fleet = new FleetModule();
-    // Whatever the child's handleCommand would run as /bug: it drops the
-    // first character, whatever it is, and trims after it.
     for (const command of ['/bug it broke', '/bug', '/bug\tx', '/ bug the model wrote this', 'xbug words', '!bug words', '/\tbug x']) {
       const result = await fleet.handleToolCall({ id: 't', name: 'command', input: { name: 'any', command } } as never);
       expect(result.success).toBe(false);
       expect(String(result.error)).toContain('/bug is for a person to run');
     }
-    // The handler reads those names the same way: each would run /bug.
     for (const command of ['/ bug words', 'xbug words', '/\tbug words']) {
       expect(parseCommand(command)).toEqual({ name: 'bug', rest: 'words' });
     }
     expect(parseCommand('/bug   two  spaced\nlines  ')).toEqual({ name: 'bug', rest: 'two  spaced\nlines' });
     expect(parseCommand('/')).toEqual({ name: '', rest: '' });
-    // A leading space makes the name "/bug", which no command is: it runs nothing.
     expect(parseCommand('  /bug x').name).toBe('/bug');
-    // Other commands still reach the child check.
     const other = await fleet.handleToolCall({ id: 't', name: 'command', input: { name: 'missing', command: '/status' } } as never);
     expect(String(other.error)).not.toContain('/bug');
   });
@@ -594,9 +551,7 @@ describe('what the report says about itself', () => {
   test("only this process's call log is read, and a process with none says so", () => {
     const dir = canaryDataDir();
     try {
-      // canaryFacts names this process's file; the newer-named one holds a failure it must not count.
       expect(buildBugReport('x', canaryFacts(dir)).full.report).toContain('Provider calls, last hour: 3, 2 failed');
-      // By default, the file index.ts named when it created it.
       setCallLogPath(join(dir, CALL_LOG));
       const named = gatherBugReportFacts({ now: NOW, mode: 'tui', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
       expect(named.providerCalls).toMatchObject({ calls: 3, failed: 2 });
@@ -616,14 +571,12 @@ describe('what the report says about itself', () => {
       writeFileSync(join(dir, CALL_LOG), [
         record({ type: 'call' }),
         record({ type: 'error', httpStatus: 529, errorType: 'server', retryable: true }),
-        // An error that keeps its raw request as evidence, 5 MiB of it.
         record({ type: 'error', httpStatus: 400, errorType: 'invalid_request', retryable: false, rawRequest: 'x'.repeat(5 * 1024 * 1024) }),
       ].join('\n') + '\n');
       const facts = gatherBugReportFacts({
         now: NOW, mode: 'batch', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: join(dir, CALL_LOG),
       });
       expect(facts.providerCalls).toMatchObject({ calls: 3, failed: 2, skipped: 0, truncated: false, readable: true });
-      // The log's newest failure is listed first.
       expect(facts.providerCalls!.recent.map((f) => f.status)).toEqual([400, 529]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -636,8 +589,6 @@ describe('what the report says about itself', () => {
       const record = (fields: Record<string, unknown>) => JSON.stringify({
         kind: 'stream', timestamp: '2026-10-11T23:40:00.000Z', durationMs: 900, ...fields,
       });
-      // Five failures that keep 15 MiB of request each, then two small
-      // records: the budget holds the two and four of the five whole.
       const big = record({ type: 'error', httpStatus: 400, errorType: 'invalid_request', retryable: false, rawRequest: 'x'.repeat(15 * 1024 * 1024) });
       writeFileSync(join(dir, CALL_LOG), [
         big, big, big, big, big,
@@ -672,7 +623,6 @@ describe('what the report says about itself', () => {
   test("a log that can't be read says so, and one read only in part says how much", () => {
     const dir = scratch();
     try {
-      // A directory where the log should be: it exists and can't be read as a file.
       mkdirSync(join(dir, 'tui-error.log'));
       const unreadable = gatherBugReportFacts({ now: NOW, mode: 'tui', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: null });
       expect(buildBugReport('x', unreadable).full.report).toContain("Host errors: tui-error.log couldn't be read");
@@ -733,7 +683,6 @@ describe('the shapes, at their edges', () => {
       `    at a (${join(ROOT, 'src/commands.ts')}:3:1)`,
     ].join('\n'), fakeScope());
     expect(parsed.errors.map((e) => [e.className, e.count, e.frames])).toEqual([['TypeError', 1, ['connectome-host/src/commands.ts:3']]]);
-    // A tagged line is a new record: the frames after it aren't the TypeError's.
     const split = parseErrorLog([
       'TypeError: x',
       '[mcpl] something else',
@@ -815,7 +764,6 @@ describe('the link, at its edges', () => {
       expect(brief).toContain('(the failures are listed in the saved report, not in this link)');
       expect(brief).not.toContain('connectome-host/src/commands.ts:12');
       expect(brief).toContain('MCP servers: 5 (connected 3, retrying 1, refused 1)');
-      // Three errors at most, by class and signature, without frames.
       expect(brief.match(/ sig [0-9a-f]{8}/g)?.length).toBe(3);
       expect(brief).not.toMatch(/^    connectome-host\//m);
     } finally {
@@ -837,7 +785,6 @@ describe('the link, at its edges', () => {
   });
 });
 
-/** Facts with nothing in their lists. */
 function canaryFactsless(): BugReportFacts {
   return gatherBugReportFacts({ now: NOW, mode: 'batch', dataDir: scratch(), recipe: {}, liveServers: [], serverConfig: () => undefined, callLog: null });
 }
@@ -852,14 +799,12 @@ describe('the running setup and the saved file', () => {
     });
     expect(facts).toMatchObject({ model: 'claude-sonnet-4-5', maxTokens: 2000, thinking: false, modules: ['wake', 'lessons', 'subscription-gc', 'workspace'], customModules: 1 });
     expectNoCanary(JSON.stringify(facts), 'the setup');
-    // Without a running framework's word, the recipe's.
     expect(setupFacts(recipe)).toMatchObject({ model: 'claude-opus-4-6', maxTokens: 1000, thinking: true, modules: ['lessons'] });
   });
 
   test("when the file can't be saved, the output says so and promises nothing of it", () => {
     const dir = scratch();
     const previous = process.env.DATA_DIR;
-    // A data directory under a file can't be made.
     writeFileSync(join(dir, 'a-file'), '');
     process.env.DATA_DIR = join(dir, 'a-file', 'data');
     try {

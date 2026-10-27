@@ -205,9 +205,13 @@ it, and what has to happen first. A pull doesn't stop for it. So:
   what each agent keeps while it's stopped: its data directory
   (`DATA_DIR`, or `./data` in its working directory), its fleet children's
   data directories (`data/<child>` under its working directory, unless the
-  recipe's entry for the child or a launch named another), the MCPL
+  recipe's entry for the child or a launch named another), which hold each
+  child's own `mcpl-servers.agent.child.json`, with any tokens its deploys
+  carry, the MCPL
   server settings it saves in its working directory (`mcpl-servers.json`
-  and `mcpl-servers.agent.json`), and the files its MCPL servers keep
+  and `mcpl-servers.agent.json`, or in that file's place the agent overlay
+  the agent's `MCPL_AGENT_OVERLAY_FILE` names, where it names one), and
+  the files its MCPL servers keep
   their state in, such as heartbeat-mcpl's `HEARTBEAT_CONFIG_FILE` and
   those discord-mcpl's README lists under
   [Stored state](https://github.com/anima-research/discord-mcpl#stored-state).
@@ -343,8 +347,9 @@ reasons unless the grant holds `ops` too.
   ended (a stop, or the OOM killer) or whose code didn't load, and what its
   servers' processes wrote.
 - **What each update copies:** the data directory, each fleet child's data
-  directory, the MCPL settings files in the working directory, and the
-  state setup recorded. A fleet child given `.` as its data directory makes
+  directory, the MCPL settings file in the working directory, the agent
+  overlay the host reads (in the working directory, unless
+  `MCPL_AGENT_OVERLAY_FILE` names another), and the state setup recorded. A fleet child given `.` as its data directory makes
   the whole working directory part of that, so keep the install root outside
   it. The copy stays until the next switch replaces it.
 - **A request refused before anything changed,** such as one that finds a
@@ -393,13 +398,11 @@ while a clone installs from its tag's `bun.lock`. So:
   from the host. Then install the new version: `npm install
   @animalabs/connectome-host@<version>`, or `bun add
   @animalabs/connectome-host@<version>`, or in a clone `git fetch --tags`,
-  `git checkout v<version>` and `bun install`. In a clone, `bun install` also
-  builds the Web UI unless install scripts are off. If it says that build
-  failed, or scripts were off, run `bun run build:web` before starting:
-  until a build succeeds, the Web UI serves whatever `dist/web` holds, if
-  anything, which isn't this version's build. If that fails too, the host
-  still runs without this version's Web UI, and going back, below, restores
-  the one you had.
+  `git checkout v<version>`, `bun install` and `bun run build:web`. Until
+  that build succeeds, the Web UI serves whatever `dist/web` holds, if
+  anything, which isn't this version's build. If it fails, the host still
+  runs without this version's Web UI, and going back, below, restores the
+  one you had.
 - **Before starting them,** run `npm ls` as before and compare. For each of
   the three libraries that moved, read its notes between the two versions,
   `https://github.com/anima-research/<library>/blob/main/CHANGELOG.md`, for
@@ -471,7 +474,7 @@ while a clone installs from its tag's `bun.lock`. So:
   the version in `package.json`, so a lockfile restored alone is refused.
   In a clone,
   check out the tag you noted and run `bun install`, then `bun run
-  build:web` if it says the Web UI's build failed or scripts were off. Put
+  build:web`. Put
   back the version of any MCPL server you updated, and any recipe or `.env`
   change you made for the newer version. Then restore the copy of what each
   agent keeps in place of what's there now, not over it, so files the newer
@@ -522,7 +525,9 @@ ambient channel chatter enters context without waking.
    provider's per-image limit still 400s the request while it stays live —
    the poison-history breaker only sheds newest exchanges. Recipes can tune
    the three image keys under `agent.strategy` (autobiographical and
-   frontdesk; zero disables each limit independently). (Stopgap: a per-install
+   frontdesk). A depth of zero turns depth stripping off; a count or byte
+   limit of zero means up to context-manager's ceilings, 500 images and
+   24 MiB, and a larger one is held to them. (Stopgap: a per-install
    `strip-oversized-images.mjs`, below.)
 
 ## Helper scripts (per install dir)

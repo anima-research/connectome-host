@@ -1,1 +1,0 @@
-- Reasoning settings now follow the current branch after undo, redo, checkout, or branch switches without a module restart. Partial settings updates and resets preserve destination settings and recipe effort fallback.

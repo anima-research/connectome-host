@@ -1,9 +1,3 @@
-/**
- * Adapter-level proof (review finding on #113): with the PUBLISHED membrane,
- * a stream call consults the active-turn trigger and carries the origin trio,
- * while a complete call (compression / side-calls / keepalive) carries the
- * debt stamp only. Runs the real AnthropicAdapter with a mocked SDK client.
- */
 import { describe, expect, it } from 'bun:test';
 import { AnthropicAdapter } from '@animalabs/membrane';
 import { gateTelemetryHeaders } from '../src/gate-telemetry.js';
@@ -22,7 +16,6 @@ const RESPONSE = {
   usage: { input_tokens: 1, output_tokens: 1 },
 };
 
-/** Minimal SDK stream: an async iterable of the events the adapter reads. */
 function mockStream() {
   const events = [
     { type: 'message_start', message: { id: 'msg_s', model: 'claude-test', role: 'assistant', content: [], usage: { input_tokens: 1, output_tokens: 0 } } },

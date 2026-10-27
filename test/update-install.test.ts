@@ -1,9 +1,3 @@
-/**
- * Installing a release beside the running one (src/update/install.ts). Each
- * test builds an install root whose running release holds a package.json,
- * a lockfile and the host, stands in for the package manager with one that
- * writes the host it was asked for, and reads what the install left.
- */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -15,7 +9,7 @@ import { join } from 'node:path';
 import {
   ContractError, copyLabelPath, installPaths, moveCurrent, releaseDir, writeJsonAtomic, type CopyLabel, type Mark,
 } from '../src/update/contract.js';
-import { installRelease, machineInstallOps, type InstallOps } from '../src/update/install.js';
+import { SYNC_WIDTH, installRelease, machineInstallOps, type InstallOps } from '../src/update/install.js';
 import { HOST_ENTRY, LAUNCHER, RELEASE_HOST } from '../src/update/launcher.js';
 
 let dir: string;
@@ -27,7 +21,6 @@ const here = () => ({ root, release: '0.11.0' });
 const RUNNING_PACKAGE = '{"dependencies":{"@animalabs/connectome-host":"^0.11.0"}}\n';
 const RUNNING_LOCK = '{"lockfileVersion":3,"of":"0.11.0"}\n';
 
-/** A release in the root, its host at `version`, with the files named beside it. */
 function release(name: string, version = name, files: Record<string, string> = {}): string {
   const path = releaseDir(root, name);
   mkdirSync(join(path, RELEASE_HOST, 'src', 'update'), { recursive: true });
@@ -38,10 +31,8 @@ function release(name: string, version = name, files: Record<string, string> = {
   return path;
 }
 
-/** A package manager that installs the host the last argument asks for, and
- *  pins it in package.json as npm and bun do, unless `outcome` says
- *  otherwise. Each call records what it was given: the files in its
- *  directory, with their bytes. */
+/** npm's `install --save-exact` and bun's `add --exact` write the version they
+ *  install into package.json. */
 function manager(outcome: {
   status?: number | null; output?: string; version?: string; manifest?: string | null; entry?: boolean; launcher?: boolean;
   files?: number;
@@ -75,7 +66,6 @@ function manager(outcome: {
   };
 }
 
-/** A copy whose label says it holds the data of `from`. */
 function copyFrom(from: string): void {
   const { copy } = installPaths(root);
   mkdirSync(copy, { recursive: true });
@@ -83,7 +73,6 @@ function copyFrom(from: string): void {
   writeJsonAtomic(copyLabelPath(copy), { v: 1, from, at: new Date().toISOString(), items: [{ path: '/srv/data', name: '0-data' }] } satisfies CopyLabel);
 }
 
-/** Make fs/promises' rm of `path` fail as a busy directory does, until the spy is restored. */
 function failRm(path: string) {
   const rm = fsp.rm;
   return spyOn(fsp, 'rm').mockImplementation((async (target: fs.PathLike, options?: fs.RmOptions) => {
@@ -92,9 +81,6 @@ function failRm(path: string) {
   }) as typeof fsp.rm);
 }
 
-/** Spy on renames, syncs and removals in order, for the length of `body`: a
- *  sync call's fsync as `sync`, and through fs/promises a sync once it has
- *  completed as `synced`, and its handle's close as `closed`. */
 async function steps(body: () => Promise<void>): Promise<string[]> {
   const paths = new Map<number, string>();
   const seen: string[] = [];
@@ -154,7 +140,6 @@ beforeEach(() => {
   root = join(dir, 'connectome-host');
   release('0.11.0', '0.11.0', { 'package.json': RUNNING_PACKAGE, 'package-lock.json': RUNNING_LOCK });
   moveCurrent(root, '0.11.0');
-  // A labelled copy, as there is from an install's first switch on.
   copyFrom('0.11.0');
   said = [];
   calls = [];
@@ -167,8 +152,6 @@ afterEach(() => {
 const installed = () => readdirSync(installPaths(root).releases).sort();
 const failure = (promise: Promise<unknown>) => promise.then(() => { throw new Error('expected a refusal'); }, (e: unknown) => e as Error);
 
-/** Run `body` with a PATH that finds nothing, so only what the ops find
- *  without it can start. */
 async function withoutPath(body: () => Promise<void>): Promise<void> {
   const path = process.env.PATH;
   process.env.PATH = join(dir, 'nothing-here');
@@ -394,7 +377,7 @@ describe('installing a release beside the running one', () => {
 
   test('syncs every file and directory it installed before its rename, and the releases directory after', async () => {
     const tmp = `${releaseDir(root, '0.12.0')}.tmp`;
-    const seen = await steps(() => installRelease(here(), '0.12.0', manager({ files: 40 })));
+    const seen = await steps(() => installRelease(here(), '0.12.0', manager({ files: SYNC_WIDTH * 2.5 })));
     const at = (step: string) => seen.indexOf(step);
     const renamed = at(`rename ${tmp}`);
     for (const path of [join(tmp, 'package.json'), join(tmp, 'package-lock.json'), join(tmp, HOST_ENTRY), join(tmp, LAUNCHER),
@@ -402,15 +385,13 @@ describe('installing a release beside the running one', () => {
       expect(at(`synced ${path}`)).toBeGreaterThan(-1);
       expect(at(`synced ${path}`)).toBeLessThan(renamed);
     }
-    // More entries than SYNC_WIDTH, each synced through fs/promises and its handle closed, all before the rename,
-    // and no entry of the tree by a sync call.
-    const extra = Array.from({ length: 40 }, (_, i) => join(tmp, 'node_modules', 'many', `f${i}`));
+    const extra = Array.from({ length: SYNC_WIDTH * 2.5 }, (_, i) => join(tmp, 'node_modules', 'many', `f${i}`));
     for (const path of extra) {
       expect(at(`synced ${path}`)).toBeGreaterThan(-1);
       expect(at(`synced ${path}`)).toBeLessThan(renamed);
     }
     const synced = seen.filter((step) => step.startsWith('synced '));
-    expect(synced.length).toBeGreaterThan(40);
+    expect(synced.length).toBeGreaterThan(SYNC_WIDTH * 2.5);
     for (const step of synced) {
       expect(at(step.replace('synced', 'closed'))).toBeGreaterThan(-1);
       expect(at(step.replace('synced', 'closed'))).toBeLessThan(renamed);
@@ -449,7 +430,7 @@ describe('installing a release beside the running one', () => {
     expect(installed()).toEqual(['0.11.0', '0.13.0-rc.1']);
   });
 
-  test('runs one install at a time', async () => {
+  test('runs one install at a time, and the next one removes the release nothing names', async () => {
     let finish!: () => void;
     let entered!: () => void;
     const inRun = new Promise<void>((done) => { entered = done; });
@@ -471,7 +452,6 @@ describe('installing a release beside the running one', () => {
       await first;
     }
     await installRelease(here(), '0.12.1', manager());
-    // 0.12.0 went, since nothing names it.
     expect(installed()).toEqual(['0.11.0', '0.12.1']);
   });
 
@@ -485,11 +465,10 @@ describe('installing a release beside the running one', () => {
 });
 
 describe('removing releases nothing needs', () => {
-  test('keeps current, the running release, the copy\'s, the mark\'s and the one being installed; removes the rest and cut installs', async () => {
+  test('keeps current, the running release, the copy\'s, the mark\'s and the one being installed; removes the rest and what cut installs and removals left', async () => {
     for (const name of ['0.9.0', '0.10.0', '0.10.2', '0.13.0']) release(name);
     mkdirSync(join(installPaths(root).releases, 'notes'));
     mkdirSync(join(installPaths(root).releases, '0.12.0.tmp', 'node_modules'), { recursive: true });
-    // A removal of 0.10.0 cut short, beside the release itself, and one of 0.8.0 that hadn't started.
     mkdirSync(join(installPaths(root).releases, '0.10.0.tmp', 'node_modules'), { recursive: true });
     release('0.8.0.tmp');
     copyFrom('0.10.2');
@@ -692,7 +671,6 @@ describe('removing releases nothing needs', () => {
     expect(installed()).toEqual(['0.11.0', '0.12.0', '0.9.0.tmp']);
     expect(said).toEqual([`[update] ${stuck}, which nothing needs, couldn't be removed, and the next install tries again: ` +
       `EBUSY: resource busy or locked, rmdir '${stuck}'`]);
-    // What the removal left isn't a release, so installing 0.9.0 installs it whole.
     await installRelease(here(), '0.9.0', manager());
     expect(calls.map(({ cwd }) => cwd)).toEqual([`${releaseDir(root, '0.12.0')}.tmp`, stuck]);
     expect(installed()).toEqual(['0.11.0', '0.9.0']);

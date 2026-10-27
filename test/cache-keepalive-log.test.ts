@@ -1,14 +1,3 @@
-/**
- * Keepalive events must ALL reach stderr.
- *
- * The host unit routes StandardError to service-stderr.log and leaves stdout on
- * the journal, so an event written with console.log lands where no operator
- * greps. That actually happened on fable-cm 2026-08-23: the keepalive refreshed
- * a 523k prefix three times, correctly, while a monitor tailing
- * service-stderr.log reported zero activity for three hours.
- *
- * These tests fail if anyone re-introduces severity routing.
- */
 import { describe, test, expect } from 'bun:test';
 import {
   logKeepaliveEvent,
@@ -36,8 +25,6 @@ describe('keepalive event logging', () => {
   });
 
   test('routine refreshes are logged, not filtered as noise', () => {
-    // The regression this guards: treating `refreshed` as too chatty to log
-    // leaves no positive evidence the feature ran at all.
     const lines: string[] = [];
     logKeepaliveEvent(EVENTS[0]!, (l) => lines.push(l));
     expect(lines[0]).toContain('refreshed');
@@ -60,8 +47,6 @@ describe('keepalive event logging', () => {
   });
 
   test('DEFAULT SINK IS STDERR for every event type — not stdout', () => {
-    // The actual bug. console.error -> stderr -> service-stderr.log;
-    // console.log -> stdout -> journal, where nobody looks.
     const origLog = console.log;
     const origErr = console.error;
     const origWarn = console.warn;

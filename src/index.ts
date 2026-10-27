@@ -11,7 +11,8 @@
  *   bun src/index.ts --headless --exit-when-idle   # One-shot: exit when agents go idle after first inference
  *
  * Environment variables:
- *   ANTHROPIC_API_KEY   - Required (not needed for recipe provider "mock")
+ *   ANTHROPIC_API_KEY   - Recipe provider "anthropic" needs this or one of
+ *                         the next two
  *   ANTHROPIC_AUTH_TOKEN - Subscription (OAuth) bearer instead of the API key
  *   ANTHROPIC_OAUTH_CREDENTIALS_FILE - JSON credentials file (accessToken +
  *                         refreshToken + expiresAt, Claude Code's shape or flat);
@@ -19,7 +20,8 @@
  *                         Point it at a COPY, never at ~/.claude/.credentials.json.
  *   ANTHROPIC_OAUTH_AUTO_REFRESH - 1/true: rotate on a 401 without asking
  *                         (default: alert + operator action)
- *   MODEL               - Override model (default: from recipe or claude-opus-4-6)
+ *   MODEL               - Override model (default: from recipe, else
+ *                         claude-opus-4-6, or gpt-5.4 for openai-codex)
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
 
@@ -53,7 +55,7 @@ import { SubagentModule } from './modules/subagent-module.js';
 import { historyModuleOptions, assertSemanticSearchRegistered } from './history-semantic.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
-import { buildRetrievalModuleConfig } from './retrieval-config.js';
+import { retrievalModuleConfig } from './retrieval-config.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
@@ -83,7 +85,7 @@ import { armTrialLog } from './update/trial-log.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
-import { generateSessionName } from './synesthete.js';
+import { generateSessionName, namingSummary } from './synesthete.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
@@ -110,6 +112,7 @@ import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions, type ExtensionRegistry } from './extensions.js';
 import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
 import { stopForSessionSwitch } from './session-switch-stop.js';
+import { failureHint } from './failure-hint.js';
 
 export type { AppContext };
 
@@ -126,47 +129,26 @@ const config = {
   anthropicAutoRefresh: ['1', 'true'].includes((process.env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()),
   openaiApiKey: process.env.OPENAI_API_KEY,
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
-  // Deliberately NO fallback to OPENAI_API_KEY: agent.baseUrl is
-  // recipe-controlled, so a fallback would silently send a real OpenAI
-  // credential as a Bearer token to whatever endpoint a recipe names.
+  // The key for recipe provider "openai-compatible"; OPENAI_API_KEY is never
+  // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
 
-// ---------------------------------------------------------------------------
-// AppContext — mutable container for session switching
-// ---------------------------------------------------------------------------
-
 interface AppContext {
   framework: AgentFramework;
   membrane: Membrane;
   sessionManager: SessionManager;
   recipe: Recipe;
-  /**
-   * Resolved at startup from recipe + active session's import sidecar +
-   * default. Used downstream by createFramework, setupSynesthete, etc. so
-   * the priority chain isn't recomputed (and potentially drifted) at each
-   * call site. Stays stable across `switchSession` — see note in main().
-   */
   agentName: string;
   branchState: BranchState;
   userMessageCount: number;
   codexAdapter?: CodexSubscriptionAdapter;
-  /** Content-free recent provider-call ledger. Consumed by the panel-data
-   *  layer (health snapshots) in BOTH runtimes — WebUI host and headless
-   *  fleet child. Null when the provider adapter exposes no ledger. */
   callLedger: CallLedger | null;
-  /** Subscription quota windows; null on metered (pay-per-token) providers.
-   *  Its presence is what flips usage readouts from dollars to percent. */
   quotaMeter: QuotaMeter | null;
-  /** Credential state + operator actions (subscription providers). Null on
-   *  API-key hosts, where nothing here is actionable. */
   credentials: CredentialMonitor | null;
-  /** A subscription credential whose windows this host cannot read
-   *  (openai-codex through an inference gateway, which tracks them per
-   *  login): usage readouts still stay off dollars. */
   subscriptionUnmetered: boolean;
   /**
    * Headless only: the framework's traces from create() on, held until
@@ -177,18 +159,10 @@ interface AppContext {
    * (src/boot-traces.ts).
    */
   bootTraces?: BootTraceHold;
-  /** Set by the TUI's stop once it has begun; the host's other modes don't
-   *  set it. A session switch then makes nothing more, and stops what it has
-   *  already made (switchSessionSteps). */
   stopping?: boolean;
 
-  /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
 }
-
-// ---------------------------------------------------------------------------
-// Recipe resolution
-// ---------------------------------------------------------------------------
 
 async function resolveRecipe(): Promise<Recipe> {
   const { source, noRecipe } = parseRecipeArg(process.argv);
@@ -212,8 +186,6 @@ async function resolveRecipe(): Promise<Recipe> {
       process.exit(1);
     }
     try {
-      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
-      // host-mounted and backed up, so resolved secrets must never land there.
       saveRecipe(config.dataDir, loaded.persistable);
     } catch (err) {
       stopAtSavedRecipe('save the recipe to', err);
@@ -223,9 +195,6 @@ async function resolveRecipe(): Promise<Recipe> {
     return recipe;
   }
 
-  // Try saved recipe. Re-resolves ${VAR} references against the CURRENT
-  // environment, so a missing secret fails loudly here rather than starting
-  // a misconfigured agent on the default recipe.
   try {
     const saved = await loadSavedRecipe(config.dataDir);
     if (saved) {
@@ -246,18 +215,11 @@ async function resolveRecipe(): Promise<Recipe> {
   return DEFAULT_RECIPE;
 }
 
-/** What a directory at the saved recipe's path needs; nothing the host does replaces one. */
 const SAVED_RECIPE_DIRECTORY_LINE =
   'Move or remove it, then start again: the host saves its recipe there as a file, so the source of a bind mount there has to be a file that exists before the container starts.';
 
-/**
- * Stop startup on a failure to save or clear the saved recipe, naming its
- * path, and saying so where the cause is a directory there: a save fails with
- * EISDIR, and a clear with ERR_FS_EISDIR, when a directory there is what
- * stopped it, itself or (for a save) through a link. Any other failure, such
- * as a clear of a link in a data directory the host can't write, prints its
- * own error.
- */
+/** A save that a directory stops fails with EISDIR, and a clear with
+ *  ERR_FS_EISDIR. */
 function stopAtSavedRecipe(failedTo: string, err: unknown): never {
   const code = (err as NodeJS.ErrnoException | null)?.code;
   const directory = code === 'EISDIR' || code === 'ERR_FS_EISDIR' ? savedRecipeDirectory(config.dataDir) : null;
@@ -266,20 +228,12 @@ function stopAtSavedRecipe(failedTo: string, err: unknown): never {
   process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Framework factory
-// ---------------------------------------------------------------------------
-
 function resolveModel(recipe: Recipe): string {
   return recipeModel(recipe, config.model);
 }
 
-/** The host's one NoticesModule, kept across session switches (see createFramework). */
 let noticesRef: NoticesModule | null = null;
-/** The host's one InstructionsModule, kept across session switches (see createFramework). */
 let instructionsRef: InstructionsModule | null = null;
-/** The install whose entry point started this host, and its release, or null
- *  when none did. Set first thing in main(), and the same for the host's life. */
 let installHere: ReleaseHere | null = null;
 
 async function createFramework(
@@ -298,21 +252,10 @@ async function createFramework(
   const modules = recipe.modules ?? {};
   const timeZone = resolveTimeZone(recipe.agent.timezone);
 
-  // Load recipe extensions first — custom strategies must be registered
-  // before buildFrameworkStrategy runs, and custom modules join the module
-  // list below. The loader is a dumb local import; see src/extensions.ts.
-  // The start's own framework takes the ones main() loaded, which a trial's
-  // audit uses too; a session switch, once the framework before has stopped,
-  // loads them again.
   const extensionRegistry = extensions ?? await loadExtensions(recipe);
 
-  // -- Build module list --
-  // SettingsModule is constructed in main() (before the adapter, so the
-  // adapter can read its state for cross-cutting concerns like reasoning).
   const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule];
 
-  // Subagents. OPT-IN — not part of the standard recipe; enable explicitly
-  // via modules.subagents when an agent should fork parallel workers.
   let subagentModule: SubagentModule | null = null;
   if (modules.subagents) {
     const subagentConfig = typeof modules.subagents === 'object' ? modules.subagents : {};
@@ -323,12 +266,11 @@ async function createFramework(
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
       ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
       ...(subagentConfig.lifecycleReach ? { lifecycleReach: subagentConfig.lifecycleReach } : {}),
+      timeZone,
     });
     moduleInstances.push(subagentModule);
   }
 
-  // Lessons. OPT-IN — not part of the standard recipe; enable explicitly via
-  // modules.lessons for agents that curate a lesson library.
   let lessonsModule: LessonsModule | null = null;
   if (modules.lessons) {
     const globalLessonsPath = resolve(join(storePath, '..', '..', 'lessons.json'));
@@ -336,9 +278,6 @@ async function createFramework(
     moduleInstances.push(lessonsModule);
   }
 
-  // Fleet (cross-process child orchestration). Opt-in via recipe, as `true` or
-  // as its settings, which `true` leaves at their defaults. A host an install
-  // started keeps the children file its launcher reads before a switch.
   let fleetModule: FleetModule | null = null;
   if (modules.fleet === true || (modules.fleet && typeof modules.fleet === 'object')) {
     const fleetCfg = modules.fleet === true ? {} : modules.fleet;
@@ -351,7 +290,7 @@ async function createFramework(
         const entry: NonNullable<FleetModuleConfig['autoStart']>[number] = {
           name: c.name,
           recipe: c.recipe,
-          autoStart: c.autoStart !== false,  // default true
+          autoStart: c.autoStart !== false,
         };
         if (c.dataDir !== undefined) entry.dataDir = c.dataDir;
         if (c.env !== undefined) entry.env = c.env;
@@ -370,50 +309,33 @@ async function createFramework(
     moduleInstances.push(fleetModule);
   }
 
-  // Retrieval (requires lessons). OPT-IN — not part of the standard recipe:
-  // it injects context-dependent content into every compile (plus up to two
-  // configured retrieval-model calls), which adds per-turn context churn.
-  // Enable explicitly only when an agent actually curates a lesson library.
   if (modules.retrieval && lessonsModule) {
-    moduleInstances.push(new RetrievalModule(
-      buildRetrievalModuleConfig(membrane, modules.retrieval, recipe.agent.provider),
-    ));
+    moduleInstances.push(new RetrievalModule(retrievalModuleConfig(membrane, recipe)));
   }
 
-  // History browsing (native chronicle indexes + summary-backed overview).
-  // OPT-IN — not part of the standard recipe. bind() (ContextManager +
-  // ChannelRegistry) happens post-creation, below, once `framework` exists.
   let historyModule: HistoryModule | null = null;
   if (modules.history) {
-    // storePath is sessionManager.getStorePath(id) → basename = session id.
-    const historyOpts = historyModuleOptions(modules.history, agentName, basename(storePath));
+    const sessionId = basename(storePath);
+    const historyOpts = historyModuleOptions(modules.history, agentName, sessionId);
     historyModule = new HistoryModule(historyOpts);
     assertSemanticSearchRegistered(historyModule, historyOpts.semantic !== undefined);
     moduleInstances.push(historyModule);
   }
 
-  // Gate config — core AF EventGate feature.
-  // Path is per-session: {storePath}/config/gate.json
   let gateOptions: import('@animalabs/agent-framework').GateOptions | undefined;
   if (modules.wake !== false) {
     gateOptions = { configPath: join(storePath, 'config', 'gate.json') };
     if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
       gateOptions.config = modules.wake as import('@animalabs/agent-framework').GateConfig;
     }
-    // Privileged-users file for the `sleep` tool — users who may wake the agent
-    // through a sleep window. Stable across sessions (install-dir relative);
-    // override with SLEEP_PRIVILEGED_FILE. Edit the file to change the list.
+    // The `sleep` tool's privileged users, who may wake the agent through a
+    // sleep window: ./sleep-privileged.json in the working directory, shared by
+    // every session, unless SLEEP_PRIVILEGED_FILE names another. Edit the file
+    // to change the list.
     gateOptions.privilegedUsersPath =
       process.env.SLEEP_PRIVILEGED_FILE || resolve('./sleep-privileged.json');
   }
 
-  // Workspace (replaces FilesModule + LocalFilesModule)
-  // Note: workspace: false disables ALL filesystem access (both read and write).
-  // Previously LocalFilesModule was always-on; this is an intentional change —
-  // recipes that need read-only access should keep workspace enabled (the default).
-  // Mount construction lives in workspace-mounts.ts so recipe validation
-  // reasons over the SAME mount flags the runtime builds (see that file's
-  // header for why).
   let workspaceModule: WorkspaceModule | null = null;
   const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
   if (workspaceMounts) {
@@ -421,26 +343,14 @@ async function createFramework(
     moduleInstances.push(workspaceModule);
   }
 
-  // Shared operating instructions — opt-in per recipe. Injects a living
-  // instructions document (read through a workspace mount) into EVERY
-  // agent's context on every turn — resident and ephemeral subagents alike —
-  // via gatherContext. Requires the workspace module; validateRecipe rejects
-  // the instructions+`workspace: false` pairing, so workspaceModule is
-  // non-null here (the guard keeps the module fail-open regardless).
-  // ONE instance per host process, reused across session switches, as the
-  // notices module is: an instructions-unavailable alert raised in one
-  // session is stood down in the next once the file loads there. Its stop()
-  // lets go of the old session's workspace, so it's given this one's.
   if (modules.instructions) {
     const instructionsConfig =
       typeof modules.instructions === 'object' ? modules.instructions : {};
-    // Its alerts carry the agent's name, as the notices module's filter expects.
     instructionsRef ??= new InstructionsModule({ ...instructionsConfig, agentName });
     if (workspaceModule) instructionsRef.setWorkspace(workspaceModule);
     moduleInstances.push(instructionsRef);
   }
 
-  // Activity (typing indicators) — opt-in per recipe
   let activityModule: ActivityModule | null = null;
   if (modules.activity !== undefined && modules.activity !== false) {
     const activityConfig = typeof modules.activity === 'object' ? modules.activity : {};
@@ -450,12 +360,6 @@ async function createFramework(
     moduleInstances.push(activityModule);
   }
 
-  // Outage notices (host speaks in the agent's channels when it cannot) —
-  // opt-in per recipe. ONE instance per host process, reused across session
-  // switches: a standing outage announced before the switch must still be
-  // told, cleared and owed afterwards, and the credential monitor announces
-  // transitions only. Server ids are handed over once the MCPL server list
-  // is final (below), for the one-time "unknown server" warning.
   let noticesModule: NoticesModule | null = null;
   if (modules.notices !== undefined && modules.notices !== false) {
     if (!noticesRef) {
@@ -474,8 +378,6 @@ async function createFramework(
     moduleInstances.push(noticesModule);
   }
 
-  // Auto-unsubscribe noisy ambient channels — ON by default (opt out with
-  // `modules.subscriptionGc: false`).
   if (modules.subscriptionGc !== false) {
     const gcConfig =
       typeof modules.subscriptionGc === 'object' ? modules.subscriptionGc : {};
@@ -488,10 +390,6 @@ async function createFramework(
     );
   }
 
-  // Channel attention modes (`set_channel_mode`). Needs the gate to add/remove
-  // the per-channel debounce policy, so only when `wake` is enabled. On by
-  // default there (opt out with `modules.channelMode: false`); it only adds a
-  // tool, inert until called.
   let channelModeModule: ChannelModeModule | null = null;
   if (gateOptions && modules.channelMode !== false) {
     const cmConfig =
@@ -505,8 +403,6 @@ async function createFramework(
     moduleInstances.push(channelModeModule);
   }
 
-  // MCPL self-administration — opt-in per recipe (grants the agent the
-  // ability to spawn arbitrary commands via mcpl_deploy; see recipe.ts).
   let mcplAdminModule: McplAdminModule | null = null;
   if (modules.mcplAdmin === true || typeof modules.mcplAdmin === 'object') {
     const surface = typeof modules.mcplAdmin === 'object' ? modules.mcplAdmin.surface : undefined;
@@ -514,9 +410,6 @@ async function createFramework(
     moduleInstances.push(mcplAdminModule);
   }
 
-  // Self-restart (`lifecycle--restart`) — opt-in per recipe. The request and
-  // the last completed restart live in the data dir; only headless mode arms
-  // it (src/self-restart.ts).
   if (modules.selfRestart !== undefined && modules.selfRestart !== false) {
     const srCfg = typeof modules.selfRestart === 'object' ? modules.selfRestart : {};
     moduleInstances.push(new LifecycleModule({
@@ -526,10 +419,6 @@ async function createFramework(
     }));
   }
 
-  // Archipelago identity — opt-in per recipe. Utilities-only: enrollment is
-  // one-time and token refresh is rare, so it costs no tool slots (see
-  // identity-module.ts header). Keypair lives at the dataDir level — an
-  // identity belongs to the deployment, not the session.
   let identityModule: IdentityModule | null = null;
   if (modules.identity !== undefined && modules.identity !== false) {
     const idCfg = typeof modules.identity === 'object' ? modules.identity : {};
@@ -541,15 +430,12 @@ async function createFramework(
     moduleInstances.push(identityModule);
   }
 
-  // Web admin UI — opt-in per recipe
   let webUiModule: WebUiModule | null = null;
   if (modules.webui !== undefined && modules.webui !== false) {
     const webuiConfig = typeof modules.webui === 'object' ? modules.webui : {};
-    // Observer grants (docs/observability.md): data/observers.json by
-    // default, overridable via OBSERVERS_FILE. The feature is inert until
-    // the file holds at least one grant. The companion ObserversModule
-    // gives the agent grant/revoke tools over the same file — interiority
-    // access is the agent's to give.
+    // The Web UI's observer grants: $DATA_DIR/observers.json unless
+    // OBSERVERS_FILE names another; with no grant in it, no observer is
+    // admitted.
     const observersPath = process.env.OBSERVERS_FILE || resolve(config.dataDir, 'observers.json');
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
@@ -569,17 +455,10 @@ async function createFramework(
     }));
   }
 
-  // TTS relay tap — opt-in per recipe. Pure trace-bus consumer: mirrors the
-  // agent's streaming generation to a melodeus-tts-relay /bot endpoint and
-  // trims posted messages on voice interruptions. See modules.ttsRelay in
-  // recipe.ts for the config contract (url/token validated at recipe load).
   if (modules.ttsRelay) {
     moduleInstances.push(new TtsRelayModule(modules.ttsRelay));
   }
 
-  // Extension-registered modules. Instantiated last so built-in modules keep
-  // their historical positions; each factory gets the minimal runtime context
-  // plus its declaring extension's config blob.
   const extensionModules: Module[] = [];
   for (const entry of extensionRegistry.modules) {
     const instance = entry.factory({ timeZone, storePath, model, config: entry.config });
@@ -587,51 +466,20 @@ async function createFramework(
     moduleInstances.push(instance);
   }
 
-  // -- Build MCP server list --
-  //
-  // Recipes are opt-in: a file entry from mcpl-servers.json is loaded only
-  // when the recipe references its id under `mcpServers`. Credentials and
-  // the spawn command come from the file; the recipe entry can override
-  // policy fields (channelSubscription, toolPrefix, feature-set toggles,
-  // reconnect). Recipes can also define new servers the file doesn't have
-  // by supplying `command` or `url` themselves.
-  //
-  // The previous behavior loaded every file server for every recipe, which
-  // silently flooded focused recipes (conductor, reviewer) with traffic
-  // from channels the agent never asked to listen to.
   const recipeServers = recipe.mcpServers ?? {};
   const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
 
-  // A server entry has EITHER a `command` (stdio) or a `url` (WebSocket); the
-  // framework's McplServerConfig carries both as optional. mergeRecipeServers
-  // applies the recipe's policy overrides (RECIPE_OVERRIDABLE_SERVER_FIELDS)
-  // to file servers it names, passes recipe-defined servers through verbatim,
-  // and rejects an id-only entry the file doesn't define.
   const allServers = mergeRecipeServers(
     recipeServers as unknown as Record<string, Record<string, unknown>>,
     fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
   );
 
-  // Apply the agent overlay (mcpl-servers.agent.json): servers the agent
-  // deployed for itself load unconditionally (no recipe opt-in), and
-  // tombstones suppress recipe/file servers the agent unloaded. An overlay
-  // entry that replaces an operator's server and lacks what it provides, or
-  // names a host variable that only a recipe substitutes, is logged.
   for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
   const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
-      // Stdio MCPL children share the recipe's agent-facing wall clock.
-      // The framework derives the reaction-suppression default when the
-      // child spawns; a baseline with tokens in the server's env (or, with
-      // inheritEnv, in the host's own) replaces it. Protocol timestamps
-      // remain UTC; only their rendered text uses AGENT_TIMEZONE.
       env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),
     };
-    // `access` is a declarative name (recipe/file/overlay); the credential
-    // provider it implies is attached HERE, at load time — fresh credential
-    // per dial via the identity module, never serialized, never in model
-    // context (see identity-module.ts header).
     if (typeof withEnv.access === 'string' && withEnv.access) {
       if (identityModule) {
         const identity = identityModule;
@@ -643,26 +491,15 @@ async function createFramework(
         );
       }
     }
-    // A credential over ws:// or http:// to another machine is readable on
-    // the network between. mcpl_deploy refuses one; an operator's recipe, or
-    // an overlay entry saved before that refusal, still loads, and
-    // agent-framework warns when it connects (serverConfigWarnings).
     return withEnv;
   });
 
-  // No server augmentation needed — gate is wired via FrameworkConfig.gate
-
-  // -- Build strategy --
   const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
-  // Per-channel conversation routing: the recipe agent becomes the trunk
-  // template; forks get a fresh instance of the same recipe strategy.
-  // Deprecated (agent-framework#235): still wired, but named at startup.
   for (const notice of deprecatedConversationsNotices(recipe.conversations)) console.warn(`[deprecated] ${notice}`);
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
-  // -- Create framework --
   const framework = await AgentFramework.create({
     storePath,
     membrane,
@@ -674,7 +511,6 @@ agents: [agentConfig],
     // A 429 while a subscription window is spent is a quota, not a throttle:
     // park until it resets instead of retrying into it.
     ...(quotaMeter ? { providerHold: quotaProviderHold(quotaMeter, () => model) } : {}),
-    // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
     // Tune-out's reader (agent-framework#77, #232) and the Dendrite options
@@ -682,20 +518,9 @@ agents: [agentConfig],
     // framework's own config (agent-framework#546); the reader mapping adds
     // the one field a recipe cannot state.
     ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
-    // MCPL RFC-008 tool classes: this host's module table, and the recipe's
-    // operator overrides. Spread as an untyped object so an agent-framework
-    // older than the tool-lifecycle release (which lacks both fields)
-    // typechecks and simply ignores them — no tool is then classed beyond
-    // the framework's own built-ins.
     ...(toolClassConfig(recipe) as object),
   });
 
-  // Wire post-creation hooks
-
-  // HistoryModule needs the live ContextManager (only obtainable via the
-  // agent, post-creation) and the framework's ChannelRegistry (null when no
-  // MCPL servers are configured — bind() degrades to raw-channel-id-only
-  // resolution in that case, per its own JSDoc).
   if (historyModule) {
     const cm = framework.getAgent(agentName)?.getContextManager();
     if (cm) {
@@ -703,19 +528,9 @@ agents: [agentConfig],
     }
   }
 
-  // agent.autoContinue only takes effect on a framework that has it.
   const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
   if (autoContinueWarning) console.warn(autoContinueWarning);
 
-  // Compression-quarantine klaxon → the framework's ops-alert channel
-  // (failures.log + ops:alert trace + CONNECTOME_OPS_WEBHOOK). The strategy
-  // re-fires this every alarm interval for as long as ANY span is
-  // quarantined: quarantined spans stay raw, the fold floor creeps, and the
-  // picker eventually cannot fit the window — a guaranteed future outage
-  // that must never be a silent state. quarantineAlarm decides what each
-  // call sends: the alarm, or the all-clear under its own kind.
-  // Duck-typed on both sides so version skew in either dep degrades to a
-  // no-op (the strategy's own stderr klaxon still fires) instead of a crash.
   {
     const alarmCapable = strategy as unknown as {
       setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
@@ -730,16 +545,6 @@ agents: [agentConfig],
       });
     }
 
-    // A load whose repair dropped summaries holding text → the same channel,
-    // so the agent's keeper hears that its memory changed rather than the
-    // agent noticing first. context-manager hands this any reports from the
-    // loads `create` already ran, then each later one; /healthz reads the
-    // latest from the strategy itself (getLatestLoadRepairReport), and the
-    // Health tab reads /healthz.
-    // Duck-typed as the quarantine alarm is. A conversation fork's strategy
-    // gets no handler, as it gets no quarantine alarm: it opens a namespace
-    // no fork has used before, so its load almost never has anything to
-    // repair.
     wireLoadRepairAlert(strategy, framework, agentName, storePath);
   }
 
@@ -759,8 +564,6 @@ agents: [agentConfig],
     channelModeModule.setFramework(framework);
   }
 
-  // Extension modules get the same duck-typed post-creation hook the
-  // built-ins use: if the instance exposes setFramework, call it.
   for (const instance of extensionModules) {
     const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
     hooked.setFramework?.(framework);
@@ -780,9 +583,6 @@ agents: [agentConfig],
     fleetModule.setStoreSync(() => framework.getStore().sync());
   }
 
-  // Stash the WebUiModule reference on the framework so main() can call
-  // setApp() once the AppContext is built. Using a symbol-keyed property to
-  // avoid polluting the public framework API for the sake of one module.
   if (webUiModule) {
     (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
   }
@@ -796,10 +596,6 @@ function getWebUiModule(framework: AgentFramework): WebUiModule | null {
   const sym = (framework as unknown as Record<symbol, WebUiModule | undefined>)[webUiModuleSymbol];
   return sym ?? null;
 }
-
-// ---------------------------------------------------------------------------
-// Synesthete auto-naming hook
-// ---------------------------------------------------------------------------
 
 function setupSynesthete(app: AppContext): void {
   const agentName = app.agentName;
@@ -821,17 +617,7 @@ function setupSynesthete(app: AppContext): void {
     if (!cm) return;
 
     const { messages } = cm.queryMessages({});
-    const summary = messages
-      .filter(m => m.content.some((b: { type: string }) => b.type === 'text'))
-      .slice(0, 6)
-      .map(m => {
-        const text = m.content
-          .filter((b: { type: string }): b is { type: 'text'; text: string } => b.type === 'text')
-          .map((b: { text: string }) => b.text)
-          .join(' ');
-        return `${m.participant}: ${text.slice(0, 200)}`;
-      })
-      .join('\n');
+    const summary = namingSummary(messages);
 
     generateSessionName(app.membrane, summary, namingExamples).then(name => {
       if (name) {
@@ -841,15 +627,8 @@ function setupSynesthete(app: AppContext): void {
   });
 }
 
-// ---------------------------------------------------------------------------
-// MCPL subprocess stderr log — receipts for "why did that MCPL server break"
-// ---------------------------------------------------------------------------
+const MCPL_STDERR_LOG_MAX_BYTES = 10 * 1024 * 1024;
 
-const MCPL_STDERR_LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB; rolls to .1 on overflow.
-
-/** Render an mcpl:server-* connection-lifecycle trace as a log line, or null
- *  for trace types this sink doesn't record. Lifecycle lines are prefixed
- *  `[host]` to stand apart from the server's own stderr output. */
 function formatMcplLifecycleLine(event: { type: string } & Record<string, unknown>): string | null {
   switch (event.type) {
     case 'mcpl:server-stderr':
@@ -871,24 +650,18 @@ function mcplStderrLogDir(storePath: string): string {
   return join(storePath, 'mcpl-stderr');
 }
 
-/** Append one timestamped line to a server's mcpl-stderr log. Never rejects:
- *  logging must not be load-bearing. */
 async function appendMcplLogLine(dir: string, serverId: string, timestamp: number, line: string): Promise<void> {
-  // basename guards against a misconfigured serverId like "../foo" escaping dir.
   const path = join(dir, `${basename(serverId)}.log`);
   const entry = `${new Date(timestamp).toISOString()} ${line}\n`;
   try {
     await rotateIfNeeded(path, entry.length);
     await appendFile(path, entry);
   } catch {
-    // If logging itself fails, don't cascade.
   }
 }
 
 function setupMcplStderrLog(app: AppContext, storePath: string): void {
   const dir = mcplStderrLogDir(storePath);
-  // Best-effort directory creation — if it fails, per-write attempts will too,
-  // and we'll swallow those quietly. We don't want logging to be load-bearing.
   void mkdir(dir, { recursive: true }).catch(() => {});
 
   app.framework.onTrace((event) => {
@@ -907,13 +680,8 @@ async function rotateIfNeeded(path: string, incomingBytes: number): Promise<void
       await rename(path, `${path}.1`);
     }
   } catch {
-    // No existing file (or stat failed) — nothing to rotate.
   }
 }
-
-// ---------------------------------------------------------------------------
-// Readline / batch mode (--no-tui, or any non-TTY stdin without --headless)
-// ---------------------------------------------------------------------------
 
 async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
@@ -923,7 +691,7 @@ async function runPiped(app: AppContext) {
     write: (text) => { process.stdout.write(text); },
     log: (line) => { console.log(line); },
     error: (line) => { console.error(line); },
-  });
+  }, failureHint(app.recipe, process.env, app.credentials));
   const traces = traceFollower((event) => turns.onTrace(event as { type: string; [key: string]: unknown }));
   traces.follow(app.framework);
 
@@ -934,8 +702,6 @@ async function runPiped(app: AppContext) {
       const result = handleCommand(trimmed, app);
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
-      // A command's follow-up, such as /update's answer, as the TUI and
-      // headless mode show it.
       if (result.asyncWork) {
         try {
           for (const l of (await result.asyncWork).lines) console.log(l.text);
@@ -951,6 +717,7 @@ async function runPiped(app: AppContext) {
       }
       if (result.switchToSessionId) {
         const sessionId = result.switchToSessionId;
+        turns.switched();
         await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
         console.log('Session switched.');
       }
@@ -964,9 +731,6 @@ async function runPiped(app: AppContext) {
     return false;
   }
 
-  // Batch: stdin is not a TTY. Read all, process, then stop — which closes
-  // every MCPL server, so say so: a host started without a terminal (under a
-  // supervisor, say) lands here too, even without --no-tui.
   if (!process.stdin.isTTY) {
     console.log(batchModeStartNotice());
     const lines: string[] = [];
@@ -984,25 +748,16 @@ async function runPiped(app: AppContext) {
     if (session) {
       const dir = mcplStderrLogDir(app.sessionManager.getStorePath(session.id));
       const now = Date.now();
-      // setupMcplStderrLog creates the directory without awaiting it; a
-      // fresh session with empty stdin can get here first.
       await mkdir(dir, { recursive: true }).catch(() => {});
-      // Awaited so the note lands before the `connection closed` line.
       await Promise.all(serverIds.map((id) => appendMcplLogLine(dir, id, now, BATCH_MCPL_LOG_NOTE)));
     }
     await app.framework.stop();
-    // WebUiModule.stop() leaves the web server up on purpose (it outlives
-    // session switches), and that server keeps the process running.
     const webUiUrl = getWebUiModule(app.framework)?.listeningUrl();
     if (webUiUrl) console.log(batchWebUiNotice(webUiUrl));
     return;
   }
 
-  // Interactive TTY readline (fallback if --no-tui is explicit on a TTY)
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
-  // An update's Restart ends readline mode as /quit does, and the operator
-  // starts the host again (src/update/update.ts). The command's answer,
-  // printed first, says so.
   let restarting = false;
   hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
   console.log('connectome-host (readline mode). Type /help for commands.');
@@ -1014,9 +769,6 @@ async function runPiped(app: AppContext) {
   await new Promise<void>(r => rl.on('close', r));
   console.log('\nShutting down...');
   await app.framework.stop();
-  // WebUiModule.stop() leaves the Web UI's server up, and it would keep the
-  // process, and with it the install's lock, so a Restart ends it too, as
-  // the TUI's end does.
   if (restarting) {
     await stopWebUiServer().catch((error: unknown) => {
       console.error(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1024,11 +776,6 @@ async function runPiped(app: AppContext) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-/** Count non-empty lines in a file. Returns 0 if the file doesn't exist. */
 function countLines(path: string): number {
   if (!existsSync(path)) return 0;
   try {
@@ -1036,7 +783,6 @@ function countLines(path: string): number {
     if (buf.length === 0) return 0;
     let n = 0;
     for (let i = 0; i < buf.length; i++) if (buf.charCodeAt(i) === 10) n++;
-    // If the last byte isn't a newline, there's a partial trailing line that counts too.
     if (buf.charCodeAt(buf.length - 1) !== 10) n++;
     return n;
   } catch {
@@ -1044,30 +790,16 @@ function countLines(path: string): number {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-/** What a fatal error waits for before exiting: headless mode's log. */
 let beforeFatalExit: (() => Promise<void>) | undefined;
 
 async function main() {
-  // The store audit runs in place of a host: it opens the stores of the data
-  // directories given as a start of this release would, and starts no agent.
   // It exits as soon as what it wrote has gone out, since an extension the
   // saved recipe names can keep the process alive, as a timer can.
   if (process.argv[2] === AUDIT_STORES_FLAG) {
     process.exit(await auditStoresFromEntry(process.argv.slice(3)));
   }
-  // First, a fleet child of a host that keeps the children file begins only
-  // once that file lists it (waitToBeListed).
   await waitToBeListed();
-  // Then, before anything else a host does: a host an install's entry point
-  // started has to be one of that install's releases, or it refuses to start
-  // (releaseHere).
   installHere = releaseHere();
-  // A release on trial keeps its last lines, for the release that falls back
-  // if it ends before its commit (src/update/trial-log.ts).
   if (installHere !== null) armTrialLog(installHere);
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
@@ -1089,20 +821,13 @@ async function main() {
     process.exit(1);
   }
 
-  // SettingsModule constructed early so the adapter can read its state for
-  // cross-cutting concerns (currently: reasoning). It's wired into the
-  // framework's module list inside createFramework().
   const settingsModule = new SettingsModule(recipe.agent.thinking?.effort);
 
-  // Append each LLM request/response/error to a JSONL log per process lifetime
-  // (matches the Hermes-era `llm-calls.<iso>.jsonl` visibility). The adapter
-  // also reads SettingsModule.getReasoning() per call to inject `thinking`
-  // when the agent has toggled reasoning on.
+  // One JSONL call log per process lifetime.
   const llmLogPath = join(
     config.dataDir,
     `llm-calls.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`,
   );
-  // /bug reads this process's own call log, not whichever is newest.
   setCallLogPath(llmLogPath);
   const callLedger = provider === 'anthropic'
     ? new CallLedger({
@@ -1110,18 +835,14 @@ async function main() {
         defaultTtl: recipe.agent.cacheTtl ?? '5m',
       })
     : null;
-  // Credential monitor, bound below once the adapters exist; the Codex
-  // login prompt needs to reach it, and the adapter is built first.
   let credentialsRef: CredentialMonitor | null = null;
-  // The Codex subscription adapter owns ChatGPT login/refresh independently
-  // of the API-key transports below — unless an inference gate holds the
-  // logins (CODEX_GATE_TOKEN + CODEX_BASE_URL), in which case no Codex CLI runs.
+  // With CODEX_GATE_TOKEN and CODEX_BASE_URL set, an inference gate holds the
+  // Codex logins and no Codex CLI runs.
   const codexGate = provider === 'openai-codex' ? codexGateAuth(process.env) : undefined;
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
         fastMode: recipe.agent.codex?.fastMode ?? false,
-        // stderr for headless logs, the monitor for TUI/WebUI/fleet alerts.
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');
           console.error(`Open ${verificationUrl} and enter code: ${userCode}\n`);
@@ -1130,9 +851,6 @@ async function main() {
         ...(codexGate ? { authProvider: codexGate } : {}),
       })
     : undefined;
-  // Anthropic subscription credential: a bare token or a refreshable file.
-  // Loaded once here; the adapter and the quota meter read it per request so
-  // an operator rotation (/auth, WebUI) takes effect without a restart.
   const anthropicCredentials = provider === 'anthropic' && (config.anthropicCredentialsFile || config.authToken)
     ? new AnthropicOAuthCredentials({
         ...(config.anthropicCredentialsFile
@@ -1149,14 +867,9 @@ async function main() {
         authToken: () => anthropicCredentials.currentToken(),
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       }))
-    // through a gate there is no Codex login to read windows from; the gate
-    // tracks them per login (its /gate/status)
     : codexAdapter && !codexGate
       ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
       : null;
-  // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
-  // Groq, NanoGPT, ...). The recipe carries the endpoint (agent.baseUrl,
-  // validated at load); the key is optional because local servers have none.
   const openaiCompatibleAdapter = provider === 'openai-compatible'
     ? new OpenAICompatibleAdapter({
         baseURL: recipe.agent.baseUrl!,
@@ -1170,51 +883,19 @@ async function main() {
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
-  // Bedrock: an alternate Claude transport. (Historically for models that
-  // left the direct API — as of 2026-07-31 every 3.5-era id and opus-4-0514
-  // are EOL on Bedrock too, so what actually runs here is the 4-era via
-  // inference profiles.) The adapter reads AWS_* env vars (AWS_REGION
-  // defaults us-west-2) and maps standard Claude model IDs to Bedrock IDs.
-  // Uses the Anthropic-native message shape, so NativeFormatter applies
-  // unchanged. Prompt caching is model-gated
-  // (bedrockModelSupportsPromptCaching): pre-GA families (Claude 3,
-  // 3.5 Sonnet) off, everything currently invokable caches — verified by
-  // live probe 2026-07-31. Still no CallLedger — it's
-  // anthropic-transport-only for now; cache metrics are visible in
-  // llm-calls.jsonl via the logging wrapper.
-  // BEDROCK_BASE_URL routes bedrock-runtime calls through an inference
-  // gateway (gate.animalabs.ai/bedrock/<credSet>) — mirrors the
-  // ANTHROPIC_BASE_URL hook below. The gate reads the agent token from the
-  // SigV4 Credential (AWS_ACCESS_KEY_ID slot), discards the client
-  // signature, and re-signs with real AWS creds held on the gate box.
+  // The Bedrock adapter reads the AWS_* variables (AWS_REGION defaults to
+  // us-west-2). BEDROCK_BASE_URL routes its bedrock-runtime calls through an
+  // inference gateway.
   const bedrockAdapter = provider === 'bedrock'
     ? new LoggingBedrockAdapter(
         { baseURL: process.env.BEDROCK_BASE_URL || undefined },
         llmLogPath,
       )
     : undefined;
-  // Mock: membrane's canned/echo adapter — the full host loop with zero
-  // provider spend and no credentials (none of the key checks above are
-  // gated on it). Echo is the default because it's the informative shape
-  // for interactive smoke runs; recipe agent.mock.echoMode=false switches
-  // to defaultResponse for deterministic scripted output; the delay, chunk
-  // and responseQueue knobs pass through as well (RecipeMockConfig). It rides the
-  // generic logging decorator so even mock calls leave llm-calls.jsonl
-  // receipts — the observability path is part of what a mock run exercises.
   const mockAdapter = provider === 'mock'
     ? new MockAdapter(mockAdapterConfig(recipe.agent.mock))
     : undefined;
-  // -- x-gate-debt-chunks stamp (membrane dynamicHeaders, antra-tess/membrane#65)
-  // The gate records compression-debt per ledger row; debt only changes at
-  // calls, so the per-call series is its full-resolution history ("spoke ->
-  // chunk appeared -> chewed" vs "solver repacked -> queue spiked"). The value
-  // is the SAME reduction /healthz reports (cm getCompressionDebt). Late-bound
-  // through appRef because the framework outlives adapter construction and is
-  // replaced on session switch. Whenever it is unreadable — no framework yet,
-  // multi-agent process (whose debt would we even claim?), no strategy — the
-  // header is simply not sent: an unstamped call is honest, a guessed one lies.
   let appRefForDebt: AppContext | null = null;
-  // The resident whose turn/debt we stamp: the framework's primary.
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
@@ -1239,19 +920,15 @@ async function main() {
     }
   };
 
-  // Why the turn in progress fired (heartbeat / a channel message by whom /
-  // operator), read from the framework's active-turn trigger. Same guards as
-  // the debt getter: no framework or several agents
-  // -> null -> the origin trio is simply not sent.
   const activeTurnTrigger = (): TurnTrigger | null => {
     try {
       const fw = appRefForDebt?.framework;
       if (!fw) return null;
       const agents = fw.getAllAgents();
-      // ONE adapter serves every agent in this process, so this hook cannot
-      // tell whose request it is decorating: stamp the primary's trigger only
-      // while no other agent (subconscious, fork, ephemeral) has a turn in
-      // flight — see stampedTrigger().
+      // membrane's dynamicHeaders callback is told only the request's lane, and
+      // one adapter serves every agent in this process, so it can't tell whose
+      // request it stamps: the primary's trigger is stamped only while no other
+      // agent has a turn in flight.
       const t = stampedTrigger({
         agents: agents.map((a) => a.name),
         primary: primaryAgent()?.name,
@@ -1277,11 +954,6 @@ async function main() {
         }),
         llmLogPath,
       )
-    // Codex/openrouter/openai adapters get the provider-agnostic logging
-    // decorator (llm-calls.jsonl); anthropic and bedrock keep their
-    // purpose-built logging classes below. The bare `codexAdapter` /
-    // `openrouterAdapter` instances stay un-wrapped for auth commands and
-    // dispose() — only the membrane sees the wrapper.
     : bedrockAdapter
       ?? (mockAdapter ? new LoggingProviderAdapter(mockAdapter, llmLogPath) : undefined)
       ?? (openrouterAdapter ? new LoggingProviderAdapter(openrouterAdapter, llmLogPath) : undefined)
@@ -1289,10 +961,6 @@ async function main() {
       ?? (codexAdapter ? new LoggingProviderAdapter(codexAdapter, llmLogPath) : undefined)
       ?? new LoggingAnthropicAdapter(
         {
-          // Anthropic OAuth wins over API-key auth when both are present.
-          // Subscription tokens additionally require this beta header.
-          // Recipe-declared betas (agent.anthropicBetas, e.g. context-1m)
-          // are merged into the same anthropic-beta header either way.
           ...(anthropicCredentials
             ? {
                 authToken: anthropicCredentials.tokenResolver(),
@@ -1307,15 +975,13 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
-          // Double-gated (see src/gate-telemetry.ts): GATE_TELEMETRY=1 AND a
-          // configured base URL, so the stamp can only ever go to a
-          // gateway the operator has declared — never to the vendor's
-          // default endpoint (review finding on the first wiring).
+          // Only with GATE_TELEMETRY=1 and ANTHROPIC_BASE_URL set, so the stamp
+          // goes only to a gateway the operator has named, never to the
+          // vendor's default endpoint.
           ...(gateTelemetryDynamicHeaders ? { dynamicHeaders: gateTelemetryDynamicHeaders } : {}),
-          // Hold this agent's cached prefix warm across idle gaps. Only fires
-          // when the entry is actually near expiry, so a busy agent costs
-          // nothing; only the 1h-TTL primary lane is eligible (the module
-          // skips anything else). Off with cacheKeepalive.enabled: false.
+          // membrane refreshes the cached prefix once it has gone
+          // refreshAfterMs (45 minutes by default) untouched, so a busy agent
+          // costs nothing, and only on the primary lane.
           cacheKeepalive: {
             enabled: recipe.agent.cacheKeepalive?.enabled !== false,
             ...(recipe.agent.cacheKeepalive?.maxIdleHours !== undefined
@@ -1324,10 +990,6 @@ async function main() {
             ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
               ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
               : {}),
-            // Every event — routine refreshes included — goes to stderr, so
-            // all of them land in service-stderr.log next to
-            // [inference-refusal]. See cache-keepalive-log.ts for why this is
-            // not severity-routed.
             onEvent: logKeepaliveEvent,
           },
         },
@@ -1336,12 +998,6 @@ async function main() {
         (record) => callLedger!.record(record),
       );
 
-  // Session management — resolved before Membrane construction so the
-  // active session's import-source sidecar can contribute to agent-name
-  // resolution. Without that, a custom recipe that omits agent.name
-  // combined with a claudeai-imported session falls back to 'agent' on
-  // the live side while the importer + warmup default to 'Claude',
-  // re-creating the namespace fork this branch exists to close.
   const sessionManager = new SessionManager(config.dataDir);
   sessionManager.migrateIfNeeded();
 
@@ -1367,32 +1023,16 @@ async function main() {
   const agentName = resolved.name;
 
   const membrane = new Membrane(adapter, {
-    // Recipe-level retry policy (agent.retry) over the host's default, which
-    // retries a 529 as any other retryable failure rather than on membrane's
-    // ten-minute overloaded schedule inside each framework attempt (see
-    // membrane-retry.ts).
     retry: hostMembraneRetry(recipe.agent.retry),
     formatter: recipeFormatter(recipe, provider, resolveModel(recipe)),
-    // Caching default for internal callers (autobio compression,
-    // executeMerge), which read Membrane's defaultPromptCaching rather
-    // than the per-agent flag. Applies on EVERY provider whenever the
-    // recipe/model resolves an explicit answer — an Anthropic recipe with
-    // promptCaching:false must disable internal calls too, and on bedrock
-    // the model gate decides (see bedrockModelSupportsPromptCaching).
     ...membraneCachingOverride(recipe, resolveModel(recipe)),
-    // Anchor the assistant role for internal callers that don't set
-    // request.assistantParticipant themselves (autobio compression,
-    // executeMerge). Mismatch here flips stored assistant turns to
-    // role: 'user' and the API rejects tool_use blocks riding along.
+    // membrane sends this participant's messages as assistant turns for a
+    // request that names no assistant participant ('Claude' otherwise), and the
+    // API refuses a tool_use block in a user turn.
     assistantParticipant: agentName,
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  // On trial, while `current` names another release, the places its fallback
-  // puts back are settled, and the active session's store held to them,
-  // before the framework opens that store, since its open writes in place
-  // like any other: one that reaches past them ends the start having opened
-  // nothing. startFramework audits the rest before the commit.
   let placesForTrial: string[] | null = null;
   if (installHere !== null) {
     const install = installHere;
@@ -1402,12 +1042,6 @@ async function main() {
       checkActiveStore(storePath, current, placesForTrial);
     }
   }
-  // Credential monitor: one named state for the provider credential (spent
-  // quota, expiring/expired/rejected token, pending device-code login) and
-  // the operator actions that fit it, announced through the ops-alert
-  // pipeline. Alerts raised before the framework exists are queued and
-  // flushed once the app is bound; the sink reads app.framework lazily so
-  // session switches stay wired.
   let appForAlerts: AppContext | null = null;
   const queuedAlerts: Array<[string, string, Record<string, unknown>]> = [];
   const credentialSource = anthropicCredentials ?? codexAdapter?.credentialSource() ?? null;
@@ -1438,14 +1072,9 @@ async function main() {
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
-  // Loaded once for this start: its framework's modules come from them, and
-  // a trial's audit builds its strategies from them while that framework is
-  // alive, making no register() call of its own. (A fleet child's audit, like
-  // the child itself, is a process of its own, which loads its own.)
   const extensions = await loadExtensions(recipe);
   const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
 
-  // Build app context
   const app: AppContext = {
     framework,
     membrane,
@@ -1469,16 +1098,10 @@ async function main() {
         },
         make: () => {
           sessionManager.setActiveSession(id);
-          // Note: agentName stays as resolved at startup. A per-session
-          // re-resolution would matter only if recipe.agent.name is absent
-          // AND the user switches between imports that used different
-          // --agent values; not the canonical flow.
           return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
         },
         install: async (next) => {
           this.framework = next;
-          // No install: a switch can't change the release, which the host's own
-          // start committed before any agent ran, so there is nothing to commit.
           await startFramework(next, null);
           this.userMessageCount = 0;
           resetBranchState(this.branchState);
@@ -1494,13 +1117,6 @@ async function main() {
   appRefForDebt = app;
   appForAlerts = app;
 
-  // Off-path refusal dragnet → ops alerts (observability M3): refusals on
-  // non-streamed calls (compression/summarizer drains, maintenance) never
-  // reach the framework's own noteRefusal — the 2026-07-15 mythos cascade
-  // started exactly there, silently. Surface them through the same
-  // opsAlert pipeline (failures.log + ops:alert trace + throttled webhook).
-  // Reads app.framework (not the closure) so session switches stay wired;
-  // feature-detects notifyOpsAlert for older framework versions.
   if (adapter instanceof LoggingAnthropicAdapter) {
     adapter.onRefusal = (info) => {
       const fw = app.framework as unknown as {
@@ -1523,8 +1139,6 @@ async function main() {
   });
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
-  // Update, Restart and Go back reach whatever framework the host runs now,
-  // and a batch run doesn't read the registry (src/update/update.ts).
   hostUpdate.configure({
     here: installHere,
     running: hostVersionOf(HOST_PACKAGE_JSON),
@@ -1555,12 +1169,6 @@ async function main() {
       try {
         await runTui(app);
       } finally {
-        // WebUiModule.stop() leaves the web server up so it serves across
-        // session switches, and it would keep the process running. Once
-        // runTui settles, whether the TUI quit or its setup failed, the host
-        // is ending, so the server ends too. stopWebUiServer calls the
-        // server's stop first, so a throw in what it detaches after that is
-        // logged rather than failing a host whose stop succeeded.
         await stopWebUiServer().catch((error: unknown) => {
           console.error(`[webui] the TUI has ended, and closing the Web UI's server failed: ${error instanceof Error ? error.message : String(error)}`);
         });

@@ -1,21 +1,3 @@
-/**
- * Pins panel — operator control over protected ranges.
- *
- * Three semantics, kept visibly distinct because collapsing them into one
- * "pin" button would hide what actually happens to the fold plan:
- *
- *   raw        — never folded (classic pin)
- *   max L_k    — fold no deeper than k (k=0 is equivalent to raw)
- *   at L_k     — pinned AT exactly k; the frontier cut passes through that node
- *
- * `at L_k` is honored only by the kv-stable folding strategy. Elsewhere it
- * degrades to raw — a safe superset, but not what was asked for — so the panel
- * warns rather than letting it pass silently.
- *
- * Ids are picked from the client's own message list (real store ids) rather than
- * typed. See PinCandidate for why /debug/context/curve is NOT a usable source.
- */
-
 import { createSignal, For, Show } from 'solid-js';
 
 export interface PinRow {
@@ -35,23 +17,13 @@ export interface PinsState {
   pinsSupported: boolean;
   levelHonored: boolean;
   deepestLevel?: number;
-  /** Picker candidates shipped by a fleet-child scope's snapshot — the
-   *  client has no window into a child's message store, so the child sends
-   *  recent real store ids along. Absent on local scope (the client builds
-   *  its candidate list from its own message window). */
   candidates?: PinCandidate[];
 }
 
 /**
- * A pinnable message.
- *
- * MUST be a real message-store id. /debug/context/curve looked like the natural
- * source but is not: on a live store its raw entries carry no `sourceMessageId`
- * (0 of 208 had one) and the entries that DO have an `id` are summaries, whose
- * ids (`L3-544`) are not message ids at all. Pinning with one would create a pin
- * matching no message and silently do nothing. The client's own message list is
- * authoritative — `WelcomeMessageEntry.id` is the store id, and server-sourced
- * rows are exactly those with a store `index`.
+ * MUST be a real message-store id: context-manager keeps a pin whatever ids it
+ * names, so a pin naming no stored message matches nothing and silently does
+ * nothing.
  */
 export interface PinCandidate {
   id: string;
@@ -69,7 +41,6 @@ const ago = (ms: number) => {
   return `${Math.round(s / 86400)}d`;
 };
 
-/** What the fold plan will actually do with this range. */
 function describe(p: PinRow): string {
   if (p.level !== undefined) return p.level === 0 ? 'at raw' : `at L${p.level}`;
   if (p.maxLevel !== undefined) return p.maxLevel === 0 ? 'raw (max L0)' : `max L${p.maxLevel}`;
@@ -80,7 +51,6 @@ export function PinsPanel(props: {
   loaded: boolean;
   state: PinsState | null;
   agent?: string;
-  /** Pinnable messages — server-sourced rows only (real store ids). */
   candidates?: PinCandidate[];
   onRefresh(): void;
   onAdd(input: {
@@ -107,8 +77,6 @@ export function PinsPanel(props: {
     const q = filter().trim().toLowerCase();
     const all = props.candidates ?? [];
     const hit = q ? all.filter((c) => c.text.toLowerCase().includes(q) || c.id.includes(q)) : all;
-    // Newest last is how the operator reads the conversation; cap the list so a
-    // long history doesn't build thousands of rows.
     return hit.slice(-200);
   };
 
@@ -169,7 +137,6 @@ export function PinsPanel(props: {
           </div>
         </Show>
 
-        {/* ---- existing pins ---- */}
         <Show when={props.state!.pins.length === 0}>
           <div class="text-neutral-600 italic mb-3">No pins.</div>
         </Show>
@@ -213,7 +180,6 @@ export function PinsPanel(props: {
           </table>
         </Show>
 
-        {/* ---- add ---- */}
         <div class="border-t border-neutral-800 pt-2">
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1.5">
             add

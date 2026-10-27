@@ -1,16 +1,3 @@
-/**
- * /healthz reconciliation of the alert strip's condition rows (compression
- * quarantine and inference-exhausted), worked out as a plan the page applies.
- * Kept free of Solid and the DOM so it can be tested alone.
- *
- * A row of either kind whose agent is missing from the snapshot's `agents`
- * list is removed, whatever raised it: the agent was torn down (an ephemeral
- * subagent), and no later snapshot would clear the row. Rows of other kinds
- * are left to the page's own handlers for them. agent-framework 0.22.3 sends
- * no `hard-down-clear`, so a hard-down row leaves only by a dismissal, for a
- * present agent and a departed one alike.
- */
-
 import type { HealthSnapshot } from './Health';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 
@@ -28,7 +15,6 @@ export interface HealthAlertPlan {
 const QUARANTINE = 'compression-quarantine';
 const EXHAUSTED = 'inference-exhausted';
 
-/** The agent part of a `${agent}:${kind}` key, or undefined for another kind. */
 function agentOf(key: string, kind: string): string | undefined {
   const suffix = `:${kind}`;
   return key.endsWith(suffix) ? key.slice(0, -suffix.length) : undefined;
@@ -62,9 +48,6 @@ export function planHealthAlerts(
     if (streak >= 3) {
       const message = `${streak} consecutive inference failures — agent is down.`
         + (a.lastInference?.lastError ? ` Last: ${a.lastInference.lastError}` : '');
-      // Only touch the entry when the condition actually changed —
-      // rewriting `at` every poll would show a perpetual "5s ago" and
-      // re-sort the strip on every cycle.
       if (current.get(key)?.message !== message) {
         plan.upsert.push({ kind: EXHAUSTED, agent: a.name, message });
       }
@@ -72,7 +55,6 @@ export function planHealthAlerts(
       plan.remove.push(key);
     }
   }
-  // Departed agents; a snapshot without `agents` (an older host) says nothing.
   if (Array.isArray(agents)) {
     const present = new Set(agents.map((a) => a.name));
     for (const key of current.keys()) {

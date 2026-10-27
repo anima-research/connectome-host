@@ -42,7 +42,6 @@ async function runEvacuator(args: string[], options: {
       rawPrompt: 'fixture', adjustedPrompt: 'fixture', finalSystemPrompt: 'fixture',
       finalMemoriesBlock: '',
     }));
-    // Capture the actual warmup launch without making compression calls.
     const bin = join(dir, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'bun'),
@@ -97,7 +96,7 @@ async function observeHostSwitch(recipe: Recipe, importedName: string) {
     const native = sessions.createSession('Native');
     const imported = sessions.createSession('Imported');
     writeFileSync(join(dataDir, 'sessions', imported.id + '.import-source.json'), JSON.stringify({ agentName: importedName }));
-    sessions.setActiveSession(native.id); // the documented pre-import active session
+    sessions.setActiveSession(native.id);
     writeFileSync(extension, `
       import { appendFileSync } from 'node:fs';
       const membranes = new WeakMap();

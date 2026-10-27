@@ -1,9 +1,3 @@
-/**
- * TtsRelayModule's activation for a turn a tool ended: `inference:turn_ended`
- * (skip_reply, sleep) ends the activation as `complete`, as a turn that
- * streams to its end does, so the next turn on the channel opens one of its
- * own. Driven against a stand-in for the relay's /bot endpoint.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import { TtsRelayModule } from '../src/modules/tts-relay-module.js';
@@ -15,9 +9,6 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-/** Waits for something the relay is sent; the deadline only guards a wait
- *  that would otherwise never end, so it is far above the milliseconds a
- *  message takes. */
 async function waitFor(check: () => boolean, what: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (!check()) {
@@ -26,8 +17,6 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
   }
 }
 
-/** A relay that answers the module's auth and records what it's sent, and
- *  the module started on a context whose traces the test emits. */
 async function harness() {
   const received: RelayMessage[] = [];
   const server = Bun.serve({
@@ -52,7 +41,6 @@ async function harness() {
   const module = new TtsRelayModule({ url: `ws://127.0.0.1:${server.port}/bot`, token: 't', reconnectIntervalMs: 50 });
   await module.start(ctx);
   cleanups.push(async () => { await module.stop(); server.stop(true); });
-  // The module sends nothing until the relay's auth_ok has reached it.
   const connected = () =>
     (module as unknown as { client: { isConnected(): boolean } | null }).client?.isConnected() ?? false;
   await waitFor(connected, 'the relay to authenticate the module');

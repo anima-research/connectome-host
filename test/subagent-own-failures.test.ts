@@ -1,24 +1,3 @@
-/**
- * The subagent module's retries, its time limit and its concurrency limit.
- *
- * - Its own failures end the retry loop without their words being read: an
- *   async run whose time limit of 429 ms runs out leaves the concurrency
- *   limit alone, though the rate-limit pattern reads 429 as a status code.
- *   The framework's failures are read without the ephemeral agent's name,
- *   which holds the name the agent chose: a spawn or fork named
- *   rate-limit-audit or idle-watch whose run the startup watchdog ends is
- *   tried once. Before, a name or a number in such a failure could make it
- *   count as a rate limit or as transient.
- * - At its time limit a run is stopped, not left working untracked.
- * - Raising the concurrency limit lets a waiting spawn start, except while a
- *   rate limit's halving holds.
- * - A sync run moves to the background at its timeoutMs and goes on; only an
- *   async run's timeoutMs is a hard limit, and it covers the retries.
- * - Slots are released once, and waiting spawns start wherever the limit
- *   rises or a slot frees.
- * - A run not started by its deadline is dropped by the framework and
- *   reported as the time limit; one whose setup outlasts it isn't started.
- */
 import { describe, test, expect, spyOn, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,20 +37,14 @@ interface Harness {
   framework: AgentFramework;
   subagent: SubagentModule;
   runs(): number;
-  /** Whether a run of this subagent is in the framework now, past its
-   *  setup: the point at which a stop or a reclaim can end it. */
   running(name: string): boolean;
-  /** The framework's store, for a framework opened on it again. */
   storePath: string;
   cleanup(): Promise<void>;
 }
 
-/** What the module gives the framework's run of an ephemeral agent. */
 type Watchdogs = { startupTimeoutMs?: number } | undefined;
 type Run = (agent: { name: string }, contextManager: unknown, watchdogs: Watchdogs) => Promise<{ speech: string; toolCallsCount: number }>;
 
-/** `run` stands in for the framework's run of each ephemeral agent; left
- *  out, the framework runs it against the mock provider. */
 async function harness(
   config: ConstructorParameters<typeof SubagentModule>[0],
   run?: Run,
@@ -80,7 +53,6 @@ async function harness(
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-own-'));
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', defaultMaxTokens: 256, ...config });
-  // The rate-limit cooldown is 30 s; nothing here depends on its length.
   (subagent as unknown as Internal).rateLimitCooldownMs = 0;
   const framework = await AgentFramework.create({
     storePath: join(tmpDir, 'store'),
@@ -98,8 +70,8 @@ async function harness(
   fw.createEphemeralAgent = (c) => { runs++; return create(c); };
   if (run) {
     fw.runEphemeralToCompletion = (agent, contextManager, watchdogs) => {
-      // Registered by name while it runs, as the framework's own run does,
-      // so a stop finds it.
+      // Registered by name while it runs, as agent-framework's own run is, so a
+      // stop finds it.
       fw.agents.set(agent.name, agent);
       const ran = run(agent, contextManager, watchdogs);
       const drop = () => { if (fw.agents.get(agent.name) === agent) fw.agents.delete(agent.name); };
@@ -116,7 +88,7 @@ async function harness(
     runs: () => runs,
     running: (name: string) => [...fw.agents.keys()].some((k) => k.startsWith(`spawn-${name}-`) || k.startsWith(`${name}-d`)),
     cleanup: async () => {
-      try { await framework.stop(); } catch { /* noop */ }
+      try { await framework.stop(); } catch { }
       rmSync(tmpDir, { recursive: true, force: true });
     },
   };
@@ -131,9 +103,7 @@ function fork(name: string, extra: Record<string, unknown> = {}): ToolCall {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-/** Wait for what a step brings about rather than for a set time, and fail
- *  if it doesn't come. Timed by performance.now(), which a test that holds
- *  Date.now doesn't stop. */
+/** performance.now() runs on while a test holds Date.now. */
 async function until(done: () => boolean, ms = 10_000): Promise<void> {
   const end = performance.now() + ms;
   while (!done()) {
@@ -141,16 +111,11 @@ async function until(done: () => boolean, ms = 10_000): Promise<void> {
     await sleep(10);
   }
 }
-/** A promise the test opens when it's ready: it holds a run open for as
- *  long as the test's probes need, rather than for a set time. */
 function gate(): { open(): void; wait: Promise<void> } {
   let open!: () => void;
   const wait = new Promise<void>((r) => { open = r; });
   return { open, wait };
 }
-/** The waits a run makes between attempts (a rate limit's cooldown, the
- *  back-off before a retry): each one's length, and whether the run's
- *  cancel or its own timer ended it. */
 function watchWaits(sub: SubagentModule): Array<{ ms: number; endedBy?: 'cancel' | 'timer' }> {
   const waits: Array<{ ms: number; endedBy?: 'cancel' | 'timer' }> = [];
   const m = internal(sub);
@@ -164,14 +129,12 @@ function watchWaits(sub: SubagentModule): Array<{ ms: number; endedBy?: 'cancel'
   };
   return waits;
 }
-/** The reasons of the promise rejections nothing handled while it watched. */
 function watchUnhandled(): { reasons: unknown[]; stop(): void } {
   const reasons: unknown[] = [];
   const record = (reason: unknown) => { reasons.push(reason); };
   process.on('unhandledRejection', record);
   return { reasons, stop: () => { process.off('unhandledRejection', record); } };
 }
-/** The settled outcome of an async subagent, from its handle. */
 async function outcome(h: Harness, name: string): Promise<{ ok: boolean; text: string }> {
   const handle = internal(h.subagent).asyncHandles.get(name);
   if (!handle) throw new Error(`no async handle for ${name}`);
@@ -180,24 +143,18 @@ async function outcome(h: Harness, name: string): Promise<{ ok: boolean; text: s
     (e) => ({ ok: false, text: e instanceof Error ? e.message : String(e) }),
   );
 }
-/** What the agent reads when a spawn's or fork's run ends on an error of its
- *  own, after a run began: the module's account (failedRun). */
 function stoppedText(name: string, why: string, kind: 'spawn' | 'fork' = 'spawn', attempts = 1): string {
   return `${kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`} stopped${attempts > 1 ? ` after ${attempts} attempts` : ''} ` +
     `and returned no result: ${why}. What it did before then stays done, and ${kind === 'fork' ? 'forking' : 'spawning'} it again ` +
     'starts its task over.';
 }
-/** What the agent reads when an async run's time limit ends it. */
 function timeLimitText(name: string, limit: string, kind: 'spawn' | 'fork' = 'spawn', attempts = 1, started = true): string {
   const again = `To give it longer, call subagent--${kind} again with a larger timeoutMs; an async ${kind} with no timeoutMs has no limit.`;
   return started
     ? `${stoppedText(name, `its time limit of ${limit} ran out`, kind, attempts)} ${again}`
     : `${kind === 'fork' ? `Fork '${name}'` : `Subagent '${name}'`} didn't start, so nothing ran: its time limit of ${limit} ran out. ${again}`;
 }
-/** The label a reclaimed zombie's result opens with. */
 const ZOMBIE_LABEL = '[Stopped: it showed no activity for over 120 s, so the host reclaimed its slot]';
-/** What the module delivers to the parent agent: each message it adds to
- *  the parent's context, and each inference it requests. */
 function deliveries(h: Harness): { messages: string[]; requests: string[] } {
   const got = { messages: [] as string[], requests: [] as string[] };
   const ctx = (h.subagent as unknown as { ctx: {
@@ -217,7 +174,6 @@ function deliveries(h: Harness): { messages: string[]; requests: string[] } {
   return got;
 }
 
-/** Count each ephemeral agent's stops (cancelStream calls) and when they came. */
 function countStops(h: Harness): number[] {
   const at: number[] = [];
   const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<{ agent: { cancelStream(): void } }> };
@@ -232,18 +188,12 @@ function countStops(h: Harness): number[] {
 }
 
 describe('the module\'s own failures end the retry loop without their words being read', () => {
-  // A time limit of 429 ms ends the run with "its time limit of 429 ms ran
-  // out", which the rate-limit classifier would read as a status code and
-  // answer by halving the concurrency limit. Each of runSpawn's and
-  // runFork's loops has its own check that ends it first.
   for (const kind of ['spawn', 'fork'] as const) {
-    test(`an async ${kind} whose 429 ms time limit runs out leaves the concurrency limit alone`, async () => {
-      const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* never settles */ }));
+    test(`an async ${kind} whose 429 ms time limit runs out leaves the concurrency limit alone, though its words carry a rate limit's 429`, async () => {
+      const h = await harness({ maxRetries: 1 }, () => new Promise(() => { }));
       try {
         await h.subagent.handleToolCall((kind === 'spawn' ? spawn : fork)('scout', { timeoutMs: 429 }));
         const out = await outcome(h, 'scout');
-        // Stopped at its limit, or not started if its setup outlasted it:
-        // the module's own failure either way.
         expect(out.ok).toBe(false);
         expect(out.text).toContain('its time limit of 429 ms ran out');
         expect(h.subagent.getConcurrencyStatus()).toEqual({ configured: 5, effective: 5, active: 0, queued: 0 });
@@ -253,18 +203,12 @@ describe('the module\'s own failures end the retry loop without their words bein
 });
 
 describe('a framework failure is read without the ephemeral agent\'s name, and numbers as whole numbers', () => {
-  // agent-framework 0.22.3's startup watchdog, which quotes the agent's name.
+  // agent-framework's startup watchdog error, which quotes the agent's name.
   const watchdog = (agent: { name: string }) => new Error(
     `Ephemeral agent "${agent.name}" failed to start inference within 15000ms — zombie detected. ` +
     'The event loop may have stalled or the inference request was dropped.',
   );
 
-  // The watchdog's message quotes the name. One name holds a rate limit's
-  // phrase and the other "idle", which isTransientError takes as transient:
-  // read with the name, the failure would be tried again, and the rate limit
-  // would halve the concurrency limit. Each classifier reads the failure
-  // through classifiedText, and runSpawn and runFork each pass both of them
-  // their ephemeral agent's name.
   for (const kind of ['spawn', 'fork'] as const) {
     for (const name of ['rate-limit-audit', 'idle-watch']) {
       test(`a ${kind} named ${name} whose run the watchdog ended runs once and leaves concurrency alone`, async () => {
@@ -319,7 +263,6 @@ describe('a sync run moves to the background at its timeoutMs and goes on', () =
       expect(String(res.data)).toContain('moved to background');
       expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'done' });
       expect(stops).toEqual([]);
-      // The parent gets the result as a message, and one turn to read it.
       await until(() => delivered.requests.length > 0);
       await sleep(50);
       expect(delivered.messages.filter((m) => m.startsWith("[Subagent 'scout'"))).toEqual(["[Subagent 'scout' returned]\n\ndone"]);
@@ -336,7 +279,6 @@ describe('a sync run moves to the background at its timeoutMs and goes on', () =
       expect(String(res.data)).toContain('moved to background');
       expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'done' });
       expect(stops).toEqual([]);
-      // The parent gets the result as a message, and one turn to read it.
       await until(() => delivered.requests.length > 0);
       await sleep(50);
       expect(delivered.messages.filter((m) => m.startsWith("[Subagent 'scout'"))).toEqual(["[Subagent 'scout' returned]\n\ndone"]);
@@ -353,7 +295,6 @@ describe('a sync run moves to the background at its timeoutMs and goes on', () =
       expect(String(res.data)).toContain('moved to background');
       expect(await outcome(h, 'probe')).toEqual({ ok: true, text: 'done' });
       expect(stops).toEqual([]);
-      // The parent gets the result as a message, and one turn to read it.
       await until(() => delivered.requests.length > 0);
       await sleep(50);
       expect(delivered.messages.filter((m) => m.startsWith("[Subagent 'probe'"))).toEqual(["[Subagent 'probe' returned]\n\ndone"]);
@@ -363,8 +304,7 @@ describe('a sync run moves to the background at its timeoutMs and goes on', () =
 });
 
 describe('an async run is stopped at its time limit, which covers its retries', () => {
-  test('no more of its stream arrives after the stop, and the framework lets the run go', async () => {
-    // 60 one-character chunks 100 ms apart: about 6 s of streaming.
+  test('no more of its stream than a chunk already on its way arrives after the stop, and the framework lets the run go', async () => {
     const adapter = new MockAdapter({ defaultResponse: 'x'.repeat(60), streamChunkSize: 1, streamChunkDelayMs: 100 });
     const h = await harness({ maxRetries: 0 }, undefined, adapter);
     const stops = countStops(h);
@@ -379,15 +319,11 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 1000 }));
       expect(await outcome(h, 'scout')).toEqual({ ok: false, text: timeLimitText('scout', '1 s') });
       expect(tokensAt.length).toBeGreaterThan(0);
-      expect(stops.length).toBeGreaterThan(0); // the limit stopped the run
-      // The framework lets the run go well before its stream would have
-      // ended by itself, about 6 s in.
+      expect(stops.length).toBeGreaterThan(0);
       await until(() => live().length === 0, 2_000);
       expect(live()).toEqual([]);
-      // Once the framework has let the run go, it drops the stream's later
-      // events unread (agent-framework 0.22.3, driveStream's check that the
-      // agent still owns its name), so the count is final. At most a chunk
-      // already on its way when the stream was cancelled.
+      // Once agent-framework has let the run go, it drops the stream's later
+      // events unread, so the count is final but for a chunk already on its way.
       const stoppedAt = stops[0]!;
       expect(tokensAt.filter((t) => t > stoppedAt).length).toBeLessThanOrEqual(1);
     } finally { await h.cleanup(); }
@@ -410,7 +346,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     try {
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 3000 }));
       expect(await outcome(h, 'scout')).toEqual({ ok: false, text: stoppedText('scout', '503 overloaded') });
-      expect(attempts).toBe(1); // the retry's 5 s back-off would end past the 3 s limit
+      expect(attempts).toBe(1);
     } finally { await h.cleanup(); }
   }, 20_000);
 
@@ -419,7 +355,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
     const h = await harness({ maxRetries: 1 }, async (_agent, _cm, watchdogs) => {
       given.push(watchdogs);
       if (given.length === 1) { await sleep(50); throw new Error('503 overloaded'); }
-      return new Promise(() => { /* never settles */ });
+      return new Promise(() => { });
     });
     try {
       const started = Date.now();
@@ -428,11 +364,9 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       const took = Date.now() - started;
       expect(out).toEqual({ ok: false, text: timeLimitText('scout', '6 s', 'spawn', 2) });
       expect(given).toHaveLength(2);
-      // The retry started after the 5 s back-off with what was left, under
-      // 1 s, where a fresh limit would have given it 6 s.
       expect(given[0]!.startupTimeoutMs!).toBeGreaterThan(5000);
       expect(given[1]!.startupTimeoutMs!).toBeLessThanOrEqual(1000);
-      expect(took).toBeLessThan(8500); // a fresh limit would end at about 11 s
+      expect(took).toBeLessThan(8500);
     } finally { await h.cleanup(); }
   }, 20_000);
 
@@ -449,12 +383,11 @@ describe('an async run is stopped at its time limit, which covers its retries', 
         const took = Date.now() - started;
         expect(out).toEqual({ ok: false, text: stoppedText('scout', '429 Too Many Requests', kind) });
         expect(h.runs()).toBe(1);
-        // It cooled down for what was left of its limit, about 500 ms, not 5 s.
         const cooled = lines.map((l) => /cooling down (\d+)ms/.exec(l)?.[1]).filter((m) => m !== undefined).map(Number);
         expect(cooled).toHaveLength(1);
         expect(cooled[0]!).toBeLessThanOrEqual(500);
-        expect(took).toBeLessThan(4000); // a whole cooldown would end at about 6 s
-        expect(h.subagent.getConcurrencyStatus().effective).toBe(2); // the halving holds
+        expect(took).toBeLessThan(4000);
+        expect(h.subagent.getConcurrencyStatus().effective).toBe(2);
       } finally {
         spy.mockRestore();
         await h.cleanup();
@@ -464,10 +397,9 @@ describe('an async run is stopped at its time limit, which covers its retries', 
 
   test('a run not started by its deadline is dropped by the framework\'s startup watchdog, and reported as the time limit', async () => {
     const given: Watchdogs[] = [];
-    // As agent-framework 0.22.3 does: a run whose inference hasn't started
-    // by its startup watchdog is rejected with the framework's own words.
-    // Its timer fires a millisecond early, as Node's can, so it settles the
-    // attempt before the module's own limit does.
+    // As agent-framework's startup watchdog rejects a run whose inference hasn't
+    // started, in its own words, with its timer a millisecond early, as Node's
+    // can fire.
     const h = await harness({ maxRetries: 1 }, (agent, _cm, watchdogs) => {
       given.push(watchdogs);
       const ms = watchdogs?.startupTimeoutMs ?? 30_000;
@@ -506,21 +438,20 @@ describe('an async run is stopped at its time limit, which covers its retries', 
       given[name] = watchdogs;
       return name === 'first'
         ? sleep(800).then(() => ({ speech: 'ok', toolCallsCount: 0 }))
-        : new Promise(() => { /* never settles */ });
+        : new Promise(() => { });
     });
     try {
       await h.subagent.handleToolCall(spawn('first'));
       await until(() => h.subagent.getConcurrencyStatus().active === 1);
       await h.subagent.handleToolCall(spawn('second', { timeoutMs: 1500 }));
       expect(await outcome(h, 'second')).toEqual({ ok: false, text: timeLimitText('second', '1.5 s') });
-      // It waited about 800 ms for its slot, and its limit started then.
       expect(given.second!.startupTimeoutMs!).toBeGreaterThan(1000);
     } finally { await h.cleanup(); }
   }, 20_000);
 
   test('a run whose setup outlasts its limit isn\'t started', async () => {
     let started = 0;
-    const h = await harness({ maxRetries: 0 }, () => { started++; return new Promise(() => { /* never settles */ }); });
+    const h = await harness({ maxRetries: 0 }, () => { started++; return new Promise(() => { }); });
     try {
       const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<unknown> };
       const create = fw.createEphemeralAgent.bind(fw);
@@ -532,7 +463,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
   }, 20_000);
 
   test('a fork with a 1500 ms limit is stopped once', async () => {
-    const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxRetries: 1 }, () => new Promise(() => { }));
     const stops = countStops(h);
     try {
       await h.subagent.handleToolCall(fork('probe', { timeoutMs: 1500 }));
@@ -545,7 +476,7 @@ describe('an async run is stopped at its time limit, which covers its retries', 
 describe('the stop', () => {
   for (const call of [spawn, fork]) {
     test(`a user's cancel stops a ${call.name}'s run through it, and its stop says no output yet, not that nothing ran`, async () => {
-      const h = await harness({ maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+      const h = await harness({ maxRetries: 0 }, () => new Promise(() => { }));
       try {
         const sub = internal(h.subagent);
         const stopped: unknown[] = [];
@@ -623,7 +554,6 @@ describe('concurrency slots', () => {
     try {
       await internal(h.subagent).onRateLimitHit();
       expect(h.subagent.getConcurrencyStatus().effective).toBe(1);
-      // Three successes in a row raise the effective limit by one.
       for (let i = 0; i < 3; i++) await h.subagent.handleToolCall(spawn(`ok${i}`, { sync: true }));
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ configured: 2, effective: 2 });
       h.subagent.setConcurrency(5);
@@ -634,7 +564,7 @@ describe('concurrency slots', () => {
   test('a success that raises the limit starts every waiting spawn there\'s room for', async () => {
     const h = await harness({ maxConcurrent: 3, maxRetries: 0 }, (agent) => (agent.name.startsWith('spawn-short-')
       ? sleep(100).then(() => ({ speech: 'ok', toolCallsCount: 0 }))
-      : new Promise(() => { /* holds its slot */ })));
+      : new Promise(() => { })));
     try {
       const sub = internal(h.subagent);
       sub.effectiveConcurrent = 2;
@@ -647,20 +577,18 @@ describe('concurrency slots', () => {
       await until(() => h.subagent.getConcurrencyStatus().queued === 2);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ effective: 2, active: 2, queued: 2 });
       await outcome(h, 'short');
-      // The success raised the limit to 3 as its slot freed: both waiting spawns start.
       await until(() => h.subagent.getConcurrencyStatus().queued === 0);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ effective: 3, active: 3, queued: 0 });
     } finally { await h.cleanup(); }
   }, 20_000);
 
   test('a reclaimed zombie\'s slot is released once, and goes to a waiting spawn', async () => {
-    const h = await harness({ maxConcurrent: 2, maxRetries: 0 }, () => new Promise(() => { /* holds its slot */ }));
+    const h = await harness({ maxConcurrent: 2, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('zombie'));
       await h.subagent.handleToolCall(spawn('long'));
       await h.subagent.handleToolCall(spawn('waiting'));
-      // Both runs have reached the point where a reclaim can end them.
       await until(() => h.subagent.getConcurrencyStatus().queued === 1
         && h.running('zombie') && h.running('long'));
       const stopped: unknown[] = [];
@@ -670,7 +598,6 @@ describe('concurrency slots', () => {
       expect(sub.reclaimZombieSlots()).toBe(1);
       expect(stopped).toHaveLength(1);
       expect((await outcome(h, 'zombie')).text).toContain(ZOMBIE_LABEL);
-      // The zombie's own finally found its slot released already.
       await until(() => h.subagent.getConcurrencyStatus().active === 2 && h.subagent.getConcurrencyStatus().queued === 0);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 2, queued: 0 });
       await sleep(50);
@@ -680,7 +607,7 @@ describe('concurrency slots', () => {
 
   test('a finished fork of the same name doesn\'t hide a stuck spawn from the reclaim', async () => {
     const h = await harness({ maxConcurrent: 2, maxRetries: 0 }, (agent) => (agent.name.startsWith('spawn-')
-      ? new Promise(() => { /* holds its slot */ })
+      ? new Promise(() => { })
       : sleep(5).then(() => ({ speech: 'ok', toolCallsCount: 0 }))));
     try {
       const sub = internal(h.subagent);
@@ -696,12 +623,12 @@ describe('concurrency slots', () => {
   }, 20_000);
 
   test('a waiter whose wait runs out takes the slot a last-chance reclaim frees, and leaves the others waiting', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* holds its slot */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('zombie'));
       await until(() => h.running('zombie'));
-      const first = sub.acquireSlot('spawn', 100); // gives up after 100 ms, unless a reclaim then frees a slot
+      const first = sub.acquireSlot('spawn', 100);
       const second = sub.acquireSlot('spawn', 10_000);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 2 });
       sub.activeSubagents.get('spawn-zombie')!.lastActivityAt = Date.now() - 200_000;
@@ -744,11 +671,10 @@ describe('concurrency slots', () => {
 });
 
 describe('module stop reaches the whole run', () => {
-  /** What a run the module's stop ended opens with (stopLabel's 'killed'). */
   const SESSION_STOPPED = "[Stopped: its session stopped, as at a session switch or the host's exit]";
 
   test('module stop ends a queued spawn and the active one, and the queued one never starts', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* stopped by the module */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('long'));
@@ -780,7 +706,7 @@ describe('module stop reaches the whole run', () => {
           await until(() => waits.length === 1);
           expect(waits).toEqual([{ ms: 5000 }]);
           await h.subagent.stop();
-          await h.subagent.stop(); // stopping an already stopped module is harmless
+          await h.subagent.stop();
           expect(sub.cancellationHandles.size).toBe(0);
           await until(() => waits[0].endedBy !== undefined);
           expect(await done).toEqual({ ok: true, text: `${SESSION_STOPPED} (no output yet)` });
@@ -790,7 +716,7 @@ describe('module stop reaches the whole run', () => {
           expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
           expect(sub.liveSubagents.size).toBe(0);
         } finally {
-          h.subagent.cancelAll(); // also release a wait when testing the unfixed module
+          h.subagent.cancelAll();
           await h.cleanup();
         }
       }, 20_000);
@@ -799,7 +725,7 @@ describe('module stop reaches the whole run', () => {
 
   for (const call of [spawn, fork]) {
     test(`module stop preserves a live ${call.name}'s partial output`, async () => {
-      const h = await harness({ maxRetries: 1 }, () => new Promise(() => { /* stopped by the module */ }));
+      const h = await harness({ maxRetries: 1 }, () => new Promise(() => { }));
       try {
         const sub = internal(h.subagent);
         await h.subagent.handleToolCall(call('scout'));
@@ -830,8 +756,6 @@ describe('module stop reaches the whole run', () => {
         await h.subagent.handleToolCall(call('scout'));
         const done = outcome(h, 'scout');
         await until(() => waits.length === 1);
-        // As stopForSessionSwitch and the host's exit stop it: the framework
-        // ends its agents and ephemeral runs, then stops its modules.
         await h.framework.stop();
         expect(await done).toEqual({ ok: true, text: `${SESSION_STOPPED} (no output yet)` });
         expect(waits).toEqual([{ ms: 5000, endedBy: 'cancel' }]);
@@ -849,7 +773,6 @@ describe('module stop reaches the whole run', () => {
       await h.subagent.handleToolCall(spawn('scout'));
       await until(() => waits.length === 1);
       await h.framework.stop();
-      // The session opened again, as a switch back to it opens it.
       const next = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', defaultMaxTokens: 256 });
       again = await AgentFramework.create({
         storePath: h.storePath,
@@ -864,13 +787,13 @@ describe('module stop reaches the whole run', () => {
       expect(restored.status).toBe('cancelled');
       expect(restored.statusMessage).toBe('interrupted (branch/session switch)');
     } finally {
-      await again?.stop().catch(() => { /* noop */ });
+      await again?.stop().catch(() => { });
       await h.cleanup();
     }
   }, 20_000);
 
   test("module stop ends a run's queued child for the module's stop too, not as a user's cancel", async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* stopped by the module */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('lead'));
       await until(() => h.running('lead'));
@@ -882,7 +805,7 @@ describe('module stop reaches the whole run', () => {
       await h.subagent.stop();
       expect((await child).text).toBe(`${SESSION_STOPPED} (no output: it was still waiting for a concurrency slot, and never started)`);
       expect((await leadDone).text).toBe(`${SESSION_STOPPED} (no output yet)`);
-      expect(h.runs()).toBe(1); // the child never started
+      expect(h.runs()).toBe(1);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
     } finally { h.subagent.cancelAll(); await h.cleanup(); }
   }, 20_000);
@@ -906,12 +829,12 @@ describe('a cancel reaches the whole run', () => {
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 1, queued: 0 });
       await outcome(h, 'long');
       await sleep(50);
-      expect(h.runs()).toBe(1); // only "long" ever ran
+      expect(h.runs()).toBe(1);
     } finally { await h.cleanup(); }
   }, 20_000);
 
   test("a live attempt's framework agent is the subagent's while its run is live, and not once the run has settled", async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('long'));
       await until(() => h.running('long'));
@@ -925,7 +848,7 @@ describe('a cancel reaches the whole run', () => {
   }, 20_000);
 
   test('cancelling them all reaches a spawn still waiting for a slot', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('long'));
       await until(() => h.running('long'));
@@ -949,9 +872,8 @@ describe('a cancel reaches the whole run', () => {
         const waits = watchWaits(h.subagent);
         try {
           await h.subagent.handleToolCall(call('scout'));
-          await until(() => waits.length === 1); // past the attempt, into the wait of 5 s
+          await until(() => waits.length === 1);
           expect(h.subagent.cancelSubagent('scout')).toBe(true);
-          // An attempt ran before the wait, so the stop says only that it has no output.
           expect((await outcome(h, 'scout')).text).toBe('[Stopped by user] (no output yet)');
           expect(waits).toEqual([{ ms: 5000, endedBy: 'cancel' }]);
           expect(attempts).toBe(1);
@@ -994,10 +916,6 @@ describe('a cancel reaches the whole run', () => {
         const compile = created.contextManager.compile.bind(created.contextManager);
         created.contextManager.compile = () => {
           const compiled = compile();
-          // Runs when compiling settles, just before the setup's race takes
-          // up its result. The race still takes compile's result, which
-          // reached it before the cancel did, so only the check after the
-          // race can see this cancel.
           void compiled.then(() => h.subagent.cancelSubagent('scout'));
           return compiled;
         };
@@ -1020,7 +938,7 @@ describe('a cancel reaches the whole run', () => {
     try {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('scout'));
-      await until(() => waits.length === 1); // in the back-off, still registered
+      await until(() => waits.length === 1);
       sub.activeSubagents.get('spawn-scout')!.lastActivityAt = Date.now() - 200_000;
       expect(sub.reclaimZombieSlots()).toBe(1);
       expect((await outcome(h, 'scout')).text).toBe(`${ZOMBIE_LABEL} (no output yet)`);
@@ -1031,7 +949,7 @@ describe('a cancel reaches the whole run', () => {
   }, 20_000);
 
   test('cancelling a subagent reaches its child still waiting for a slot', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('lead'));
       await until(() => h.running('lead'));
@@ -1044,13 +962,13 @@ describe('a cancel reaches the whole run', () => {
       expect((await child).text).toStartWith('[Stopped by user] (no output: it was still waiting');
       expect((await leadDone).text).toStartWith('[Stopped by user]');
       await sleep(50);
-      expect(h.runs()).toBe(1); // the child never started
+      expect(h.runs()).toBe(1);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ active: 0, queued: 0 });
     } finally { await h.cleanup(); }
   }, 20_000);
 
   test('cancelling them all counts a parent and its child, each once', async () => {
-    const h = await harness({ maxConcurrent: 2, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 2, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('lead'));
       await until(() => h.running('lead'));
@@ -1076,11 +994,11 @@ describe('a cancel reaches the whole run', () => {
             await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
             throw new Error('503 overloaded');
           }
-          return new Promise(() => { /* the retry runs until cancelled */ });
+          return new Promise(() => { });
         }
-        return new Promise(() => { /* the child runs until cancelled */ });
+        return new Promise(() => { });
       });
-      internal(h.subagent).waitOrStop = async () => null; // retry at once
+      internal(h.subagent).waitOrStop = async () => null;
       try {
         await h.subagent.handleToolCall(call('lead'));
         await until(() => leadAttempts === 2 && h.running('child'));
@@ -1096,10 +1014,6 @@ describe('a cancel reaches the whole run', () => {
   }
 
   test('cancelling a subagent in its back-off reaches the children its earlier attempt spawned', async () => {
-    // The earlier attempt is still live in its back-off (its catch waits
-    // before its finally unregisters it), so a lookup through live attempts
-    // reached this child too; the next test's window is the one only the
-    // index of every attempt covers.
     let leadAttempts = 0;
     let h!: Harness;
     h = await harness({ maxConcurrent: 3, maxRetries: 1 }, async (agent) => {
@@ -1108,12 +1022,12 @@ describe('a cancel reaches the whole run', () => {
         await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
         throw new Error('503 overloaded');
       }
-      return new Promise(() => { /* the child runs until cancelled */ });
+      return new Promise(() => { });
     });
     const waits = watchWaits(h.subagent);
     try {
       await h.subagent.handleToolCall(spawn('lead'));
-      await until(() => waits.length === 1 && h.running('child')); // the lead is in its back-off
+      await until(() => waits.length === 1 && h.running('child'));
       let childText: string | undefined;
       void outcome(h, 'child').then((o) => { childText = o.text; });
       const lead = outcome(h, 'lead');
@@ -1136,18 +1050,16 @@ describe('a cancel reaches the whole run', () => {
         await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
         throw new Error('503 overloaded');
       }
-      return new Promise(() => { /* the child runs until cancelled */ });
+      return new Promise(() => { });
     });
-    internal(h.subagent).waitOrStop = async () => null; // retry at once
-    // The lead's second attempt never finishes creating its agent: between
-    // its attempts, with neither attempt live.
+    internal(h.subagent).waitOrStop = async () => null;
     const fw = h.framework as unknown as { createEphemeralAgent: (c: { name: string }) => Promise<unknown> };
     const create = fw.createEphemeralAgent.bind(fw);
     let leadCreates = 0;
     fw.createEphemeralAgent = async (c) => {
       if (c.name.startsWith('spawn-lead-') && ++leadCreates === 2) {
         retrySettingUp = true;
-        return new Promise(() => { /* never settles */ });
+        return new Promise(() => { });
       }
       return create(c);
     };
@@ -1167,7 +1079,7 @@ describe('a cancel reaches the whole run', () => {
 
   for (const call of [spawn, fork]) {
     test(`a child ${call.name} whose wait for a slot times out leaves no parent link`, async () => {
-      const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+      const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
       const sub = internal(h.subagent);
       const acquire = sub.acquireSlot.bind(h.subagent);
       sub.acquireSlot = (kind: 'spawn' | 'fork', _slotTimeoutMs?: number, cancelled?: Promise<never>) => acquire(kind, 50, cancelled);
@@ -1176,7 +1088,7 @@ describe('a cancel reaches the whole run', () => {
         await until(() => h.running('lead'));
         const lead = sub.liveSubagents.get('lead')!.frameworkAgentName;
         await h.subagent.handleToolCall({ ...call('child'), callerAgentName: lead });
-        expect(sub.parentMap.get('child')).toBe(lead); // taken as it queued
+        expect(sub.parentMap.get('child')).toBe(lead);
         const child = await outcome(h, 'child');
         expect(child.text).toContain(
           `${call === fork ? "Fork 'child'" : "Subagent 'child'"} didn't start, so nothing ran: no concurrency slot opened within 50 ms ` +
@@ -1192,7 +1104,7 @@ describe('a cancel reaches the whole run', () => {
   test('a run leaves no cancel behind, so a second cancel finds nothing', async () => {
     const h = await harness({ maxRetries: 0 }, (agent) => (agent.name.startsWith('spawn-quick-')
       ? sleep(5).then(() => ({ speech: 'ok', toolCallsCount: 0 }))
-      : new Promise(() => { /* never settles */ })));
+      : new Promise(() => { })));
     try {
       const sub = internal(h.subagent);
       await h.subagent.handleToolCall(spawn('quick'));
@@ -1212,7 +1124,7 @@ describe('a cancel reaches the whole run', () => {
   }, 20_000);
 
   test('a spawn under a running subagent\'s name is refused, and a cancel still stops the running one', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('scan'));
       await until(() => h.running('scan'));
@@ -1263,7 +1175,7 @@ describe('a name means one subagent until its result has come back', () => {
   }, 20_000);
 
   test('a name waiting for a concurrency slot is refused', async () => {
-    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { /* never settles */ }));
+    const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, () => new Promise(() => { }));
     try {
       await h.subagent.handleToolCall(spawn('long'));
       await until(() => h.running('long'));
@@ -1306,7 +1218,7 @@ describe('a name means one subagent until its result has come back', () => {
   test('a cancelled subagent is finishing, and keeps its name until its result has come back, so a new run\'s result isn\'t taken for it', async () => {
     let calls = 0;
     const h = await harness({ maxRetries: 0 }, () => (++calls === 1
-      ? new Promise(() => { /* never settles: the cancel ends it */ })
+      ? new Promise(() => { })
       : sleep(20).then(() => ran('second'))));
     const delivered = deliveries(h);
     try {
@@ -1328,13 +1240,12 @@ describe('a name means one subagent until its result has come back', () => {
   test('a result stashed with return by a run that was then cancelled isn\'t taken by the next run under its name', async () => {
     let calls = 0;
     const h = await harness({ maxRetries: 0 }, () => (++calls === 1
-      ? new Promise(() => { /* never settles: the cancel ends it */ })
+      ? new Promise(() => { })
       : sleep(20).then(() => ran('second'))));
     const delivered = deliveries(h);
     try {
       await h.subagent.handleToolCall(spawn('scout'));
       await until(() => h.running('scout'));
-      // The run returns a result, then is cancelled before its attempt settles.
       internal(h.subagent).callIdIndex.set('ret-1', 'scout');
       await h.subagent.handleToolCall({ id: 'ret-1', name: 'return', input: { result: 'stale' } });
       expect(h.subagent.cancelSubagent('scout')).toBe(true);
@@ -1356,7 +1267,7 @@ describe('a name means one subagent until its result has come back', () => {
         }
         return ran('fresh');
       });
-      internal(h.subagent).waitOrStop = async () => null; // retry at once
+      internal(h.subagent).waitOrStop = async () => null;
       try {
         await h.subagent.handleToolCall(call('scout'));
         expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'fresh' });
@@ -1370,13 +1281,180 @@ describe('a name means one subagent until its result has come back', () => {
     try {
       const sub = internal(h.subagent);
       expect((await h.subagent.handleToolCall(spawn('scout'))).success).toBe(true);
-      await until(() => !sub.asyncHandles.has('scout')); // its result has come back
+      await until(() => !sub.asyncHandles.has('scout'));
       sub.lastInputTokens.set('scout', 1234);
       expect(sub.parentMap.get('scout')).toBe('parent');
       const { callerAgentName: _caller, ...noCaller } = spawn('scout');
       expect((await h.subagent.handleToolCall(noCaller as ToolCall)).success).toBe(true);
       expect(sub.parentMap.has('scout')).toBe(false);
       expect(sub.lastInputTokens.has('scout')).toBe(false);
+    } finally { await h.cleanup(); }
+  }, 20_000);
+
+  test('an async result goes to the window of the subagent that launched it, its line naming it, and its wake to it', async () => {
+    const h = await harness({ maxRetries: 0 }, async (agent) => agent.name.includes('lead') ? new Promise(() => { }) : ran('done'));
+    const ctx = (h.subagent as unknown as { ctx: {
+      addMessage(participant: string, content: Array<{ type: string; text?: string }>, metadata?: unknown, opts?: { forAgent?: string }): unknown;
+      pushEvent(event: { type: string; agentName?: string }): unknown;
+    } }).ctx;
+    const add = ctx.addMessage.bind(ctx);
+    const push = ctx.pushEvent.bind(ctx);
+    const written: Array<{ text: string; forAgent?: string }> = [];
+    const woken: string[] = [];
+    ctx.addMessage = (participant, content, metadata, opts) => {
+      const text = content[0]?.text ?? '';
+      if (text.startsWith('[Subagent ')) written.push({ text, ...(opts?.forAgent !== undefined ? { forAgent: opts.forAgent } : {}) });
+      return add(participant, content, metadata, opts);
+    };
+    ctx.pushEvent = (event) => {
+      if (event.type === 'inference-request' && event.agentName) woken.push(event.agentName);
+      return push(event);
+    };
+    try {
+      await h.subagent.handleToolCall(spawn('lead'));
+      await until(() => h.running('lead'));
+      const lead = internal(h.subagent).liveSubagents.get('lead')!.frameworkAgentName;
+      expect((await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: lead })).success).toBe(true);
+      await until(() => written.length > 0);
+      expect(lead).not.toBe('lead');
+      expect(written).toEqual([{ text: `[Subagent 'child' returned, for 'lead']\n\ndone`, forAgent: lead }]);
+      expect(woken).toEqual([lead]);
+    } finally {
+      h.subagent.cancelSubagent('lead');
+      await h.cleanup();
+    }
+  }, 20_000);
+
+  for (const call of [spawn, fork]) {
+    test(`an async result for a ${call.name} that has ended reaches the primary, not a later run under its name, which isn't woken`, async () => {
+      const isLead = (agentName: string) => agentName.startsWith(call === spawn ? 'spawn-lead-' : 'lead-d');
+      let leadRuns = 0;
+      let firstLead = '';
+      let releaseChild!: () => void;
+      const childMayEnd = new Promise<void>((resolve) => { releaseChild = resolve; });
+      let h!: Harness;
+      h = await harness({ maxConcurrent: 3, maxRetries: 0 }, async (agent) => {
+        if (isLead(agent.name)) {
+          if (++leadRuns === 1) {
+            firstLead = agent.name;
+            await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
+            return ran('done');
+          }
+          return new Promise(() => { });
+        }
+        await childMayEnd;
+        return ran('child done');
+      });
+      const sub = internal(h.subagent);
+      const ctx = (h.subagent as unknown as { ctx: {
+        addMessage(participant: string, content: Array<{ type: string; text?: string }>, metadata?: unknown, opts?: { forAgent?: string }): unknown;
+        pushEvent(event: { type: string; agentName?: string; reason?: string }): unknown;
+      } }).ctx;
+      const add = ctx.addMessage.bind(ctx);
+      const push = ctx.pushEvent.bind(ctx);
+      const written: Array<{ text: string; forAgent?: string }> = [];
+      const woken: string[] = [];
+      ctx.addMessage = (participant, content, metadata, opts) => {
+        const text = content[0]?.text ?? '';
+        if (text.startsWith("[Subagent 'child'")) written.push({ text, ...(opts?.forAgent !== undefined ? { forAgent: opts.forAgent } : {}) });
+        return add(participant, content, metadata, opts);
+      };
+      ctx.pushEvent = (event) => {
+        if (event.type === 'inference-request' && event.agentName && event.reason?.endsWith(':child')) woken.push(event.agentName);
+        return push(event);
+      };
+      try {
+        await h.subagent.handleToolCall(call('lead'));
+        await until(() => h.running('child') && !sub.asyncHandles.has('lead'));
+        expect((await h.subagent.handleToolCall(call('lead'))).success).toBe(true);
+        await until(() => leadRuns === 2 && h.running('lead'));
+        const secondLead = sub.liveSubagents.get('lead')!.frameworkAgentName;
+        expect(secondLead).not.toBe(firstLead);
+        releaseChild();
+        await until(() => written.length > 0);
+        expect(written).toEqual([{ text: "[Subagent 'child' returned, for 'lead', which has ended]\n\nchild done" }]);
+        expect(woken).toEqual([]);
+      } finally {
+        h.subagent.cancelSubagent('lead');
+        await h.cleanup();
+      }
+    }, 20_000);
+  }
+
+  for (const kind of ['an async fork', 'a failing spawn', 'a sync spawn moved to the background'] as const) {
+    test(`${kind}'s result names its launcher by its display name`, async () => {
+      let h!: Harness;
+      let lead = '';
+      h = await harness({ maxConcurrent: 3, maxRetries: 0 }, async (agent) => {
+        if (agent.name.startsWith('spawn-lead-')) {
+          lead = agent.name;
+          const call = kind === 'an async fork' ? fork('child') : kind === 'a failing spawn' ? spawn('child') : spawn('child', { sync: true, timeoutMs: 50 });
+          await h.subagent.handleToolCall({ ...call, callerAgentName: agent.name });
+          return new Promise(() => { });
+        }
+        if (kind === 'a failing spawn') throw new Error('broke');
+        if (kind === 'a sync spawn moved to the background') await sleep(300);
+        return ran('child done');
+      });
+      const ctx = (h.subagent as unknown as { ctx: {
+        addMessage(participant: string, content: Array<{ type: string; text?: string }>, metadata?: unknown, opts?: { forAgent?: string }): unknown;
+      } }).ctx;
+      const add = ctx.addMessage.bind(ctx);
+      const written: Array<{ text: string; forAgent?: string }> = [];
+      ctx.addMessage = (participant, content, metadata, opts) => {
+        const text = content[0]?.text ?? '';
+        if (text.startsWith("[Subagent 'child'")) written.push({ text, ...(opts?.forAgent !== undefined ? { forAgent: opts.forAgent } : {}) });
+        return add(participant, content, metadata, opts);
+      };
+      try {
+        await h.subagent.handleToolCall(spawn('lead'));
+        await until(() => written.length > 0);
+        expect(lead).toStartWith('spawn-lead-');
+        const outcome = kind === 'a failing spawn' ? 'failed' : 'returned';
+        expect(written[0]!.text).toStartWith(`[Subagent 'child' ${outcome}, for 'lead']\n\n`);
+        expect(written[0]!.forAgent).toBe(lead);
+      } finally {
+        h.subagent.cancelSubagent('lead');
+        await h.cleanup();
+      }
+    }, 20_000);
+  }
+
+  test('a child whose launcher has ended is listed in the primary\'s fleet status while it runs', async () => {
+    let releaseChild!: () => void;
+    const childMayEnd = new Promise<void>((resolve) => { releaseChild = resolve; });
+    let h!: Harness;
+    h = await harness({ maxConcurrent: 3, maxRetries: 0 }, async (agent) => {
+      if (agent.name.startsWith('spawn-lead-')) {
+        await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
+        return ran('done');
+      }
+      await childMayEnd;
+      return ran('child done');
+    });
+    const sub = internal(h.subagent);
+    const status = async () => ((await h.subagent.gatherContext('parent'))[0]?.content[0] as { text: string } | undefined)?.text;
+    try {
+      expect((await h.subagent.handleToolCall({ id: 't-hud', name: 'hud', input: { enabled: true }, callerAgentName: 'parent' })).success).toBe(true);
+      await h.subagent.handleToolCall(spawn('lead'));
+      await until(() => h.running('child') && !sub.asyncHandles.has('lead'));
+      expect(await status()).toContain("child [spawn] running since");
+      expect((await h.subagent.peek(undefined, 'parent')).map((snapshot) => snapshot.name)).toContain('child');
+      expect((await h.subagent.peek('child', 'parent')).map((snapshot) => snapshot.name)).toEqual(['child']);
+      releaseChild();
+      await until(() => !sub.asyncHandles.has('child'));
+      expect((await status()) ?? '').not.toContain('child [spawn] running');
+    } finally { await h.cleanup(); }
+  }, 20_000);
+
+  test('an async result with no launcher named, by the call or the config, lands as before', async () => {
+    const h = await harness({ parentAgentName: undefined, maxRetries: 0 }, async () => ran('done'));
+    const delivered = deliveries(h);
+    try {
+      const { callerAgentName: _caller, ...noCaller } = spawn('scout');
+      expect((await h.subagent.handleToolCall(noCaller as ToolCall)).success).toBe(true);
+      await until(() => delivered.requests.length > 0);
+      expect(delivered.messages.filter((m) => m.startsWith("[Subagent 'scout'"))).toEqual(["[Subagent 'scout' returned]\n\ndone"]);
     } finally { await h.cleanup(); }
   }, 20_000);
 
@@ -1391,21 +1469,19 @@ describe('a name means one subagent until its result has come back', () => {
             await h.subagent.handleToolCall({ ...spawn('child'), callerAgentName: agent.name });
             return ran('done');
           }
-          return new Promise(() => { /* the second run under the name runs until cancelled */ });
+          return new Promise(() => { });
         }
-        return new Promise(() => { /* the child runs until cancelled */ });
+        return new Promise(() => { });
       });
       const sub = internal(h.subagent);
       try {
         await h.subagent.handleToolCall(call('lead'));
-        await until(() => h.running('child') && !sub.asyncHandles.has('lead')); // the first run's result has come back
+        await until(() => h.running('child') && !sub.asyncHandles.has('lead'));
         expect((await h.subagent.handleToolCall(call('lead'))).success).toBe(true);
         await until(() => leadRuns === 2);
         const lead = outcome(h, 'lead');
         expect(h.subagent.cancelSubagent('lead')).toBe(true);
         expect((await lead).text).toStartWith('[Stopped by user]');
-        // The child is the last run's, so this run's cancel left it, and its
-        // own cancel still finds it.
         expect(h.subagent.cancelSubagent('child')).toBe(true);
       } finally { await h.cleanup(); }
     }, 20_000);
@@ -1418,9 +1494,9 @@ describe('a name means one subagent until its result has come back', () => {
       const create = fw.createEphemeralAgent.bind(fw);
       let reached = false;
       fw.createEphemeralAgent = async (c) => {
-        if (stuck === 'creating its agent') { reached = true; return new Promise(() => { /* never settles */ }); }
+        if (stuck === 'creating its agent') { reached = true; return new Promise(() => { }); }
         const created = await create(c);
-        created.contextManager.compile = () => { reached = true; return new Promise(() => { /* never settles */ }); };
+        created.contextManager.compile = () => { reached = true; return new Promise(() => { }); };
         return created;
       };
       const delivered = deliveries(h);
@@ -1444,7 +1520,6 @@ describe('a name means one subagent until its result has come back', () => {
       let finish!: () => void;
       let cleanups = 0;
       fw.createEphemeralAgent = (c) => new Promise((resolve, reject) => {
-        // Creation finishes only when the test says, after the cancel.
         finish = () => create(c).then((created) => resolve({ ...created, cleanup: () => { cleanups++; created.cleanup(); } }), reject);
       });
       const delivered = deliveries(h);
@@ -1467,7 +1542,6 @@ describe('a name means one subagent until its result has come back', () => {
     const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<unknown> };
     let fail!: () => void;
     fw.createEphemeralAgent = () => new Promise((_resolve, reject) => {
-      // Creation fails only when the test says, after the cancel.
       fail = () => reject(new Error('creation failed late'));
     });
     const delivered = deliveries(h);
@@ -1511,16 +1585,14 @@ describe('a name means one subagent until its result has come back', () => {
     } finally { spy.mockRestore(); unhandled.stop(); await h.cleanup(); }
   }, 20_000);
 
-  test('a reclaim ends a run whose setup never finishes compiling its prompt, and frees its name', async () => {
+  test('a reclaim ends a registered run whose setup never finishes compiling its prompt, and frees its name', async () => {
     const h = await harness({ maxRetries: 0 }, async () => ran('ran'));
     const fw = h.framework as unknown as { createEphemeralAgent: (c: unknown) => Promise<{ contextManager: { compile(): Promise<unknown> } }> };
     const create = fw.createEphemeralAgent.bind(fw);
     let reached = false;
-    // The reaper reads the runs registered for peek, which a run is once
-    // it has its agent, so this one sticks compiling.
     fw.createEphemeralAgent = async (c) => {
       const created = await create(c);
-      created.contextManager.compile = () => { reached = true; return new Promise(() => { /* never settles */ }); };
+      created.contextManager.compile = () => { reached = true; return new Promise(() => { }); };
       return created;
     };
     const delivered = deliveries(h);
@@ -1543,12 +1615,10 @@ describe('a name means one subagent until its result has come back', () => {
     const cm = parent.getContextManager();
     const compile = cm.compile.bind(cm);
     let reached = false;
-    // Only the fork's read of the parent's context never settles; the
-    // parent's own turn after the result compiles as usual.
     cm.compile = () => {
       if (reached) return compile();
       reached = true;
-      return new Promise(() => { /* never settles */ });
+      return new Promise(() => { });
     };
     const delivered = deliveries(h);
     try {
@@ -1601,15 +1671,10 @@ describe('a name means one subagent until its result has come back', () => {
 });
 
 describe('with the clock held, agent names stay new to agent-framework, and until() still gives up', () => {
-  // agent-framework refuses to create an agent under a name it has seen in
-  // the framework's life. These cases hold the clock, so every attempt in
-  // them starts in the same millisecond, and the clock is given back after
-  // each case, one that times out included.
   const realNow = Date.now;
   const holdClock = (now = realNow()) => { Date.now = () => now; };
   afterEach(() => { Date.now = realNow; });
   const ran = (speech: string) => ({ speech, toolCallsCount: 0 });
-  /** The number an agent name ends in. */
   const stampOf = (agentName: string) => Number(/-(\d+)$/.exec(agentName)?.[1]);
 
   test('until() still gives up while the clock is held', async () => {
@@ -1620,8 +1685,8 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
   }, 2_000);
 
   test('a name\'s number is the time when no earlier name has reached it', async () => {
-    // A minute past any number given so far, so the time is what decides.
-    const now = realNow() + 60_000;
+    const aMinutePastAnyNumberGiven = 60_000;
+    const now = realNow() + aMinutePastAnyNumberGiven;
     holdClock(now);
     const names: string[] = [];
     const h = await harness({ maxRetries: 0 }, async (agent) => { names.push(agent.name); return ran('done'); });
@@ -1645,7 +1710,7 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
         if (names.length === 1) throw new Error('503 overloaded');
         return ran('second');
       });
-      internal(h.subagent).waitOrStop = async () => null; // retry at once
+      internal(h.subagent).waitOrStop = async () => null;
       try {
         await h.subagent.handleToolCall(call('scout'));
         expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'second' });
@@ -1659,18 +1724,17 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
     test(`a new ${call.name} run under a name, and its retry, start in the same millisecond as the last run's`, async () => {
       holdClock();
       const names: string[] = [];
-      // Each run's first attempt fails and its retry gives the result.
       const h = await harness({ maxRetries: 1 }, async (agent) => {
         names.push(agent.name);
         if (names.length % 2 === 1) throw new Error('503 overloaded');
         return ran(`run ${names.length / 2}`);
       });
       const sub = internal(h.subagent);
-      sub.waitOrStop = async () => null; // retry at once
+      sub.waitOrStop = async () => null;
       try {
         await h.subagent.handleToolCall(call('scout'));
         expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'run 1' });
-        await until(() => !sub.asyncHandles.has('scout')); // its result has come back
+        await until(() => !sub.asyncHandles.has('scout'));
         await h.subagent.handleToolCall(call('scout'));
         expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'run 2' });
         expect(names).toHaveLength(4);
@@ -1683,8 +1747,6 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
     }, 20_000);
   }
 
-  // Last in the file, so what runs after it in the same process has the
-  // real clock.
   test('the clock is the real one again after the cases that held it', () => {
     expect(Date.now).toBe(realNow);
   });

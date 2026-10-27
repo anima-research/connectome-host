@@ -71,8 +71,6 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('prices Opus 5 at the Opus-tier rate rather than leaving it unpriced', () => {
-    // 'claude-opus-5' matches no 'claude-opus-4-*' prefix, so before this it
-    // fell through to undefined and every diver call showed no cost at all.
     const cost = priceAnthropicCall('claude-opus-5', timestamp, usage({
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
@@ -97,7 +95,6 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('prices Haiku 5.5 by prompt length, up to 100,000 tokens at $0.10/$0.50 and over that at $0.50/$2.50', () => {
-    // the prompt is input, cache reads and both cache writes; output doesn't count
     const prompt = { cacheReadTokens: 50_000, cacheWrite5mTokens: 5_000, cacheWrite1hTokens: 5_000, outputTokens: 1_000_000 };
     const at = priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ ...prompt, inputTokens: 40_000 }));
     expect(at?.rates.inputPerMillion).toBe(0.1);
@@ -107,8 +104,6 @@ describe('Anthropic per-call pricing', () => {
     expect(at?.cacheWrite5m).toBeCloseTo(0.000625, 12);
     expect(at?.cacheWrite1h).toBeCloseTo(0.001, 12);
     expect(at?.output).toBeCloseTo(0.5, 12);
-    // The solver reads one multiple for Haiku 5.5, whatever the prompt's
-    // length (anthropicCacheReadMultiplier), so both tiers must share it.
     expect(at!.rates.cacheReadPerMillion / at!.rates.inputPerMillion).toBeCloseTo(anthropicCacheReadMultiplier('claude-haiku-5-5'), 12);
 
     const over = priceAnthropicCall('claude-haiku-5-5', timestamp, usage({ ...prompt, inputTokens: 40_001 }));
@@ -137,9 +132,6 @@ describe('Anthropic per-call pricing', () => {
     expect(anthropicCacheReadMultiplier('global.anthropic.claude-mythos-5-1')).toBe(0.025);
     expect(anthropicCacheReadMultiplier('claude-opus-4-6')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('claude-haiku-5-5')).toBe(0.1);
-    // The pricing page reads Sonnet 5.5 at 0.05x, but the table leaves it at
-    // the Sonnet 5 entry's 0.1x, and this is the solver's price for it too:
-    // see that entry's comment before changing it.
     expect(anthropicCacheReadMultiplier('claude-sonnet-5-5')).toBe(0.1);
     expect(anthropicCacheReadMultiplier('some-unknown-model')).toBe(0.1);
   });
@@ -167,9 +159,6 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('Mythos 5.1 reads from cache at 0.025x too, and Mythos 5 still at 0.1x', () => {
-    // the pricing page's footnote names both 5.1 models; the prefix order is
-    // pinned the same way the Fable pair is, so 'claude-mythos-5' cannot
-    // swallow 'claude-mythos-5-1' first
     const mythos51 = priceAnthropicCall('claude-mythos-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
     const mythos5 = priceAnthropicCall('claude-mythos-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
     expect(mythos51?.cacheRead).toBeCloseTo(0.25, 9);
@@ -201,8 +190,6 @@ describe('Anthropic per-call pricing', () => {
   });
 
   test('prices Sonnet 5 at $2/$10 after September 1, the withdrawn increase date', () => {
-    // the introductory rate became the standard one; the scheduled move to
-    // $3/$15 on 2026-09-01 never happened, so no call is priced at it
     const all = usage({
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,

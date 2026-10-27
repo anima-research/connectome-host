@@ -20,10 +20,8 @@ interface Receipt {
   originalError: boolean;
 }
 
-// The limits only catch a hang, so they leave a loaded machine room.
 const KILL_AFTER_MS = 45_000;
 
-/** Run the mock child, and read its tui-error.log once it has exited. */
 async function spawnChild(mode: string, control: string): Promise<{ stdout: string; code: number | null; signal: string | null; stderr: string; log: string }> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tui-shutdown-')));
   const child = spawn(process.execPath, [join(import.meta.dir, 'mock-tui-shutdown-child.ts'), mode, control], {
@@ -56,7 +54,6 @@ async function runChild(mode: string, control: string): Promise<{ receipt: Recei
   return { receipt: JSON.parse(match[1]) as Receipt, code, signal, stdout, stderr, log };
 }
 
-/** The log's lines for a failing terminal, and for a teardown step that failed. */
 const terminalLines = (log: string) => log.split('\n').filter(line => line.startsWith('terminal failed'));
 const stoppingLines = (log: string) => log.split('\n').filter(line => line.startsWith('stopping:'));
 
@@ -65,9 +62,6 @@ const STOPPED_ONCE = {
   serverStops: 0, activeAfterStop: 0, modulesReadAfterStop: 0, settledBeforeSwitch: null, destroyed: true, unhandled: false,
 };
 
-// OpenTUI ends the TUI on SIGTERM, SIGINT and SIGHUP; the Web UI's own quit
-// sends SIGTERM. Each stops as /quit does, and detaches the TUI's traces
-// before the framework stops.
 for (const control of ['ctrl-c', 'quit', 'SIGTERM', 'SIGINT', 'SIGHUP']) {
   for (const mode of ['healthy', 'failure', 'delayed-failure']) {
     test(`TUI ${control} shutdown ${mode} settles after terminal cleanup`, async () => {
@@ -85,8 +79,6 @@ for (const control of ['ctrl-c', 'quit', 'SIGTERM', 'SIGINT', 'SIGHUP']) {
   }
 }
 
-// A terminal that fails with no signal stops the TUI through its stream's
-// error, and its first error gets one line in the log.
 for (const [control, line] of [
   ['stdout-error', 'terminal failed (write EIO): stopping as /quit does'],
   ['stdin-error', 'terminal failed (write EIO): stopping as /quit does'],
@@ -100,9 +92,6 @@ for (const [control, line] of [
   }, 60_000);
 }
 
-// A teardown step that throws is logged, and the steps after it still run:
-// ending the trace subscription comes before the renderer goes, so the
-// renderer is still destroyed after it throws. The framework still stops.
 for (const [control, line] of [
   ['title-throws', 'stopping: resetting the title failed (injected title write failure); the stop goes on'],
   ['detach-throws', 'stopping: ending the trace subscription failed (injected trace detach failure); the stop goes on'],
@@ -123,7 +112,6 @@ test('a terminal error once the stop has settled, after the log has ended, is sw
 }, 60_000);
 
 test("the TUI settles only once its log has its last lines, so a host that exits at once after a failed stop keeps them", async () => {
-  // As index.ts's main().catch: the host exits as soon as runTui rejects.
   const { code, signal, stderr, log } = await spawnChild('failure', 'exit-at-once');
   expect(stderr).toContain('injected Fleet cleanup failure');
   expect(stoppingLines(log)).toEqual(['stopping: resetting the title failed (injected title write failure); the stop goes on']);
@@ -154,8 +142,6 @@ test('a command whose work answers once the stop has begun draws nothing, and no
 
 for (const mode of ['healthy', 'failure']) {
   test(`once a ${mode === 'healthy' ? 'clean' : 'failed'} stop has settled, a stop signal ends a host that something else keeps running`, async () => {
-    // The TUI's own signal listeners last only as long as its stop, however
-    // it ends, so a host that lingers after it can still be ended by SIGTERM.
     const { stdout, code, signal } = await spawnChild(mode, 'linger');
     expect(stdout).toContain('TUI_SETTLED');
     expect({ code, signal }).toEqual({ code: null, signal: 'SIGTERM' });
@@ -166,15 +152,8 @@ test("a stop during a session switch doesn't wait for it, and the switch stops w
   const { receipt, code, signal, log } = await runChild('healthy', 'switch');
   expect(receipt).toEqual({
     status: 'fulfilled',
-    // The TUI's stop settled while the switch was still making its framework.
     settledBeforeSwitch: true,
-    // The switch stopped the old framework, after the TUI had stopped
-    // following it, and the TUI's stop shared that stop.
     stopCalls: 1, detachedAtStop: 1, traceDetached: 1,
-    // Once released, the switch stopped the framework it made and closed the
-    // Web UI's server rather than install it. The TUI followed no framework
-    // after the stop, and the switch's continuation read nothing, rebound
-    // nothing and drew nothing.
     switchedStopCalls: 1, switchedDetachedAtStop: 1, serverStops: 1, followedAfterStop: 0, activeAfterStop: 0, modulesReadAfterStop: 0,
     destroyed: true, unhandled: false, originalError: false,
   });

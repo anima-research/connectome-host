@@ -4,31 +4,24 @@ import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
-/** Compile budget for a recipe that omits `agent.contextBudgetTokens`. Sized
- *  for the 1M-window models; a recipe on a smaller window must set its own
- *  (budget + maxTokens has to fit under the window). */
 export const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
+const STREAM_HEADROOM_TOKENS = 20_000;
+const FRAMEWORK_DEFAULT_MAX_STREAM_TOKENS = 150_000;
 
-/** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
- *  when it's set, else the recipe's own, else its provider's default. */
 export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
   return envModel || recipe.agent.model ||
     (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
 }
 
-/** The compile budget the recipe configures: its own, else the default. A
- *  runtime override (agent settings) can still move the live budget. */
 export function effectiveContextBudgetTokens(recipe: Recipe): number {
   return recipe.agent.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS;
 }
 
 /**
- * A startup warning for a recipe that turns `agent.autoContinue` on while the
- * installed agent-framework predates the setting (agent-framework#744): the
- * key passes through, the framework builds the agent without it, and turns
- * end as before with no other sign. `agent` is the built agent
- * (framework.getAgent); a framework that supports the setting gives it
- * `autoContinue`, resolved. Undefined when the setting is off or supported.
+ * An agent-framework that predates `agent.autoContinue` (agent-framework#744)
+ * passes the key through and builds the agent without it, so turns end as
+ * before with no other sign. One that supports it gives the built agent
+ * (framework.getAgent) `autoContinue`, resolved.
  */
 export function autoContinueSupportWarning(recipe: Recipe, agent: object | undefined): string | undefined {
   if (!recipe.agent.autoContinue || !agent) return undefined;
@@ -38,35 +31,20 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
 }
 
 export type FrameworkAgentConfig = AgentConfig & {
-  // Forward recipe fields that newer Agent Framework releases understand
-  // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
   autoContinue?: Recipe['agent']['autoContinue'];
 };
 
 /**
- * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7
- * Sonnet, and Claude 4+ — but NOT for 3.5 Sonnet (either version). 1022
- * ("3.6") was in the Dec 2024 preview and was dropped at GA — that
- * account-level "your request did not allow prompt caching" is the error
- * observed here 2026-07-21 (antra's diagnosis, confirmed against the AWS
- * docs 2026-07-31; as of the same day's live probe every 3.5-era model
- * is EOL on Bedrock anyway). So the gate denies the pre-GA FAMILIES —
- * Claude v2/instant, Claude 3, 3.5 Sonnet — at the family boundary, so
- * dated ids, bare aliases, -latest, and inference-profile forms
- * (us.anthropic.claude-...) all resolve the same; 3.5 Haiku and 3.7
- * Sonnet stay distinct and on. Non-Claude Bedrock ids (Nova etc.) are
- * out of scope for this gate and conservatively off — membrane's
- * BedrockAdapter only accepts Claude ids today. recipe.agent.
- * promptCaching overrides in either direction for accounts/regions
- * whose entitlements differ from the GA table. (Connectome issue #35.)
+ * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7 Sonnet,
+ * and Claude 4+, but not for 3.5 Sonnet (either version): 1022 ("3.6") was
+ * in the Dec 2024 preview and was dropped at GA, and Bedrock refuses it with
+ * an account-level "your request did not allow prompt caching".
  */
 export function bedrockModelSupportsPromptCaching(model: string): boolean {
   const id = model.toLowerCase();
   if (!id.includes('claude')) return false;
-  // (?![a-z0-9]) = family boundary: end of id, or a separator (-, ., :)
-  // before a date/qualifier — matches the whole family, not one spelling.
   return !/claude-(v2|instant|3-(opus|sonnet|haiku)|3-5-sonnet)(?![a-z0-9])/.test(id);
 }
 
@@ -77,12 +55,10 @@ export function resolvePromptCaching(recipe: Recipe, model: string): boolean | u
 }
 
 /**
- * Membrane-level counterpart of resolvePromptCaching, spread into the
- * Membrane constructor config. The per-agent flag only governs agent
- * inference; internal callers (autobio compression, executeMerge) read
- * Membrane's defaultPromptCaching — so an explicit recipe override must
- * land at BOTH layers, on every provider, or `promptCaching: false` on
- * an Anthropic recipe would silently keep caching on for internal calls.
+ * Callers inside the agent's strategy, such as context-manager's
+ * autobiographical compression and merge, send requests that don't set
+ * promptCaching, which membrane's defaultPromptCaching then decides, so a
+ * recipe's override is set at both layers.
  */
 export function membraneCachingOverride(
   recipe: Recipe,
@@ -114,26 +90,16 @@ export function buildFrameworkAgentConfig(
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
     maxTokens: recipe.agent.maxTokens ?? 16384,
-    // An omitted maxStreamTokens follows the budget (+20k) only when the
-    // budget is the host default too. A recipe that sets its own budget may be
-    // on a 200k-window model, where budget + 20k would let a stream grow past
-    // the window; it keeps the framework's historical 150k.
     maxStreamTokens: recipe.agent.maxStreamTokens
-      ?? (recipe.agent.contextBudgetTokens === undefined ? DEFAULT_CONTEXT_BUDGET_TOKENS + 20_000 : 150_000),
+      ?? (recipe.agent.contextBudgetTokens === undefined
+        ? DEFAULT_CONTEXT_BUDGET_TOKENS + STREAM_HEADROOM_TOKENS
+        : FRAMEWORK_DEFAULT_MAX_STREAM_TOKENS),
     contextBudgetTokens: effectiveContextBudgetTokens(recipe),
-    // cacheTtl is withheld at the HOST layer on bedrock: the transport
-    // only has the default 5m cache, and older membrane releases forward
-    // the ttl field Bedrock rejects. Note this is not the whole story —
-    // Agent Framework still supplies its own default ('1h') downstream
-    // when the host omits the field, and membrane ≥0.5.77 strips it at
-    // the provider boundary before wire dispatch. Requests are safe, but
-    // pre-adapter config is NOT cache-TTL telemetry; the wire truth lives
-    // at the adapter.
+    // Bedrock offers only the default 5m cache, so cacheTtl isn't forwarded
+    // there. agent-framework sends its own default ('1h') when the host omits it.
     ...(recipe.agent.cacheTtl && recipe.agent.provider !== 'bedrock'
       && { cacheTtl: recipe.agent.cacheTtl }),
     ...(promptCaching !== undefined && { promptCaching }),
-    // Prefill scaffold (anthropic-xml formatter), e.g. chapterx CLI-sim's
-    // '<cmd>cat untitled.txt</cmd>' — part of migrating prefill-era bots.
     ...(recipe.agent.prefillUserMessage && { prefillUserMessage: recipe.agent.prefillUserMessage }),
     ...((recipe.agent.provider === 'openai-responses' || recipe.agent.provider === 'openai-codex') && {
       providerParams: {
@@ -169,7 +135,6 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.autoContinue !== undefined
       ? { autoContinue: recipe.agent.autoContinue }
       : {}),
-    // Ten-minute clock rows unless the recipe names its own or turns them off (false).
     ...(recipe.agent.clock === false ? {} : { clock: recipe.agent.clock ?? { ...DEFAULT_RECIPE_CLOCK } }),
   };
 }

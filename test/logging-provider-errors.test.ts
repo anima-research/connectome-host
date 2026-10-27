@@ -5,11 +5,6 @@ import { join } from 'node:path';
 import type { ProviderAdapter, ProviderRequest, ProviderResponse } from '@animalabs/membrane';
 import { LoggingProviderAdapter } from '../src/logging-provider-wrapper.js';
 
-// A provider can echo the whole rejected request in its error body (a
-// household's OpenAI-compatible 400 echoed ~1.7 MB). The record keeps the
-// request already; its error text is bounded, and the classification is
-// kept beside it so a reader can tell a rejection from a transient failure.
-
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
@@ -74,8 +69,6 @@ describe('LoggingProviderAdapter error records', () => {
 
   test('a thrown non-Error is bounded too, and no excerpt splits a surrogate pair at either cut', async () => {
     const path = logFile();
-    // The cuts as the bound computes them for this length: a pair is placed
-    // straddling each one, and on every position around it.
     const n = 100_002;
     const marker = ` …[${n} of ${n} characters omitted]… `.length;
     const budget = 4_000 - marker;
@@ -94,8 +87,6 @@ describe('LoggingProviderAdapter error records', () => {
       const kept = record.error as string;
       expect(kept.length).toBeLessThanOrEqual(4_000);
       expect(loneSurrogate.test(kept)).toBe(false);
-      // The stated count is what the cuts actually removed, after any step
-      // a cut took to keep a pair whole.
       const m = / …\[(\d+) of (\d+) characters omitted\]… /.exec(kept)!;
       const [omitted, total] = [Number(m[1]), Number(m[2])];
       expect(total).toBe(n);
@@ -105,8 +96,6 @@ describe('LoggingProviderAdapter error records', () => {
 
   test('an overlong errorType and providerErrorCode are each cut like the text, within 128 characters; the text, the other fields and the thrown error are unchanged', async () => {
     const path = logFile();
-    // A pair at every position of a value past the bound, so wherever the
-    // bound places its cuts, some case has a pair straddling each one.
     const n = 300;
     const thrown: Array<{ error: Error & { type: string; providerErrorCode: string }; type: string; code: string }> = [];
     for (let at = 0; at <= n - 2; at++) {
@@ -242,7 +231,6 @@ describe('LoggingProviderAdapter error records', () => {
       expect(await call(tap(new LoggingProviderAdapter(succeeding(response), logFile())))).toBe(response);
       const error = membraneLike('zz');
       await expect(call(tap(new LoggingProviderAdapter(failing(error), logFile())))).rejects.toBe(error);
-      // A rejection with undefined is a failure for the taps too.
       let thrown: unknown = 'not thrown';
       try { await call(tap(new LoggingProviderAdapter(failing(undefined), logFile()))); } catch (e) { thrown = e; }
       expect(thrown).toBeUndefined();
@@ -269,7 +257,6 @@ describe('LoggingProviderAdapter error records', () => {
         }
       }
     }
-    // An unreadable name falls back to "Error"; the message and fields stay.
     const path = logFile();
     const error = Object.assign(new Error('zz diagnostic'), all);
     Object.defineProperty(error, 'name', { get() { throw new Error('getter failed'); } });

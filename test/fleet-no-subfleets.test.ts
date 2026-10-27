@@ -1,10 +1,3 @@
-/**
- * Phase 6 — no-subfleets invariant.
- *
- * A fleet child recipe may not itself declare a `modules.fleet` entry.
- * Validation happens before subprocess spawn so the failure surfaces as a
- * clean synchronous tool error.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,9 +17,6 @@ interface ToolResultLike {
 
 describe('FleetModule — no-subfleets invariant', () => {
   let tmpDir: string;
-  // Tests 3 and 4 pass validation and actually spawn a (detached) bun child;
-  // without explicit cleanup the children orphan to PID 1.  Track every
-  // FleetModule we construct so afterAll can reap them.
   const activeFleets: FleetModule[] = [];
 
   beforeAll(() => {
@@ -34,11 +24,8 @@ describe('FleetModule — no-subfleets invariant', () => {
   });
 
   afterAll(async () => {
-    // Reap in parallel — production shutdown timeouts (graceful 10s + SIGTERM 5s
-    // + SIGKILL 2s ≈ 17s per fleet) would blow Bun's 5s hook budget if awaited
-    // serially. The constructor below also overrides those to snappy values.
-    await Promise.all(activeFleets.map((f) => f.stop().catch(() => { /* noop */ })));
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    await Promise.all(activeFleets.map((f) => f.stop().catch(() => { })));
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   }, 30_000);
 
   async function runLaunch(recipeBody: object): Promise<ToolResultLike> {
@@ -48,15 +35,10 @@ describe('FleetModule — no-subfleets invariant', () => {
     const fleet = new FleetModule({
       childRuntimePath: 'bun',
       childIndexPath: INDEX_PATH,
-      // Snappy shutdown so afterAll reaping stays within the hook budget
-      // even if a spawned child is uncooperative (no API key, etc.).
       gracefulShutdownMs: 1_000,
       sigtermEscalationMs: 500,
     });
     activeFleets.push(fleet);
-    // FleetModule.start() reads/writes Chronicle state; for a pure validation
-    // test we drive handleToolCall directly without start(). The launch path
-    // we exercise here checks the recipe before any subprocess spawn.
     const result = await fleet.handleToolCall({
       id: 'test-call',
       name: 'launch',
@@ -118,10 +100,6 @@ describe('FleetModule — no-subfleets invariant', () => {
         workspace: false,
       },
     });
-    // We don't care if the spawn itself succeeds in this test environment —
-    // we care that the *invariant validation* doesn't reject it. Any rejection
-    // here would be from a different code path (spawn-time errors), not the
-    // no-subfleets check we just added.
     if (result.success === false && result.error) {
       expect(result.error).not.toContain('nested fleets');
     }

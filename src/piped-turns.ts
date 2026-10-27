@@ -1,54 +1,52 @@
 /**
  * Piped mode's view of the agent's turns (`--no-tui`, or batch mode when
  * stdin isn't a TTY): it prints every agent's prose and each tool call as
- * they stream, and waits for the turn an input line started before it reads
- * the next line. Kept apart from the framework so tests can drive it with
- * traces.
+ * they stream, and waits for the turn an input line started before it
+ * takes the next line.
  *
  * The wait follows the primary agent alone, by the name the framework's
  * agent was created with: a sync subagent streams inside the primary's
  * turn, and its end isn't the end of the line's turn. The wait ends at one
- * of the primary's TURN_SETTLED_TRACES (state/turn-trace.ts). At
- * `inference:failed` it prints the error and keeps waiting, since the
- * framework may retry the turn, or hold it and run it again, and either
- * answers the line. The wait's cap still bounds it: a turn held longer than
- * the cap lets the next line go in, with a line on stderr saying so, and
- * that turn's answer prints if it comes while piped mode still runs; after
- * a batch's last line, the host goes on to its teardown.
- * The framework's traces don't say which events started a turn, so the wait
- * can't tell its line's turn from another turn of the primary's, such as a
- * wake's.
+ * of the primary's TURN_SETTLED_TRACES. At `inference:failed` it prints
+ * the error, unless it repeats the error the turn's last failure printed,
+ * and keeps waiting, since the framework may retry the turn, or
+ * hold it and run it again, and either answers the line. The wait's cap
+ * still bounds it: a turn held longer than the cap lets the next line go
+ * in, with a line on stderr saying so, and that turn's answer prints if it
+ * comes while piped mode still runs; after a batch's last line, the host
+ * goes on to its teardown. The framework's traces don't say which events
+ * started a turn, so the wait can't tell its line's turn from another turn
+ * of the primary's, such as a wake's.
  */
 
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES, traceError } from './state/turn-trace.js';
+import { createTurnFailures, turnEndedLine } from './state/turn-failures.js';
 
 export interface PipedOutput {
-  /** Text to stdout as it comes: prose, and the line breaks around it. */
   write(text: string): void;
-  /** A line to stdout. */
   log(line: string): void;
-  /** A line to stderr. */
   error(line: string): void;
 }
 
 export interface PipedTurns {
   onTrace(event: { type: string; [key: string]: unknown }): void;
-  /** Resolves when the primary agent's turn settles, or after `capMs`. */
   waitForTurn(capMs?: number): Promise<void>;
+  /** The host follows another framework, whose turns owe nothing to the
+   *  failures counted so far, and a line waiting on the old one's turn is
+   *  released. */
+  switched(): void;
 }
 
 /** The longest a line waits for its turn. */
 export const PIPED_TURN_CAP_MS = 120_000;
 
-export function createPipedTurns(primaryAgentName: string, out: PipedOutput): PipedTurns {
-  /** Each agent's stream from its start until it settles: 'open' until its
-   *  first end, 'failed' after a failure, while a retry or a held turn can
-   *  still answer. An end that finds none comes after the stream settled, as
-   *  the `turn_ended` after a tool-ended turn's `completed` does, and is
-   *  nothing new. agent-framework 0.22.3 sends it before the turn releases
-   *  the agent, and starts no next turn of the agent until then
-   *  (state/turn-trace.ts). */
+export function createPipedTurns(
+  primaryAgentName: string,
+  out: PipedOutput,
+  hint: (errorType: string | undefined) => string | undefined = () => undefined,
+): PipedTurns {
   const streams = new Map<string, 'open' | 'failed'>();
+  let failures = createTurnFailures();
   let settle: (() => void) | null = null;
 
   function onTrace(event: { type: string; [key: string]: unknown }): void {
@@ -56,6 +54,7 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
     switch (event.type) {
       case 'inference:started':
         if (agent !== undefined) streams.set(agent, 'open');
+        failures.onTrace(event);
         out.write('\n');
         return;
       case 'inference:tokens':
@@ -76,25 +75,12 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
     if (agent === undefined || !STREAM_END_TRACES.has(event.type)) return;
     const state = streams.get(agent);
     if (state === undefined) return;
+    const step = failures.onTrace(event);
     const primary = agent === primaryAgentName;
-    // A stream's first end closes its prose line on stdout, so that what
-    // prints next, such as a batch's echo of its next line, starts a line of
-    // its own, and says how the stream ended. A failure goes to stderr, for
-    // any agent: `failed`, and a lone `exhausted`, which from agent-framework
-    // 0.22.3 comes only from an abort whose reason isn't `user` (each of its
-    // other `exhausted` emits follows a `failed`) and which the framework
-    // counts as a failure. The primary's lone `exhausted` reads
-    // `(turn ended: …)`, the line that says this line's own turn ended;
-    // another agent's reads `Error:`, as any agent's `failed` does. Its
-    // newline goes to stdout rather than leading its stderr line, so a
-    // terminal showing both reads as before; where stdout's line had already
-    // ended, as after a tool's line, stdout gets an empty line. The primary's
-    // stop, `aborted`, goes to stdout, since it isn't one. An end after an
-    // end, such as `exhausted` after `failed`, prints nothing.
     if (state === 'open') {
       if (event.type === 'inference:failed') {
         out.write('\n');
-        out.error(`Error: ${traceError(event)}`);
+        if (step?.show === 'line') out.error(`Error: ${step.text}`);
       } else if (event.type === 'inference:exhausted') {
         out.write('\n');
         out.error(primary ? `(turn ended: ${traceError(event)})` : `Error: ${traceError(event)}`);
@@ -105,11 +91,12 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
         out.write('\n');
       }
     }
+    const ended = primary && step?.show === 'ended' ? turnEndedLine(step, hint(step.errorType)) : undefined;
+    if (ended) out.error(ended);
     if (!TURN_SETTLED_TRACES.has(event.type)) {
       streams.set(agent, 'failed');
       return;
     }
-    // Settled: a later end of this stream finds nothing (see `streams`).
     streams.delete(agent);
     if (primary) {
       const done = settle;
@@ -120,9 +107,8 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
 
   function waitForTurn(capMs = PIPED_TURN_CAP_MS): Promise<void> {
     return new Promise((resolve) => {
-      // The timer only caps the wait. Clear it once the turn settles: a
-      // pending timer held the event loop open, so a batch run sat out the
-      // cap after `Done.` before the process exited.
+      // A pending timer holds the event loop open, so it's cleared once the turn
+      // settles.
       const timer = setTimeout(() => {
         if (settle !== done) return;
         settle = null;
@@ -134,19 +120,21 @@ export function createPipedTurns(primaryAgentName: string, out: PipedOutput): Pi
     });
   }
 
-  return { onTrace, waitForTurn };
+  function switched(): void {
+    streams.clear();
+    failures = createTurnFailures();
+    const done = settle;
+    settle = null;
+    done?.();
+  }
+
+  return { onTrace, waitForTurn, switched };
 }
 
-/** What sends traces: a framework, whose onTrace returns the listener's
- *  unsubscribe. */
 export interface TraceSource {
   onTrace(listener: (event: unknown) => void): () => void;
 }
 
-/**
- * Follows one framework's traces at a time. Following a framework stops
- * following the last.
- */
 export function traceFollower(listener: (event: unknown) => void): { follow(source: TraceSource): void; stop(): void } {
   let off: (() => void) | undefined;
   const stop = (): void => {
@@ -162,15 +150,6 @@ export function traceFollower(listener: (event: unknown) => void): { follow(sour
   };
 }
 
-/**
- * A session switch under a trace follower. The switch stops the framework
- * and makes another, so this stops following before it, and follows
- * whichever framework the host holds after it, also when it throws: the new
- * one, or after a failed switch whatever the host was left with, which can
- * be the old framework, stopped (a stopped framework keeps its listeners,
- * so a late trace of its own can still arrive). The switch's error then
- * goes on to the caller.
- */
 export async function switchFollowing(
   traces: { follow(source: TraceSource): void; stop(): void },
   switchSession: () => Promise<unknown>,

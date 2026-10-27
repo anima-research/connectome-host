@@ -1,31 +1,3 @@
-/**
- * The host's side of updating an install (contract.ts): the notice, Update,
- * Restart and Go back, which the `/update` commands call, and the `update`
- * section of /healthz. One per process (hostUpdate): main()
- * configures it at start, and the mode the host runs in tells it how this
- * host stops (attachStop).
- *
- * - **The notice:** at start and every 24 h, the host reads the registry
- *   (releases.ts) and logs one `[update]` line for each newer release it
- *   sees, with what the releases between cost. CONNECTOME_UPDATE_CHECK=0 or
- *   NO_UPDATE_NOTIFIER turns that off. The fleet starts its children with
- *   the first, and a batch run doesn't read it.
- * - **Update** installs the newest release beside the running one
- *   (installRelease, whose prune also removes releases nothing needs) once
- *   its checks pass, and the running release runs on.
- * - **Restart** quiesces this host and its fleet's children (quiesce.ts).
- *   Once they drain, or the operator chooses to stop now, it writes the mark
- *   and stops the host. A supervised host exits 75, and the service's next
- *   start switches through the launcher. A host no supervisor restarts stops
- *   as /quit does, and the operator starts it again. Until the mark is
- *   written, no start switches release: a crash or an agent's own restart
- *   before then starts the same release again.
- * - **Go back** is Restart toward the release the copy holds the data of
- *   (goBackOffer), keeping the newer data or restoring the copy.
- *
- * A host started without an install's entry point can't update itself. Its
- * notice points at DEPLOYMENTS.md's "Updating an install" instead.
- */
 import { readdirSync, readFileSync } from 'node:fs';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
@@ -35,7 +7,7 @@ import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
 import { goBackOffer } from './launcher.js';
 import {
-  quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework, type SwitchFleet,
+  NOT_THE_SWITCHS, SERVING, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework, type SwitchFleet,
 } from './quiesce.js';
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
@@ -46,24 +18,15 @@ import {
   type SwitchOutcome, type UpdateStatus,
 } from '../web/update-text.js';
 
-/** How often a running host reads the registry again. */
 const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
-/** How long Restart lets turns in progress end before asking the operator. */
 const RESTART_QUIESCE_MS = 120_000;
-/** How long "wait longer" waits. */
 const WAIT_LONGER_MS = 600_000;
 
-/** What Restart reaches of the host: whatever it runs now, since a session
- *  switch replaces the framework. */
 export interface UpdateHost {
   framework(): QuiesceFramework;
   fleet(): SwitchFleet | null;
 }
 
-/** How this host stops for a restart, attached by the mode it runs in: a
- *  supervised stop exits for the service to start it again, and any other
- *  stops as /quit does, leaving the operator to start it. `farewell` is the
- *  line for whoever watches it go. */
 export interface HostStop {
   supervised: boolean;
   stop(reason: string, farewell: string): void;
@@ -71,7 +34,6 @@ export interface HostStop {
 
 export interface UpdateSetup {
   here: ReleaseHere | null;
-  /** This host's version. */
   running: string;
   host: UpdateHost;
   env?: Record<string, string | undefined>;
@@ -79,13 +41,10 @@ export interface UpdateSetup {
   fetchManifest?: typeof fetch;
   installOps?: InstallOps;
   now?: () => Date;
-  /** A line for the host's log. */
   log?: (line: string) => void;
-  /** How long Restart's quiesce and "wait longer" wait, for a test. */
   waits?: { restartMs: number; longerMs: number };
 }
 
-/** An answer to a request: whether it did what was asked, and what to say. */
 export interface UpdateAnswer {
   done: boolean;
   lines: string[];
@@ -104,10 +63,8 @@ export class HostUpdate {
   private installing: string | null = null;
   private lastInstall: UpdateStatus['lastInstall'] = null;
   private restart: RestartState | null = null;
-  /** The framework the restart's last quiesce was of. */
   private quiescedFramework: QuiesceFramework | null = null;
-  /** A resume with no restart under way is ending a switch's quiesce. */
-  private endingLeft = false;
+  private endingSwitchQuiesce = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   configure(setup: UpdateSetup): void {
@@ -118,14 +75,13 @@ export class HostUpdate {
     this.stopper = stop;
   }
 
-  /** Whether the host reads the registry on its own. */
+  /** Whether the host reads the registry on its own: not when
+   *  CONNECTOME_UPDATE_CHECK is 0 or NO_UPDATE_NOTIFIER is set non-empty. */
   checksOn(): boolean {
     const env = this.need().env ?? process.env;
     return env.CONNECTOME_UPDATE_CHECK !== '0' && !env.NO_UPDATE_NOTIFIER;
   }
 
-  /** Read the registry now, unawaited, and every 24 h on a timer that
-   *  doesn't keep the process alive, unless checks are off. */
   startChecks(): void {
     if (this.timer !== null || !this.checksOn()) return;
     void this.readRegistry();
@@ -133,8 +89,6 @@ export class HostUpdate {
     this.timer.unref?.();
   }
 
-  /** Read the registry, keep what it says, and log the notice the first
-   *  time each newer release is seen, or why the read failed. */
   async readRegistry(): Promise<Check> {
     const setup = this.need();
     const at = this.now().toISOString();
@@ -153,18 +107,12 @@ export class HostUpdate {
     return this.check;
   }
 
-  /**
-   * Update: read the registry again, and install the newest release beside
-   * the running one, once its checks pass. A deprecated release is never
-   * the candidate, nothing older than the running release is offered, and a
-   * release whose Bun floor this Bun is below isn't installed.
-   */
   async install(): Promise<UpdateAnswer> {
     const setup = this.need();
     if (setup.here === null) return refused(NOT_AN_INSTALL);
     if (this.installing !== null) return refused(`An install of ${this.installing} is under way.`);
     if (this.restart !== null) return refused(`${restartName(this.restart, true)} is under way.`);
-    if (this.endingLeft) return refused(ENDING_LEFT);
+    if (this.endingSwitchQuiesce) return refused(ENDING_SWITCH_QUIESCE);
     const here = setup.here;
     const at = this.now().toISOString();
     this.installing = 'the newest release';
@@ -191,8 +139,6 @@ export class HostUpdate {
       try {
         await installRelease(here, version, setup.installOps ?? machineInstallOps());
       } catch (error) {
-        // installRelease's own refusals name the release; anything else is
-        // the filesystem's own error, which doesn't.
         const why = error instanceof ContractError ? said(error) : `Installing ${version} failed: ${said(error)}`;
         this.lastInstall = { version, at, ok: false, error: why };
         return refused(why);
@@ -205,8 +151,6 @@ export class HostUpdate {
     }
   }
 
-  /** Restart onto the newest release installed beside this one, which must
-   *  be `expected` when the caller names the release it showed. */
   async restartToInstalled(expected?: string): Promise<UpdateAnswer> {
     const refusal = this.restartRefusal();
     if (refusal !== null) return refused(refusal);
@@ -224,9 +168,6 @@ export class HostUpdate {
     return this.beginRestart({ to, why: 'update', keepData: false });
   }
 
-  /** Go back to the release the copy holds the data of, keeping the newer
-   *  data or restoring the copy. That must be `expected` when the caller
-   *  names the release it showed. */
   async goBack(keepData: boolean, expected?: string): Promise<UpdateAnswer> {
     const refusal = this.restartRefusal();
     if (refusal !== null) return refused(refusal);
@@ -245,36 +186,28 @@ export class HostUpdate {
     return this.beginRestart({ to: offer.to, why: 'go-back', keepData });
   }
 
-  /** After a quiesce that didn't drain: wait up to 10 minutes more. */
   async waitLonger(): Promise<UpdateAnswer> {
     if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
     return this.quiesceThenStop(this.need().waits?.longerMs ?? WAIT_LONGER_MS);
   }
 
-  /** After a quiesce that didn't drain: stop now, cutting off the turns
-   *  still in progress. */
   async stopNow(): Promise<UpdateAnswer> {
     if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
     if (this.need().host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED);
     return this.markAndStop();
   }
 
-  /**
-   * Try later: end the switch's quiesce on every host, calling off a restart
-   * that waits on turns. With no restart under way, it ends a switch's
-   * quiesce left standing, as when an earlier try couldn't.
-   */
   async resume(): Promise<UpdateAnswer> {
     const restart = this.restart;
     if (restart !== null && restart.phase !== 'busy') return refused(`${restartName(restart, true)} is ${PHASE[restart.phase]}.`);
     if (restart !== null) return this.callOff(null);
-    if (this.endingLeft) return refused(ENDING_LEFT);
-    this.endingLeft = true;
+    if (this.endingSwitchQuiesce) return refused(ENDING_SWITCH_QUIESCE);
+    this.endingSwitchQuiesce = true;
     let ended;
     try {
       ended = await this.endQuiesce();
     } finally {
-      this.endingLeft = false;
+      this.endingSwitchQuiesce = false;
     }
     const on = ended.ended.length > 0 ? `The switch's quiesce is ended on ${list(ended.ended)}` : null;
     const first = ended.stuck > 0
@@ -283,8 +216,6 @@ export class HostUpdate {
     return ended.stuck > 0 ? refused(first, ...ended.lines, RESUME_AGAIN) : done(first, ...ended.lines);
   }
 
-  /** The update section of /healthz, and what `/update` shows. Never throws:
-   *  what can't be read is named in `problems`. */
   status(): UpdateStatus {
     const setup = this.need();
     const problems: string[] = [];
@@ -309,14 +240,11 @@ export class HostUpdate {
       goBack: here === null ? null : read(GO_BACK_UNREAD, () => goBackOffer(here.root, here.release)),
       restart: this.restart === null ? null : { ...this.restart, hosts: [...this.restart.hosts] },
       operatorQuiesced: quiesced?.quiesced && !isSwitchQuiesce(quiesced.reason) ? quiesced.reason ?? 'no reason given' : null,
-      // A fleet child's switch quiesce is its parent's restart's.
       switchQuiesceLeft: here !== null && quiesced?.quiesced === true && isSwitchQuiesce(quiesced.reason) && this.restart === null,
       lastSwitch: here === null ? null : read('the last switch', () => lastSwitchOf(here.root, problems)),
       problems,
     };
   }
-
-  // -------------------------------------------------------------------------
 
   private need(): UpdateSetup {
     if (this.setup === null) throw new Error('The host\'s update isn\'t set up: main() configures it at start.');
@@ -352,8 +280,6 @@ export class HostUpdate {
     };
   }
 
-  /** The newest release in releases/ that's newer than this one and whose
-   *  host is in place there, or null. */
   private installedTarget(): string | null {
     const here = this.need().here!;
     const newer = readdirSync(installPaths(here.root).releases)
@@ -363,7 +289,6 @@ export class HostUpdate {
     return newer.at(-1) ?? null;
   }
 
-  /** Why no restart can begin now, or null. */
   private restartRefusal(): string | null {
     const here = this.need().here;
     if (here === null) return NOT_AN_INSTALL;
@@ -378,7 +303,7 @@ export class HostUpdate {
           `${COMMAND_WAYS.resume}.`
         : `${restartName(this.restart, true)} is ${PHASE[this.restart.phase]}.`;
     }
-    if (this.endingLeft) return ENDING_LEFT;
+    if (this.endingSwitchQuiesce) return ENDING_SWITCH_QUIESCE;
     let current: string | null;
     try {
       current = readCurrent(here.root);
@@ -397,8 +322,6 @@ export class HostUpdate {
     return this.quiesceThenStop(this.need().waits?.restartMs ?? RESTART_QUIESCE_MS);
   }
 
-  /** Quiesce for the switch and wait up to `timeoutMs`: once every host has
-   *  drained, write the mark and stop; otherwise say who is still busy. */
   private async quiesceThenStop(timeoutMs: number): Promise<UpdateAnswer> {
     const setup = this.need();
     const restart = this.restart!;
@@ -410,10 +333,8 @@ export class HostUpdate {
     try {
       quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs });
     } catch (error) {
-      // A child may have quiesced before this host's own quiesce threw.
       return this.callOff(`its quiesce was refused: ${said(error)}`);
     }
-    // A session switch meanwhile replaced what drained.
     if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED);
     if (quiet.drained) return this.markAndStop();
     restart.phase = 'busy';
@@ -421,8 +342,6 @@ export class HostUpdate {
     return refused(...busyLines(restart, timeoutMs));
   }
 
-  /** Write the mark, then stop. A mark that can't be written calls the
-   *  restart off, since nothing would switch. */
   private async markAndStop(): Promise<UpdateAnswer> {
     const setup = this.need();
     const restart = this.restart!;
@@ -444,9 +363,6 @@ export class HostUpdate {
     return done(farewell);
   }
 
-  /** Call the restart off: end the switch's quiesce on every host, saying any
-   *  that stayed quiesced, with `why` it was called off, or null for the
-   *  operator's resume. Nothing else acts on the restart meanwhile. */
   private async callOff(why: string | null): Promise<UpdateAnswer> {
     const restart = this.restart!;
     restart.phase = 'ending';
@@ -460,17 +376,11 @@ export class HostUpdate {
     return why === null ? done(first, ...ended.lines) : refused(first, ...ended.lines);
   }
 
-  /** End the switch's quiesce on each host: the hosts it ended, a line for
-   *  each host with something to say, and how many stayed quiesced. */
   private async endQuiesce(): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
     const setup = this.need();
     try {
       const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet());
       const said = (h: { host: string; why?: string }) => `${h.host}: ${(h.why ?? 'it didn\'t say why').replace(/\.$/, '')}.`;
-      // A host that was serving has nothing to say. One whose quiesce isn't
-      // the switch's keeps it, as it should, and one that resumed may still
-      // have something to say, as when its resume failed after its quiesce
-      // ended. The rest stayed quiesced for the switch.
       const told = hosts.filter((h) => h.why !== undefined && h.why !== SERVING);
       const stuck = told.filter((h) => !h.resumed && !h.why!.startsWith(NOT_THE_SWITCHS));
       return { ended: hosts.filter((h) => h.resumed).map((h) => h.host), lines: told.map(said), stuck: stuck.length };
@@ -480,29 +390,15 @@ export class HostUpdate {
   }
 }
 
-/** How resumeIfSwitch (quiesce.ts) answers for a host that was serving, and
- *  begins its answer for one quiesced by someone else, which keeps it. */
-const SERVING = 'it was serving';
-const NOT_THE_SWITCHS = 'its quiesce isn\'t the switch\'s';
-
 const SESSION_CHANGED = 'the session changed while turns were ending, so this host now serves one the restart didn\'t ' +
   'quiesce. Ask again.';
 const RESUME_AGAIN = 'For a host still quiesced, /update restart resume tries again, as does the host\'s next start.';
-const ENDING_LEFT = 'A switch\'s quiesce is being ended. Ask again once that has answered.';
-/** Wait longer and stop now are for a restart whose wait has run out. */
+const ENDING_SWITCH_QUIESCE = 'A switch\'s quiesce is being ended. Ask again once that has answered.';
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
 
-/** The process's update: main() configures it, a mode attaches its stop. */
 export const hostUpdate = new HostUpdate();
 
-// ---------------------------------------------------------------------------
-// The last switch, from the journal
-// ---------------------------------------------------------------------------
-
-/** How the journal's last request ended: committed, fallen back, or not gone
- *  ahead (a refusal, or a step that failed). A trial log that can't be read
- *  is named in `problems`, and the fallback is given without its lines. */
 export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutcome | null {
   const lines = readJournal(root);
   for (let at = lines.length - 1; at >= 0; at--) {
@@ -526,7 +422,6 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
   return null;
 }
 
-/** This host's version, from its package.json. */
 export function hostVersionOf(packageJson: URL): string {
   const version = (JSON.parse(readFileSync(packageJson, 'utf-8')) as { version?: unknown }).version;
   if (typeof version !== 'string') throw new Error(`${packageJson.pathname} names no version.`);

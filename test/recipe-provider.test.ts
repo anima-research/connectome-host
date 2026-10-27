@@ -12,9 +12,6 @@ describe('recipe provider validation', () => {
       .toBe('openai-responses');
     expect(validateRecipe(recipe({ provider: 'openai-codex' })).agent.provider)
       .toBe('openai-codex');
-    // resolveProvider's answer, which createFramework (src/index.ts) passes
-    // to SubagentModule for its launches to state. This pins the answer, not
-    // that wiring.
     expect(resolveProvider(validateRecipe(recipe()))).toBe('anthropic');
     expect(resolveProvider(validateRecipe(recipe({ provider: 'openai-codex' })))).toBe('openai-codex');
   });

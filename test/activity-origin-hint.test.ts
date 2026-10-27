@@ -1,13 +1,3 @@
-/**
- * ActivityModule reads the head of a file the workspace reports created or
- * modified for an origin hint, which routes its typing notice. It reads
- * through WorkspaceModule.readFileFromDisk, the read that keeps the mount's
- * link policy and reads a file only if its canonical path lies inside the
- * mount. The stand-in read refuses one path, and every path also resolves by
- * its text to a real file holding a hint, which a read that went around
- * readFileFromDisk would find instead. agent-framework's own read runs too,
- * on a real mount whose one link leads to a file inside it.
- */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +12,6 @@ describe("the origin hint comes only from what the mount's own read gives", () =
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   });
 
-  /** An activity module over a stand-in read, with what it asked for and the typing notices it sent. */
   async function moduleOverStandIn() {
     const dir = mkdtempSync(join(tmpdir(), 'activity-origin-'));
     dirs.push(dir);
@@ -42,7 +31,6 @@ describe("the origin hint comes only from what the mount's own read gives", () =
     return { ...(await moduleOver(workspace)), asked };
   }
 
-  /** An activity module reading through `workspace`, with the typing notices it sent. */
   async function moduleOver(workspace: unknown) {
     const typing: Array<{ channel: string; metadata: unknown }> = [];
     const listeners = new Set<(event: TraceEvent) => void>();
@@ -81,7 +69,6 @@ describe("the origin hint comes only from what the mount's own read gives", () =
     ]);
   });
 
-  // Each path of an event is read on its own: a refused one doesn't stop the rest.
   test('an event naming a refused file and a given one still takes the topic from the given one', async () => {
     const { module, asked, typing, trace } = await moduleOverStandIn();
     await module.onProcess({ type: 'workspace:modified', paths: ['files/refused.md', 'files/given.md'] } as never, {} as never);
@@ -110,9 +97,9 @@ describe("the origin hint comes only from what the mount's own read gives", () =
         trace('inference:completed');
         return (typing.at(-1)!.metadata as { topic?: string } | undefined)?.topic;
       };
-      // A mount doesn't follow links unless the recipe sets followSymlinks, so
-      // here the read refuses a file that is itself a link, even one naming a
-      // file in the same mount.
+      // A mount doesn't follow links unless it sets followSymlinks, so the read
+      // refuses a file that is itself a link, even one naming a file in the same
+      // mount.
       expect(await topicAfter('files/linked.md')).toBeUndefined();
       expect(await topicAfter('files/late.md')).toBeUndefined();
       expect(await topicAfter('files/early.md')).toBe('in-the-head');

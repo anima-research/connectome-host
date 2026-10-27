@@ -1,9 +1,3 @@
-/**
- * The store audit (src/update/audit-stores.ts): each store a start of this
- * release would open, opened in place the way a start opens the agent's
- * namespace, each one it couldn't open said, and the audit a host on trial
- * runs before its commit (startFramework).
- */
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -13,7 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import { AgentFramework, resolveTimeZone, storeOwnRow } from '@animalabs/agent-framework';
+import { AgentFramework, resolveTimeZone, storeOwnRow, subconsciousContextOptions } from '@animalabs/agent-framework';
 import { JsStore } from '@animalabs/chronicle';
 import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@animalabs/context-manager';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
@@ -35,11 +29,9 @@ import { processEnded, waitForEnd } from './process-ended.js';
 
 const MODEL = { complete: async () => ({ stopReason: 'end_turn', content: [{ type: 'text', text: 'x' }] }) } as never;
 const INDEX_PATH = join(import.meta.dir, '..', 'src', 'index.ts');
-// context-manager's own build, the `main` its package names: another copy of
-// the library than the host's, which Bun loads from its source, as an
-// extension's own would be. The package is found where Bun resolves it from
-// here, in this checkout's node_modules or one above it, as a hoisted or
-// linked install leaves it.
+// context-manager's `main` build is another copy of the library than the
+// host's, which Bun loads from its source through the package's `bun` export,
+// as an extension's own copy would be.
 const CONTEXT_MANAGER = ((): string => {
   let dir = dirname(Bun.resolveSync('@animalabs/context-manager', import.meta.dir));
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
@@ -50,20 +42,16 @@ const MODEL_CALLED = 'its strategy called a model while opening it, and the audi
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'update-audit-')); });
-/** Each test's last word on what it started: run after it, whether it
- *  passed, failed or timed out. */
 const leftovers: Array<() => void> = [];
 afterEach(() => {
   for (const end of leftovers.splice(0)) {
-    try { end(); } catch { /* gone */ }
+    try { end(); } catch { }
   }
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A store whose namespace holds 40 messages. With `crossed`, it also holds a
- *  level-2 summary whose leaves aren't contiguous in store order, made as
- *  context-manager's own topology tests make one, so an open under the
- *  default topology policy refuses it. */
+/** context-manager's default topology policy, 'reject', refuses at open a
+ *  summary whose leaves aren't contiguous in store order. */
 async function makeStore(path: string, namespace: string, crossed: boolean): Promise<void> {
   const seed = new AutobiographicalStrategy({ adaptiveResolution: true, hierarchical: true, autoTickOnNewMessage: false });
   const manager = await ContextManager.open({ path, namespace, strategy: seed, membrane: MODEL });
@@ -88,18 +76,18 @@ async function makeStore(path: string, namespace: string, crossed: boolean): Pro
   manager.close();
 }
 
-/** A store of 120 messages in `agents/agent` whose summary L2-x merges an L1
- *  over 40..49 with one over 60..69, and no record owns 50..59 (Effie-2289's
- *  case, room-203 #164796). A start chunks that run before its topology
- *  check, which gives L2-x holes, unless the messages are ones a tune-out
- *  diverted (`tunedOut`), which a start's view leaves out. The seed opens with
- *  `auditOnly` only so that adding the messages makes no chunk records. */
-async function makeSpanStore(path: string, tunedOut: boolean): Promise<void> {
+/** The seed opens with auditOnly, which never chunks the uncovered frontier,
+ *  so adding the messages makes no chunk records. */
+async function makeSpanStore(path: string, run?: 'tuned-out' | 'injected' | 'own-injected'): Promise<void> {
   const seed = new AutobiographicalStrategy({ adaptiveResolution: true, hierarchical: true, autoTickOnNewMessage: false, auditOnly: true });
   const manager = await ContextManager.open({ path, namespace: 'agents/agent', strategy: seed, membrane: MODEL });
   const ids: string[] = [];
   for (let i = 0; i < 120; i++) {
-    const diverted = tunedOut && i >= 50 && i <= 59 ? { tuneOut: { epochId: 'test' } } : undefined;
+    const inRun = i >= 50 && i <= 59;
+    const diverted = inRun && run === 'tuned-out' ? { tuneOut: { epochId: 'test' } }
+      : inRun && (run === 'injected' || run === 'own-injected')
+        ? { system: true, kind: 'context-injection', contextInjection: { agent: run === 'injected' ? 'other' : 'agent', namespace: 'retrieval', contentHash: `h${i}`, part: 0, parts: 1 } }
+        : undefined;
     ids.push(manager.addMessage(i % 2 ? 'agent' : 'user', [{ type: 'text', text: `message ${i} ` + 'word '.repeat(60) }], diverted));
   }
   const summary = (id: string, level: number, sourceIds: string[], first: string, last: string, mergedInto?: string) => ({
@@ -115,9 +103,8 @@ async function makeSpanStore(path: string, tunedOut: boolean): Promise<void> {
   manager.close();
 }
 
-/** A store whose agent's namespace opens and whose subconscious's context
- *  log holds a null where an entry should be, which the subconscious's open
- *  can't index (context-manager ContextLog.rebuildSourceIndex). */
+/** context-manager's ContextLog reads each entry's fields to index it
+ *  (rebuildSourceIndex), so a null entry fails the open. */
 async function makeBrokenSubconsciousStore(path: string): Promise<void> {
   await makeStore(path, 'agents/agent', false);
   const store = JsStore.openOrCreate({ path });
@@ -126,13 +113,10 @@ async function makeBrokenSubconsciousStore(path: string): Promise<void> {
   store.close();
 }
 
-/** A data directory with one session per maker, the first of them active,
- *  each session's store made by its maker. */
 async function makeDataDirWith(name: string, makers: Array<(store: string) => Promise<void>>): Promise<{ dir: string; stores: string[] }> {
   const dir = join(root, name);
   const manager = new SessionManager(dir);
-  // An id of digits alone would be listed before the others, as an integer
-  // key is, so the sessions' order would no longer be the makers'.
+  // An object lists a key that reads as an array index before its other keys.
   const made = makers.map(() => {
     for (;;) {
       const session = manager.createSession();
@@ -154,14 +138,10 @@ async function makeDataDirWith(name: string, makers: Array<(store: string) => Pr
   return { dir, stores };
 }
 
-/** A data directory with one session per entry, each store made as
- *  `makeStore` makes it. */
 function makeDataDir(name: string, sessions: Array<{ namespace: string; crossed: boolean }>): Promise<{ dir: string; stores: string[] }> {
   return makeDataDirWith(name, sessions.map((session) => (store: string) => makeStore(store, session.namespace, session.crossed)));
 }
 
-/** The audit of `dirs` through auditStores: its status, every line it said,
- *  and the lines of what it couldn't open or audit. */
 async function audit(dirs: string[], options: AuditOptions = {}): Promise<{ status: number; lines: string[]; failed: string[] }> {
   const lines: string[] = [];
   const failed: string[] = [];
@@ -172,10 +152,6 @@ async function audit(dirs: string[], options: AuditOptions = {}): Promise<{ stat
   return { status, lines, failed };
 }
 
-/** The audit through the host's entry, with no provider credential, as its
- *  own process: its exit status and what it wrote. With `holdAfter`, its
- *  output is read only once that file exists and then it has exited or 3 s
- *  have passed. */
 async function entry(dirs: string[], options: { holdAfter?: string; env?: Record<string, string | undefined> } = {}): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const env: Record<string, string | undefined> = { ...process.env, ...options.env };
   for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'DATA_DIR']) {
@@ -196,9 +172,8 @@ async function entry(dirs: string[], options: { holdAfter?: string; env?: Record
   return { status, stdout, stderr };
 }
 
-/** A recipe whose strategy extension `type` is made by the factory `source`
- *  gives, as a module's text, written to a file of the data directory's own,
- *  since a module is loaded once per path. */
+/** A module is loaded once per path, so each data directory's extension is a
+ *  file of its own. */
 function withStrategy(dir: string, type: string, source: string): void {
   const extension = join(root, `${basename(dir)}-${type}-strategy.ts`);
   writeFileSync(extension, source);
@@ -209,9 +184,6 @@ function withStrategy(dir: string, type: string, source: string): void {
   });
 }
 
-/** An audit's line for a store that reaches past what an update copies, as
- *  auditStores words it: on a trial, with setup's --extra-state among the
- *  ways on. */
 function outsideLine(store: string, where: string, onTrial: boolean, pointable = true): string {
   return `Couldn't audit ${store}: it lies outside ${where}, where an update can't put back what opening it changes, so ` +
     `it wasn't opened. ${ways(onTrial, "move the store into its data directory, where its session's entry in " +
@@ -231,55 +203,39 @@ function ways(onTrial: boolean, first: string, carries: string, repointed: strin
   if (!pointable) return onTrial ? `To update, ${first}, or ${declare}.` : `To update, ${first}.`;
   return onTrial ? `To update, ${first}, ${moved}, or ${declare}.` : `To update, ${first}, or ${moved}.`;
 }
-/** The line for a session's store that is a link to nothing. */
 function nothingLine(store: string): string {
   return `Couldn't audit ${store}: it's a link to nothing, so it wasn't opened. To update, point the link at the ` +
     "session's store, or remove it.";
 }
-/** The line for a store holding a link to nothing. */
 function holdsNothingLine(store: string, link: string): string {
   return `Couldn't audit ${store}: it holds ${link}, a link to nothing, which opening it could make where an update ` +
     "can't take it away, so it wasn't opened. To update, point the link at a file inside the store, or remove it.";
 }
-/** The line, before every store's, for a store a fleet child's audit
- *  couldn't finish, whose fleet's host's data directory is `parent`. */
 function unfinishedLine(dir: string, how: string, parent: string): string {
   return `Couldn't audit ${dir}: its audit ${how} before it said it had finished, so it isn't known that every store ` +
     `there was audited: ${byHand(parent)}, and shows where it stops, should it stop again.`;
 }
 const TRIAL_PLACES = "every place this trial's fallback puts back";
 
-/** `text` as a regular expression matches it, literally. */
 const literally = (text: string): string => text.replace(/[.*+?^$|()[\]{}\\]/g, '\\$&');
 
-/** The advice a child's audit line gives: its parent's audit by hand. */
 function byHand(parent: string): string {
   return `\`--audit-stores\` on ${parent}, after a copy of it and of each of its fleet children's directories, run as ` +
     'this host is started, with its recipe and its environment, audits this child as its fleet starts it';
 }
 
-/** A recipe file for a fleet child, with `fields` over the default one. */
 function childRecipe(name: string, fields: Record<string, unknown> = {}): string {
   const path = join(root, `${name}.json`);
   writeFileSync(path, JSON.stringify({ ...DEFAULT_RECIPE, ...fields }));
   return path;
 }
 
-/** Whether the timer being armed now is the audit's own: the first frame of
- *  its stack past this file's that names a file is in the audit's source.
- *  Another timer of the same length armed meanwhile, such as an extension's
- *  or a library's, isn't; one the audit's own code arms is, whichever audit
- *  run arms it. */
 function armedByAudit(): boolean {
   const frames = (new Error().stack ?? '').split('\n').slice(1);
   const caller = frames.find((frame) => frame.includes(sep) && !frame.includes(import.meta.path));
   return caller?.includes(join('src', 'update', 'audit-stores.ts')) ?? false;
 }
 
-/** A fleet child's audit limit made short: each timer of `limitMs` (the
- *  default, 5 minutes, unless given) the audit arms fires once `ready` holds
- *  and a second has passed, unless it was cleared first. `armed` counts the
- *  timers the audit armed; any other timer is armed as it asked. */
 function limitWhen(ready: () => boolean, limitMs = 5 * 60_000): { armed: () => number; restore: () => void } {
   const later = globalThis.setTimeout;
   const cancel = globalThis.clearTimeout;
@@ -304,13 +260,8 @@ function limitWhen(ready: () => boolean, limitMs = 5 * 60_000): { armed: () => n
   return { armed: () => armed, restore: () => { arming.mockRestore(); clearing.mockRestore(); } };
 }
 
-/** An extension's first line: the pid of the process that started it, taken
- *  as it loads, before it marks anything a test waits on. */
 const PARENT_AT_IMPORT = 'const parentAtImport = process.ppid;';
 
-/** The source of an extension's work, without a turn of its event loop,
- *  until the process that started it has ended, and, given `release`, until
- *  that file is there too (PARENT_AT_IMPORT and existsSync in scope). */
 function holdPastParent(release?: string): string[] {
   const released = release === undefined ? 'true' : `existsSync(${JSON.stringify(release)})`;
   return [
@@ -327,8 +278,6 @@ describe('the store audit', () => {
     expect(failed).toHaveLength(1);
     expect(lines).toEqual(failed);
     expect(failed[0]).toStartWith(`${stores[0]} (agents/agent): refused: store topology rejected: 1 summary owns non-contiguous leaves`);
-    // The library's own remedy, a topologyPolicy the host's strategies take
-    // from no recipe, gives way to §11.8.
     expect(failed[0]).toEndWith(`). ${REMEDY}`);
     expect(failed[0]).not.toContain('topologyPolicy');
     expect(failed[0]).not.toContain('\n');
@@ -346,8 +295,6 @@ describe('the store audit', () => {
       .toEqual([['agent', stores[0], 'agents/agent', [['L2-x', 'names-missing']]]]);
     const said = `${stores[0]} (agents/agent): ${loadRepairLines(got[0]!.report, 'agent', stores[0]!).join(' ')}`;
     expect(lines).toEqual([`${stores[0]} (agents/agent): opens`, said]);
-    // Said before it's handed on, so a hand-on that throws can't keep it from
-    // whoever runs the update.
     expect(got[0]!.lastSaid).toBe(said);
     const again = await audit([dir]);
     expect(again.lines).toEqual([`${stores[0]} (agents/agent): opens`]);
@@ -381,7 +328,6 @@ describe('the store audit', () => {
     const { status, lines } = await audit([parent.dir], { onLoadRepair: (report, agent, store) => { got.push({ report, agent, store }); } });
     expect(status, lines.join('\n')).toBe(0);
     expect(got.map(({ report, agent, store }) => [agent, store, report.dropped.map((drop) => drop.id)])).toEqual([['Kid', child.stores[0], ['L2-x']]]);
-    // The read-back's coordinates come through whole.
     const { branch, stateId, sequenceBefore } = got[0]!.report;
     expect([branch, stateId]).toEqual(['main', 'agents/Kid/autobio:summaries']);
     expect(sequenceBefore).toBeGreaterThan(0);
@@ -400,23 +346,19 @@ describe('the store audit', () => {
     const line = (said: unknown) => `--fleet-child load repair ${JSON.stringify(said)}`;
     const taken = (r: unknown) => fleetChildRepair(line({ store: '/s', agent: 'Kid', report: r }));
     expect(fleetChildRepair(line({ store: '/s', agent: 'Kid', report }))).toEqual({ store: '/s', agent: 'Kid', report } as never);
-    // What context-manager may send: nulls where a value couldn't be read,
-    // and fields a later version adds.
+    // context-manager's report holds null where a value couldn't be read.
     for (const r of [
       { ...report, dropped: [{ ...drop, level: null, tokens: null, sourceRange: null }] },
       { ...report, dropped: [{ ...drop, sourceRange: { ...range, firstAt: null, lastAt: null } }] },
       { ...report, dropped: [{ ...drop, later: 1 }], later: 'x' },
     ]) expect(taken(r)?.report).toEqual(r as never);
-    // Each field of the wrong type, one at a time.
     for (const key of Object.keys(report)) expect(taken({ ...report, [key]: true }), key).toBeUndefined();
     for (const key of Object.keys(drop)) expect(taken({ ...report, dropped: [{ ...drop, [key]: true }] }), key).toBeUndefined();
     for (const key of Object.keys(range)) expect(taken({ ...report, dropped: [{ ...drop, sourceRange: { ...range, [key]: true } }] }), key).toBeUndefined();
     expect(taken({ ...report, dropped: [null] })).toBeUndefined();
     expect(fleetChildRepair(line({ store: true, agent: 'Kid', report }))).toBeUndefined();
     expect(fleetChildRepair(line({ store: '/s', report }))).toBeUndefined();
-    // Cut short, as a kill at the time limit leaves it.
     expect(fleetChildRepair(line({ store: '/s', agent: 'Kid', report }).slice(0, -5))).toBeUndefined();
-    // Another line, even one holding a report.
     expect(fleetChildRepair(`/s (agents/Kid): opens`)).toBeUndefined();
     expect(fleetChildRepair(JSON.stringify({ store: '/s', agent: 'Kid', report }))).toBeUndefined();
   });
@@ -430,34 +372,26 @@ describe('the store audit', () => {
   });
 
   test("each store's answer is the one agent-framework's own open of it gives", async () => {
-    // The audit restates how agent-framework opens a resident's namespace
-    // (createAgent), its view of the messages included, and the
-    // subconscious's (createSubconsciousAgent). This opens a copy of each
-    // store through agent-framework itself, with the same recipe, and
-    // requires the same answer, so the two stay in step. The small windows
-    // let a start chunk the span stores' unowned run.
     const recipe = { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, strategy: { headWindowTokens: 500, recentWindowTokens: 1000 } } };
     const subconscious = { enabled: true, systemPrompt: 'attend to the agent' };
     const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true }> = {
       crossed: { make: (store) => makeStore(store, 'agents/agent', true) },
       plain: { make: (store) => makeStore(store, 'agents/agent', false) },
-      'unowned run inside a span': { make: (store) => makeSpanStore(store, false) },
-      'tuned-out run inside a span': { make: (store) => makeSpanStore(store, true) },
+      'unowned run inside a span': { make: (store) => makeSpanStore(store) },
+      'tuned-out run inside a span': { make: (store) => makeSpanStore(store, 'tuned-out') },
+      "another agent's stored injections inside a span": { make: (store) => makeSpanStore(store, 'injected') },
+      "the agent's own stored injections inside a span": { make: (store) => makeSpanStore(store, 'own-injected') },
       'a subconscious that opens': { make: (store) => makeStore(store, 'agents/agent', false), subconscious: true },
       "a subconscious whose context a start can't read": { make: makeBrokenSubconsciousStore, subconscious: true },
       'the same store, its subconscious off': { make: makeBrokenSubconsciousStore, off: true },
     };
     const audited: Record<string, string> = {};
     const started: Record<string, string> = {};
-    // What a refusal says, without the library's remedy, which the audit's
-    // line replaces.
     const said: Record<string, { audit: string; start: string }> = {};
     for (const [index, [name, { make, subconscious: on, off }]] of Object.entries(cases).entries()) {
       const { dir, stores } = await makeDataDirWith(`case-${index}`, [make]);
       const caseRecipe = on ? { ...recipe, subconscious } : off ? { ...recipe, subconscious: { ...subconscious, enabled: false } } : recipe;
       saveRecipe(dir, caseRecipe);
-      // agent-framework opens a copy, made before the audit opens the store
-      // in place.
       const copy = join(root, `case-${index}-framework`);
       cpSync(stores[0]!, copy, { recursive: true });
       const { status, failed } = await audit([dir]);
@@ -486,6 +420,8 @@ describe('the store audit', () => {
       plain: 'opens',
       'unowned run inside a span': 'refused',
       'tuned-out run inside a span': 'opens',
+      "another agent's stored injections inside a span": 'opens',
+      "the agent's own stored injections inside a span": 'refused',
       'a subconscious that opens': 'opens',
       "a subconscious whose context a start can't read": 'refused',
       'the same store, its subconscious off': 'opens',
@@ -576,6 +512,89 @@ describe('the store audit', () => {
     }
   }, 60_000);
 
+  test("the subconscious's view leaves out other agents' stored injections", () => {
+    // The audit opens the subconscious with agent-framework's own options
+    // (subconsciousContextOptions, #291) and keeps no copy of its view on this
+    // branch, so this reads the view those options give a recipe that names
+    // no subconscious.
+    const view = subconsciousContextOptions({ serves: 'agent' }).viewFilter as (message: never) => boolean;
+    const row = (metadata?: Record<string, unknown>) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, ...(metadata ? { metadata } : {}) }) as never;
+    const injection = (agent: string) => ({ system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 } });
+    expect(view(row(injection('agent')))).toBe(false);
+    expect(view(row(injection('Subconscious')))).toBe(true);
+    expect(view(row({ tuneOut: { channel: 'c' } }))).toBe(true);
+    expect(view(row())).toBe(true);
+  });
+
+  test("the audit opens a named subconscious with its own name's view, and the resident with the resident's", async () => {
+    const { dir } = await makeDataDirWith('named-subconscious', [(store) => makeStore(store, 'agents/agent', false)]);
+    saveRecipe(dir, { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } });
+    const views = new Map<string, (message: never) => boolean>();
+    const open = ContextManager.open.bind(ContextManager);
+    const spy = spyOn(ContextManager, 'open').mockImplementation(((options: { namespace?: string; viewFilter?: (message: never) => boolean }) => {
+      if (options.namespace !== undefined && options.viewFilter) views.set(options.namespace, options.viewFilter);
+      return open(options as never);
+    }) as never);
+    try {
+      expect((await audit([dir])).status).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    const row = (agent: string) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, metadata: {
+      system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 },
+    } }) as never;
+    const muse = views.get('subconscious/agent')!;
+    const agent = views.get('agents/agent')!;
+    expect([muse(row('Muse')), muse(row('agent')), muse(row('Subconscious'))]).toEqual([true, false, false]);
+    expect([agent(row('agent')), agent(row('Muse'))]).toEqual([true, false]);
+  });
+
+  test("the audit's subconscious view answers as the filter agent-framework opens a named subconscious with", async () => {
+    // This takes the filter agent-framework's start passes to
+    // ContextManager.open for the subconscious, and the one the audit passes.
+    // On this branch the audit has no copy of the view: it opens with
+    // agent-framework's own options (subconsciousContextOptions, #291), so
+    // the two are read from the opens, not from an export of the audit's.
+    const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } };
+    const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => makeStore(store, 'agents/agent', false)]);
+    saveRecipe(dir, raw as never);
+    let frameworkView: ((message: never) => boolean) | undefined;
+    let ours: ((message: never) => boolean) | undefined;
+    let auditing = false;
+    const open = ContextManager.open.bind(ContextManager);
+    const spy = spyOn(ContextManager, 'open').mockImplementation(((options: { namespace?: string; viewFilter?: (message: never) => boolean }) => {
+      if (options.namespace === 'subconscious/agent') {
+        if (auditing) ours = options.viewFilter;
+        else frameworkView = options.viewFilter;
+      }
+      return open(options as never);
+    }) as never);
+    try {
+      const recipe = validateRecipe(structuredClone(raw));
+      const model = recipeModel(recipe, process.env.MODEL);
+      const strategy = buildFrameworkStrategy(recipe, model, resolveTimeZone(recipe.agent.timezone));
+      const framework = await AgentFramework.create({
+        storePath: stores[0]!,
+        membrane: new Membrane(new MockAdapter()),
+        agents: [buildFrameworkAgentConfig(recipe, 'agent', model, strategy)],
+        modules: [],
+        subconscious: recipe.subconscious!,
+      });
+      await framework.stop();
+      auditing = true;
+      expect((await audit([dir])).status).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(frameworkView).toBeDefined();
+    expect(ours).toBeDefined();
+    const injection = (agent: string) => ({ system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 } });
+    const rows = [injection('agent'), injection('Muse'), injection('Subconscious'), { tuneOut: { channel: 'c' } }, undefined]
+      .map((metadata) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, ...(metadata ? { metadata } : {}) }) as never);
+    expect(rows.map((row) => ours!(row))).toEqual(rows.map((row) => frameworkView!(row)));
+    expect(rows.map((row) => ours!(row))).toEqual([false, true, false, true, true]);
+  });
+
   test("a crossed store opens under a resident's kv-unified block that keeps gap-bearing summaries, as at its start", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
     const kvUnified = { ...standardKvUnifiedConfig(DEFAULT_RECIPE, 'claude-opus-4-6'), preserveGapBearingSummaries: true };
@@ -586,8 +605,6 @@ describe('the store audit', () => {
   });
 
   test('every session is audited under the agent name a start resolves', async () => {
-    // The first session's crossed namespace is one this recipe's agent never
-    // opens; the second's is the agent's own.
     const { dir, stores } = await makeDataDir('data', [
       { namespace: 'agents/agent', crossed: true },
       { namespace: 'agents/Kid', crossed: true },
@@ -600,8 +617,6 @@ describe('the store audit', () => {
   });
 
   test("a store an import wrote under another name is opened under the recipe's name, as a start opens it", async () => {
-    // The import record names Claude, whose crossed summaries the store holds;
-    // the recipe names Kid, which a start opens, warning of the difference.
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/Claude', crossed: true }]);
     saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, name: 'Kid' } });
     const manager = new SessionManager(dir);
@@ -646,20 +661,14 @@ describe('the store audit', () => {
   });
 
   test("a directory's fleet children are audited as the fleet launches them, under the recipe each entry names and in the environment the fleet starts it with, and a directory no entry names is said to be read in this one's", async () => {
-    // The child's recipe, the one its entry names, takes its agent's name
-    // from a variable only its fleet entry sets, which this environment
-    // doesn't; the snapshot its last start saved names another agent.
     delete process.env.AUDIT_TEST_CHILD_NAME;
     const child = await makeDataDir('child', [{ namespace: 'agents/Kid', crossed: true }]);
     saveRecipe(child.dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, name: 'Snapshot' } });
     const kidRecipe = join(root, 'kid.json');
-    // Its system prompt is at an address nothing serves, which a fetch
-    // would fail on.
     writeFileSync(kidRecipe, JSON.stringify({
       ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, name: '${AUDIT_TEST_CHILD_NAME}', systemPrompt: 'http://127.0.0.1:9/prompt' },
     }));
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
-    // A second entry whose child has never run, so it has no directory.
     saveRecipe(parent.dir, {
       ...DEFAULT_RECIPE,
       modules: {
@@ -673,7 +682,6 @@ describe('the store audit', () => {
       },
     });
     const other = await makeDataDir('other', [{ namespace: 'agents/agent', crossed: false }]);
-    // Alone, the child is read under its snapshot, in this environment.
     const alone = await audit([child.dir]);
     expect(alone.status).toBe(0);
     expect(alone.lines).toEqual([`${child.stores[0]} (agents/Snapshot): opens`]);
@@ -681,8 +689,6 @@ describe('the store audit', () => {
       const { status, lines, failed } = await audit(given);
       expect(status).toBe(1);
       expect(failed.map((line) => line.slice(0, line.indexOf(': ')))).toEqual([`${child.stores[0]} (agents/Kid)`]);
-      // The child's audit writes the libraries' lines to its stderr too,
-      // which pass on with its own.
       expect(lines.filter((line) => line.startsWith(root) && !failed.includes(line))).toEqual([
         `${parent.stores[0]} (agents/agent): opens`,
         `${other.dir}: none of the fleet entries of the other directories given names it, so it's audited in this audit's own environment`,
@@ -705,10 +711,6 @@ describe('the store audit', () => {
   });
 
   test("with no agent name in the recipe, each session's store is opened under the name every session gives", async () => {
-    // The second session's import record names Bob, the third's Carol, and
-    // the second's store holds crossed summaries under Carol's name: a start
-    // with the third session active, and a switch from it to the second,
-    // opens them there.
     const { dir, stores } = await makeDataDir('data', [
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/Carol', crossed: true },
@@ -743,8 +745,6 @@ describe('the store audit', () => {
   });
 
   test("an active session the index doesn't list gives no name, since a start makes a new session in its place, which a switch opens each store from", async () => {
-    // The listed session's own import record names Claude, so only the start's
-    // new session gives the agent's name.
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
     const { name: _name, ...agent } = DEFAULT_RECIPE.agent;
     saveRecipe(dir, { ...DEFAULT_RECIPE, agent });
@@ -772,14 +772,10 @@ describe('the store audit', () => {
     const manager = new SessionManager(dir);
     const index = manager.load();
     const [first, second] = Object.keys(index.sessions);
-    // The active entry under another key, its id kept: a start opens the store
-    // the id names and reads the import record the id names.
     index.sessions['other-key'] = index.sessions[first!]!;
     delete index.sessions[first!];
     index.activeSessionId = 'other-key';
     writeFileSync(join(dir, 'sessions', `${first}.import-source.json`), JSON.stringify({ agentName: 'Claude' }));
-    // The second entry's store is under its key, its id naming none, and its
-    // import record is read by its id.
     index.sessions[second!] = { ...index.sessions[second!]!, id: 'names-no-store' };
     manager.save(index);
     writeFileSync(join(dir, 'sessions', 'names-no-store.import-source.json'), JSON.stringify({ agentName: 'Dana' }));
@@ -801,8 +797,6 @@ describe('the store audit', () => {
       `${stores[0]} (agents/agent): opens`,
       `${stores[1]} (agents/agent): the index lists its session, and no store is there; a start makes an empty one`,
     ]);
-    // A file where a directory on a store's path should be: its lstat fails,
-    // as it would for a directory the audit may not read.
     const manager = new SessionManager(dir);
     const index = manager.load();
     index.sessions['blocked/inner'] = { ...index.sessions[Object.keys(index.sessions)[0]!]!, id: 'blocked/inner' };
@@ -821,7 +815,7 @@ describe('the store audit', () => {
     expect(failed).toEqual([`Couldn't audit ${dir}: cannot build`]);
   });
 
-  test("each store's open gets a strategy of its own", async () => {
+  test("each store's open gets a strategy of its own, after the one built to check the recipe", async () => {
     const { dir } = await makeDataDir('data', [
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
@@ -843,7 +837,6 @@ describe('the store audit', () => {
     try {
       const { status } = await audit([dir]);
       expect(status).toBe(0);
-      // The first is the one built to check the recipe; each open takes a new one.
       expect(opens).toEqual([2, 3]);
     } finally {
       delete (globalThis as { auditTestOpens?: number[] }).auditTestOpens;
@@ -852,7 +845,6 @@ describe('the store audit', () => {
 
   test('a system prompt the recipe gives as a URL is not fetched', async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
-    // Nothing listens on port 1, so a fetch would fail the load.
     saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, systemPrompt: 'http://127.0.0.1:1/prompt.md' } });
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
@@ -874,7 +866,6 @@ describe('the store audit', () => {
     expect(given.status, given.failed.join('\n')).toBe(0);
     expect(given.lines).toEqual([`${stores[0]} (agents/agent): opens`]);
     expect(readFileSync(calls, 'utf8')).toBe('register\n');
-    // Without them, the audit loads the recipe's own.
     expect((await audit([dir])).status).toBe(0);
     expect(readFileSync(calls, 'utf8')).toBe('register\nregister\n');
   });
@@ -951,10 +942,6 @@ describe('the store audit', () => {
 
   test("a store refused on its topology is refused, though its strategy also called a model", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
-    // The library's own strategy, whose open checks the store's topology,
-    // after a model call it catches. It's another copy of the library than
-    // the host's (Bun loads the host's from its source), as an extension's
-    // own would be, so its error's class isn't the host's.
     const library = CONTEXT_MANAGER;
     withStrategy(dir, 'calling', [
       `import { AutobiographicalStrategy } from ${JSON.stringify(library)};`,
@@ -968,8 +955,6 @@ describe('the store audit', () => {
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
     expect(failed).toEqual([expect.stringMatching(new RegExp(`^${stores[0]} \\(agents/agent\\): refused: store topology rejected: `))]);
-    // Its line says where to look, as the host's own copy's does, not what the
-    // library suggests.
     expect(failed[0]).toEndWith('AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.');
     expect(failed[0]).not.toContain('topologyPolicy');
   });
@@ -994,8 +979,7 @@ describe('the store audit', () => {
       '}',
     ].join('\n'));
     const { status, lines } = await audit([dir]);
-    // Whichever store is opened first, as the index lists its sessions, meets
-    // the call; an id of digits alone is listed first.
+    // An object lists a key that reads as an array index before its other keys.
     const [first, second] = lines[0]!.startsWith("Couldn't audit") ? [lines[0]!, lines[1]!] : [lines[1]!, lines[0]!];
     const called = stores.find((store) => first === `Couldn't audit ${store}: ${MODEL_CALLED}`);
     expect(called, lines.join('\n')).toBeDefined();
@@ -1004,9 +988,8 @@ describe('the store audit', () => {
     expect(status).toBe(1);
   });
 
-  test("a strategy that can't be built for a later store leaves that store not audited, not refused", async () => {
+  test("a strategy that can't be built for a store, once the recipe check's build has worked, leaves that store not audited, not refused", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
-    // The first build, which checks the recipe, works; the one for the store doesn't.
     withStrategy(dir, 'fickle', [
       `import { PassthroughStrategy } from '${CONTEXT_MANAGER}';`,
       'let built = 0;',
@@ -1025,7 +1008,6 @@ describe('the store audit', () => {
     const close = spyOn(ContextManager.prototype, 'close');
     try {
       expect((await audit([dir])).status).toBe(1);
-      // The crossed store's namespace never opened, so only the other's closes.
       expect(close).toHaveBeenCalledTimes(1);
       close.mockImplementation(() => { throw new Error('close failed'); });
       const { failed } = await audit([dir]);
@@ -1036,9 +1018,6 @@ describe('the store audit', () => {
     } finally {
       close.mockRestore();
     }
-    // The store itself, which the audit opens as agent-framework does and
-    // closes after the agent's namespace.
-    // Each store closes, so the next audit can open it, and then says it failed.
     const realClose = JsStore.prototype.close;
     const storeClose = spyOn(JsStore.prototype, 'close').mockImplementation(function (this: JsStore) {
       realClose.call(this);
@@ -1051,7 +1030,6 @@ describe('the store audit', () => {
         expect.stringMatching(new RegExp(`^${literally(stores[1]!)} \\(agents/agent\\): refused: store topology rejected: [^;]*[^.;]; closing it failed: store close failed$`)),
       ]);
       expect(storeClose).toHaveBeenCalledTimes(2);
-      // A store not audited, whose close then fails, says both.
       withStrategy(dir, 'calls', "export function register(api) { api.registerStrategy('calls', () => ({ initialize: async (ctx) => { await ctx.membrane.complete({}); } })); }\n");
       const unaudited = await audit([dir]);
       expect(unaudited.failed).toEqual(stores.map((store) => `Couldn't audit ${store}: ${MODEL_CALLED}; closing it failed: store close failed`));
@@ -1101,7 +1079,6 @@ describe('the store audit', () => {
     const none = await audit([]);
     expect(none.status).toBe(1);
     expect(none.failed).toEqual(['Usage: --audit-stores [--recipe <recipe>] <data directory>…, with one data directory when a recipe is given']);
-    // A recipe goes with one data directory, as a start's does.
     const two = await audit([dir, dir], { recipe: join(root, 'kid.json') });
     expect(two.status).toBe(1);
     expect(two.failed).toEqual(['Usage: --audit-stores [--recipe <recipe>] <data directory>…, with one data directory when a recipe is given']);
@@ -1134,8 +1111,8 @@ describe('the store audit', () => {
       { namespace: 'agents/agent', crossed: true },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // An extension whose import starts a timer, which would keep a process
-    // that waits for its event loop to empty alive.
+    // A pending timer keeps a process that waits for its event loop to empty
+    // alive.
     const extension = join(root, 'lingering.ts');
     const started = join(root, 'timer-started');
     writeFileSync(extension, [
@@ -1166,8 +1143,6 @@ describe('the store audit', () => {
     const clean = await entry([dir]);
     expect(clean.status, clean.stderr).toBe(0);
     expect(clean.stderr).toContain(`${stores[0]} (agents/agent): opens\n`);
-    // A root that holds no release, which would stop a host's start, doesn't
-    // stop the audit, whose dispatch comes first.
     const rootless = await entry([dir], { env: { CONNECTOME_INSTALL_ROOT: join(root, 'no-install') } });
     expect(rootless.status, rootless.stderr).toBe(0);
     expect(rootless.stderr).toContain(`${stores[0]} (agents/agent): opens\n`);
@@ -1181,17 +1156,12 @@ describe('the store audit', () => {
   }, 60_000);
 
   test("through the host's entry, a line reaches stderr whole, though it's longer than a pipe holds and its reader starts late", async () => {
-    // Bun 1.4.3 drops what's still queued for a pipe at process.exit: a probe
-    // read 475,072 of 1,000,000 bytes from a child that wrote them and exited
-    // while its reader held off.
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
     const refusing = join(root, 'refusing');
     withStrategy(dir, 'wordy', [
       "import { writeFileSync } from 'node:fs';",
       `export function register(api) { api.registerStrategy('wordy', () => ({ initialize: async () => { writeFileSync(${JSON.stringify(refusing)}, ''); throw new Error('x'.repeat(1_000_000)); } })); }`,
     ].join('\n'));
-    // Held from the moment its strategy refuses, which comes just before the
-    // line is written, until the audit exits or 3 s have passed.
     const { status, stderr } = await entry([dir], { holdAfter: refusing });
     expect(status, stderr.slice(-2000)).toBe(1);
     expect(stderr).toContain(`${stores[0]} (agents/agent): refused: ${'x'.repeat(1_000_000)}\n`);
@@ -1216,9 +1186,8 @@ describe("what a strategy's open and an index can do", () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // The second session's entry, as one naming a store two levels up.
     const index = JSON.parse(readFileSync(join(dir, 'sessions.json'), 'utf8'));
-    // Not by position: a key of digits alone comes first in an object's keys.
+    // An object lists a key that reads as an array index before its other keys.
     const second = Object.keys(index.sessions).find((key) => key !== index.activeSessionId);
     const escaped = '../../escaped';
     index.sessions[escaped] = { ...index.sessions[second!], id: escaped };
@@ -1245,8 +1214,6 @@ describe("what a strategy's open and an index can do", () => {
 });
 
 describe("a fleet child's audit, in a process of its own", () => {
-  /** A parent whose recipe names one child for each recipe given, each in a
-   *  directory of its own with a store that opens. */
   async function parentOf(children: Array<{ name: string; extension?: string; dir?: string }>) {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const entries = [];
@@ -1277,14 +1244,10 @@ describe("a fleet child's audit, in a process of its own", () => {
         ].join('\n'),
       },
       { name: 'quitter', extension: 'process.exit(3);\nexport function register() {}' },
-      // 1 is the audit's own failure status, here with no line to explain it.
       { name: 'leaver', extension: 'process.exit(1);\nexport function register() {}' },
-      // A line that reads as a failure, and then a status no audit gives.
       { name: 'partial', extension: "import { writeSync } from 'node:fs';\nwriteSync(2, \"Couldn't audit what this extension says\\n\");\nprocess.exit(3);\nexport function register() {}" },
-      // A clean child whose extension writes a line that reads as a failure.
       { name: 'chatty', extension: "import { writeSync } from 'node:fs';\nwriteSync(2, \"Couldn't audit what this extension says\\n\");\nexport function register() {}" },
       { name: 'killed', extension: "process.kill(process.pid, 'SIGTERM');\nawait new Promise(() => {});\nexport function register() {}" },
-      // A clean child whose lines hold what a failure's line holds.
       { name: 'odd', dir: "odd Couldn't audit dir" },
     ]);
     process.env.CONNECTOME_INSTALL_ROOT = join(root, 'an-install');
@@ -1331,7 +1294,6 @@ describe("a fleet child's audit, in a process of its own", () => {
     const pidFile = join(root, 'stuck.pid');
     const { parent, dirs } = await parentOf([{
       name: 'stuck',
-      // An extension that waits at its import for good.
       extension: [
         "import { writeFileSync } from 'node:fs';",
         `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
@@ -1340,14 +1302,10 @@ describe("a fleet child's audit, in a process of its own", () => {
         'export function register() {}',
       ].join('\n'),
     }]);
-    // The limit, 1 minute as the audit's environment sets it, made a second,
-    // counted from the moment the child's extension has begun its wait.
     const before = process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
     leftovers.push(() => { if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES; else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before; });
     process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = '1';
     const limit = limitWhen(() => existsSync(pidFile), 60_000);
-    // A timer of the same minute the audit didn't arm isn't its limit: it's
-    // armed as it asked, not counted, and not fired early.
     let strayFired = false;
     let stray: ReturnType<typeof setTimeout> | undefined;
     const kill = process.kill.bind(process);
@@ -1361,7 +1319,6 @@ describe("a fleet child's audit, in a process of its own", () => {
       stray = setTimeout(() => { strayFired = true; }, 60_000);
       result = await audit([parent.dir]);
     } finally {
-      // The stray's real minute would outlast this test.
       clearTimeout(stray);
       limit.restore();
       killing.mockRestore();
@@ -1371,7 +1328,6 @@ describe("a fleet child's audit, in a process of its own", () => {
     expect(result.status).toBe(1);
     expect(limit.armed()).toBe(1);
     expect(strayFired).toBe(false);
-    // Its group was sent SIGKILL at the limit.
     expect(killed).toContain(Number(readFileSync(pidFile, 'utf8')));
     expect(result.failed).toEqual([`Couldn't audit ${dirs.stuck!.dir}: its audit didn't end within 1 minute, so it was ` +
       "sent SIGKILL, and it isn't known that every store there was audited. Something may have held it, such as an " +
@@ -1404,17 +1360,11 @@ describe("a fleet child's audit, in a process of its own", () => {
     const { parent, dirs } = await parentOf([
       {
         name: 'ended',
-        // Ended by a signal as it exits, after its last line.
         extension: "process.on('exit', () => { process.kill(process.pid, 'SIGKILL'); });\nexport function register() {}",
       },
-      // A clean audit whose status is made one no audit gives as it exits,
-      // after its last line.
       { name: 'other', extension: "process.on('exit', () => { process.exit(2); });\nexport function register() {}" },
-      // An audit that refused a store, whose status is made 0 as it exits, as
-      // an extension's own cleanup might.
       { name: 'cleaned', extension: "process.on('exit', () => { process.exit(0); });\nexport function register() {}" },
     ]);
-    // The last child's store is one a start refuses.
     rmSync(dirs.cleaned!.stores[0]!, { recursive: true, force: true });
     await makeStore(dirs.cleaned!.stores[0]!, 'agents/agent', true);
     const { status, failed } = await audit([parent.dir]);
@@ -1448,9 +1398,6 @@ describe("a fleet child's audit, in a process of its own", () => {
   test("a child's audit that finishes with 1 and says of no store why isn't taken as clean", async () => {
     const { parent, dirs } = await parentOf([{
       name: 'silent',
-      // A clean audit whose status is made 1 as it exits, after a last line
-      // that imitates the audit's own saying it ends with 1, which only such
-      // an imitation can give without a line saying why.
       extension: "import { writeSync } from 'node:fs';\nprocess.on('exit', () => { writeSync(2, '--fleet-child audit finished: 1\\n'); process.exit(1); });\nexport function register() {}",
     }]);
     const { status, failed, lines } = await audit([parent.dir]);
@@ -1478,14 +1425,12 @@ describe("a fleet child's audit, in a process of its own", () => {
     const helper = Number(readFileSync(pidFile, 'utf8'));
     let ended = false;
     try {
-      // Ended with the audit's group.
       ended = await waitForEnd(helper, 10_000);
       expect(ended).toBe(true);
     } finally {
-      // Only one that hasn't ended: an ended helper's pid may be another
-      // process's by now.
+      // An ended process's pid may be another process's by now.
       if (!ended) {
-        try { process.kill(helper, 'SIGKILL'); } catch { /* it has ended since */ }
+        try { process.kill(helper, 'SIGKILL'); } catch { }
       }
     }
   }, 90_000);
@@ -1506,8 +1451,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     expect(lines.filter((line) => line.includes('--fleet-child audit finished'))).toEqual([]);
   }, 60_000);
 
-  /** A spy under which a SIGKILL to a process group reaches nothing, as for a
-   *  process that outlasts one, with the groups it was sent to. */
   function groupKillsMissed(): { groups: number[]; restore: () => void } {
     const kill = process.kill.bind(process);
     const groups: number[] = [];
@@ -1566,7 +1509,7 @@ describe("a fleet child's audit and what outlasts it", () => {
         "Once sure that group is this audit's, whoever runs this host can end it, as a user allowed to signal it, with " +
         `\`kill -KILL -- -${group}\`; a process held in the kernel ends only once the kernel lets it go.`);
     } finally {
-      try { process.kill(-group!, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(-group!, 'SIGKILL'); } catch { }
     }
   }, 60_000);
 
@@ -1575,8 +1518,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     const child = await makeDataDir('held', [{ namespace: 'agents/agent', crossed: false }]);
     const heldFile = join(root, 'held.pid');
     const extension = join(root, 'held.ts');
-    // Held as its process exits, after its last line, as an extension's exit
-    // handler could hold it.
     writeFileSync(extension, [
       "import { writeFileSync } from 'node:fs';",
       `process.on('exit', () => { writeFileSync(${JSON.stringify(heldFile)}, String(process.pid)); for (;;) { /* held */ } });`,
@@ -1584,7 +1525,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     ].join('\n'));
     const recipe = childRecipe('held', { extensions: { held: { kind: 'module', path: extension } } });
     saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'held', recipe, dataDir: child.dir }] } } });
-    // A setting under a minute, its line's figure not rounded to 0.
     const before = process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
     leftovers.push(() => { if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES; else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before; });
     process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = '0.01';
@@ -1605,7 +1545,6 @@ describe("a fleet child's audit and what outlasts it", () => {
       "but didn't end within 0.01 minutes, so it was sent SIGKILL, and its answer can't be taken. Something held it after " +
       `its last store, such as an extension in its process: ${byHand(parent.dir)}. If it is held again, inspect the ` +
       "child's process."]);
-    // The SIGKILL its limit sent ended it.
     const held = Number(readFileSync(heldFile, 'utf8'));
     expect(await waitForEnd(held, 10_000)).toBe(true);
   }, 60_000);
@@ -1613,9 +1552,6 @@ describe("a fleet child's audit and what outlasts it", () => {
   test("a child's audit has the minutes the audit's environment gives it, and 5 where it gives none it can use", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
-    // The child's entry gives a setting of its own, which is the child's, not
-    // its audit's limit. The parent's strategy arms a long timer of its own,
-    // as a library the audit calls can: only the audit's own timers count.
     const timing = join(root, 'timing-strategy.ts');
     writeFileSync(timing, [
       `import { PassthroughStrategy } from '${CONTEXT_MANAGER}';`,
@@ -1631,11 +1567,11 @@ describe("a fleet child's audit and what outlasts it", () => {
     leftovers.push(() => { if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES; else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before; });
     const later = globalThis.setTimeout;
     const limits: number[] = [];
-    let others = 0;
+    let longTimersArmedOutsideTheAudit = 0;
     const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) => {
       if (typeof ms === 'number' && ms >= 60_000) {
         if (armedByAudit()) limits.push(ms);
-        else others++;
+        else longTimersArmedOutsideTheAudit++;
       }
       return later(handler, ms, ...rest);
     }) as typeof setTimeout);
@@ -1651,13 +1587,9 @@ describe("a fleet child's audit and what outlasts it", () => {
       if (before === undefined) delete process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES;
       else process.env.CONNECTOME_FLEET_CHILD_AUDIT_MINUTES = before;
     }
-    // A billion minutes, or Infinity, is more than a timer holds, so it's the
-    // longest one does.
+    // A timer holds at most 2 ** 31 - 1 ms.
     expect(limits).toEqual([7.5 * 60_000, 2 ** 31 - 1, 2 ** 31 - 1, 5 * 60_000, 5 * 60_000, 5 * 60_000, 5 * 60_000]);
-    // At least one long timer armed from outside the audit was left out, as
-    // the parent's strategy arms one each time it's built; the count doesn't
-    // say which caller armed it.
-    expect(others).toBeGreaterThan(0);
+    expect(longTimersArmedOutsideTheAudit).toBeGreaterThan(0);
   }, 90_000);
 
   test("a child's audit past its limit whose SIGKILL ends nothing is settled without it, and stays listed", async () => {
@@ -1666,8 +1598,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     const file = childrenFilePath(parent.dir);
     const pidFile = join(root, 'stuck.pid');
     const extension = join(root, 'stuck.ts');
-    // Stuck without a turn of its event loop, so nothing but a SIGKILL could
-    // end it, its stdin's end included.
     writeFileSync(extension, [
       "import { writeFileSync } from 'node:fs';",
       `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
@@ -1679,7 +1609,6 @@ describe("a fleet child's audit and what outlasts it", () => {
     const limit = limitWhen(() => existsSync(pidFile));
     const missed = groupKillsMissed();
     const log = spyOn(console, 'error').mockImplementation(() => {});
-    // The busy child is ended after the test, however the audit went.
     leftovers.push(() => { if (existsSync(pidFile)) process.kill(-Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); });
     let result: Awaited<ReturnType<typeof audit>>;
     try {
@@ -1703,7 +1632,7 @@ describe("a fleet child's audit and what outlasts it", () => {
         { name: "stuck's store audit", pid, bootId: bootNow(), dataDir: child.dir },
       ]);
     } finally {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(-pid, 'SIGKILL'); } catch { }
     }
   }, 60_000);
 });
@@ -1713,7 +1642,6 @@ describe("which fleet children an audit follows, and how", () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('child', [{ namespace: 'agents/agent', crossed: false }]);
     const grandchild = await makeDataDir('grandchild', [{ namespace: 'agents/agent', crossed: true }]);
-    // The child's recipe names a child of its own, and the parent again.
     const recipe = childRecipe('kid', {
       modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [
         { name: 'grand', recipe: childRecipe('grand'), dataDir: grandchild.dir },
@@ -1734,7 +1662,6 @@ describe("which fleet children an audit follows, and how", () => {
     delete process.env.AUDIT_TEST_CHILD_NAME;
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('child', [{ namespace: 'agents/Kid', crossed: true }]);
-    // Its saved recipe names a fleet of its own, which would make it a parent.
     saveRecipe(child.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'x', recipe: childRecipe('x'), dataDir: join(root, 'x') }] } } });
     const plain = childRecipe('plain');
     const named = childRecipe('named', { agent: { ...DEFAULT_RECIPE.agent, name: '${AUDIT_TEST_CHILD_NAME}' } });
@@ -1747,8 +1674,6 @@ describe("which fleet children an audit follows, and how", () => {
     });
     const { status, lines, failed } = await audit([parent.dir, child.dir]);
     expect(status).toBe(1);
-    // The plain entry opens the store under agents/agent, where it holds
-    // nothing; the named one opens agents/Kid, which is crossed.
     expect(lines).toContain(`${child.dir}: audited as ${parent.dir}'s fleet child plain, under the recipe its entry names, in the environment the fleet starts it with`);
     expect(lines).toContain(`${child.dir}: audited as ${parent.dir}'s fleet child named, under the recipe its entry names, in the environment the fleet starts it with`);
     expect(lines).toContain(`${child.stores[0]} (agents/agent): opens`);
@@ -1832,7 +1757,6 @@ describe("which fleet children an audit follows, and how", () => {
 
   test("a fleet child's audit ends when the audit that started it does, since its stdin closes", async () => {
     const { dir } = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
-    // An extension whose import waits, so the audit is still running.
     const extension = join(root, 'waiting.ts');
     const held = join(root, 'held');
     writeFileSync(extension, [
@@ -1844,10 +1768,10 @@ describe("which fleet children an audit follows, and how", () => {
     const recipe = childRecipe('kid', { extensions: { waiting: { kind: 'module', path: extension } } });
     const env: Record<string, string | undefined> = { ...process.env };
     for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'DATA_DIR']) delete env[key];
-    // It leads its own group, as the audit that starts it makes it.
+    // Spawned detached, the child leads a process group of its own.
     const child = spawn('bun', [INDEX_PATH, '--audit-stores', '--fleet-child', '--recipe', recipe, dir], { env, stdio: ['pipe', 'ignore', 'pipe'], detached: true });
-    // Told to begin, as the audit that starts it tells it.
-    child.stdin!.write('\n');
+    const tellItToBegin = '\n';
+    child.stdin!.write(tellItToBegin);
     let stderr = '';
     child.stderr!.on('data', (chunk) => { stderr += chunk; });
     const ended = new Promise<string>((done) => child.on('exit', (code, signal) => done(signal ?? `status ${code}`)));
@@ -1857,7 +1781,6 @@ describe("which fleet children an audit follows, and how", () => {
     const how = await Promise.race([ended, Bun.sleep(20_000).then(() => 'still running')]);
     if (how === 'still running') process.kill(-child.pid!, 'SIGKILL');
     expect(how).toBe('SIGKILL');
-    // It ended mid-audit, before any store's line.
     expect(stderr).not.toContain(': opens');
   }, 60_000);
 
@@ -1866,12 +1789,8 @@ describe("which fleet children an audit follows, and how", () => {
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
     const file = childrenFilePath(parent.dir);
     const other = { name: 'other', pid: null, bootId: null, dataDir: join(root, 'other') };
-    // An entry of the same name with another pid, such as another session's
-    // audit of the same child, isn't this audit's to take out.
     const sameName = { name: "kid's store audit", pid: process.pid, bootId: null, dataDir: join(root, 'kid') };
     writeJsonAtomic(file, { v: 1, children: [other, 'not a child', sameName] });
-    // An extension that records, as the child's audit loads it, its own pid
-    // and what the children file holds then.
     const seen = join(root, 'seen.json');
     const extension = join(root, 'looks.ts');
     writeFileSync(extension, [
@@ -1885,7 +1804,7 @@ describe("which fleet children an audit follows, and how", () => {
     expect(status, lines.join('\n')).toBe(0);
     const { pid, file: during } = JSON.parse(readFileSync(seen, 'utf8'));
     let boot: string | null = null;
-    try { boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null; } catch { /* none */ }
+    try { boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null; } catch { }
     expect(during).toEqual({ v: 1, children: [other, 'not a child', sameName, { name: "kid's store audit", pid, bootId: boot, dataDir: child.dir }] });
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 1, children: [other, 'not a child', sameName] });
   }, 60_000);
@@ -1921,9 +1840,6 @@ describe("which fleet children an audit follows, and how", () => {
     const file = childrenFilePath(parent.dir);
     const opening = join(root, 'opening');
     const release = join(root, 'release');
-    // A strategy whose open of the child's store works, without a turn of
-    // the event loop, until its host has ended and the test lets it go, once
-    // it has marked that the open began.
     const extension = join(root, 'slow-open.ts');
     writeFileSync(extension, [
       PARENT_AT_IMPORT,
@@ -1940,7 +1856,6 @@ describe("which fleet children an audit follows, and how", () => {
       agent: { ...DEFAULT_RECIPE.agent, strategy: { type: 'slow' } },
     });
     saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe, dataDir: child.dir }] } } });
-    // The host on trial, which ends as soon as the child's open has begun.
     const host = join(root, 'host.ts');
     writeFileSync(host, [
       "import { existsSync } from 'node:fs';",
@@ -1956,37 +1871,30 @@ describe("which fleet children an audit follows, and how", () => {
     expect(existsSync(opening), "the child's open never began").toBe(true);
     const pid = Number(readFileSync(opening, 'utf8'));
     try {
-      // The host has ended, and its child's audit, still in its open, is
-      // listed as running, which the launcher's fallback waits for.
       expect(processEnded(pid), "the child's audit ended with its host, before its open did").toBe(false);
       const listed = JSON.parse(readFileSync(file, 'utf8')).children;
       expect(listed).toContainEqual(expect.objectContaining({ name: "kid's store audit", pid, dataDir: child.dir }));
       writeFileSync(release, '');
       expect(await waitForEnd(pid, 20_000), "the child's audit went on after its open").toBe(true);
     } finally {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(-pid, 'SIGKILL'); } catch { }
     }
   }, 60_000);
 
-  test("a child's audit whose host ended mid-open ends its process group as it ends, so a helper its extension started there writes nothing", async () => {
+  test("a child's audit whose host ended mid-open ends its process group as it ends, a helper its extension started there included", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
     const file = childrenFilePath(parent.dir);
     const opening = join(root, 'opening');
     const helperPid = join(root, 'helper.pid');
-    const late = join(child.dir, 'helper-wrote');
-    const go = join(root, 'go');
-    // A strategy whose open of the child's store works, without a turn of
-    // the event loop, until its host has ended, once it has marked that the
-    // open began.
     const extension = join(root, 'slow-open.ts');
     writeFileSync(extension, [
       PARENT_AT_IMPORT,
       "import { spawn } from 'node:child_process';",
       "import { existsSync, writeFileSync } from 'node:fs';",
-      // A helper in the audit's own group, which writes in the child's data
-      // directory once the test lets it.
-      `const helper = spawn('sh', ['-c', 'while [ ! -e ${go} ]; do sleep 0.05; done; echo late > ${late}'], { stdio: 'ignore' });`,
+      // Spawned without detached, the helper stays in the audit's own process
+      // group.
+      "const helper = spawn('sleep', ['60'], { stdio: 'ignore' });",
       `writeFileSync(${JSON.stringify(helperPid)}, String(helper.pid));`,
       'helper.unref();',
       "export function register(api) { api.registerStrategy('slow', () => ({",
@@ -2001,7 +1909,6 @@ describe("which fleet children an audit follows, and how", () => {
       agent: { ...DEFAULT_RECIPE.agent, strategy: { type: 'slow' } },
     });
     saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe, dataDir: child.dir }] } } });
-    // The host on trial, which ends as soon as the child's open has begun.
     const host = join(root, 'host.ts');
     writeFileSync(host, [
       "import { existsSync } from 'node:fs';",
@@ -2019,16 +1926,10 @@ describe("which fleet children an audit follows, and how", () => {
     const helper = Number(readFileSync(helperPid, 'utf8'));
     try {
       expect(await waitForEnd(pid, 20_000), "the child's audit went on after its open").toBe(true);
-      // The group's SIGKILL, sent as the child's audit ended, lands on the
-      // helper in its own time.
       expect(await waitForEnd(helper, 10_000), "the helper outlived the child's audit").toBe(true);
-      // Let it write, were it there.
-      writeFileSync(go, '');
-      await Bun.sleep(500);
-      expect(existsSync(late), 'the helper wrote in the data directory').toBe(false);
     } finally {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(-pid, 'SIGKILL'); } catch { }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   }, 60_000);
 
@@ -2042,24 +1943,25 @@ describe("which fleet children an audit follows, and how", () => {
     const start = (mark: string) => spawn('bun', [INDEX_PATH, '--audit-stores', '--fleet-child', '--recipe', recipe, dir], {
       env: { ...env, AUDIT_TEST_MARK: mark }, stdio: ['pipe', 'ignore', 'pipe'], detached: true,
     });
-    // Told to begin at once, a child loads its extension: how long that takes
-    // here sets how long the next one is given.
     const toldMark = join(root, 'told');
-    const began = Date.now();
     const told = start(toldMark);
     told.stdin!.write('\n');
     const toldEnded = new Promise((done) => told.on('exit', done));
     for (let waited = 0; !existsSync(toldMark) && waited < 30_000; waited += 20) await Bun.sleep(20);
     expect(existsSync(toldMark), 'a child told to begin never loaded its extension').toBe(true);
-    const took = Date.now() - began;
     await toldEnded;
     const loaded = join(root, 'loaded');
     const child = start(loaded);
+    child.stdin!.on('error', () => { });
     let stderr = '';
     child.stderr!.on('data', (chunk) => { stderr += chunk; });
     const ended = new Promise<string>((done) => child.on('exit', (code, signal) => done(signal ?? `status ${code}`)));
-    // Never told to begin: given three times as long, it has loaded none.
-    await Bun.sleep(Math.max(1_500, 3 * took));
+    // More than its stdin can buffer, so the write completes only once the child
+    // reads it, which only its gate does.
+    const wrote = await new Promise<Error | null | undefined>((done) => child.stdin!.write(Buffer.alloc(4 << 20, 120), done));
+    expect(wrote ?? null).toBeNull();
+    expect(child.exitCode).toBeNull();
+    expect(child.signalCode).toBeNull();
     expect(existsSync(loaded)).toBe(false);
     child.stdin!.end();
     const how = await Promise.race([ended, Bun.sleep(20_000).then(() => 'still running')]);
@@ -2080,7 +1982,6 @@ describe("which fleet children an audit follows, and how", () => {
     expect(failed).toEqual([
       `Couldn't audit ${child.dir}: its audit couldn't be listed in ${file}, which an update reads to see which processes may still be running, so it was ended: The fleet's children file at ${file} isn't JSON, so this release can't read it.`,
     ]);
-    // Ended before it opened the store, whose refusal would have said so.
     expect(lines.some((line) => line.includes('refused'))).toBe(false);
     expect(readFileSync(file, 'utf8')).toBe('not json');
   }, 60_000);
@@ -2104,8 +2005,7 @@ describe("which fleet children an audit follows, and how", () => {
       write.mockRestore();
     }
     expect(failing.failed).toEqual([`${listing}no space left on device`]);
-    // A write that replaced the file and then failed, as when the sync of
-    // its directory does: the entry it left is taken out.
+    // A directory's sync can fail after a write has replaced the file.
     const real = contract.writeJsonAtomic;
     const landed = spyOn(contract, 'writeJsonAtomic').mockImplementationOnce((path, value) => {
       real(path, value);
@@ -2125,8 +2025,6 @@ describe("which fleet children an audit follows, and how", () => {
   test("on a trial, a child's audit holds its stores to the trial's places, not its own directory alone", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDir('kid', [{ namespace: 'agents/agent', crossed: false }]);
-    // The child's log lives in the parent's data directory, which the trial
-    // copies as one of its places.
     const log = join(child.stores[0]!, 'records.log');
     const moved = join(parent.dir, 'kid-records.log');
     renameSync(log, moved);
@@ -2135,7 +2033,6 @@ describe("which fleet children an audit follows, and how", () => {
     const onTrial = await audit([parent.dir], { within: [parent.dir, child.dir] });
     expect(onTrial.status, onTrial.lines.join('\n')).toBe(0);
     expect(onTrial.lines).toContain(`${child.stores[0]} (agents/agent): opens`);
-    // By hand, the child's directory is its stores' place, and the link leaves it.
     const byHand = await audit([parent.dir]);
     expect(byHand.status).toBe(1);
     expect(byHand.failed).toEqual([linkLine(child.stores[0]!, log, child.dir, false)]);
@@ -2156,15 +2053,12 @@ describe("which fleet children an audit follows, and how", () => {
         expect(status).toBe(1);
         expect(failed).toEqual([linkLine(child.stores[0]!, log, TRIAL_PLACES, true, pointable)]);
       }
-      // A child's directory named through a link is the place it reaches.
       const alias = join(root, 'kid-alias');
       symlinkSync(child.dir, alias);
       saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe: childRecipe('kid'), dataDir: alias }] } } });
       const aliased = join(alias, relative(child.dir, child.stores[0]!));
       const throughAlias = await audit([parent.dir], { within: [parent.dir, child.dir] });
       expect(throughAlias.failed).toEqual([linkLine(aliased, join(aliased, 'records.log'), TRIAL_PLACES, true, true)]);
-      // A store the child's index names outside every place gets no pointing
-      // either, where its directory isn't one of them.
       renameSync(moved, log);
       saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe: childRecipe('kid'), dataDir: child.dir }] } } });
       const index = JSON.parse(readFileSync(join(child.dir, 'sessions.json'), 'utf8'));
@@ -2201,9 +2095,6 @@ describe("which fleet children an audit follows, and how", () => {
     const size = statSync(log).size;
     const started = join(root, 'started');
     const built = join(root, 'built');
-    // A strategy whose import works, without a turn of the event loop,
-    // until the audit that started it has ended, and which marks an open of
-    // the store, which initializes it.
     const extension = join(root, 'busy.ts');
     writeFileSync(extension, [
       PARENT_AT_IMPORT,
@@ -2218,7 +2109,6 @@ describe("which fleet children an audit follows, and how", () => {
       extensions: { busy: { kind: 'strategy', path: extension } },
       agent: { ...DEFAULT_RECIPE.agent, strategy: { type: 'busy' } },
     });
-    // The audit that starts it, which ends as soon as the import has begun.
     const starter = join(root, 'starter.ts');
     const pidFile = join(root, 'kid.pid');
     const stderrFile = join(root, 'kid.stderr');
@@ -2243,7 +2133,7 @@ describe("which fleet children an audit follows, and how", () => {
       expect(existsSync(built), 'the store was opened').toBe(false);
       expect(readFileSync(stderrFile, 'utf8')).not.toContain(': opens');
     } finally {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(-pid, 'SIGKILL'); } catch { }
     }
   }, 60_000);
 
@@ -2269,11 +2159,9 @@ describe("which fleet children an audit follows, and how", () => {
       ]);
       expect(status).toBe(0);
       expect(lines).toContain(`${child.stores[0]} (agents/agent): opens`);
-      // The helper left the group and still holds the pipe, so it was the
-      // grace that ended the wait.
       expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).not.toThrow();
     } finally {
-      try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { }
     }
   }, 60_000);
 });
@@ -2285,8 +2173,6 @@ describe('which stores an audit opens, by where they lie', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // The second session's store moves out, and a link takes its place; the
-    // third's is a link to where nothing is.
     const outside = join(root, 'moved-out');
     renameSync(stores[1]!, outside);
     symlinkSync(outside, stores[1]!);
@@ -2307,8 +2193,6 @@ describe('which stores an audit opens, by where they lie', () => {
       (store) => makeStore(store, 'agents/agent', false),
       (store) => makeStore(store, 'agents/agent', false),
     ]);
-    // The data directory is reached through a link, and the second session's
-    // store isn't there.
     const linked = join(root, 'linked');
     symlinkSync(real.dir, linked);
     const index = JSON.parse(readFileSync(join(real.dir, 'sessions.json'), 'utf8'));
@@ -2331,9 +2215,7 @@ describe('which stores an audit opens, by where they lie', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // The first store's log moves out of the data directory, with three torn
-    // bytes after its last record, which an open would cut; the second's moves
-    // within it. A link takes each one's place.
+    // A store's open cuts torn bytes after its last record.
     const out = join(root, 'outside-log');
     renameSync(join(stores[0]!, 'records.log'), out);
     symlinkSync(out, join(stores[0]!, 'records.log'));
@@ -2384,7 +2266,6 @@ describe('which stores an audit opens, by where they lie', () => {
       { namespace: 'agents/agent', crossed: false },
     ]);
     const real = realpathSync(stores[1]!);
-    // A directory in a store whose own path can't be read through.
     const inner = join(stores[2]!, 'inner');
     mkdirSync(inner);
     const statSync = fs.statSync;
@@ -2427,7 +2308,6 @@ describe('which stores an audit opens, by where they lie', () => {
     writeFileSync(join(root, 'outside-file'), '');
     symlinkSync(join(root, 'outside-file'), join(elsewhere, 'out'));
     symlinkSync(elsewhere, join(stores[0]!, 'inward'));
-    // And one back to the store itself, which the walk passes once.
     symlinkSync(stores[0]!, join(elsewhere, 'back'));
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
@@ -2489,7 +2369,6 @@ describe('which stores an audit opens, by where they lie', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // A session whose store lies under a directory that is a link to itself.
     const manager = new SessionManager(dir);
     const index = manager.load();
     index.sessions['loop/inner'] = { ...index.sessions[Object.keys(index.sessions)[0]!]!, id: 'loop/inner' };
@@ -2525,7 +2404,6 @@ describe('a host on trial, before its commit', () => {
     moveCurrent(install, '0.10.2');
   });
 
-  /** A framework as startFramework uses one, counting its starts and stops. */
   function counting() {
     const counts = { started: 0, stopped: 0 };
     const framework = {
@@ -2536,8 +2414,6 @@ describe('a host on trial, before its commit', () => {
     return { framework, counts };
   }
 
-  /** startFramework on trial for 0.11.0, with the stores it opened and what
-   *  it threw. */
   async function trial(dir: string, activeStore: string, places: () => string[] | null) {
     const { framework, counts } = counting();
     const opened: string[] = [];
@@ -2554,20 +2430,15 @@ describe('a host on trial, before its commit', () => {
     } finally {
       opening.mockRestore();
     }
-    return { ...counts, opened, message: error === undefined ? undefined : error instanceof Error ? error.message : String(error) };
+    return { ...counts, openedInThisProcess: opened, message: error === undefined ? undefined : error instanceof Error ? error.message : String(error) };
   }
 
   test("audits every store it would open only after its commit under a place its fallback undoes, leaves its active session to its own start, and a store it can't open ends the start with `current` as it was", async () => {
-    // The active session opens and the other is crossed; the recipe's
-    // child, inside the data directory, is crossed too, though no children
-    // file lists it.
     const { dir, stores } = await makeDataDir('data', [
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: true },
     ]);
     const child = await makeDataDirWith(join('data', 'kid'), [(store) => makeStore(store, 'agents/agent', true)]);
-    // A child whose directory is under no place the fallback undoes: left
-    // unopened, and its line holds the commit.
     const outside = await makeDataDir('outside', [{ namespace: 'agents/agent', crossed: true }]);
     const kidRecipe = join(root, 'kid.json');
     writeFileSync(kidRecipe, JSON.stringify(DEFAULT_RECIPE));
@@ -2578,7 +2449,6 @@ describe('a host on trial, before its commit', () => {
         fleet: { children: [
           { name: 'kid', recipe: kidRecipe, dataDir: child.dir },
           { name: 'far', recipe: kidRecipe, dataDir: outside.dir },
-          // Not there yet, outside the places: its start would make it there.
           { name: 'new', recipe: kidRecipe, dataDir: join(root, 'not-yet') },
         ] },
       },
@@ -2587,7 +2457,6 @@ describe('a host on trial, before its commit', () => {
     const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
     let result: Awaited<ReturnType<typeof trial>>;
     try {
-      // The active store by a link to it.
       const link = join(root, 'active-link');
       symlinkSync(stores[0]!, link);
       result = await trial(dir, link, () => [join(root, 'elsewhere'), dir]);
@@ -2597,8 +2466,7 @@ describe('a host on trial, before its commit', () => {
     expect(result.started).toBe(0);
     expect(result.stopped).toBe(1);
     expect(readCurrent(install)).toBe('0.10.2');
-    // The child's stores are opened by its own process, not this one.
-    expect(result.opened).toEqual([stores[1]!]);
+    expect(result.openedInThisProcess).toEqual([stores[1]!]);
     const farLine = `Couldn't audit ${outside.dir}, ${dir}'s fleet child far's directory: it lies outside every place ` +
       "this trial's fallback puts back, where an update can't put back what opening its stores changes, so it wasn't " +
       `audited. To update, move it under ${dir} and point its fleet entry there, or declare it by running ` +
@@ -2634,7 +2502,7 @@ describe('a host on trial, before its commit', () => {
       } finally {
         log.mockRestore();
       }
-      expect(result.opened).toEqual([]);
+      expect(result.openedInThisProcess).toEqual([]);
       expect(result.started).toBe(0);
       expect(result.stopped).toBe(1);
       expect(result.message).toBe(said);
@@ -2654,7 +2522,7 @@ describe('a host on trial, before its commit', () => {
     } finally {
       log.mockRestore();
     }
-    expect(result.opened).toEqual([]);
+    expect(result.openedInThisProcess).toEqual([]);
     expect(result.message).toContain(`\n${outsideLine(stores[1]!, TRIAL_PLACES, true)}\n`);
   });
 
@@ -2750,10 +2618,6 @@ describe('a host on trial, before its commit', () => {
     expect(result.message).toContain(`\nCouldn't audit ${stores[1]}: ${MODEL_CALLED}; closing it failed: store close failed\n`);
   });
 
-  /** This checkout as the install's 0.11.0, started through its entry on the
-   *  trial the launcher leaves: the data's copy, labelled, and the
-   *  `trial-start` line. Resolves with how it ended and what it wrote on
-   *  stderr. */
   async function startOnTrial(dir: string, { journal = true, extension }: { journal?: boolean; extension?: string } = {}): Promise<{ status: number | null; stderr: string }> {
     rmSync(join(install, 'releases', '0.11.0'), { recursive: true });
     symlinkSync(join(import.meta.dir, '..'), join(install, 'releases', '0.11.0'));
@@ -2799,9 +2663,6 @@ describe('a host on trial, before its commit', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: true },
     ]);
-    // Each register() call adds a line, as an extension's own allocation
-    // there would add one, released only by its module's stop; the module it
-    // registers adds one as it's built.
     const calls = join(root, 'register-calls');
     const extension = join(root, 'counted.ts');
     writeFileSync(extension, [
@@ -2817,16 +2678,13 @@ describe('a host on trial, before its commit', () => {
     ].join('\n'));
     const { status, stderr } = await startOnTrial(dir, { extension });
     expect(status, stderr.slice(-3000)).toBe(1);
-    // The audit ran, and refused the crossed store, with the start's one
-    // register(), whose module the start's framework was built with.
     expect(stderr).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(readFileSync(calls, 'utf8')).toBe('register\nmodule\n');
   }, 90_000);
 
   test("through the host's entry, on a trial: an active session's store holding a link out of the places ends the start before anything opens it", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
-    // The active store's log moves out of the data directory, with three torn
-    // bytes after its last record, which an open would cut.
+    // A store's open cuts torn bytes after its last record.
     const out = join(root, 'outside-log');
     renameSync(join(stores[0]!, 'records.log'), out);
     symlinkSync(out, join(stores[0]!, 'records.log'));
@@ -2842,8 +2700,7 @@ describe('a host on trial, before its commit', () => {
 
   test("through the host's entry, with no trial under way: a release `current` doesn't name ends its start having opened no store", async () => {
     const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
-    // Three torn bytes after the active store's last record, which an open
-    // would cut.
+    // A store's open cuts torn bytes after its last record.
     const log = join(stores[0]!, 'records.log');
     appendFileSync(log, 'xyz');
     const size = statSync(log).size;
@@ -2860,9 +2717,6 @@ describe('a host on trial, before its commit', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: false },
     ]);
-    // Its strategy calls a model as it opens the child's first store, which
-    // leaves that store's line one that doesn't hold the commit, and its
-    // extension exits 1 as the second store opens.
     const extension = join(root, 'asks-then-exits.ts');
     writeFileSync(extension, [
       'let opens = 0;',
@@ -2948,7 +2802,6 @@ describe('a host on trial, before its commit', () => {
     expect(sent.map(({ kind, agent, data }) => [kind, agent, data!.store]).sort())
       .toEqual([['memory-load-repair', 'agent', stores[1]], ['memory-load-repair', 'agent', stores[2]]].sort());
     for (const { agent, message, data } of sent) {
-      // The Health tab and /healthz never hold a report the audit's own strategy made.
       expect(message).toBe(loadRepairAlert(data as unknown as LoadRepairReport, agent, data!.store as string, AUDIT_POINTER).message);
       expect(message).toEndWith("The message is in failures.log and among the update's audit lines.");
       expect((data as unknown as LoadRepairReport).dropped.map((drop) => drop.id)).toEqual(['L2-x']);
@@ -2963,8 +2816,6 @@ describe('a host on trial, before its commit', () => {
     const sent: string[] = [];
     const framework = {
       start: () => {}, stop: async () => {}, getModule: () => null,
-      // Every store the audit opens opens, so the audit ends with its repair;
-      // a server that didn't connect then refuses the commit.
       listMcplServers: () => [{ id: 'discord', connected: false }],
       notifyOps: (kind: string) => { sent.push(kind); },
     } as never;
@@ -2984,16 +2835,14 @@ describe('a host on trial, before its commit', () => {
     await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places });
     expect(counts.started).toBe(1);
     expect(readCurrent(install)).toBe('0.11.0');
-    // Committed, and with its other session crossed now: no audit stops it.
     await makeStore(stores[1]!, 'agents/agent', true);
     const opening = spyOn(JsStore, 'openOrCreate');
     try {
       await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places });
-      // An install with no `current`, which the launcher wouldn't start.
       rmSync(join(install, 'current'));
       await expect(startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places }))
         .rejects.toThrow('has no `current` to say which release it runs on');
-      // A `current` that isn't a link, which can't be read.
+      // readlink fails with EINVAL on a file that isn't a link.
       writeFileSync(join(install, 'current'), '0.10.2');
       await expect(startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places }))
         .rejects.toThrow(new RegExp(`^This host couldn't read which release the install at ${install} runs on, so none of its agents started: EINVAL: .*\\. Each start reads \`current\` again before any agent starts\\.$`));

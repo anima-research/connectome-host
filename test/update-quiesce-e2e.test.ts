@@ -1,13 +1,3 @@
-/**
- * The switch's quiesce across a real fleet: a FleetModule launches a real
- * headless child, whose agent is mid-turn on the mock provider's slow stream,
- * and quiesceForSwitch asks it over its socket as Restart does. The child's
- * own agent-framework says who holds a turn and whether it has drained, and
- * its quiesce persists in its store until resumeAfterSwitchQuiesce ends it.
- * This host's side is a stand-in with no turn alive: its own quiesce is
- * update-quiesce.test.ts's, and a real host's boot under it is
- * update-commit-e2e.test.ts's.
- */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,9 +11,8 @@ import { hostModeRecord } from './host-mode-record.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// A reply of 60 characters streamed 150 ms apart: a turn of about nine
-// seconds, with no network, which the first quiesce's wait of about a second
-// ends well inside, even on a loaded host.
+// agent-framework's quiesce waits at least a second, so the reply below, 60
+// characters 150 ms apart, outlasts the first quiesce's wait.
 const RECIPE = {
   name: 'Switch quiesce child',
   agent: {
@@ -49,8 +38,6 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
   }
 }
 
-/** This host, with no turn alive: quiesced once asked, as agent-framework's
- *  quiesce leaves a host, and serving again once resumed. */
 function idleHost(): QuiesceFramework {
   let quiesced = false;
   let reason: string | undefined;
@@ -66,7 +53,7 @@ function idleHost(): QuiesceFramework {
 }
 
 describe("the switch's quiesce of a real fleet child", () => {
-  test('waits on its turn, says who holds it, persists until the resume, and leaves the child serving', async () => {
+  test('waits on its turn, says who holds it, answers a request it can\'t read with why, persists until the resume, and leaves the child serving', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'update-quiesce-e2e-'));
     dirs.push(dir);
     const recipe = join(dir, 'kid.json');
@@ -82,10 +69,6 @@ describe("the switch's quiesce of a real fleet child", () => {
     fleet.launchAutoStart();
     await until(() => fleet.getChildren().get('kid')?.status === 'ready', 30_000, 'the child is ready');
 
-    // A request whose handling throws in the child, as a quiesce refused for
-    // a stopping framework does, is answered with why rather than left for
-    // the parent to time out. A request with no body throws so; requestSwitch
-    // can't send one, so it goes on the fleet's own connection to the child.
     const answers: Array<{ ok?: boolean; error?: string }> = [];
     const unsubscribe = fleet.onChildEvent('kid', (_name, event) => {
       if (event.type === 'update-response' && (event as { corrId?: string }).corrId === 'unreadable') answers.push(event as never);
@@ -103,7 +86,6 @@ describe("the switch's quiesce of a real fleet child", () => {
       if (agentName === 'kid' && typeof type === 'string') seen.push(type);
     });
     await fleet.handleToolCall({ id: 'say', name: 'send', input: { name: 'kid', content: 'hello' } });
-    // The reply is streaming: the turn has about nine seconds to run.
     await until(() => seen.includes('inference:tokens'), 20_000, 'the child streams its reply');
 
     const host = idleHost();
@@ -113,7 +95,6 @@ describe("the switch's quiesce of a real fleet child", () => {
     expect(first.hosts[1]).toMatchObject({ host: 'kid', answered: true, drained: false, activeTurnAgents: ['kid'] });
     expect(seen).not.toContain('inference:completed');
 
-    // Wait longer: the turn ends, and the child answers drained.
     const second = await quiesceForSwitch(host, fleet, { to: '9.9.9', timeoutMs: 20_000 });
     expect(second.drained).toBe(true);
     expect(second.hosts[1]).toMatchObject({ host: 'kid', answered: true, drained: true, activeTurnAgents: [] });
@@ -122,7 +103,6 @@ describe("the switch's quiesce of a real fleet child", () => {
     expect(quiesced?.quiesced).toBe(true);
     expect(isSwitchQuiesce(quiesced?.reason)).toBe(true);
 
-    // Try later: the child's quiesce ends, and it takes a turn again.
     const resumed = await resumeAfterSwitchQuiesce(host, fleet);
     expect(resumed.hosts[1]).toEqual({ host: 'kid', resumed: true });
     expect(hostModeRecord(dataDir)?.quiesced).toBe(false);

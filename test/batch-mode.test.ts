@@ -1,10 +1,3 @@
-/**
- * Batch mode (stdin not a TTY, no --headless): the host echoes and runs each
- * stdin line, then stops the framework, closing every MCPL server. These
- * tests pin that the echo hides what an /auth line's credential may be, that
- * the teardown is announced, on the console and in each server's
- * mcpl-stderr log, and that the process exits once the run is done.
- */
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -19,9 +12,11 @@ import {
   batchEchoLine,
   BATCH_MCPL_LOG_NOTE,
 } from '../src/batch-mode.js';
+import { PIPED_TURN_CAP_MS } from '../src/piped-turns.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
+const EXIT_WELL_INSIDE_TURN_CAP_MS = PIPED_TURN_CAP_MS / 4;
 
 describe('batch-mode notices', () => {
   test('the start notice says the run ends at EOF and names --headless', () => {
@@ -48,33 +43,22 @@ describe('batch-mode notices', () => {
     expect(webUiHttpUrl('localhost', 0)).toBe('http://localhost:0');
   });
 
-  test("the echo hides an /auth line's words after its subcommand, and shows every other line as it came", () => {
+  test("the echo hides an /auth line's words after a subcommand it knows, or from the first word it doesn't, and shows every other line as it came", () => {
     expect(batchEchoLine('/auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
     expect(batchEchoLine('  /auth TOKEN  two words  ')).toBe('/auth TOKEN <hidden>');
     expect(batchEchoLine('/AUTH token sk-ant-oat01-secret')).toBe('/AUTH token <hidden>');
-    // Split on any whitespace, as handleCommand splits it, which runs a line
-    // with spaces after its slash as the command they precede.
     expect(batchEchoLine('/auth\ttoken\tsk-ant-oat01-secret')).toBe('/auth token <hidden>');
     expect(batchEchoLine('/ auth token sk-ant-oat01-secret')).toBe('/auth token <hidden>');
-    // Words after another subcommand /auth knows run nothing, but are hidden too.
     expect(batchEchoLine('/auth recheck now')).toBe('/auth recheck <hidden>');
-    // A word /auth doesn't know may itself be the credential, so it's hidden
-    // with what follows it.
     expect(batchEchoLine('/auth set-token sk-ant-oat01-secret')).toBe('/auth <hidden>');
     expect(batchEchoLine('/auth sk-ant-oat01-secret')).toBe('/auth <hidden>');
     expect(batchEchoLine('/AUTH set-token sk-ant-oat01-secret')).toBe('/AUTH <hidden>');
-    // A command whose name starts with auth runs nothing unless it's /auth,
-    // so a dropped space or a stray character still hides what follows.
     expect(batchEchoLine('/authtoken sk-ant-oat01-secret')).toBe('/authtoken <hidden>');
     expect(batchEchoLine('/auth-token sk-ant-oat01-secret')).toBe('/auth-token <hidden>');
     expect(batchEchoLine('/authx token abc')).toBe('/authx token <hidden>');
-    // Each subcommand /auth knows keeps its name.
     expect(batchEchoLine('/auth login now')).toBe('/auth login <hidden>');
     expect(batchEchoLine('/auth refresh now')).toBe('/auth refresh <hidden>');
     expect(batchEchoLine('/auth status now')).toBe('/auth status <hidden>');
-    // An /auth line with nothing to hide, a message (even one that reads as
-    // the command once its first character goes, or that has spaces around
-    // it) and other commands come as they are.
     for (const line of ['/auth', '/auth token', '/auth token   ', '/auth status', '/auth login', '/auth refresh', '/AUTH Recheck', '/authtoken', 'a message about /auth token abc', '  a message  ', 'xauth token abc', '/help']) {
       expect(batchEchoLine(line)).toBe(line);
     }
@@ -88,7 +72,6 @@ describe('batch-mode notices', () => {
   });
 });
 
-// A stdio server that answers just enough of the handshake to connect.
 const FAKE_SERVER = `
 import { createInterface } from 'node:readline';
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
@@ -135,14 +118,13 @@ function setup(webui: boolean): { dir: string; recipePath: string } {
 
 function startBatch(dir: string, recipePath: string, input: string) {
   const child = spawn(process.execPath, [INDEX_PATH, recipePath], {
-    // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
     cwd: dir,
     env: { ...process.env, DATA_DIR: join(dir, 'data') },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
   child.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf-8'); });
-  child.stderr!.on('data', () => { /* drain */ });
+  child.stderr!.on('data', () => { });
   child.stdin!.end(input);
   // 'close', not 'exit': only then have the stdio pipes delivered everything.
   const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
@@ -175,12 +157,10 @@ describe('batch mode end to end', () => {
   test('announces the MCPL teardown and exits once the input is done', async () => {
     const { dir, recipePath } = setup(false);
     const run = startBatch(dir, recipePath, 'hello\n');
-    // The inference wait's 120 s safety timer used to outlive the reply and
-    // hold the process open for two minutes after `Done.`.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
       run.exited,
-      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), EXIT_WELL_INSIDE_TURN_CAP_MS); }),
     ]).finally(() => clearTimeout(timer));
     if (outcome === 'still running') {
       run.child.kill('SIGKILL');
@@ -199,7 +179,6 @@ describe('batch mode end to end', () => {
     expect(teardown).toBeGreaterThan(done);
     expect(out).not.toContain('webui stays up');
 
-    // The server's own log states the cause ahead of the close it explains.
     const log = findFile(join(dir, 'data'), join('mcpl-stderr', 'fake.log'));
     expect(log).not.toBeNull();
     const text = readFileSync(log!, 'utf-8');
@@ -215,7 +194,7 @@ describe('batch mode end to end', () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
       run.exited,
-      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), 30_000); }),
+      new Promise<'still running'>((r) => { timer = setTimeout(() => r('still running'), EXIT_WELL_INSIDE_TURN_CAP_MS); }),
     ]).finally(() => clearTimeout(timer));
     if (outcome === 'still running') {
       run.child.kill('SIGKILL');
@@ -233,9 +212,6 @@ describe('batch mode end to end', () => {
     let exitCode: number | null | undefined;
     void run.exited.then((code) => { exitCode = code; });
     try {
-      // Boot and the first line take what they take. Then the second line's
-      // turn is an echo, so its wait ends far inside the 120 s cap, unless it
-      // waits for the cap itself.
       await waitFor(() => run.out().includes('> second line'), 120_000, '`> second line`');
       await waitFor(() => run.out().includes('Done.'), 90_000, '`Done.` inside the 120 s cap');
       await waitFor(() => exitCode !== undefined, 30_000, 'the batch run to exit');
@@ -248,8 +224,6 @@ describe('batch mode end to end', () => {
     expect(exitCode).toBe(0);
     const out = run.out();
     expect(out).toContain('Session switched.');
-    // The mock answers each line with `[Echo] …`, so the new session's turn
-    // printed its answer after `> second line`, and before `Done.`.
     const second = out.slice(out.indexOf('> second line'), out.indexOf('Done.'));
     expect(second).toContain('[Echo]');
   }, 260_000);
@@ -263,7 +237,6 @@ describe('batch mode end to end', () => {
       expect(url).toBeDefined();
       expect(run.out()).toContain(batchWebUiNotice(url!));
       expect(run.out()).toContain(batchTeardownNotice(['fake']));
-      // What the notice promises: the server answers, the agent data doesn't.
       expect((await fetch(`${url}/healthz`)).status).toBe(503);
     } finally {
       run.child.kill('SIGKILL');

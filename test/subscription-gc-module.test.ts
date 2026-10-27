@@ -54,11 +54,11 @@ describe('SubscriptionGcModule', () => {
     const { ctx, toolCalls } = mockCtx();
     await m.start(ctx);
 
-    let r = await m.onProcess(ambient('c1', 'abcdef'), PS); // 6 — under
+    let r = await m.onProcess(ambient('c1', 'abcdef'), PS);
     expect(toolCalls.length).toBe(0);
     expect(r.addMessages).toBeUndefined();
 
-    r = await m.onProcess(ambient('c1', 'ghijkl'), PS); // +6 = 12 > 10 → unsub
+    r = await m.onProcess(ambient('c1', 'ghijkl'), PS);
     expect(toolCalls.length).toBe(1);
     expect(toolCalls[0].name).toBe('channel_close');
     expect(toolCalls[0].input.channelId).toBe('discord:g1:c1');
@@ -86,9 +86,9 @@ describe('SubscriptionGcModule', () => {
     const { ctx, traceListeners, toolCalls } = mockCtx();
     await m.start(ctx);
 
-    await m.onProcess(ambient('c1', 'abcdefgh'), PS); // 8 — under
-    traceListeners[0]({ type: 'inference:started', agentName: 'lena' }); // reset
-    await m.onProcess(ambient('c1', 'abcdefgh'), PS); // 8 again, not 16 → no unsub
+    await m.onProcess(ambient('c1', 'abcdefgh'), PS);
+    traceListeners[0]({ type: 'inference:started', agentName: 'lena' });
+    await m.onProcess(ambient('c1', 'abcdefgh'), PS);
     expect(toolCalls.length).toBe(0);
 
     await m.stop();
@@ -105,18 +105,14 @@ describe('SubscriptionGcModule', () => {
       input: { channelId: 'discord:g1:c1', limit: 'off' },
     });
     await m.onProcess(ambient('c1', 'waytoolongambient'), PS);
-    expect(toolCalls.length).toBe(0); // pinned → never unsubscribed
+    expect(toolCalls.length).toBe(0);
 
-    // A different channel still accrues, and state is persisted.
     await m.onProcess(ambient('c2', 'abc'), PS);
     const persisted = getState() as { overrides: Record<string, unknown>; counters: Record<string, number> };
     expect(persisted.overrides['discord:g1:c1']).toBe('off');
 
-    // Simulate restart: a new module loads the persisted state (counters carry
-    // across — a restart is not an activation).
     const m2 = new SubscriptionGcModule({ defaultLimitChars: 5 });
     const restart = mockCtx();
-    // Feed the prior persisted state into the "restarted" module.
     const ctx2 = {
       getState: () => persisted,
       setState: () => {},
@@ -127,7 +123,6 @@ describe('SubscriptionGcModule', () => {
       },
     } as unknown as ModuleContext;
     await m2.start(ctx2);
-    // c2 was at 3; +3 = 6 > 5 → unsubscribe (counter survived the "restart")
     await m2.onProcess(ambient('c2', 'def'), PS);
     expect(restart.toolCalls.length).toBe(1);
     expect(restart.toolCalls[0].input.channelId).toBe('discord:g1:c2');
@@ -142,7 +137,6 @@ describe('agent_settings extension (channel_idle_limits)', () => {
     const mod = new SubscriptionGcModule();
     await mod.start(mockCtx().ctx as unknown as ModuleContext);
     expect(mod.getTools()).toEqual([]);
-    // Undeclared ≠ dead: agent muscle memory routes via the old name.
     const result = await mod.handleToolCall({
       id: 't1',
       name: 'set_channel_idle_limit',
@@ -179,7 +173,6 @@ describe('agent_settings extension (channel_idle_limits)', () => {
     const ext = mod.getAgentSettingsExtension();
     ext.update('agent', { channel_idle_limits: { A: 5000, B: 'off', C: '12000' } });
     expect(ext.get('agent').channel_idle_limits).toEqual({ A: 5000, B: 'off', C: 12000 });
-    // merge: only mentioned entries change; default/null clear
     ext.update('agent', { channel_idle_limits: { A: 'default', B: null } });
     expect(ext.get('agent').channel_idle_limits).toEqual({ C: 12000 });
   });
@@ -218,7 +211,6 @@ describe('agent_settings extension (channel_idle_limits)', () => {
       "channel_idle_limits wasn't changed, and none of its entries were applied. " +
         `A channel id is empty: give each channel by its id. The other 2 entries were fine as given. ${others}`,
     );
-    // An empty id with a bad value is named as empty, not as a bad entry.
     expect(refusal({ channel_idle_limits: { A: 5000, '': 'soon' } })).toBe(
       "channel_idle_limits wasn't changed, and none of its entries were applied. " +
         `A channel id is empty: give each channel by its id. The other entry was fine as given. ${others}`,
@@ -251,9 +243,6 @@ describe('agent_settings extension (channel_idle_limits)', () => {
     const { ctx, getState } = mockCtx();
     await mod.start(ctx);
     const ext = mod.getAgentSettingsExtension();
-    // A is valid, B is junk: the whole patch must be rejected — per-entry
-    // application would leave A live (limitFor reads the map directly) and
-    // persisted by the next flush, after the agent was told the update failed.
     expect(() => ext.update('agent', { channel_idle_limits: { A: 5000, B: -3 } })).toThrow(
       /positive/,
     );
@@ -268,10 +257,8 @@ describe('agent_settings extension (channel_idle_limits)', () => {
     const ext = mod.getAgentSettingsExtension();
     ext.update('agent', { channel_idle_limits: { A: 5000, B: 'off' } });
     expect(ext.reset('agent').channel_idle_limits).toEqual({});
-    // keyed reset also clears
     ext.update('agent', { channel_idle_limits: { A: 5000 } });
     expect(ext.reset('agent', ['channel_idle_limits']).channel_idle_limits).toEqual({});
-    // reset for other keys leaves ours alone
     ext.update('agent', { channel_idle_limits: { A: 5000 } });
     expect(ext.reset('agent', ['reasoning_enabled']).channel_idle_limits).toEqual({ A: 5000 });
   });
@@ -282,7 +269,6 @@ describe('system pins (pin_channel_idle_limit)', () => {
     const mod = new SubscriptionGcModule({ defaultLimitChars: 5 });
     const { ctx, toolCalls } = mockCtx();
     await mod.start(ctx);
-    // ChannelMode's debounced-mode step 3.
     await mod.handleToolCall({
       id: 't1',
       name: 'pin_channel_idle_limit',
@@ -290,17 +276,15 @@ describe('system pins (pin_channel_idle_limit)', () => {
     });
     const ext = mod.getAgentSettingsExtension();
     ext.update('agent', { channel_idle_limits: { A: 5000 } });
-    // Blanket `agent_settings reset` (e.g. to restore default reasoning).
     const after = ext.reset('agent');
     expect(after.channel_idle_limits).toEqual({});
     expect(after.channel_idle_pinned).toEqual(['discord:g1:c1']);
-    // The pinned channel must NOT auto-close after the reset.
     await mod.onProcess(ambient('c1', 'waytoolongambienttraffic'), PS);
     expect(toolCalls.length).toBe(0);
     await mod.stop();
   });
 
-  test('pin/unpin round-trip preserves an agent override', async () => {
+  test('pin/unpin round-trip preserves an agent override, and pinned traffic still counts toward it', async () => {
     const mod = new SubscriptionGcModule({ defaultLimitChars: 5 });
     const { ctx, toolCalls } = mockCtx();
     await mod.start(ctx);
@@ -311,7 +295,7 @@ describe('system pins (pin_channel_idle_limit)', () => {
       name: 'pin_channel_idle_limit',
       input: { channelId: 'discord:g1:c1', pinned: true },
     });
-    await mod.onProcess(ambient('c1', 'longerthannine'), PS); // pinned → no close
+    await mod.onProcess(ambient('c1', 'longerthannine'), PS);
     expect(toolCalls.length).toBe(0);
     await mod.handleToolCall({
       id: 't2',
@@ -319,8 +303,6 @@ describe('system pins (pin_channel_idle_limit)', () => {
       input: { channelId: 'discord:g1:c1', pinned: false },
     });
     expect(ext.get('agent').channel_idle_limits).toEqual({ 'discord:g1:c1': 9 });
-    // Override (9) is live again: counter is at 14 from the pinned message,
-    // so the next ambient char crosses it.
     await mod.onProcess(ambient('c1', 'x'), PS);
     expect(toolCalls.length).toBe(1);
     expect(toolCalls[0].name).toBe('channel_close');
@@ -351,7 +333,7 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
     const { ctx, toolCalls } = mockCtx();
     await m.start(ctx);
 
-    await m.onProcess(ambient('c1', 'abcdefghijkl'), PS); // 12 > 10 → close
+    await m.onProcess(ambient('c1', 'abcdefghijkl'), PS);
     expect(toolCalls.length).toBe(1);
     expect(toolCalls[0].input.source).toBe('subscription-gc');
     expect(toolCalls[0].input.overrideExplicitOpen).toBe(false);
@@ -369,7 +351,7 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
       name: 'set_channel_idle_limit',
       input: { channelId: 'discord:g1:c1', limit: 8 },
     });
-    await m.onProcess(ambient('c1', 'abcdefghij'), PS); // 10 > 8 → close under lease
+    await m.onProcess(ambient('c1', 'abcdefghij'), PS);
     expect(toolCalls.length).toBe(1);
     expect(toolCalls[0].input.overrideExplicitOpen).toBe(true);
 
@@ -390,15 +372,12 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
     };
     await m.start(ctx);
 
-    const r = await m.onProcess(ambient('c1', 'abcdefghijkl'), PS); // 12 > 10
+    const r = await m.onProcess(ambient('c1', 'abcdefghijkl'), PS);
     expect(toolCalls.length).toBe(1);
-    // No context spam, no counter restore: the janitor stands down and the
-    // next attempt is at least a full budget away.
     expect(r.addMessages).toBeUndefined();
     const counters = (getState() as { counters: Record<string, number> }).counters;
     expect(counters['discord:g1:c1']).toBeUndefined();
 
-    // Next ambient message counts from zero rather than instantly re-firing.
     await m.onProcess(ambient('c1', 'ab'), PS);
     expect(toolCalls.length).toBe(1);
 
@@ -426,19 +405,15 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
       input: { channelId: 'discord:g1:c1', limit: 8 },
     });
 
-    const r = await m.onProcess(ambient('c1', 'abcdefghij'), PS); // 10 > 8, under the lease
+    const r = await m.onProcess(ambient('c1', 'abcdefghij'), PS);
     expect(toolCalls.length).toBe(1);
     expect(toolCalls[0].input.overrideExplicitOpen).toBe(true);
-    // No context message and no counter restored: the janitor stands down.
     expect(r.addMessages).toBeUndefined();
     const counters = (getState() as { counters: Record<string, number> }).counters;
     expect(counters['discord:g1:c1']).toBeUndefined();
 
-    // The next ambient message counts from zero rather than trying the close
-    // again, so the next try is a full budget away.
     await m.onProcess(ambient('c1', 'ab'), PS);
     expect(toolCalls.length).toBe(1);
-    // A full budget later (2 + 7 > 8), it tries once more.
     await m.onProcess(ambient('c1', 'abcdefg'), PS);
     expect(toolCalls.length).toBe(2);
 
@@ -449,10 +424,8 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
     const m = new SubscriptionGcModule({ defaultLimitChars: 10, serverId: 'discord' });
     const { ctx } = mockCtx();
     const receipts: Array<{ kind: string; agent: string; message: string; data?: Record<string, unknown> }> = [];
-    // The mock is deliberately `this`-sensitive, like the real
-    // ModuleContextImpl.notifyOps (which reads this.registry): a detached
-    // `const f = ctx.notifyOps; f(...)` throws here instead of passing —
-    // the exact bug class Sol caught in the first revision.
+    // `this`-sensitive, as agent-framework's ModuleContextImpl.notifyOps is (it
+    // reads this.registry), so a detached call throws.
     Object.assign(ctx as object, {
       getAgents: () => [{ name: 'mythos' }],
       _receipts: receipts,
@@ -478,7 +451,6 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
       decisionSource: 'subscription-gc',
       lease: 'default',
     });
-    // Privacy-minimal: the receipt names ids and thresholds, never content.
     expect(receipts[0].message).not.toContain('abcdef');
 
     await m.stop();
@@ -508,10 +480,8 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
       name: 'set_channel_idle_limit',
       input: { channelId: 'discord:g1:c1', limit: 8 },
     });
-    await m.onProcess(ambient('c1', 'abcdefghij'), PS); // 10 > 8
+    await m.onProcess(ambient('c1', 'abcdefghij'), PS);
     expect(receipts.length).toBe(1);
-    // The override state records no actor (agent, operator, or imported are
-    // all possible) — the receipt must not claim 'agent-set'.
     expect(receipts[0].data?.lease).toBe('configured-budget');
     expect(receipts[0].message).toContain('configured per-channel budget');
     expect(receipts[0].message).not.toContain('agent-set');

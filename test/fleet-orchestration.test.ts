@@ -1,12 +1,3 @@
-/**
- * Tests for the orchestration primitives added alongside the Phase-5 caveat fixes:
- *   - child-side synthetic events (lifecycle:idle, inference:speech)
- *   - fleet--relay (sibling messaging)
- *   - fleet--await (fan-out wait)
- *
- * Uses a minimal mock child (test/mock-headless-child.ts) so the tests don't
- * need an ANTHROPIC_API_KEY or a working framework/Membrane/Chronicle stack.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -78,8 +69,8 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
   });
 
   afterAll(async () => {
-    try { await fleet.stop(); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { await fleet.stop(); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('text command triggers inference:speech and lifecycle:idle', async () => {
@@ -102,7 +93,6 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
   });
 
   test('tool-ending round does NOT update lastCompletedSpeech; final round does', async () => {
-    // Before: we have "echo: hello there" from the previous test.
     const before = fleet.getChildren().get('a')!.lastCompletedSpeech;
     expect(before).toContain('echo: hello there');
 
@@ -129,8 +119,8 @@ describe('fleet--relay', () => {
   });
 
   afterAll(async () => {
-    try { await fleet.stop(); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { await fleet.stop(); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('errors when source has no completed speech yet', async () => {
@@ -159,8 +149,6 @@ describe('fleet--relay', () => {
     expect(res.success).toBe(true);
     expect(res.data).toMatchObject({ from: 'src', to: 'dst' });
 
-    // The mock echoes whatever text it receives, so the destination's
-    // lastCompletedSpeech should reflect our prefixed payload.
     await waitFor(
       () => fleet.getChildren().get('dst')!.lastCompletedSpeech.startsWith('echo: Miner says:'),
       3_000,
@@ -205,7 +193,7 @@ describe('fleet--await', () => {
   });
 
   afterAll(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('returns immediately when all named children are already idle', async () => {
@@ -213,7 +201,6 @@ describe('fleet--await', () => {
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
     await launchChild(fleet, 'x', join(tmpDir, 'x1'));
 
-    // Trigger one round so child emits lifecycle:idle.
     await send(fleet, 'x', 'hi');
     await waitFor(
       () => fleet.getChildren().get('x')!.events.some(
@@ -243,9 +230,7 @@ describe('fleet--await', () => {
     await launchChild(fleet, 'p', join(tmpDir, 'p'));
     await launchChild(fleet, 'q', join(tmpDir, 'q'));
 
-    // Kick both, then await — the await should resolve after both idle up.
     const awaitPromise = (async () => {
-      // tiny delay to make sure the sends land before the wait checks "already idle"
       await new Promise((r) => setTimeout(r, 50));
       return fleet.handleToolCall({
         id: 'await-both',
@@ -282,7 +267,6 @@ describe('fleet--await', () => {
     })();
 
     await send(fleet, 'fast', 'quick');
-    // 'slow' left unbothered — requireAll:false means we return as soon as fast idles.
 
     const res = await awaitPromise;
     expect(res.success).toBe(true);
@@ -325,7 +309,6 @@ describe('fleet--await', () => {
       });
     })();
 
-    // Send the crash command.
     await command(fleet, 'doomed', '/crash');
 
     const res = await awaitPromise;

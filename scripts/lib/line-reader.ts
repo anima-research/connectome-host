@@ -1,12 +1,7 @@
 /**
- * Stdin line reader using readline's 'line' event. Robust to piped input
- * (Bun 1.3's readline.question / readline/promises.question hang at 99% CPU
- * on subsequent calls when stdin is a pipe). Keep one reader instance alive
- * for the whole script's main() — close/re-open per question is also flaky.
- *
- * Shared between scripts/evacuator.ts and scripts/import-claudeai-export.ts;
- * if the upstream Bun bug ever gets fixed there is exactly one place to
- * revert.
+ * Stdin line reader using readline's 'line' event: Bun's readline.question and
+ * readline/promises question hang, spinning the CPU, on their second call when
+ * stdin is a pipe.
  */
 import { createInterface } from 'node:readline';
 

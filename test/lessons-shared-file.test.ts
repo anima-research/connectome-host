@@ -1,11 +1,3 @@
-/**
- * The shared lessons file, which several hosts write: a call that changes a
- * lesson reads it and merges it in first, so the change is made to the
- * newest copy and stamped past it, a file this host can't read as a lessons
- * file isn't written over, an entry without a named id is kept in the file
- * and not loaded, and a save replaces the file whole where it can, keeping
- * its other keys and each entry where it stood.
- */
 import { describe, test, expect, spyOn } from 'bun:test';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -24,10 +16,6 @@ const lesson = (id: unknown, content: string, updated = 1): AnyObj => ({
   content, tags: ['t'], confidence: 0.6, evidence: [], created: 1, updated, deprecated: false,
 });
 
-/** A host: its module state persists across restarts in `state`, and the
- *  shared file is `path`, its own unless another host's is given. Lines
- *  each start and each save logs are kept. The state the module starts from
- *  is a copy, so what it doesn't keep with setState is lost, as in a host. */
 function host(shared?: string) {
   const dir = shared ? dirname(shared) : mkdtempSync(join(tmpdir(), 'lessons-shared-'));
   const path = shared ?? join(dir, 'lessons.json');
@@ -49,7 +37,6 @@ function host(shared?: string) {
       m = new LessonsModule({ globalPath: path });
       await logged(() => m!.start({ getState: () => structuredClone(state), setState: (s: unknown) => { state = structuredClone(s); } } as unknown as ModuleContext));
     },
-    /** A tool call that saves: a new lesson, created with this content. */
     save(content = 'saved') { return logged(() => m!.handleToolCall(call('create', { content, tags: ['t'] }))); },
     update(id: string, content: string) { return logged(() => m!.handleToolCall(call('update', { id, content }))); },
     call(name: string, input: AnyObj) { return logged(() => m!.handleToolCall(call(name, input))); },
@@ -59,14 +46,11 @@ function host(shared?: string) {
   };
 }
 
-/** Entries other than the ones saves created, to compare a file before and after. */
 const kept = (entries: unknown[]) =>
   entries.filter(e => !(typeof e === 'object' && e !== null && /^saved|^again/.test(String((e as AnyObj).content))));
 
-/** The temporary file's name in an error's text, as a problem is named. */
 const tmpOf = (file: string) => join(dirname(file), 'lessons-<random>.tmp');
 
-/** Making the temporary file refused with `code`, while `refusing()`. */
 function refuseTemporaryFile(code: string, refusing: () => boolean = () => true) {
   const realOpen = fs.openSync;
   return spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
@@ -124,7 +108,6 @@ describe('a shared file this host can\'t read as a lessons file isn\'t written o
     const real = fs.readFileSync;
     const refusal = `EACCES: permission denied, open '${h.path}'`;
     let refuse = true;
-    // A read refused on a file a write would replace, so a write would show.
     const spy = spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
       if (p === h.path && refuse) throw Object.assign(new Error(refusal), { code: 'EACCES' });
       return (real as (...a: unknown[]) => unknown)(p, ...rest);
@@ -148,7 +131,6 @@ describe('a shared file this host can\'t read as a lessons file isn\'t written o
   test('one that isn\'t UTF-8 text is named, and left as it is', async () => {
     const h = host();
     try {
-      // "café" in Latin-1, where é is the lone byte 0xe9.
       const bytes = Buffer.concat([
         Buffer.from('{"lessons": [{"id": "theirs", "content": "caf'),
         Buffer.from([0xe9]),
@@ -186,7 +168,6 @@ describe('a shared file this host can\'t read as a lessons file isn\'t written o
       h.setLessons([lesson('mine', 'here')]);
       await h.start();
       writeFileSync(h.path, JSON.stringify({ lessons: [] }));
-      // A call refused after its read, so nothing is written.
       expect((await h.update('nope', 'no such lesson')).success).toBe(false);
       writeFileSync(h.path, broken);
       await h.save('saved');
@@ -268,7 +249,6 @@ describe('a save reads the shared file again and merges it in', () => {
       writeFileSync(h.path, JSON.stringify({ lessons: [deprecated] }));
       h.setLessons([deprecated]);
       await h.start();
-      // Taken back by hand: not deprecated, and no reason.
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('x', 'X', 6)] }));
       await h.save('saved');
       expect((h.file() as AnyObj[])[0]).toEqual(lesson('x', 'X', 6));
@@ -333,11 +313,7 @@ describe('a save reads the shared file again and merges it in', () => {
   });
 });
 
-describe('an entry without a named id is kept in the file, and isn\'t loaded', () => {
-  // Each case: what the module's state and the shared file hold at start. A
-  // named id is non-empty text that at most one entry of the file and at most
-  // one of the module's lessons holds. Some of these, the start merge on main
-  // overwrote or dropped.
+describe('an entry without a named id (text, not empty, held once at most in the file and once at most on this host) is kept in the file, and isn\'t loaded', () => {
   const cases: Array<{ name: string; state: unknown[]; file: unknown[]; loaded: string[] }> = [
     { name: 'two lessons without an id', state: [], file: [lesson(undefined, 'X'), lesson(undefined, 'Y', 2)], loaded: [] },
     { name: 'one without an id here, and it and another in the file', state: [lesson(undefined, 'X')], file: [lesson(undefined, 'X'), lesson(undefined, 'Y', 2)], loaded: ['X'] },
@@ -356,11 +332,9 @@ describe('an entry without a named id is kept in the file, and isn\'t loaded', (
         writeFileSync(h.path, JSON.stringify({ lessons: c.file }));
         h.setLessons(c.state);
         await h.start();
-        // The module holds what it held, and nothing from the file.
         expect(contents(h.lessons()).filter(x => x !== 5)).toEqual(c.loaded);
         await h.save('saved');
         const first = h.file();
-        // Every entry of the file, once, beside the lesson this save created.
         expect(kept(first)).toEqual(c.file);
         await h.start();
         await h.save('again');
@@ -403,9 +377,6 @@ describe('an entry without a named id is kept in the file, and isn\'t loaded', (
 });
 
 describe('a call that changes a lesson reads the file first, so it changes the newest copy', () => {
-  // Host A edits X's content, then host B, whose copy of X is older, changes
-  // X another way. B's change has the newer stamp, so made to its own copy it
-  // would write A's edit away.
   const cases: Array<{ name: string; input: AnyObj; check: (x: AnyObj) => void }> = [
     { name: 'update', input: { id: 'x', tags: ['u'] }, check: (x) => expect(x.tags).toEqual(['u']) },
     { name: 'deprecate', input: { id: 'x', reason: 'no longer true' }, check: (x) => expect(x.deprecated).toBe(true) },
@@ -438,8 +409,6 @@ describe('a call that changes a lesson reads the file first, so it changes the n
       await b.start();
       const before = a.fileText();
       expect((await b.call('boost', { id: 'y' })).success).toBe(true);
-      // Another host read the file before B's write and wrote it after:
-      // Y is back as it was before B's boost.
       writeFileSync(a.path, before);
       expect((a.file() as AnyObj[])[1].confidence).toBe(0.6);
       expect((await b.call('demote', { id: 'x' })).success).toBe(true);
@@ -462,13 +431,10 @@ describe('a call that changes a lesson reads the file first, so it changes the n
       writeFileSync(a.path, JSON.stringify({ lessons: [lesson('x', 'X')] }));
       await a.start();
       await b.start();
-      // A's clock runs a minute ahead of B's. A's change takes A's time, and
-      // B's, one past the copy B made it on.
       expect((await at(now + 60_000, () => a.update('x', 'X, edited by A'))).success).toBe(true);
       expect((a.file() as AnyObj[])[0].updated).toBe(now + 60_000);
       expect((await at(now, () => b.call('update', { id: 'x', tags: ['b'] }))).success).toBe(true);
       expect((a.file() as AnyObj[])[0].updated).toBe(now + 60_001);
-      // A's next change reads B's, made on A's copy, and keeps it.
       expect((await at(now + 60_001, () => a.save('saved'))).success).toBe(true);
       const [x] = a.file() as AnyObj[];
       expect(x.content).toBe('X, edited by A');
@@ -481,8 +447,6 @@ describe('a call that changes a lesson reads the file first, so it changes the n
     const ids = ['aaaaaaaa-0000-4000-8000-000000000000', 'bbbbbbbb-0000-4000-8000-000000000000', 'cccccccc-0000-4000-8000-000000000000'];
     const spy = spyOn(crypto, 'randomUUID').mockImplementation(() => ids.shift() as ReturnType<typeof crypto.randomUUID>);
     try {
-      // The file holds aaaaaaaa twice, so the merge carries both and the host
-      // never holds that id; this host holds bbbbbbbb.
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('aaaaaaaa', 'theirs'), lesson('aaaaaaaa', 'theirs too', 2)] }));
       h.setLessons([lesson('bbbbbbbb', 'mine')]);
       await h.start();
@@ -499,7 +463,6 @@ describe('a call that changes a lesson reads the file first, so it changes the n
       h.setLessons([lesson('dup', 'mine')]);
       await h.start();
       h.lines.length = 0;
-      // Changes to other lessons write the file; one to it is refused.
       await h.save('saved');
       await h.save('saved again');
       expect(h.lines).toEqual([
@@ -576,7 +539,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
     } finally { h.cleanup(); }
   });
 
-  // All tied, and one later than the other two.
   for (const stamps of [[5, 5, 5], [5, 1, 1]]) {
     test(`of three with updated ${stamps.join(', ')}, the refusal says to give all but one a new id`, async () => {
       const h = host();
@@ -611,7 +573,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
       await h.start();
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('x', 'one', 5), lesson('x', 'two', 1)] }));
       expect((await h.call('boost', { id: 'x' })).success).toBe(false);
-      // Both taken out by hand: the next change's read finds neither.
       writeFileSync(h.path, JSON.stringify({ lessons: [] }));
       await h.save('saved');
       writeFileSync(h.path, '{"lessons": [');
@@ -637,11 +598,8 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
       await h.start();
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('x', 'one'), lesson('x', 'two'), lesson('y', 'why')] }));
       expect((await h.call('boost', { id: 'x' })).success).toBe(false);
-      // x is gone from the file and y is doubled, both by hand. The call is
-      // refused, so only its read keeps the state.
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('y', 'why'), lesson('y', 'why too')] }));
       expect((await h.call('boost', { id: 'y' })).success).toBe(false);
-      // The restart can't read the file, so the host goes by what it kept.
       writeFileSync(h.path, '{"lessons": [');
       await h.start();
       const r = await h.call('update', { id: 'y', content: 'why, edited' });
@@ -653,13 +611,11 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
   test('a change made while the file is away, whose write fails, is dropped once the file comes back resolved as the refusal advises, and both lessons are kept', async () => {
     const h = host();
     try {
-      // This host's copy is the one the refusal says to give a new id.
       h.setLessons([lesson('x', 'two', 3)]);
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('x', 'one', 5), lesson('x', 'two', 3)] }));
       await h.start();
       expect(h.held()).toEqual(['x']);
       rmSync(h.path);
-      // The write that would make the file again fails.
       const refuse = refuseTemporaryFile('EACCES');
       try {
         expect((await h.update('x', 'two, edited while the file was away')).success).toBe(true);
@@ -687,8 +643,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
     } finally { h.cleanup(); }
   });
 
-  // The instruction followed, on a host that never read the file while it
-  // held the id twice, and one that did.
   for (const two of [lesson('x', 'two', 1), lesson('x', 'two', 9)]) {
     test(`giving the entry with the earlier updated a new id keeps both on every host, with the other entry ${two.updated === 1 ? 'older' : 'newer'}`, async () => {
       const a = host();
@@ -712,8 +666,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
     });
   }
 
-  // Each: the file holds x = "one", which the host merges; "two" lands beside
-  // it under x; the host's call is refused; the operator resolves the two.
   const resolutions: Array<{ name: string; two: AnyObj; resolved: AnyObj[]; file: string[] }> = [
     { name: 'a copy, and the original removed', two: lesson('x', 'two'), resolved: [lesson('x', 'two')], file: ['x:two'] },
     { name: 'a copy, and the original given a new id', two: lesson('x', 'two'), resolved: [lesson('z', 'one'), lesson('x', 'two')], file: ['z:one', 'x:two'] },
@@ -729,7 +681,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
         writeFileSync(h.path, JSON.stringify({ lessons: [lesson('x', 'one'), c.two] }));
         expect((await h.call('update', { id: 'x', content: 'one, edited' })).success).toBe(false);
         writeFileSync(h.path, JSON.stringify({ lessons: c.resolved }));
-        // The host restarts before it reads the resolved file.
         await h.start();
         await h.save('saved');
         await h.save('saved again');
@@ -750,7 +701,6 @@ describe('while the file holds an id of this host\'s lessons twice, the host cha
       await h.save('saved');
       const before = h.fileText();
       expect((await h.update('x', 'one, edited')).success).toBe(true);
-      // Another host read the file before that write and wrote it after.
       writeFileSync(h.path, before);
       await h.save('saved again');
       expect(contents(h.file())).toEqual(['one, edited', 'two', 'saved', 'saved again']);
@@ -853,8 +803,6 @@ describe('a save replaces the file whole where it can', () => {
     }
   });
 
-  // Root writes it anyway. With a second name too, it's refused, not said
-  // to be written in place.
   for (const secondName of [false, true]) {
     test.skipIf(process.getuid?.() === 0)(`a file this host can't write${secondName ? ', with a second name,' : ''} is refused, and named, as on main`, async () => {
       const h = host();
@@ -890,7 +838,6 @@ describe('a save replaces the file whole where it can', () => {
         await h.start();
         await h.save('saved');
         expect(contents(h.file())).toEqual(['from another host', 'saved']);
-        // The same file, not one renamed over it.
         expect(fs.statSync(h.path).ino).toBe(ino);
         expect(h.lines).toEqual([]);
       } finally { spy.mockRestore(); h.cleanup(); }
@@ -918,9 +865,6 @@ describe('a save replaces the file whole where it can', () => {
     } finally { spy.mockRestore(); h.cleanup(); }
   });
 
-  // Each way the write goes in place by its own line: the line is in the
-  // log as the write in place starts, and a write that breaks the file
-  // partway is named as that, so the host doesn't promise to try again.
   const inPlaceWays: Array<{ name: string; setup: (h: ReturnType<typeof host>) => () => void; why: (h: ReturnType<typeof host>) => string }> = [
     {
       name: 'a refused temporary file',
@@ -950,7 +894,6 @@ describe('a save replaces the file whole where it can', () => {
         writeFileSync(h.path, JSON.stringify({ lessons: [lesson('theirs', 'from another host')] }));
         restore = way.setup(h);
         await h.start();
-        // The write in place breaks partway, as past a file size limit.
         const write = spyOn(fs, 'writeFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, data: string, ...rest: unknown[]) => {
           if (p !== h.path) return (realWrite as (...a: unknown[]) => void)(p, data, ...rest);
           atWrite.push([...h.lines]);
@@ -963,7 +906,6 @@ describe('a save replaces the file whole where it can', () => {
         expect(h.lines).toHaveLength(2);
         expect(h.lines[0]).toBe(inPlace);
         expect(h.lines[1]).toMatch(/^\[lessons\] the shared lessons file .+ couldn't be written \(EFBIG: file too large, write\), and now isn't valid JSON \(.+\): this host keeps its lessons in its own state and won't write the file until it reads as a lessons file again\.$/);
-        // The next change finds it so, and neither writes it nor names it again.
         const broken = h.fileText();
         await h.save('saved again');
         expect(h.fileText()).toBe(broken);
@@ -992,8 +934,6 @@ describe('a save replaces the file whole where it can', () => {
     const h = host();
     const real = fs.writeFileSync;
     let failures = 2;
-    // The temporary file is written through its descriptor; the module's
-    // other writes, and the test's, name a path.
     const spy = spyOn(fs, 'writeFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, data: string, ...rest: unknown[]) => {
       if (typeof p === 'number' && failures-- > 0) {
         (real as (...a: unknown[]) => void)(p, data.slice(0, data.length >> 1), ...rest);
@@ -1019,8 +959,6 @@ describe('a save replaces the file whole where it can', () => {
     } finally { spy.mockRestore(); h.cleanup(); }
   });
 
-  // Refused for permission or a mount, the rename's way gives way to a write
-  // in place; refused any other way, the file is left as it was.
   const refusals: Array<{ code: string; inPlace: boolean }> = [
     { code: 'EACCES', inPlace: true },
     { code: 'EPERM', inPlace: true },
@@ -1031,8 +969,7 @@ describe('a save replaces the file whole where it can', () => {
   for (const r of refusals) {
     test(`a rename refused with ${r.code} ${r.inPlace ? 'writes the file in place, and says so once' : 'leaves the file as it was, and is named once'}`, async () => {
       const h = host();
-      // As the runtime's errors do, the text names both paths, the
-      // temporary file's new at each write.
+      // As the runtime's rename errors do, the text names both paths.
       const spy = spyOn(fs, 'renameSync').mockImplementation(((a: fs.PathLike, b: fs.PathLike) => {
         throw Object.assign(new Error(`${r.code}: refused, rename '${a}' -> '${b}'`), { code: r.code });
       }) as typeof fs.renameSync);
@@ -1062,9 +999,6 @@ describe('a save replaces the file whole where it can', () => {
     });
   }
 
-  // EROFS: a file mounted on its own in a directory on a read-only mount,
-  // where removing even a temporary file never made is refused as well
-  // (receipt shared-write-erofs-rm.txt).
   for (const code of ['EACCES', 'EROFS', 'EIO']) {
     const inPlace = code !== 'EIO';
     test(`making the temporary file refused with ${code} ${inPlace ? 'writes the file in place, and says so once' : 'leaves the file as it was, and is named once'}`, async () => {
@@ -1107,7 +1041,8 @@ describe('a save replaces the file whole where it can', () => {
   test('a file whose name is near the longest a directory takes still saves, since the temporary file\'s name doesn\'t grow with it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lessons-shared-'));
     try {
-      // 225 bytes: 41 more, as the file's name and a UUID, would pass 255.
+      // A name holds at most 255 bytes: this one is 225, and 41 more (a dot, a
+      // UUID and .tmp after it) would pass that.
       const h = host(join(dir, `${'l'.repeat(220)}.json`));
       writeFileSync(h.path, JSON.stringify({ lessons: [lesson('theirs', 'from another host')] }));
       await h.start();
@@ -1134,7 +1069,6 @@ describe('a save replaces the file whole where it can', () => {
     const h = host();
     let failures = 1;
     const real = fs.writeFileSync;
-    // The new file is written through the temporary file's descriptor.
     const spy = spyOn(fs, 'writeFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, data: string, ...rest: unknown[]) => {
       if (typeof p === 'number' && failures-- > 0) {
         (real as (...a: unknown[]) => void)(p, data.slice(0, data.length >> 1), ...rest);

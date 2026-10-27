@@ -1,10 +1,11 @@
 import type { Membrane } from '@animalabs/membrane';
-import type { RecipeAgent, RecipeModules } from './recipe.js';
+import type { Recipe, RecipeAgent, RecipeModules } from './recipe.js';
 import type { RetrievalModuleConfig } from './modules/retrieval-module.js';
+import { SUBAGENT_MESSAGE_CAP } from './modules/subagent-module.js';
+import { strategyMessageCap } from './framework-strategy.js';
 
 type RetrievalRecipeConfig = Exclude<RecipeModules['retrieval'], boolean | undefined>;
 
-/** Translate the recipe's retrieval block into the module's runtime config. */
 export function buildRetrievalModuleConfig(
   membrane: Membrane,
   retrieval: RecipeModules['retrieval'],
@@ -36,4 +37,17 @@ export function buildRetrievalModuleConfig(
     retrievalReasoning,
     maxInjectedLessons: config.maxInjected,
   };
+}
+
+export function retrievalModuleConfig(membrane: Membrane, recipe: Recipe): RetrievalModuleConfig {
+  return {
+    ...buildRetrievalModuleConfig(membrane, recipe.modules?.retrieval, recipe.agent.provider),
+    maxMessageTokens: retrievalMessageCap(recipe),
+  };
+}
+
+export function retrievalMessageCap(recipe: Recipe): number | undefined {
+  const caps = [strategyMessageCap(recipe), recipe.modules?.subagents ? SUBAGENT_MESSAGE_CAP : undefined]
+    .filter((cap): cap is number => cap !== undefined && cap > 0);
+  return caps.length > 0 ? Math.min(...caps) : undefined;
 }

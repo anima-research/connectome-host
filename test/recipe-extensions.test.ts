@@ -1,8 +1,3 @@
-/**
- * Tests for the recipe `extensions` seam: schema validation, load-time path
- * resolution, the extension loader/registry, and custom strategy dispatch
- * through buildFrameworkStrategy.
- */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,16 +26,11 @@ function baseRecipe(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
-/** Write an extension module file and return its absolute path. */
 function writeExtension(filename: string, body: string): string {
   const path = join(dir, filename);
   writeFileSync(path, body, 'utf-8');
   return path;
 }
-
-// ---------------------------------------------------------------------------
-// validateRecipe
-// ---------------------------------------------------------------------------
 
 describe('validateRecipe extensions block', () => {
   test('accepts a well-formed extensions block', () => {
@@ -105,10 +95,6 @@ describe('validateRecipe extensions block', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// loadRecipe path resolution
-// ---------------------------------------------------------------------------
-
 describe('loadRecipe extension path resolution', () => {
   test('relative extension paths resolve against the recipe dir', async () => {
     const recipePath = join(dir, 'r.json');
@@ -128,10 +114,6 @@ describe('loadRecipe extension path resolution', () => {
     expect(recipe.extensions!.zk!.path).toBe('/opt/zk/index.ts');
   });
 });
-
-// ---------------------------------------------------------------------------
-// loadExtensions
-// ---------------------------------------------------------------------------
 
 describe('loadExtensions', () => {
   test('empty when no extensions declared', async () => {
@@ -237,10 +219,6 @@ describe('loadExtensions', () => {
     await expect(loadExtensions(recipe)).rejects.toThrow(/extension "boom".*failed to import/);
   });
 });
-
-// ---------------------------------------------------------------------------
-// buildFrameworkStrategy custom dispatch
-// ---------------------------------------------------------------------------
 
 describe('buildFrameworkStrategy with extensions', () => {
   test('dispatches a custom type through the registry with full config', async () => {

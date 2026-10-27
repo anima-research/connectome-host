@@ -1,21 +1,13 @@
 import type { ProcessEvent } from '@animalabs/agent-framework';
 
 /**
- * The channel a person's message addressed to the agent came from, when it
- * arrived as an MCPL push event, and the server's origin for it; undefined
- * for any other event or push.
- *
  * A message addressed to the agent from a channel it hasn't opened, such as a
  * mention in a closed channel, a reply or a first DM, arrives as
  * `mcpl:push-event` rather than `mcpl:channel-incoming`. The framework
  * expands the tags at entry, so `chat:mention`, `chat:reply` and `chat:dm`
- * arrive with `chat:addressed`. It's a person's when it's tagged
- * `chat:from-human`, as discord-mcpl and zulip_mcp tag a person's message: a
- * bot's is `chat:from-bot`, and zulip_mcp's catch-up summary of missed
- * messages and its markers for an edited or deleted message carry neither.
- * The channel is the origin's `mcplChannelId`, the composite id the
- * framework registers and routes by, which zulip_mcp and every discord-mcpl
- * release set.
+ * arrive with `chat:addressed`. discord-mcpl tags a person's message
+ * `chat:from-human` and a bot's `chat:from-bot`. The channel is the origin's
+ * `mcplChannelId`, the composite id the framework registers and routes by.
  */
 export function addressedPush(event: ProcessEvent): { channelId: string; origin: Record<string, unknown> } | undefined {
   if (event.type !== 'mcpl:push-event') return undefined;

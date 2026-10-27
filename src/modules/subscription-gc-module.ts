@@ -1,36 +1,3 @@
-/**
- * SubscriptionGcModule — auto-close noisy ordinary channel traffic.
- *
- * Problem: a subscribed channel delivers ambient (non-mention, non-DM) messages
- * into the agent's context whether or not the agent ever acts on them. A busy
- * channel the agent isn't engaging is pure context cost.
- *
- * Mechanic (host-side, because only the host sees activations):
- *   - Per subscribed channel, count ambient CHARACTERS as they arrive
- *     (`onProcess` over `mcpl:push-event` / `mcpl:channel-incoming`).
- *   - Every agent ACTIVATION (`inference:started` trace) zeroes ALL counters —
- *     the agent saw every subscribed channel in that context (compressed if
- *     large; nothing is dropped), so the slate is clean.
- *   - The instant a channel's since-last-activation count crosses its limit, it
- *     is auto-closed via the host's generic `channel_close` tool. This
- *     bounds any one channel's context pollution to ~limit characters.
- *   - A refusal of the close as stated intent stands: the close of a
- *     channel opened explicitly, where no configured budget gives a lease,
- *     or of one tuned out, which only its tune-out's cancel ends. The
- *     janitor stands down, and its next try is a full budget of traffic
- *     away.
- *
- * Everything is durable across restarts: counters + per-channel overrides
- * persist to chronicle (a restart is NOT an activation, so counters must carry
- * across downtime — they only reset when the agent actually runs).
- *
- * Config (recipe `modules.subscriptionGc`): `defaultLimitChars` (20000),
- * `serverId` (`discord`), `toolPrefix` (`mcpl--<serverId>`). The agent can
- * override per channel at runtime through `agent_settings` (field
- * `channel_idle_limits`); other modules pin channels open through the
- * internal `pin_channel_idle_limit` tool.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -44,36 +11,24 @@ import type {
 import { shown } from './shown.js';
 import { unknownToolResult } from './unknown-tool.js';
 
-/** What a refused channel_idle_limits can't say for the rest of its
- *  agent_settings call: agent-framework applies each settings extension in
- *  turn and then the core patch, so an extension's throw leaves the ones
- *  before it applied and the core patch not (0.22.3). */
+/** agent-framework applies each agent_settings extension in turn and then
+ *  the core patch, so an extension's throw leaves the ones before it applied
+ *  and the core patch not. */
 const OTHER_SETTINGS =
   'Other settings given in the same call may not all have been applied: agent_settings with action "get" shows each as it stands.';
 
 export interface SubscriptionGcConfig {
-  /** Default ambient-character budget per channel before auto-close. */
   defaultLimitChars?: number;
-  /** MCPL server id that owns subscriptions (default 'discord'). */
   serverId?: string;
   /** @deprecated Lifecycle tools are host-generic; retained for config compatibility. */
   toolPrefix?: string;
 }
 
-/** `'off'` pins a channel (never auto-close); a number overrides the
- *  default limit; absence falls back to the default. */
 type LimitOverride = number | 'off';
 
 interface GcState {
-  /** Agent-set per-channel limits. Cleared by agent_settings reset. */
   overrides: Record<string, LimitOverride>;
-  /** System pins (never auto-close), set by other modules via
-   *  pin_channel_idle_limit — e.g. ChannelModeModule's debounced mode.
-   *  These encode mode invariants, not agent preferences, so
-   *  agent_settings reset leaves them alone; only unpinning (a mode
-   *  change) clears them. A pin wins over any override. */
   pins: Record<string, true>;
-  /** Ambient chars accrued per channel since the last activation. */
   counters: Record<string, number>;
 }
 
@@ -104,18 +59,12 @@ export class SubscriptionGcModule implements Module {
     this.ctx = ctx;
     const saved = ctx.getState<Partial<GcState>>();
     if (saved) {
-      // Pre-pins state stored ChannelMode's programmatic 'off' pins in
-      // `overrides`; they stay there as agent-level overrides and get
-      // re-asserted as pins on the next mode change.
       this.state = {
         overrides: saved.overrides ?? {},
         pins: saved.pins ?? {},
         counters: saved.counters ?? {},
       };
     }
-    // Reset all counters on every activation: the agent just saw the full
-    // context, so every subscribed channel is "seen". This is the ONLY reset —
-    // never on restart.
     this.unsubscribeTrace = ctx.onTrace((e) => {
       if (e.type === 'inference:started') {
         if (Object.keys(this.state.counters).length > 0) {
@@ -135,18 +84,12 @@ export class SubscriptionGcModule implements Module {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    this.persistNow(); // flush any pending counter changes before teardown
+    this.persistNow();
     this.ctx = null;
   }
 
-  /** No agent-visible tools — idle limits live inside the framework's
-   *  `agent_settings` tool via getAgentSettingsExtension() below (same
-   *  consolidation as the reasoning controls). The former tools remain
-   *  ROUTABLE though undeclared (module tool routing is prefix-based), so
-   *  agent muscle memory keeps working. ChannelModeModule holds channels
-   *  open via the internal `subscription-gc--pin_channel_idle_limit` tool
-   *  — a separate layer from agent overrides, so agent_settings reset
-   *  can't break debounced mode's invariant. */
+  /** agent-framework routes a call by its module prefix whether or not the
+   *  tool is declared, so the former tools still answer here. */
   getTools(): ToolDefinition[] {
     return [];
   }
@@ -159,7 +102,6 @@ export class SubscriptionGcModule implements Module {
         if (typeof channelId !== 'string' || channelId.length === 0) {
           return { success: false, error: 'channelId is required', isError: true };
         }
-        // `limit` accepts "default", "off", a number, or a numeric string.
         const limit = input.limit;
         const numeric =
           typeof limit === 'number'
@@ -188,8 +130,6 @@ export class SubscriptionGcModule implements Module {
         return ok(`Idle limit for ${channelId} set to ${desc}.`);
       }
       case 'pin_channel_idle_limit': {
-        // Internal (module-to-module) verb: hold a channel open regardless of
-        // agent-level overrides. Not part of the agent settings surface.
         const channelId = input.channelId;
         if (typeof channelId !== 'string' || channelId.length === 0) {
           return { success: false, error: 'channelId is required', isError: true };
@@ -225,22 +165,8 @@ export class SubscriptionGcModule implements Module {
     }
   }
 
-  /**
-   * Declare idle limits as an agent_settings extension: the framework merges
-   * the field into the agent_settings tool and routes get/update/reset back
-   * here. Same pattern as SettingsModule's reasoning fields. Update semantics
-   * mirror the (undeclared but still routable) set_channel_idle_limit tool:
-   * per entry, a positive number sets an override, "off" disables auto-close
-   * for the channel, and "default"/null clears back to the global default.
-   * Entries not mentioned in a patch are left untouched, and a patch applies
-   * all-or-nothing: it is validated in full before any entry takes effect.
-   *
-   * `get` additionally reports read-only companions (the framework merges
-   * ext.get() into the response but only routes declared `keys` on update):
-   * `channel_idle_default`, live `channel_idle_counters`, and
-   * `channel_idle_pinned` — system pins held by other modules, which sit
-   * above these overrides and are not touched by update or reset.
-   */
+  /** agent-framework merges get()'s fields into agent_settings' answer, and
+   *  routes only the declared `keys` to update. */
   getAgentSettingsExtension(): {
     properties: Record<string, unknown>;
     keys: string[];
@@ -276,11 +202,6 @@ export class SubscriptionGcModule implements Module {
             `positive number, "off", or "default"/null, not ${shown(raw)}. ${OTHER_SETTINGS}`,
           );
         }
-        // All-or-nothing: validate the full patch into a staging copy and
-        // swap only if every entry passes. Mutating live state per-entry
-        // would leave earlier entries active (limitFor reads the map
-        // directly, and any later flush persists them) after a failure the
-        // agent was told was rejected. Every bad entry is named at once.
         const staged = { ...this.state.overrides };
         const bad: string[] = [];
         let emptyId = false;
@@ -322,10 +243,6 @@ export class SubscriptionGcModule implements Module {
         return this.settingsSnapshot();
       },
       reset: (_agentName, keys) => {
-        // Clears agent overrides only. Pins are mode invariants owned by
-        // other modules (ChannelMode's debounced mode), not agent
-        // preferences — a blanket `agent_settings reset` must not silently
-        // reopen a debounced channel to auto-close.
         const all = !keys || keys.length === 0;
         if (all || keys?.includes('channel_idle_limits')) {
           this.state.overrides = {};
@@ -336,7 +253,6 @@ export class SubscriptionGcModule implements Module {
     };
   }
 
-  /** agent_settings view: the writable overrides plus read-only status. */
   private settingsSnapshot(): Record<string, unknown> {
     return {
       channel_idle_limits: { ...this.state.overrides },
@@ -355,17 +271,11 @@ export class SubscriptionGcModule implements Module {
     const next = (this.state.counters[channelId] ?? 0) + chars;
 
     if (limit !== Infinity && next > limit) {
-      // Cross the threshold → close and clear the counter.
       delete this.state.counters[channelId];
       this.persistNow();
-      // A CONFIGURED numeric budget for this channel is an explicit idle
-      // lease: someone chose a close-at-N budget for this specific channel,
-      // so the registry may close even an explicitly-opened one. The state
-      // does not record WHO configured it (agent via agent_settings,
-      // operator, or imported before these semantics existed), so nothing
-      // downstream may claim "agent-set" — receipts say 'configured-budget',
-      // actor unknown. The global default is not consent of any kind; the
-      // registry refuses machine closes of explicit opens under it (#5).
+      // agent-framework refuses a machine close of an explicitly opened channel
+      // unless the close certifies an idle lease, which a budget configured for
+      // the channel is, and refuses a tuned-out channel's close in any case.
       const hasConfiguredLease = typeof this.state.overrides[channelId] === 'number';
       const result = await this.ctx
         ?.callTool({
@@ -385,14 +295,8 @@ export class SubscriptionGcModule implements Module {
         }));
 
       if (result && result.success) {
-        // Operator-side receipt (privacy-minimal: ids and thresholds, no
-        // content) — a GC close changes durable listening state and must
-        // not look spontaneous from outside the transcript. Duck-typed
-        // against a framework that may not have ModuleContext.notifyOps yet
-        // (skipped there), and invoked THROUGH the context object: the real
-        // ModuleContextImpl.notifyOps reads `this`, so a detached
-        // `const f = ctx.notifyOps; f(...)` throws in production while
-        // passing against arrow-function mocks.
+        // ModuleContext.notifyOps is optional, and agent-framework's implementation
+        // reads `this`, so it's called through the context.
         const opsCtx = this.ctx as unknown as {
           notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
         } | null;
@@ -406,9 +310,6 @@ export class SubscriptionGcModule implements Module {
             channelId,
             limitChars: limit,
             decisionSource: 'subscription-gc',
-            // 'configured-budget' deliberately does NOT claim an actor: the
-            // override state records no provenance (agent, operator, or
-            // imported are all possible).
             lease: hasConfiguredLease ? 'configured-budget' : 'default',
             restore: `channel_open ${channelId}`,
           },
@@ -432,19 +333,11 @@ export class SubscriptionGcModule implements Module {
         };
       }
 
-      // The registry refused because the channel was explicitly opened and
-      // we hold no lease, or because it's tuned out, which a close can't
-      // end (only the tune-out's cancel does): stand down quietly — the
-      // janitor doesn't argue with stated intent. The counter stays cleared,
-      // so the next refusal is at least a full budget away; if the channel's
-      // provenance later changes (reopened by policy), GC self-heals.
       const refusal = (result as { data?: { refusal?: string } } | undefined)?.data?.refusal;
       if (refusal === 'explicit-open' || refusal === 'tuned-out') {
         return {};
       }
 
-      // Close failed — keep the channel counted so we retry on the next
-      // ambient message rather than silently giving up.
       this.state.counters[channelId] = next;
       this.persistNow();
       return {};
@@ -455,8 +348,6 @@ export class SubscriptionGcModule implements Module {
     return {};
   }
 
-  // ── internals ──
-
   private limitFor(channelId: string): number {
     if (this.state.pins[channelId]) return Infinity;
     const o = this.state.overrides[channelId];
@@ -465,8 +356,6 @@ export class SubscriptionGcModule implements Module {
     return this.defaultLimitChars;
   }
 
-  /** Pull (channelId, ambient char count) out of an MCPL message event for our
-   *  target server, or null if it isn't ambient traffic we should count. */
   private extractAmbient(event: ProcessEvent): { channelId: string; chars: number } | null {
     if (event.type === 'mcpl:push-event') {
       if (event.serverId !== this.serverId) return null;
@@ -494,9 +383,6 @@ export class SubscriptionGcModule implements Module {
     this.ctx?.setState(this.state);
   }
 
-  /** Debounced persistence so a firehose channel doesn't drive a chronicle
-   *  write per message. Durability target: a clean restart flushes via stop();
-   *  a hard crash loses at most the debounce window of counter increments. */
   private scheduleFlush(): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
@@ -506,7 +392,6 @@ export class SubscriptionGcModule implements Module {
   }
 }
 
-/** Total length of text content blocks (non-text blocks count as 0). */
 function textLen(content: unknown): number {
   if (!Array.isArray(content)) return 0;
   let n = 0;

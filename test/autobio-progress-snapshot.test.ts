@@ -22,8 +22,6 @@ async function initializedStrategy() {
   };
 }
 
-// Guards against silent breakage if upstream renames the protected fields
-// that getProgressSnapshot reads. The shape is what warmup-session.ts relies on.
 describe('AutobiographicalStrategy.getProgressSnapshot', () => {
   test('returns the expected shape after branch state is initialized', async () => {
     const { strategy, close } = await initializedStrategy();

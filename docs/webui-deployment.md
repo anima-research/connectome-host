@@ -215,7 +215,7 @@ travel over the WebSocket.
 | `/healthz` | health JSON: gate state, queued work, per-agent status and last inference |
 | `/quota` | subscription quota windows (`{"subscription": false}` on API keys) |
 | `/media/<messageId>/<block>[?agent=]` | one inline transcript image |
-| `/files/<mount>/<path>` | a workspace file. `403` for: a path no mount holds or one leading out of its mount; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
+| `/files/<mount>/<path>` | a workspace file. `403` for: a path no mount holds or one leading out of its mount; one its mount's `include` doesn't cover; one in another mount's directory nested in it (refused from agent-framework's release with anima-research/agent-framework#460), or reached through a link into one (from the release with anima-research/agent-framework#468); a file that is itself a link, on a mount that doesn't follow links (its `followSymlinks`, off unless the recipe sets it), or one reached through such a link among its directories (refused from agent-framework's release with anima-research/agent-framework#468); and one whose canonical path leaves its mount. `404` for a file the read can't give, such as one in a mount whose directory has gone, until agent-framework's release with anima-research/agent-framework#533. `503` with no workspace, or for a mount the read refuses as unavailable, which from that release includes a mount whose directory has gone |
 | `/curve` | the context-curve page (reads `/debug/context/curve`) |
 | `/debug/context` and `/debug/context/{makeup,coverage,curve,preview,maintenance}` | context debugging — see [`debug-context-api.md`](./debug-context-api.md) |
 | `/debug/retrieval[/view]` | retrieval traces — see [`retrieval-traces.md`](./retrieval-traces.md) |
@@ -261,11 +261,12 @@ MCPL context), because gathering those is not transparent.
 Query params:
 
 - `agent=<name>` — defaults to the recipe's root agent
-- `injections=1` (any value but `0`/`false`) — opt into full fidelity: gather
-  the dynamic injections too.
+- `injections=1` (any value but `0`/`false`) — gather the dynamic injections
+  too. One a start would store as a message isn't capped, sharded or weighed
+  against the budget in the preview as the stored message would be.
   **Not transparent** — this can run inference (e.g. the retrieval module's
-  configured model calls cost tokens) and fires MCPL `beforeInference` hooks
-  (whose paired
+  configured model calls cost tokens), counts as a start for retrieval's
+  per-turn result, and fires MCPL `beforeInference` hooks (whose paired
   `afterInference` is never sent, so a stateful server may be left half-open).
 - `pretty=1` — pretty-print the JSON
 
@@ -278,7 +279,7 @@ mode ran.
 curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
   'https://admin.example.internal/debug/context?pretty=1'
 
-# Full-fidelity preview (spends tokens, fires MCPL hooks):
+# Preview with the gathered injections (spends tokens, fires MCPL hooks):
 curl -fsSL -u "$WEBUI_USER:$WEBUI_PASS" \
   'https://admin.example.internal/debug/context?injections=1&pretty=1'
 ```
@@ -319,9 +320,9 @@ with that pattern.
 - **`/ws` upgrade gets 403 behind a proxy**: the Origin check rejected it.
   Forward the original `Host` header, or list the public origin in
   `allowedOrigins`.
-- **WebUI bundle not found at .../dist/web**: in a checkout, run
-  `bun install` at the repository root, whose `postinstall` script builds
-  the SPA, or `bun run build:web`. The npm package carries the SPA built,
+- **WebUI bundle not found at .../dist/web**: in a clone, run
+  `bun run build:web` at the repository root, as the host's warning
+  says. The npm package carries the SPA built,
   so an installed package without it needs reinstalling.
 - **Disconnect banner stuck**: the host process may have crashed. Check
   `journalctl -u connectome-host -n 100` (or the equivalent for your

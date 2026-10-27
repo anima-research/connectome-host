@@ -6,6 +6,320 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.14.1 — 2026-10-26
+
+### Changed
+
+- **Operators:** 0.14.0's step to agent-framework 0.27.0, context-manager
+  0.22.1 and membrane 0.7.2 changed more than its notes said.
+  - **A recipe's `agent.retry` no longer applies to an agent's turns.**
+    agent-framework now retries a turn itself, on membrane's default
+    schedules: a 529 up to 7 tries over five to ten minutes, each wait between
+    half and all of a step that doubles from 10 s to 5 minutes; a rate limit
+    up to 5 tries; and any other retryable failure, such as a 5xx or a dropped
+    connection, up to 3 tries, 1 s then 2 s apart. Under 0.13 releases,
+    agent-framework retried a failed turn up to three times, 1, 2 and 4 s
+    apart, and each try went through the host's own retries, up to three
+    sends with a 529 retried as any other failure. Those counts and waits hold
+    when the provider states no wait. A longer wait the provider states is
+    waited instead: a resident is held for all of it before any retry counts,
+    and a subagent's run waits up to ten minutes of it and ends on a longer
+    one. Under 0.13 releases, agent-framework's own retries waited a stated
+    wait in place of their 1, 2 and 4 s. `agent.retry` now applies only
+    to the host's own provider calls: compression and merging, retrieval,
+    session naming and the TUI's status line. The recipe documentation now
+    says so.
+  - **A live-image limit of 0 no longer turns the limit off.** For agents on
+    the autobiographical strategy (the default) or frontdesk, a recipe's
+    `agent.strategy.maxLiveImages` of 0 now keeps up to 500 live images, and a
+    `maxLiveImageBytes` of 0 up to 24 MiB. These are context-manager's image
+    ceilings, and a value above one is held to it. This host doesn't pass the
+    ceilings, so a recipe can't raise them. The strategy warns at start about
+    a value above a ceiling, and says once which ceiling it held a 0 to when
+    that first leaves an image as a placeholder. A recipe that sets neither
+    keeps the defaults, 6 images and 20 MiB, as before. The recipe
+    documentation and the agents' memory guide now say so.
+  - **A pin or document mark on a long message now covers the whole
+    message.** Under adaptive resolution, which this host turns on for agents
+    on the autobiographical strategy (the default) or frontdesk unless a
+    recipe sets `adaptiveResolution: false`, a pin or mark the Pins panel made
+    on a single message the store keeps in parts covered only its first part;
+    it now covers every part. So the first compile after upgrading rewrites
+    the request once, from that message on, or from earlier where older history
+    folds further to make room for it. Where the whole message doesn't fit,
+    the compile refuses as over budget, as for any pin the budget can't hold;
+    where the plan's middle is what's over, the refusal names the mark and the
+    tokens it keeps raw. Compression requests after the message carry it
+    whole, so they cost more. A mark made as a long message arrived can leave
+    parts no chunk holds, which compression requests carry without counting
+    them against
+    `compressionContextBudgetTokens`. Where those come to more than that
+    budget, a summarizer with a smaller window would refuse those requests,
+    and compression would stop making progress for that store unless
+    `compressionSourceOnly` or `compressionSourceOnlyFallback` is set.
+    Unpinning lets later requests leave them out, though a chunk already
+    quarantined for them can stay quarantined.
+  - **A pin at a level no summary supplies yet no longer stops every
+    compile.** Under the kv-unified folding strategy, which adaptive
+    resolution uses unless a recipe sets `foldingStrategy`, a pin or mark the
+    Pins panel made at a level made every compile refuse as infeasible under
+    0.13 releases while no summary over the pinned messages supplied that
+    level. Such a pin now holds its messages at the deepest level a summary
+    does supply, or raw, until the pinned level exists, and the log says
+    `autobio: kv-unified holds pin …`. While it's held, the pin can take more
+    of the budget than it asked for, and the compile can refuse as over
+    budget.
+  - **A channel an agent put in mentions mode before upgrading reads as one it
+    closed itself.** agent-framework before 0.27.0 recorded the channel-mode
+    module's close as the agent's own. So a resident's words there carry a
+    note, unless it has turned `closed_channel_note` off, that it closed the
+    channel and that `channel_open` opens it, which would undo only part of
+    mentions mode. Calling `channel-mode--set_channel_mode` with
+    `mode: "mentions"` for that channel again records the close as the
+    module's, and the note stops.
+  - **An MCPL server's `inference/request` is refused,** with a log line once
+    per server naming `inferenceRouting`, which this host doesn't set and a
+    recipe can't. 0.13 releases sent such a request to the provider under the
+    model name `default`. So what 0.14.0's notes say of an MCPL server's
+    inference, its `'updates'` thinking display, its cache write and its
+    traces naming the model, doesn't happen on this host, and a refused
+    request's trace names no model.
+  - **Two membrane fixes reach this host.** Cache keepalive, on by default for
+    the anthropic provider, now counts a cache's last use from when a request
+    was sent rather than from its first answer, so a slow first answer no
+    longer moves a refresh toward where it writes the cache instead of
+    reading it. And membrane now strips `temperature`, `top_p` and `top_k`
+    for Claude Opus 5 and Opus 5.5, which refuse them: lesson retrieval sends
+    `temperature: 0`, so with `modules.retrieval.model` set to either model,
+    its calls failed under 0.13 releases and now go through.
+  - **One-time costs at upgrading.** agent-framework 0.27.0 changes the
+    `channel_close` and `agent_settings` tool definitions, so each agent given
+    either tool has its whole cached prompt written again at its first call.
+    For an agent given `agent_settings`, that is the same write as the one
+    0.14.0's notes give for `reasoning_display`'s description. With
+    `modules.history.semantic`, each branch's summaries are embedded again
+    under a new key, one embedding per summary; until a branch's summaries
+    have been sent again, a search on it can miss one. Going back to a 0.13
+    release with `/update back` leaves those summaries out of its searches
+    until the index is rebuilt. The index lives in the embedding service, and
+    neither `/update back`'s data restore nor any command of this host
+    rebuilds it.
+
+- For agent-framework storing a module's `afterUser` injection where the
+  compile placed it (context-manager #155 part 5), so that it no longer
+  moves at each start and costs the replies after it their thinking:
+  - Retrieval reads each agent's own window, a fork's or a subagent's
+    included, where it read the primary's for every agent. A
+    subconscious's window is its own store, its summaries and tool rounds,
+    which holds no message of anyone else's, so its lessons are found once
+    per process from those and kept for the session, while its entry is
+    among the 64 most recently used, where they followed the residents'
+    conversation.
+    It keeps each agent's lessons for the turn's opening message, the
+    newest row someone other than the agent wrote to it. A later start of
+    the same turn, such as a budget restart after a tool round, gets the same
+    block with no model calls, an empty result of those calls included,
+    within one process and while its entry is among the 64 most recently
+    used; a Web UI preview with injections counts as a start too, so one
+    that overlaps a start can leave its own result as the turn's, or none;
+    a start that a later start of the agent's overtook
+    keeps nothing; a retrieval that failed, or whose concept step or
+    relevance check answered with something that isn't a list, is tried
+    again at the next start, where before, a relevance answer that didn't
+    parse was kept, as the top candidates unchecked, while the recent
+    messages stayed the same. A message stored in shards is one message, by
+    context-manager's rule of what makes up a message, and a tool call's or
+    result's is no turn's opening message. Rows marked `system`
+    (clock rows, autoContinue's `[continue]`, the framework's notices and
+    the host's `[host-notice]`), rows under participant `system`, a
+    self-wake's line and stored injections don't open a turn; a batched
+    wake's `[Gate: …]` line, another agent's message, a subagent's result,
+    a script's wake and the host's unmarked notes, such as a `[voice]`
+    interruption, do. The block's heading names the message it was found
+    for, and stored injections are left out of the conversation retrieval
+    reads.
+  - Retrieval's block fits under the smallest per-message cap of the
+    windows it gathers for, which would cut a stored message mid-text: the
+    strategy's (`maxMessageTokens`, 10,000 by default, none for
+    passthrough or a cap that isn't a positive number) and, with the
+    subagent module on, a subagent's or a fork's, 10,000. When every
+    lesson fits, the block holds them all; otherwise it keeps whole
+    lessons, most relevant first, leaves out any that doesn't fit, a
+    single lesson over the cap included, and says how many it left out.
+    With none that fits, nothing is injected.
+  - The fleet status lists the subagents running or waiting for a slot,
+    each started subagent with its start as a clock time in the recipe's
+    `agent.timezone`, and its date when that falls on an earlier day than
+    the status's "as of", which gives the date and time of the latest start
+    or end, where it
+    listed every subagent the session had started, with elapsed seconds
+    and call counts. A finished one, which has reported in its launcher's
+    conversation, or the primary's once its launcher's run had ended,
+    leaves the list. The primary's status also lists a run under way whose
+    launcher's run has ended, and `peek` shows it. Once none is running or
+    waiting, an
+    agent whose newest stored status lists a run is told so, until a status
+    saying so is stored. The
+    `hud` tool's text says when the status is added again, and that
+    turning it off stops new statuses and leaves one already in the
+    context there. The `hud` setting now stays on across a subagent's
+    start or end, which turned it off before.
+  - An async subagent's result, `[Subagent '…' returned]` or `[… failed]`,
+    lands in the window of the agent that launched it, a fork's or a
+    subagent's own, through agent-framework's `addMessage` with
+    `forAgent`, where it landed in the residents' slot for every launcher.
+    Its line names a launcher that isn't the primary, as `[Subagent
+    'scout' returned, for 'fork-y']`. One whose launcher has ended by the
+    time the result comes lands in the residents' slot, its line adding
+    `, which has ended`. One whose launching attempt has ended while its
+    run goes on, as after a retry, is the run's: its current attempt
+    takes it, told `launched by an earlier attempt`, and while
+    agent-framework lists no attempt of the run, from an attempt's end
+    until the next is listed or the run ends, it lands in the residents'
+    slot, `for '…': launched by an attempt that has ended`. One whose
+    launcher's window is let go without reading it, a fork's or a
+    subagent's run, or a conversation agent closed, agent-framework passes
+    to the residents' slot, where its line names whom it was for. None of
+    these wakes the primary.
+  - A stored injection shows in the TUI's history replay and the Web UI as
+    a labelled system row, such as `[retrieval, injected for alice]`, not
+    as the user's or the agent's message. Session naming, a subagent's
+    last-text fallback, a subagent's last message and message count in
+    `peek`, a fork's seed from its parent and the frontdesk strategy's
+    open questions leave it out, and `/undo` steps back past one right
+    before the reply it undoes. The `--audit-stores` check opens a store,
+    and its subconscious's, with agent-framework's views, which leave out
+    another agent's stored injections.
+  - The instructions module, set off `system`, marks its injection to be
+    placed at each compile as before, since stored instructions would
+    drift back into history as the conversation grew past them.
+  - **Cache:** the `hud` tool's description changes, and tools come first
+    in a request. So for each agent given the subagent module's tools, on
+    any provider whose prompt cache covers the tools, the whole cached
+    prompt is written again once, at its first call after upgrading from
+    0.14.0. Upgrading from a 0.13 release, that falls in the same
+    first-call write as 0.14.0's.
+
+### Fixed
+
+- Lesson retrieval now leaves out messages a tune-out diverted. 0.13.0's notes said it read the last ten messages the residents are shown, leaving out those a tune-out holds from them, but a message a tune-out had diverted into the residents' slot, stored with `metadata.tuneOut`, which agent-framework keeps out of a resident's view, still reached the concept step, so text a resident had tuned out could choose its lessons.
+
+## 0.14.0 — 2026-10-26
+
+### Breaking
+
+- **Scripts driving piped mode:** in piped mode (`--no-tui`, or a batch run
+  whose stdin isn't a TTY), `(turn ended: <error>)`, the line for a primary
+  agent's turn that agent-framework ended as a failure, now prints on
+  stderr, beside the `Error:` lines. It printed on stdout before, among the
+  agent's answer. A script that looked for it on stdout reads stderr for it
+  now, or it takes a failed turn's partial answer as the turn's. Another
+  agent's turn that agent-framework ended this way now prints an `Error:`
+  line on stderr, as that agent's failed attempts already did, where it
+  printed nothing before; an `Error:` line doesn't name its agent.
+  Unchanged: `(turn ended: …)` is the primary agent's alone, the agent's
+  prose and a stop's `(turn aborted: <reason>)` stay on stdout, `Error:`
+  lines stay on stderr, and a script reading stdout and stderr together
+  (`2>&1`) sees the primary agent's lines where it did before.
+
+### Added
+
+- **Operators:** recipes take `agent.autoContinue` (`true`, or
+  `{ "maxConsecutive": 1–20 }`, default 3; off when omitted), passed through
+  to agent-framework's `AgentConfig.autoContinue`: a turn the model ends
+  itself is followed by another until the agent calls `skip_reply`, ends on
+  a `>>skip_reply` / `>>>skip_reply` envelope, or reaches the cap, and each
+  next turn reads a short `[continue]` row. It takes effect with the
+  agent-framework release that adds it; an earlier one ignores it. A value
+  that isn't true, false or such an object is refused when the recipe loads.
+- **Operators:** a fork's or spawn's orientation lists `auto-continue` among the
+  agent settings a subagent stream doesn't take from its launch (`off` for
+  the stream, beside the parent's), since subagents don't inherit it.
+
+- Per-server `toolHints` (the MCPL RFC-014 opt-in that turns on tool hints
+  and toolsets for a server) in recipes and `mcpl-servers.json`, each
+  validated as `true` or `false` (the agent's own overlay leaves any other
+  value out and names it at startup), overridable by a recipe that names a server
+  from `mcpl-servers.json`, and passed through to agent-framework. Takes
+  effect with an agent-framework that implements RFC-014.
+
+### Changed
+
+- **Dependencies:** `@animalabs/agent-framework` ^0.27.0 (was ^0.26.1),
+  `@animalabs/context-manager` ^0.22.1 (was ^0.20.1) and `@animalabs/membrane`
+  ^0.7.2 (was ^0.7.1). `package-lock.json` and `bun.lock` move those three
+  packages and nothing else. What operators and agents meet comes from those
+  releases; see their changelogs. Among it: agent-framework is now the one
+  retry layer for a turn; an agent's own `channel_close` or `channel_decline`
+  holds against its own speech in that channel; the workspace's `read`,
+  `grep`, `edit` and `edit_many` answer as the text the model reads, with
+  their fields in `structured`; a gate policy's `match.channel` in the
+  registered form meets every event in that channel; and `agent.autoContinue`
+  and a server's `toolHints`, which this host already passes through, take
+  effect.
+
+- **Agents on Fable 5/5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5:** the notes these models write between
+  tool calls ("found X, checking Y next") come back as signed `thinking` blocks, empty under thinking
+  display `'omitted'`, which is also what the API applies when no thinking config is sent. On these
+  models (dated snapshot IDs included) the host now sends `thinking: { type: 'adaptive', display:
+  'updates' }` on streamed calls through the Anthropic API (agent turns, and an MCPL server's streamed
+  inference) wherever it would have left display at `'omitted'`: with reasoning off (these models think anyway), with
+  `reasoning_display` set to `'omitted'`, and, with reasoning off, with a recipe's `agent.thinking.display`
+  set to `'omitted'` (with reasoning on, `reasoning_display` decides). This step leaves
+  one-shot `complete()` calls alone, since they make no tool calls; the reasoning setting still applies
+  to them as before. Reasoning stays hidden as before, and the notes come back as text, in stores,
+  logs and the web UI. A `'summarized'` config, which already returns them (mixed with reasoning
+  summaries), goes as it is, and other models' thinking configs are unchanged. With reasoning off, a recipe's
+  `agent.thinking.display` reaches the host only in the thinking config membrane builds from the
+  recipe's `thinking`. Where membrane builds none, as for a display alone on Fable and Mythos, the call
+  goes as `'updates'` like any other without a config, a recipe's `'summarized'` included.
+  Needs membrane 0.7.0 or later, which adds the `thinking-display-updates-2026-08-18` beta that
+  `'updates'` requires.
+  - **Cache:** on these models the first call after upgrading also sends a thinking config where none
+    or `'omitted'` went before. For an agent given `agent_settings`, that adds no write of its own:
+    the `reasoning_display` description change below already has its whole cached prompt written
+    again at that call. For other requests on these models, such as a subagent whose tools leave
+    `agent_settings` out or an MCPL server's streamed inference, the cached message prefix may be
+    written again, once.
+  - **Bedrock:** an agent on `provider: 'bedrock'` goes through `LoggingBedrockAdapter`, which
+    applies none of `agent_settings`' reasoning fields, this step included: its requests carry the
+    thinking config membrane builds from the recipe, as before.
+- `agent_settings`' `reasoning_display` description no longer tells the agent its reasoning is lost
+  to it on replay under `'omitted'`: a thinking block sent back gives the model its full reasoning
+  either way, and the setting changes only what is recorded as readable text.
+  - **Cache:** the description is part of the `agent_settings` tool, which every host registers, and
+    tools come first in a request. So for each agent given that tool, on any provider whose prompt
+    cache covers the tools, the whole cached prompt is written again once, at its first call after
+    upgrading.
+
+- Piped mode (`--no-tui`, or a batch run whose stdin isn't a TTY) now ends
+  the agent's line on stdout before an `Error:` line, where what came next,
+  such as a batch's echo of its next line or `Done.`, used to follow on the
+  same line. The `Error:` line no longer begins with a line break, nor does
+  `(turn ended: …)` on stderr, so in a terminal showing both the line breaks
+  fall as before. Where stdout's line had already ended, as after a tool's
+  line, stdout now gets an empty line there, and a retried attempt's answer
+  can start after a blank line.
+
+### Fixed
+
+- Reasoning settings now follow the current branch after undo, redo, checkout, or branch switches without a module restart. Partial settings updates and resets preserve destination settings and recipe effort fallback.
+
+- A session switch or the host's exit now ends subagent spawns and forks still waiting for a concurrency slot, a retry back-off or a rate-limit cooldown, rather than leaving each to try again once its wait ends. Such a run's result says "Stopped: its session stopped".
+
+- The TUI now reports a subagent's lone inference:exhausted as a failure in the main log and marks its phase failed, while failed followed by exhausted still shows one failure line there.
+
+- A Web UI observer with the `ops` scope now gets the traces agent-framework
+  already emits for gate.json's policy writes and shadowed rules, an MCPL
+  server's channels, state, checkpoints and pushes, and channel tune-outs.
+  A channel registered at its first push carries the label the push gives
+  it, for a direct message the person's name, so that trace needs
+  `messages` as well.
+  The traces of inference an MCPL server asks for name the model it went
+  to and, at the end, its token counts, so they need `health` as well.
+  Without entries in the observers' trace table they reached full clients
+  only.
+
 ## 0.13.2 — 2026-10-24
 
 ### Added

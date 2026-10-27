@@ -1,29 +1,3 @@
-/**
- * SettingsModule — runtime-tunable host settings the agent can toggle for
- * itself. State persists to chronicle via ModuleContext (`setState`/`getState`)
- * so changes survive restarts, and it's read there at each use, so it follows
- * the store's branches through rollbacks and checkouts. An undo moves no
- * branch (agent-framework #291), so it leaves the settings as they are.
- *
- * First domain: **reasoning** (Anthropic extended thinking), surfaced to the
- * agent as `agent_settings` fields (reasoning_enabled /
- * reasoning_budget_tokens / reasoning_display / reasoning_effort) via the framework's settings-extension hook —
- * NOT as standalone tools (the former reasoning_status/enable/disable trio
- * was tool bloat for one boolean + number).
- *
- * The host's adapter wrapper (LoggingAnthropicAdapter) reads `getReasoning()`
- * on each call and injects `thinking: {type: 'adaptive', display}` into the
- * outgoing Anthropic request when enabled, on a model that takes adaptive
- * thinking (withReasoning) — keeping the cross-cutting "request mutator"
- * plumbing out of every call site. On a streamed call to a model that
- * returns its notes as thinking blocks, it then sends display 'updates'
- * where the request would leave 'omitted' (withProgressNotes).
- *
- * Designed to be extensible: new domains add their own slice in
- * `SettingsState` + a few tools + a typed accessor. Bundled with the host;
- * recipes opt in by including `SettingsModule` in moduleInstances.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -43,20 +17,16 @@ export interface ReasoningSettings {
   /**
    * How thinking content comes back from the API: 'summarized' returns a
    * readable reasoning summary in the `thinking` field; 'omitted' returns an
-   * empty `thinking` field with only the encrypted signature. Models 4.7+
-   * default to 'omitted' server-side — we default to 'summarized' to restore
-   * the pre-4.7 behavior (visible reasoning in stores, webui, estimators).
-   * On the models modelReturnsNotesInThinking lists, a streamed call through
-   * the Anthropic adapter sends 'omitted' as 'updates', so the notes between
-   * tool calls come back as text while reasoning stays hidden
-   * (LoggingAnthropicAdapter.withProgressNotes).
+   * empty `thinking` field with only the encrypted signature. The default is
+   * 'summarized'. On a model that returns its notes as thinking blocks, a
+   * streamed call sends 'omitted' as 'updates', so the notes between tool calls
+   * come back as text while reasoning stays hidden.
    */
   display: 'summarized' | 'omitted';
   /**
    * Reasoning effort for the agent's own turns, sent as Anthropic
    * `output_config.effort`. 'default' sends nothing, leaving the model's
-   * server-side default in force. Independent of `enabled`: on models where
-   * thinking is always on, effort is the only depth control.
+   * server-side default in force. Independent of `enabled`.
    */
   effort: ReasoningEffort;
 }
@@ -76,7 +46,6 @@ export class SettingsModule implements Module {
   readonly name = 'settings';
 
   private ctx: ModuleContext | null = null;
-  /** Each malformed saved value already logged, so it's named once rather than on every read. */
   private readonly warned = new Set<string>();
 
   constructor(private readonly initialEffort: ReasoningEffort = 'default') {}
@@ -88,7 +57,8 @@ export class SettingsModule implements Module {
   /**
    * The current branch's reasoning settings, and the effort the agent chose
    * there, read from module state at each call: a rollback or a checkout
-   * moves to another branch without restarting modules.
+   * moves to another branch without restarting modules. An undo moves no
+   * branch (agent-framework #291), so it leaves the settings as they are.
    */
   private current(): { reasoning: ReasoningSettings; effortOverride: ReasoningEffort | undefined } {
     const saved = this.ctx?.getState<{ reasoning?: unknown }>()?.reasoning;
@@ -100,7 +70,6 @@ export class SettingsModule implements Module {
     this.ctx = null;
   }
 
-  /** Read accessor for external consumers (e.g., the LLM adapter wrapper). */
   getReasoning(): ReasoningSettings {
     return this.current().reasoning;
   }
@@ -121,9 +90,6 @@ export class SettingsModule implements Module {
     return true;
   }
 
-  /** No standalone tools — reasoning controls live inside the framework's
-   *  `agent_settings` tool via getAgentSettingsExtension() below. The three
-   *  former reasoning_* tools were pure tool bloat for one boolean + number. */
   getTools(): ToolDefinition[] {
     return [];
   }
@@ -137,13 +103,6 @@ export class SettingsModule implements Module {
     );
   }
 
-  /**
-   * Declare reasoning as an agent_settings extension: the framework merges
-   * these fields into the agent_settings tool and routes get/update/reset for
-   * them back here. Framework versions predating the hook simply never call
-   * this — in that case reasoning is temporarily not agent-tunable (the
-   * adapter still honors persisted state).
-   */
   getAgentSettingsExtension(): {
     properties: Record<string, unknown>;
     keys: string[];
@@ -189,8 +148,6 @@ export class SettingsModule implements Module {
       get: () => reasoningSettingsView(this.current().reasoning),
       update: (_agentName, patch) => {
         const { reasoning, effortOverride } = this.current();
-        // Every field is checked before any applies, and every problem is
-        // named, so one refusal shows all there is to fix.
         const next = { ...reasoning };
         const problems: string[] = [];
         if (patch.reasoning_enabled !== undefined) {
@@ -252,7 +209,6 @@ export class SettingsModule implements Module {
     };
   }
 
-  /** Persist agent choices, leaving recipe-derived effort out of saved state. */
   private persist(settings: ReasoningSettings, effortOverride: ReasoningEffort | undefined): void {
     const { effort: _effort, ...reasoning } = settings;
     this.ctx?.setState({
@@ -269,7 +225,6 @@ export class SettingsModule implements Module {
 
 }
 
-/** The extension's wire view of reasoning settings (flat agent_settings keys). */
 function reasoningSettingsView(r: ReasoningSettings): Record<string, unknown> {
   return {
     reasoning_enabled: r.enabled,
@@ -279,15 +234,6 @@ function reasoningSettingsView(r: ReasoningSettings): Record<string, unknown> {
   };
 }
 
-/**
- * Restored reasoning settings, field by field. Saved state is not trusted: an
- * older version or a hand edit can leave a value the API rejects, and since
- * display and effort are sent on every turn, one bad value would fail every
- * turn, leaving the agent no turn to fix the setting with. Such a value falls
- * back to the baseline, which is the default except for an effort the recipe
- * sets, and the host logs the value it uses instead, once for each saved value
- * it meets.
- */
 function restoreReasoning(saved: unknown, baseline = DEFAULTS.reasoning, warned?: Set<string>): ReasoningSettings {
   const restored = clone(baseline);
   if (!saved || typeof saved !== 'object') return restored;
@@ -318,7 +264,8 @@ function restoreReasoning(saved: unknown, baseline = DEFAULTS.reasoning, warned?
   return restored;
 }
 
-/** Legacy nondefault effort was an agent choice; legacy default means unset. */
+/** A saved effort from before `effortExplicit` is the agent's choice unless
+ *  it's 'default'. */
 function savedEffortOverride(saved: unknown): ReasoningEffort | undefined {
   if (!saved || typeof saved !== 'object') return undefined;
   const s = saved as Record<string, unknown>;

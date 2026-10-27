@@ -1,21 +1,3 @@
-/**
- * Health surfaces — the operator-facing view of what /healthz and the
- * ops-alert stream already tell machines (fleet hub, connectome-doctor).
- *
- * Two pieces:
- *   - OpsAlertStrip: persistent banner rows under the header, one per active
- *     alert (compression quarantine, refusal streaks, inference-exhausted…).
- *     Fed live from `ops:alert` traces and reconciled against /healthz polls
- *     so a page opened mid-incident still shows the alarm.
- *   - HealthPanel: sidebar tab with per-agent runtime state — status, failure
- *     streaks, refusal stats, runtime settings (budget / tail / pace /
- *     convergence), compression quarantine, and process-level counters.
- *
- * Data access mirrors the Context panel: same-origin fetch of /healthz with
- * the session cookie; observers need the 'health' scope (403 renders as a
- * scope hint, not an error).
- */
-
 import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
 import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
@@ -27,21 +9,14 @@ import { debtNextStep, debtSummary, debtTone, type CompressionDebt, type DebtTon
 import type { UpdateStatus, UpdateWay } from '@conhost/web/update-text';
 import { UpdateBlock } from './Update';
 
-/** One active operator alert, keyed `${agent}:${kind}`. `count` increments on
- *  every re-fire of the same key so a repeating klaxon reads as one row. */
 export interface OpsAlert {
   key: string;
   kind: string;
   agent: string;
   message: string;
-  /** Epoch millis of the latest firing. */
   at: number;
   count: number;
-  /** Operator actions the host offers for this alert (credential alerts
-   *  carry them in the trace's `data.actions`). Rendered as buttons. */
   actions?: CredentialAction[];
-  /** Process the alert (and its actions) belong to. The strip is a
-   *  host-level surface, so this is 'local' for everything it shows. */
   scope?: string;
 }
 
@@ -51,8 +26,6 @@ export interface CredentialAction {
   hint?: string;
 }
 
-/** The host's credential state (health `credential` block / credential-state
- *  frame). Absent on API-key hosts. Never carries a token. */
 export interface CredentialInfo {
   subscription?: boolean;
   agent?: string;
@@ -69,13 +42,10 @@ export interface CredentialInfo {
   lastAction?: { id: string; at: number; ok: boolean; message: string };
 }
 
-/** Credential alert kinds — the ones whose row gets action buttons and the
- *  ones a fresh credential-state frame must reconcile away. */
 export const CREDENTIAL_ALERT_KINDS = [
   'quota-spent', 'quota-unreadable', 'auth-expiring', 'auth-expired', 'auth-rejected', 'auth-login-required',
 ] as const;
 
-/** Rendered composition of the agent's last live compile. */
 export interface ContextComposition {
   head?: { messages: number; tokens: number };
   tail?: { messages: number; tokens: number };
@@ -84,25 +54,13 @@ export interface ContextComposition {
   total?: { messages: number; tokens: number };
 }
 
-/** One provider call. Aliased to the wire type so the two cannot drift; only
- *  the fields this panel aggregates are read. */
 export type LedgerRow = CallLedgerRow;
 
-/** Shape of GET /healthz — framework healthSnapshot() plus the host's
- *  extensions: credential, the per-agent compressionQuarantine,
- *  compressionDebt, contextComposition and runtimeSettings,
- *  contextCompositionNotKept, readFailures,
- *  and callLedger. All fields optional and defensively read: health
- *  rendering must survive version skew. */
 export interface HealthSnapshot {
   at?: string;
   credential?: CredentialInfo;
-  /** The host's update (src/update/update.ts); absent before the host has
-   *  set it up. */
   update?: UpdateStatus;
   contextComposition?: Record<string, ContextComposition>;
-  /** The agents left out of contextComposition because their strategy keeps
-   *  no render stats; absent when there are none. */
   contextCompositionNotKept?: string[];
   uptimeSec?: number;
   gate?: Record<string, unknown> | null;
@@ -125,29 +83,8 @@ export interface HealthSnapshot {
       lastCategory?: string;
     } | null;
   }>;
-  /** Each agent's quarantine status: records (`count`) and their keys, and the
-   *  quarantined spans (`spans`) when context-manager lists them. */
   compressionQuarantine?: Record<string, { count?: number; keys?: string[]; spans?: unknown[] }>;
-  /** Each agent's latest load repair that dropped summaries holding text,
-   *  for the life of its strategy (getLatestLoadRepairReport); an agent with
-   *  none is absent. */
   loadRepair?: Record<string, LoadRepairReport>;
-
-  /** cm's single-authority debt reduction (getCompressionDebt) — the QUEUE
-
-   * of closed-but-uncompressed chunks. Distinct from contextComposition:
-
-   * composition says what the last live compile RENDERED (summaries L1 = 0 there
-
-   * means "no L1 tokens in the window", often healthy consolidation);
-
-   * this block says what the memory organ still OWES. Absent per-agent
-
-   * entry = the stack predates the reduction — render that as
-
-   * "not reported", never as zero (misread twice on 2026-08-29). A count
-
-   * the report couldn't compute is null: leave it out, never show 0. */
 
   compressionDebt?: Record<string, CompressionDebt>;
   runtimeSettings?: Record<string, {
@@ -159,11 +96,6 @@ export interface HealthSnapshot {
     transition?: string;
     transitionReason?: string;
   }>;
-  /** Per-agent reads that threw, by agent and then section, with what the
-   *  error said, which an observer without 'ops' gets empty. Present only
-   *  when one threw. Such an agent is missing from
-   *  that section, as an agent with nothing to report there is, but only a
-   *  failed read has an entry here. */
   readFailures?: Record<string, Record<string, string>>;
 }
 
@@ -188,9 +120,6 @@ const fmtUptime = (sec: number): string => {
   return `${Math.floor(sec / 86_400)}d ${Math.floor((sec % 86_400) / 3600)}h`;
 };
 
-/** Severity → row tone. Quarantine and hard-down are outage-class (rose);
- *  everything else on this channel is at least warning-class (amber). */
-/** Rose = the agent cannot answer right now; amber = degraded / act soon. */
 const HARD_DOWN_KINDS = new Set([
   'compression-quarantine', 'inference-exhausted', 'hard-down',
   'quota-spent', 'auth-expired', 'auth-rejected', 'auth-login-required',
@@ -200,9 +129,6 @@ const alertTone = (kind: string): { row: string; dot: string } =>
     ? { row: 'bg-rose-950/60 border-rose-900 text-rose-200', dot: 'bg-rose-500 animate-pulse' }
     : { row: 'bg-amber-950/60 border-amber-900 text-amber-200', dot: 'bg-amber-500' };
 
-/** A debt line's class by its tone: a report that names a failed read, or an
- *  unknown debt, takes the rose of a section that couldn't be read, unless
- *  it is critical, which keeps the alarm's. */
 const DEBT_TONE_CLASS: Record<DebtTone, string> = {
   alarm: 'text-rose-300',
   unread: 'text-rose-300/90',
@@ -210,8 +136,6 @@ const DEBT_TONE_CLASS: Record<DebtTone, string> = {
   quiet: 'text-neutral-500',
 };
 
-/** Action buttons on an alert row / the credential section. The host runs
- *  the action; nothing here is automatic. */
 export function CredentialActionButtons(props: {
   actions: CredentialAction[] | undefined;
   onAction(actionId: string): void;
@@ -239,7 +163,6 @@ export function CredentialActionButtons(props: {
 export function OpsAlertStrip(props: {
   alerts: OpsAlert[];
   onDismiss(key: string): void;
-  /** Present when the host can run credential actions for a row. */
   onAction?(alert: OpsAlert, actionId: string): void;
 }) {
   return (
@@ -275,14 +198,12 @@ export function OpsAlertStrip(props: {
 const n0 = (v: number) => v.toLocaleString();
 
 function CallStats(props: { rows: LedgerRow[] }) {
-  /** Newest first — the interesting call is the one that just happened. */
   const recent = () => [...props.rows].reverse().slice(0, 24);
 
   const clock = (ts: string) => {
     const d = new Date(ts);
     return Number.isNaN(d.getTime()) ? '—' : d.toISOString().slice(11, 19);
   };
-  /** Fraction of the prompt that was reused rather than re-read. */
   const share = (r: LedgerRow) => {
     const sent = r.tokens.input + r.tokens.cacheRead;
     return sent > 0 ? Math.round((100 * r.tokens.cacheRead) / sent) : null;
@@ -365,7 +286,6 @@ function CallStats(props: { rows: LedgerRow[] }) {
   );
 }
 
-/** Verdict colouring: reuse is good, rewrites cost a full re-read. */
 function verdictTone(v: string): string {
   if (v === 'HIT' || v === 'hit+extend') return 'text-emerald-300';
   if (v === 'first-write') return 'text-violet-300';
@@ -422,7 +342,6 @@ function CompositionBlock(props: { c: ContextComposition }) {
   );
 }
 
-/** Credential block for the Health tab: state, expiry, last action, buttons. */
 export function CredentialSection(props: {
   credential: CredentialInfo | undefined;
   onAction(actionId: string): void;
@@ -471,29 +390,20 @@ export function CredentialSection(props: {
 
 export function HealthPanel(props: {
   health: HealthSnapshot | null;
-  /** Recent provider calls. Already on the client via the call-ledger frame. */
   ledger?: LedgerRow[];
-  /** Non-null when the last /healthz fetch failed; '403' means scope-denied. */
   error: string | null;
   onRefresh(): void;
-  /** Credential state (live frame wins over the health poll) + action sink. */
   credential?: CredentialInfo | null;
   onCredentialAction?(actionId: string): void;
-  /** The local host's update, for the local scope only: a fleet child is
-   *  updated by its parent. */
   update?: UpdateStatus | null;
-  /** Absent for an observer, who can't send commands. */
   onUpdateWay?(way: UpdateWay): void;
 }) {
   const agents = () => props.health?.agents ?? [];
-  // Each section is looked up by own key (healthEntry), so an agent whose name
-  // is also an Object.prototype member reads as missing when it is.
   const quarantine = (name: string) => healthEntry(props.health?.compressionQuarantine, name);
   const loadRepair = (name: string) => healthEntry(props.health?.loadRepair, name);
   const debt = (name: string) => healthEntry(props.health?.compressionDebt, name);
   const settings = (name: string) => healthEntry(props.health?.runtimeSettings, name);
   const failures = (name: string) => healthEntry(props.health?.readFailures, name);
-  // An agent's composition block, or the line in its place, if any.
   const compositionView = (name: string) => healthComposition(props.health, name);
   const compositionStats = (name: string) => {
     const view = compositionView(name);
@@ -543,9 +453,6 @@ export function HealthPanel(props: {
             <span>up {fmtUptime(props.health!.uptimeSec!)}</span>
           </Show>
           <Show when={props.health!.pendingRequests !== undefined}>
-            {/* the INFERENCE queue (requests waiting to run) — not compression
-                debt; that lives per-agent below. A bare "queued" invited the
-                misread, hence the explicit label. */}
             <span>{props.health!.pendingRequests} inference queued</span>
           </Show>
           <Show when={props.health!.activeStreams !== undefined}>
@@ -599,9 +506,6 @@ export function HealthPanel(props: {
               </div>
             </Show>
 
-            {/* A load repair that dropped summaries holding text: memory that
-                changed at a load, kept here for this session with no dismiss,
-                since loads happen at starts, when nobody is usually watching. */}
             <Show when={loadRepair(a.name)}>
               {(r) => (
                 <div class="text-amber-200 bg-amber-950/30 border border-amber-900/50 rounded px-2 py-1 break-words space-y-1">
@@ -613,8 +517,6 @@ export function HealthPanel(props: {
               )}
             </Show>
 
-            {/* A section this agent couldn't be read for is missing from the
-                snapshot; say so, rather than show it as nothing to report. */}
             <Show when={failures(a.name)}>
               {(f) => (
                 <div class="text-rose-300/90">
@@ -627,11 +529,6 @@ export function HealthPanel(props: {
               )}
             </Show>
 
-            {/* Compression debt: the organ's QUEUE, not the render composition.
-                An old stack that reports nothing must say so — absence
-                rendered as zero invites misreads. A failed read is listed
-                above instead. A report that couldn't read something says
-                what under its line. */}
             <Show when={debt(a.name)} fallback={
               <Show when={healthEntry(failures(a.name), 'compressionDebt') === undefined}>
                 <div class="text-neutral-600">compression debt: not reported by this stack</div>
@@ -693,12 +590,6 @@ export function HealthPanel(props: {
               )}
             </Show>
 
-            {/* How the last live compile split. Composition is in-process
-                render stats (free), which context-manager keeps only from a
-                live compile since the agent's context was loaded, and only
-                for a strategy that keeps them, so where there's none a line
-                says which; a read that failed is named above. Call stats
-                come from the ledger the client already holds. */}
             <Show
               when={compositionStats(a.name)}
               fallback={

@@ -1,9 +1,3 @@
-/**
- * A fleet child that fails to start says why in its own output, which goes to
- * the startup.log the parent opened for it. The launch's error quotes the end
- * of what the child wrote there during that launch, so the agent that
- * launched it can see the cause, such as a recipe naming an unset variable.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import {
@@ -25,7 +19,6 @@ type Internal = {
 };
 const internal = (fleet: FleetModule): Internal => fleet as unknown as Internal;
 
-/** Waits until ready() holds, or fails, naming what it waited for. */
 const waitFor = async (what: string, ready: () => boolean): Promise<void> => {
   for (const until = Date.now() + 4_000; !ready(); await Bun.sleep(1)) {
     if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
@@ -39,8 +32,6 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A fleet whose children are the lifecycle mock, told what to do by the
- *  options each launch writes as its recipe. */
 function setup(config: FleetModuleConfig = {}, childIndexPath = join(import.meta.dir, 'mock-fleet-lifecycle-child.ts')) {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-launch-output-'));
   dirs.push(dir);
@@ -62,7 +53,6 @@ function setup(config: FleetModuleConfig = {}, childIndexPath = join(import.meta
 
 const quoted = (lines: string[]): string => lines.map((line) => `  ${line}`).join('\n');
 
-/** On Linux, the paths this process holds descriptors on. */
 const openPaths = (): string[] => readdirSync('/proc/self/fd').flatMap((fd) => {
   try { return [readlinkSync(join('/proc/self/fd', fd))]; } catch { return []; }
 });
@@ -75,12 +65,9 @@ describe('a failed launch quotes the child\'s own output', () => {
     const result = await launch({ stderr: `${error}\n`, crashBeforeSocket: true });
     expect(result.success).toBe(false);
     expect(result.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n${quoted([error])}`);
-    // The record, which fleet--status and the TUI show on one line, stays one.
     expect(fleet.getChildren().get('leaf')!.exitReason).not.toContain('\n');
   });
 
-  // startup.log is appended to by every launch, so a launch that quoted the
-  // file's end would report an earlier launch's error as its own.
   test('a launch quotes only its own output, and says when there was none', async () => {
     const { launch, log } = setup();
     const first = await launch({ stderr: 'the first launch failed this way\n', crashBeforeSocket: true });
@@ -88,7 +75,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     const second = await launch({ crashBeforeSocket: true });
     expect(second.error).toEndWith(`\nThe child wrote nothing to ${log} during this launch.`);
     expect(second.error).not.toContain('the first launch failed this way');
-    // Each launch's header goes after what the file already held.
     const file = readFileSync(log, 'utf8');
     const headers = [...file.matchAll(/^--- launch .* ---$/gm)].map((header) => header.index);
     expect(headers).toHaveLength(2);
@@ -96,18 +82,12 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(file.indexOf('the first launch failed this way')).toBeLessThan(headers[1]!);
   });
 
-  // Once its child has exited, the record allows another launch of the name
-  // while this launch is still on its way to its error. That launch's header
-  // and output come after this child's, and aren't its.
   test('a launch quotes only what its child wrote before it exited', async () => {
     const { fleet, launch, log } = setup();
     const api = internal(fleet);
     const first = launch({ stderr: 'FIRST_MARKER\n', crashBeforeSocket: true });
     await waitFor('the first launch\'s child', () => fleet.getChildren().get('leaf')?.process != null);
     const proc = fleet.getChildren().get('leaf')!.process!;
-    // The first launch's quote is read only once the second child's output is
-    // in the file, so a read that ran past the first child's exit would take
-    // the second launch's lines.
     const failLaunch = api.failLaunch.bind(fleet);
     api.failLaunch = async (child, reason, startupLog) => {
       if (child.process === proc) await waitFor('the second child\'s output', () => readFileSync(log, 'utf8').includes('SECOND_MARKER'));
@@ -121,9 +101,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect((await second!).error).toEndWith(`\nThe child's output during this launch, from ${log}:\n${quoted(['SECOND_MARKER'])}`);
   });
 
-  // A directory the parent can't search as the child exits fails the read made
-  // then, which isn't made again once a later launch has written there.
-  // Run as root, the directory's mode doesn't stop the read.
   test.skipIf(process.getuid?.() === 0)('a startup.log the parent can\'t read as the child exits isn\'t read later', async () => {
     const { fleet, launch, dataDir, log } = setup();
     try {
@@ -144,10 +121,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     }
   });
 
-  // A launch can find its child ready and still fail, at the subscribe. The
-  // child's exit, which the parent's stop brings, ends its output all the same:
-  // once the record shows the exit, another launch's header and output can
-  // follow it in the file.
   test('a launch that fails after its child was ready quotes only what its child wrote before it exited', async () => {
     const { fleet, launch, log } = setup();
     const api = internal(fleet);
@@ -155,8 +128,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     const send = api.sendToChild.bind(fleet);
     api.connectChildSocket = async (child) => {
       await connect(child);
-      // Written as the record shows the exit, as a later launch's header and
-      // output would be, and before the parent's wait for that exit ends.
       child.process!.once('exit', () => appendFileSync(log, '\n--- launch later ---\nLATER_MARKER\n'));
       await waitFor('the child to be ready', () => child.status === 'ready');
     };
@@ -173,8 +144,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(readFileSync(log, 'utf8')).toEndWith('LATER_MARKER\n');
   });
 
-  // The read at the exit is for a launch still on its way to its error: once
-  // the launch has succeeded, its child's exit reads nothing.
   test('an exit after a launch that succeeded reads nothing', async () => {
     const { fleet, launch, dataDir, log } = setup();
     const crash = join(dataDir, '..', 'crash-now');
@@ -197,7 +166,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     const { launch, log } = setup();
     const result = await launch({ stderr: '\n \n\n', crashBeforeSocket: true });
     expect(result.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n  `);
-    // Only the file's last 64 KiB are read: past them, the quote says there was more.
     const tail = await launch({ stderr: `an error\n${'\n'.repeat(70_000)}`, crashBeforeSocket: true });
     expect(tail.error).toEndWith(`\nThe end of the child's output during this launch (the rest is in ${log}):\n  `);
   });
@@ -213,9 +181,6 @@ describe('a failed launch quotes the child\'s own output', () => {
 
   test('a long output is quoted within 2,000 characters as printed, by whole lines or the end of one', async () => {
     const { launch, log } = setup();
-    // Three lines of 664 characters print as exactly 2,000, each with its
-    // indent and all but the last with a newline, so the one-character line
-    // before them is the first that doesn't fit.
     const lines = Array.from({ length: 3 }, (_, i) => `${i + 1}${'.'.repeat(663)}`);
     expect(quoted(lines).length).toBe(2_000);
     const exact = await launch({ stderr: `x\n${lines.join('\n')}\n`, crashBeforeSocket: true });
@@ -226,17 +191,13 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(long.error).toEndWith(
       `\nThe end of the child's output during this launch (the rest is in ${log}):\n  ${'x'.repeat(1_991)}the end`,
     );
-    // 3,001 code units: the 1,998 that fit begin with the second half of an
-    // emoji, which goes.
+    // An emoji is two UTF-16 code units, so the cut lands inside one, which goes.
     const astral = await launch({ stderr: `${'\u{1F600}'.repeat(1_500)}z\n`, crashBeforeSocket: true });
     expect(astral.error).toEndWith(
       `\nThe end of the child's output during this launch (the rest is in ${log}):\n  ${'\u{1F600}'.repeat(998)}z`,
     );
   });
 
-  // FORCE_COLOR makes Bun colour what it writes even to a file, and a child's
-  // own code can print other sequences, which the operator's terminal would
-  // act on, such as a title (OSC) or a reset (ESC c).
   test('escape sequences in the output are left out of the quote', async () => {
     const { launch, log } = setup();
     const result = await launch({
@@ -250,8 +211,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     );
   });
 
-  // OpenTUI writes a bell or a backspace to the terminal as it is, and breaks
-  // the line at a carriage return, such as a progress line's.
   test('control characters other than tab and newline are left out of the quote', async () => {
     const { launch, log } = setup();
     const result = await launch({
@@ -263,13 +222,10 @@ describe('a failed launch quotes the child\'s own output', () => {
       `\nThe child's output during this launch, from ${log}:\n` +
       quoted(['a bell and a backspace', '\tindented', 'progress 10%progress 20%', 'from the edges']),
     );
-    // Output that is only such characters was still written: one blank line.
     const only = await launch({ stderr: '\x07\x1b[0m\n', crashBeforeSocket: true });
     expect(only.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n  `);
   });
 
-  // Bun.stripANSI drops everything after a sequence it finds no end for, so
-  // the quote strips each line on its own.
   test('a sequence with no end hides at most the rest of its own line', async () => {
     const { launch, log } = setup();
     const result = await launch({
@@ -283,8 +239,7 @@ describe('a failed launch quotes the child\'s own output', () => {
   });
 
   // A spawn that fails, such as for a runtime that isn't there, starts no
-  // process: its pid stays undefined and no exit comes for it (Bun 1.3.14 and
-  // 1.4.3), so there's nothing to stop, wait for or quote.
+  // process: its pid stays undefined and no exit comes for it.
   test('a launch whose spawn started no process says so, without a stop, and leaves no starting record', async () => {
     const { fleet, log } = setup();
     const api = internal(fleet);
@@ -320,8 +275,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(emptied.error).toEndWith(`\n${log} was truncated during this launch, and is empty now.`);
   });
 
-  // The child writes to the descriptor it inherited, so a file put in
-  // startup.log's place isn't the one its output goes to, whatever it holds.
   test('a startup.log replaced during the launch isn\'t read, since it isn\'t the file the child was given', async () => {
     const { launch, log } = setup();
     const result = await launch({ replaceStartupLog: 'a line the child never wrote\n', stderr: 'unseen\n', crashBeforeSocket: true });
@@ -329,9 +282,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(result.error).not.toContain('a line the child never wrote');
   });
 
-  // A link at startup.log when the launch starts is followed at both opens,
-  // as main follows one at the spawn: the output goes to its target, and the
-  // quote is read from there.
   test('a link at startup.log when the launch starts is followed, and its target quoted', async () => {
     const { dataDir, launch, log } = setup();
     mkdirSync(dataDir, { recursive: true });
@@ -344,9 +294,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(lstatSync(log).isSymbolicLink()).toBe(true);
   });
 
-  // The child writes before it makes its socket, so before the parent starts
-  // waiting for it to report ready: however slowly it starts, what it wrote
-  // is there when the parent stops it.
   test('a child stopped for a ready timeout has what it wrote quoted', async () => {
     const { fleet, launch, log } = setup({ readyTimeoutMs: 500 });
     const result = await launch({ stderr: 'Open https://example.test/device and enter code: ABCD-1234\n', ready: false });
@@ -359,7 +306,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(fleet.getChildren().get('leaf')!.exitReason).not.toContain('\n');
   });
 
-  // Without the file, the child's stdio goes nowhere.
   test('a startup.log the parent can\'t open says the output wasn\'t kept', async () => {
     const { launch, log } = setup();
     mkdirSync(log, { recursive: true });
@@ -369,8 +315,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     );
   });
 
-  // Opened as plain append, a FIFO left at startup.log, by a child in its own
-  // data directory say, would stop the host's event loop at the next launch.
   test('a FIFO at startup.log as the launch starts doesn\'t block it, with or without a reader', async () => {
     const { launch, dataDir, log } = setup();
     mkdirSync(dataDir, { recursive: true });
@@ -379,8 +323,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(unread.error).toEndWith(
       `\n${log} couldn't be opened when the child started (ENXIO), so the child's console output wasn't kept.`,
     );
-    // With a reader the open succeeds, so the file's type refuses it, before
-    // the header is written.
     const reader = openSync(log, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const read = await launch({ stderr: 'lost\n', crashBeforeSocket: true });
@@ -388,17 +330,14 @@ describe('a failed launch quotes the child\'s own output', () => {
       let received = 0;
       try { received = readSync(reader, Buffer.alloc(256)); } catch { /* EAGAIN: nothing written */ }
       expect(received).toBe(0);
-      // The parent closed what it opened; the test's reader is the one left.
       if (process.platform === 'linux') expect(openPaths().filter((path) => path === realpathSync(log))).toHaveLength(1);
     } finally {
       closeSync(reader);
     }
   });
 
-  // A header that doesn't fit, as on a full disk, goes in a short write and
-  // then a failed one, and the child's writes would fail the same way. A
-  // file-size limit stands in for the full disk, with SIGXFSZ ignored so the
-  // write fails with EFBIG; the launch runs in a process of its own under it.
+  // A file-size limit stands in for a full disk: with SIGXFSZ ignored, a write
+  // past it fails with EFBIG.
   test('a launch whose header can\'t be written gives the child no file, and says why', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-launch-output-'));
     dirs.push(dir);
@@ -418,7 +357,6 @@ describe('a failed launch quotes the child\'s own output', () => {
       `const input = { name: 'leaf', recipe: ${JSON.stringify(recipe)}, dataDir: ${JSON.stringify(dataDir)} };`,
       'const result = await fleet.handleToolCall({ id: "launch", name: "launch", input });',
       'await fleet.stop();',
-      // The descriptors this process still holds on startup.log, on Linux.
       `const log = realpathSync(${JSON.stringify(log)});`,
       'const open = process.platform !== "linux" ? [] : readdirSync("/proc/self/fd").filter((fd) => {',
       '  try { return readlinkSync(`/proc/self/fd/${fd}`) === log; } catch { return false; }',
@@ -434,29 +372,22 @@ describe('a failed launch quotes the child\'s own output', () => {
     expect(result.error).toEndWith(
       `\n${log} couldn't be written to when the child started (EFBIG), so the child's console output wasn't kept.`,
     );
-    // The child's stderr wasn't the file, and the parent kept no descriptor on it.
     expect(readFileSync(stderrKind, 'utf8')).toBe('not a file');
     expect(open).toEqual([]);
   }, 20_000);
 
-  // Bun's spawn throws for a NUL byte in an argument, such as a mistyped
-  // childIndexPath; the parent's copy of the descriptor closes all the same.
+  // Bun's spawn throws for a NUL byte in an argument.
   test.skipIf(process.platform !== 'linux')('a spawn that throws leaves no descriptor open on startup.log', async () => {
     const { fleet, launch, log } = setup({}, `${join(import.meta.dir, 'mock-fleet-lifecycle-child.ts')}\0`);
     const result = await launch({});
     expect(result.success).toBe(false);
-    // The launch got as far as the open: the header is there.
     expect(readFileSync(log, 'utf8')).toContain('--- launch ');
     expect(openPaths()).not.toContain(realpathSync(log));
-    // Its record ends as a later failure's does, not starting, and the index
-    // path is the host's own configuration.
     expect(fleet.getChildren().get('leaf')!.status).toBe('crashed');
     expect(result.error).toStartWith('Child \'leaf\' didn\'t start (launch failed: its spawn refused a value from this ' +
       'host\'s configuration: The argument \'args[0]\' must be a string without null bytes. (ERR_INVALID_ARG_VALUE)): ');
   });
 
-  // Such a launch can succeed, so the host says so as it launches, not only
-  // if the launch fails.
   test('a launch that runs without the file says so in the host\'s log', async () => {
     const { launch, log } = setup();
     mkdirSync(log, { recursive: true });
@@ -471,14 +402,12 @@ describe('a failed launch quotes the child\'s own output', () => {
     }
   });
 
-  // Run as root, the file's mode doesn't stop the read.
   test.skipIf(process.getuid?.() === 0)('a startup.log the parent can\'t read by the child\'s exit gives the error code', async () => {
     const { launch, log } = setup();
     const result = await launch({ stderr: 'unread\n', lockStartupLog: true, crashBeforeSocket: true });
     expect(result.error).toEndWith(`\n${log} couldn't be read (EACCES), so the child's output isn't quoted.`);
   });
 
-  // Opened without O_NONBLOCK, a FIFO with no writer would block the parent.
   test('a startup.log that is a FIFO by the child\'s exit isn\'t read, and doesn\'t block', async () => {
     const { launch, log } = setup();
     const result = await launch({ fifoStartupLog: true, crashBeforeSocket: true });
@@ -503,7 +432,6 @@ describe('a failed launch quotes the child\'s own output', () => {
       const result = await launch({ stderr: 'started, and never ready\n', ready: false });
       expect(result.error).toContain("this host couldn't confirm that its process stopped");
       expect(result.error).toEndWith(`\nThe child's output during this launch, from ${log}:\n${quoted(['started, and never ready'])}`);
-      // The record stays one line.
       expect(child!.exitReason).not.toContain('\n');
     } finally {
       api.waitForExit = wait;
@@ -515,8 +443,6 @@ describe('a failed launch quotes the child\'s own output', () => {
     }
   });
 
-  // The real child, src/index.ts, prints the recipe error itself: this is
-  // what an agent launching a misconfigured recipe now sees.
   test('a real child whose recipe names an unset variable has that error quoted', async () => {
     delete process.env.FLEET_LAUNCH_OUTPUT_TEST_UNSET;
     const { launch } = setup({}, join(import.meta.dir, '..', 'src', 'index.ts'));
@@ -531,14 +457,7 @@ describe('a failed launch quotes the child\'s own output', () => {
   }, 20_000);
 });
 
-// A spawn that starts no process (Bun 1.3.14 and 1.4.3, Linux) either
-// reports 'error' on a later tick, with no pid and no exit to follow, for a
-// runtime that isn't there or that may not run, or throws, as for a NUL byte
-// in an argument or an env value, or a runtime the system can't execute.
-// Either way the launch ends at once with the spawn's own error, and its
-// record the way a later failure's is.
 describe('a launch whose spawn starts no process', () => {
-  /** A fleet started with a context whose saved state the test reads. */
   async function started(config: FleetModuleConfig) {
     const made = setup(config);
     let saved: { children: Record<string, { status: string; exitReason: string | null }> } | undefined;
@@ -562,8 +481,8 @@ describe('a launch whose spawn starts no process', () => {
     test(`a runtime that ${kind} fails the launch at once with its code, for whoever runs the host to fix`, async () => {
       const { fleet, launch, saved } = await started({ childRuntimePath: runtime() });
       const result = await launch({});
-      // The reason is the spawn's error, so the socket wait ended on it, not
-      // at its timeout (10 s here, past the test's own 5 s).
+      // The socket wait's 10 s is past bun:test's default 5 s timeout, so a pass
+      // shows the wait ended on the spawn's error.
       expect(result.error).toStartWith(`Child 'leaf' didn't start (launch failed: its runtime couldn't be started: `);
       expect(result.error).toContain(code);
       expect(result.error).toEndWith('): no process started for it, so there\'s nothing to stop and no output to ' +
@@ -574,13 +493,10 @@ describe('a launch whose spawn starts no process', () => {
       expect(record.exitReason).toStartWith('launch failed: its runtime couldn\'t be started: ');
       expect(record.exitReason).toEndWith('; no process started for this launch');
       expect(saved()!.children.leaf.status).toBe('crashed');
-      // The record holds nothing: a relaunch tries again, and fails the same way.
       expect((await launch({})).error).toStartWith(`Child 'leaf' didn't start (launch failed: its runtime couldn't`);
     });
   }
 
-  // A runtime the system can't execute makes the spawn throw instead (Bun
-  // 1.3.14 and 1.4.3, Linux), and it's the runtime's to fix all the same.
   test.skipIf(process.platform !== 'linux')('a runtime the system can\'t execute fails the launch with its code, for whoever runs the host to fix', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-runtime-'));
     dirs.push(dir);
@@ -611,18 +527,12 @@ describe('a launch whose spawn starts no process', () => {
     expect(fleet.getChildren().get('auto')!.autoRestartStopped).toBe(
       'its runtime couldn\'t be started, which is not retried; once whoever runs this host fixes it, ' +
       'fleet--restart starts it again');
-    // Whoever runs the host puts the runtime in place.
     symlinkSync(process.execPath, runtime);
     const restarted = await fleet.handleToolCall({ id: 'restart', name: 'restart', input: { name: 'auto' } });
     expect(restarted.success).toBe(true);
     expect(fleet.getChildren().get('auto')!.status).toBe('ready');
   });
 
-  // The spawn's message for a refused env value ends with the value, which
-  // may be a secret, and an env value comes from the host's recipe, so an
-  // autoStart launch is where it's refused: the value reaches neither the
-  // host's log line, which carries the launch's error, nor the saved record,
-  // nor startup.log.
   test('an env value the spawn refuses fails an autoStart launch, without the value reaching its log line, the record or startup.log', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-env-'));
     dirs.push(dir);
@@ -648,9 +558,6 @@ describe('a launch whose spawn starts no process', () => {
       stderr.mockRestore();
     }
     const line = written.find((logged) => logged.startsWith(failed))!;
-    // The spawn's own words name the property; the value they end with is
-    // cut. Only the host's configuration holds it, so only whoever runs the
-    // host can change it.
     expect(line).toStartWith(`${failed}Child 'leaf' didn't start (launch failed: its spawn refused a value from this ` +
       'host\'s configuration: ');
     expect(line).toContain('FLEET_TEST_SECRET');
@@ -667,8 +574,6 @@ describe('a launch whose spawn starts no process', () => {
     expect(readFileSync(join(dataDir, 'startup.log'), 'utf8')).not.toContain(secret);
   });
 
-  // An ERR_INVALID_ARG_* message whose refused value can't be cut from it
-  // is given as its code alone, and a code its message lacks is added.
   test('a refused argument\'s message is cut before its value, or given as its code alone', () => {
     const { fleet } = setup();
     const failure = (message: string, code: string) => (fleet as unknown as {
@@ -686,8 +591,6 @@ describe('a launch whose spawn starts no process', () => {
       .toBe('its runtime couldn\'t be started: ENOENT: no such file or directory, posix_spawn \'/nonexistent/bun\'');
   });
 
-  // The spawn, or the check of the data directory before it, would refuse
-  // a NUL byte without saying whose value it was.
   test('a name, recipe or data directory holding a NUL byte is refused before anything starts, naming the agent\'s field', async () => {
     const { fleet, dataDir } = setup();
     const recipe = join(dataDir, '..', 'recipe.json');
@@ -704,18 +607,12 @@ describe('a launch whose spawn starts no process', () => {
     expect(await refused({ name: 'leaf', recipe, dataDir: `${dataDir}\0` })).toBe(
       'Nothing was launched: fleet--launch\'s "dataDir" is the child\'s data directory, which can\'t hold a NUL byte; ' +
       `it got the string ${JSON.stringify(`${dataDir}\0`)}.`);
-    // A name is refused with a data directory given too, since it would go
-    // raw into the host's log lines.
     expect(await refused({ name: 'le\0af', recipe, dataDir })).toBe(
       'Nothing was launched: fleet--launch\'s "name" is the child\'s short name, which can\'t hold a NUL byte; it got ' +
       'the string "le\\u0000af".');
-    // An env the agent passes is dropped, so it never reaches the spawn: a
-    // value the spawn would refuse launches all the same.
     const withEnv = await fleet.handleToolCall({ id: 'nul-env', name: 'launch',
       input: { name: 'leaf', recipe, dataDir, env: { FLEET_TEST_AGENT_ENV: 'agent\0value' } } });
     expect(withEnv.success).toBe(true);
-    // An autoStart child's configured recipe gets the same refusal, as the
-    // other input checks' do, under the host's log line for that child.
     const logged: string[] = [];
     const errors = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
     try {
@@ -731,8 +628,6 @@ describe('a launch whose spawn starts no process', () => {
     }
   });
 
-  // An 'error' for a process that started, such as a kill that failed, is
-  // the host's to log, and changes nothing about the child.
   test('an error reported for a running child is logged and leaves it running', async () => {
     const { fleet, launch } = setup();
     expect((await launch({})).success).toBe(true);

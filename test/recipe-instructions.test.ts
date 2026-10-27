@@ -9,9 +9,6 @@ function recipe(modules?: Record<string, unknown>) {
   };
 }
 
-/** A workspace declaration that satisfies the instructions cross-check for
- *  the given mount name: read-write + autoMaterialize (the validated shape
- *  for a mount agents curate). */
 function wsFor(mountName: string) {
   return {
     mounts: [
@@ -113,68 +110,51 @@ describe('recipe modules.instructions validation', () => {
       { name: 'input', path: './input', mode: 'read-only' },
       { name: 'products', path: './output', mode: 'read-write' },
     ];
-    // Default path 'instructions/AGENTS.md' names a mount that isn't declared.
     expect(() => validateRecipe(recipe({ instructions: true, workspace: { mounts } })))
       .toThrow(/requires a workspace mount named\s+"instructions"/);
-    // Same for an explicit path with a typo'd mount name.
     expect(() => validateRecipe(recipe({
       instructions: { path: 'shared/AGENTS.md' },
       workspace: { mounts },
     }))).toThrow(/names workspace mount "shared"/);
-    // A read-only declared mount passes without autoMaterialize (disk is its
-    // only write path).
     expect(() => validateRecipe(recipe({
       instructions: { path: 'input/AGENTS.md' },
       workspace: { mounts },
     }))).not.toThrow();
-    // The '_config' mount exists under configMount but is rejected for
-    // instructions: it does not auto-materialize (agent edits reach disk only
-    // after branch-changing commands), so the injection would serve stale
-    // content — the same split-brain the autoMaterialize check prevents.
     expect(() => validateRecipe(recipe({
       instructions: { path: '_config/AGENTS.md' },
       workspace: { mounts, configMount: true },
     }))).toThrow(/host-managed "_config"/);
   });
 
-  test('rejects a read-write instructions mount without autoMaterialize (split-brain guard)', () => {
-    // Workspace writes are Chronicle-first; the injection reads disk. A rw
-    // mount that never materializes would silently freeze the injection at
-    // the pre-curation content.
+  test('rejects a read-write Chronicle instructions mount without autoMaterialize (split-brain guard)', () => {
     expect(() => validateRecipe(recipe({
       instructions: { path: 'products/AGENTS.md' },
       workspace: { mounts: [{ name: 'products', path: './output', mode: 'read-write' }] },
     }))).toThrow(/autoMaterialize/);
-    // Mode defaults to read-write, so an unmoded mount needs it too.
     expect(() => validateRecipe(recipe({
       instructions: true,
       workspace: { mounts: [{ name: 'instructions', path: './instructions' }] },
     }))).toThrow(/autoMaterialize/);
   });
 
-  test('accepts a direct instructions mount, which is read-only', () => {
-    expect(() => validateRecipe(recipe({
-      instructions: true,
-      workspace: { mounts: [{ name: 'instructions', path: './instructions', backend: 'direct', mode: 'read-only' }] },
-    }))).not.toThrow();
+  test('accepts a direct instructions mount, read-only or read-write, with no autoMaterialize', () => {
+    for (const mode of ['read-only', 'read-write']) {
+      expect(() => validateRecipe(recipe({
+        instructions: true,
+        workspace: { mounts: [{ name: 'instructions', path: './instructions', backend: 'direct', mode }] },
+      }))).not.toThrow();
+    }
   });
 
   test('cross-checks against the implicit default workspace too', () => {
-    // `instructions: true` with the implicit workspace (mounts input +
-    // products) can never inject — the default path's mount cannot exist.
-    // That used to validate and be dead config; now it fails at load.
     expect(() => validateRecipe(recipe({ instructions: true })))
       .toThrow(/implicit default\s+mounts/);
     expect(() => validateRecipe(recipe({ instructions: true, workspace: true })))
       .toThrow(/implicit default\s+mounts/);
-    // The implicit read-only 'input' mount is a valid target (file maintained
-    // outside the agent).
     expect(() => validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md' } })))
       .not.toThrow();
-    // The implicit 'products' mount is rw without autoMaterialize — and the
-    // implicit workspace cannot set it, so this directs to explicit mounts.
     expect(() => validateRecipe(recipe({ instructions: { path: 'products/AGENTS.md' } })))
-      .toThrow(/implicit default workspace cannot/);
+      .toThrow(/implicit default workspace can do neither/);
   });
 
   test('allows instructions: false alongside workspace: false', () => {

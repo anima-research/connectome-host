@@ -4,7 +4,6 @@ import {buildFrameworkAgentConfig} from '../src/framework-agent-config.js';
 const config={path:'/tmp/presentation.json',cataloguePath:'board/tools.md'};
 const board={mounts:[{name:'board',path:'/tmp/board',mode:'read-write',autoMaterialize:true}]};
 const recipe=(tp:unknown=config,workspace:unknown=board)=>({name:'test',agent:{systemPrompt:'.',toolPresentation:tp},modules:{workspace}});
-// Each refusal is matched by its own words, so a TypeError from code past a missing guard can't stand in for it.
 const SHAPE=/agent\.toolPresentation requires absolute path and mount-prefixed cataloguePath/;
 const MOUNT=/toolPresentation cataloguePath requires an existing workspace mount/;
 const DEFAULTS=/toolPresentation defaults require unique component sources and absolute paths/;

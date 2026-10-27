@@ -1,7 +1,3 @@
-/**
- * The host owns timezone and explicit server env. AgentFramework supplies
- * its reaction default later, when configured and retained markers are known.
- */
 import { describe, test, expect } from 'bun:test';
 import { composeMcplChildEnv } from '../src/mcpl-config.js';
 

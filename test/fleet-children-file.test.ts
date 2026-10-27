@@ -1,12 +1,8 @@
-/**
- * The fleet's side of the update contract: the children file an install's
- * launcher reads before a switch, the fleet's record of a child from its
- * spawn, and children that never get the install's root, so none of them
- * acts as the install's host.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import * as childProcess from 'node:child_process';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FLEET_BEGIN_ENV } from '../src/fleet-begin.js';
@@ -23,14 +19,12 @@ type Record_ = { children: Record<string, { name: string; pid: number | null; st
 const fixtures: Array<{ fleet: FleetModule; dir: string }> = [];
 afterEach(async () => {
   for (const { fleet, dir } of fixtures.splice(0)) {
-    await fleet.stop().catch(() => { /* already stopped */ });
+    await fleet.stop().catch(() => { });
     rmSync(dir, { recursive: true, force: true });
   }
   delete process.env.CONNECTOME_INSTALL_ROOT;
 });
 
-/** A started fleet whose store is a stand-in: `record` is what it holds, and
- *  `writes` each record set, in order, with each sync between them. */
 async function startedFleet(config: FleetModuleConfig = {}, store: { record?: unknown; unreadable?: true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-children-file-'));
   const recipe = join(dir, 'recipe.json');
@@ -46,7 +40,6 @@ async function startedFleet(config: FleetModuleConfig = {}, store: { record?: un
   fixtures.push({ fleet, dir });
   let record: unknown = store.record ?? null;
   const writes: Array<Record_ | 'sync'> = [];
-  /** What the children file listed at each sync. */
   const atSync: Array<ChildrenFile['children']> = [];
   fleet.setStoreSync(() => {
     writes.push('sync');
@@ -54,7 +47,6 @@ async function startedFleet(config: FleetModuleConfig = {}, store: { record?: un
       try {
         atSync.push(listed(config.childrenFile));
       } catch {
-        // A file the test made unreadable: the fleet's own read says so.
       }
     }
   });
@@ -74,7 +66,6 @@ async function startedFleet(config: FleetModuleConfig = {}, store: { record?: un
 const launch = (fleet: FleetModule, input: Launch): Promise<Result> =>
   (fleet as unknown as Internal).handleLaunch(input, { viaAutoStart: true });
 
-/** This machine's boot id, as the fleet reads it, or null where there's none. */
 function machineBootId(): string | null {
   try {
     return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null;
@@ -83,7 +74,6 @@ function machineBootId(): string | null {
   }
 }
 
-/** A pid no process holds now: one that ran and exited. */
 function deadPid(): number {
   return spawnSync('true').pid!;
 }
@@ -94,9 +84,6 @@ function parentDataDir(): string {
   return parentData;
 }
 
-/** A spy under which each timer of `ms` the fleet arms, the write it makes
- *  a moment after a child's exit, is kept for the test to run, and is
- *  checked to be unref'd, so it holds no host open. */
 function laterWrites(ms: number): { rewrites: Array<() => void>; unrefed: () => boolean[]; restore: () => void } {
   const later = globalThis.setTimeout;
   const rewrites: Array<() => void> = [];
@@ -120,19 +107,13 @@ function laterWrites(ms: number): { rewrites: Array<() => void>; unrefed: () => 
   };
 }
 
-/** A process group whose leader has ended while a process of it still runs,
- *  as a child's that left a helper behind: its id, and how to end it. A live
- *  leader wouldn't do: a pid isn't handed out while a group with that id has
- *  a member, so the fleet reads a live process at an ended child's pid as
- *  another's. */
 async function leaderlessGroup(): Promise<{ pid: number; end: () => void }> {
   const leader = spawn('sh', ['-c', 'sleep 60 & exit 0'], { detached: true, stdio: 'ignore' });
   await new Promise((ended) => leader.once('exit', ended));
   const pid = leader.pid!;
-  return { pid, end: () => { try { process.kill(-pid, 'SIGKILL'); } catch { /* the group has ended */ } } };
+  return { pid, end: () => { try { process.kill(-pid, 'SIGKILL'); } catch { } } };
 }
 
-/** Waits until `ready` holds, for up to 8 s. */
 async function until(ready: () => boolean): Promise<void> {
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline && !ready()) await Bun.sleep(10);
@@ -151,7 +132,6 @@ function isAlive(pid: number): boolean {
 }
 
 
-/** Waits until `ready` holds, for up to 30 s, or throws naming `what`. */
 async function waitFor(ready: () => boolean, what: string, ms = 30_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!ready()) {
@@ -160,18 +140,13 @@ async function waitFor(ready: () => boolean, what: string, ms = 30_000): Promise
   }
 }
 
-/** Holds this thread, as a slow disk holds a write, until `ready` holds or
- *  `ms` has passed, and says whether it held. */
 function holdUntil(ready: () => boolean, ms: number): boolean {
   const deadline = Date.now() + ms;
-  while (!ready() && Date.now() < deadline) { /* held */ }
+  while (!ready() && Date.now() < deadline) { }
   return ready();
 }
 
-/** The stand-in child, started as a fleet that keeps the children file
- *  starts it, told to begin on its stdin, with `options` as its recipe. */
 const standIns: ChildProcess[] = [];
-/** What a stand-in has written on its stderr. */
 const stderrOf = new WeakMap<ChildProcess, string[]>();
 function standIn(dir: string, options: Record<string, unknown>): ChildProcess {
   const dataDir = join(dir, 'data');
@@ -184,37 +159,36 @@ function standIn(dir: string, options: Record<string, unknown>): ChildProcess {
   const written: string[] = [];
   stderrOf.set(child, written);
   child.stderr!.on('data', (chunk: Buffer) => { written.push(chunk.toString()); });
-  child.stdin!.on('error', () => { /* a child that has ended */ });
+  child.stdin!.on('error', () => { });
   standIns.push(child);
   return child;
 }
 afterEach(() => {
   for (const child of standIns.splice(0)) {
-    try { child.kill('SIGKILL'); } catch { /* gone */ }
+    try { child.kill('SIGKILL'); } catch { }
   }
 });
 
-/** How long a told stand-in takes here from coming to its wait to beginning,
- *  measured once. Each hold that shows a child hasn't begun is many of these,
- *  so it holds as long on a loaded machine as on an idle one. */
-let beginTime: number | undefined;
-async function holdForBegin(): Promise<number> {
-  if (beginTime === undefined) {
-    const dir = mkdtempSync(join(tmpdir(), 'fleet-begin-time-'));
-    try {
-      const atGate = join(dir, 'at-gate');
-      const begun = join(dir, 'begun');
-      const child = standIn(dir, { atGate, begun });
-      await waitFor(() => existsSync(atGate), 'the measured child came to its wait');
-      const from = Date.now();
-      child.stdin!.write('\n');
-      await waitFor(() => existsSync(begun), 'the measured child began');
-      beginTime = Date.now() - from;
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-  return Math.max(1_000, 20 * beginTime);
+const GROUP_END_WAIT_MS = 60_000;
+async function linesOf(file: string, what: string): Promise<string[]> {
+  await waitFor(() => existsSync(file) && readFileSync(file, 'utf8').endsWith('\n'), what);
+  return readFileSync(file, 'utf8').trimEnd().split('\n');
+}
+
+function firstLine(socketPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    let got = '';
+    socket.on('data', (data) => {
+      got += data.toString();
+      const newline = got.indexOf('\n');
+      if (newline < 0) return;
+      socket.destroy();
+      resolve(got.slice(0, newline));
+    });
+    socket.on('error', reject);
+    socket.on('close', () => reject(new Error(`${socketPath} closed before it sent a line`)));
+  });
 }
 
 describe("the fleet's children file", () => {
@@ -231,7 +205,6 @@ describe("the fleet's children file", () => {
       { name: 'twig', pid: pid('twig'), bootId: boot, dataDir: input('twig').dataDir },
     ]);
 
-    // Its group had nothing else, so its signal finds none, which is no failure.
     const logged: string[] = [];
     const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
     try {
@@ -264,21 +237,16 @@ describe("the fleet's children file", () => {
   test('a child is in the record, synced, and then in the file, from the moment its process exists, before it is ready', async () => {
     const childrenFile = childrenFilePath(parentDataDir());
     const { fleet, input, writes, atSync } = await startedFleet({ childrenFile });
-    // A child that never opens its socket stays starting until something ends it.
     writeFileSync(input().recipe, JSON.stringify({ noSocket: true }));
     const launched = launch(fleet, input());
     await until(() => typeof listed(childrenFile).find((c) => c.name === 'leaf')?.pid === 'number');
     const child = fleet.getChildren().get('leaf')!;
     expect(child.status).toBe('starting');
     expect(listed(childrenFile).find((c) => c.name === 'leaf')?.pid).toBe(child.pid);
-    // The record held the starting child, with its pid, and was synced before
-    // the file listed it.
     const recorded = writes.findIndex((w) => w !== 'sync' && w.children.leaf?.status === 'starting' && w.children.leaf.pid === child.pid);
     expect(recorded).toBeGreaterThanOrEqual(0);
     expect(writes[recorded + 1]).toBe('sync');
-    // At that sync, the file didn't list the child yet: it follows the record.
     expect(atSync[0]).toEqual([]);
-    // Stopping the fleet ends the child, and with it the launch.
     await fleet.stop();
     expect((await launched).success).toBe(false);
   });
@@ -290,16 +258,12 @@ describe("the fleet's children file", () => {
     const launched = launch(first.fleet, first.input());
     await until(() => typeof listed(childrenFile).find((c) => c.name === 'leaf')?.pid === 'number');
     const pid = first.fleet.getChildren().get('leaf')!.pid!;
-    // The next parent, as after this one was killed: its store holds the record
-    // made at the spawn.
     const next = await startedFleet({ childrenFile }, { record: first.record() });
     expect(next.fleet.getChildren().get('leaf')).toMatchObject({ status: 'starting', pid });
     expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid, bootId: machineBootId(), dataDir: first.input().dataDir }]);
     const again = await launch(next.fleet, first.input());
     expect(again.success).toBe(false);
-    const launches = join(first.input().dataDir, 'launches.jsonl');
-    await until(() => existsSync(launches));
-    expect(readFileSync(launches, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(await linesOf(join(first.input().dataDir, 'launches.jsonl'), 'the first child wrote its launch')).toHaveLength(1);
     await first.fleet.stop();
     expect((await launched).success).toBe(false);
   });
@@ -321,8 +285,6 @@ describe("the fleet's children file", () => {
     expect(fileWrites).toBe(1);
     expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
     expect(next.fleet.getChildren().get('twig')?.adopted).toBe(true);
-    // Each reattached child's ready event came while the map held only the
-    // children taken back so far; nothing was written until all were back.
     const records = next.writes.filter((w): w is Record_ => w !== 'sync');
     expect(records.map((w) => Object.keys(w.children).sort())).toEqual([['leaf', 'twig']]);
     expect(listed(childrenFile).map((c) => c.name)).toEqual(['leaf', 'twig']);
@@ -338,17 +300,13 @@ describe("the fleet's children file", () => {
         const childrenFile = childrenFilePath(parentData);
         const { fleet, input } = await startedFleet({ childrenFile });
         const boot = givesNone ? null : machineBootId();
-        // This test's own process stands for a child that still runs.
         const running = { name: 'kid-of-another-session', pid: process.pid, bootId: boot, dataDir: join(parentData, 'elsewhere') };
         const stopped = { name: 'old-kid', pid: deadPid(), bootId: boot, dataDir: join(parentData, 'gone') };
         const sameDirRunning = { name: 'another-generation', pid: process.pid, bootId: boot, dataDir: input().dataDir };
         const sameDirStopped = { name: 'earlier-generation', pid: deadPid(), bootId: boot, dataDir: input().dataDir };
-        // A pid of this boot's held by a live process, under another boot's
-        // id, isn't that child's; under no boot id at all, it may be.
         const otherBoot = { name: 'kid-of-another-boot', pid: process.pid, bootId: 'another-boot', dataDir: join(parentData, 'rebooted') };
         const unknownBoot = { name: 'kid-of-an-unknown-boot', pid: process.pid, bootId: null, dataDir: join(parentData, 'unknown') };
         const sameDirOtherBoot = { name: 'rebooted-generation', pid: process.pid, bootId: 'another-boot', dataDir: input().dataDir };
-        // Entries without a child's shape, kept as they are.
         const unreadable = [
           { name: 'no-directory', pid: 12, bootId: null },
           { name: 'odd-pid', pid: 'twelve', bootId: null, dataDir: join(parentData, 'odd') },
@@ -360,9 +318,6 @@ describe("the fleet's children file", () => {
           children: [running, sameDirStopped, sameDirRunning, sameDirOtherBoot, otherBoot, unknownBoot, ...unreadable, stopped],
         }));
         expect((await launch(fleet, input())).success).toBe(true);
-        // Where the machine gives no boot id, as on macOS, nothing tells
-        // another boot's pid from this one's, so the launcher reads a live one
-        // as possibly running, and the write keeps it.
         expect(listed(childrenFile)).toEqual([
           { name: 'leaf', pid: fleet.getChildren().get('leaf')!.pid, bootId: boot, dataDir: input().dataDir },
           running,
@@ -384,23 +339,17 @@ describe("the fleet's children file", () => {
     const { fleet, input } = await startedFleet({ childrenFile });
     expect((await launch(fleet, input('leaf'))).success).toBe(true);
     expect((await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
-    // As if the exited child's pid had since been reused by a live process
-    // leading a group of its own, which an entry of another session lists for
-    // the same directory.
     const reused = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
     try {
       (fleet.getChildren().get('leaf') as { pid: number | null }).pid = reused.pid!;
       const live = { name: 'another-generation', pid: reused.pid!, bootId: machineBootId(), dataDir: input('leaf').dataDir };
-      // And one with the child's own name, as the file's own earlier entry for
-      // it would be had its pid been taken before the retirement's write: kept,
-      // a hold the launcher names, rather than told apart from a live writer's.
-      const sameName = { ...live, name: 'leaf' };
-      writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [...listed(childrenFile), live, sameName] }));
+      const ownEntryWhosePidWasTaken = { ...live, name: 'leaf' };
+      writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [...listed(childrenFile), live, ownEntryWhosePidWasTaken] }));
       expect((await launch(fleet, input('twig'))).success).toBe(true);
       expect(listed(childrenFile).filter((c) => c.dataDir === input('leaf').dataDir)).toEqual([
         { name: 'leaf', pid: null, bootId: machineBootId(), dataDir: input('leaf').dataDir },
         live,
-        sameName,
+        ownEntryWhosePidWasTaken,
       ]);
     } finally {
       reused.kill('SIGKILL');
@@ -416,8 +365,6 @@ describe("the fleet's children file", () => {
     const helper = Number(readFileSync(helperPid, 'utf8'));
     const leader = first.fleet.getChildren().get('leaf')!.pid!;
     try {
-      // The first host has gone, as a real one would be: nothing of it hears
-      // the child end, which leaves its helper behind in its group.
       first.fleet.getChildren().get('leaf')!.process!.removeAllListeners('exit');
       process.kill(leader, 'SIGKILL');
       await until(() => !isAlive(leader));
@@ -431,8 +378,6 @@ describe("the fleet's children file", () => {
       expect((await launch(next.fleet, next.input('twig'))).success).toBe(true);
       expect(listed(childrenFile).find((c) => c.name === 'leaf')).toEqual(
         { name: 'leaf', pid: null, bootId: machineBootId(), dataDir: first.input().dataDir });
-      // Its group found empty, it's done with: a live group that takes its
-      // pid later doesn't bring it back.
       const reused = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
       try {
         (next.fleet.getChildren().get('leaf') as { pid: number | null }).pid = reused.pid!;
@@ -443,7 +388,7 @@ describe("the fleet's children file", () => {
         reused.kill('SIGKILL');
       }
     } finally {
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   });
 
@@ -454,8 +399,6 @@ describe("the fleet's children file", () => {
     expect((await first.fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
     const record = structuredClone(first.record()) as { children: Record<string, { pid: number | null; groupEnded?: boolean }> };
     delete record.children.leaf!.groupEnded;
-    // As if its pid had been taken since by a process leading a group of its
-    // own, which it can be only once the child's group has ended.
     const reused = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
     try {
       record.children.leaf!.pid = reused.pid!;
@@ -472,8 +415,6 @@ describe("the fleet's children file", () => {
   test("an earlier entry in a listed child's own directory whose process has ended is kept while the group it led has a member, and dropped once that group is empty", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
     const { fleet, input } = await startedFleet({ childrenFile });
-    // An earlier generation's leader has ended, and a process of its group
-    // still runs.
     const earlier = await leaderlessGroup();
     const entry = { name: 'earlier-generation', pid: earlier.pid, bootId: machineBootId(), dataDir: input().dataDir };
     try {
@@ -496,9 +437,6 @@ describe("the fleet's children file", () => {
     expect((await first.fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
     const record = structuredClone(first.record()) as { children: Record<string, { pid: number | null; groupEnded?: boolean }> };
     expect(record.children.leaf!.groupEnded).toBe(true);
-    // As if the ended child's pid had since been taken by a process leading a
-    // group of its own: one still running, and one that has ended while its
-    // group runs on, which only the record's own word tells from the child's.
     const reused = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
     const leaderless = await leaderlessGroup();
     try {
@@ -508,7 +446,6 @@ describe("the fleet's children file", () => {
         expect((await launch(next.fleet, next.input('twig'))).success).toBe(true);
         expect(listed(childrenFile).find((c) => c.name === 'leaf')).toEqual(
           { name: 'leaf', pid: null, bootId: machineBootId(), dataDir: first.input().dataDir });
-        // So the next iteration's listing is its own fleet's alone.
         await next.fleet.stop();
       }
     } finally {
@@ -562,8 +499,6 @@ describe("the fleet's children file", () => {
     expect((await first.fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })).success).toBe(true);
     const live = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
     try {
-      // As left by an adoption that failed, and then found the group empty,
-      // its pid since taken.
       const record = structuredClone(first.record()) as { children: Record<string, { pid: number | null; status: string; exitReason: string | null; groupEnded?: boolean }> };
       const leaf = record.children.leaf!;
       expect(leaf.groupEnded).toBe(true);
@@ -603,8 +538,6 @@ describe("the fleet's children file", () => {
       expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: leader, bootId: machineBootId(), dataDir: input().dataDir }]);
       expect(logged).toContain(`[fleet] couldn't end what's left of child "leaf"'s process group (${leader}): EPERM, so the ` +
         'children file lists the child while that group may have a process.');
-      // Its stop says the signal was refused, not that a process outlasted
-      // it, and waits for nothing, since no signal went out.
       const probe = fleet as unknown as { groupInUse: (pid: number | null) => boolean };
       const probing = spyOn(probe, 'groupInUse');
       let result: Result;
@@ -621,9 +554,8 @@ describe("the fleet's children file", () => {
     } finally {
       refused.mockRestore();
       log.mockRestore();
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
-    // A host with no children file says the refusal alone.
     const bare = await startedFleet();
     writeFileSync(bare.input().recipe, JSON.stringify({}));
     expect((await launch(bare.fleet, bare.input())).success).toBe(true);
@@ -646,9 +578,7 @@ describe("the fleet's children file", () => {
 
   test("a child's entry keeps its pid while what it left in its group is still there, though the group was signalled, and loses it at the fleet's own write once that has gone, with no other event", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
-    // The write after the exit is armed for the time a stop gives a group,
-    // here a minute, and run below once the group has ended.
-    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: 60_000 });
+    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: GROUP_END_WAIT_MS });
     const helperPid = join(dir, 'helper.pid');
     writeFileSync(input().recipe, JSON.stringify({ helperPid }));
     expect((await launch(fleet, input())).success).toBe(true);
@@ -661,7 +591,7 @@ describe("the fleet's children file", () => {
       if (pid === -leader && signal === 'SIGKILL') return true;
       return kill(pid, signal);
     }) as typeof process.kill);
-    const later = laterWrites(60_000);
+    const later = laterWrites(GROUP_END_WAIT_MS);
     const rewrites = later.rewrites;
     try {
       kill(leader, 'SIGKILL');
@@ -671,24 +601,22 @@ describe("the fleet's children file", () => {
       expect(rewrites).toHaveLength(1);
       expect(later.unrefed()).toEqual([true]);
       kill(helper, 'SIGKILL');
-      // Reaped too, so its group has no member left.
       await waitFor(() => { try { kill(-leader, 0); return false; } catch { return true; } }, 'the group emptied');
-      // The fleet's own write after the exit finds the group empty.
       rewrites[0]!();
       expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: null, bootId: machineBootId(), dataDir: input().dataDir }]);
     } finally {
       later.restore();
       slow.mockRestore();
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   });
 
   test("a child whose group is found empty at its exit's write is retired then, and the fleet arms no later write for it", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
-    const { fleet, input } = await startedFleet({ childrenFile, groupEndWaitMs: 60_000 });
+    const { fleet, input } = await startedFleet({ childrenFile, groupEndWaitMs: GROUP_END_WAIT_MS });
     expect((await launch(fleet, input())).success).toBe(true);
     const leader = fleet.getChildren().get('leaf')!.pid!;
-    const later = laterWrites(60_000);
+    const later = laterWrites(GROUP_END_WAIT_MS);
     try {
       process.kill(leader, 'SIGKILL');
       await waitFor(() => fleet.getChildren().get('leaf')?.status === 'crashed', 'the child exited');
@@ -701,7 +629,7 @@ describe("the fleet's children file", () => {
 
   test("the fleet's own write after a child's exit, should the store refuse it, is logged, not thrown", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
-    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: 60_000 });
+    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: GROUP_END_WAIT_MS });
     const helperPid = join(dir, 'helper.pid');
     writeFileSync(input().recipe, JSON.stringify({ helperPid }));
     expect((await launch(fleet, input())).success).toBe(true);
@@ -712,7 +640,7 @@ describe("the fleet's children file", () => {
       if (pid === -leader && signal === 'SIGKILL') return true;
       return kill(pid, signal);
     }) as typeof process.kill);
-    const later = laterWrites(60_000);
+    const later = laterWrites(GROUP_END_WAIT_MS);
     const rewrites = later.rewrites;
     const logged: string[] = [];
     try {
@@ -731,37 +659,38 @@ describe("the fleet's children file", () => {
     } finally {
       later.restore();
       slow.mockRestore();
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   });
 
-  /** A spy under which the fleet finds the group a pid led in use while
-   *  `held` says so, as a group whose SIGKILL is slow to end it. */
-  function holdGroups(fleet: FleetModule, held: (pid: number | null) => boolean): { restore: () => void } {
+  function holdGroups(fleet: FleetModule, held: (pid: number | null) => boolean): { restore: () => void; heldFound: (pid: number) => number } {
     const probe = fleet as unknown as { groupInUse: (pid: number | null) => boolean };
     const inUse = probe.groupInUse.bind(fleet);
-    const spy = spyOn(probe, 'groupInUse').mockImplementation((pid) => held(pid) || inUse(pid));
-    return { restore: () => spy.mockRestore() };
+    const found = new Map<number, number>();
+    const spy = spyOn(probe, 'groupInUse').mockImplementation((pid) => {
+      if (pid !== null && held(pid)) {
+        found.set(pid, (found.get(pid) ?? 0) + 1);
+        return true;
+      }
+      return inUse(pid);
+    });
+    return { restore: () => spy.mockRestore(), heldFound: (pid) => found.get(pid) ?? 0 };
   }
 
   test("a stop returns once the group it signalled is found empty, listing no pid then, a stop of a child that has just exited and the host's stop included", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
-    // A wait long enough that only the group's end can end it here.
-    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: 60_000 });
-    // Each child leaves a helper in its group, so the signal to it goes out.
+    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: GROUP_END_WAIT_MS });
     writeFileSync(input().recipe, JSON.stringify({ helperPid: join(dir, 'helper.pid') }));
     for (const name of ['leaf', 'twig', 'bud']) expect((await launch(fleet, input(name))).success).toBe(true);
     const pids = new Map([...fleet.getChildren()].map(([name, c]) => [name, c.pid!]));
     const holding = new Set(pids.values());
     const held = holdGroups(fleet, (pid) => pid !== null && holding.has(pid));
-    /** Starts `stop`, waits until the group's signal has gone out, then shows
-     *  the stop still waiting and the pid still listed while the group is
-     *  held, and done, with no pid, once it's let go. */
     const waitsFor = async (name: string, stop: () => Promise<unknown>): Promise<unknown> => {
       let settled = false;
       const stopping = stop().then((result) => { settled = true; return result; });
       await waitFor(() => fleet.getChildren().get(name)?.groupSignal === 'sent', `${name}'s signal to its group`);
-      await new Promise((wait) => setTimeout(wait, 500));
+      const before = held.heldFound(pids.get(name)!);
+      await waitFor(() => held.heldFound(pids.get(name)!) >= before + 2, `${name}'s stop finding its group held twice`);
       expect(settled, name).toBe(false);
       expect(listed(childrenFile).find((c) => c.name === name)?.pid, name).toBe(pids.get(name));
       holding.delete(pids.get(name)!);
@@ -773,12 +702,10 @@ describe("the fleet's children file", () => {
       const result = await waitsFor('leaf', () => fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } })) as Result;
       expect(result.success).toBe(true);
       expect((result.data as { note?: string }).note).toBeUndefined();
-      // A child that has just exited, its group still ending: fleet--kill waits.
       process.kill(pids.get('twig')!, 'SIGKILL');
       await waitFor(() => fleet.getChildren().get('twig')?.status === 'crashed', 'twig exited');
       const again = await waitsFor('twig', () => fleet.handleToolCall({ id: 'kill-twig', name: 'kill', input: { name: 'twig' } })) as Result;
       expect((again.data as { note?: string }).note).toBe('already stopped');
-      // And the host's stop, of a child that has just exited.
       process.kill(pids.get('bud')!, 'SIGKILL');
       await waitFor(() => fleet.getChildren().get('bud')?.status === 'crashed', 'bud exited');
       await waitsFor('bud', () => fleet.stop());
@@ -812,7 +739,7 @@ describe("the fleet's children file", () => {
 
   test("a stop whose write of its group's end fails says so, and goes on", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
-    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: 60_000 });
+    const { fleet, dir, input } = await startedFleet({ childrenFile, groupEndWaitMs: GROUP_END_WAIT_MS });
     writeFileSync(input().recipe, JSON.stringify({ helperPid: join(dir, 'helper.pid') }));
     expect((await launch(fleet, input())).success).toBe(true);
     const leader = fleet.getChildren().get('leaf')!.pid!;
@@ -825,7 +752,6 @@ describe("the fleet's children file", () => {
     try {
       const stopping = fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
       await waitFor(() => fleet.getChildren().get('leaf')?.groupSignal === 'sent', 'the signal to its group');
-      // The next write, the retirement's, is refused.
       refusing = spyOn(record, 'persistState').mockImplementationOnce(() => { throw new Error('the store refused the write'); });
       holding = false;
       const stopped = await stopping;
@@ -873,7 +799,6 @@ describe("the fleet's children file", () => {
       end(child, live.pid!);
       expect(signals).toEqual([-live.pid!]);
       expect(child.groupSignal).toBe('sent');
-      // One whose signal found its group empty is retired, and gets no other.
       const gone = { name: 'twig', pid: live.pid } as Record<string, unknown>;
       counting.mockImplementation(((pid: number) => {
         if (pid < 0) signals.push(pid);
@@ -897,8 +822,6 @@ describe("the fleet's children file", () => {
     expect((await launch(fleet, input())).success).toBe(true);
     const leader = fleet.getChildren().get('leaf')!.pid!;
     const helper = Number(readFileSync(helperPid, 'utf8'));
-    // The signal itself is what's checked, at the write: the helper's end
-    // after it takes as long as the machine takes.
     const kill = process.kill.bind(process);
     const signals: Array<[number, unknown]> = [];
     const recording = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
@@ -920,7 +843,7 @@ describe("the fleet's children file", () => {
     } finally {
       writing.mockRestore();
       recording.mockRestore();
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   });
 
@@ -937,7 +860,7 @@ describe("the fleet's children file", () => {
       (fleet as unknown as { killAllOnExitSync: () => void }).killAllOnExitSync();
       await waitFor(() => processEnded(helper), 'the helper ended with its child');
     } finally {
-      try { process.kill(helper, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(helper, 'SIGKILL'); } catch { }
     }
   });
 
@@ -945,8 +868,6 @@ describe("the fleet's children file", () => {
     const parentData = parentDataDir();
     const childrenFile = childrenFilePath(parentData);
     const { fleet, input } = await startedFleet({ childrenFile });
-    // A leader that leaves a member in its group and ends, as a store audit
-    // whose helper outlives it.
     const leader = spawn('sh', ['-c', 'sleep 60 & echo $!'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const member = await new Promise<number>((read, failed) => {
       let out = '';
@@ -956,7 +877,9 @@ describe("the fleet's children file", () => {
       });
       leader.once('close', () => failed(new Error(`the leader wrote no line with its member's pid: ${JSON.stringify(out)}`)));
     });
-    // A pid of 0 or less would signal this runner's own group, or every process.
+    // Only a positive pid names one process: kill() takes 0 as this process's
+    // group, -1 as every process it may signal, and another negative pid as
+    // that group.
     expect(Number.isSafeInteger(member) && member > 0, String(member)).toBe(true);
     await waitFor(() => !isAlive(leader.pid!), 'the leader ended');
     try {
@@ -971,7 +894,7 @@ describe("the fleet's children file", () => {
       expect((await launch(fleet, input('twig'))).success).toBe(true);
       expect(listed(childrenFile).filter((c) => c.name !== 'leaf' && c.name !== 'twig')).toEqual([{ ...entry, pid: null }]);
     } finally {
-      try { process.kill(member, 'SIGKILL'); } catch { /* gone */ }
+      try { process.kill(member, 'SIGKILL'); } catch { }
     }
   });
 
@@ -1012,8 +935,8 @@ describe("the fleet's children file", () => {
   test("a launch whose child the children file can't list stops the child and fails, saying why", async () => {
     const childrenFile = childrenFilePath(parentDataDir());
     const { fleet, input } = await startedFleet({ childrenFile });
-    // Where the write's temporary file goes, a directory: the write fails,
-    // for root as for anyone.
+    // A directory where the write's temporary file goes fails the write, for root
+    // as for anyone.
     mkdirSync(`${childrenFile}.tmp`);
     const logged = spyOn(console, 'error').mockImplementation(() => {});
     let result: Result;
@@ -1029,55 +952,59 @@ describe("the fleet's children file", () => {
     expect(child.pid).toBeNumber();
     expect(child.status).toBe('crashed');
     expect(() => process.kill(child.pid!, 0)).toThrow();
-    // Never told to begin, it wrote nothing in its directory.
     expect(existsSync(join(input().dataDir, 'launches.jsonl'))).toBe(false);
   });
 
   test("a fleet that keeps the file tells its child to begin only once the file lists it", async () => {
-    const hold = await holdForBegin();
     const childrenFile = childrenFilePath(parentDataDir());
     const { fleet, dir, input } = await startedFleet({ childrenFile });
-    const atGate = join(dir, 'at-gate');
     const begun = join(dir, 'begun');
-    writeFileSync(input().recipe, JSON.stringify({ atGate, begun }));
-    // The listing's write waits until the child has come to its wait, and
-    // then holds, as a slow disk can: a child told before the write lands
-    // would begin meanwhile.
-    const seen: Array<{ atGate: boolean; begun: boolean }> = [];
-    const write = contract.writeJsonAtomic;
-    const writing = spyOn(contract, 'writeJsonAtomic').mockImplementation((path: string, value: unknown) => {
-      if (path === childrenFile && seen.length === 0) {
-        const there = holdUntil(() => existsSync(atGate), 30_000);
-        holdUntil(() => false, hold);
-        seen.push({ atGate: there, begun: existsSync(begun) });
+    writeFileSync(input().recipe, JSON.stringify({ begun }));
+    const toldWhileListed: boolean[] = [];
+    const spawnReal = childProcess.spawn as (...args: unknown[]) => ChildProcess;
+    const spawning = spyOn(childProcess, 'spawn').mockImplementation(((...args: unknown[]) => {
+      const proc = spawnReal(...args);
+      const stdin = proc.stdin as unknown as Record<'write' | 'end', (...parts: unknown[]) => unknown> | null;
+      for (const method of ['write', 'end'] as const) {
+        if (!stdin) break;
+        const send = stdin[method].bind(stdin);
+        stdin[method] = (...parts: unknown[]) => {
+          if (parts.some((part) => (typeof part === 'string' || Buffer.isBuffer(part)) && part.includes('\n'))) {
+            toldWhileListed.push(listed(childrenFile).some((entry) => entry.name === 'leaf' && entry.pid === proc.pid));
+          }
+          return send(...parts);
+        };
       }
-      write(path, value);
-    });
+      return proc;
+    }) as unknown as typeof childProcess.spawn);
     let result: Result;
     try {
       result = await launch(fleet, input());
     } finally {
-      writing.mockRestore();
+      spawning.mockRestore();
     }
     expect(result.success, result.error).toBe(true);
-    expect(seen).toEqual([{ atGate: true, begun: false }]);
-    expect(existsSync(begun)).toBe(true);
+    expect(toldWhileListed).toContain(true);
+    expect(toldWhileListed).not.toContain(false);
+    await waitFor(() => existsSync(begun), 'the told child began');
   });
 
   test("a child that's never told waits, doing nothing in its data directory, and ends when its stdin does, a line without its end included", async () => {
-    const hold = await holdForBegin();
     for (const sent of ['', 'no newline']) {
       const dir = mkdtempSync(join(parentDataDir(), 'untold-'));
       const atGate = join(dir, 'at-gate');
       const begun = join(dir, 'begun');
-      const child = standIn(dir, { atGate, begun });
+      const chunks = join(dir, 'chunks');
+      const child = standIn(dir, { atGate, begun, chunks });
       const exit = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
       await waitFor(() => existsSync(atGate), 'the child came to its wait');
-      if (sent !== '') child.stdin!.write(sent);
-      await Bun.sleep(hold);
-      expect(child.exitCode, sent).toBeNull();
-      expect(existsSync(begun), sent).toBe(false);
-      expect(readdirSync(join(dir, 'data')), sent).toEqual([]);
+      if (sent !== '') {
+        child.stdin!.write(sent);
+        await waitFor(() => existsSync(chunks) || child.exitCode !== null, 'the child read what was sent');
+        expect(child.exitCode, sent).toBeNull();
+        expect(existsSync(begun), sent).toBe(false);
+        expect(readdirSync(join(dir, 'data')), sent).toEqual([]);
+      }
       child.stdin!.end();
       expect(await exit, sent).toBe(1);
       expect(existsSync(begun), sent).toBe(false);
@@ -1086,20 +1013,20 @@ describe("the fleet's children file", () => {
   });
 
   test("a child whose line comes in pieces begins at its newline, with the begin variable gone from its env", async () => {
-    const hold = await holdForBegin();
     const dir = mkdtempSync(join(parentDataDir(), 'pieces-'));
     const atGate = join(dir, 'at-gate');
     const begun = join(dir, 'begun');
-    const child = standIn(dir, { atGate, begun });
+    const chunks = join(dir, 'chunks');
+    const child = standIn(dir, { atGate, begun, chunks });
     await waitFor(() => existsSync(atGate), 'the child came to its wait');
     child.stdin!.write('a');
-    await Bun.sleep(hold);
+    await waitFor(() => existsSync(chunks) || child.exitCode !== null, "the child read the line's first piece");
+    expect(child.exitCode).toBeNull();
     expect(existsSync(begun)).toBe(false);
     child.stdin!.write('\n');
-    await waitFor(() => existsSync(join(dir, 'data', 'launches.jsonl')), 'the child began');
+    const [row] = await linesOf(join(dir, 'data', 'launches.jsonl'), 'the child began');
     expect(existsSync(begun)).toBe(true);
-    const [row] = readFileSync(join(dir, 'data', 'launches.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(row.begin).toBeNull();
+    expect(JSON.parse(row!).begin).toBeNull();
   });
 
   test("a child whose stdin fails as it waits ends, having done nothing in its data directory", async () => {
@@ -1108,24 +1035,25 @@ describe("the fleet's children file", () => {
     const child = standIn(dir, { begun, stdinErrorAtGate: true });
     const code = await new Promise<number | null>((done) => child.on('close', (exited) => done(exited)));
     expect(code).toBe(1);
-    // Its own exit, not an unhandled error's.
     expect(stderrOf.get(child)!.join('')).toBe('');
     expect(existsSync(begun)).toBe(false);
     expect(readdirSync(join(dir, 'data'))).toEqual([]);
   });
 
   test("a told child goes on once its stdin has ended", async () => {
-    const hold = await holdForBegin();
     const dir = mkdtempSync(join(parentDataDir(), 'told-'));
     const atGate = join(dir, 'at-gate');
-    const child = standIn(dir, { atGate });
+    const stdinDone = join(dir, 'stdin-done');
+    const socketPath = join(dir, 'data', 'ipc.sock');
+    const child = standIn(dir, { atGate, stdinDone });
     await waitFor(() => existsSync(atGate), 'the child came to its wait');
     child.stdin!.write('\n');
-    await waitFor(() => existsSync(join(dir, 'data', 'headless.pid')), 'the told child began');
+    await waitFor(() => existsSync(socketPath) || child.exitCode !== null, 'the told child began');
     child.stdin!.end();
-    await Bun.sleep(hold);
+    await waitFor(() => existsSync(stdinDone) || child.exitCode !== null, 'the told child had nothing more from its stdin');
     expect(child.exitCode).toBeNull();
     expect(child.signalCode).toBeNull();
+    expect(JSON.parse(await firstLine(socketPath))).toMatchObject({ phase: 'ready' });
   });
 
   test("a fleet whose child's end of the pipe is gone before its line fails that launch, and goes on", async () => {
@@ -1133,8 +1061,6 @@ describe("the fleet's children file", () => {
     const { fleet, dir, input } = await startedFleet({ childrenFile, socketWaitTimeoutMs: 500 });
     const atGate = join(dir, 'at-gate');
     writeFileSync(input().recipe, JSON.stringify({ atGate, closeStdinAtGate: true }));
-    // The listing's write waits until the child has closed its stdin, so the
-    // line goes to a pipe nobody reads.
     const write = contract.writeJsonAtomic;
     let there: boolean | undefined;
     const writing = spyOn(contract, 'writeJsonAtomic').mockImplementation((path: string, value: unknown) => {
@@ -1150,7 +1076,6 @@ describe("the fleet's children file", () => {
     expect(there).toBe(true);
     expect(result.success).toBe(false);
     expect(result.error).toStartWith("Child 'leaf' didn't start (launch failed");
-    // The host goes on: another launch succeeds.
     writeFileSync(join(dir, 'other.json'), JSON.stringify({}));
     expect((await launch(fleet, { name: 'twig', recipe: join(dir, 'other.json'), dataDir: join(dir, 'twig') })).success).toBe(true);
   });
@@ -1170,7 +1095,6 @@ describe("the fleet's children file", () => {
     expect(listed(childrenFile)).toEqual([
       { name: 'leaf', pid: fleet.getChildren().get('leaf')!.pid, bootId: machineBootId(), dataDir: input().dataDir },
     ]);
-    // And a fleet with no store at all.
     const bareFile = childrenFilePath(parentDataDir());
     const dir = mkdtempSync(join(tmpdir(), 'fleet-children-file-'));
     const recipe = join(dir, 'recipe.json');
@@ -1208,7 +1132,6 @@ describe("the fleet's children file", () => {
       expect(note(withFile, { groupEnded: true })).toBeUndefined();
       expect(note(withFile, { bootId: 'an-earlier-boot', startedAt: 1 })).toBeUndefined();
       expect(note(withFile, { pid: deadPid() })).toBeUndefined();
-      // A live process at the pid is another's, the child's group having ended.
       const other = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
       try {
         expect(note(withFile, { pid: other.pid })).toBeUndefined();
@@ -1225,7 +1148,6 @@ describe("the fleet's children file", () => {
     const { fleet, input } = await startedFleet({ childrenFile });
     mkdirSync(`${childrenFile}.tmp`);
     const internal = fleet as unknown as { stopping: boolean };
-    // The host begins to detach as the launch's record is synced.
     fleet.setStoreSync(() => {
       internal.stopping = true;
       fleet.setDetachMode(true);

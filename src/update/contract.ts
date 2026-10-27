@@ -1,8 +1,7 @@
 /**
  * The contract between a running host and the launcher of an install that
  * updates itself: every file one side writes and the other reads, where it
- * lives, and its form. Both halves import this module rather than restating
- * any of it.
+ * lives, and its form.
  *
  * An install keeps each release side by side under one root, which the entry
  * point passes to the host as CONNECTOME_INSTALL_ROOT. A host started without
@@ -14,10 +13,9 @@
  *
  * The rule for changing it: a field never changes meaning in place. A new
  * meaning is a new field, and the old one keeps being written, so the release
- * before can still read everything a newer host writes, and its fallback never
- * strands. Added fields keep `v: 1`, and readers ignore fields they don't know.
- * A reader that meets any other `v` refuses, naming the file: that guards
- * against a mistake, not a planned break.
+ * before can still read everything a newer host writes, and its fallback
+ * never strands. Added fields keep `v: 1`, and readers ignore fields they
+ * don't know. A reader that meets any other `v` refuses, naming the file.
  *
  * Who writes what:
  * - the host: the mark (Restart, and its Go back), the fleet's children
@@ -34,8 +32,7 @@
  * The journal has one writer at a time: the launcher appends before it starts
  * a release and after one ends, and the host while it runs. A mark is written
  * only after a commit, by the committed host or by the launcher of the
- * release `current` names, so the launcher that acts on a mark is always the
- * committed release's.
+ * release `current` names.
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -49,9 +46,9 @@ export const INSTALL_ROOT_ENV = 'CONNECTOME_INSTALL_ROOT';
 
 /** The entry point setup writes in the install root: the service runs it as
  *  it ran the host, and it hands over to the launcher of the release
- *  `current` names. It stays as setup wrote it, so it does as little as it
- *  can. Run from a shell with `--go-back`, the launcher asks the next start
- *  for a Go back instead (launcher.ts). */
+ *  `current` names. It stays as setup wrote it. Run from a shell with
+ *  `--go-back`, the launcher asks the next start for a Go back instead
+ *  (launcher.ts). */
 export const ENTRY_POINT = 'start.js';
 
 /** The host's exit status when it stops so that its next start switches
@@ -145,25 +142,24 @@ export function copyItemName(position: number, path: string): string {
 }
 
 /** Where a restore keeps what a file item held before it, named by the mark
- *  it acts on, so a retry finds the one it started: the file's content under
- *  `kept/`, or under `absent/` an empty note that it wasn't there, each under
- *  the item's name in the copy (copyItemName), so no two share an entry. A
- *  Go back's own fallback keeps what the older release's trial left the same
- *  way under `put-back/`. A Go back that keeps the newer data keeps a copy of
- *  each file here too, before the older release's trial, so that trial's
- *  fallback can put it back. Each file's content is copied there, since the
- *  item may be on another filesystem. A directory item's content is set
- *  aside inside it instead (itemSetAsideDir). A Go back keeps its list of places
+ *  it acts on: the file's content under `kept/`, or under `absent/` an empty
+ *  note that it wasn't there, each under the item's name in the copy
+ *  (copyItemName), so no two share an entry. A Go back's own fallback keeps
+ *  what the older release's trial left the same way under `put-back/`. A Go
+ *  back that keeps the newer data keeps a copy of each file here too, before
+ *  the older release's trial, so that trial's fallback can put it back. Each
+ *  file's content is copied there. A directory item's content is set aside
+ *  inside it instead (itemSetAsideDir). A Go back keeps its list of places
  *  here too (goBackListPath). */
 export function setAsideDir(root: string, markId: string): string {
   return join(root, 'set-aside', segment(markId, 'mark id'));
 }
 
 /** Where a restore sets aside a directory item's newer content: inside the
- *  item, under the launcher's `.connectome-update/`, so no rename crosses
- *  a filesystem. A Go back that keeps the newer data sets a copy of it aside
- *  here too, before the older release's trial, so that trial's fallback can
- *  put it back. The launcher's copy of an item leaves that directory out. */
+ *  item, under the launcher's `.connectome-update/`. A Go back that keeps
+ *  the newer data sets a copy of it aside here too, before the older
+ *  release's trial, so that trial's fallback can put it back. The
+ *  launcher's copy of an item leaves that directory out. */
 export function itemSetAsideDir(item: string, markId: string): string {
   return join(item, ITEM_UPDATE_DIR, 'set-aside', segment(markId, 'mark id'));
 }
@@ -174,17 +170,12 @@ export function itemSetAsideDir(item: string, markId: string): string {
 export const ITEM_UPDATE_DIR = '.connectome-update';
 
 /** The fleet's children file, in the parent's data directory: each child of
- *  the host's fleet, in any of its sessions, with its process, boot and data
- *  directory, which the launcher checks before a switch. The launcher reads
- *  it before anything is copied or restored, since a restore puts back the
- *  data directory's earlier contents, this file's included. */
+ *  the host's fleet, in any of its sessions, with its process, boot and
+ *  data directory, which the launcher checks before a switch. The launcher
+ *  reads it before anything is copied or restored. */
 export function childrenFilePath(dataDir: string): string {
   return join(dataDir, 'fleet-children.json');
 }
-
-// ---------------------------------------------------------------------------
-// The forms
-// ---------------------------------------------------------------------------
 
 /** install.json, written by setup. */
 export interface InstallRecord {
@@ -290,10 +281,9 @@ export interface CopyLabel {
   at: string;
   /** Each item the copy holds, one at least: where it lives, as an absolute
    *  path, and its name in the copy, which copyItemName gives from its
-   *  position in this list and that path. A reader checks that the name is one
-   *  path segment starting with that position and a `-`, and nothing after
-   *  that, so a later release can change what follows the `-`. The `-` keeps
-   *  position 1 from taking position 10's name. */
+   *  position in this list and that path. A reader checks that the name is
+   *  one path segment starting with that position and a `-`, and nothing
+   *  after that, so a later release can change what follows the `-`. */
   items: Array<{ path: string; name: string }>;
   /** The places the switch would have copied that weren't there, such as a
    *  fleet child's data directory before the child first ran, each with the
@@ -315,11 +305,11 @@ export const PLACE_KINDS = ['dir', 'file', 'none'] as const;
 export type PlaceKind = typeof PLACE_KINDS[number];
 
 /** A Go back's list of its places, at goBackListPath, written before
- *  anything else of the Go back so whatever it left can be found: one place
- *  at least, since a Go back always lists the data directory, each with its
- *  absolute path, its name in what the Go back keeps (copyItemName, numbered
- *  by its position in the list), what it held when the Go back began, which
- *  the Go back's fallback puts back, and what the Go back puts there. */
+ *  anything else of the Go back: one place at least, since a Go back always
+ *  lists the data directory, each with its absolute path, its name in what
+ *  the Go back keeps (copyItemName, numbered by its position in the list),
+ *  what it held when the Go back began, which the Go back's fallback puts
+ *  back, and what the Go back puts there. */
 export interface GoBackList {
   v: 1;
   places: Array<{ path: string; name: string; before: PlaceKind; target: PlaceKind }>;
@@ -331,9 +321,8 @@ export function goBackListPath(root: string, markId: string): string {
 }
 
 /** The places of the Go back under `markId`. A list that's missing, or whose
- *  contents this release can't read, is a ContractError, since nothing else
- *  says what the Go back changed; a filesystem error reading it is passed on
- *  as it is. */
+ *  contents this release can't read, is a ContractError; a filesystem error
+ *  reading it is passed on as it is. */
 export function readGoBackList(root: string, markId: string): GoBackList['places'] {
   const path = goBackListPath(root, markId);
   const list = readRecord<GoBackList>(path, "Go back's list of places");
@@ -353,14 +342,14 @@ export function readGoBackList(root: string, markId: string): GoBackList['places
 
 /** fleet-children.json, written by the fleet. Each write lists the fleet's
  *  own children as its record has them, and keeps what's already there that
- *  it doesn't replace, such as another session's child (writeChildrenFile in
- *  the fleet module). A `pid` is null once nothing of the child can be
- *  running: the fleet found the process group it led, whose id is its pid,
- *  empty after the child ended, whether or not it signalled that group, or
- *  the record is from an earlier boot. Until then the child keeps its pid,
- *  and the launcher reads it as running while a process holds that pid or
- *  the group has a member, its boot this one's or unknown. A store audit's entry is written and
- *  read the same way. */
+ *  it doesn't replace, such as another session's child. A `pid` is null
+ *  once nothing of the child can be running: the fleet found the process
+ *  group it led, whose id is its pid, empty after the child ended, whether
+ *  or not it signalled that group, or the record is from an earlier boot.
+ *  Until then the child keeps its pid, and the launcher reads it as running
+ *  while a process holds that pid or the group has a member, its boot this
+ *  one's or unknown. A store audit's entry is written and read the same
+ *  way. */
 export interface ChildrenFile {
   v: 1;
   children: Array<{ name: string; pid: number | null; bootId: string | null; dataDir: string }>;
@@ -396,10 +385,6 @@ export function isChildEntry(entry: unknown): entry is ChildrenFile['children'][
     (e.pid === null || typeof e.pid === 'number') && (e.bootId === null || typeof e.bootId === 'string');
 }
 
-// ---------------------------------------------------------------------------
-// Reading and writing
-// ---------------------------------------------------------------------------
-
 export class ContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -407,17 +392,11 @@ export class ContractError extends Error {
   }
 }
 
-/** Whether `value` can name one entry of a directory: a non-empty string with
- *  no separator or NUL, neither `.` nor `..`, and no longer than an entry's
- *  name can be (NAME_MAX). */
 function pathSegment(value: unknown): value is string {
   return typeof value === 'string' && value !== '' && value !== '.' && value !== '..' &&
     !value.includes('/') && !value.includes('\0') && Buffer.byteLength(value) <= NAME_MAX;
 }
 
-/** `value`, when it is one path segment, or a ContractError: every path this
- *  module builds from a release or a mark id takes it as one entry of a
- *  directory, wherever the value came from. */
 function segment(value: string, what: string): string {
   if (!pathSegment(value)) {
     throw new ContractError(`The ${what} ${JSON.stringify(value)} isn't one path segment, so it can't name a directory.`);
@@ -431,10 +410,8 @@ export function syncDir(dir: string): void {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-/** Write all of `text`. A write can come back short, as when the disk fills
- *  or the file reaches its size limit, so each write goes on from where the
- *  last one stopped, until every byte is written or a write fails with the
- *  reason. */
+/** A write can come back short, as when the disk fills or the file reaches
+ *  its size limit. */
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, 'utf-8');
   for (let done = 0; done < bytes.length;) done += writeSync(fd, bytes, done, bytes.length - done);
@@ -494,8 +471,7 @@ function checkVersion<T>(value: unknown, named: string): T {
 /** Append one line to the journal and sync it, and the root, so a later start
  *  can trust it whichever append created the journal. A last line without its
  *  newline was cut off as it was written, and readJournal takes it as not
- *  recorded. It's cut away first: this line would otherwise join it, and no
- *  later read could get past the two. */
+ *  recorded. It's cut away first. */
 export function appendJournal(root: string, line: Omit<JournalLine, 'v'>): void {
   const path = installPaths(root).journal;
   cutTornTail(path);
@@ -509,7 +485,6 @@ export function appendJournal(root: string, line: Omit<JournalLine, 'v'>): void 
   syncDir(root);
 }
 
-/** Cut a last line left without its newline back to the line before it. */
 function cutTornTail(path: string): void {
   let bytes: Buffer;
   try {
@@ -565,8 +540,7 @@ export function readCurrent(root: string): string | null {
 export function moveCurrent(root: string, version: string): void {
   const { current } = installPaths(root);
   const target = join('releases', segment(version, 'release'));
-  // Fixed, since there is one writer at a time. A link can't be made over one
-  // a crash left, so that one is removed first; only its absence is no error.
+  // A link can't be made over one a crash left, so that one is removed first.
   const tmp = `${current}.tmp`;
   try {
     unlinkSync(tmp);
@@ -651,17 +625,14 @@ export function pendingGoBack(lines: JournalLine[]): JournalLine | null {
 
 /** Whether a mark's request has run its course: its switch committed, so
  *  `current` names its `to`, or a fallback that names it succeeded, so the
- *  same failing request isn't run again. A request refused before it touched
- *  the data isn't spent by its line: the launcher removes its mark once the
- *  line is synced, and a start cut off between the two tries it once more,
- *  still the start right after the host's stop. A Go back's
- *  `go-back` line doesn't spend its mark, since the Go back is under way from
- *  there, not done. Like any mark, it's spent by its commit, the older
- *  release's, or by a successful fallback that names it. It needs no clock,
- *  since a new request to the same release has a new id. */
+ *  same failing request isn't run again. A request refused before it
+ *  touched the data isn't spent by its line: the launcher removes its mark
+ *  once the line is synced, and a start cut off between the two tries it
+ *  once more, still the start right after the host's stop. A Go back's
+ *  `go-back` line doesn't spend its mark, since the Go back is under way
+ *  from there, not done. Like any mark, it's spent by its commit, the older
+ *  release's, or by a successful fallback that names it. */
 export function markSpent(mark: Mark, lines: JournalLine[], current: string | null): boolean {
-  // No line can say that a mark without an id has run, though a line that
-  // names no mark has no id either.
   return current === mark.to || (typeof mark.id === 'string' &&
     lines.some((line) => line.step === 'fallback' && line.outcome === 'ok' && line.mark === mark.id));
 }
@@ -709,7 +680,7 @@ export function readMark(root: string): Mark | null {
  *  that error as `unsynced`, which its writer tells the operator. A power cut
  *  that loses the unsynced entry leaves what stood before the write: no
  *  request, so the release that ran starts and ends the switch's quiesce, or
- *  the request this one replaced. `write` is a test's seam. */
+ *  the request this one replaced. */
 export function writeMark(
   root: string, request: Pick<Mark, 'to' | 'why' | 'keepData'>, now: Date = new Date(), write = writeJsonAtomic,
 ): { mark: Mark; unsynced: Error | null } {
@@ -725,10 +696,6 @@ export function writeMark(
     try {
       standing = readRecord<Mark>(path, 'mark');
     } catch {
-      // A file that isn't a record isn't this write's mark, which went in
-      // whole. One that can't be read at all is taken as not this write's
-      // either: reading a file this process has just renamed into place, its
-      // own descriptor closed, fails only on a filesystem that's failing.
     }
     if (standing?.id !== mark.id) throw error;
     return { mark, unsynced: error instanceof Error ? error : new Error(String(error)) };

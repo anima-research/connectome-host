@@ -1,10 +1,3 @@
-/**
- * Setup (src/update/setup.ts): the one step by hand that makes an npm install
- * of the host update itself, and the entry point it writes. Each test builds
- * an install on disk (its package.json, lockfile and node_modules holding the
- * host) and a data directory, runs setup with the service's units stood in,
- * and reads what it left.
- */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import {
@@ -40,7 +33,6 @@ const options = (over: Partial<SetupOptions> = {}): SetupOptions => ({
 
 const record = () => readRecord<InstallRecord>(installPaths(root).install, 'install record');
 
-/** A release in the root as an update would install it, with a launcher that writes `out`. */
 function laterRelease(version: string, out: string): void {
   const host = join(releaseDir(root, version), 'node_modules', '@animalabs', 'connectome-host');
   mkdirSync(join(host, 'src', 'update'), { recursive: true });
@@ -100,7 +92,6 @@ describe('setup', () => {
       expect(said.some((l) => l.includes(says) && l.includes("couldn't check that") &&
         l.includes(`must restart the host when it exits with 75, as a switch's restart does, and with 1, as a trial that ends before its commit does, so its fallback runs: under systemd, each of the two restarted, ${NEEDED}; or launchd's KeepAlive.`))).toBe(true);
     }
-    // One manager couldn't be asked, and the other found a unit: both are said.
     said = [];
     units = { found: [unit], unasked: ['user'], unresolved: [], defaulted: [] };
     setup(options());
@@ -138,7 +129,6 @@ describe('setup', () => {
   test('a run cut off finishes on the next: after its release copy, after current, and after its record', () => {
     setup(options());
     const entry = join(root, ENTRY_POINT);
-    // After its release copy: no current, record or entry point.
     rmSync(installPaths(root).install);
     unlinkSync(installPaths(root).current);
     rmSync(entry);
@@ -146,8 +136,6 @@ describe('setup', () => {
     expect(readCurrent(root)).toBe('0.10.2');
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
-    // After current: no record or entry point, and current names a release
-    // this install's code no longer is.
     laterRelease('0.11.0', join(dir, 'ran'));
     moveCurrent(root, '0.11.0');
     rmSync(installPaths(root).install);
@@ -156,7 +144,6 @@ describe('setup', () => {
     expect(readCurrent(root)).toBe('0.11.0');
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
-    // After its record: no entry point.
     rmSync(entry);
     setup(options());
     expect(existsSync(entry)).toBe(true);
@@ -181,7 +168,6 @@ describe('setup', () => {
   });
 
   test("a run whose record's write fails leaves current, so the next run finishes", () => {
-    // A directory where the record's temporary file goes, so its write fails.
     mkdirSync(join(root, 'releases'), { recursive: true });
     mkdirSync(join(root, 'install.json.tmp'));
     expect(() => setup(options())).toThrow(/install\.json\.tmp/);
@@ -222,7 +208,6 @@ describe('setup', () => {
       syncs.mockRestore();
       renames.mockRestore();
     }
-    // The releases directory, before current names what's in it.
     expect(synced.indexOf(installPaths(root).releases)).toBeGreaterThan(-1);
     expect(synced.indexOf(installPaths(root).releases)).toBeLessThan(synced.indexOf('current renamed'));
     expect(readCurrent(root)).toBe('0.10.2');
@@ -264,7 +249,6 @@ describe('setup', () => {
   test("a current that doesn't lead to releases/<the release it names> is refused with how to point it there", () => {
     setup(options());
     laterRelease('0.11.0', join(dir, 'ran'));
-    // A link that names 0.10.2 by its last segment but leads nowhere.
     unlinkSync(installPaths(root).current);
     symlinkSync(join('elsewhere', '0.10.2'), installPaths(root).current);
     expect(readCurrent(root)).toBe('0.10.2');
@@ -315,7 +299,6 @@ describe('setup', () => {
     setup(options());
     unlinkSync(installPaths(root).current);
     expect(() => setup(options())).toThrow(/has its record and no .*current.*never remove it.*By the journal, that release is the release setup installed, since the journal has no line, which unless it's gone is 0\.10\.2, in .*releases\. Point current at it with `ln -s 'releases\/<that release>' /);
-    // A release's staging name isn't one, and with two, both are named.
     mkdirSync(join(installPaths(root).releases, '0.11.0.tmp'));
     laterRelease('0.11.0', join(dir, 'ran'));
     expect(() => setup(options())).toThrow(/which unless it's gone is one of 0\.10\.2, 0\.11\.0, in /);
@@ -328,15 +311,12 @@ describe('setup', () => {
     appendJournal(root, { v: 1, at: 'T2', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     appendJournal(root, { v: 1, at: 'T3', step: 'trial-start', from: '0.11.0', to: '0.12.0', outcome: 'ok', mark: 'm2' });
     appendJournal(root, { v: 1, at: 'T4', step: 'fallback', from: '0.12.0', to: '0.11.0', outcome: 'ok', mark: 'm2' });
-    // A trial that fell back didn't commit.
     expect(() => setup(options())).toThrow(/that release is 0\.11\.0, which the journal's last line leaves it naming\. Point/);
     appendJournal(root, { v: 1, at: 'T5', step: 'trial-start', from: '0.11.0', to: '0.13.0', outcome: 'ok', mark: 'm3' });
     appendJournal(root, { v: 1, at: 'T6', step: 'fallback', from: '0.13.0', to: '0.11.0', outcome: 'failed', reason: 'x', mark: 'm3' });
-    // Nor did one whose fallback failed: nothing starts after it.
     expect(() => setup(options())).toThrow(/that release is 0\.11\.0, which the journal's last line leaves it naming\. Point/);
     appendJournal(root, { v: 1, at: 'T7', step: 'trial-start', from: '0.11.0', to: '0.10.2', outcome: 'ok', mark: 'g1' });
     expect(() => setup(options())).toThrow(/last line leaves it naming, or 0\.10\.2 if its trial committed/);
-    // A later line written with current naming 0.11.0 says that trial didn't commit.
     appendJournal(root, { v: 1, at: 'T8', step: 'copy', from: '0.11.0', to: '0.14.0', outcome: 'refused', reason: 'x', mark: 'm4' });
     expect(() => setup(options())).toThrow(/that release is 0\.11\.0, which the journal's last line leaves it naming\. Point/);
     expect(readCurrent(root)).toBeNull();
@@ -348,7 +328,6 @@ describe('setup', () => {
     mkdirSync(installPaths(root).current);
     expect(() => setup(options())).toThrow(/current is there and isn't a link, so it can't say which release this install runs\. Move it aside, and point current at the release the data last committed on with `ln -s /);
     rmdirSync(installPaths(root).current);
-    // A link whose last part names no release.
     symlinkSync('releases/..', installPaths(root).current);
     expect(() => setup(options())).toThrow(/current is a link to releases\/\.\., which names no release, .*`ln -sfn /);
   });
@@ -356,8 +335,6 @@ describe('setup', () => {
   test("with no commit line, the release named is the one the journal's last line leaves current naming", () => {
     setup(options());
     unlinkSync(installPaths(root).current);
-    // A trial whose commit moved current and was cut before its line, and a
-    // later request from the release it committed.
     appendJournal(root, { v: 1, at: 'T1', step: 'trial-start', from: '0.10.2', to: '0.11.0', outcome: 'ok', mark: 'm1' });
     appendJournal(root, { v: 1, at: 'T2', step: 'copy', from: '0.11.0', to: '0.12.0', outcome: 'refused', reason: 'x', mark: 'm2' });
     expect(() => setup(options())).toThrow(/that release is 0\.11\.0, which the journal's last line leaves it naming\. Point/);
@@ -401,14 +378,12 @@ describe('setup', () => {
     chmodSync(installPaths(root).releases, 0o300);
     try {
       expect(() => setup(options())).toThrow(/releases can't be listed to say which: .*EACCES.*Make it readable to this user/);
-      // A journal with a line names the release without the listing.
       appendJournal(root, { v: 1, at: 'T1', step: 'copy', from: '0.10.2', to: '0.11.0', outcome: 'refused', reason: 'x', mark: 'm1' });
       expect(() => setup(options())).toThrow(/that release is 0\.10\.2, which the journal's last line leaves it naming/);
     } finally {
       chmodSync(installPaths(root).releases, 0o755);
     }
     rmSync(installPaths(root).journal);
-    // A releases/ that's a file isn't mended by permissions.
     renameSync(installPaths(root).releases, join(dir, 'releases-aside'));
     writeFileSync(installPaths(root).releases, '');
     expect(() => setup(options())).toThrow(/releases can't be listed to say which: .*ENOTDIR.*Repair what that path runs through/);
@@ -416,7 +391,6 @@ describe('setup', () => {
     renameSync(join(dir, 'releases-aside'), installPaths(root).releases);
     rmSync(releaseDir(root, '0.10.2'), { recursive: true });
     expect(() => setup(options())).toThrow(/releases holds no release\. Put that release back in .*releases from a backup, point current at it with `ln -s /);
-    // A releases/ that isn't there holds none either.
     rmSync(installPaths(root).releases, { recursive: true });
     expect(() => setup(options())).toThrow(/releases holds no release\. Put that release back/);
   });
@@ -489,14 +463,13 @@ describe('setup', () => {
     units = { found: [{ id: 'connectome.service', settings: 'Restart=on-failure', restarts: true }], unasked: [], unresolved: [], defaulted: ['a.service', 'b.service'] };
     setup(options());
     expect(said.some((l) => l.startsWith(note('a.service, b.service', false)))).toBe(true);
-    // A % in the directory is doubled, as a unit file's value needs.
+    // A unit file's value writes a literal % as %%.
     const percent = join(dir, '50%h');
     symlinkSync(install, percent);
     said = [];
     units = { found: [], unasked: [], unresolved: [], defaulted: ['a.service'] };
     setup(options({ cwd: percent }));
     expect(said.some((l) => l.includes(`give the service WorkingDirectory=${join(dir, '50%%h')} and run setup again`))).toBe(true);
-    // Beside a manager it couldn't ask, found or not.
     for (const found of [[], [{ id: 'connectome.service', settings: 'Restart=on-failure', restarts: true }]]) {
       said = [];
       units = { found, unasked: ['system'], unresolved: [], defaulted: ['a.service'] };
@@ -625,7 +598,7 @@ describe('setup', () => {
       mkdirSync(join(dir, 'checkout'));
       symlinkSync(join(dir, 'checkout'), join(install, 'node_modules', 'linked'));
       symlinkSync('../../outside', join(install, 'node_modules', '.bin', 'up'));
-      // A link by its full path leads into the install, not the release copied from it.
+      // A link by its full path still leads into the install once its release is copied.
       symlinkSync(join(install, 'node_modules', '@animalabs'), join(install, 'node_modules', 'by-path'));
       return {};
     }, /^node_modules\/\.bin\/up links to \.\.\/\.\.\/outside; node_modules\/by-path links to .*node_modules\/@animalabs; node_modules\/linked links to .*checkout: outside this install/],
@@ -640,7 +613,6 @@ describe('setup', () => {
       return {};
     }, /isn't empty/],
     ["a host in this directory's node_modules that leads through a link into another install's", () => {
-      // The other install is whole, so only this check stands between setup and copying it.
       const other = join(dir, 'other');
       const host = join(install, 'node_modules', '@animalabs', 'connectome-host');
       mkdirSync(join(other, 'node_modules', '@animalabs'), { recursive: true });
@@ -670,7 +642,7 @@ describe('setup', () => {
       mkdirSync(join(dir, 'outside', 'deep'), { recursive: true });
       writeFileSync(join(dir, 'outside', 'y'), 'outside');
       symlinkSync('../../outside/deep', join(install, 'node_modules', 'inner'));
-      // As written it reads node_modules/y, inside; through `inner` it's outside.
+      // Read as written, inner/../y stays inside; resolved through the link inner, it leaves.
       symlinkSync('inner/../y', join(install, 'node_modules', 'x'));
       return {};
     }, /node_modules\/x links to inner\/\.\.\/y/],
@@ -727,7 +699,6 @@ describe('the entry point', () => {
     expect(run.exitCode).toBe(1);
     expect(run.stderr.toString()).toContain("doesn't load");
     expect(run.stderr.toString()).toContain('run setup again');
-    // One that's there and isn't a link is named the same way, and setup says which.
     writeFileSync(installPaths(root).current, '');
     const file = Bun.spawnSync([process.execPath, join(root, ENTRY_POINT)], { cwd: install, stderr: 'pipe' });
     expect(file.exitCode).toBe(1);
@@ -750,15 +721,11 @@ describe('the service check', () => {
       unit('third.service', 'no', install),
       unit('clean.service', 'on-failure', install, '75 SIGTERM'),
       unit('prevented.service', 'always', install, '', '75'),
-      // A switch's restart, but not a failed trial's.
       unit('success.service', 'on-success', install, '75'),
-      // Both, when each counts as a success.
       unit('both-success.service', 'on-success', install, '75 1'),
       unit('forced.service', 'no', install, '', '', '75 1'),
       unit('half-forced.service', 'no', install, '', '', '75'),
-      // A status both prevented and forced is read as prevented.
-      unit('both-lists.service', 'always', install, '', '1', '1'),
-      // Prevented on 1 alone: a failed trial's exit leaves it stopped.
+      unit('in-both-lists-read-as-prevented.service', 'always', install, '', '1', '1'),
       unit('prevent-1.service', 'on-failure', install, '', '1'),
     ].join('\n\n');
     const calls: string[][] = [];
@@ -778,7 +745,7 @@ describe('the service check', () => {
       { id: 'both-success.service', settings: 'Restart=on-success, SuccessExitStatus includes 75 and 1', restarts: true },
       { id: 'forced.service', settings: 'Restart=no, RestartForceExitStatus includes 75 and 1', restarts: true },
       { id: 'half-forced.service', settings: 'Restart=no, RestartForceExitStatus includes 75', restarts: false },
-      { id: 'both-lists.service', settings: 'Restart=always, RestartPreventExitStatus includes 1, RestartForceExitStatus includes 1', restarts: false },
+      { id: 'in-both-lists-read-as-prevented.service', settings: 'Restart=always, RestartPreventExitStatus includes 1, RestartForceExitStatus includes 1', restarts: false },
       { id: 'prevent-1.service', settings: 'Restart=on-failure, RestartPreventExitStatus includes 1', restarts: false },
     ]);
     expect(calls).toEqual([['--user', ...query], query]);
@@ -828,12 +795,10 @@ describe('the service check', () => {
           unresolved: ['system-tilde.service'], defaulted: ['sets-none.service'],
         });
       }
-      // A home given through a link is the same home.
       const linked = join(dir, 'home-link');
       symlinkSync(install, linked);
       expect(systemdUnits(install, (args) => ({ exitCode: 0, stdout: Buffer.from(args[0] === '--user' ? user : '') }), linked,
         () => null).defaulted).toEqual(['sets-none.service']);
-      // A home that can't be resolved leaves the rule off: the unit's directory is read as set, and named as unresolved.
       const shut = join(dir, 'shut-home');
       mkdirSync(join(shut, 'home'), { recursive: true });
       chmodSync(shut, 0o600);
@@ -844,11 +809,9 @@ describe('the service check', () => {
       } finally {
         chmodSync(shut, 0o755);
       }
-      // One that sets the home itself, without the `!`, is found.
       const explicit = `Id=explicit.service\nWorkingDirectory=${install}\nRestart=no`;
       expect(systemdUnits(install, (args) => ({ exitCode: 0, stdout: Buffer.from(args[0] === '--user' ? explicit : '') }), install).found)
         .toEqual([{ id: 'explicit.service', settings: 'Restart=no', restarts: false }]);
-      // A system unit's ~ is its User='s home, root's when it names none, found when it's this directory.
       const homes: Record<string, string> = { connectome: install, root: '/root' };
       const system2 = 'Id=as-user.service\nWorkingDirectory=!~\nUser=connectome\nRestart=always\n\n' +
         'Id=as-root.service\nWorkingDirectory=!~\nUser=\nRestart=always';
@@ -857,7 +820,6 @@ describe('the service check', () => {
         found: [{ id: 'as-user.service', settings: 'Restart=always', restarts: true }], unasked: [], unresolved: [], defaulted: [],
       });
     }
-    // Run elsewhere, a unit that sets none is neither found nor named.
     const none = `Id=sets-none.service\nWorkingDirectory=!${dir}\nRestart=no`;
     expect(systemdUnits(install, (args) => ({ exitCode: 0, stdout: Buffer.from(args[0] === '--user' ? none : '') }), dir)).toEqual({
       found: [], unasked: [], unresolved: [], defaulted: [],

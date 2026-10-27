@@ -1,12 +1,3 @@
-/**
- * Verifies FleetModule's reducer-required event union.
- *
- * Recipe authors can specify a narrow per-child subscription (to keep the
- * wire lean), but the unified-tree rendering needs a specific set of events
- * to avoid drifting. The framework forces those into every subscribe sent
- * to a child — recipes can extend the set, never narrow it below rendering's
- * floor.
- */
 import { describe, test, expect } from 'bun:test';
 import { unionWithReducerRequired } from '../src/modules/fleet-module.js';
 import { REDUCER_REQUIRED_EVENTS } from '../src/state/agent-tree-reducer.js';
@@ -41,7 +32,6 @@ describe('unionWithReducerRequired', () => {
     expect(result).not.toContain('tool:started');
     expect(result).not.toContain('tool:completed');
     expect(result).not.toContain('tool:failed');
-    // But inference:* events still need to be added
     expect(result).toContain('inference:tool_calls_yielded');
   });
 
@@ -49,12 +39,10 @@ describe('unionWithReducerRequired', () => {
     const result = unionWithReducerRequired(['inference:*', 'lifecycle']);
     expect(result).not.toContain('inference:tool_calls_yielded');
     expect(result).not.toContain('inference:tokens');
-    // tool:* still needed
     expect(result).toContain('tool:started');
   });
 
   test('the postmortem-broken triumvirate subscription gets the missing events back', () => {
-    // Exact subscription from triumvirate.json that caused the rendering gap.
     const recipeSubscription = [
       'lifecycle',
       'inference:completed',
@@ -64,10 +52,8 @@ describe('unionWithReducerRequired', () => {
       'inference:failed',
     ];
     const result = new Set(unionWithReducerRequired(recipeSubscription));
-    // Recipe-specified events still present:
     expect(result.has('lifecycle')).toBe(true);
     expect(result.has('inference:speech')).toBe(true);
-    // Reducer-required events that were missing get added:
     expect(result.has('inference:tool_calls_yielded')).toBe(true);
     expect(result.has('inference:started')).toBe(true);
     expect(result.has('inference:tokens')).toBe(true);

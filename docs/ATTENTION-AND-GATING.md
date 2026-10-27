@@ -128,13 +128,17 @@ check is conservative, so no warning isn't proof of safety.
   file that fails to parse or validate is ignored: the previous rules stay in
   force and the error appears in `gate_status` under `errors`.
 - **Not `workspace--edit _config/gate.json`.** If your recipe sets
-  `modules.workspace.configMount: true`, the config directory also appears as
-  the `_config/` mount, and changes on disk are versioned into your chronicle.
+  `modules.workspace.configMount: true`, the gate's files in the config
+  directory, `gate.json`, `gate.js` and `gate.recipe.json` (the recipe a
+  start last applied, which agent-framework writes from 0.27.0), also appear in the `_config/` mount, which holds only files with those names,
+  at any depth, and their changes on disk are versioned into your
+  chronicle.
   But that mount doesn't write through: a workspace edit stays chronicle-side and
   never reaches the file the gate reads until a branch-changing command
   re-materializes the mount — and the next disk write (a `wake_add_rule`, a
-  shell edit) replaces it. Read through `_config/` if you like; write with the
-  tools above. The same goes for `gate.js`.
+  shell edit) replaces it. Read through `_config/` if you like; change
+  `gate.json` with the tools above and `gate.js` with your shell, neither
+  through `_config/`.
 
 ## Event tags
 
@@ -168,7 +172,11 @@ are open — so treat `event_tags` as a map, not a fence.
 When declarative rules aren't enough, put a `gate.js` in the same directory as
 `gate.json` (on disk — write it with your shell, not through `_config/`). It
 exports a default function that receives the event and returns a behavior — or
-`null` to fall through to your `gate.json` policies.
+`null` to fall through to your `gate.json` policies. `_config/` versions
+`gate.js` itself but not files beside it that it imports or reads, so a
+branch switch or a rollback takes back `gate.js` and leaves those as they are
+(an undo moves no branch, so it takes back nothing): keep `gate.js`
+self-contained, or put such files in a mount of their own.
 
 The event is `{ content, eventType, serverId, channelId, metadata, tags, mount,
 paths }`. `tags` can be absent on untagged events (so default it), and `mount` /

@@ -1,28 +1,8 @@
-/**
- * Live operator surgery UI — the pieces the chat/context views and header
- * mount when the host advertises them in `welcome.features`:
- *
- *   - MediaView       inline image (lazy `/media/<ref>`) with a lightbox
- *   - HostModeToggle  quiesce / resume switch showing the host's serving state
- *   - SurgeryDialog   confirm + note for a rollback or suppression; shows the
- *                     result, and offers "quiesce, then retry" on agent-busy
- *   - SelectionBar    floating bar while messages are being selected to suppress
- *   - OperatorLogList the durable operator-actions record, newest first
- *
- * Every mutation goes through the server (`rollback` / `suppress` /
- * `host-quiesce` / `host-resume` frames); nothing here touches state directly.
- */
-
 import { createSignal, For, Show } from 'solid-js';
 import type { HostModeSnapshot, OperatorLogEntryWire, SurgeryResultMessage } from '@conhost/web/protocol';
 
-// ---------------------------------------------------------------------------
-// Images
-// ---------------------------------------------------------------------------
-
 const [lightbox, setLightbox] = createSignal<{ src: string; label: string } | null>(null);
 
-/** Full-screen viewer for whichever image was clicked. Mount once at app root. */
 export function Lightbox() {
   return (
     <Show when={lightbox()}>
@@ -39,18 +19,10 @@ export function Lightbox() {
   );
 }
 
-/**
- * One media block. With a `ref` (or an inline data URL) it renders the image
- * lazily and opens the lightbox on click; otherwise it stays the type chip the
- * UI always showed (documents, audio, stripped images).
- */
 export function MediaView(props: {
   mediaType: string;
-  /** Host media locator (`<messageId>/<blockPath>`), served at /media/. */
   mediaRef?: string;
-  /** Already-inline image (context document ships base64) — a data: URL. */
   dataUrl?: string;
-  /** Query suffix routing /media to a fleet child, e.g. `?scope=miner`. */
   scopeQuery?: string;
   compact?: boolean;
 }) {
@@ -86,18 +58,12 @@ export function MediaView(props: {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Host mode (quiesce)
-// ---------------------------------------------------------------------------
-
 const fmtSince = (ts?: number): string => {
   if (!ts) return '';
   const m = Math.round((Date.now() - ts) / 60_000);
   return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${(m / 60).toFixed(1)}h ago`;
 };
 
-/** Header switch: serving ⇄ quiesced. Disabled for observers and while a
- *  transition is in flight. */
 export function HostModeToggle(props: {
   hostMode: HostModeSnapshot | null;
   busy: boolean;
@@ -162,17 +128,10 @@ export function HostModeToggle(props: {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Rollback / suppress dialog
-// ---------------------------------------------------------------------------
-
 export interface SurgeryRequest {
   op: 'rollback' | 'suppress';
-  /** Rollback: the message that becomes the new tail. Suppress: the messages to redact. */
   messageIds: string[];
-  /** Human preview lines for the dialog (participant + first words). */
   previews: string[];
-  /** Rollback only: how many messages leave the live branch. */
   affected?: number;
 }
 
@@ -268,7 +227,6 @@ export function SurgeryDialog(props: {
   );
 }
 
-/** Floating bar shown while selecting messages to suppress. */
 export function SelectionBar(props: { count: number; onSuppress(): void; onClear(): void }) {
   return (
     <div class="sticky bottom-2 z-20 mx-auto w-fit flex items-center gap-3 bg-neutral-900/95 border border-rose-900/60 rounded-full px-4 py-1.5 shadow-xl text-xs font-mono">
@@ -278,10 +236,6 @@ export function SelectionBar(props: { count: number; onSuppress(): void; onClear
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Operator log
-// ---------------------------------------------------------------------------
 
 const fmtAt = (iso: string): string => {
   const d = new Date(iso);

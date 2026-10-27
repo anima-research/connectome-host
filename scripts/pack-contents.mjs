@@ -3,19 +3,14 @@
 // (--ignore-scripts, or ignore-scripts in an npmrc, which skips
 // prepublishOnly's release holds too). It refuses a pack without the built
 // Web UI (dist/web/index.html), and one that would carry a file git ignores,
-// the built Web UI aside: package.json's files takes what it lists whole, so a
-// local file there, such as a recipe of your own (my-recipe.json) or a data/
-// directory, would ship from a working tree, where the publish job's clean
-// checkout has none. git decides what's ignored, from .gitignore,
-// .git/info/exclude and your own excludes file, so this keeps no list of its
-// own. In a git checkout, when git can't say, the pack stops. Outside one,
-// such as a copy of the files made to run the checks elsewhere, it says it
-// can't tell and lets a pack through, since the pack check runs in such
-// copies; a copy that holds local files packs them, with that warning. An
-// npm publish there stops, since its warning would come once the tarball is
-// public; bun's publish tells its scripts it's a pack, so it gets the warning.
-// `npm publish` of a tarball runs no scripts, but the tarball's `npm pack` ran
-// this. Each refusal exits 1 saying what to do.
+// the built Web UI aside, since package.json's files takes what it lists
+// whole. git decides what's ignored, from .gitignore, .git/info/exclude and
+// your own excludes file. In a git checkout, when git can't say, the pack
+// stops. Outside one it warns that it can't tell and lets a pack through,
+// but an npm publish there stops; bun's publish tells its scripts it's a
+// pack, so it gets the warning. `npm publish` of a tarball runs no scripts,
+// but the tarball's `npm pack` ran this. Each refusal exits 1 saying what to
+// do.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -23,13 +18,11 @@ import { dirname, join, resolve } from "node:path";
 const WEB_UI = "dist/web/index.html";
 const MAX_BUFFER = 64 * 1024 * 1024;
 
-/** npm: the one running this, when npm runs it. */
 function npm(args) {
   const cli = process.env.npm_execpath;
   return cli && /npm-cli\.c?js$/.test(cli) ? [process.execPath, [cli, ...args]] : ["npm", args];
 }
 
-/** The .git of the checkout this directory is in, or null outside one. */
 function checkout(dir) {
   for (let at = resolve(dir); ; at = dirname(at)) {
     if (existsSync(join(at, ".git"))) return join(at, ".git");

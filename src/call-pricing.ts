@@ -8,30 +8,21 @@
  * Anthropic bills cache READS at 0.1x input on every model but four: Claude
  * Fable 5.1 and Claude Mythos 5.1 read at 0.025x ($0.25/MTok), a quarter of
  * the 5 pair's rate, and Claude Opus 5.5 and Claude Sonnet 5.5 at 0.05x
- * ($0.20 and $0.10/MTok). Those exceptions are not cosmetic for long-lived
- * agents — a resident re-reading a 260k prefix on every call spends most of
- * its bill on cache reads, so charging them at 0.1x overstates its total two-
- * to fourfold. This table gives the first three their rates, and Sonnet 5.5
- * 0.1x: see the Sonnet 5 entry.
+ * ($0.20 and $0.10/MTok). This table gives the first three their rates, and
+ * Sonnet 5.5 0.1x: see the Sonnet 5 entry.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
- * Snapshot: 2026-10-19 (Haiku 5.5 added; it had matched no entry and went
- * unpriced). Keep the version string/date auditable; silently changing
- * historical prices would make old JSONL replay disagree with bills.
  */
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
 export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-10-19';
 
-/** Cache reads bill at this multiple of base input on every model that does
- *  not override it. */
 const DEFAULT_CACHE_READ_MULTIPLIER = 0.1;
 
 interface BaseRate {
   inputPerMillion: number;
   outputPerMillion: number;
-  /** Defaults to {@link DEFAULT_CACHE_READ_MULTIPLIER}. */
   cacheReadMultiplier: number;
 }
 
@@ -41,8 +32,6 @@ export interface PriceableCallUsage {
   cacheReadTokens: number;
   cacheWrite5mTokens: number;
   cacheWrite1hTokens: number;
-  /** Non-zero means the provider reported creation tokens we could not place
-   *  in an authoritative TTL bucket. Such a call is deliberately unpriced. */
   unclassifiedCacheWriteTokens: number;
   inferenceGeo?: string;
   serviceTier?: string;
@@ -50,8 +39,6 @@ export interface PriceableCallUsage {
 
 export function priceAnthropicCall(
   model: string,
-  // No rate in the current table is date-bounded; kept so a future dated
-  // price change does not have to re-plumb every caller.
   _timestamp: string,
   usage: PriceableCallUsage,
 ): CallCostBreakdown | undefined {
@@ -63,7 +50,7 @@ export function priceAnthropicCall(
   if (!rate || usage.unclassifiedCacheWriteTokens > 0) return undefined;
 
   // Public list pricing covers standard service. Priority Tier is contract
-  // priced; returning no figure is safer than presenting a plausible lie.
+  // priced.
   const tier = usage.serviceTier?.toLowerCase();
   if (tier && tier !== 'standard') return undefined;
 
@@ -99,16 +86,9 @@ export function priceAnthropicCall(
   };
 }
 
-/** A model's rates, for a request whose prompt is `promptTokens` long. Only
- *  Claude Haiku 5.5's depend on it. */
 function anthropicBaseRate(model: string, promptTokens: number): BaseRate | undefined {
   // The 5.1 pair first: their prefixes also match the Fable 5 / Mythos 5 test
-  // below, and they are the two models that read from cache at 0.025x rather
-  // than 0.1x. The pricing page's footnote on the cache-hit column: "Cache
-  // hits and refreshes on Claude Fable 5.1 and Claude Mythos 5.1 are priced
-  // at 0.025x the base input price. All other models use the standard 0.1x
-  // multiplier." (platform.claude.com/docs/en/about-claude/pricing, read
-  // 2026-09-16; the prompt-caching section repeats it.)
+  // below, and they read from cache at 0.025x.
   if (starts(model, 'claude-fable-5-1', 'claude-mythos-5-1')) return rate(10, 50, 0.025);
 
   // Fable 5 and Mythos 5 share pricing.
@@ -126,12 +106,8 @@ function anthropicBaseRate(model: string, promptTokens: number): BaseRate | unde
     'claude-opus-4-5',
   )) return rate(5, 25);
 
-  // Sonnet 5 launched at $2/$10 as introductory pricing through 2026-08-31,
-  // with a move to $3/$15 scheduled for 2026-09-01. That increase was
-  // withdrawn: "The $2/$10 per million input/output token pricing for Claude
-  // Sonnet 5 ... is now the standard price. The previously scheduled increase
-  // to $3/$15 ... on September 1, 2026 will not occur." (pricing page, read
-  // 2026-09-21.) So there is no cutoff; every call is $2/$10.
+  // Sonnet 5 is $2/$10: "The $2/$10 per million input/output token pricing for
+  // Claude Sonnet 5 ... is now the standard price." (pricing page)
   //
   // Sonnet 5.5 matches this prefix too, so it's priced at $2/$10 with 0.1x
   // reads, where the pricing page gives its cache reads 0.05x ($0.10/MTok),
@@ -162,22 +138,13 @@ function anthropicBaseRate(model: string, promptTokens: number): BaseRate | unde
   return undefined;
 }
 
-/**
- * Cache-read price as a multiple of the model's base input price, for a
- * Claude model id as a recipe names it: a Bedrock region prefix
- * (`global.anthropic.`) or a gateway prefix (`anthropic/`) is stripped first.
- * Models this table doesn't know get the standard 0.1x. Claude Haiku 5.5's two
- * prompt-length tiers both read at 0.1x, so the multiple doesn't depend on a
- * prompt's length.
- */
 export function anthropicCacheReadMultiplier(model: string): number {
   const bare = model.replace(/^(?:[a-z]+\.)?anthropic[./]/, '');
   return anthropicBaseRate(bare, 0)?.cacheReadMultiplier ?? DEFAULT_CACHE_READ_MULTIPLIER;
 }
 
 /**
- * OpenAI cache prices as multiples of a model's uncached input, for the
- * standard kv-unified block (the ledger doesn't price OpenAI calls).
+ * OpenAI cache prices as multiples of a model's uncached input.
  *
  * - Writes: the API bills them at 1.25x for the GPT-5.6 and GPT-6 families
  *   (the models its pricing table gives a cache-write price) and charges
@@ -188,8 +155,7 @@ export function anthropicCacheReadMultiplier(model: string): number {
  *   o1 / o3-mini, 0.1x everything else.
  *
  * Sources: https://developers.openai.com/api/docs/pricing and
- * https://learn.chatgpt.com/docs/pricing, read 2026-10-17. A gateway prefix
- * (`openai/`) is stripped first.
+ * https://learn.chatgpt.com/docs/pricing.
  */
 export function openaiCacheMultipliers(
   model: string,

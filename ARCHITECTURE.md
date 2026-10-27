@@ -193,7 +193,9 @@ conditions are required so the headers can never reach a vendor endpoint.
   `foldingStrategy: "kv-stable"`. About 48 further context-manager keys pass
   through verbatim, among them the live-image limits `maxLiveImages`,
   `imageStripDepthTokens` and `maxLiveImageBytes` (context-manager defaults
-  6, 30000 and 20 MiB; zero disables each).
+  6, 30000 and 20 MiB; a depth of zero turns depth stripping off, and a
+  count or byte limit of zero means up to context-manager's ceilings, 500
+  images and 24 MiB).
 - **`frontdesk`** (`src/strategies/frontdesk-strategy.ts`) — the same, plus
   channel provenance headers, topic-aware chunk boundaries and preservation of
   unanswered questions and @mentions. For agents that staff a channel.
@@ -256,8 +258,9 @@ Framework features configured by top-level recipe keys rather than modules:
   (`src/tool-lifecycle-config.ts`) and the server's own `_meta`. Off by
   default; needs agent-framework ≥ 0.20 (anima-research/agent-framework#199),
   which this host requires. See the README.
-- **Agent overlay.** `mcpl-servers.agent.json` holds servers the agent deployed
-  for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
+- **Agent overlay.** `mcpl-servers.agent.json` (a fleet child's own is
+  `mcpl-servers.agent.child.json` in its data directory) holds servers the
+  agent deployed for itself (`mcplAdmin`); they load unconditionally, and tombstones in it
   suppress servers the agent unloaded. The overlay can never grant
   `enabledCapabilities`, `toolLifecycle`, `inheritEnv` or
   `allowHostCommands`: the boot leaves them out of every overlay entry.
@@ -367,6 +370,7 @@ Under `$DATA_DIR` (default `./data`):
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
+| `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
 
 Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
@@ -415,8 +419,8 @@ Claude Code transcripts are ingested by the procedure in
 ## Runtime and dependencies
 
 - **Bun** runs the host (OpenTUI's native core requires it; Bun also loads
-  `.env`). **Node/npm** builds the WebUI in a checkout (`postinstall` /
-  `bun run build:web`); the npm package carries it built.
+  `.env`). **Node/npm** builds the WebUI in a clone (`bun run build:web`);
+  the npm package carries it built.
 - `@animalabs/agent-framework`, `context-manager`, `membrane` and
   `chronicle` come from npm; chronicle ships prebuilt native binaries, so no
   Rust toolchain is needed unless you build it from source. For working on the

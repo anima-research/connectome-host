@@ -1,11 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { resolveQuitConfirm } from '../src/tui.js';
 
-// Pins the quit-prompt semantics. The pre-fix behavior — "anything that
-// isn't n/no/cancel → kill every fleet child and exit" — meant a user who
-// forgot the armed prompt and typed a normal chat message killed the fleet.
-// The default for arbitrary input MUST stay 'cancel-keep-input'; a refactor
-// that flips it back should fail here, loudly.
 describe('resolveQuitConfirm', () => {
   test('only explicit consent kills', () => {
     expect(resolveQuitConfirm('y')).toBe('kill');

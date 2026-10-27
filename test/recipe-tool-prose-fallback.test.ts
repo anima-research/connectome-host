@@ -2,12 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { validateRecipe } from '../src/recipe.js';
 
-// Context Manager tool-prose hoist rung (sill, 2026-09-19). The host's only
-// jobs: validate LOUDLY (CM treats a malformed value as "rung off", which on a
-// resident whose compressions are refusing is an outage) and pass it through
-// (an unplumbed strategy key is silently dropped — the recall-budget /
-// split-fallback class of outage).
-
 function recipe(strategy: Record<string, unknown>) {
   return {
     name: 'tool-prose-test',

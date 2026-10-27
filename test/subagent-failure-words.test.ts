@@ -1,16 +1,3 @@
-/**
- * What the subagent tools tell the agent.
- *
- * - Every tool's inputs are checked against the types its schema declares
- *   before anything starts, and a refusal names every problem with what to
- *   give. Absent or null means not given, which a required input can't be.
- *   Before, a spawn without systemPrompt answered "spawned" and then failed
- *   on a TypeError, "false" turned the HUD on and ran a spawn sync, a
- *   timeoutMs of null ended an async run at once and one of "300" set no
- *   limit, and maxConcurrent {} held every spawn.
- * - A spawn's or fork's failure says whether anything ran, what ended it,
- *   and what to do, in the call's answer and in the async notice.
- */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,8 +30,6 @@ interface Harness {
   cleanup(): Promise<void>;
 }
 
-/** `run` stands in for the framework's run of each ephemeral agent; left
- *  out, the framework runs it against the mock provider. */
 async function harness(config: ConstructorParameters<typeof SubagentModule>[0] = {}, run?: Run): Promise<Harness> {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-words-'));
   const membrane = new Membrane(new MockAdapter({ defaultResponse: 'ok' }), { formatter: new NativeFormatter() });
@@ -68,7 +53,7 @@ async function harness(config: ConstructorParameters<typeof SubagentModule>[0] =
     subagent,
     runs: () => runs,
     cleanup: async () => {
-      try { await framework.stop(); } catch { /* noop */ }
+      try { await framework.stop(); } catch { }
       rmSync(tmpDir, { recursive: true, force: true });
     },
   };
@@ -87,7 +72,6 @@ async function until(done: () => boolean, ms = 10_000): Promise<void> {
   }
 }
 
-/** The settled outcome of an async subagent, from its handle. */
 async function outcome(h: Harness, name: string): Promise<{ ok: boolean; text: string }> {
   const handle = internal(h.subagent).asyncHandles.get(name);
   if (!handle) throw new Error(`no async handle for ${name}`);
@@ -115,7 +99,6 @@ describe('every input is checked against the type its schema declares', () => {
           'Nothing was started: name is missing: give the fork a short name; task is missing: give the intention the fork pursues.',
         );
       }
-      // A null counts as not given.
       expect((await h.subagent.handleToolCall(spawn('scout', { name: null, task: null }))).error).toBe(
         `Nothing was started: ${SPAWN_MISSING.name}; ${SPAWN_MISSING.task}.`,
       );
@@ -143,8 +126,8 @@ describe('every input is checked against the type its schema declares', () => {
       expect(sub.ctx.getState<{ hudEnabled?: unknown }>()?.hudEnabled).toBe(true);
       expect(h.subagent.getConcurrencyStatus()).toMatchObject({ configured: 5, effective: 5 });
       expect(sub.returnedResults.has('scout')).toBe(false);
-      // A tool the module doesn't have is answered as that, whatever its input.
-      expect((await h.subagent.handleToolCall(call('constructor', 'x'))).error).toStartWith('There\'s no tool "subagent--constructor"');
+      const aNameObjectPrototypeHasToo = 'constructor';
+      expect((await h.subagent.handleToolCall(call(aNameObjectPrototypeHasToo, 'x'))).error).toStartWith('There\'s no tool "subagent--constructor"');
     } finally { await h.cleanup(); }
   });
 
@@ -191,10 +174,8 @@ describe('every input is checked against the type its schema declares', () => {
     const maxTokens: number[] = [];
     const h = await harness({}, async (agent) => { maxTokens.push(agent.maxTokens); await sleep(50); return { speech: 'ok', toolCallsCount: 0 }; });
     try {
-      // An async run with timeoutMs null has no limit: it runs to its end.
       await h.subagent.handleToolCall(spawn('scout', { timeoutMs: null, maxTokens: null }));
       expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'ok' });
-      // maxTokens null gives the module's default, as leaving it out does.
       expect(maxTokens).toEqual([256]);
     } finally { await h.cleanup(); }
   });
@@ -205,8 +186,8 @@ describe('every input is checked against the type its schema declares', () => {
       const enabled = () => internal(h.subagent).ctx.getState<{ hudEnabled?: unknown }>()?.hudEnabled;
       expect((await h.subagent.handleToolCall(call('hud', { enabled: true }))).success).toBe(true);
       for (const [input, problem] of [
-        [{}, 'enabled is missing: give true to show the fleet status summary before each inference, or false to hide it'],
-        [undefined, 'enabled is missing: give true to show the fleet status summary before each inference, or false to hide it'],
+        [{}, 'enabled is missing: give true to show the fleet status summary, or false to stop showing it'],
+        [undefined, 'enabled is missing: give true to show the fleet status summary, or false to stop showing it'],
         [{ enabled: 'false' }, 'enabled must be true or false, not "false"'],
         [{ enabled: 0 }, 'enabled must be true or false, not 0'],
       ] as const) {
@@ -240,7 +221,6 @@ describe('every input is checked against the type its schema declares', () => {
         'Nothing was returned: result must be text, not {"a":1}.',
       );
       expect(sub.returnedResults.has('scout')).toBe(false);
-      // Without a result, the run's last words stand for it, as before.
       expect(await h.subagent.handleToolCall(call('return', {}, 't-ret'))).toEqual({ success: true, data: 'Result received.', endTurn: true });
       expect(sub.returnedResults.get('scout')).toBeUndefined();
     } finally { await h.cleanup(); }
@@ -274,7 +254,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
   test('a run\'s own error after its retries: it stopped, what it did stays done, and calling again starts over', async () => {
     let attempts = 0;
     const h = await harness({ maxRetries: 1 }, async () => { attempts++; throw new Error('503 overloaded'); });
-    internal(h.subagent).waitOrStop = async () => null; // the 5 s back-off before the retry
+    internal(h.subagent).waitOrStop = async () => null;
     try {
       expect((await h.subagent.handleToolCall(fork('scout', { sync: true }))).error).toBe(
         "Fork 'scout' stopped after 2 attempts and returned no result: 503 overloaded. What it did before then stays done, " +
@@ -328,7 +308,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     try {
       await h.subagent.handleToolCall(spawn('a'));
       await h.subagent.handleToolCall(spawn('b'));
-      // The holder list names the subagents running.
       await until(() => ['spawn-a', 'spawn-b'].every((n) => sub.activeSubagents.get(n)?.status === 'running'));
       const first = (await h.subagent.handleToolCall(spawn('c', { sync: true }))).error ?? '';
       expect(first).toStartWith(
@@ -336,8 +315,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
         '0 others waiting). Wait for one of the subagents below to finish, or raise the limit with subagent--concurrency, then ' +
         'call subagent--spawn again. Start no more than 2 at a time here.\nSlots held by:\n  - a [spawn] ',
       );
-      // While a rate limit's halving holds, raising the ceiling doesn't raise
-      // the limit, so the remedy is to wait.
       sub.configuredMaxConcurrent = 4;
       sub.throttled = true;
       const held2 = (await h.subagent.handleToolCall(fork('d', { sync: true }))).error ?? '';
@@ -353,14 +330,12 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
   test('no slot in time after a rate limit at a limit of 1: the remedy is to wait, since raising it wouldn\'t take effect at once', async () => {
     const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, (agent) => (agent.name.startsWith('spawn-r-')
       ? Promise.reject(new Error('429 Too Many Requests'))
-      : new Promise(() => { /* holds its slot */ })));
+      : new Promise(() => { })));
     const sub = internal(h.subagent);
     const acquire = (sub as unknown as { acquireSlot: (k: 'spawn' | 'fork', ms?: number, c?: Promise<never>) => Promise<unknown> });
     const slot = acquire.acquireSlot.bind(h.subagent);
     acquire.acquireSlot = (kind, _ms, cancelled) => slot(kind, 50, cancelled);
     try {
-      // A run meets a rate limit at a limit of 1, which can't halve, so
-      // nothing holds the limit below the ceiling and the status has no note.
       expect((await h.subagent.handleToolCall(spawn('r', { sync: true }))).error)
         .toStartWith("Subagent 'r' stopped and returned no result: 429 Too Many Requests.");
       expect(sub.throttled).toBe(true);
@@ -373,7 +348,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
         "Subagent 'c' didn't start, so nothing ran: no concurrency slot opened within 50 ms (1 running against a limit of 1, " +
         "0 others waiting). A rate limit was hit at this limit, so raising it wouldn't take effect at once. " + wait,
       );
-      // Raising it leaves the limit at 1 for now, as the remedy says.
       expect((await h.subagent.handleToolCall(call('concurrency', { maxConcurrent: 2 }))).data).toEqual({
         configured: 2, effective: 1, active: 1, queued: 0,
         note: 'A rate limit holds the limit at 1. It rises by one after every three subagents that finish without error, up to 2.',
@@ -393,7 +367,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       ? Promise.reject(new Error('429 Too Many Requests'))
       : agent.name.startsWith('spawn-a-')
         ? done.then(() => ({ speech: 'ok', toolCallsCount: 0 }))
-        : new Promise(() => { /* holds its slot */ })));
+        : new Promise(() => { })));
     const sub = internal(h.subagent);
     const acquire = (sub as unknown as { acquireSlot: (k: 'spawn' | 'fork', ms?: number, c?: Promise<never>) => Promise<unknown> });
     const slot = acquire.acquireSlot.bind(h.subagent);
@@ -406,7 +380,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       expect((await h.subagent.handleToolCall(spawn('c', { sync: true }))).error).toContain(
         "A rate limit was hit at this limit, so raising it wouldn't take effect at once. Wait for one of the subagents below",
       );
-      // One success at the ceiling clears it, so the wait offers the raise again.
       release();
       await until(() => sub.activeSubagents.get('spawn-a')?.status === 'completed');
       expect(sub.throttled).toBe(false);
@@ -417,7 +390,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
         '0 others waiting). Wait for one of the subagents below to finish, or raise the limit with subagent--concurrency, then ' +
         'call subagent--spawn again. Start no more than 1 at a time here.\nSlots held by:\n  - b [spawn] ',
       );
-      // And a raise then takes effect at once.
       expect((await h.subagent.handleToolCall(call('concurrency', { maxConcurrent: 2 }))).data)
         .toEqual({ configured: 2, effective: 2, active: 1, queued: 0 });
     } finally { release(); await h.cleanup(); }
@@ -430,7 +402,7 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
       releaseSlot(slot: object): void;
     };
     try {
-      const held = await sub.acquireSlot('spawn'); // a slot no subagent entry holds
+      const held = await sub.acquireSlot('spawn');
       const later = sub.acquireSlot('fork', 10_000);
       const failure = await sub.acquireSlot('spawn', 50).then(() => null, (e: unknown) => e as { why: string; remedy: string });
       expect(failure?.why).toBe('no concurrency slot opened within 50 ms (1 running against a limit of 1, 1 other waiting)');

@@ -1,10 +1,6 @@
-/**
- * The host update's words as the Web UI shows them (src/web/update-text.ts):
- * the banner's state and buttons, the ways Health offers, the Restart
- * dialog's text, and each way named by its button where `/update` names its
- * command.
- */
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   COMMAND_WAYS, PAGE_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal, noticeLines, openWays,
   restartLines, shownBanner, statusLines,
@@ -16,8 +12,6 @@ const base: UpdateStatus = {
   goBack: null, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null, problems: [],
 };
 
-/** A read that found 0.13.1, crossing 0.12.2 (breaking), 0.13.0 (a cache
- *  write) and 0.13.1 (cut before releases recorded their cost). */
 const read: ReadCheck = {
   at: '2026-10-24T05:00:00.000Z', ok: true, candidate: '0.13.1', bunFloorUnmet: null, runningDeprecated: null,
   costs: [
@@ -51,7 +45,6 @@ describe('the banner', () => {
     expect(bannerOf({ ...base, restart: { ...busy, phase: 'quiescing' } }))
       .toEqual({ line: 'The restart to 0.13.0 is waiting for turns to end, with new turns held.', ways: [], dismissable: false });
     expect(bannerOf({ ...base, restart: { ...busy, phase: 'stopping' } })?.ways).toEqual([]);
-    // A Go back is named as one, waiting on turns too.
     expect(bannerOf({ ...base, restart: { ...busy, to: '0.12.0', why: 'go-back', phase: 'ending' } })?.line)
       .toBe("The Go back to 0.12.0 is being called off, ending the switch's quiesce.");
     const goingBack: RestartState = { ...busy, to: '0.12.0', why: 'go-back' };
@@ -60,7 +53,6 @@ describe('the banner', () => {
       'turns held. Busy when its wait ran out:');
     expect(busyLines(goingBack, 120_000)[0]).toBe("Turns didn't all end within 2 min, so the Go back to 0.12.0 is waiting, " +
       'with new turns held. Still busy:');
-    // Ahead of an install under way, an installed release and a newer one out.
     expect(bannerOf({ ...base, check: read, installing: '0.13.1', installed: '0.13.0', switchQuiesceLeft: true })).toEqual({
       line: "This host is quiesced for a switch that isn't going ahead.", ways: ['resume'], dismissable: false,
     });
@@ -75,7 +67,6 @@ describe('the banner', () => {
     expect(bannerOf({ ...all, installing: null })).toEqual({ line: '0.13.0 is installed.', ways: ['restart'], dismissable: true });
     expect(bannerOf({ ...all, installing: null, installed: null }))
       .toEqual({ line: 'Last install: npm exited 1', ways: ['install'], dismissable: true });
-    // Offered again only as a fresh release would be: not when this Bun is too old for it, or nothing newer was read.
     expect(bannerOf({ ...all, installing: null, installed: null, check: { ...read, bunFloorUnmet: '>=1.5.0' } })?.ways).toEqual([]);
     expect(bannerOf({ ...all, installing: null, installed: null, check: null })?.ways).toEqual([]);
     expect(bannerOf({ ...base, check: read })).toEqual({
@@ -90,7 +81,6 @@ describe('the banner', () => {
   test('an installed release whose last try fell back, or whose last request was refused, says so', () => {
     expect(bannerOf({ ...base, installed: '0.13.0', lastSwitch: fellBack })?.line)
       .toBe('0.13.0 ended before its commit at its last try, so 0.12.1 came back. Health shows what it wrote last.');
-    // A trial that kept no lines points at the service's log instead.
     expect(bannerOf({ ...base, installed: '0.13.0', lastSwitch: { ...fellBack, trialLog: null } })?.line)
       .toBe("0.13.0 ended before its commit at its last try, so 0.12.1 came back. The service's log, or the terminal the " +
         'host was started in, says more.');
@@ -100,7 +90,6 @@ describe('the banner', () => {
     };
     expect(bannerOf({ ...base, installed: '0.13.0', lastSwitch: refused })?.line)
       .toBe("0.13.0 is installed, and the last request to switch to it didn't go ahead: fleet children are still running: kid.");
-    // About another release, they say nothing of this one.
     expect(bannerOf({ ...base, installed: '0.13.1', lastSwitch: fellBack })?.line).toBe('0.13.1 is installed.');
     expect(bannerOf({ ...base, installed: '0.13.1', lastSwitch: refused })?.line).toBe('0.13.1 is installed.');
   });
@@ -131,7 +120,6 @@ describe('a dismissed banner', () => {
     const line = bannerOf(out)!.line;
     expect(shownBanner(out, line)).toBeNull();
     expect(keptDismissal(out, line)).toBe(line);
-    // The banner says something else, and the dismissal lapses, so the line shows when it comes back.
     const installed: UpdateStatus = { ...out, installed: '0.13.1' };
     expect(shownBanner(installed, line)?.line).toBe('0.13.1 is installed.');
     expect(keptDismissal(installed, line)).toBeNull();
@@ -146,15 +134,12 @@ describe('a dismissed banner', () => {
 describe('the ways Health offers', () => {
   test('each way the status leaves open, and only Check now on a host that cannot update itself', () => {
     expect(openWays({ ...base, check: read })).toEqual(['install', 'check']);
-    // The release read is the one installed, as after an install that went through.
     expect(openWays({ ...base, check: read, installed: '0.13.1', goBack: { to: '0.12.0', since: 'then' },
       lastInstall: { version: '0.13.1', at: read.at, ok: true } })).toEqual(['restart', 'back', 'check']);
-    // A newer release than the installed one is out, and a quiesce was left standing.
     expect(openWays({ ...base, check: read, installed: '0.13.0', switchQuiesceLeft: true }))
       .toEqual(['resume', 'install', 'restart', 'check']);
     expect(openWays({ ...base, check: { ...read, bunFloorUnmet: '>=1.5.0' } })).toEqual(['check']);
     expect(openWays({ ...base, check: { ...read, candidate: null, costs: [] } })).toEqual(['check']);
-    // Nothing read, as with the reads off or a failed one: Check now reads, and a failed install offers no blind retry.
     expect(openWays({ ...base, lastInstall: { version: '0.13.1', at: read.at, ok: false, error: 'npm exited 1' } }))
       .toEqual(['check']);
     expect(openWays({ ...base, check: { at: read.at, ok: false, error: 'offline' } })).toEqual(['check']);
@@ -166,7 +151,6 @@ describe('the ways Health offers', () => {
     expect(openWays({ ...all, restart: busy })).toEqual(['wait', 'now', 'resume']);
     expect(openWays({ ...all, restart: { ...busy, phase: 'ending' } })).toEqual([]);
     expect(openWays({ ...all, installing: '0.13.1' })).toEqual([]);
-    // A quiesce left standing holds new turns, so Resume stays while an install runs.
     expect(openWays({ ...all, installing: '0.13.1', switchQuiesceLeft: true })).toEqual(['resume']);
   });
 });
@@ -196,14 +180,12 @@ describe('the Restart dialog', () => {
     expect(lines).toContain('This host is quiesced (maintenance), and comes back quiesced.');
     expect(restartLines({ ...base, check: read, installed: '0.13.0', lastSwitch: { ...fellBack, trialLog: ['', ''] } }))
       .toContain("Its last try ended before its commit. The service's log, or the terminal the host was started in, says more.");
-    // A last request to it that didn't go ahead says why, as the banner does.
     const refused: SwitchOutcome = {
       outcome: 'refused', step: 'copy', from: '0.12.1', to: '0.13.0', at: read.at, reason: 'the copy failed: ENOSPC',
     };
     expect(restartLines({ ...base, check: read, installed: '0.13.0', lastSwitch: refused }))
       .toContain("The last request to switch to 0.13.0 didn't go ahead: the copy failed: ENOSPC");
     expect(restartLines({ ...base, check: read, installed: '0.13.1', lastSwitch: refused })?.join('\n')).not.toContain('last request');
-    // A fallback from another release says nothing of this one's last try.
     expect(restartLines({ ...base, check: read, installed: '0.13.1', lastSwitch: fellBack })?.join('\n')).not.toContain('last try');
     expect(restartLines({ ...base, check: read })).toBeNull();
   });
@@ -270,7 +252,15 @@ describe('each way named as its caller names it', () => {
   });
 
   test('both tables name the same ways', () => {
-    // Each command is one /update routes (update-host-update.test.ts, "/update").
     expect(Object.keys(PAGE_WAYS)).toEqual(Object.keys(COMMAND_WAYS));
+  });
+});
+
+describe('a host not started through an install', () => {
+  test("/update says what to run to make an npm install update itself: setup's command, at a path the package holds", () => {
+    const text = statusLines({ ...base, install: false }).join('\n');
+    const setup = /`bun (node_modules\/@animalabs\/connectome-host\/(src\/update\/setup\.ts))`/.exec(text);
+    expect(setup).not.toBeNull();
+    expect(existsSync(join(import.meta.dir, '..', setup![2]!))).toBe(true);
   });
 });

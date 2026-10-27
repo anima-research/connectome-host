@@ -8,14 +8,8 @@ import { slowLogWrites } from './slow-log-writes.ts';
 
 const mode = process.argv[2];
 if (!['healthy', 'failure', 'delayed-failure', 'ready-window', 'slow-log-failure', 'late-write-failure', 'stuck-log'].includes(mode)) throw new Error('Unknown shutdown fixture mode');
-// A slow disk: each write to headless.log lands 100 ms after it's made.
-// A stuck one: no write ever finishes.
 if (mode === 'slow-log-failure' || mode === 'late-write-failure') slowLogWrites(100);
 if (mode === 'stuck-log') slowLogWrites(Infinity);
-// Each write's callback records the error it was given, or null, in a file
-// named for the write, and, for a write made before the log ends, whether
-// headless.log held its line when the callback ran; the mock notes that it
-// was answered.
 const answered: Array<Promise<void>> = [];
 const recordCallback = (file: string, line?: string) => {
   let answer!: () => void;
@@ -26,9 +20,6 @@ const recordCallback = (file: string, line?: string) => {
     answer();
   };
 };
-// A stdout write in each form a callback can come in (second, after an
-// undefined encoding, after a named one) and a stderr write, each with a
-// callback.
 const writes = (when: 'before' | 'after') => {
   const checked = (line: string) => (when === 'before' ? line : undefined);
   const second = `a line written ${when} the log ended, its callback second\n`;
@@ -40,16 +31,6 @@ const writes = (when: 'before' | 'after') => {
   const stderrLine = `a stderr line written ${when} the log ended\n`;
   process.stderr.write(stderrLine, recordCallback(`callback-${when}-stderr.json`, checked(stderrLine)));
 };
-// The late writes are made as the shutdown ends headless.log's stream, while
-// the slow disk still holds what was written before: stdout writes in each
-// callback form, a stderr write, and a client's line, which the host logs as
-// malformed through its own log(). The end's callback waits until every late
-// write's callback has been answered, which comes once its write to the
-// process's stderr has completed, and until the host's log line for the
-// client has been written there too, through the write runHeadless saves
-// before its redirect (the one wrapped here). So all of it is on stderr
-// before the exit; if any of it never is, the exit waits out the 2 s limit
-// and the test finds it missing.
 let lateClient: Socket | undefined;
 if (mode === 'late-write-failure') {
   let clientLineLogged!: () => void;
@@ -75,8 +56,8 @@ if (mode === 'late-write-failure') {
     return result;
   } as typeof end;
 }
-// Hold the actual listen callback until shutdown has entered framework.stop.
-// The server can accept a client and send ready while that callback is held.
+// The server can accept a client and send ready while its listen callback
+// is held.
 const order: string[] = [];
 let releaseListen: (() => void) | undefined;
 if (mode === 'ready-window') {
@@ -108,16 +89,13 @@ await runHeadless({
         order.push('stop-entered');
         if (!releaseListen) throw new Error('Listen callback was not held');
         releaseListen();
-        // Let runHeadless finish its post-listen startup continuation before cleanup.
         await new Promise<void>(resolve => setImmediate(resolve));
         order.push('stop-returning');
         writeFileSync(join(process.env.DATA_DIR!, 'stop-order.json'), JSON.stringify(order));
       }
       if (mode === 'delayed-failure') await new Promise(resolve => setTimeout(resolve, 100));
       writeFileSync(join(process.env.DATA_DIR!, 'stop-calls.json'), JSON.stringify({ stopCalls }));
-      // The writes before the log ends, and the client whose line comes once
-      // it has: the host has accepted it once its first event arrives, so
-      // the server's close at the shutdown can't drop it.
+      // server.close() stops new connections and leaves accepted ones open.
       if (mode === 'late-write-failure') {
         writes('before');
         lateClient = connect(join(process.env.DATA_DIR!, 'ipc.sock'));

@@ -1,10 +1,3 @@
-/**
- * Unknown recipe keys (#167): a misspelled key used to load without a word and
- * simply not happen. Keys the host never reads at the top level, under `agent`
- * and under `modules` are now named in a warning (with the key they were
- * probably meant to be), and the recipe still loads; the shipped recipes carry
- * none.
- */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { takeRecipeWarnings, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
@@ -44,7 +37,6 @@ describe('unknownRecipeKeys', () => {
       streamChunkSize: 1, responseQueue: ['x'],
     };
     expect(unknownRecipeKeys(base({}, { mock: known }))).toEqual([]);
-    // A mock that is not an object is the validator's to reject, not this walk's.
     expect(unknownRecipeKeys(base({}, { mock: 'echo' }))).toEqual([]);
     expect(unknownRecipeKeys({ name: 'T', agent: ['mock'] })).toEqual([]);
   });
@@ -63,7 +55,6 @@ describe('unknownRecipeKeys', () => {
       policy: { alpha: 0.7, ageBandSteps: 0 }, labelCeiling: 1, engine: 'auto', latentDemandMode: 'joint',
     };
     expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: known } }))).toEqual([]);
-    // A block that is not an object is the validator's to reject, not this walk's.
     expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: 'standard' } }))).toEqual([]);
     expect(unknownRecipeKeys(base({}, { strategy: { kvUnified: { policy: [1] } } }))).toEqual([]);
   });
@@ -122,7 +113,6 @@ describe('validateRecipe and unknown keys', () => {
   });
 
   test('keeps the warning for the runtime log, taken once', () => {
-    // The TUI and headless redirect stderr after the recipe is validated: they write these into their logs.
     warn = spyOn(console, 'warn').mockImplementation(() => {});
     takeRecipeWarnings();
     validateRecipe(base({ mcplServers: {} }));

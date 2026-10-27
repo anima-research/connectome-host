@@ -1,31 +1,3 @@
-/**
- * The launcher (contract.ts): what runs at every start of an install that
- * updates itself, before its host. The install's entry point imports it from
- * the release `current` names, so it's always the launcher of the release
- * that last committed on the install's data, never that of a release on
- * trial. It takes the install's lock, finishes or undoes whatever a start cut
- * off left, carries out a standing mark (a switch, or a Go back), and then
- * becomes the host it chose (execve), keeping the process, with the install's
- * root in CONNECTOME_INSTALL_ROOT. While a Go back is offered, each start's
- * log names the command that asks for it from a shell (goBackFromShell).
- *
- * Every step leaves an outcome the filesystem shows, and the journal says
- * which request is under way, so a start that finds a step cut off finishes
- * it. A state it can't finish or undo stops the start, saying what it found:
- * the process exits without starting a host, and the supervisor's next start
- * meets the same report until someone acts. A mark it can't read, or one
- * asking for what this release doesn't know, has changed nothing, so it's
- * reported and the release `current` names starts.
- *
- * What a restore replaces it keeps, under the mark it acts on: a directory's
- * entries inside the directory (itemSetAsideDir, itemStagingDir), a file's
- * content or its absence in the root (setAsideDir). What's removed is only
- * what nothing needs: a Go back's own copy of the data it keeps, once that
- * Go back commits or falls back before its trial; the keeps of a putting back
- * that failed before a Go back's trial, which hold what the copy still holds;
- * the copy before the last, once the last is whole; and what a request cut
- * off before its first journal line had prepared, which no data depends on.
- */
 import {
   accessSync, chmodSync, constants, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync,
   renameSync, rmSync, statfsSync, statSync, writeFileSync, writeSync,
@@ -43,6 +15,7 @@ import {
   PRIVATE_DIR_MODE, copyTree, drive, exists, keepFile, makeDirs, putFileBack, removeTree, replaceFile, sameContent,
   spaceTaken, syncEntries, syncPath, type FileKeep,
 } from './data-swap.js';
+import { agentOverlayPath } from './agent-overlay-path.js';
 
 /** Where a release's host is inside its directory, one npm install of the
  *  package. The entry point imports the launcher from here, so neither path
@@ -51,38 +24,23 @@ export const RELEASE_HOST = join('node_modules', '@animalabs', 'connectome-host'
 export const HOST_ENTRY = join(RELEASE_HOST, 'src', 'index.ts');
 export const LAUNCHER = join(RELEASE_HOST, 'src', 'update', 'launcher.ts');
 
-/** Room a switch leaves free beyond what its copy and a fallback's restore
- *  of it need, so the trial and the host after it can still write. */
 const ROOM_MARGIN = 256 * 2 ** 20;
 
-/** What the launcher needs from the machine, given to it so tests can stand in. */
 export interface LauncherOps {
   now(): Date;
-  /** A line for the operator, in the host's log. */
   report(line: string): void;
-  /** The data directory a host started here would serve. */
   dataDir(): string;
+  agentOverlay(): string;
   cwd(): string;
   bootId(): string | null;
   pidAlive(pid: number): boolean;
-  /** Whether the process group `pid` leads has a member, after `pid` itself
-   *  has ended too. */
   groupAlive(pid: number): boolean;
-  /** Load a module, to see that it loads. */
   importModule(path: string): Promise<unknown>;
-  /** Bytes free to this user on the filesystem holding `path`. */
   freeBytes(path: string): number;
-  /** Every mount point on the machine, as absolute paths, or null when its
-   *  list couldn't be read. Anywhere but Linux and macOS the launcher has no
-   *  list, and finds none. */
   mountPoints(): string[] | null;
-  /** Wait `ms` milliseconds. */
   sleep(ms: number): void;
 }
 
-/** What a start decided to run: a release, on trial when it hasn't committed
- *  on this install's data yet. The host isn't told `trial`: it tells its own
- *  trial from `current`, which a trial doesn't name (host.ts). */
 export interface Start {
   release: string;
   trial: boolean;
@@ -96,13 +54,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Whether `path` is `dir` or inside it. */
 export function isUnder(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 }
 
-/** Whether this process can write the file at `path`, or give itself write
- *  on it as its owner, as a write in place does. */
 function mayWrite(path: string): boolean {
   try {
     accessSync(path, constants.W_OK);
@@ -162,8 +117,6 @@ function heldIn(dir: string): { path: string; why: 'sticky' | 'unwritable' } | n
   return null;
 }
 
-/** Why `held`, from heldIn or stuckIn, can't be moved, for a refusal that
- *  goes on with what moves it. */
 function heldText(held: { path: string; why: 'sticky' | 'unwritable' }, moves: string): string {
   const dir = dirname(held.path);
   return held.why === 'sticky'
@@ -174,8 +127,6 @@ function heldText(held: { path: string; why: 'sticky' | 'unwritable' }, moves: s
       `${held.path}, or make this user its owner`;
 }
 
-/** Whether the filesystem holding `path` can be written at all: not when it's
- *  mounted read-only, as a container's read-only file mount is. */
 function writableFilesystem(path: string): boolean {
   try {
     accessSync(path, constants.W_OK);
@@ -185,12 +136,6 @@ function writableFilesystem(path: string): boolean {
   return true;
 }
 
-/** Why an update can't change these directories, or null: each entry moves
- *  through an area inside its directory, and a place is made or taken away in
- *  its own, and each is synced after, so this process must be able to read,
- *  write and search each. It's
- *  checked at the request, before anything changes, for the request's sake
- *  and its fallback's, which would otherwise fail partway. */
 function unwritableDirectory(dirs: string[]): string | null {
   for (const dir of dirs) {
     try {
@@ -206,23 +151,8 @@ function unwritableDirectory(dirs: string[]): string | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// The lock
-// ---------------------------------------------------------------------------
-
-/** The lock is held by a process that's still running (takeLock). */
 export class LockHeld extends ContractError {}
 
-/** Take the install's lock, which stays with this process as its host. The
- *  lock file is made by a hard link of a whole record, so two starts can't
- *  both make it. A lock left by a process that has ended, or by an earlier
- *  boot, is removed and taken once more. A start and a Go back from a shell
- *  can race for a stale lock, so the lock is renamed aside and removed only
- *  if it is still the record found stale: one the other took meanwhile is put
- *  back, and the next look finds it held. A third start racing in the same
- *  moment, or a crash between the rename and the put back, can still leave
- *  two holders, as removing a stale lock could before. A lock a running
- *  process holds is a LockHeld. */
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -241,9 +171,6 @@ export function takeLock(root: string, ops: LauncherOps): void {
       const holder = readRecord<LockRecord>(lock, 'lock');
       if (holder === null) continue;
       if (holder.pid === process.pid) {
-        // Written by a process that had this one's number and has ended: one
-        // before a reboot, or one a container numbered the same. The lock is
-        // this start's now, so it takes this start's record.
         renameSync(mine, lock);
         syncPath(dirname(lock));
         return;
@@ -262,14 +189,11 @@ export function takeLock(root: string, ops: LauncherOps): void {
       try {
         renameSync(lock, aside);
       } catch (error) {
-        // Another start removed it first.
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         continue;
       }
       const moved = readRecord<LockRecord>(aside, 'lock');
       if (moved?.pid !== holder.pid || moved.at !== holder.at) {
-        // Another start took the stale lock between the read and the rename:
-        // its lock goes back, and the next attempt finds it held.
         try {
           linkSync(aside, lock);
         } catch (error) {
@@ -283,12 +207,6 @@ export function takeLock(root: string, ops: LauncherOps): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// What the install's data is
-// ---------------------------------------------------------------------------
-
-/** The install record, checked against the data directory a host started
- *  here would serve: an install serves one, the one setup recorded. */
 export function readInstall(root: string, ops: LauncherOps): InstallRecord {
   const { install } = installPaths(root);
   const record = readRecord<InstallRecord>(install, 'install record');
@@ -309,8 +227,6 @@ export function readInstall(root: string, ops: LauncherOps): InstallRecord {
   return record;
 }
 
-/** The children file's children whose process may still be running, each
- *  named with its pid, and whether only the process group it led remains. */
 export function liveChildren(dataDir: string, ops: LauncherOps): string[] {
   const file = readRecord<ChildrenFile>(childrenFilePath(dataDir), "fleet's children file");
   if (file === null) return [];
@@ -318,14 +234,9 @@ export function liveChildren(dataDir: string, ops: LauncherOps): string[] {
     throw new ContractError(`The fleet's children file at ${childrenFilePath(dataDir)} has no list of children this release can read.`);
   }
   const bootId = ops.bootId();
-  // The fleet keeps an entry it can't read as a child as it is, and such an
-  // entry names no process.
-  // A child runs in a group it leads, as a fleet child does, and a helper
-  // left in that group can write where the child does, so the child counts
-  // while its group has a member. The lock's
-  // holder counts by its own process alone.
-  // Only a positive pid names a process: 0 or less would signal this one's
-  // own group.
+  // Only a positive pid names one process: kill() takes 0 as this process's
+  // group, -1 as every process it may signal, and another negative pid as
+  // that group.
   const live: string[] = [];
   for (const child of file.children.filter(isChildEntry)) {
     const pid = child.pid;
@@ -337,17 +248,11 @@ export function liveChildren(dataDir: string, ops: LauncherOps): string[] {
   return live;
 }
 
-/** Why a request can't go ahead while fleet children may be running, or
- *  null when none may: a child writes in its data directory, which an update
- *  must not change under it. A children file that can't be read can't say,
- *  so it's the reason. */
 function childrenProblem(record: InstallRecord, ops: LauncherOps): string | null {
   const found = childrenFound(record, ops);
   return found === null ? null : `${found.reason.replace(/\.+$/, '')}. ${found.why}. To let it go ahead, ${found.remedy}`;
 }
 
-/** What childrenProblem finds: the reason, why it holds the update, and what
- *  would clear it. */
 function childrenFound(record: InstallRecord, ops: LauncherOps): { reason: string; why: string; remedy: string } | null {
   const file = childrenFilePath(record.dataDir);
   const none = 'with nothing it lists, and no process in a group one led, still running';
@@ -355,7 +260,6 @@ function childrenFound(record: InstallRecord, ops: LauncherOps): { reason: strin
   try {
     children = liveChildren(record.dataDir, ops);
   } catch (error) {
-    // A file that can't be read, for whatever reason, can't say.
     const content = error instanceof ContractError;
     return {
       reason: content ? error.message : `the fleet's children file at ${file} can't be read: ${errorText(error)}`,
@@ -379,10 +283,7 @@ function childrenFound(record: InstallRecord, ops: LauncherOps): { reason: strin
  *  on starts, as systemd's is by default, would give up on the service. */
 export const CHILDREN_WAIT_MS = 120_000;
 
-/** Wait while a fleet child may still be running (childrenProblem), and
- *  stop, saying why, if one still may after CHILDREN_WAIT_MS. */
 function waitForChildren(record: InstallRecord, ops: LauncherOps, what: string): void {
-  // Counted by the time slept, which a change to the clock can't stretch.
   for (let waited = 0, found = childrenFound(record, ops); found !== null; found = childrenFound(record, ops)) {
     if (waited >= CHILDREN_WAIT_MS) {
       throw new ContractError(`${what}, and it can't go on: ${found.reason.replace(/\.+$/, '')}. ${found.why}, so ` +
@@ -393,23 +294,16 @@ function waitForChildren(record: InstallRecord, ops: LauncherOps, what: string):
   }
 }
 
-/** Everything a switch copies, as real paths: the data directory, each fleet
- *  child's, the MCPL settings files in the working directory, and the extra
- *  state setup recorded. `present` are those there now, none inside another,
- *  since copying the outer one covers it. `absent` are those that aren't,
- *  none inside a present one or another absent one, which a restore keeps
- *  empty of whatever a trial makes there. */
 export function dataItems(root: string, record: InstallRecord, ops: LauncherOps): { present: string[]; absent: string[] } {
   const candidates = [record.dataDir];
   const children = readRecord<ChildrenFile>(childrenFilePath(record.dataDir), "fleet's children file");
   for (const child of Array.isArray(children?.children) ? children.children.filter(isChildEntry) : []) {
     candidates.push(resolve(ops.cwd(), child.dataDir));
   }
-  candidates.push(join(ops.cwd(), 'mcpl-servers.json'), join(ops.cwd(), 'mcpl-servers.agent.json'), ...record.extraState);
+  candidates.push(join(ops.cwd(), 'mcpl-servers.json'), ops.agentOverlay(), ...record.extraState);
   const there = new Set<string>();
   const missing = new Set<string>();
   for (const path of candidates) {
-    // A path that can't be looked at isn't taken for absent: its error is the reason.
     if (!exists(path)) {
       missing.add(realOrResolved(path));
       continue;
@@ -444,9 +338,6 @@ export function dataItems(root: string, record: InstallRecord, ops: LauncherOps)
   return { present, absent };
 }
 
-/** The mount points inside the directories `dirs`, not a directory itself,
- *  from the machine's list of mounts, or null when that list couldn't be
- *  read. A platform with no list (machineOps) has none. */
 export function mountsInside(dirs: string[], ops: LauncherOps): string[] | null {
   if (dirs.length === 0) return [];
   const listed = ops.mountPoints();
@@ -473,13 +364,10 @@ function mountProblem(dirs: string[], ops: LauncherOps): string | null {
     'mounted outside that directory';
 }
 
-/** Why the machine's list of mounts is missing, and what to check. */
 const MOUNTS_UNREAD = 'the machine\'s list of mounts couldn\'t be read (/proc/self/mountinfo on Linux, `mount` on macOS)';
 const MOUNTS_CHECK = 'On Linux, /proc/self/mountinfo is this process\'s own, so check that /proc is mounted; on macOS, ' +
   'that `mount` runs';
 
-/** Stop, saying why, before a restore moves the entries of `dir` while a
- *  mount may be inside it (mountProblem). */
 function stopForMounts(dir: string, ops: LauncherOps): void {
   const problem = mountProblem([dir], ops);
   if (problem !== null) {
@@ -487,13 +375,6 @@ function stopForMounts(dir: string, ops: LauncherOps): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Releases
-// ---------------------------------------------------------------------------
-
-/** Refuse, with the reason, a release that isn't installed whole: its host
- *  must be there, and its own launcher must load, since once it commits it
- *  decides every later start. */
 export async function checkRelease(root: string, version: string, ops: LauncherOps): Promise<void> {
   const entry = releaseEntry(root, version);
   if (!existsSync(entry)) throw new ContractError(`${version} isn't installed here: ${entry} isn't there`);
@@ -515,8 +396,6 @@ function existingAncestor(path: string): string {
   return at;
 }
 
-/** Why the filesystems lack room for `needs` (bytes to write, each where it
- *  lands), with a margin left on each, or null when they have it. */
 function roomProblem(root: string, needs: Array<{ path: string; bytes: number }>, purpose: string,
   ops: LauncherOps): string | null {
   const byDevice = new Map<number, { path: string; bytes: number }>();
@@ -539,11 +418,6 @@ function roomProblem(root: string, needs: Array<{ path: string; bytes: number }>
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Places, and putting data in place
-// ---------------------------------------------------------------------------
-
-/** What a place holds: a directory, a file, or nothing (PlaceKind). */
 type Kind = PlaceKind;
 
 function kindOf(path: string): Kind {
@@ -559,8 +433,6 @@ function kindWord(kind: Kind): string {
   return kind === 'dir' ? 'directory' : 'file';
 }
 
-/** A place an update copies or restores: where it lives, and its name in the
- *  copy and in what a restore keeps of it (copyItemName). */
 interface Place {
   path: string;
   name: string;
@@ -570,23 +442,15 @@ function placesOf(paths: string[], from = 0): Place[] {
   return paths.map((path, at) => ({ path, name: copyItemName(from + at, path) }));
 }
 
-/** Where a restore stages a directory's incoming content: in its
- *  ITEM_UPDATE_DIR, beside its set-aside, so it moves in by renames. Only
- *  this release's launcher reads it. */
 export function itemStagingDir(item: string, markId: string): string {
   return join(dirname(dirname(itemSetAsideDir(item, markId))), 'staging', markId);
 }
 
-/** What a restore under `markId` keeps of a file it writes over (setAsideDir):
- *  a switch's fallback or a Go back keeps what it replaces under `restore`,
- *  and a Go back's own fallback what the older release's trial left under
- *  `put-back`. */
 function fileKeep(root: string, markId: string, name: string, phase: 'restore' | 'put-back'): FileKeep {
   const base = phase === 'restore' ? setAsideDir(root, markId) : join(setAsideDir(root, markId), 'put-back');
   return { kept: join(base, 'kept', name), absent: join(base, 'absent', name) };
 }
 
-/** A directory's areas a drive under `markId` uses, with the names a cut can leave them under. */
 function areas(dir: string, markId: string): { setAside: string; staging: string; any: boolean } {
   const setAside = itemSetAsideDir(dir, markId);
   const staging = itemStagingDir(dir, markId);
@@ -594,31 +458,23 @@ function areas(dir: string, markId: string): { setAside: string; staging: string
   return { setAside, staging, any };
 }
 
-/** Copy `source` to `target` so that `target` is whole or not there: under a
- *  `.tmp` name first. */
 function copyWhole(source: string, target: string): void {
   const tmp = `${target}.tmp`;
   removeTree(tmp);
   makeDirs(dirname(tmp), PRIVATE_DIR_MODE);
   copyTree(source, tmp);
-  // The area is the update's, whatever mode the copied directory had, so a
-  // drive can empty it.
   chmodSync(tmp, PRIVATE_DIR_MODE);
   syncPath(tmp);
   renameSync(tmp, target);
   syncPath(dirname(target));
 }
 
-/** An empty area, for a drive whose incoming set is nothing. */
 function emptyArea(dir: string): void {
   makeDirs(dirname(dir), PRIVATE_DIR_MODE);
   mkdirSync(dir, { mode: PRIVATE_DIR_MODE });
   syncPath(dirname(dir));
 }
 
-/** Take the switch's copy of `present` as copy.tmp, its label written last,
- *  then put it in place of the last copy, which is moved to copy.prev first
- *  and removed once the new one is in place (settleCopy). */
 function takeCopy(root: string, present: Place[], absent: Place[], from: string, mark: Mark, ops: LauncherOps): void {
   const { copy, copyTmp, copyPrev } = installPaths(root);
   removeTree(copyTmp);
@@ -636,12 +492,9 @@ function takeCopy(root: string, present: Place[], absent: Place[], from: string,
   }
   renameSync(copyTmp, copy);
   syncPath(root);
-  // The new copy is in place, so the switch goes ahead: what's left of the
-  // one before it only takes room, and a later start tries again.
   dropCopyPrev(root, ops);
 }
 
-/** Remove copy.prev once the copy is in place, saying so if that fails. */
 function dropCopyPrev(root: string, ops: LauncherOps): void {
   try {
     removeTree(installPaths(root).copyPrev);
@@ -651,8 +504,6 @@ function dropCopyPrev(root: string, ops: LauncherOps): void {
   }
 }
 
-/** Remove copy.tmp, a copy a switch didn't finish. Nothing needs it, so a
- *  removal that fails is said, and a later start tries again. */
 function dropUnfinishedCopy(root: string, ops: LauncherOps): void {
   const { copyTmp } = installPaths(root);
   try {
@@ -663,8 +514,6 @@ function dropUnfinishedCopy(root: string, ops: LauncherOps): void {
   }
 }
 
-/** Finish or undo a replacement of the copy that a start cut off: with the
- *  new copy in place, the one before it goes; without, it comes back. */
 function settleCopy(root: string, ops: LauncherOps): void {
   const { copy, copyPrev } = installPaths(root);
   if (!existsSync(copyPrev)) return;
@@ -676,8 +525,6 @@ function settleCopy(root: string, ops: LauncherOps): void {
   }
 }
 
-/** The copy's places, each with what the copy holds for it: a directory or a
- *  file, or nothing for a place that wasn't there when it was taken. */
 function copyTargets(copy: string, label: CopyLabel): Array<Place & { target: Kind }> {
   return [
     ...label.items.map(({ path, name }) => ({ path, name, target: kindOf(join(copy, name)) })),
@@ -685,12 +532,6 @@ function copyTargets(copy: string, label: CopyLabel): Array<Place & { target: Ki
   ];
 }
 
-/** Make `place` hold what `from` holds for it, `target`, keeping what it
- *  holds now under `markId`: a directory's entries in its set-aside, by
- *  renames, once `from`'s are staged inside it; a file's content, or its
- *  absence, in the root (keepFile). A directory that isn't there is made, and
- *  one that should hold nothing is emptied rather than removed, since it may
- *  hold what's kept. Called again after a cut, it finishes from there. */
 function restorePlace(root: string, from: string, place: Place, target: Kind, markId: string, ops: LauncherOps): void {
   const now = kindOf(place.path);
   if (now !== 'none' && target !== 'none' && now !== target) {
@@ -702,16 +543,11 @@ function restorePlace(root: string, from: string, place: Place, target: Kind, ma
     return;
   }
   if (target === 'none' && now === 'none') {
-    // A replay after a cut before an earlier attempt's sync finds it gone.
     if (existsSync(dirname(place.path))) syncEntries(dirname(place.path));
     return;
   }
-  // A directory that's there keeps its own mode, as a file item does. One
-  // made here is made with the copy's, with rwx for its owner, since it holds
-  // its update area, so a replay finds it with that mode. Only when the umask
-  // takes bits from it, or setgid, which mkdir takes from the parent rather
-  // than from the mode, differs, does the chmod after set it, and a cut
-  // between the two leaves it with the mode mkdir gave it.
+  // mkdir's mode loses the bits the umask takes, and its setgid comes from
+  // the parent rather than from the mode, so the chmod after sets it.
   const made = now === 'none';
   if (made) {
     makeDirs(dirname(place.path));
@@ -719,7 +555,6 @@ function restorePlace(root: string, from: string, place: Place, target: Kind, ma
     mkdirSync(place.path, { mode });
     if ((lstatSync(place.path).mode & 0o7777) !== mode) chmodSync(place.path, mode);
   } else {
-    // One made here holds no mount; one that was there might.
     stopForMounts(place.path, ops);
   }
   const { setAside, staging, any } = areas(place.path, markId);
@@ -732,20 +567,12 @@ function restorePlace(root: string, from: string, place: Place, target: Kind, ma
     syncPath(place.path);
     syncPath(dirname(place.path));
   } else {
-    // One an earlier attempt made, cut before this sync, is found now.
     syncEntries(dirname(place.path));
   }
 }
 
-/** Remove what a Go back under `markId` kept: before its `go-back` line,
- *  what its preparation made, when it hasn't touched the data; and for a Go
- *  back that kept the newer data, the copy it kept for its trial, once that
- *  trial commits or the Go back falls back before its trial starts. */
 function clearGoBack(root: string, markId: string, ops: LauncherOps): void {
   let places: GoBackList['places'] = [];
-  // A Go back writes its list before anything else of it, so with none
-  // there, nothing of it is outside the root. One that can't be read is the
-  // only record of where its areas are, so it all stays, and the start says so.
   try {
     if (exists(goBackListPath(root, markId))) places = readGoBackList(root, markId);
   } catch (error) {
@@ -755,12 +582,8 @@ function clearGoBack(root: string, markId: string, ops: LauncherOps): void {
       'there is wanted.');
     return;
   }
-  // Nothing needs what's removed here, so a removal that fails is said and
-  // left for a later start, which tries again. The areas go first, and the
-  // set-aside directory, the list in it, after them, so while an area stays
-  // the list still says where it is. The areas' removal is synced before the
-  // list goes, so a power cut can't bring an area back with nothing to name
-  // it; a sync that can't be made leaves the list, as a failed removal does.
+  // The areas' removal is synced before the list goes, so a power cut can't
+  // bring an area back with nothing to name it.
   try {
     for (const place of places.filter((p) => kindOf(p.path) === 'dir')) {
       for (const area of [itemSetAsideDir(place.path, markId), itemStagingDir(place.path, markId)]) {
@@ -775,18 +598,12 @@ function clearGoBack(root: string, markId: string, ops: LauncherOps): void {
   }
 }
 
-/** Put back what a Go back under `markId` replaced, keeping what each place
- *  holds now, the older release's: a directory's in its staging, a file's
- *  under `put-back`. A directory with nothing set aside, which the Go back
- *  never reached or an earlier attempt already put back, holds the newer
- *  data, and is left as it is. */
 function putBack(root: string, markId: string, ops: LauncherOps): void {
   for (const place of readGoBackList(root, markId)) {
     const now = kindOf(place.path);
     const keep = fileKeep(root, markId, place.name, 'put-back');
     if (place.before === 'file' || (place.before === 'none' && place.target === 'file')) {
       if (now === 'dir') throw new ContractError(`${place.path} is a directory now, and what's put back there is a file`);
-      // Its content or absence was kept before the Go back's line.
       putFileBack(place.path, fileKeep(root, markId, place.name, 'restore'), keep);
       continue;
     }
@@ -801,22 +618,15 @@ function putBack(root: string, markId: string, ops: LauncherOps): void {
       drive(place.path, staging, setAside);
       continue;
     }
-    // Nothing was there before: keep aside whatever is there now.
     if (now === 'file') {
       replaceFile(place.path, null, keep);
     } else if (now === 'none') {
-      // A replay after a cut before an earlier attempt's sync finds it gone.
       if (existsSync(dirname(place.path))) syncEntries(dirname(place.path));
     } else if (now === 'dir') {
       const { setAside, staging, any } = areas(place.path, markId);
-      // A copy into the staging of one the restore made, cut off by its
-      // failure, is nobody's. (One that was there was staged before the line.)
       removeTree(`${staging}.tmp`);
-      // One the Go back made and never filled holds nothing to keep. It's
-      // left holding only its update directory rather than driven, since a
-      // drive would leave an empty staging area to stand in for the copy's at
-      // a later restore; removing it would want a mount check of its own.
-      if (!any && readdirSync(place.path).every((name) => name === ITEM_UPDATE_DIR)) continue;
+      const madeAndNeverFilled = !any && readdirSync(place.path).every((name) => name === ITEM_UPDATE_DIR);
+      if (madeAndNeverFilled) continue;
       stopForMounts(place.path, ops);
       if (!any) emptyArea(setAside);
       drive(place.path, staging, setAside);
@@ -824,20 +634,10 @@ function putBack(root: string, markId: string, ops: LauncherOps): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// The requests
-// ---------------------------------------------------------------------------
-
 function line(ops: LauncherOps, fields: Omit<JournalLine, 'v' | 'at'>): Omit<JournalLine, 'v'> {
   return { at: ops.now().toISOString(), ...fields };
 }
 
-/** A request refused before it touched the data: the journal says why, the
- *  mark is removed, and the release that runs now starts as it was. A mark
- *  asks for the start right after the operator's Restart, or their Go back
- *  from a shell, so one left standing would act at whichever start came
- *  next, unquiesced: an agent's own restart, or a crash. The operator asks
- *  again once what refused it has cleared. */
 function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], current: string, mark: Mark, reason: string,
   outcome: 'refused' | 'failed' = 'refused'): Start {
   appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id }));
@@ -862,16 +662,11 @@ function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], curre
   return { release: current, trial: false };
 }
 
-/** What a request's checks refuse it for: the journal step it's recorded
- *  under, and why. */
 interface Refusal {
   step: JournalLine['step'];
   reason: string;
 }
 
-/** A request whose checks threw is refused, with the reason: nothing before
- *  its first journal line changes the data, so the release that runs now
- *  starts as it was. */
 function refuseThrown(root: string, ops: LauncherOps, step: JournalLine['step'], current: string, mark: Mark,
   error: unknown): Start {
   return error instanceof ContractError
@@ -879,8 +674,6 @@ function refuseThrown(root: string, ops: LauncherOps, step: JournalLine['step'],
     : refuse(root, ops, step, current, mark, `checking it failed: ${errorText(error)}`, 'failed');
 }
 
-/** Why a switch to `mark.to` can't go ahead, or the places it copies: those
- *  there now, and those that aren't. It changes nothing. */
 async function checkSwitch(root: string, record: InstallRecord, mark: Mark, ops: LauncherOps):
   Promise<Refusal | { present: Place[]; absent: Place[] }> {
   const children = childrenProblem(record, ops);
@@ -898,20 +691,17 @@ async function checkSwitch(root: string, record: InstallRecord, mark: Mark, ops:
   if (unwritable !== null) return { step: 'copy', reason: unwritable };
   const mounts = mountProblem(dirs, ops);
   if (mounts !== null) return { step: 'copy', reason: mounts };
-  // A fallback's restore moves each directory's entries into its set-aside.
   for (const dir of dirs) {
     const held = heldIn(dir);
     if (held !== null) return { step: 'copy', reason: heldText(held, `the fallback, if ${mark.to} fails before it commits,`) };
   }
   const places = placesOf(present);
-  // The copy, in the root; and a fallback's restore of it: a directory's
-  // staged inside it, a file's present content kept in the root and the
-  // copy's written over it in place.
   const room = roomProblem(root, places.flatMap((place) => {
     const bytes = spaceTaken(place.path);
-    if (statSync(place.path).isDirectory()) return [{ path: root, bytes }, { path: place.path, bytes }];
-    // A file on a filesystem no one can write is never written in place.
-    const needs = [{ path: root, bytes }, { path: root, bytes }];
+    const copied = { path: root, bytes };
+    if (statSync(place.path).isDirectory()) return [copied, { path: place.path, bytes }];
+    const keptAtFallback = { path: root, bytes };
+    const needs = [copied, keptAtFallback];
     return writableFilesystem(place.path) ? [...needs, { path: place.path, bytes }] : needs;
   }), `a copy of the data and room to restore it if ${mark.to} fails before it commits`, ops);
   if (room !== null) return { step: 'copy', reason: room };
@@ -940,20 +730,11 @@ async function switchTo(root: string, record: InstallRecord, mark: Mark, current
   return { release: mark.to, trial: true };
 }
 
-/** Why a Go back to `mark.to` can't go ahead, or its places, each with what
- *  it holds now and what the Go back puts there, and the copy it restores
- *  them from, or null for a Go back that keeps the newer data. It changes
- *  nothing. */
 async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops: LauncherOps):
   Promise<Refusal | { places: GoBackList['places']; source: string | null }> {
   await checkRelease(root, mark.to, ops);
   const children = childrenProblem(record, ops);
   if (children !== null) return { step: 'children-check', reason: children };
-  // A start's cleanup removes an earlier attempt's preparation, unless the
-  // list that says where its areas are can't be read, the set-aside
-  // directory can't be listed, or a removal fails, each of which that start
-  // reports. Its keeps would then stand for what the data holds now, so the
-  // Go back waits for them to go.
   const earlier = setAsideDir(root, mark.id);
   if (exists(earlier)) {
     return {
@@ -965,7 +746,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
   let places: GoBackList['places'];
   let from: string | null = null;
   if (mark.keepData) {
-    // Its fallback puts back the newer data it keeps, which must be there.
     if (!existsSync(record.dataDir)) return { step: 'go-back', reason: `the data directory ${record.dataDir} isn't there` };
     const { present, absent } = dataItems(root, record, ops);
     places = [
@@ -983,9 +763,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
     }
     from = installPaths(root).copy;
     const listed = copyTargets(from, label);
-    // The copy took each place by its real path. One whose path leads
-    // elsewhere now, through a link a move left, would be put back where
-    // the link leads, beside the place found there in its own right.
     const moved = listed.find((place) => realOrResolved(place.path) !== place.path);
     if (moved) {
       return {
@@ -996,9 +773,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
       };
     }
     const { present, absent } = dataItems(root, record, ops);
-    // A place recorded since the switch that holds one the copy took on its
-    // own, such as a directory given where the copy took a file inside it,
-    // can't be put back from the copy whole, nor kept whole beside it.
     const outer = [...present, ...absent].find((path) =>
       listed.some((place) => place.path !== path && isUnder(place.path, path)));
     if (outer) {
@@ -1010,9 +784,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
           `the record gained since the switch, take it out of extraState in ${installPaths(root).install}`,
       };
     }
-    // A data item the copy doesn't list, such as a child added since the
-    // switch, wasn't there in the older release's time: the Go back keeps
-    // what it holds aside, and its fallback puts that back.
     const added = [...present, ...absent].filter((path) =>
       !listed.some((place) => isUnder(path, place.path) || isUnder(place.path, path)));
     places = [
@@ -1028,21 +799,14 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
       };
     }
   }
-  // A file place it writes in place mustn't be a link, which the write would
-  // go through: one that leads somewhere is a place that moved, refused
-  // above, so this is one that leads nowhere, which the record no longer
-  // lists. And one it takes away mustn't be a mount, which can't go.
+  // A file place it writes in place mustn't be a link, which the write
+  // would go through. And one it takes away mustn't be a mount, which
+  // can't go.
   const link = places.find((place) => place.before === 'file' && lstatSync(place.path).isSymbolicLink());
   if (link) {
     return { step: 'go-back', reason: `${link.path} is a link now, and a Go back writes a file in place, so it won't write ` +
       'through the link to what it names. Put the file itself there' };
   }
-  // A file it would change, refused before its line rather than failing
-  // after it: on a filesystem no one can write, or, written in place, one
-  // this process may neither write nor give itself write on, not being its
-  // owner. Taking one away, or replacing it with a directory, needs its
-  // directory, which the checks after these cover. Whether it would change a
-  // file is asked last, since that reads the copy's content.
   const changes = (place: GoBackList['places'][number]) => (place.before === 'file' || place.target === 'file') &&
     (place.before !== place.target || (from !== null && !sameContent(place.path, join(from, place.name))));
   const fixed = places.find((place) => !writableFilesystem(existingAncestor(place.path)) && changes(place));
@@ -1056,8 +820,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
     return { step: 'go-back', reason: `${locked.path} can't be written by this process, which doesn't own it, and the ` +
       'Go back would change it. Give this user write on it, or go back keeping the newer data' };
   }
-  // A directory's entries move inside it; a file it makes or takes away, or
-  // a directory it makes, is an entry of its parent.
   const unwritable = unwritableDirectory([
     ...places.filter((place) => place.before === 'dir').map((place) => place.path),
     ...places.filter((place) => (place.before !== place.target && (place.before === 'file' || place.target === 'file')) ||
@@ -1066,18 +828,11 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
   if (unwritable !== null) return { step: 'go-back', reason: unwritable };
   const mounts = mountProblem(places.filter((place) => place.before === 'dir').map((place) => place.path), ops);
   if (mounts !== null) return { step: 'go-back', reason: mounts };
-  // What it moves out of a directory, whatever the directory's write: a
-  // file it takes away, which the sticky bit may keep there, and each entry
-  // of a directory, which a restore drives into the directory's set-aside,
-  // and a fallback's putting back, a Go back that keeps the newer data's
-  // included, into its staging (heldIn).
   for (const place of places) {
     const held = place.before === 'file' && place.target !== 'file'
       ? stuckIn(dirname(place.path), () => [basename(place.path)]).map((path) => ({ path, why: 'sticky' as const }))[0] ?? null
       : place.before === 'dir' ? heldIn(place.path) : null;
     if (held === null) continue;
-    // Going back keeping the newer data isn't offered: its fallback drives
-    // the same directories, so whether it could go on depends on every place.
     return { step: 'go-back', reason: heldText(held, from === null
       ? `the fallback, if ${mark.to} fails before it commits,` : 'the Go back') };
   }
@@ -1095,12 +850,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
     }
   }
   const source = from;
-  // What the Go back writes before its line and after it: a restore's
-  // staged directories inside each, or its kept copy of the newer data
-  // there; each file's newer content kept in the root, and at a fallback
-  // the older release's too; and each file's restored content written over
-  // it in place.
-  // A file on a filesystem no one can write is never written in place.
   const room = roomProblem(root, places.flatMap((place) => {
     const needs: Array<{ path: string; bytes: number }> = [];
     const content = () => spaceTaken(source !== null ? join(source, place.name) : place.path);
@@ -1108,7 +857,6 @@ async function checkGoBack(root: string, record: InstallRecord, mark: Mark, ops:
     if (place.target === 'dir') needs.push({ path: place.path, bytes: content() });
     if (place.before === 'file') {
       needs.push({ path: root, bytes: spaceTaken(place.path) });
-      // The fallback's writing it back.
       if (inPlace) needs.push({ path: place.path, bytes: spaceTaken(place.path) });
     }
     if (place.target === 'file') {
@@ -1152,9 +900,6 @@ async function goBack(root: string, record: InstallRecord, mark: Mark, current: 
   return finishGoBack(root, record, { v: 1, ...goBackLine }, current, ops);
 }
 
-/** Carry a Go back on from its `go-back` line: its restore of the copy, when
- *  it restores one, then the older release's start on trial. If it can't,
- *  what it replaced goes back, and the release that runs now starts. */
 async function finishGoBack(root: string, record: InstallRecord, goBackLine: JournalLine, current: string,
   ops: LauncherOps): Promise<Start> {
   const markId = goBackLine.mark;
@@ -1162,10 +907,8 @@ async function finishGoBack(root: string, record: InstallRecord, goBackLine: Jou
     throw new ContractError(`The journal's go-back line to ${goBackLine.to} names no mark, so what it set aside can't be found.`);
   }
   waitForChildren(record, ops, `The Go back to ${goBackLine.to} is under way`);
-  // A putting back that failed before this Go back's trial kept, of each
-  // file, only what this restore wrote, which the copy still holds. Its keeps
-  // go, so the trial's fallback keeps what the trial leaves.
-  removeTree(join(setAsideDir(root, markId), 'put-back'));
+  const failedPutBackKeeps = join(setAsideDir(root, markId), 'put-back');
+  removeTree(failedPutBackKeeps);
   if (existsSync(setAsideDir(root, markId))) syncPath(setAsideDir(root, markId));
   try {
     if (!goBackLine.keptData) {
@@ -1186,8 +929,6 @@ async function finishGoBack(root: string, record: InstallRecord, goBackLine: Jou
   return { release: goBackLine.to, trial: true };
 }
 
-/** A Go back that couldn't start the older release: what it replaced goes
- *  back, unless it kept the newer data, in which case it replaced nothing. */
 function fallBackGoBack(root: string, goBackLine: JournalLine, current: string, why: string, ops: LauncherOps): Start {
   const markId = goBackLine.mark!;
   if (!goBackLine.keptData) {
@@ -1201,16 +942,12 @@ function fallBackGoBack(root: string, goBackLine: JournalLine, current: string, 
     }
   }
   appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'ok', reason: why, mark: markId }));
-  // A Go back that kept the newer data kept a copy of it only for its trial's
-  // fallback, and its trial never started.
   if (goBackLine.keptData) clearGoBack(root, markId, ops);
   ops.report(`[update] The Go back to ${goBackLine.to} didn't go ahead (${why}), so ` +
     (goBackLine.keptData ? `${current} starts on its data as it was.` : `${current}'s data is back and it starts.`));
   return { release: current, trial: false };
 }
 
-/** Fall back from a trial that ended before its commit: a switch's by
- *  restoring its copy, a Go back's by putting back what it replaced. */
 function fallBackTrial(root: string, record: InstallRecord, trial: JournalLine, current: string, lines: JournalLine[],
   ops: LauncherOps): Start {
   const markId = trial.mark;
@@ -1246,12 +983,6 @@ function fallBackTrial(root: string, record: InstallRecord, trial: JournalLine, 
   return { release: current, trial: false };
 }
 
-/** Remove what requests left that nothing needs: a switch's copy.tmp, each
- *  Go back's preparation under an id that no successful journal line names,
- *  which a later attempt makes again from the data as it is then, and the
- *  copy a Go back that kept the newer data took for its trial, once that
- *  trial committed or the Go back fell back before it. Only a start with no
- *  request under way calls it. */
 function clearLeftovers(root: string, lines: JournalLine[], ops: LauncherOps): void {
   const { setAside } = installPaths(root);
   dropUnfinishedCopy(root, ops);
@@ -1272,22 +1003,12 @@ function clearLeftovers(root: string, lines: JournalLine[], ops: LauncherOps): v
   for (const goBackLine of lines) {
     const id = goBackLine.mark;
     if (goBackLine.step !== 'go-back' || goBackLine.outcome !== 'ok' || !goBackLine.keptData || typeof id !== 'string') continue;
-    // Its copy is needed only while its trial may fall back: not once that
-    // trial has ended without a fallback, which with no trial unfinished
-    // (decide calls this only then) is its commit, nor once it fell back
-    // before its trial started.
     const trialEndedWithoutFallback = ok('trial-start', id) && !ok('fallback', id);
     const neverTried = ok('fallback', id) && !ok('trial-start', id);
     if (ids.includes(id) && (trialEndedWithoutFallback || neverTried)) clearGoBack(root, id, ops);
   }
 }
 
-// ---------------------------------------------------------------------------
-// A start
-// ---------------------------------------------------------------------------
-
-/** Everything a start does before its host: what to run, and whether on
- *  trial. A ContractError says why nothing can start. */
 export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   takeLock(root, ops);
   settleCopy(root, ops);
@@ -1297,9 +1018,6 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   // it: synced first, nothing acts on a line that can be lost after.
   if (exists(installPaths(root).journal)) syncPath(installPaths(root).journal);
   const lines = readJournal(root);
-  // The entry point loads the launcher through current, so a current that
-  // isn't a link gets here only as a directory holding a release, copied in
-  // place of the link.
   let current: string | null;
   try {
     current = readCurrent(root);
@@ -1331,7 +1049,6 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
   if (mark === null) return { release: current, trial: false };
   if (mark.why === 'update') return switchTo(root, record, mark, current, ops);
   if (mark.why === 'go-back') return goBack(root, record, mark, current, ops);
-  // The request as written, cut short, by code points, with a mark that says so.
   const asked = JSON.stringify(mark.why);
   const points = asked === undefined ? [] : [...asked];
   const request = asked === undefined ? 'names no request'
@@ -1340,10 +1057,6 @@ export async function decide(root: string, ops: LauncherOps): Promise<Start> {
     `${current} starts as it was. The mark stands, and each start says this again until it's removed.`);
   return { release: current, trial: false };
 }
-
-// ---------------------------------------------------------------------------
-// Going back from a shell
-// ---------------------------------------------------------------------------
 
 /** The entry point's flag for a Go back asked from a shell, and its choice to
  *  keep the newer data rather than restore the copy. */
@@ -1355,10 +1068,6 @@ export const KEEP_DATA_FLAG = '--keep-data';
  *  start, five seconds apart in the documented unit. */
 export const GO_BACK_LOCK_WAIT_MS = 60_000;
 
-/** The Go back an install offers while `running` runs: to the release the
- *  copy holds the data of, with when the copy was taken, when that release
- *  is another and is still installed, as the prune keeps it. Null when there
- *  is none. A copy that can't be read throws (lastCopy). */
 export function goBackOffer(root: string, running: string): { to: string; since: string } | null {
   const label = lastCopy(root);
   if (label === null || typeof label.from !== 'string' || label.from === running) return null;
@@ -1366,17 +1075,12 @@ export function goBackOffer(root: string, running: string): { to: string; since:
   return { to: label.from, since: typeof label.at === 'string' ? label.at : 'at a time its label doesn\'t say' };
 }
 
-/** The line each start's log carries while a Go back is offered, naming the
- *  way to it from a shell, since a release that keeps exiting after its
- *  commit never stays up to offer it. */
 export function goBackLine(root: string, offer: { to: string; since: string }): string {
   return `[update] Going back to ${offer.to} is offered, with the copy of its data taken ${offer.since}. If this ` +
     `release keeps exiting, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}\` asks the next start to go ` +
     `back, restoring that copy and keeping what changed since aside, or with ${KEEP_DATA_FLAG} keeping the newer data.`;
 }
 
-/** `word` as one word of a POSIX shell's command line: quoted when it holds
- *  anything but letters, digits and `@%+=:,./_-`. */
 export function shellWord(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
@@ -1392,8 +1096,7 @@ export function shellWord(word: string): string {
  * that a Go back is offered and that no request is under way, writes the
  * mark, and gives the lock up: the service's next start goes back. A host
  * that holds the lock the whole time is up, so its own Go back, which
- * quiesces first, is the way: a mark ready for a running host's next start
- * would switch it at a moment the operator didn't choose.
+ * quiesces first, is the way.
  */
 export function goBackFromShell(root: string, args: string[], ops: LauncherOps): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
@@ -1441,7 +1144,6 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps):
       throw new ContractError(`no Go back is offered: ${current} runs, and the copy doesn't hold another installed ` +
         'release\'s data');
     }
-    // A mark standing, read or not, is replaced: this request is the operator's latest.
     let standing: string | null;
     try {
       standing = readMark(root)?.to ?? null;
@@ -1464,13 +1166,11 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps):
   }
 }
 
-/** Give up the install's lock, when this process holds it. */
 function releaseLock(root: string): void {
   const { lock } = installPaths(root);
   try {
     if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });
   } catch {
-    // A lock this process can't read or remove frees itself once it ends.
   }
 }
 
@@ -1519,6 +1219,7 @@ export function machineOps(): LauncherOps {
     now: () => new Date(),
     report: (text) => { writeSync(2, `${text}\n`); },
     dataDir: () => resolve(process.env.DATA_DIR || './data'),
+    agentOverlay: () => agentOverlayPath(process.cwd(), process.env),
     cwd: () => process.cwd(),
     bootId: () => {
       try {
@@ -1539,10 +1240,6 @@ export function machineOps(): LauncherOps {
   };
 }
 
-/** The entry point's call: decide, then become the release's host, keeping
- *  the process. When nothing can start, say why and exit non-zero, so the
- *  supervisor tries again. Given --go-back first, from a shell, it asks the
- *  next start to go back instead (goBackFromShell) and exits. */
 export async function launch(root: string, argv: string[]): Promise<never> {
   const ops = machineOps();
   if (argv[0] === GO_BACK_FLAG) process.exit(goBackFromShell(root, argv.slice(1), ops));

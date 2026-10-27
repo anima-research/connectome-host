@@ -3,14 +3,11 @@
 // alone into an empty directory with its dependencies from the registry, and
 // runs it there under bun. The install runs no install scripts, as npm 12
 // and bun install by default, so a dependency that needs its install script
-// to work fails here as it would for them. npm 10 and 11 run install
-// scripts: the package's own postinstall builds the Web UI only in a
-// checkout, where web/ is, and no dependency in package-lock.json has one.
-// Build the Web UI first (`npm run build:web:ci`). It checks:
+// to work fails here as it would for them. Build the Web UI first
+// (`npm run build:web:ci`), and run it from the repository root. It checks:
 //   1. the package carries the Web UI, dist/web/index.html and every local
-//      file its quoted src and href attributes name, as vite writes them,
-//      and tsconfig.json, with which a consumer typechecks the TypeScript
-//      source the package ships, as connectome-smoke's published lane does;
+//      file its quoted src and href attributes name, and tsconfig.json, with
+//      which a consumer typechecks the TypeScript source the package ships;
 //   2. `bun build` resolves src/index.ts's static imports, and its dynamic
 //      ones with a literal specifier, in the installed tree, on paths a run
 //      doesn't reach too (a recipe extension, loaded by a computed path, isn't
@@ -22,25 +19,13 @@
 //      so no credentials and no provider call. It must exit 0, taking the
 //      message it was sent and then printing the queued reply, which carries
 //      a nonce of this run.
-// A file missing from the package, or a dependency only devDependencies
-// supplied, then fails here, before the release is published, and not for
-// whoever installs it. The publish workflow runs it in a job of its own,
-// without the publish credential, since building the Web UI runs its
-// dependencies' install scripts, and publishes the Web UI that job built;
-// to check by hand, build the Web UI and run it from the repository root,
-// for example before `git push --follow-tags`. npm pack packs the working
-// tree, so it warns when that differs from HEAD, where the publish workflow
-// packs a clean checkout; prepack's scripts/pack-contents.mjs stops a pack
-// that would carry a file git ignores.
+// npm pack packs the working tree, so it warns when that differs from HEAD.
 // A failed install is tried again, three attempts in all,
-// PACK_INSTALLS_ALONE_RETRY_DELAY_MS apart (default 15000), to get past a
-// registry blip; one that runs out of time isn't.
-// PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS and
+// PACK_INSTALLS_ALONE_RETRY_DELAY_MS apart (default 15000); one that runs out
+// of time isn't. PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS and
 // PACK_INSTALLS_ALONE_SMOKE_TIMEOUT_MS set the install's and the smoke run's
 // limits in milliseconds (defaults 900000 and 120000); npm pack has the
-// install's. A child that outlives its limit is killed, not asked to stop:
-// one that handles SIGTERM, as a dependency's new release could, would keep
-// running past it.
+// install's.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -59,7 +44,6 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 
 class CheckError extends Error {}
 
-/** A whole number of milliseconds from the environment, or `fallback`. */
 function millis(name, fallback, zeroAllowed = false) {
   const value = process.env[name];
   if (value === undefined) return fallback;
@@ -69,31 +53,23 @@ function millis(name, fallback, zeroAllowed = false) {
   return Number(value);
 }
 
-/** The working tree's changes from HEAD, as git lists them, or none outside
- *  a git checkout. */
 function changesFromHead() {
   const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
   if (status.status !== 0) return [];
   return status.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
 }
 
-/** The local files a built index.html names in its quoted src and href
- *  attributes, as vite writes them, as paths under its own directory:
- *  URLs with a scheme or a host, and anchors, aside. */
 function webAssets(html) {
   const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"'#?]*)/gi)].map((match) => match[1]);
   return [...new Set(refs.filter((ref) => ref !== "" && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)).map((ref) => ref.replace(/^\.?\//, "")))];
 }
 
-/** Up to five paths, for a message. */
 function some(paths) {
   return `${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ", …" : ""}`;
 }
 
 class TimeoutError extends CheckError {}
 
-/** Runs a command, its output going to ours. A failure throws `message`,
- *  and running out of time says that `what` didn't finish. */
 function run(file, args, options, what, message) {
   try {
     execFileSync(file, args, { stdio: ["ignore", "inherit", "inherit"], killSignal: "SIGKILL", ...options });
@@ -179,8 +155,6 @@ function main() {
         );
         break;
       } catch (error) {
-        // Running out of time isn't a blip: retried, it would leave npm's
-        // children writing into the tree the next attempt starts from.
         const final = !(error instanceof CheckError) || error instanceof TimeoutError;
         if (final || attempt === INSTALL_ATTEMPTS) throw error;
         console.error(`pack-installs-alone: the install failed (attempt ${attempt} of ${INSTALL_ATTEMPTS}); trying again.`);
@@ -234,9 +208,6 @@ function main() {
       );
     }
 
-    // The smoke run's recipe, with the Web UI off (batch mode keeps a Web UI
-    // serving after the run, and nothing here would end it), and the mock
-    // agent's reply queued, with a nonce, so the check reads this run's reply.
     const reply = `pack-installs-alone: reply ${randomBytes(4).toString("hex")}`;
     let recipe;
     try {
@@ -268,8 +239,6 @@ function main() {
     if (smoke.status !== 0) {
       throw new CheckError(`${smokeRun} exited ${smoke.status ?? `on ${smoke.signal}`} (its output is above).`);
     }
-    // Batch mode prints each line it takes as '> line', and the agent's reply
-    // after it.
     const lines = (smoke.stdout ?? "").split("\n");
     const taken = lines.indexOf(`> ${SMOKE_MESSAGE}`);
     if (taken === -1 || !lines.slice(taken + 1).some((line) => line.trim() === reply)) {

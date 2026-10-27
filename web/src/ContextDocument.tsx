@@ -1,21 +1,6 @@
-/**
- * ContextDocument — the agent's compiled context rendered in the MAIN pane, as
- * a readable, navigable document.
- *
- * Combines GET /debug/context (the flat compiled messages) with
- * /debug/context/makeup (segment token/message counts) to partition the flat
- * list into Head | Middle | Recent zones (render order is head, then the folded
- * middle, then the verbatim tail — the makeup counts give the boundaries). A
- * sticky timeline at the top is a clickable minimap: each zone is sized by its
- * token share and scrolls the document to that section. Summary recall-pairs in
- * the middle are styled distinctly.
- */
-
 import { createEffect, createSignal, on, For, Show } from 'solid-js';
 import { MediaView } from './Surgery';
 
-/** One compiled message. `sourceMessageId` is the chronicle id when the
- *  entry is a raw message (strategies stamp it); summaries have none. */
 interface Msg { participant?: string; role?: string; content: unknown; sourceMessageId?: string }
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -26,15 +11,12 @@ interface Stats {
 
 const fmt = (n: number) => n.toLocaleString();
 const estTokens = (s: string) => Math.round(s.length / 3.6);
-const SUMMARY_LABELS = ['What do you remember', 'Context Manager'];
+const CONTEXT_MANAGER_SUMMARY_LABELS = ['What do you remember', 'Context Manager'];
 
 type Block = { type?: string; text?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean; thinking?: string };
 
 const TOOL_INPUT_PREVIEW = 600;
 
-/** Render one content block as text. Every block type the API can put in a
- *  message gets a visible form — a box whose blocks all map to '' is what an
- *  operator reads as "empty context", which is never true. */
 function blockText(b: unknown): string {
   if (!b || typeof b !== 'object') return String(b ?? '');
   const blk = b as Block;
@@ -62,8 +44,6 @@ function textOf(c: unknown): string {
   return String(c ?? '');
 }
 
-/** Inline images in the compiled message (the request ships them as base64
- *  — exactly what the model sees), including ones nested in tool results. */
 function imagesOf(c: unknown): Array<{ mediaType: string; dataUrl: string }> {
   if (!Array.isArray(c)) return [];
   const out: Array<{ mediaType: string; dataUrl: string }> = [];
@@ -82,8 +62,6 @@ function imagesOf(c: unknown): Array<{ mediaType: string; dataUrl: string }> {
   return out;
 }
 
-/** Coarse message kind for the box header: tool traffic gets labelled so a
- *  tool-heavy stretch of context reads as what it is. */
 function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
   if (!Array.isArray(c)) return null;
   const types = new Set(c.map((b) => (b && typeof b === 'object' ? (b as Block).type : undefined)));
@@ -98,7 +76,6 @@ export function ContextDocument(props: {
    *  a redo on it, DQ-4): the document reads its context again. */
   refreshKey?: number;
   scrollRoot?: () => HTMLElement | undefined;
-  /** Show "roll back to here" on raw-message boxes (host supports it, local scope, operator). */
   canRollback?: boolean;
   onRollback?: (messageId: string, preview: string) => void;
 }) {
@@ -108,7 +85,6 @@ export function ContextDocument(props: {
   const [err, setErr] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
-  /** Fleet-child scopes route through the host's ?scope= proxy. */
   const query = () => props.scope && props.scope !== 'local'
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
@@ -127,7 +103,7 @@ export function ContextDocument(props: {
         throw new Error(body?.error ?? `context HTTP ${ctxRes.status}`);
       }
       const ctx = await ctxRes.json();
-      if (props.scope !== scopeAtStart) return; // scope switched mid-flight
+      if (props.scope !== scopeAtStart) return;
       setMsgs((ctx?.request?.messages ?? []) as Msg[]);
       if (mkRes.ok) { const mk = await mkRes.json(); setStats(mk.stats); setExact(mk.exactTotalTokens); }
     } catch (e) {
@@ -135,7 +111,6 @@ export function ContextDocument(props: {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
   };
-  // Initial load AND scope-switch refetch, clearing the stale document first.
   createEffect(on(() => props.scope, () => {
     setMsgs([]); setStats(null); setExact(null); setErr(null);
     void load();
@@ -144,7 +119,6 @@ export function ContextDocument(props: {
   // it again, keeping the old one on screen until the new one comes.
   createEffect(on(() => props.refreshKey, () => void load(), { defer: true }));
 
-  // Zone boundaries from the makeup counts (render order: head | middle | tail).
   const headN = () => stats()?.head.messages ?? 0;
   const tailN = () => stats()?.tail.messages ?? 0;
   const midStart = () => headN();
@@ -171,12 +145,11 @@ export function ContextDocument(props: {
   const isSummary = (m: Msg) => {
     const who = m.participant ?? '';
     const t = textOf(m.content);
-    return SUMMARY_LABELS.some((l) => who.includes('Context Manager') || t.startsWith(l));
+    return CONTEXT_MANAGER_SUMMARY_LABELS.some((l) => who.includes('Context Manager') || t.startsWith(l));
   };
 
   return (
     <div class="text-sm text-neutral-300">
-      {/* sticky timeline minimap */}
       <div class="sticky top-0 z-10 bg-neutral-950/95 backdrop-blur border-b border-neutral-800 pb-2 mb-3 -mx-1 px-1">
         <div class="flex items-center justify-between text-[11px] font-mono text-neutral-500 mb-1">
           <span>
@@ -206,7 +179,6 @@ export function ContextDocument(props: {
 
       <Show when={err()}><div class="text-rose-400 font-mono text-xs px-1">error: {err()}</div></Show>
 
-      {/* the document */}
       <div class="space-y-2 px-1">
         <For each={msgs()}>
           {(m, i) => {

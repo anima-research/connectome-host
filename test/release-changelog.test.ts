@@ -1,7 +1,3 @@
-// Black-box coverage of scripts/release-changelog.ts: each case runs the
-// real script in a throwaway directory, so assembly, validation, and the
-// deletion of consumed fragments are all exercised exactly as `npm version`
-// would run them.
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -40,9 +36,7 @@ interface Fixture {
   version?: string;
   changelog?: string;
   fragments?: Record<string, string>;
-  /** package.json's other fields, such as an earlier release's connectomeRelease. */
   pkg?: Record<string, unknown>;
-  /** RELEASE_CACHE_WRITE, unset when left out. */
   cacheWrite?: string;
 }
 
@@ -70,7 +64,6 @@ function run(dir: string): { status: number; stdout: string; stderr: string } {
   try {
     env.RELEASE_CACHE_WRITE = readFileSync(join(dir, ".cache-write"), "utf8");
   } catch {
-    // Unset: the fixture gave none.
   }
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT], {
@@ -268,9 +261,6 @@ test("reads back to the first final release's heading, and counts a heading it c
   }
 });
 
-// release-bump.mjs is vendored, so this script reads a Breaking subsection
-// with its own copy of the rule; both read the same pending entries alike,
-// under Unreleased or as a fragment.
 test("reads a pending breaking entry as release-bump.mjs does", () => {
   const bodies: Array<[string, string]> = [
     ["Breaking", "- **Recipe authors:** a bullet.\n"],
@@ -315,7 +305,6 @@ test("reads a pending breaking entry as release-bump.mjs does", () => {
   }
 });
 
-/** A pattern matching `text` as written. */
 const literal = (text: string) => new RegExp(text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&"));
 
 const refusals: Array<[string, Fixture, RegExp]> = [

@@ -46,6 +46,7 @@ the recipe.
 | `headless.pid` | The child's PID; removed on graceful shutdown. Adoption uses the PID persisted in the parent's own state; the parent reads this file only to confirm a leftover belongs to the dead child it tracks before removing it (§4.3). |
 | `self-restart.json`, `self-restart.last.json` | With `modules.selfRestart`: a pending `lifecycle--restart` request (stamped with how the process exited), and the last completed one, which the cooldown is measured from. The next process's lifecycle module moves the first to the second at start. |
 | `startup.log` | Opened by the *parent's* FleetModule as a fleet child's stdout and stderr, after a `--- launch …` line per launch. Bun's `console.*` writes to those descriptors directly (Bun 1.3.14 and 1.4.3), not through the redirected methods, so every console line the child prints goes to the file the parent opened here, for the child's whole life: a bad recipe, a missing key, an import error, and a fatal error after the redirect. The parent opens it without waiting for a FIFO's reader, and hands it on only as a regular file that took the launch's header; otherwise the child's console output goes nowhere, and the host's log says why. A link there is followed, when the parent opens the file and when it reads it. A launch that fails after the spawn quotes the end of what the child wrote here during it, or says why it can't, unless the parent is detaching and leaves the child running (§4.3). |
+| `mcpl-servers.agent.child.json` | A fleet child's own agent overlay: the servers it deployed and unloaded for itself with `modules.mcplAdmin`. The parent writes it at a launch that finds none there, before the child's start reads it, and names it in `MCPL_AGENT_OVERLAY_FILE`. Its name is never the working directory's overlay's, `mcpl-servers.agent.json`, so it's the child's own whatever its data dir is, the working directory included. A child launched into its data dir before, whose `startup.log` is there, starts from a copy of the overlay in the working directory as it stands at that launch, which every child read as its own before children had their own, tombstones included; a new child starts from an empty one, even in a data dir made for it ahead of time, `.` included, and so does a child from before this version whose `startup.log` is gone. It's made its owner's alone, never wider than 0600, and a copy never wider than the original, since it can hold the tokens its deploys carry. From then on the file is the child's, and the parent's own deployments no longer reach it: empty it (`{"mcplServers": {}}`) to start the child with none of them, since a launch that finds the file gone copies the working directory's again, where the child's `startup.log` is there. Relative `./` args in it resolve against the working directory, which the child shares with the parent. A link someone makes at a child's own overlay file is kept as made. |
 
 **Connection model.** One client at a time; a new connection closes the
 previous one. On every connection the subscription resets to `['*']` and the
@@ -255,8 +256,9 @@ events; it learns about children by calling these tools.
 ### 4.3 Launch
 
 A child is `<process.execPath> <process.argv[1]> <recipePath> --headless`,
-spawned detached with env `{...process.env, ...env, AGENT_TIMEZONE, DATA_DIR}`,
-less `CONNECTOME_INSTALL_ROOT`, so a child is never an install's host.
+spawned detached with env `{...process.env, ...env, AGENT_TIMEZONE, DATA_DIR, CONNECTOME_UPDATE_CHECK=0, MCPL_AGENT_OVERLAY_FILE}`,
+less `CONNECTOME_INSTALL_ROOT`, so a child is never an install's host, and `CONNECTOME_FLEET_BEGIN`, which the fleet sets again for a gated child, and
+no `cwd`, so it runs in the parent's working directory.
 The parent waits for the socket file, connects, sends `subscribe`, and waits
 for `lifecycle:ready`.
 

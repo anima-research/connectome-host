@@ -1,8 +1,3 @@
-/**
- * Tests for the ${VAR} env substitution added to loadRecipe.
- * Exercises substituteEnvVars() directly (pure function) plus an end-to-end
- * loadRecipe flow via a temp recipe file.
- */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,7 +64,6 @@ describe('substituteEnvVars', () => {
   });
 
   test('pattern requires valid identifier (starts with letter or underscore)', () => {
-    // ${1FOO} is not a valid var name and should be left alone.
     expect(substituteEnvVars('${1FOO}', 'test')).toBe('${1FOO}');
   });
 
@@ -92,7 +86,7 @@ describe('loadRecipe — end-to-end with env substitution', () => {
 
   afterEach(() => {
     process.env = originalEnv;
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('substitution flows through loadRecipe to the validated recipe', async () => {

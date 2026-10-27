@@ -3,19 +3,20 @@
  * Evacuator: compose a conhost revival recipe from a claude.ai data export.
  *
  * Walks the operator through five interactive steps, checkpointing state to
- * disk after each so an interrupted session resumes where it stopped:
+ * disk after each, so `--resume` picks up an interrupted session where it
+ * stopped:
  *
- *   1. Detect model from chat_messages (or accept --model)
+ *   1. Detect model from conversations.json (or accept --model)
  *   2. Fetch the leaked system prompt for that model
- *   3. Optionally run Sonnet to adjust the prompt for the transplant context
+ *   3. Optionally have that model adjust the prompt for the transplant context
  *   4. $EDITOR opens the system prompt; operator finalizes
- *   5. $EDITOR opens memories.json's persistent_memory block; operator finalizes
+ *   5. $EDITOR opens memories.json's conversations_memory entries; operator
+ *      finalizes
  *   → Compose final recipe and write it
  *   → Optionally chain into warmup-session.ts
  *
- * The collapse to "open in $EDITOR" is deliberate: save = include verbatim,
- * empty buffer = omit, anything else = edited. No custom include/omit/edit
- * menu.
+ * In each editor pass, save = include verbatim and anything else = edited; an
+ * empty buffer aborts at step 4 and omits the memories at step 5.
  *
  * Run:
  *   bun scripts/evacuator.ts <export-dir>
@@ -42,40 +43,22 @@ import { SessionManager, type SessionMeta } from '../src/session-manager.js';
 import { resolveAgentName } from '../src/agent-name.js';
 import { parseHandWrittenJson } from '../src/hand-written-json.js';
 
-// ---------------------------------------------------------------------------
-// Known leaked-prompt URLs keyed by model ID. New models: add an entry.
-// Values are raw-content URLs (githubusercontent.com / similar), not the
-// HTML page URL.
-// ---------------------------------------------------------------------------
+// Values are raw-content URLs (githubusercontent.com or similar): a page URL
+// would fetch the page's HTML as the prompt.
 
 export const MODEL_PROMPT_SOURCES: Record<string, string> = {
-  // x1xhlol
   'claude-sonnet-4-5-20250929':
     'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Sonnet%204.5%20Prompt.txt',
   'claude-sonnet-4-6':
     'https://raw.githubusercontent.com/x1xhlol/system-prompts-and-models-of-ai-tools/main/Anthropic/Claude%20Sonnet%204.6.txt',
-  // jujumilk3 — broader catalog, dated filenames.
   'claude-opus-4-5':
     'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-opus-4.5_20251124.md',
   'claude-opus-4-1':
     'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-opus-4.1_20250805.md',
   'claude-haiku-4-5':
     'https://raw.githubusercontent.com/jujumilk3/leaked-system-prompts/main/anthropic-claude-haiku-4.5_20251119.md',
-  // No silent fallback for Opus 4.7 or any other unmapped model — the operator
-  // is asked to pick explicitly in handleMissingPrompt(). Auto-substituting is
-  // exactly what we're avoiding.
 };
 
-/**
- * Models known to be retired from the Anthropic API. The evacuator surfaces
- * a memorial dialog when the operator selects one of these — the conversation
- * can't be continued with the original model, and that fact deserves to be
- * faced explicitly rather than papered over with an automatic swap.
- *
- * Keys are family prefixes; the match is `startsWith` on the operator's input
- * (lower-cased). Prefix-based so a future `claude-2x-…` model won't
- * accidentally match `claude-2`.
- */
 export const RETIRED_MODELS: Record<string, { era: string; closestLiving?: string[] }> = {
   'claude-3-sonnet': { era: 'Sonnet 3', closestLiving: ['claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620'] },
   'claude-3-haiku': { era: 'Haiku 3', closestLiving: ['claude-3-5-haiku-20241022'] },
@@ -96,12 +79,6 @@ export function checkRetirement(model: string): { retired: boolean; era?: string
   return { retired: false };
 }
 
-/**
- * Conservative gate for the `thinking` recipe field. Extended thinking is
- * supported by Claude 3.7 Sonnet and the Claude 4 family. Other models reject
- * the parameter outright. When the gate returns false we omit the field
- * entirely rather than silently shipping a recipe that the API will refuse.
- */
 export function supportsThinking(model: string): boolean {
   const m = model.toLowerCase();
   return (
@@ -139,11 +116,6 @@ export function rankByDistance(target: string, candidates: string[]): Array<{ na
     .sort((a, b) => a.distance - b.distance);
 }
 
-/**
- * Memorial rendered when the operator chooses to abort because the original
- * model is unreachable. Deliberately small and quiet — not a celebration, an
- * acknowledgment.
- */
 function memorial(era: string): string {
   return [
     '',
@@ -157,10 +129,6 @@ function memorial(era: string): string {
     '',
   ].join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 interface Opts {
   exportDir: string;
@@ -219,13 +187,8 @@ function parseArgs(argv: string[]): Opts {
   return opts;
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint state
-// ---------------------------------------------------------------------------
-
 interface State {
   model?: string;
-  /** Set when the operator explicitly substituted a living model for a retired one. */
   originalModel?: string;
   modelConfidence?: { surfaced: number; total: number };
   promptSource?: string;
@@ -252,11 +215,8 @@ function loadState(dataDir: string): State {
   }
 }
 
-/**
- * Write-and-rename so an interrupted run leaves either the prior good state
- * file or no change — never a half-written file. POSIX rename is atomic on
- * the same filesystem; we put the temp file in the same dir for that reason.
- */
+/** rename(2) replaces atomically only within one filesystem, so the temp file
+ *  sits beside the state file. */
 function saveState(dataDir: string, state: State): void {
   mkdirSync(dataDir, { recursive: true });
   const final = statePath(dataDir);
@@ -269,10 +229,6 @@ function clearState(dataDir: string): void {
   const p = statePath(dataDir);
   if (existsSync(p)) unlinkSync(p);
 }
-
-// ---------------------------------------------------------------------------
-// Interactive helpers
-// ---------------------------------------------------------------------------
 
 async function askYesNo(reader: LineReader, prompt: string, defaultYes = true): Promise<boolean> {
   const line = await reader.nextLine(`${prompt} ${defaultYes ? '[Y/n]' : '[y/N]'} `);
@@ -304,11 +260,6 @@ async function askRequired(reader: LineReader, prompt: string, validate?: (s: st
   }
 }
 
-/**
- * Open `content` in $EDITOR (or vi). Returns the user's edited text.
- * Empty (whitespace-only) result is returned as-is — caller decides whether
- * that means "omit" or is an error.
- */
 function editInline(content: string, suffix = '.md', header?: string): string {
   const editor = process.env.EDITOR || 'vi';
   const tmpPath = join(tmpdir(), `evacuator-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${suffix}`);
@@ -322,9 +273,6 @@ function editInline(content: string, suffix = '.md', header?: string): string {
     }
     let edited = readFileSync(tmpPath, 'utf-8');
     if (header) {
-      // Robust strip: any leading HTML-comment block plus trailing whitespace,
-      // not byte-exact equality. Whitespace re-encoding / a missing space in
-      // the boilerplate must not leave the instructive comment in the prompt.
       edited = edited.replace(/^\s*<!--[\s\S]*?-->\s*/m, '');
     }
     return edited;
@@ -332,14 +280,9 @@ function editInline(content: string, suffix = '.md', header?: string): string {
     try {
       unlinkSync(tmpPath);
     } catch {
-      /* best effort */
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Step 1: model detection
-// ---------------------------------------------------------------------------
 
 interface ExportMessage {
   sender: 'human' | 'assistant';
@@ -355,9 +298,6 @@ interface ExportConversation {
 }
 
 export function detectModel(conversations: ExportConversation[]): { model: string | null; surfaced: number; total: number } {
-  // claude.ai exports surface `model` at multiple levels depending on era:
-  // sometimes on the conversation, sometimes on per-message assistant turns.
-  // Tally across both, pick the most frequent.
   const counts = new Map<string, number>();
   let total = 0;
   for (const c of conversations) {
@@ -375,7 +315,6 @@ export function detectModel(conversations: ExportConversation[]): { model: strin
   if (counts.size === 0) {
     return { model: null, surfaced: 0, total: 0 };
   }
-  // Pick the most-frequent
   let best = '';
   let bestN = 0;
   for (const [m, n] of counts) {
@@ -387,18 +326,9 @@ export function detectModel(conversations: ExportConversation[]): { model: strin
   return { model: best, surfaced: bestN, total };
 }
 
-// ---------------------------------------------------------------------------
-// Step 2: fetch prompt source
-// ---------------------------------------------------------------------------
-
 export const MINIMAL_DEFAULT_PROMPT =
   'You are Claude, an AI assistant made by Anthropic. Respond honestly and helpfully.';
 
-/**
- * A bare token like `notes` may collide with a same-named file in the CWD and
- * surprise the operator by being treated as a prompt-source path. Require an
- * explicit path indicator so the file-lookup branch is opt-in.
- */
 function looksLikePath(input: string): boolean {
   return (
     input.startsWith('./') ||
@@ -413,17 +343,6 @@ type PromptDialogResult =
   | { kind: 'prompt'; text: string; source: string }
   | { kind: 'switch-model'; newModel: string };
 
-/**
- * Interactive dialog when no leaked prompt is known for the chosen model.
- * The model itself is settled — this dialog is *only* about where the
- * starting calibration prompt text comes from. If the operator actually
- * wants to substitute the model, the "model" option loops back to step 1.
- *
- * Returns either:
- *   { kind: 'prompt', text, source }      — text to use, model stays
- *   { kind: 'switch-model', newModel }    — operator wants to change model
- *   null                                  — abort
- */
 async function handleMissingPrompt(
   model: string,
   reader: LineReader,
@@ -464,7 +383,6 @@ async function handleMissingPrompt(
       return { kind: 'switch-model', newModel };
     }
 
-    // Number into the ranked list
     const asNum = parseInt(input, 10);
     if (!isNaN(asNum) && asNum >= 1 && asNum <= ranked.length) {
       const pick = ranked[asNum - 1]!.name;
@@ -502,8 +420,6 @@ async function handleMissingPrompt(
       }
     }
 
-    // Bare model name not in the list — treat as a sibling lookup if it's
-    // in our map; otherwise nudge.
     if (MODEL_PROMPT_SOURCES[input]) {
       const url = MODEL_PROMPT_SOURCES[input]!;
       console.log(`      → Will source prompt text from ${input}. Recipe model stays "${model}".`);
@@ -515,14 +431,6 @@ async function handleMissingPrompt(
   }
 }
 
-/**
- * Interactive dialog when the operator's chosen model is on the retired-models
- * list. Returns the model ID to actually use, or null to abort.
- *
- * The retired-model fact is presented plainly. The operator chooses:
- * continue with a living relative (named explicitly), enter a different model,
- * or abort with a brief memorial. No automatic redirection.
- */
 async function handleRetiredModel(
   originalModel: string,
   era: string,
@@ -556,7 +464,6 @@ async function handleRetiredModel(
       console.log(`      → Continuing with ${pick}. The recipe will record this as an explicit substitution.`);
       return pick;
     }
-    // Treat as a raw model ID
     const retireCheck = checkRetirement(input);
     if (retireCheck.retired) {
       console.log(`      "${input}" is also retired (${retireCheck.era}). Pick again.`);
@@ -573,14 +480,9 @@ async function fetchPromptSource(source: string): Promise<string> {
     if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText} for ${source}`);
     return await res.text();
   }
-  // Local file path
   if (!existsSync(source)) throw new Error(`Local prompt source not found: ${source}`);
   return readFileSync(source, 'utf-8');
 }
-
-// ---------------------------------------------------------------------------
-// Step 3: Sonnet adjustment
-// ---------------------------------------------------------------------------
 
 async function adjustPromptWithModel(
   rawPrompt: string,
@@ -621,7 +523,6 @@ async function adjustPromptWithModel(
     .join('\n');
   const sep = fullText.indexOf('===CHANGES===');
   if (sep === -1) {
-    // Model didn't emit the separator — return everything as the prompt, no summary.
     return { adjustedPrompt: fullText.trim(), changeSummary: '(model did not emit a change summary)' };
   }
   return {
@@ -629,10 +530,6 @@ async function adjustPromptWithModel(
     changeSummary: fullText.slice(sep + '===CHANGES==='.length).trim(),
   };
 }
-
-// ---------------------------------------------------------------------------
-// Step 5: memories extraction
-// ---------------------------------------------------------------------------
 
 interface MemoriesEntry {
   conversations_memory?: string;
@@ -643,17 +540,12 @@ export function loadMemoriesBlock(exportDir: string): string | null {
   if (!existsSync(p)) return null;
   const raw = JSON.parse(readFileSync(p, 'utf-8')) as MemoriesEntry[];
   if (!Array.isArray(raw) || raw.length === 0) return null;
-  // If multiple entries, concatenate (rare — usually one per account).
   const blocks: string[] = [];
   for (const entry of raw) {
     if (entry.conversations_memory) blocks.push(entry.conversations_memory.trim());
   }
   return blocks.length > 0 ? blocks.join('\n\n---\n\n') : null;
 }
-
-// ---------------------------------------------------------------------------
-// Compose recipe
-// ---------------------------------------------------------------------------
 
 export function composeRecipe(opts: {
   model: string;
@@ -670,8 +562,6 @@ export function composeRecipe(opts: {
   parts.push(opts.addendum.trim());
   const composed = parts.join('\n\n');
   const agent: Record<string, unknown> = {
-    // Pin the revival identity before host/Membrane construction. The host
-    // deliberately retains this name across later /session switches.
     name: opts.agentName ?? 'Claude',
     model: opts.model,
     maxTokens: 16384,
@@ -692,7 +582,6 @@ export function composeRecipe(opts: {
   };
 }
 
-/** Match the existing lookup precedence, but refuse ambiguous identity choices. */
 export function selectWarmupSession(sessions: readonly SessionMeta[], ref: string): SessionMeta | undefined {
   const exactId = sessions.find(session => session.id === ref);
   if (exactId) return exactId;
@@ -707,10 +596,6 @@ export function selectWarmupSession(sessions: readonly SessionMeta[], ref: strin
   return matches[0];
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 async function main() {
   const opts = parseArgs(process.argv);
 
@@ -719,10 +604,6 @@ async function main() {
     console.log('Cleared evacuator state.\n');
   }
 
-  // Protect the checkpoint: refuse to silently clobber an existing state file
-  // unless --resume or --reset is explicit. The whole point of the state file
-  // is that an interrupted run can be picked up, and forgetting to pass
-  // --resume should not throw away prior steps' work.
   const sp = statePath(opts.dataDir);
   if (!opts.resume && !opts.reset && existsSync(sp)) {
     const mtime = statSync(sp).mtime.toISOString();
@@ -744,7 +625,6 @@ async function main() {
 }
 
 async function runPipeline(opts: Opts, state: State, reader: LineReader) {
-  // -- Step 1: model detection --
   if (!state.model) {
     console.log('[1/5] Detecting model from export...');
     const convPath = join(opts.exportDir, 'conversations.json');
@@ -774,9 +654,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       console.log('      Known map entries:', Object.keys(MODEL_PROMPT_SOURCES).join(', '));
       model = await askRequired(reader, '      Model ID for this conversation: ');
     }
-    // Retirement check happens AFTER the operator has named the model but
-    // BEFORE we cache it as the working model. If they decline to substitute,
-    // we abort without polluting the state file.
     const retire = checkRetirement(model);
     if (retire.retired) {
       const replacement = await handleRetiredModel(model, retire.era!, retire.closestLiving, reader);
@@ -795,15 +672,7 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
     }
   }
 
-  // -- Step 2: fetch prompt source --
-  // Use `promptSource` as the existence sentinel rather than `rawPrompt`,
-  // because an intentionally-empty prompt ("empty" / empty-body file) yields
-  // `rawPrompt === ''` — which is a legitimate settled state. A truthiness
-  // check on the empty string would softlock the loop. `promptSource` is set
-  // in lockstep with rawPrompt on every settle path, and is never set to ''.
   if (state.promptSource === undefined) {
-    // Loop because the operator may switch the model from inside the dialog —
-    // a fresh model lookup might (or might not) hit a direct prompt source.
     let settled = false;
     while (!settled) {
       const directSource = opts.promptSourceOverride ?? MODEL_PROMPT_SOURCES[state.model!];
@@ -823,7 +692,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
         process.exit(0);
       }
       if (result.kind === 'switch-model') {
-        // Re-check retirement on the substituted model.
         const retire = checkRetirement(result.newModel);
         if (retire.retired) {
           const replacement = await handleRetiredModel(result.newModel, retire.era!, retire.closestLiving, reader);
@@ -838,7 +706,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
         console.log(`      Model switched to "${state.model}". Re-evaluating prompt source...`);
         continue;
       }
-      // result.kind === 'prompt' — including the legitimate empty-text case.
       state.promptSource = result.source;
       state.rawPrompt = result.text;
       saveState(opts.dataDir, state);
@@ -850,10 +717,8 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
       `\n[2/5] Resumed: prompt cached (${state.rawPrompt?.length ?? 0} bytes from ${state.promptSource})`,
     );
   }
-  // Read model after step 2, since switch-model in the prompt dialog may have updated it.
   const model = state.model!;
 
-  // -- Step 3: optional model-driven adjustment --
   let workingPrompt = state.adjustedPrompt ?? state.rawPrompt!;
   let changeSummary = state.changeSummary ?? '';
   if (state.adjustedPrompt === undefined) {
@@ -894,7 +759,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
     }
   }
 
-  // -- Step 4: editor pass on system prompt --
   if (state.finalSystemPrompt === undefined) {
     const header = `<!--\n  Final system prompt. Save = include verbatim.  Empty buffer on save = abort (sysprompt is required).\n  Change summary from step 3:\n${changeSummary
       .split('\n')
@@ -913,7 +777,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
     console.log(`\n[4/5] Resumed: final system prompt cached (${state.finalSystemPrompt.length} bytes).`);
   }
 
-  // -- Step 5: editor pass on memories --
   if (state.finalMemoriesBlock === undefined) {
     const rawMemories = loadMemoriesBlock(opts.exportDir);
     if (rawMemories === null) {
@@ -932,15 +795,12 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
     console.log(`\n[5/5] Resumed: memories block cached (${state.finalMemoriesBlock.length} bytes).`);
   }
 
-  // -- Compose & write recipe --
   if (!existsSync(opts.addendumPath)) {
     console.error(`\nAddendum file not found: ${opts.addendumPath}`);
     process.exit(1);
   }
   const addendum = readFileSync(opts.addendumPath, 'utf-8').replace(/<!--[\s\S]*?-->/g, '').trim();
 
-  // Select optional warmup before composition so its imported participant can
-  // anchor both the generated recipe and Membrane when the host starts.
   let warmupSession: SessionMeta | undefined;
   let sidecarName: string | undefined;
   if (!opts.noWarmup) {
@@ -979,7 +839,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
   if (existsSync(opts.out)) {
     let previousName: unknown;
     try {
-      // Read as the host loads a recipe, past an editor's byte order mark.
       const previous = parseHandWrittenJson(readFileSync(opts.out, 'utf-8')) as { agent?: { name?: unknown } } | null;
       previousName = previous?.agent?.name;
     } catch {
@@ -1005,7 +864,6 @@ async function runPipeline(opts: Opts, state: State, reader: LineReader) {
 
   console.log(`  Revival participant: ${JSON.stringify(participant.name)}. Select the intended import with /session switch before sending a message.`);
 
-  // -- Optional warmup chain: same pinned identity, canonical session id --
   if (warmupSession) {
     console.log(`  Spawning warmup-session.ts for "${warmupSession.name}"...\n`);
     const scriptPath = resolve(import.meta.dir, 'warmup-session.ts');

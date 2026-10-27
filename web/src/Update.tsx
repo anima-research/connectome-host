@@ -1,14 +1,3 @@
-/**
- * The host update in the page (src/update/update.ts): a banner under the
- * header, a block in Health, and the Restart and Go back dialogs. They read
- * the local /healthz's `update` section and say what `/update` says
- * (`@conhost/web/update-text`), with each way named by its button. Each
- * button sends `/update`'s command (commandFor), naming the release the page
- * showed where the way is for one, and its answer lands in the conversation
- * pane, which the page shows as it sends. An observer, who can't send
- * commands, sees the words and no buttons.
- */
-
 import { For, Show } from 'solid-js';
 import {
   PAGE_WAYS, goBackLines, openWays, restartLines, shownBanner, statusLines, type UpdateStatus, type UpdateWay,
@@ -16,7 +5,6 @@ import {
 
 const BUTTON = 'px-1.5 py-0.5 rounded border border-current/40 hover:bg-white/10 font-mono text-[10px]';
 
-/** The ways' buttons. Restart and Go back name a dialog, so they end in "…". */
 function WayButtons(props: { ways: UpdateWay[]; onWay(way: UpdateWay): void }) {
   return (
     <span class="flex items-center gap-1 shrink-0">
@@ -29,9 +17,6 @@ function WayButtons(props: { ways: UpdateWay[]; onWay(way: UpdateWay): void }) {
   );
 }
 
-/** One line under the header for the most pressing of the update's states
- *  (bannerOf). `onWay` is absent for an observer. A dismissed line stays
- *  hidden until the banner says something else (keptDismissal). */
 export function UpdateBanner(props: {
   status: UpdateStatus | null;
   dismissed: string | null;
@@ -65,8 +50,6 @@ export function UpdateBanner(props: {
   );
 }
 
-/** Health's Update block: `/update`'s status, and a button for each way open
- *  now (openWays). `onWay` is absent for an observer. */
 export function UpdateBlock(props: { status: UpdateStatus; onWay?(way: UpdateWay): void }) {
   const ways = () => (props.onWay ? openWays(props.status) : []);
   return (
@@ -84,10 +67,6 @@ export function UpdateBlock(props: { status: UpdateStatus; onWay?(way: UpdateWay
   );
 }
 
-/** The Restart and Go back dialogs: what each does, before the yes. A Go
- *  back offers keeping the newer data first. Each offers its yes only while
- *  the status leaves its way open (openWays), and its words follow the
- *  status as the page reads it again. */
 export function UpdateDialog(props: {
   kind: 'restart' | 'back';
   status: UpdateStatus;
@@ -107,8 +86,6 @@ export function UpdateDialog(props: {
         </div>
         <div class="flex gap-2 justify-end">
           <button type="button" class="px-3 py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-sm" onClick={() => props.onClose()}>Cancel</button>
-          {/* Restoring the copy sets residents' days since it aside, so it
-              reads as the weightier way. */}
           <For each={ways()}>{(way) => (
             <button
               type="button"

@@ -1,11 +1,7 @@
 /**
- * A subagent whose run the framework ended rather than sleep a provider's
- * stated wait (an ephemeral run sleeps a stated wait of up to ten minutes,
- * and ends at once on a longer one or on one it can't read as a number)
- * fails without a restart, since a restart would call the provider again
- * too soon. Other rate-limit errors stay transient. agent-framework 0.22.3
- * rejects such a run with its ProviderWaitNotSleptError, which the module
- * reads by name.
+ * agent-framework's runEphemeralToCompletion ends a run at once, rejecting with
+ * ProviderWaitNotSleptError, when a provider states a wait longer than 600 s,
+ * an infinite one, or one that isn't a number.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -16,9 +12,8 @@ import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
-// The framework's message for each kind of wait it won't sleep
-// (statedWaitNotSlept), after the provider's own. The last test builds them
-// as the framework does.
+// agent-framework's words for each wait it won't sleep (statedWaitNotSlept),
+// after the provider's own.
 const UNSLEPT = "429 rate_limit_error: try again later (the provider asked to wait 7200 s; an ephemeral run doesn't sleep a stated wait longer than 600 s, so it ends now)";
 const UNSLEPT_NAN = "429 rate_limit_error (the provider's stated wait is not a number, and an ephemeral run sleeps only a stated wait of 600 s or less, so it ends now)";
 
@@ -27,12 +22,7 @@ type Classifier = { isTransientError(err: Error): boolean };
 async function harness(fail: () => Error) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-wait-'));
   const membrane = new Membrane(new MockAdapter({ defaultResponse: 'ok' }), { formatter: new NativeFormatter() });
-  // One retry, so a restart shows as a second run after a 5 s delay, well
-  // inside the test's bound.
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', defaultMaxTokens: 256, maxRetries: 1 });
-  // The rate-limit cooldown is 30 s. A run ended over a wait the framework
-  // won't sleep never reaches it; at 0, a run that did would show as a halved
-  // concurrency (throttle()) rather than as a test out of time.
   (subagent as unknown as { rateLimitCooldownMs: number }).rateLimitCooldownMs = 0;
   const framework = await AgentFramework.create({
     storePath: join(tmpDir, 'store'),
@@ -56,10 +46,9 @@ async function harness(fail: () => Error) {
     framework,
     subagent,
     runs: () => runs,
-    /** Whether the module throttled its subagents, as a rate limit does. */
     throttle: () => ({ halved: limits.effectiveConcurrent < concurrency, throttled: limits.throttled }),
     cleanup: async () => {
-      try { await framework.stop(); } catch { /* noop */ }
+      try { await framework.stop(); } catch { }
       rmSync(tmpDir, { recursive: true, force: true });
     },
   };
@@ -96,9 +85,8 @@ describe("a provider's stated wait that the framework won't sleep", () => {
 
   for (const tool of ['spawn', 'fork'] as const) {
     test(`fails a ${tool} without a restart when the framework's error is named ProviderWaitNotSleptError, whatever its words`, async () => {
-      // Its name is the mark, so an error from a second copy of the package,
-      // with a class of its own, reads the same. These words would otherwise
-      // be transient.
+      // A second copy of the package has a class of its own, so only the name
+      // marks its error.
       const words = '503 overloaded: socket hang up';
       const marked = () => Object.assign(new Error(words), {
         name: 'ProviderWaitNotSleptError', retryAfterMs: 7_200_000,
@@ -121,8 +109,6 @@ describe("a provider's stated wait that the framework won't sleep", () => {
   });
 
   test('a rate-limit error without that class throttles the subagents and is tried again, as before', async () => {
-    // The control for the throttle() checks above: a plain rate-limit error
-    // halves the concurrency, throttles, and restarts the run.
     const h = await harness(() => new Error('429 rate_limit_error: try again later'));
     try {
       const res = await h.subagent.handleToolCall(call('spawn', 'plain-limited'));
@@ -145,15 +131,10 @@ describe("a provider's stated wait that the framework won't sleep", () => {
     let next: Error = new Error('unset');
     const h = await harness(() => next);
     try {
-      // The framework's own words and wait, from the installed package, as
-      // its settle passes them to ProviderWaitNotSleptError
-      // (runEphemeralToCompletion's reject).
       const fw = h.framework as unknown as { statedWaitNotSlept(error: Error): { error: string; statedWaitMs: number } };
       const stated = (retryAfterMs: number) => Object.assign(new Error('429 rate_limit_error: try again later'), {
         name: 'MembraneError', type: 'rate_limit', retryable: true, retryAfterMs,
       });
-      // Each case's own words, so a framework that stopped reading the stand-in
-      // as a MembraneError, and gave every case one ending, fails here.
       const cases = [
         [7_200_000, 'the provider asked to wait 7200 s'],
         [Number.POSITIVE_INFINITY, 'the provider asked to wait longer than can be represented'],

@@ -1,8 +1,3 @@
-/**
- * Anthropic OAuth credential source: bare token vs credentials file, the
- * refresh exchange at the token endpoint, persistence back to the file, the
- * operator-driven (not automatic) rotation default, and the usage probe.
- */
 import { describe, expect, test, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs';
@@ -110,8 +105,6 @@ describe('credentials file', () => {
   test('a planted temp path cannot capture the write: the rotation stays in memory and is reported', async () => {
     const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
     const { fetchImpl } = fakeFetch(() => Response.json({ access_token: 'b', refresh_token: 'r2', expires_in: 60 }));
-    // Make the credentials file's directory unwritable for new entries by
-    // pointing the file inside a directory that does not exist for the temp.
     const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl });
     (creds as unknown as { file: string }).file = join(path, 'nope', 'creds.json'); // path is a file ⇒ ENOTDIR on open
     await creds.refresh();

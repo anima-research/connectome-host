@@ -33,18 +33,33 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
-```bash
-# Prerequisites: Bun 1.4.3+ and Node.js 22.12+ (Node builds the web UI), plus credentials
-export ANTHROPIC_API_KEY=sk-ant-...     # or ANTHROPIC_AUTH_TOKEN (Claude subscription)
+Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+ and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
 
-bun install                                   # also builds the web UI bundle
-bun src/index.ts                              # generic assistant (or the last recipe you loaded)
-bun src/index.ts recipes/mock-test.json       # zero-cost offline smoke run, no credentials needed
-bun src/index.ts path/to/recipe.json          # load a recipe
-bun src/index.ts https://example.com/r.json   # recipe from URL
+```bash
+mkdir my-agent && cd my-agent
+bun add @animalabs/connectome-host        # or: npm install @animalabs/connectome-host
+export ANTHROPIC_API_KEY=sk-ant-...       # or ANTHROPIC_AUTH_TOKEN (Claude subscription)
+
+H=node_modules/@animalabs/connectome-host
+bun $H/src/index.ts                               # generic assistant (or the last recipe you loaded)
+bun $H/src/index.ts $H/recipes/mock-test.json     # zero-cost offline smoke run, no credentials needed
+bun $H/src/index.ts path/to/recipe.json           # load a recipe
+bun $H/src/index.ts https://example.com/r.json    # recipe from URL
 ```
 
-Bun loads `.env` automatically; `.env.example` lists the common variables.
+Bun loads `.env` from the folder you run in; `$H/.env.example` lists the common variables. An install from npm can update itself once it's set up: [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install".
+
+**From a clone** instead, check out a release, since `main` holds work that isn't released yet. A clone needs git, and Node.js 22.12+ and npm to build the Web UI.
+
+```bash
+git clone --branch "v$(npm view @animalabs/connectome-host version)" https://github.com/anima-research/connectome-host
+cd connectome-host
+bun install
+bun run build:web     # the Web UI; the host runs without it
+bun src/index.ts      # and the rest as above, with the clone's own paths
+```
+
+A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
 
 ## Recipes
 
@@ -240,18 +255,21 @@ loads only when a recipe names its id. For a named id the registry supplies
 the command, args and env, and the recipe entry may carry only policy fields —
 no `command` or `url` needed: `channelSubscription`, `toolPrefix`, feature-set
 and tool toggles, reconnect settings, WebSocket transport, `access`,
-`toolLifecycle` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
+`toolLifecycle`, `toolHints` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
 `src/mcpl-config.ts`).
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
 
 Agents with `modules.mcplAdmin` can also deploy, restart and unload their own
-servers; those are kept in `mcpl-servers.agent.json` and load regardless of
-the recipe.
+servers; those are kept in `mcpl-servers.agent.json` in the working directory,
+or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
+([`docs/fleet-protocol.md`](docs/fleet-protocol.md)), and load regardless of
+the recipe. Their relative `./` args resolve against the working directory.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools, and `agent.retry` passes a Membrane retry policy
-through for flaky gateways.
+by default) for slow tools. `agent.retry` sets a Membrane retry policy for
+the host's own provider calls, such as compression and retrieval; an agent's
+turns are retried by agent-framework itself.
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 
@@ -267,8 +285,9 @@ them to enable:
 - `enabledFeatureSets` **omitted**: every set the server declares is enabled,
   subject to the `uses` rule below.
 - `enabledFeatureSets: []` in a recipe or in `mcpl-servers.json`: **no** set is
-  enabled (deny-all). Only the agent's own `mcpl-servers.agent.json` reads an
-  empty list as unset, since strict function calling makes some models send
+  enabled (deny-all). Only the agent's own overlay (`mcpl-servers.agent.json`,
+  or a fleet child's `mcpl-servers.agent.child.json`) reads an empty list as
+  unset, since strict function calling makes some models send
   `[]` for "unspecified" (`resolveOverlayEntry` in `src/mcpl-config.ts`).
 - A `*` in a pattern matches exactly one dot-separated segment (`memory.*`
   matches `memory.retrieval`, not `memory.a.b`). `disabledFeatureSets` wins
@@ -325,7 +344,19 @@ An unclassed tool is treated as the most restrictive class: observable that it r
 
 To check what each tool ended up as, and which of the three sources decided it, run `/tools [agent]`, open the web UI's MCP tab, or `GET /debug/tool-classes`. With `mcplAdmin` enabled, the agent's `mcpl_list` shows the same for each server's tools.
 
-Servers an agent deploys for itself (`mcpl-servers.agent.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
+Servers an agent deploys for itself (`mcpl-servers.agent.json`, or a fleet child's `mcpl-servers.agent.child.json`) can never hold either permission. The overlay denies `toolLifecycle` and strips any `toolLifecycle` block, as it already does for context hooks and server-initiated inference. To let such a server observe, the operator moves it into the recipe. These settings take effect with an agent-framework that includes tool lifecycle (anima-research/agent-framework#199); older ones ignore them.
+
+### Tool hints and toolsets (MCPL RFC-014)
+
+`toolHints: true` on a server's entry turns on RFC-014 for that server. The host advertises `toolHints` to it, and the server then lists every tool with hints: static or dynamic, visible or not, and which toolset it belongs to. Its toolsets (a game, a builder) can then be opened and closed instead of all being present at once. Hints confer no authority: what the server may do is still its grant.
+
+```json
+"mcpServers": {
+  "surfaces": { "url": "wss://surfaces.example/mcpl", "toolHints": true }
+}
+```
+
+Set it in the recipe, or in `mcpl-servers.json` for a server the recipe names. A recipe naming such a server may override it, so `false` there turns it off. It must be `true` or `false`: anything else stops the load. In the agent's own overlay (`mcpl-servers.agent.json`, or a fleet child's `mcpl-servers.agent.child.json`), anything else is left out and named in a startup line, and the server gets the default. Omitted, agent-framework's default applies. It takes effect with an agent-framework that implements RFC-014; older ones ignore it.
 
 ### Included recipes
 
@@ -524,15 +555,23 @@ unknown-key warning, like those at the other levels.
 - **Workspace** (`modules.workspace`, on) — mounted directories backed by
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
   (read-only `./input`) and `products` (read-write `./output`). A mount with
-  `"backend": "direct"` reads disk as it is, with no store or watcher, for a
-  checkout an agent reads: it names `"mode": "read-only"`, the only mode
-  agent-framework takes on a direct mount, and a mount the agent writes, or
-  whose changes should wake it, leaves `backend` out. A direct mount that names no `ignore` passes over `node_modules`,
+  `"backend": "direct"` reads disk as it is, and writes it as it is if it's
+  writable, with no store, undo or watcher: it names its mode, `"read-only"`,
+  or `"read-write"` from agent-framework 0.27.0, and a mount whose changes
+  should wake the agent, or whose writes should be undoable, leaves `backend`
+  out. A direct mount that names no `ignore` passes over `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
   and one that names any passes over only what it names. While its store
-  holds changes from when it ran as Chronicle, it runs as Chronicle until a
-  start after they're settled, and says at start how to settle them.
-  `include` limits what a mount holds. See `RecipeWorkspaceMount` in
+  holds changes from when it ran as Chronicle, it runs as Chronicle, taking no
+  writes, until a start after they're settled, and says at start how to settle them.
+  `include` limits what a mount holds, and agent-framework keeps its own
+  files (spilled tool results, saved payloads, fetched references) only in the
+  first writable mount with no `include` that isn't configured direct. `configMount: true` adds `_config`, holding only files named
+  `gate.json`, `gate.js` or `gate.recipe.json`, the names of the gate's
+  files, anywhere in the session's config directory, subdirectories
+  included. `_config` is
+  the host's mount's name, so no mount of the recipe's own takes it. See
+  `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form
@@ -594,6 +633,13 @@ Claude model and cannot be sent through an OpenAI adapter. Anthropic/Claude
 uses different native thinking controls and does not accept this OpenAI-shaped
 option.
 
+Retrieval fits its lessons block under the per-message cap of every window it
+gathers for: the recipe strategy's `maxMessageTokens` (10,000 unless the recipe
+sets it, none for `passthrough`), and with `modules.subagents` on, a subagent's
+or a fork's 10,000. For a strategy an extension registers, retrieval knows only
+the recipe's `agent.strategy.maxMessageTokens`, so set it there if that strategy
+cuts long messages, or its cut can fall mid-lesson.
+
 ### Shared instructions
 
 `modules.instructions` keeps a living instructions document (CLAUDE.md
@@ -611,7 +657,9 @@ never satisfy the default path, so declare an `instructions` mount explicitly.
 **Who edits, and how it propagates**: the module reads *disk*; agent
 `workspace--write`/`edit` land in Chronicle and reach disk only on an
 `autoMaterialize: true` mount — validation therefore requires it on a
-read-write instructions mount. On a read-only mount the flow reverses:
+read-write instructions mount, unless it's configured direct, where an
+agent's write is on disk when it answers (and is refused in a session the
+mount runs as Chronicle). On a read-only mount the flow reverses:
 human/deploy edits to disk reach the injection, but not `workspace--read`
 (which serves Chronicle) — prefer routing human feedback through conversation
 and letting the agent make the edit. A mount running direct
@@ -633,7 +681,7 @@ are one free-form curated document, always present verbatim.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) 1.4.3+ runs the host; [Node.js](https://nodejs.org/) 22.12+ and npm build the web UI
+- [Bun](https://bun.sh/) 1.4.3+ runs the host. In a clone, [Node.js](https://nodejs.org/) 22.12+ and npm build the web UI; the npm package carries it built
 - No Rust toolchain: `@animalabs/chronicle` ships prebuilt native binaries
 - Credentials for one provider: an Anthropic API key, a Claude subscription
   OAuth token (`claude setup-token`), an OpenAI or OpenRouter key, AWS
@@ -642,14 +690,7 @@ are one free-form curated document, always present verbatim.
 
 ### Install
 
-```bash
-bun install      # or npm install; the postinstall step builds the web UI
-```
-
-Installed from npm instead (`npm install @animalabs/connectome-host`), the
-package carries the web UI already built. npm 12 and bun may report its
-`postinstall` as blocked: it builds the web UI only in a checkout, so nothing
-is lost.
+From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connectome-host`; the package runs no install script. In a clone, `bun install`, then `bun run build:web` for the web UI. The [Quick start](#quick-start) has both.
 
 ## Environment variables
 
@@ -671,6 +712,7 @@ is lost.
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
 | `DATA_DIR` | `./data` | Session, recipe and log storage |
+| `MCPL_AGENT_OVERLAY_FILE` | — | Set by a fleet for each child: the child's own agent overlay, the servers it deployed and unloaded for itself (`modules.mcplAdmin`), `mcpl-servers.agent.child.json` in its data directory. A host whose environment doesn't set it keeps its overlay in `mcpl-servers.agent.json` in its working directory |
 | `AGENT_TIMEZONE` | process timezone | Agent-facing clock when the recipe sets no `agent.timezone` |
 | `SLEEP_PRIVILEGED_FILE` | `./sleep-privileged.json` | Who may wake the agent during `sleep` |
 | `OBSERVERS_FILE` | `$DATA_DIR/observers.json` | Web UI observer grants |
@@ -739,8 +781,8 @@ or supply credentials for a remote deployment:
 "modules": { "webui": { "basicAuth": { "username": "${WEBUI_USERNAME}", "password": "${WEBUI_PASSWORD}" } } }
 ```
 
-In a checkout, build the SPA bundle once with `bun run build:web` (also runs
-on install via postinstall); the npm package carries it built. Deployment
+In a clone, build the SPA bundle with `bun run build:web`, and again after
+each update; the npm package carries it built. Deployment
 behind a reverse proxy, observer access and all
 endpoints are covered in [`docs/webui-deployment.md`](docs/webui-deployment.md).
 

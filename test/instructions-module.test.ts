@@ -11,17 +11,13 @@ import {
   type WorkspaceDiskReader,
 } from '../src/modules/instructions-module.js';
 
-// agent-framework's code for a link among a path's directories that stays
-// inside the mount, from its release with anima-research/agent-framework#468.
 const PARENT_SYMLINK = 'parent_symlink' as WorkspaceReadError['code'];
-// anima-research/agent-framework#460's code for a path in another mount's
-// directory nested in the one named.
 const OTHER_MOUNT = 'other_mount' as WorkspaceReadError['code'];
 
 type Alert = { kind: string; agent: string; message: string };
 
-/** A module context that records the ops alerts raised through it, called
- *  through the context object, as the real ModuleContext needs. */
+/** Called on the context object, as agent-framework's ModuleContext.notifyOps
+ *  needs: it reads `this`. */
 function contextFor(alerts: Alert[]): ModuleContext {
   const context = {
     notifyOps(this: unknown, kind: string, agent: string, message: string) {
@@ -32,7 +28,6 @@ function contextFor(alerts: Alert[]): ModuleContext {
   return context;
 }
 
-/** A reader whose reads the test settles, each call kept in order. */
 function settledByTest() {
   const calls: Array<{ resolve: (read: { bytes: Buffer; size: number; truncated: boolean }) => void; reject: (error: unknown) => void }> = [];
   const reader: WorkspaceDiskReader = {
@@ -43,21 +38,12 @@ function settledByTest() {
 
 const readOf = (text: string) => ({ bytes: Buffer.from(text), size: Buffer.byteLength(text), truncated: false });
 const missing = () => new WorkspaceReadError('not_found', 'File not found: instructions/AGENTS.md', 'lstat', 'ENOENT');
-/** Lets every settled read's callbacks run. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** The registry's budget lowered to 400 ms, so a read's own budget is 300 ms. */
 class QuickInstructionsModule extends InstructionsModule {
   override readonly contextTimeoutMs = 400;
 }
 
-/**
- * The module reads through agent-framework's own WorkspaceModule here, on a
- * real mount, as production wires it. Every link these tests make leads to a
- * file inside the same mount; a read refused as leading outside a mount is
- * stood in for (agent-framework's own tests cover that read), and so is a
- * read whose timing a test needs to settle.
- */
 describe('InstructionsModule', () => {
   let dir: string;
   let storeDir: string;
@@ -66,7 +52,6 @@ describe('InstructionsModule', () => {
   let alerts: Alert[];
   let ctx: ModuleContext;
 
-  /** A WorkspaceModule with one mount named `mountName` over the test's directory. */
   function workspaceOver(mountName: string, mount: { followSymlinks?: boolean } = {}): WorkspaceModule {
     const store = JsStore.openOrCreate({ path: join(storeDir, `store-${stores.length}`) });
     stores.push(store as { close?: () => void });
@@ -75,7 +60,6 @@ describe('InstructionsModule', () => {
     return workspace;
   }
 
-  /** A module started on the test's context, reading through `workspace`. */
   async function moduleOver(workspace: WorkspaceDiskReader | null, config = {}): Promise<InstructionsModule> {
     const mod = new InstructionsModule({ agentName: 'resident', ...config });
     await mod.start(ctx);
@@ -143,6 +127,18 @@ describe('InstructionsModule', () => {
     expect((await mod.gatherContext('a'))[0]!.position).toBe('beforeUser');
   });
 
+  test('off system, the instructions are placed at each compile, not stored', async () => {
+    writeFileSync(join(dir, 'AGENTS.md'), 'x');
+    for (const position of ['beforeUser', 'afterUser'] as const) {
+      const mod = await moduleOver(workspaceOver('instructions'), { position });
+      const [injection] = await mod.gatherContext('a');
+      expect((injection as { placedEachCompile?: unknown }).placedEachCompile).toBe(true);
+    }
+    const atSystem = await moduleOver(workspaceOver('instructions'));
+    const [injection] = await atSystem.gatherContext('a');
+    expect('placedEachCompile' in injection!).toBe(false);
+  });
+
   test('returns the same injection for every agent name', async () => {
     writeFileSync(join(dir, 'AGENTS.md'), 'shared doc');
     const mod = await moduleOver(workspaceOver('instructions'));
@@ -167,13 +163,22 @@ describe('InstructionsModule', () => {
   });
 
   test('an unknown mount fails open with one warning and one alert', async () => {
-    const mod = await moduleOver(workspaceOver('instructions'), { path: 'nonexistent/AGENTS.md' });
+    const workspace = workspaceOver('instructions');
+    const mod = await moduleOver(workspace, { path: 'nonexistent/AGENTS.md' });
 
     expect(await mod.gatherContext('a')).toEqual([]);
     expect(await mod.gatherContext('a')).toEqual([]);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0]!.message).toContain('Unknown mount');
+    const refused = await workspace.readFileFromDisk('nonexistent/AGENTS.md').then(
+      () => { throw new Error('agent-framework read a path no mount holds'); },
+      (err: WorkspaceReadError) => err,
+    );
+    expect(refused.code).toBe('unknown_mount');
+    expect(alerts).toEqual([{
+      kind: 'instructions-unavailable',
+      agent: 'resident',
+      message: `no instructions injected: ${refused.message}`,
+    }]);
   });
 
   test('no workspace wired fails open, and says so', async () => {
@@ -199,7 +204,6 @@ describe('InstructionsModule', () => {
     expect(alerts.map((a) => a.kind)).toEqual(['instructions-unavailable', 'instructions-unavailable-clear']);
     expect(alerts[1]!.agent).toBe('resident');
 
-    // A recurrence warns and alerts again.
     rmSync(join(dir, 'AGENTS.md'));
     expect(await mod.gatherContext('a')).toEqual([]);
     expect(alerts.map((a) => a.kind)).toEqual(['instructions-unavailable', 'instructions-unavailable-clear', 'instructions-unavailable']);
@@ -225,9 +229,7 @@ describe('InstructionsModule', () => {
   });
 
   test('truncation never splits a multibyte character (no U+FFFD)', async () => {
-    // '€' is 3 bytes in UTF-8; maxBytes: 4 keeps one full '€' plus the lead
-    // byte of the second. The incomplete sequence must be dropped and the
-    // marker report the actual kept byte count.
+    // '€' is 3 bytes in UTF-8.
     writeFileSync(join(dir, 'AGENTS.md'), '€€€€');
     const mod = await moduleOver(workspaceOver('instructions'), { maxBytes: 4 });
 
@@ -237,8 +239,6 @@ describe('InstructionsModule', () => {
   });
 
   test('a multibyte character ending exactly at the cap survives', async () => {
-    // '€€' is 6 bytes; maxBytes: 3 keeps exactly one complete '€' — the
-    // boundary backup must not chop a sequence that finished at the cap.
     writeFileSync(join(dir, 'AGENTS.md'), '€€');
     const mod = await moduleOver(workspaceOver('instructions'), { maxBytes: 3 });
 
@@ -248,8 +248,7 @@ describe('InstructionsModule', () => {
   });
 
   test('truncation never splits a 2-byte or a 4-byte character either', async () => {
-    // 'é' is 2 bytes and '😀' is 4: each cap keeps one whole character and
-    // the start of the next, which the backup drops.
+    // 'é' is 2 bytes in UTF-8 and '😀' is 4.
     writeFileSync(join(dir, 'AGENTS.md'), 'éé');
     const twoByte = textOf(await (await moduleOver(workspaceOver('instructions'), { maxBytes: 3 })).gatherContext('a'));
     expect(twoByte).toBe(`${DEFAULT_INSTRUCTIONS_HEADER}\n\né\n\n[truncated: first 2 of 4 bytes]`);
@@ -267,8 +266,6 @@ describe('InstructionsModule', () => {
   });
 
   test('reads at most maxBytes from an oversized file', async () => {
-    // Only the first maxBytes influence the injection, whatever the file's
-    // size: the read asks for no more.
     const big = 'begin-' + 'x'.repeat(512 * 1024) + '-end';
     writeFileSync(join(dir, 'AGENTS.md'), big);
     const mod = await moduleOver(workspaceOver('instructions'), { maxBytes: 1000 });
@@ -280,9 +277,6 @@ describe('InstructionsModule', () => {
     expect(text).not.toContain('-end');
   });
 
-  // A mount doesn't follow links unless the recipe sets followSymlinks, so
-  // here a file that is itself a link is refused even when it names another
-  // file in the same mount.
   test('a file that is itself a link injects nothing, and the alert names the remedy', async () => {
     writeFileSync(join(dir, 'real.md'), 'legit content');
     symlinkSync('real.md', join(dir, 'AGENTS.md'));
@@ -313,11 +307,6 @@ describe('InstructionsModule', () => {
   });
 
   test('a file reached through a linked directory inside the mount is read as the mount reads it', async () => {
-    // agent-framework 0.22.3 follows a linked directory that stays inside the
-    // mount on any mount. Its release with anima-research/agent-framework#468
-    // refuses one on a mount that doesn't follow links (parent_symlink), and
-    // the alert gives the read's own words, which name the link and the
-    // mount's followSymlinks setting.
     mkdirSync(join(dir, 'v2'));
     writeFileSync(join(dir, 'v2', 'AGENTS.md'), 'the second version');
     symlinkSync('v2', join(dir, 'current'));
@@ -361,7 +350,6 @@ describe('InstructionsModule', () => {
   });
 
   test("a path in a nested mount's directory is reported in the read's own words, which name the path to use", async () => {
-    // As anima-research/agent-framework#460 reports a path in another mount's directory nested in the one named.
     const message = '"instructions/inner/AGENTS.md" lies in mount "inner", nested in mount "instructions", which neither ' +
       'reads nor writes it: use "inner/AGENTS.md".';
     const mod = await moduleOver(
@@ -395,7 +383,6 @@ describe('InstructionsModule', () => {
     await mod.start(ctx);
     mod.setWorkspace(reader);
 
-    // Two turns while the read is pending share it, and both give up at its deadline.
     expect(await Promise.all([mod.gatherContext('resident'), mod.gatherContext('resident_fork_3')])).toEqual([[], []]);
     expect(calls).toHaveLength(1);
     expect(alerts).toEqual([{
@@ -405,7 +392,6 @@ describe('InstructionsModule', () => {
         'read starts until it finishes, the session is switched or the host restarts',
     }]);
 
-    // A turn after the deadline injects nothing at once, rather than waiting on the read again.
     const late = mod.gatherContext('resident');
     const first = await Promise.race([late.then(() => 'returned'), new Promise((resolve) => setTimeout(() => resolve('waited'), 100))]);
     expect(first).toBe('returned');
@@ -413,7 +399,6 @@ describe('InstructionsModule', () => {
     expect(calls).toHaveLength(1);
     expect(alerts).toHaveLength(1);
 
-    // Once the read settles, the next turn reads again, and its file stands the alert down.
     calls[0]!.resolve(readOf('the late read'));
     await settle();
     const next = mod.gatherContext('resident');
@@ -427,8 +412,6 @@ describe('InstructionsModule', () => {
     const { reader, calls } = settledByTest();
     const mod = await moduleOver(reader);
     const first = mod.gatherContext('resident');
-    // An hour forward on the wall clock while the read is pending: a turn
-    // that joins it still has its budget, counted on the monotonic clock.
     setSystemTime(new Date(Date.now() + 60 * 60 * 1000));
     try {
       const joining = mod.gatherContext('resident');
@@ -445,7 +428,6 @@ describe('InstructionsModule', () => {
   test('a stop with a read pending: the next session reads afresh, and the old read settling changes nothing', async () => {
     const { reader, calls } = settledByTest();
     const mod = await moduleOver(reader);
-    // An alert is up, so a stale success would have one to stand down.
     const failing = mod.gatherContext('resident');
     calls[0]!.reject(missing());
     expect(await failing).toEqual([]);
@@ -462,7 +444,6 @@ describe('InstructionsModule', () => {
     calls[1]!.resolve(readOf("the old session's file"));
     expect(await stale).toEqual([]);
     expect(nextAlerts).toEqual([]);
-    // The old read settling leaves the next session's read in place.
     const sharing = mod.gatherContext('resident_fork_3');
     expect(calls).toHaveLength(3);
 
@@ -477,8 +458,6 @@ describe('InstructionsModule', () => {
     const mod = await moduleOver(workspaceOver('instructions'));
     expect(await mod.gatherContext('resident')).toEqual([]);
 
-    // The host keeps the module across the switch; the next session gives
-    // its own context and workspace.
     await mod.stop();
     const nextAlerts: Alert[] = [];
     await mod.start(contextFor(nextAlerts));
@@ -524,8 +503,6 @@ describe('InstructionsModule', () => {
     const { reader, calls } = settledByTest();
     const mod = await moduleOver(reader);
     await mod.stop();
-    // After the stop, and given the next session's workspace before its
-    // start, as the host does: no read, no log line, no alert.
     expect(await mod.gatherContext('resident')).toEqual([]);
     mod.setWorkspace(reader);
     expect(await mod.gatherContext('resident')).toEqual([]);
@@ -533,9 +510,6 @@ describe('InstructionsModule', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     expect(alerts).toEqual([]);
 
-    // Started, the session's first failing read raises its alert and its
-    // first successful read stands it down: nothing those turns did is left
-    // to swallow the one or bring on the other.
     const nextAlerts: Alert[] = [];
     await mod.start(contextFor(nextAlerts));
     const failing = mod.gatherContext('resident');
@@ -569,26 +543,19 @@ describe('InstructionsModule', () => {
     expect(nextAlerts.map((a) => a.kind)).toEqual(['instructions-unavailable']);
   });
 
-  // A stop can come once the read has settled and the module has let go of
-  // it, before the turn waiting on it resumes. That turn belongs to the
-  // ended session as much as one that resumes after the read.
   test('a stop between a read settling and its turn resuming leaves the turn without effect', async () => {
     const { reader, calls } = settledByTest();
     const mod = await moduleOver(reader);
     const stale = mod.gatherContext('resident');
     expect(calls).toHaveLength(1);
-    // A reaction to the read's outcome after the module's own two, the one
-    // that lets go of the read and the turn's: it runs once the read has
-    // settled and before the turn resumes.
     const { outcome } = (mod as unknown as { pending: { outcome: Promise<unknown> } }).pending;
-    const stopped = outcome.then(() => mod.stop());
+    const stopOnceTheModuleHasReacted = outcome.then(() => mod.stop());
     calls[0]!.reject(missing());
-    await stopped;
+    await stopOnceTheModuleHasReacted;
     expect(await stale).toEqual([]);
     expect(alerts).toEqual([]);
     expect(warnSpy).not.toHaveBeenCalled();
 
-    // The next session's own failure, for the same reason, raises its alert.
     const nextAlerts: Alert[] = [];
     mod.setWorkspace(reader);
     await mod.start(contextFor(nextAlerts));
@@ -611,7 +578,6 @@ describe('InstructionsModule', () => {
     mod.setWorkspace(reader);
     await mod.start(contextFor(nextAlerts));
 
-    // The old read's deadline passes in the next session.
     expect(await stale).toEqual([]);
     expect(alerts).toEqual([]);
     expect(nextAlerts).toEqual([]);

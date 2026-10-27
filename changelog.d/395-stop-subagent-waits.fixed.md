@@ -1,1 +1,0 @@
-- A session switch or the host's exit now ends subagent spawns and forks still waiting for a concurrency slot, a retry back-off or a rate-limit cooldown, rather than leaving each to try again once its wait ends. Such a run's result says "Stopped: its session stopped".

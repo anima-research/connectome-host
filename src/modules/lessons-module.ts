@@ -1,15 +1,3 @@
-/**
- * LessonsModule — persistent knowledge store backed by Chronicle.
- *
- * Lessons are units of extracted knowledge with:
- *   - Confidence scores (0–1)
- *   - Tags for categorization
- *   - Evidence links (source message references)
- *
- * The module also implements gatherContext() to auto-inject
- * relevant lessons into the agent's context before inference.
- */
-
 import type {
   Module,
   ModuleContext,
@@ -30,10 +18,6 @@ import { dirname, join } from 'node:path';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface Lesson {
   id: string;
   content: string;
@@ -46,20 +30,11 @@ export interface Lesson {
   deprecationReason?: string;
 }
 
-/** A lesson as it's stored. A record an earlier version wrote, or one written
- *  by hand into the shared lessons file, can lack its content, tags or
- *  evidence, or hold a confidence outside 0 to 1, as text, or none that's a
- *  number, so every reader takes it through readable(), and the record stays
- *  as stored. */
 type StoredLesson = Omit<Lesson, 'content' | 'tags' | 'evidence' | 'confidence'> &
   { content?: unknown; tags?: unknown; evidence?: unknown; confidence?: unknown };
 
 interface LessonsState {
   lessons: StoredLesson[];
-  /** The ids the last read that could read the shared file found it
-   *  holding more than once, of lessons this host holds once. The first
-   *  read that finds one held once again takes the file's copy, whatever
-   *  the stamps (see mergeShared). */
   heldTwice?: string[];
 }
 
@@ -101,27 +76,15 @@ interface IdInput {
   id: string;
 }
 
-// ---------------------------------------------------------------------------
-// Module
-// ---------------------------------------------------------------------------
-
 export class LessonsModule implements Module {
   readonly name = 'lessons';
 
   private ctx: ModuleContext | null = null;
   private state: LessonsState = { lessons: [] };
   private globalPath: string | null;
-  /** The shared file's problem this host last named, and whether reading or
-   *  writing the file met it, so each is named once and its end is told. */
   private sharedProblem: { text: string; on: 'read' | 'write' } | null = null;
-  /** The line the last save gave for this host's lessons it couldn't write,
-   *  so each is said once. */
   private unwrittenLine = '';
-  /** The line last given for the shared file's entries this host carries
-   *  without loading, so it's said again only when they change. */
   private carriedSaid = '';
-  /** The errors, by code, for which this host has said its writes of the
-   *  shared file go in place, so each is said once. */
   private inPlaceSaid = new Set<string>();
 
   constructor(opts?: { globalPath?: string }) {
@@ -134,7 +97,6 @@ export class LessonsModule implements Module {
     if (saved) {
       this.state = saved;
     }
-    // Merge in lessons from the shared file. Nothing is written at start.
     if (this.globalPath) {
       const read = readSharedFile(this.globalPath);
       this.noteRead(read);
@@ -144,9 +106,6 @@ export class LessonsModule implements Module {
         if (changed) ctx.setState(this.state);
       }
     }
-    // Each lesson stored with a fault is named once per load for whoever
-    // runs the host, with the mark the agent's list gives it; see readable()
-    // for how readers take it.
     for (const l of this.state.lessons) {
       if (l.deprecated) continue;
       const line = loadLine(l);
@@ -282,23 +241,14 @@ export class LessonsModule implements Module {
     return {};
   }
 
-  // Lesson injection is handled solely by RetrievalModule (intelligent retrieval
-  // pipeline). LessonsModule provides storage + CRUD tools only.
-
-  // Public accessor for other modules (e.g., RetrievalModule)
   getLessons(): Lesson[] {
     return this.readableLessons();
   }
 
-  /** Every lesson as readers see it; see readable(). */
   private readableLessons(): Lesson[] {
     return this.state.lessons.map(readable);
   }
 
-  /** Each lesson as stored, with how readers see it and what the agent's
-   *  mark says it needs. A filter or a sort carries each lesson's own
-   *  record, so two that share an id don't take each other's. /export
-   *  writes the stored records as data and shows the readable ones. */
   getLessonRecords(): Array<{ stored: unknown; lesson: Lesson; needsFix?: string }> {
     return this.state.lessons.map(stored => {
       const fix = stored.deprecated ? undefined : needsFix(stored);
@@ -306,13 +256,7 @@ export class LessonsModule implements Module {
     });
   }
 
-  // =========================================================================
-  // Tool Handlers
-  // =========================================================================
-
   private handleCreate(input: CreateInput): ToolResult {
-    // A lesson stored without its content or tags reads as having none, and
-    // stays marked until it's fixed, so a call that would store one is refused.
     const problems = inputProblems(input, true);
     if (problems.length > 0) {
       return { success: false, isError: true, error: `Nothing was created: ${problems.join('; ')}.` };
@@ -351,8 +295,6 @@ export class LessonsModule implements Module {
     if (input.tags !== undefined) lesson.tags = input.tags;
     if (input.confidence !== undefined) lesson.confidence = input.confidence;
     if (input.evidence !== undefined) {
-      // Merge evidence, dedup, keeping every stored value: a lone one is
-      // the list's first entry
       const existing = new Set(storedEvidence(lesson.evidence));
       for (const e of input.evidence) existing.add(e);
       lesson.evidence = [...existing];
@@ -389,12 +331,10 @@ export class LessonsModule implements Module {
     const limit = input.limit ?? 20;
     let results = this.getLessonRecords().filter(r => !r.lesson.deprecated);
 
-    // Filter by minimum confidence
     if (input.minConfidence !== undefined) {
       results = results.filter(r => r.lesson.confidence >= input.minConfidence!);
     }
 
-    // Filter by tags (any match)
     if (input.tags && input.tags.length > 0) {
       const tagSet = new Set(input.tags.map(t => t.toLowerCase()));
       results = results.filter(r =>
@@ -402,7 +342,6 @@ export class LessonsModule implements Module {
       );
     }
 
-    // Text search (simple keyword matching)
     if (input.text) {
       const keywords = input.text.toLowerCase().split(/\s+/);
       results = results.filter(r => {
@@ -411,7 +350,6 @@ export class LessonsModule implements Module {
       });
     }
 
-    // Sort by relevance (confidence descending)
     results.sort((a, b) => b.lesson.confidence - a.lesson.confidence);
 
     return {
@@ -421,8 +359,6 @@ export class LessonsModule implements Module {
         lessons: results.slice(0, limit).map(({ stored, lesson: l, needsFix: fix }) => ({
           id: l.id,
           content: l.content,
-          // As stored, so a confidence outside 0 to 1, or stored as text,
-          // shows as it is.
           confidence: (stored as StoredLesson).confidence,
           tags: l.tags,
           evidence: l.evidence,
@@ -437,7 +373,6 @@ export class LessonsModule implements Module {
     const all = this.getLessonRecords();
     let results = input.includeDeprecated ? all : all.filter(r => !r.lesson.deprecated);
 
-    // Filter by tags
     if (input.tags && input.tags.length > 0) {
       const tagSet = new Set(input.tags.map(t => t.toLowerCase()));
       results = results.filter(r =>
@@ -445,7 +380,6 @@ export class LessonsModule implements Module {
       );
     }
 
-    // Sort
     const sort = input.sort ?? 'confidence';
     switch (sort) {
       case 'confidence':
@@ -463,12 +397,9 @@ export class LessonsModule implements Module {
       success: true,
       data: {
         total: results.length,
-        // A deprecated lesson has no mark: deprecating it is a fix.
         lessons: results.slice(0, limit).map(({ stored, lesson: l, needsFix: fix }) => ({
           id: l.id,
           content: l.content,
-          // As stored, so a confidence outside 0 to 1, or stored as text,
-          // shows as it is.
           confidence: (stored as StoredLesson).confidence,
           tags: l.tags,
           deprecated: l.deprecated,
@@ -488,8 +419,6 @@ export class LessonsModule implements Module {
     const refused = adjustRefusal(lesson, 'boost');
     if (refused) return { success: false, error: refused, isError: true };
 
-    // Diminishing returns boost; one stored as text that holds a number
-    // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.min(1, base + 0.1 * (1 - base));
     lesson.updated = laterStamp(lesson);
@@ -508,8 +437,6 @@ export class LessonsModule implements Module {
     const refused = adjustRefusal(lesson, 'demote');
     if (refused) return { success: false, error: refused, isError: true };
 
-    // Diminishing returns demote; one stored as text that holds a number
-    // starts from that number.
     const base = confidenceValue(lesson.confidence);
     lesson.confidence = Math.max(0, base - 0.1 * base);
     lesson.updated = laterStamp(lesson);
@@ -518,12 +445,6 @@ export class LessonsModule implements Module {
     return { success: true, data: { id: lesson.id, confidence: lesson.confidence } };
   }
 
-  /** Before a call changes a lesson: read the shared file and merge it in,
-   *  so the change is made to the newest copy, and stamped past it (see
-   *  laterStamp). The read is what the call's save writes back, with nothing
-   *  awaited between. Another host that writes in between has its change
-   *  written over, and its next change writes it back, unless this call
-   *  changed the same lesson with the same or a later stamp. */
   private refresh(): SharedRead | null {
     if (!this.globalPath) return null;
     const read = readSharedFile(this.globalPath);
@@ -531,17 +452,11 @@ export class LessonsModule implements Module {
     if (read.kind === 'read') {
       const { carried, changed } = this.mergeShared(read.entries);
       this.noteCarried(carried);
-      // Kept now, so a call refused after this read doesn't lose what the
-      // merge learned, such as an id the file holds twice.
       if (changed) this.ctx?.setState(this.state);
     }
     return read;
   }
 
-  /** An id for a new lesson that neither this host nor the shared file, as
-   *  this call read it, holds, so the merge doesn't take two lessons for
-   *  one. When the call couldn't read the file, only this host's ids are
-   *  checked. */
   private freshId(read: SharedRead | null): string {
     const taken = new Set(this.state.lessons.map(idOf));
     if (read?.kind === 'read') for (const e of read.entries) taken.add(idOf(e));
@@ -550,12 +465,6 @@ export class LessonsModule implements Module {
     return id;
   }
 
-  /** Keep the module's lessons, and with a shared file, write back the file
-   *  as the call read it, with this host's lessons merged in: each entry
-   *  where it stood, this host's copy in the place of each lesson it holds
-   *  by a named id, its new lessons at the end, and the document's other
-   *  keys as they were (see writeShared for how). A file the call couldn't
-   *  read as a lessons file was named at that read, and isn't written over. */
   private save(read: SharedRead | null): void {
     this.ctx?.setState(this.state);
     if (!this.globalPath || !read || read.kind === 'unreadable') return;
@@ -575,8 +484,6 @@ export class LessonsModule implements Module {
       return l;
     });
     lessons.push(...mine.values());
-    // Said before the write in place is tried, since it's there to explain
-    // one that breaks the file.
     const inPlace = (key: string, why: string): void => {
       if (this.inPlaceSaid.has(key)) return;
       this.inPlaceSaid.add(key);
@@ -585,17 +492,12 @@ export class LessonsModule implements Module {
     try {
       writeShared(this.globalPath, JSON.stringify({ ...doc, lessons }, null, 2), inPlace);
     } catch (err) {
-      // A write in place that failed partway can have left the file broken,
-      // and a file that doesn't read as a lessons file isn't written: named
-      // as its read problem, so the next read finding it doesn't name it again.
       const after = readSharedFile(this.globalPath);
       if (after.kind === 'unreadable') this.sayShared(after.problem, 'read', `couldn't be written (${errorText(err)}), and now `);
       else this.sayShared(`couldn't be written (${errorText(err)})`, 'write');
       return;
     }
     const made = read.kind === 'absent';
-    // A problem still standing here is a write's: a read's ended at the
-    // call's read (noteRead).
     if (this.sharedProblem !== null) {
       this.sharedProblem = null;
       const how = made ? "it wasn't there, so this host wrote it with its lessons" : 'this host merged its lessons in and wrote it';
@@ -603,19 +505,12 @@ export class LessonsModule implements Module {
     } else if (made) {
       console.warn(`[lessons] the shared lessons file ${this.globalPath} wasn't there: this host wrote it with its lessons.`);
     }
-    // A lesson whose id another lesson holds too, in the file or on this
-    // host, can't be told apart by the merge, so it isn't written. Nor is
-    // one without a usable id, which the agent's list marks unless it's
-    // deprecated (see needsFix).
     const unwritten = this.state.lessons.filter((l) => {
       const id = idOf(l);
       return id !== undefined && !named.has(id);
     });
     const one = unwritten.length === 1;
     const ids = [...new Set(unwritten.map(idOf))] as string[];
-    // For an id the file holds more than once, what keeps every lesson.
-    // Only for a lesson this host holds once: two it holds stay unwritten
-    // however the file is resolved.
     const inFile = idCounts(entries);
     const onHost = idCounts(this.state.lessons);
     const advice = ids.filter((id) => (inFile.get(id) ?? 0) > 1 && onHost.get(id) === 1)
@@ -630,28 +525,6 @@ export class LessonsModule implements Module {
     }
   }
 
-  /** Merge the shared file's entries into the module's lessons. An entry
-   *  whose id is named (see namedIds) merges by it: the file's copy replaces
-   *  this host's whole unless this host's is newer (see stampOf), so a hand
-   *  edit that left `updated` as it was is what the host holds, and a lesson
-   *  new to the host is added. Every other entry, one without a named id or
-   *  one that isn't an object, is carried: kept out of the module's lessons
-   *  and written back as JSON.parse read it, so no save adds or loses an
-   *  entry.
-   *
-   *  While the file holds an id of this host's lessons twice, this host
-   *  can't tell which entry its copy came from, so it changes neither (see
-   *  heldTwiceRefusal) and keeps the id in heldTwice, which holds the ids
-   *  the last read that could read the file found so; a read that finds no
-   *  file, or can't read it, keeps them. The first read to find such an id
-   *  held once takes the file's copy, whatever the stamps, so on a host
-   *  that read the file while it held the id twice, the lesson left keeps
-   *  the id however the operator resolved the two. A host that didn't
-   *  merges by stamp.
-   *  Giving all but one with the latest `updated` a new id (see
-   *  newIdAdvice) keeps every lesson on each host that holds no change to
-   *  the lesson the file lacks, such as one lost to a write at nearly the
-   *  same moment. An id this host holds twice can't merge, so it isn't held. */
   private mergeShared(entries: unknown[]): { carried: unknown[]; named: Set<string>; changed: boolean } {
     const named = namedIds(entries, this.state.lessons);
     const inFile = idCounts(entries);
@@ -686,10 +559,6 @@ export class LessonsModule implements Module {
     return { carried, named, changed };
   }
 
-  /** Name a read of the shared file that failed, once, and say when a read
-   *  succeeds after one did. A read problem ends at the read that finds it
-   *  gone, so the same problem later is named again. A file that isn't there
-   *  any more ends it too, and the write that makes the file again says so. */
   private noteRead(read: SharedRead): void {
     if (read.kind === 'unreadable') {
       this.sayShared(read.problem, 'read');
@@ -700,9 +569,6 @@ export class LessonsModule implements Module {
     if (read.kind === 'read') console.warn(`[lessons] the shared lessons file ${this.globalPath} reads as a lessons file again.`);
   }
 
-  /** Say the line for the entries this host carries, when it differs from
-   *  the one last said: at start, and at a change's read, so entries added
-   *  while the host runs are named too. */
   private noteCarried(carried: unknown[]): void {
     const line = carriedLine(this.globalPath!, carried) ?? '';
     if (line === this.carriedSaid) return;
@@ -710,8 +576,6 @@ export class LessonsModule implements Module {
     if (line) console.warn(line);
   }
 
-  /** Name a problem with the shared file once, until it changes or passes,
-   *  after what led to it, if anything. */
   private sayShared(problem: string, on: 'read' | 'write', lead = ''): void {
     if (this.sharedProblem?.text === problem) return;
     this.sharedProblem = { text: problem, on };
@@ -722,15 +586,12 @@ export class LessonsModule implements Module {
   }
 }
 
-/** What a read of the shared lessons file finds. */
 type SharedRead =
   | { kind: 'absent' }
   | { kind: 'unreadable'; problem: string }
   | { kind: 'read'; doc: Record<string, unknown>; entries: unknown[] };
 
-/** Decodes strictly, so bytes that aren't UTF-8 make a file this host can't
- *  read, rather than text it would write back changed. A byte-order mark at
- *  the start is dropped, and a write leaves it out. */
+/** TextDecoder drops a byte-order mark at the start. */
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 function readSharedFile(path: string): SharedRead {
@@ -749,10 +610,9 @@ function readSharedFile(path: string): SharedRead {
   }
   let doc: unknown;
   try {
-    // A number JSON can't hold, such as 1e999, parses as Infinity, which
-    // the module's store refuses to save. It's read as null wherever it
-    // sits: a confidence of 1e999 reads as one that isn't a number, and an
-    // id of 1e999 as one that isn't text. A save writes the null back.
+    // JSON.parse reads a number JSON can't hold, such as 1e999, as Infinity,
+    // which the module's store refuses to save: chronicle's setStateJson takes
+    // only numbers JSON can hold.
     doc = JSON.parse(text, (_key, value: unknown) =>
       typeof value === 'number' && !Number.isFinite(value) ? null : value);
   } catch (err) {
@@ -773,29 +633,11 @@ function readSharedFile(path: string): SharedRead {
  *  passed the check of its permission). */
 const IN_PLACE = new Set(['EACCES', 'EPERM', 'EBUSY', 'EXDEV', 'EROFS']);
 
-/** Write the shared lessons file. A file that's there is replaced whole: the
- *  text goes to a temporary file beside the file the path names after its
- *  links, synced to disk and given that file's permissions, and is renamed
- *  over it. So a write that fails leaves the file as it was, a host that
- *  stops partway or a machine that goes down leaves it whole, with the old
- *  text or the new, a reader never meets half of one, and a link stays a
- *  link. The file is a new one, owned as any new file this host makes
- *  there, and an access control list or other extended attribute set on
- *  it isn't kept. A file not made yet is made the same way, with the mode a new file
- *  takes, so a first write that fails leaves no file, and two hosts making
- *  it at once leave one whole file. The temporary file is
- *  lessons-<random>.tmp beside the file, its name new at each write; a
- *  host that stops between making it and the rename leaves it there.
- *
- *  It's written in place instead, as on main: through a link to a file not
- *  made yet, which a rename would replace with a plain file; for a file
- *  this host can't write, which is refused as on main; for a file with a
- *  second name (a hard link), which a rename would leave holding the old
- *  text; and where, for a file that's there, making the temporary file or
- *  the rename is refused with an IN_PLACE error. For the last two, inPlace
- *  is called first, with a key and the reason, so the caller can say so: a
- *  write in place that fails partway can leave the file broken. Any other
- *  error is thrown, with the file as it was or not made. */
+/** A rename over a file makes it a new file, owned as any new file this host
+ *  makes there, without an access control list or other extended attribute
+ *  the old one had, and a second name (a hard link) keeps the old text. A
+ *  rename onto a link to a file not made yet replaces the link with a plain
+ *  file. */
 function writeShared(path: string, text: string, inPlace: (key: string, why: string) => void): void {
   mkdirSync(dirname(path), { recursive: true });
   const old = statIfThere(path);
@@ -809,45 +651,32 @@ function writeShared(path: string, text: string, inPlace: (key: string, why: str
     return;
   }
   const target = old === null ? path : realpathSync(path);
-  // Its length doesn't depend on the file's name, so a name up to the
-  // longest a directory takes still leaves room for it.
   const tmp = join(dirname(target), `lessons-${randomUUID()}.tmp`);
   const mode = old === null ? 0o666 : old.mode & 0o777;
   try {
     const fd = openSync(tmp, 'w', mode);
     try {
       writeFileSync(fd, text);
-      // So the file is whole before the rename puts it in place: a machine
-      // that goes down finds the old file or this one, whole.
+      // Synced before the rename, so a machine that goes down finds the old file
+      // or this one, whole.
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    // The umask narrows the mode a file is made with: a file that's there
-    // keeps its own, and a new one takes the umask's, as on main.
+    // The umask narrows the mode a file is made with.
     if (old !== null) chmodSync(tmp, mode);
     renameSync(tmp, target);
   } catch (err) {
-    // A removal that fails doesn't replace the error named here: on a
-    // read-only mount even a temporary file never made is refused (EROFS).
-    // One that was made then stays beside the file.
-    try { rmSync(tmp, { force: true }); } catch { /* the write's error is the one named */ }
+    try { rmSync(tmp, { force: true }); } catch { }
     const code = codeOf(err);
-    // An error's text can name the temporary file, whose name is new at
-    // each write, and a problem is named once by its text.
     const said = errorText(err).replaceAll(tmp, join(dirname(target), 'lessons-<random>.tmp'));
-    // With no file there, writing in place needs the same directory the
-    // temporary file did, so there's nothing to fall back to.
     if (old === null || !IN_PLACE.has(code)) throw Object.assign(new Error(said), { code });
     inPlace(code, `this host can't replace it through a temporary file beside it (${said})`);
     writeFileSync(path, text);
   }
 }
 
-/** Whether this host may write the file, as far as its permission goes. A
- *  refusal for permission (EACCES, EPERM, EROFS) is no, so the write goes
- *  in place and is refused there, as on main; any other error from the
- *  check is thrown, so the file is left alone. */
+/** access(2) refuses for permission with EACCES, EPERM or EROFS. */
 function writable(path: string): boolean {
   try {
     accessSync(path, constants.W_OK);
@@ -862,11 +691,6 @@ function codeOf(err: unknown): string {
   return String((err as { code?: unknown }).code);
 }
 
-/** A refusal for a change to a lesson whose id the shared file, as this
- *  call read it, holds twice, or held twice when this host last read it
- *  and can't be read now: this host can't tell which entry its copy came
- *  from, so the change couldn't be shared, and the merge would drop it
- *  once the two are resolved (see mergeShared). */
 function heldTwiceRefusal(
   read: SharedRead | null,
   l: StoredLesson,
@@ -896,14 +720,8 @@ function heldTwiceRefusal(
   };
 }
 
-/** What keeps every lesson when the file holds an id more than once: all
- *  entries but one with the latest `updated` take new ids, so the one left
- *  under the id is at least as new as the copy a host holds, unless that
- *  host holds a change the file lacks (see mergeShared). */
 const ALL_BUT_ONE = 'give all but one of them a new id in the file, leaving the id on one with the latest updated';
 
-/** ALL_BUT_ONE for the entries the file holds under an id, said of two by
- *  the one to give a new id, named by its `updated` as the file holds it. */
 function newIdAdvice(entries: unknown[], id: string): string {
   const doubled = entries.filter((e) => idOf(e) === id) as Record<string, unknown>[];
   if (doubled.length !== 2) return ALL_BUT_ONE;
@@ -922,29 +740,17 @@ function statIfThere(path: string, stat: (path: string) => Stats = statSync): St
   }
 }
 
-/** A copy's `updated` as the merge ranks it: one that isn't a number no
- *  greater than Number.MAX_SAFE_INTEGER ranks below every one that is. Past
- *  that, adding one can give the same number, so a change couldn't always
- *  stamp past the copy; no clock gives one (a Date holds at most 8.64e15),
- *  and ranked by value, a hand edit's would outrank every change. */
+/** Past Number.MAX_SAFE_INTEGER, adding one can give the same number, and
+ *  no clock gives a stamp that large: a Date holds at most 8.64e15. */
 function stampOf(l: unknown): number {
   const u = isRecord(l) ? l.updated : undefined;
   return typeof u === 'number' && Number.isFinite(u) && u <= Number.MAX_SAFE_INTEGER ? u : -Infinity;
 }
 
-/** The `updated` for a change made on a copy: now, or one past the copy's
- *  stamp when that's later, so the change outranks the copy it was made on
- *  in every host's merge, whatever the hosts' clocks say. A copy stamped
- *  Number.MAX_SAFE_INTEGER itself is the exception: the change takes the
- *  same stamp, and of the two, the one in the file wins, as for any tie. */
 function laterStamp(l: StoredLesson): number {
   return Math.min(Number.MAX_SAFE_INTEGER, Math.max(Date.now(), stampOf(l) + 1));
 }
 
-/** The ids a merge with the shared file goes by: non-empty text that at most
- *  one entry of the file and at most one of the module's lessons holds. An
- *  id held twice on either side can't say which lessons match, and merging
- *  by it would overwrite one, or write a copy at every save. */
 function namedIds(entries: unknown[], lessons: StoredLesson[]): Set<string> {
   const inFile = idCounts(entries);
   const inState = idCounts(lessons);
@@ -955,7 +761,6 @@ function namedIds(entries: unknown[], lessons: StoredLesson[]): Set<string> {
   return named;
 }
 
-/** How many entries of a list hold each id (see idOf). */
 function idCounts(list: unknown[]): Map<string, number> {
   const n = new Map<string, number>();
   for (const e of list) {
@@ -965,13 +770,10 @@ function idCounts(list: unknown[]): Map<string, number> {
   return n;
 }
 
-/** An entry's id, when it's an object whose id is non-empty text. */
 function idOf(entry: unknown): string | undefined {
   return isRecord(entry) && typeof entry.id === 'string' && entry.id !== '' ? entry.id : undefined;
 }
 
-/** The start's line for the shared file's entries this host carries without
- *  loading, if it has any. */
 function carriedLine(path: string, carried: unknown[]): string | undefined {
   if (carried.length === 0) return undefined;
   const notObjects = carried.filter(e => !isRecord(e)).length;
@@ -989,18 +791,9 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** What's wrong with a stored lesson, field by field, or nothing when it's
- *  whole. The agent's mark, the operator's load line and boost and demote's
- *  refusals all say it from this. */
 interface Faults {
-  /** Content that isn't text, or is blank: queries find no words in it, and
-   *  retrieval leaves the lesson out. */
   content: boolean;
-  /** Tags that aren't a list ('missing'), read as none, or a list with
-   *  entries that aren't text ('mixed'), read by the ones that are. */
   tags?: 'missing' | 'mixed';
-  /** A confidence stored outside 0 to 1, as text, or as no number at all:
-   *  what's stored, as a phrase after "with". */
   confidence?: string;
 }
 
@@ -1011,25 +804,17 @@ function faultsOf(l: StoredLesson): Faults | undefined {
   return content || tags || confidence ? { content, ...(tags ? { tags } : {}), ...(confidence ? { confidence } : {}) } : undefined;
 }
 
-/** A stored confidence as a number: a number as it is, text that holds a
- *  number as that number, and anything else, blank text included, as NaN. */
 function confidenceValue(c: unknown): number {
   if (typeof c === 'number') return c;
   if (typeof c === 'string' && c.trim() !== '') return Number(c);
   return NaN;
 }
 
-/** A confidence as queries, lists and retrieval rank and filter by it: one
- *  outside 0 to 1 counts as the nearer end, and one that isn't a number as
- *  0. A lesson stored with 85 ranks as 1, the top of the range, with every
- *  lesson stored at 1, rather than as 85. */
 function rankedConfidence(c: unknown): number {
   const v = confidenceValue(c);
   return Number.isNaN(v) ? 0 : Math.min(1, Math.max(0, v));
 }
 
-/** What's wrong with a stored confidence, as a phrase after "with", or
- *  nothing when it's a number from 0 to 1. */
 function confidenceFault(c: unknown): string | undefined {
   const v = confidenceValue(c);
   const inRange = v >= 0 && v <= 1;
@@ -1039,7 +824,6 @@ function confidenceFault(c: unknown): string | undefined {
   return inRange ? asStored : `${asStored}, outside 0 to 1`;
 }
 
-/** What a lesson is stored with, as a phrase after "stored". */
 function storedPhrase(f: Faults): string {
   const missing = [...(f.content ? ['content'] : []), ...(f.tags === 'missing' ? ['tags'] : [])];
   return [
@@ -1049,21 +833,16 @@ function storedPhrase(f: Faults): string {
   ].join(', and ');
 }
 
-/** What an update gives to fix it, and whether deprecating would do too. */
 function fixPhrase(f: Faults): { give: string; orDeprecate: boolean } {
   const fields = f.content && f.tags ? ['its content and tags'] : f.content ? ['its content'] : f.tags ? ['its tags'] : [];
   const confidence = f.confidence ? ['a confidence from 0 to 1'] : [];
   return { give: [...fields, ...confidence].join(', and '), orDeprecate: fields.length > 0 };
 }
 
-/** The lesson a call's id names: only an id that's non-empty text names
- *  one. A call without an id used to find the first lesson stored without
- *  one, since undefined === undefined. */
 function findLesson(lessons: StoredLesson[], id: unknown): StoredLesson | undefined {
   return idProblem(id) ? undefined : lessons.find(l => l.id === id);
 }
 
-/** Why a call's id can't name a lesson, if it can't. */
 function idProblem(id: unknown): string | undefined {
   if (id === undefined) return 'id is missing: give the lesson\'s id';
   if (id === '') return 'id is empty: give the lesson\'s id';
@@ -1071,8 +850,6 @@ function idProblem(id: unknown): string | undefined {
   return undefined;
 }
 
-/** Why no call can name a stored lesson, as a phrase after "stored", if none
- *  can: lesson tools find a lesson by an id that's non-empty text. */
 function idFault(l: StoredLesson): string | undefined {
   if (l.id === undefined) return 'without an id';
   if (l.id === '') return 'with an empty id';
@@ -1080,9 +857,6 @@ function idFault(l: StoredLesson): string | undefined {
   return undefined;
 }
 
-/** What the agent's list and query say a stored lesson needs, if anything.
- *  A lesson no call can name gets only that, since no lesson tool can act on
- *  its other faults. */
 function needsFix(l: StoredLesson): string | undefined {
   const unnamed = idFault(l);
   if (unnamed) return `Stored ${unnamed}, so no lesson tool can name it.`;
@@ -1092,18 +866,12 @@ function needsFix(l: StoredLesson): string | undefined {
   return `Stored ${storedPhrase(f)}: give ${give} with lessons--update${orDeprecate ? ', or deprecate this lesson' : ''}.`;
 }
 
-/** The line that gives a stored lesson's mark to whoever runs the host,
- *  once per load: the agent's words, naming the lesson by its id, or as "a
- *  lesson" when no call can name it. */
 function loadLine(l: StoredLesson): string | undefined {
   const mark = needsFix(l);
   if (!mark) return undefined;
   return `[lessons] ${idFault(l) ? 'a lesson' : `lesson ${JSON.stringify(l.id)}`}: ${mark}`;
 }
 
-/** Why boost or demote leaves a lesson as it is: one whose stored confidence
- *  is outside 0 to 1 or isn't a number has no value to start from, and one
- *  taken from its rank would quietly decide it. */
 function adjustRefusal(l: StoredLesson, verb: 'boost' | 'demote'): string | undefined {
   const fault = confidenceFault(l.confidence);
   const v = confidenceValue(l.confidence);
@@ -1113,11 +881,6 @@ function adjustRefusal(l: StoredLesson, verb: 'boost' | 'demote'): string | unde
     `confidence to ${verb} from. Give it one from 0 to 1 with lessons--update, then ${verb} it.`;
 }
 
-/** A stored lesson as every reader sees it: content it lacks reads as empty,
- *  of its tags and its evidence only the text entries count (evidence stored
- *  as one value counts as a list of that one), and its confidence is the one
- *  it's ranked by. The stored record isn't changed, so it stays as stored
- *  until someone updates it. */
 function readable(l: StoredLesson): Lesson {
   if (typeof l.content === 'string' && isTextList(l.tags) && isTextList(l.evidence) && !confidenceFault(l.confidence)) {
     return l as Lesson;
@@ -1137,13 +900,10 @@ function isTextList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(t => typeof t === 'string');
 }
 
-/** Stored evidence as a list: a list as it is, a lone value as a list of
- *  that one, and none when nothing is stored. */
 function storedEvidence(value: unknown): unknown[] {
   return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 }
 
-/** The text entries of a list, or none when it isn't one. */
 function textEntries(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((t): t is string => typeof t === 'string') : [];
 }
@@ -1152,16 +912,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** What's wrong with the fields a create or update gives, each named with the
- *  value given. create needs content and tags; update takes any of them. */
 function inputProblems(
   input: { content?: unknown; tags?: unknown; confidence?: unknown; evidence?: unknown },
   isCreate: boolean,
 ): string[] {
   const problems: string[] = [];
   const textList = (value: unknown) => Array.isArray(value) && value.every(t => typeof t === 'string');
-  // A field left out keeps its value on update; null is a value, and not
-  // one any field takes.
   const orKeep = (what: string) => (isCreate ? '' : `, or leave it out to keep the current ${what}`);
   if (input.content === undefined) {
     if (isCreate) problems.push('content is missing: give the lesson as text');
@@ -1185,8 +941,6 @@ function inputProblems(
   return problems;
 }
 
-/** An update, deprecate, boost or demote whose id matches no lesson, with
- *  any other problem in the call named beside it. */
 function notFound(verb: 'updated' | 'deprecated' | 'boosted' | 'demoted', id: unknown, also?: string): ToolResult {
   const which = idProblem(id) ?? `no lesson has the id ${shown(id)}`;
   return {

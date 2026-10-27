@@ -1,16 +1,3 @@
-/**
- * Usage panel — token-spend breakdown for the focused tree node.
- *
- * Strategy by node kind:
- *  - 'process' (parent root): show session-wide UsageMessage as the
- *    authoritative total, plus a breakdown of direct children.
- *  - 'fleet-child' folder: aggregate over its agents, plus per-agent rows.
- *  - 'framework' / 'subagent' (leaf-ish): show that one agent's numbers.
- *
- * The panel is intentionally read-only — there's no per-node billing knob to
- * twiddle here yet. Most operators want the same answer: "where's the burn?"
- */
-
 import { For, Show } from 'solid-js';
 import type { UiNode } from './tree';
 import { aggregateTokens } from './tree';
@@ -26,24 +13,15 @@ import { quotaStatus } from './quota';
 
 export function UsagePanel(props: {
   node: UiNode;
-  /** Session-wide cumulative usage from welcome/usage messages. Only
-   *  consulted when the focused node is the parent process. */
   sessionUsage: TokenUsage;
-  /** Per-agent cost slice (parent-process agents only). Used to label
-   *  per-agent cost in process / per-agent breakdown views. */
   perAgentCost: PerAgentCost[];
-  /** Recent provider calls. The ledger is process-local, so it is shown on
-   *  the process usage view rather than pretending it can be split across
-   *  fleet children. */
   callLedger: CallLedgerSnapshot | null;
-  /** Subscription quota windows. On a subscription host every dollar figure
-   *  in this panel is list-price fiction: totals and per-agent costs give way
-   *  to these, and the call ledger's are relabelled as list-price equivalents. */
+  /** On a subscription host every dollar figure in this panel is list-price
+   *  fiction: the plan isn't billed per token. */
   quota: QuotaSnapshotData | null;
   onClose(): void;
 }) {
   const onSubscription = (): boolean => props.quota?.subscription === true;
-  // Cost slices are this process's own; on a subscription they are fiction.
   const perAgentCost = (): PerAgentCost[] => (onSubscription() ? [] : props.perAgentCost);
   const costFor = (agentName: string): { total: number; currency: string } | undefined => {
     return props.perAgentCost.find(c => c.name === agentName)?.cost;
@@ -59,10 +37,8 @@ export function UsagePanel(props: {
       };
     }
     const t = aggregateTokens(props.node);
-    // For an agent-leaf, attach the matching per-agent cost so the panel
-    // shows $X.XX next to its tokens. Aggregates (fleet-child folders) do
-    // not show cost — the framework's UsageTracker is per-process and we
-    // don't aggregate cross-process costs here.
+    // agent-framework's UsageTracker is per-process, so this panel's costs are
+    // this process's own and an aggregate shows none.
     if (props.node.agent) {
       const c = costFor(props.node.label);
       return c ? { ...t, cost: c } : t;
@@ -71,8 +47,6 @@ export function UsagePanel(props: {
   };
 
   const breakdown = (): UiNode[] => {
-    // Parent process and fleet-child folders break down by direct children;
-    // leaf agent nodes don't (they ARE the breakdown).
     if (props.node.kind === 'process' || props.node.kind === 'fleet-child') {
       return props.node.children;
     }
@@ -157,9 +131,6 @@ export function UsagePanel(props: {
   );
 }
 
-/** `listPrice`: subscription host — the ledger's dollars are not a bill. They
- *  stay, labelled as list-price equivalents, because the column is how a
- *  cache regression shows up; it is dimmed so it cannot pass for spend. */
 function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null; listPrice?: boolean }) {
   const rows = (): CallLedgerRow[] => [...(props.ledger?.rows ?? [])].slice(-30).reverse();
   return (
@@ -327,8 +298,6 @@ function fmt(n: number): string {
   return (n / 1_000_000).toFixed(2) + 'M';
 }
 
-/** Format a cost figure: 4 decimals when sub-dollar (so cents are visible),
- *  2 otherwise — matches the TUI's /usage formatter. */
 function fmtCost(total: number): string {
   return total.toFixed(total < 1 ? 4 : 2);
 }

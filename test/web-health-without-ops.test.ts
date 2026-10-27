@@ -1,11 +1,3 @@
-/**
- * What the Web UI's health panel makes of health without failure text, as an
- * observer that holds 'health' and not 'ops' is sent it (HEALTH_STRINGS,
- * QUOTA_STRINGS): each fact the text stood beside still shows, that a call
- * failed, a read failed, an agent is down or the quota can't be read, and no
- * text is shown in its place. The panel reads the snapshot through these
- * helpers; Health.tsx and App.tsx only lay their answers out.
- */
 import { describe, expect, test } from 'bun:test';
 import { CREDENTIAL_STRINGS, HEALTH_STRINGS, QUOTA_STRINGS, keepNamedStrings, type KeptStrings } from '../src/modules/web-ui-observers.js';
 import { PAGE_WAYS, bannerOf, restartLines, statusLines, type UpdateStatus } from '../src/web/update-text.js';
@@ -27,7 +19,6 @@ const TEXT = {
   action: 'refresh failed: the token endpoint answered 400',
 };
 
-/** As the page receives it: through JSON, without the strings `kept` doesn't name. */
 const sent = <T>(value: T, kept: KeptStrings | null): T =>
   JSON.parse(JSON.stringify(kept ? keepNamedStrings(value, kept) : value)) as T;
 
@@ -37,8 +28,6 @@ const row = (over: Partial<CallLedgerRow>): CallLedgerRow => ({
   cache: { ttls: ['5m'], effectiveTtl: '5m' }, verdict: 'HIT', cause: '90% from cache', ...over,
 });
 
-// /healthz on a host whose main agent is down, whose debt report and one
-// section's read failed, with a quarantined span and a failed call.
 const health = {
   agents: [{
     name: 'main',
@@ -72,7 +61,6 @@ describe('the health panel, with health and without ops', () => {
     const exhausted = (h: HealthSnapshot) => planHealthAlerts(h, new Map()).upsert.find((u) => u.kind === 'inference-exhausted')?.message;
     expect(exhausted(whole)).toBe(`3 consecutive inference failures — agent is down. Last: ${TEXT.lastError}`);
     expect(exhausted(bare)).toBe('3 consecutive inference failures — agent is down.');
-    // The quarantine row counts the span as the operator's does.
     const quarantine = (h: HealthSnapshot) => planHealthAlerts(h, new Map()).upsert.find((u) => u.kind === 'compression-quarantine')?.message;
     expect(quarantine(bare)).toBe(quarantine(whole));
   });
@@ -86,8 +74,6 @@ describe('the health panel, with health and without ops', () => {
     const debt = (h: HealthSnapshot) => healthEntry(h.compressionDebt, 'main') as CompressionDebt;
     expect(debtSummary(debt(bare))).toBe(debtSummary(debt(whole)));
     expect(debtTone(debt(bare))).toBe(debtTone(debt(whole)));
-    // The next step asks the operator to report what the message shows, so
-    // it comes only with the message.
     expect(debtNextStep(debt(whole))).toBeDefined();
     expect(debtNextStep(debt(bare))).toBeUndefined();
   });
@@ -114,9 +100,6 @@ describe('the health panel, with health and without ops', () => {
     expect(quotaUnreadable({ ...quota, error: undefined })).toBe(false);
     expect(quotaTitle(bareQuota)).toBe('Subscription quota (anthropic)\nLast refresh failed');
     expect(quotaTitle(quota)).toBe(`Subscription quota (anthropic)\nLast refresh failed: ${TEXT.quota}`);
-    // Before the first poll answers there is no quota; a meter that failed
-    // while it still holds windows from an earlier read has windows to show,
-    // so it isn't unreadable; a good read says nothing failed.
     expect(quotaUnreadable(null)).toBe(false);
     const kept = { ...bareQuota, windows: [{ key: 'five_hour', label: '5h', utilization: 10 }] };
     expect(quotaUnreadable(kept)).toBe(false);
@@ -134,11 +117,9 @@ describe('the health panel, with health and without ops', () => {
     expect(JSON.stringify(bare)).not.toContain(TEXT.credential);
     expect(JSON.stringify(bare)).not.toContain(TEXT.action);
     expect(bare).toMatchObject({ kind: 'auth-rejected', login: credential.login, actions: credential.actions });
-    // The line under the kind goes when its text does; it says nothing while the state is ok.
     expect(credentialNote(credential)).toBe(TEXT.credential);
     expect(credentialNote(bare)).toBeUndefined();
     expect(credentialNote({ ...credential, kind: 'ok' })).toBeUndefined();
-    // A state that names no kind is taken as ok.
     expect(credentialNote({ message: TEXT.credential })).toBeUndefined();
     expect(lastActionText(credential.lastAction, '5s ago')).toBe(`refresh FAILED 5s ago — ${TEXT.action}`);
     expect(lastActionText(bare.lastAction, '5s ago')).toBe('refresh FAILED 5s ago');
@@ -199,8 +180,6 @@ describe("the update section, with health and without ops", () => {
     expect(sent({ update: failed }, HEALTH_STRINGS).update.check).toEqual({ at: '2026-10-22T12:00:00.000Z', ok: false, error: '' });
   });
 
-  // The page's words for what it was sent (src/web/update-text.ts): each fact
-  // the emptied text stood beside, with no clause for the text.
   const secrets = ['E404', 'ECONNRESET', 'disk swap', 'sk-ant', 'journal.jsonl', 'store bug', 'ENOTFOUND', 'refused'];
   const words = (status: UpdateStatus): string => {
     const shown = sent({ update: status }, HEALTH_STRINGS).update;
@@ -222,10 +201,8 @@ describe("the update section, with health and without ops", () => {
       .toContain('Reading the registry failed at 2026-10-22T12:00:00.000Z.\n');
     const deprecated = { ...update.check!, candidate: null, costs: [] } as UpdateStatus['check'];
     expect(words({ ...update, check: deprecated })).toContain('0.12.1 is deprecated on npm.\n');
-    // The banner's own line for it, with nothing else under way to show first.
     const quiet: UpdateStatus = { ...update, check: deprecated, restart: null, installing: null, installed: null, lastInstall: null };
     expect(bannerOf(sent({ update: quiet }, HEALTH_STRINGS).update)?.line).toBe('0.12.1 is deprecated on npm.');
-    // Emptied problems are counted, on a host that can update itself or not.
     const two: UpdateStatus = { ...update, problems: ['the last switch: EACCES on journal.jsonl', 'the copy: ENOENT'] };
     expect(words(two)).toContain("2 parts of this status couldn't be read.");
     expect(words({ ...two, install: false })).toContain("2 parts of this status couldn't be read.");
@@ -243,7 +220,6 @@ describe("the update section, with health and without ops", () => {
     for (const secret of secrets) expect(text).not.toContain(secret);
     expect(text).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:00:00.000Z, from a try of 0.12.2. ' +
       "The service's log, or the terminal the host was started in, says more.");
-    // The banner and the Restart dialog point at the service's log too, since Health holds no lines for it.
     expect(text).toContain("0.12.2 ended before its commit at its last try, so 0.12.1 came back. The service's log, or the " +
       'terminal the host was started in, says more.');
     expect(text).toContain("Its last try ended before its commit. The service's log, or the terminal the host was started " +

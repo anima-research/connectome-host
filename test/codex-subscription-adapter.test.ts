@@ -72,7 +72,6 @@ describe('Codex host integration', () => {
     const seen: Array<{ url: string; headers: Headers }> = [];
     globalThis.fetch = async (url, init) => {
       seen.push({ url: String(url), headers: new Headers(init?.headers) });
-      // the gate refreshed the login behind a 401; the single retry meets it
       return seen.length === 1 ? new Response('expired', { status: 401 }) : completed();
     };
     const adapter = new CodexSubscriptionAdapter({ codexBinary: '/nonexistent/codex', authProvider: auth });
@@ -81,8 +80,6 @@ describe('Codex host integration', () => {
     expect(seen.every((c) => c.headers.get('authorization') === 'Bearer gt_devops')).toBe(true);
     expect(seen[0]!.headers.get('chatgpt-account-id')).toBeNull();
     expect(await adapter.readRateLimits()).toBeNull();
-    // Observe-only credential source: the gate holds the login, so no
-    // host-side refresh/login/paste is offered — a 401 is reported, not "fixed".
     const source = adapter.credentialSource();
     expect(source.provider).toBe('openai-codex via https://gate.test/codex');
     expect(source.canRefresh()).toBe(false);
@@ -124,7 +121,6 @@ for (const mode of ['subscription', 'api'] as const) {
         const membrane = new Membrane(wrapped, { formatter: new OpenAIResponsesFormatter() });
         const normalized = { messages: [{ participant: 'user', content: [{ type: 'text' as const, text: 'hello' }] }], config: { model: 'gpt-5.4', maxTokens: 100 } };
         const response = lane === 'complete' ? await membrane.complete(normalized) : await membrane.stream(normalized, { onChunk: () => {} });
-        // 2026-07-31 incident: adding cached tokens twice ratcheted calibration until the agent wedged.
         expect(response.usage.inputTokens).toBe(20);
         expect(response.usage.cacheReadTokens).toBe(80);
         const log = JSON.parse(readFileSync(`${dir}/calls.jsonl`, 'utf8').trim());
@@ -157,7 +153,6 @@ test('a forced refresh waits behind an ordinary acquisition rather than joining 
   const auth = new CodexAppServerAuth();
   const flags: boolean[] = [];
   let release!: (token: string) => void;
-  // Only the app-server exchange is stubbed; exercise real acquisition coordination.
   (auth as any).authenticate = (refresh: boolean) => {
     flags.push(refresh);
     return refresh ? Promise.resolve('fresh') : new Promise<string>(resolve => { release = resolve; });

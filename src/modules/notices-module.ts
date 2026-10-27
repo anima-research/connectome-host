@@ -1,46 +1,6 @@
 /**
- * NoticesModule — tells the people in an agent's chat channels when the host
- * cannot answer them, through the same channels, without a working model.
- *
- * A sink of the framework's `ops:alert` trace stream (the same stream the
- * Discord ops webhook and the WebUI alert strip read). Nothing here looks at
- * raw `inference:failed` events: the framework's own breakers decide when a
- * failure is an outage (`hard-down` after N consecutive failures, credential
- * state transitions, `mcpl-down` after 5 attempts, …) and this module only
- * decides WHERE and HOW LOUDLY to say so.
- *
- * Three audiences, by tier:
- *   - `silent` — log only (the alert still reaches failures.log / webhook).
- *   - `status` — the recipe's status channels get the operator-grade message.
- *   - `reply`  — additionally, a person who writes to the agent while the
- *                outage is on gets one canned "cannot respond right now" line
- *                in the channel they wrote in, and the channel whose message
- *                triggered the failing turn is told the same. Reply scope is a
- *                list of channel-id patterns, so "reply on Zulip, never on
- *                Discord" is `reply: { in: ['zulip:*'] }`.
- *
- * Episode semantics (not time debounce): an episode opens on the first
- * qualifying alert and holds every kind active since; a kind leaves on its
- * `-clear` alert — or, for framework kinds that have no clear (`hard-down`,
- * refusals), on the agent's next turn that completes or that a tool ends
- * (skip_reply, sleep) — and the episode closes
- * when no kind remains, so a lesser alert landing mid-outage neither mutes the
- * outage nor, on its own clear, announces a false recovery. One notice
- * per (episode, channel); a channel is told again only when the announced end
- * has passed and the outage is still on. Channels that were told get one
- * "back" line on close. Status channels follow the kind-level timeline
- * instead: one line when a kind has been active for `quietMs` (so a flap that
- * resolves in seconds says nothing), one line when a told kind clears, naming
- * what remains. Replies never wait — a human is.
- *
- * The chat MCPL server may itself be down. Channel ids are opaque here and
- * resolved at post time through the ChannelRegistry; a notice refused because
- * the channel or server isn't there to take it (the reasons in
- * PARKED_REFUSALS) is parked on the episode and re-admitted when a server
- * (re)connects while the episode is still open, else dropped silently. A
- * clear or "back" line refused the same way is owed to the channel and
- * retried on reconnect regardless, so no channel is left carrying a warning
- * nobody will clear. A first post's other failures are logged and dropped.
+ * A sink of agent-framework's `ops:alert` trace stream: the framework decides
+ * when a failure is an outage.
  */
 
 import type {
@@ -62,46 +22,26 @@ import { addressedPush } from './addressed-push.js';
 export type NoticeTier = 'silent' | 'status' | 'reply';
 
 export interface NoticesModuleConfig {
-  /** The agent whose outages these are. Alerts for other agents are ignored
-   *  (component alerts such as `mcpl-down` are keyed by component instead). */
   agentName?: string;
-  /** Channels that always get the operator-grade message for `status` and
-   *  `reply` kinds. */
   statusChannels?: string[];
-  /** Where reactive / waker replies may go — channel-id patterns, `*` wildcard
-   *  (`zulip:*`, `discord:guild-1:*`, exact ids). Default `['*']`. */
   replyIn?: string[];
-  /** Carve-outs from `replyIn`. */
   replyNot?: string[];
-  /** Tier per alert kind, `*` wildcard on the kind (`auth-*`). Merged over
-   *  DEFAULT_TIERS; unknown kinds are silent. */
   kinds?: Record<string, NoticeTier>;
-  /** Status posts wait this long for a clear before posting (default 60 s). */
   quietMs?: number;
-  /** A channel told this long ago may be told again if the outage persists
-   *  past its announced end (default 30 min). */
   renotifyMs?: number;
-  /** A failed turn's channel is told only if the alert arrives within this
-   *  long of the failure (default 10 min). */
   wakerWindowMs?: number;
-  /** Configured MCPL server ids, for a one-time startup warning about literal
-   *  channel ids whose server is not in the recipe. */
   knownServers?: string[];
   now?: () => number;
-  /** Timer injection for tests. */
   timers?: { setTimeout: (fn: () => void, ms: number) => unknown; clearTimeout: (h: unknown) => void };
 }
 
-/** Tier each framework / host alert kind gets unless the recipe says otherwise. */
 export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze({
-  // The agent cannot answer: tell the people waiting.
   'hard-down': 'reply',
   'quota-spent': 'reply',
   'auth-expired': 'reply',
   'auth-rejected': 'reply',
   'auth-login-required': 'reply',
   'provider-hold': 'reply',
-  // Degraded, or an operator matter: status channels only.
   'context-refusal': 'status',
   'mcpl-down': 'status',
   'quota-unreadable': 'status',
@@ -110,27 +50,21 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'context-maintenance-failed': 'status',
   'compression-quarantine': 'status',
   'instructions-unavailable': 'status',
-  // Normal operation noise.
   'refusal': 'silent',
 });
 
-/** Framework kinds with no `-clear` producer: the agent's next turn that
- *  completes, or that a tool ends, is the recovery signal, since the model
- *  answered either way. Everything else waits for its clear. */
+/** agent-framework raises these kinds with no `-clear` alert. */
 const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
 
 /** Alert kinds whose `agentName` is a component id (an MCPL server), not an
- *  agent. They get their own episode, status tier at most, and close when
- *  that component reconnects. */
+ *  agent. */
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
 
-/** The two markers an episode can write; see markerForm. */
 type MarkerForm = 'unanswered' | 'status';
 
 const DEFAULT_QUIET_MS = 60_000;
-/** Owed clear lines kept per channel whose server stays absent. */
 const OWED_LINES_CAP = 20;
 const DEFAULT_RENOTIFY_MS = 30 * 60_000;
 const DEFAULT_WAKER_WINDOW_MS = 10 * 60_000;
@@ -139,50 +73,26 @@ interface ActiveKind {
   message: string;
   tier: NoticeTier;
   until?: number;
-  /** When this kind (first) arrived — the newest reply-tier kind names the outage. */
   at: number;
-  /** Occurrence number within the episode: a kind that clears and returns is
-   *  a new occurrence, told anew even if the old one's post is still in flight. */
   seq: number;
 }
 
 interface Episode {
-  /** Alert `agentName`: our agent, or a component id. */
   key: string;
-  /** Every alert kind currently active. The episode closes when it empties:
-   *  a `compression-quarantine` landing mid `quota-spent` neither downgrades
-   *  the outage nor, on its own clear, ends it. */
   kinds: Map<string, ActiveKind>;
   since: number;
-  /** channelId → epoch ms of the last reply notice posted there. */
   notified: Map<string, number>;
-  /** Reply channels with a warning post in flight. */
   replyPosting: Set<string>;
-  /** Channels whose post failed for lack of a channel/server; retried on reconnect. */
   pending: Set<string>;
-  /** statusChannel → kinds it has been told about. Status channels follow
-   *  the kind-level timeline: one line when a kind is told (after its own
-   *  quiet deadline), one line when a told kind clears. */
   statusHeard: Map<string, Set<string>>;
-  /** statusChannel → kind → occurrence with a post in flight (claimed, not yet heard). */
   statusPosting: Map<string, Map<string, number>>;
-  /** statusChannel → kinds it still shows a warning for from an EARLIER
-   *  occurrence whose clear could not be delivered. Owed a clear when the
-   *  kind next clears; independent of whether the current occurrence has
-   *  been told. */
   statusOwedClear: Map<string, Set<string>>;
-  /** Occurrence counter for `ActiveKind.seq`. */
   nextSeq: number;
-  /** Pending quiet-deadline timer handle and the time it is aimed at. */
   quietTimer?: unknown;
   quietDue?: number;
-  /** The markers this episode has written: one of each form. */
   markedForms: Set<MarkerForm>;
 }
 
-/** A clear / "back" line owed to a channel whose server was absent. `key`
- *  names the episode it spoke for; `clearedKind` is the kind it declared
- *  cleared, or undefined for a reply channel's "can respond again" line. */
 interface OwedLine {
   text: string;
   key: string;
@@ -191,14 +101,12 @@ interface OwedLine {
 
 const TIER_RANK: Record<NoticeTier, number> = { silent: 0, status: 1, reply: 2 };
 
-/** The episode's tier: the loudest active kind. */
 function episodeTier(ep: Episode): NoticeTier {
   let best: NoticeTier = 'silent';
   for (const k of ep.kinds.values()) if (TIER_RANK[k.tier] > TIER_RANK[best]) best = k.tier;
   return best;
 }
 
-/** The kind that names the outage: the newest among the loudest. */
 function primaryKind(ep: Episode): { kind: string; message: string; until?: number } {
   const tier = episodeTier(ep);
   let pick: [string, ActiveKind] | undefined;
@@ -210,7 +118,6 @@ function primaryKind(ep: Episode): { kind: string; message: string; until?: numb
   return { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) };
 }
 
-/** `*`-glob → anchored RegExp. */
 export function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
   return new RegExp(`^${escaped}$`);
@@ -226,7 +133,6 @@ function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((p) => p.test(value));
 }
 
-/** Plain words for the channel, by alert kind. */
 function plainReason(kind: string): string {
   switch (kind) {
     case 'quota-spent': return 'its subscription quota is spent';
@@ -235,8 +141,6 @@ function plainReason(kind: string): string {
     case 'auth-login-required': return 'its provider login must be redone';
     case 'hard-down': return 'its model calls keep failing';
     case 'provider-hold': return 'the provider is holding its requests';
-    // A kind promoted to `reply` by the recipe: the alert message may carry
-    // provider error text, which a public channel never gets.
     default: return `it is temporarily unavailable (${kind})`;
   }
 }
@@ -245,7 +149,6 @@ function fmtUntil(ms: number): string {
   return new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 }
 
-/** The canned line a public channel gets: no error text, just the reason. */
 export function replyNoticeText(agent: string, ep: { kind: string; until?: number }): string {
   const when = ep.until !== undefined ? ` Expected back after ${fmtUntil(ep.until)}.` : '';
   return `⚠ [host notice] ${agent} cannot respond right now: ${plainReason(ep.kind)}.${when} An operator has been alerted.`;
@@ -255,7 +158,6 @@ export function replyClearText(agent: string): string {
   return `✓ [host notice] ${agent} can respond again.`;
 }
 
-/** The operator-grade line a status channel gets: kind + message. */
 export function statusNoticeText(subject: string, ep: { kind: string; message: string; until?: number }): string {
   const when = ep.until !== undefined ? ` Expected back after ${fmtUntil(ep.until)}.` : '';
   const msg = ep.message ? `: ${ep.message.slice(0, 500)}` : '';
@@ -275,16 +177,10 @@ interface Registry {
 type PublishResult = { success: boolean; error?: string; reason?: PublishRefusalReason };
 
 /**
- * The refusals that mean the chat server may simply not be up, for which
- * post() parks a notice or owes a line until a reconnect or a server's
- * return: the channel isn't registered (yet), its server is gone, connecting
- * or down, or its connection refused the request before writing anything.
- * agent-framework names each refusal's cause in `reason`. post() logs any
- * other refusal (a channel that takes no posts, a publish the host isn't
- * permitted), a failure with no reason and a thrown error, and neither parks
- * nor owes it, since nothing here waits for those to change. A line already
- * owed is retried at each reconnect whatever its replay's refusal
- * (flushOwed).
+ * The refusals agent-framework gives when the chat server may simply not be
+ * up: the channel isn't registered (yet), its server is gone, connecting or
+ * down, or its connection refused the request before writing anything
+ * (`not-sent`).
  */
 const PARKED_REFUSALS: ReadonlySet<PublishRefusalReason> = new Set<PublishRefusalReason>([
   'channel-not-registered',
@@ -311,22 +207,12 @@ export class NoticesModule implements Module {
   private readonly renotifyMs: number;
   private readonly wakerWindowMs: number;
   private episodes = new Map<string, Episode>();
-  /** Outbound locus of the agent's current / most recent turn. */
   private currentWake: string | undefined;
-  /** The channel of the most recent FAILED turn, with its time. */
   private failedWake: { channelId: string; at: number } | undefined;
   private unsubscribe: (() => void) | null = null;
   private warnedServers = false;
-  /** Bumped on every server (re)connect, so a post that was already in
-   *  flight when a server came back can tell that the flush was deduplicated
-   *  against it and ask for another. Internal re-flushes do not bump it. */
   private reconnectEpoch = 0;
-  /** channelId → clear / "back" lines that could not be delivered because the
-   *  channel's server was absent; retried on reconnect, bounded per channel,
-   *  dropped if the fact they state has since been overtaken. */
   private owedLines = new Map<string, OwedLine[]>();
-  /** All flushes run one at a time, in order: a flush that waits on one
-   *  channel must not race another flush over the same queues. */
   private flushChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
@@ -352,12 +238,6 @@ export class NoticesModule implements Module {
     this.warnUnknownServers(this.config.knownServers);
   }
 
-  /**
-   * Detach from the framework. Episodes, pending channels and owed lines are
-   * kept: a session switch rebuilds the framework around the same host, and
-   * a standing outage (the credential monitor announces transitions only)
-   * must still be told, cleared and owed in the new session.
-   */
   async stop(): Promise<void> {
     for (const ep of this.episodes.values()) this.cancelQuiet(ep);
     this.unsubscribe?.();
@@ -366,8 +246,6 @@ export class NoticesModule implements Module {
     this.ctx = null;
   }
 
-  /** Called from the host after framework creation (and re-creation on a
-   *  session switch), like ActivityModule. */
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
     this.unsubscribe?.();
@@ -376,13 +254,10 @@ export class NoticesModule implements Module {
     if (this.episodes.size > 0 || this.owedLines.size > 0) void this.flushPending();
   }
 
-  /** Server ids known to the host — call once they are resolved. */
   setKnownServers(ids: string[]): void {
     this.warnUnknownServers(ids);
   }
 
-  /** Tier a kind resolves to: the recipe table wins over the built-in one,
-   *  and within a table an exact entry beats a glob. Unknown ⇒ silent. */
   tierFor(kind: string): NoticeTier {
     const lookup = (table: Array<{ re: RegExp; exact: string | null; tier: NoticeTier }>): NoticeTier | undefined => {
       let glob: NoticeTier | undefined;
@@ -395,17 +270,14 @@ export class NoticesModule implements Module {
     return lookup(this.overrideTiers) ?? lookup(this.defaultTiers) ?? 'silent';
   }
 
-  /** Whether a reply notice may be posted in this channel. */
   mayReplyIn(channelId: string): boolean {
     return matchesAny(channelId, this.replyIn) && !matchesAny(channelId, this.replyNot);
   }
 
-  /** Clear / "back" lines still owed to channels whose server is absent. */
   owedState(): Record<string, string[]> {
     return Object.fromEntries([...this.owedLines].filter(([, l]) => l.length > 0).map(([ch, l]) => [ch, l.map((o) => o.text)]));
   }
 
-  /** Current episodes, for tests and the panel. */
   episodeState(): Array<{ key: string; kind: string; kinds: string[]; tier: NoticeTier; since: number; until?: number; notified: string[]; pending: string[]; statusHeard: Record<string, string[]> }> {
     return [...this.episodes.values()].map((ep) => {
       const primary = primaryKind(ep);
@@ -430,14 +302,11 @@ export class NoticesModule implements Module {
       const e = event as unknown as { channelId: string };
       await this.replyIfDown(e.channelId);
     } else {
-      // A person's mention in a closed channel, reply or first DM arrives as a push.
       const pushed = addressedPush(event);
       if (pushed) await this.replyIfDown(pushed.channelId);
     }
     return {};
   }
-
-  // ---------------------------------------------------------------- traces
 
   private onTrace(event: Record<string, unknown>): void {
     const type = event.type as string;
@@ -452,7 +321,6 @@ export class NoticesModule implements Module {
         this.currentWake = typeof event.channelId === 'string' ? event.channelId : undefined;
         return;
       case 'inference:aborted':
-        // An aborted turn hasn't failed: no channel is told it died.
         if (!mine) return;
         this.currentWake = undefined;
         return;
@@ -460,8 +328,8 @@ export class NoticesModule implements Module {
         if (!mine) return;
         if (this.currentWake) {
           this.failedWake = { channelId: this.currentWake, at: this.now() };
-          // The alert may already be open (hard-down re-fires per failure):
-          // tell the channel whose turn just died.
+          // agent-framework's hard-down alert fires again with each failure, so it may
+          // already be open.
           void this.replyToWaker();
         }
         return;
@@ -480,8 +348,6 @@ export class NoticesModule implements Module {
         return;
       case 'mcpl:server-reconnected':
       case 'module:added': {
-        // `module:added` is re-emitted for a reconnected MCPL server with the
-        // server id as moduleName.
         const serverId = typeof event.serverId === 'string' ? event.serverId
           : typeof event.moduleName === 'string' ? event.moduleName : undefined;
         if (serverId) {
@@ -511,8 +377,6 @@ export class NoticesModule implements Module {
     if (base !== null) {
       const ep = this.episodes.get(key);
       if (!ep || !ep.kinds.has(base)) return;
-      // Superseded (auth-expiring → auth-expired) is not recovery: the next
-      // alert re-arms a fresh episode; only a clear to "ok" posts the all-clear.
       this.removeKind(ep, base, { message, superseded: /^superseded by /.test(message) });
       return;
     }
@@ -529,13 +393,8 @@ export class NoticesModule implements Module {
     const existing = this.episodes.get(key);
     if (existing) {
       const prior = existing.kinds.get(kind);
-      // A re-fire keeps its original arrival: the quiet deadline must not
-      // slide with every repeat of a persisting alert.
       existing.kinds.set(kind, { message, tier, until, at: prior?.at ?? this.now(), seq: prior?.seq ?? existing.nextSeq++ });
       if (prior) return;
-      // A new kind joins the episode. Reply channels already told are not
-      // told twice, and still get the "back" line when the whole episode
-      // ends. Status channels hear the new kind after its own quiet deadline.
       this.scheduleStatus(existing);
       void this.replyToWaker();
       return;
@@ -549,18 +408,14 @@ export class NoticesModule implements Module {
     void this.replyToWaker();
   }
 
-  // -------------------------------------------------------------- episodes
-
   private agentEpisode(): Episode | undefined {
     const ep = this.config.agentName ? this.episodes.get(this.config.agentName) : undefined;
     if (ep) return ep;
     if (this.config.agentName) return undefined;
-    // No agent name configured: the first non-component episode.
     for (const e of this.episodes.values()) if (![...e.kinds.keys()].some((k) => COMPONENT_KINDS.has(k))) return e;
     return undefined;
   }
 
-  /** One kind cleared. The episode ends only when no kind remains active. */
   private removeKind(ep: Episode, kind: string, opts: { message: string; superseded: boolean }): void {
     const wasReply = episodeTier(ep) === 'reply';
     ep.kinds.delete(kind);
@@ -571,12 +426,6 @@ export class NoticesModule implements Module {
       this.episodes.delete(ep.key);
       ep.pending.clear();
     }
-    // Superseded (auth-expiring → auth-expired) is not recovery: nothing is
-    // said; the successor alert re-tells. Otherwise every status channel
-    // that heard this kind hears that it cleared (and what remains), and —
-    // when the whole outage ends — every reply channel told gets "back".
-    // Either way the kind's delivery record goes: if it returns, it is told
-    // anew.
     const subject = ep.key || this.config.agentName || 'the agent';
     const still = open ? primaryKind(ep).kind : undefined;
     const owedChannels = new Set<string>();
@@ -587,10 +436,6 @@ export class NoticesModule implements Module {
         void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
       }
     }
-    // Reply channels are told "back" as soon as no reply-tier kind remains:
-    // a status-only warning (quota-unreadable) left standing does not mean
-    // the agent cannot answer. Channels with a warning still in flight are
-    // settled by that post when it lands (see postReply).
     if (opts.superseded || !wasReply || stillReply) return;
     for (const ch of ep.notified.keys()) {
       if (ep.replyPosting.has(ch)) continue;
@@ -599,18 +444,10 @@ export class NoticesModule implements Module {
     ep.notified.clear();
   }
 
-  /**
-   * Arrange for the status channels to hear every active kind once its own
-   * quiet deadline (arrival + quietMs) has passed. One timer per episode,
-   * aimed at the earliest pending deadline; a kind joining later never
-   * delays one already due.
-   */
   private scheduleStatus(ep: Episode): void {
     if (this.statusChannels.length === 0) return;
     if (this.episodes.get(ep.key) !== ep) return;
     const now = this.now();
-    // Deliver what is due, then aim the timer at the earliest deadline still
-    // ahead among kinds some channel has yet to hear (or be posting).
     this.deliverStatus(ep);
     let next: number | undefined;
     for (const [kind, k] of ep.kinds) {
@@ -633,7 +470,6 @@ export class NoticesModule implements Module {
     }, next - now);
   }
 
-  /** Post every due, unheard active kind to every status channel. */
   private deliverStatus(ep: Episode): void {
     const now = this.now();
     for (const [kind, k] of ep.kinds) {
@@ -650,23 +486,14 @@ export class NoticesModule implements Module {
     }
   }
 
-  // --------------------------------------------------------------- replies
-
-  /** Traffic on a channel while the agent is down (incoming traffic, or a
-   *  person's message addressed to it as a push): say so, once. */
   private async replyIfDown(channelId: string): Promise<void> {
     const ep = this.agentEpisode();
     if (!ep || episodeTier(ep) !== 'reply') return;
     if (!this.mayReplyIn(channelId)) return;
-    // A status channel already carries the operator message.
     if (this.statusChannels.includes(channelId)) return;
     const last = ep.notified.get(channelId);
     const now = this.now();
     if (last !== undefined) {
-      // One notice per episode. The only reason to speak again is that the
-      // announced end has passed and the outage is still on — the notice was
-      // wrong about "expected back after". No announced end ⇒ nothing to
-      // correct ⇒ silence until the clear.
       const until = primaryKind(ep).until;
       const announcedEndPassed = until !== undefined && until <= now;
       if (!announcedEndPassed || now - last < this.renotifyMs) return;
@@ -674,7 +501,6 @@ export class NoticesModule implements Module {
     await this.postReply(ep, channelId);
   }
 
-  /** The channel whose turn just failed is told, within the waker window. */
   private async replyToWaker(): Promise<void> {
     const ep = this.agentEpisode();
     const fw = this.failedWake;
@@ -685,9 +511,6 @@ export class NoticesModule implements Module {
     await this.postReply(ep, fw.channelId);
   }
 
-  /** Tell one status channel about one kind. A post that lands after the
-   *  kind cleared (or the episode closed) is followed by its own clear line
-   *  at once, so no channel is left carrying a warning nobody will clear. */
   private async postStatus(ep: Episode, channelId: string, kind: string): Promise<void> {
     const k = ep.kinds.get(kind);
     if (!k) return;
@@ -703,8 +526,6 @@ export class NoticesModule implements Module {
     if (!r.ok) return;
     const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
     if (live?.seq === k.seq) { heard.add(kind); return; }
-    // Landed stale. A returning occurrence of the same kind is told on its
-    // own schedule and needs no clear for this one; a gone kind does.
     if (live) { this.scheduleStatus(ep); return; }
     const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
     void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
@@ -720,9 +541,6 @@ export class NoticesModule implements Module {
     if (!r.ok) ep.notified.delete(channelId);
     if (r.reflush) this.reflush(ep, channelId);
     if (!r.ok) return;
-    // Landed after the outage ended (or dropped to status tier): the channel
-    // now shows a warning nobody will clear. Settle it ourselves — unless a
-    // newer outage is on, in which case the warning stands for that one.
     const live = this.agentEpisode();
     if (live === ep && episodeTier(ep) === 'reply') return;
     ep.notified.delete(channelId);
@@ -733,19 +551,11 @@ export class NoticesModule implements Module {
     void this.post(channelId, replyClearText(subject), ep, { track: false, owe: { key: ep.key } });
   }
 
-  /** A reconnect flush was deduplicated against this post's claim, and may
-   *  already have taken the channel off `pending` without being able to post.
-   *  Re-park it and flush again, now that the claim is released. */
   private reflush(ep: Episode, channelId: string): void {
     if (this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
     void this.flushPending();
   }
 
-  /**
-   * Retry channels parked on an absent server. Each retry goes through the
-   * same admission as a fresh delivery — the episode may have closed, changed
-   * tier, or already reached the channel another way while we waited.
-   */
   private flushPending(): Promise<void> {
     const run = this.flushChain.then(() => this.doFlushPending());
     this.flushChain = run.catch(() => undefined);
@@ -770,14 +580,6 @@ export class NoticesModule implements Module {
     }
   }
 
-  /**
-   * Retry owed clear / "back" lines, oldest first, in order. A line whose
-   * fact has been overtaken — the kind it cleared is active again, or the
-   * agent is down again when it says "can respond again" — is not sent;
-   * instead the channel's debt moves into the live episode (it still carries
-   * a warning), whose own clear line will settle it. What still fails stays
-   * owed, in place, ahead of anything owed meanwhile.
-   */
   private async flushOwed(): Promise<void> {
     for (const channelId of [...this.owedLines.keys()]) {
       const lines = this.owedLines.get(channelId);
@@ -795,10 +597,6 @@ export class NoticesModule implements Module {
     }
   }
 
-  /** True when a live episode has overtaken the line; the channel is then
-   *  recorded in that episode as still warned, so it is owed that episode's
-   *  clear even if the episode never spoke to it itself. A returned status
-   *  kind's current occurrence is still told on its own schedule. */
   private absorbIfOvertaken(channelId: string, line: OwedLine): boolean {
     const ep = this.episodes.get(line.key);
     if (!ep) return false;
@@ -817,15 +615,6 @@ export class NoticesModule implements Module {
     this.owedLines.set(channelId, [...owed, line].slice(-OWED_LINES_CAP));
   }
 
-  /**
-   * Publish as the host. On a refusal a reconnect can undo (PARKED_REFUSALS),
-   * since the chat server may simply not be up, a tracked notice parks its
-   * channel on the episode for re-admission on reconnect, and an untracked clear / "back"
-   * line is owed to the channel and retried on reconnect regardless. `reflush`
-   * tells the caller that a reconnect happened during this attempt, so the
-   * flush it triggered was deduplicated against this post's claim and another
-   * flush is needed once the claim is released.
-   */
   private async post(
     channelId: string,
     text: string,
@@ -862,27 +651,16 @@ export class NoticesModule implements Module {
       if (ep && this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
       return { ok: false, reflush };
     }
-    // A clear / "back" line is a final statement, so it needs no re-admission:
-    // try once more against the state the mid-flight reconnect left, then owe it.
     if (reflush) return this.post(channelId, text, ep, opts);
     if (opts.owe) this.owe(channelId, { text, ...opts.owe });
     return { ok: false, reflush: false };
   }
 
-  /** Which marker a kind gets: "unanswered" when it means the agent couldn't
-   *  answer, as a reply-tier kind does and as a kind that closes on the
-   *  agent's own next inference does (its own turns were failing);
-   *  otherwise "status", a notice for whoever runs the host (a credential
-   *  expiring, say) with nothing in it for the agent to do. */
   private markerForm(kind: string): MarkerForm {
     return this.tierFor(kind) === 'reply' || CLOSES_ON_SUCCESS.has(kind) ? 'unanswered' : 'status';
   }
 
-  /** One chronicle marker per episode and form, so the agent learns, on
-   *  recovery, that the host spoke in its channel while it could not; an
-   *  episode with a kind of each form gets both. Component kinds get none.
-   *  System-flagged: no inference is requested (same as the framework's own
-   *  markers). Written through this module's context for the agent
+  /** The marker is written through this module's context for the agent
    *  (`forAgent`), so it is stamped for that agent alone and enters its
    *  window as any row for it does (agent-framework #291): at once while no
    *  turn of it is alive, and otherwise at a point of its turn that can carry

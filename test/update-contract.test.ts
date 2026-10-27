@@ -14,13 +14,14 @@ import {
   trialPlaces, unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark, type CopyLabel, type GoBackList, type JournalLine, type Mark,
 } from '../src/update/contract.js';
 
+const NAME_MAX = 255;
+
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'update-contract-')); });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 const line = (step: JournalLine['step'], outcome: JournalLine['outcome'] = 'ok', to = '0.11.0'): JournalLine =>
   ({ v: 1, at: '2026-10-19T16:00:00Z', step, from: '0.10.2', to, outcome });
-// Its id as the host makes one.
 const mark: Mark = { v: 1, id: randomUUID(), to: '0.11.0', why: 'update', at: '2026-10-19T15:59:00Z' };
 
 describe('the update contract', () => {
@@ -67,9 +68,6 @@ describe('the update contract', () => {
     expect(childrenFilePath('/d')).toBe('/d/fleet-children.json');
     expect(INSTALL_ROOT_ENV).toBe('CONNECTOME_INSTALL_ROOT');
     expect(RESTART_EXIT_CODE).toBe(75);
-    // The `notes` step and midturn.json, for notes to residents about a
-    // switch's stop, went: the update tells residents nothing, and no release
-    // wrote or read either, so nothing any release reads changed.
     expect(JOURNAL_STEPS).toEqual(['lock', 'children-check', 'copy', 'trial-start', 'commit', 'fallback', 'go-back']);
     expect(SWITCH_QUIESCE_PREFIX).toBe('connectome-host update: ');
     expect(goBackListPath('/r', 'm1')).toBe('/r/set-aside/m1/places.json');
@@ -88,8 +86,8 @@ describe('the update contract', () => {
 
   test('a temporary file or link a crash left behind is replaced by the next write', () => {
     const paths = installPaths(root);
-    // Longer than the record written next, so a temporary file that kept its old bytes would show.
-    writeFileSync(`${paths.mark}.tmp`, `{ "v": 1, "id": "half a record from a crash", "note": "${'x'.repeat(400)}`);
+    const longerThanTheRecordWrittenNext = 'x'.repeat(400);
+    writeFileSync(`${paths.mark}.tmp`, `{ "v": 1, "id": "half a record from a crash", "note": "${longerThanTheRecordWrittenNext}`);
     symlinkSync(join('releases', '0.9.0'), `${paths.current}.tmp`);
     writeJsonAtomic(paths.mark, mark);
     moveCurrent(root, '0.10.2');
@@ -101,7 +99,7 @@ describe('the update contract', () => {
   test("a link a crash left that can't be removed is the filesystem's own error, and current stays", () => {
     const { current } = installPaths(root);
     moveCurrent(root, '0.10.2');
-    // A directory where the link was: no unlink removes it.
+    // A directory where the link was, which no unlink removes.
     mkdirSync(`${current}.tmp`);
     expect(() => moveCurrent(root, '0.11.0')).toThrow(expect.objectContaining({ syscall: 'unlink' }));
     expect(readCurrent(root)).toBe('0.10.2');
@@ -111,7 +109,6 @@ describe('the update contract', () => {
     const { mark } = installPaths(root);
     writeFileSync(mark, JSON.stringify({ v: 2, to: '0.12.0' }));
     expect(() => readRecord<Mark>(mark, 'mark')).toThrow(new ContractError(`The mark at ${mark} has version 2, and this release reads only version 1.`));
-    // Any v but the number 1 is another version.
     for (const [text, v] of [['{"to":"0.12.0"}', 'undefined'], ['{"v":"1"}', '"1"'], ['{"v":0}', '0']]) {
       writeFileSync(mark, text);
       expect(() => readRecord<Mark>(mark, 'mark')).toThrow(new ContractError(`The mark at ${mark} has version ${v}, and this release reads only version 1.`));
@@ -130,8 +127,6 @@ describe('the update contract', () => {
     expect(() => readRecord<Mark>(mark, 'mark')).toThrow(expect.objectContaining({ code: 'EISDIR' }));
     writeFileSync(current, 'a file, not a link');
     expect(() => readCurrent(root)).toThrow(expect.objectContaining({ code: 'EINVAL' }));
-    // A journal that can't be read is no empty history: a start would then
-    // miss a trial left unfinished.
     const { journal } = installPaths(root);
     symlinkSync(journal, journal);
     expect(() => readJournal(root)).toThrow(expect.objectContaining({ code: 'ELOOP' }));
@@ -161,14 +156,11 @@ describe('the update contract', () => {
     expect(JSON.parse(run.stdout.toString())).toEqual({ record: 'EFBIG', journal: 'EFBIG' });
     expect(readRecord<Mark>(paths.mark, 'mark')).toEqual(mark);
     expect(readJournal(root).map((l) => l.step)).toEqual(['lock']);
-    // The part of a line that fit is cut away by the next append.
     appendJournal(root, { at: '2026-10-19T16:01:00Z', step: 'lock', from: '0.10.2', to: '0.12.0', outcome: 'ok' });
     expect(readJournal(root).map((l) => l.at)).toEqual(['2026-10-19T16:00:00Z', '2026-10-19T16:01:00Z']);
   });
 
   test('a write that comes back short is finished from where it stopped', () => {
-    // Every write here takes at most 7 bytes, so each record and line takes
-    // many. Whatever else the module passes goes through as it was given.
     const real = fs.writeSync;
     let cut = 0;
     const short = spyOn(fs, 'writeSync').mockImplementation(((fd: number, buffer: NodeJS.ArrayBufferView, offset?: number, length?: number, ...rest: unknown[]) => {
@@ -182,15 +174,12 @@ describe('the update contract', () => {
     } finally {
       short.mockRestore();
     }
-    // The module's writes went through the spy and came back short.
     expect(cut).toBeGreaterThan(10);
     expect(readRecord<Mark>(installPaths(root).mark, 'mark')).toEqual(mark);
     expect(readJournal(root)).toEqual([{ v: 1, at: '2026-10-19T16:00:00Z', step: 'lock', from: '0.10.2', to: '0.11.0', outcome: 'ok' }]);
   });
 
   test('a record and every append are written, synced, and then the root synced; a move of current syncs the root after its rename', () => {
-    // What each step does to which path, in order: the descriptor each write
-    // and sync is on is mapped back to the path it was opened on.
     const opened = new Map<number, string>();
     const did: string[] = [];
     const real = { open: fs.openSync, write: fs.writeSync, sync: fs.fsyncSync, rename: fs.renameSync };
@@ -202,7 +191,6 @@ describe('the update contract', () => {
         return fd;
       }) as typeof fs.openSync),
       spyOn(fs, 'writeSync').mockImplementation(((fd: number, ...rest: unknown[]) => {
-        // A write loop's writes count as one write.
         if (did.at(-1) !== `write ${pathOf(fd)}`) did.push(`write ${pathOf(fd)}`);
         return (real.write as (...args: unknown[]) => number)(fd, ...rest);
       }) as typeof fs.writeSync),
@@ -220,7 +208,6 @@ describe('the update contract', () => {
     try {
       expect(step(() => writeJsonAtomic(markPath, mark)))
         .toEqual([`write ${markPath}.tmp`, `sync ${markPath}.tmp`, `rename to ${markPath}`, `sync ${root}`]);
-      // The append that makes the journal, and one to a journal already there.
       expect(step(() => appendJournal(root, line('lock')))).toEqual([`write ${journal}`, `sync ${journal}`, `sync ${root}`]);
       expect(step(() => appendJournal(root, line('copy')))).toEqual([`write ${journal}`, `sync ${journal}`, `sync ${root}`]);
       expect(step(() => moveCurrent(root, '0.10.2'))).toEqual([`rename to ${current}`, `sync ${root}`]);
@@ -230,7 +217,6 @@ describe('the update contract', () => {
   });
 
   test('the journal reads back its lines whole, none when there is no journal, and a last line cut off as it was written counts as not recorded', () => {
-    // A fresh install's first start: no journal, so no history.
     expect(readJournal(root)).toEqual([]);
     appendJournal(root, { at: '2026-10-19T16:00:00Z', step: 'lock', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     appendJournal(root, { at: '2026-10-19T16:00:01Z', step: 'copy', from: '0.10.2', to: '0.11.0', outcome: 'failed', reason: 'ENOSPC' });
@@ -249,7 +235,6 @@ describe('the update contract', () => {
     appendFileSync(journal, '{"v":1,"at":"2026-10-19T16:00:02Z","step":"trial-');
     appendJournal(root, { at: '2026-10-19T16:05:00Z', step: 'lock', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     expect(readJournal(root).map((l) => l.at)).toEqual(['2026-10-19T16:00:00Z', '2026-10-19T16:05:00Z']);
-    // A file holding only a cut line is emptied first.
     writeFileSync(journal, '{"v":1,"at":"2026-10-19T16:00:02Z","step":"trial-');
     appendJournal(root, { at: '2026-10-19T16:06:00Z', step: 'lock', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     expect(readJournal(root).map((l) => l.at)).toEqual(['2026-10-19T16:06:00Z']);
@@ -278,17 +263,11 @@ describe('the update contract', () => {
     expect(unfinishedTrial([line('copy'), line('trial-start')], '0.10.2')).toEqual(line('trial-start'));
     expect(unfinishedTrial([line('trial-start'), line('commit')], '0.11.0')).toBeNull();
     expect(unfinishedTrial([line('trial-start'), line('fallback')], '0.10.2')).toBeNull();
-    // The commit moved current, and the start that made it died before the journal said so.
     expect(unfinishedTrial([line('trial-start')], '0.11.0')).toBeNull();
-    // A commit ends the trial though current has moved on since, as a Go back whose own lines were lost leaves it.
     expect(unfinishedTrial([line('trial-start'), line('commit')], '0.10.2')).toBeNull();
-    // A Go back comes only after a commit, so it ends a trial whose commit line was lost.
     expect(unfinishedTrial([line('trial-start'), { ...line('go-back'), from: '0.11.0', to: '0.10.2' }], '0.10.2')).toBeNull();
-    // A fallback that failed leaves the trial for the next start.
     expect(unfinishedTrial([line('trial-start'), line('fallback', 'failed')], '0.10.2')).toEqual(line('trial-start'));
-    // A trial-start that was refused never started a trial.
     expect(unfinishedTrial([line('trial-start', 'refused')], '0.10.2')).toBeNull();
-    // Over a longer history, the latest trial is the one that counts.
     const later = { ...line('trial-start', 'ok', '0.12.0'), from: '0.11.0' };
     expect(unfinishedTrial([line('copy'), line('trial-start'), line('commit'), later], '0.11.0')).toEqual(later);
     expect(unfinishedTrial([line('trial-start'), line('commit'), later, { ...line('fallback'), to: '0.12.0' }], '0.11.0')).toBeNull();
@@ -301,11 +280,8 @@ describe('the update contract', () => {
     expect(markSpent(mark, [{ ...line('trial-start'), mark: mark.id }], '0.11.0')).toBe(true);
     expect(markSpent(mark, [{ ...line('fallback'), mark: mark.id }], '0.10.2')).toBe(true);
     expect(markSpent(mark, [{ ...line('fallback', 'failed'), mark: mark.id }], '0.10.2')).toBe(false);
-    // No line can say that a mark without an id has run, a line that names no mark included.
     expect(markSpent({ ...mark, id: undefined } as unknown as Mark, [line('fallback')], '0.10.2')).toBe(false);
-    // A fallback for an earlier request to the same release doesn't spend a new one.
     expect(markSpent(mark, [{ ...line('fallback'), mark: 'm0' }], '0.10.2')).toBe(false);
-    // A Go back's mark stands after its restore's line; the older release's commit spends it.
     const goBack: Mark = { v: 1, id: 'g1', to: '0.10.2', why: 'go-back', at: '2026-10-19T17:00:00Z' };
     const restored = { ...line('go-back'), from: '0.11.0', to: '0.10.2', mark: 'g1', keptData: false };
     expect(markSpent(goBack, [restored], '0.11.0')).toBe(false);
@@ -326,18 +302,15 @@ describe('the update contract', () => {
   test("a mark whose write fails once it's in place still asks, and one that failed before leaves the mark that stood", () => {
     const { mark: path } = installPaths(root);
     const { mark: standing } = writeMark(root, { to: '0.11.0', why: 'update' });
-    // Fails before its rename: the mark that stood stays, and the write throws.
     const early = (() => { throw new Error('ENOSPC'); }) as typeof writeJsonAtomic;
     expect(() => writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), early)).toThrow('ENOSPC');
     expect(readRecord(path, 'mark')).toEqual(standing);
-    // Fails after its rename, as a directory sync that fails: the mark is in place, and asks, with the failure.
     const late = ((at: string, value: unknown) => { writeJsonAtomic(at, value); throw new Error('EIO'); }) as typeof writeJsonAtomic;
     const written = writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), late);
     expect(readRecord(path, 'mark')).toEqual(written.mark);
     expect(written.unsynced?.message).toBe('EIO');
     expect(unsyncedText(written.unsynced!)).toBe('The request is written, though syncing it to the disk failed (EIO), so a power cut ' +
       'could still undo it.');
-    // A file it can't read isn't its mark, so the write's own error stands.
     const garbled = ((at: string) => { fs.writeFileSync(at, 'not json'); throw new Error('EIO'); }) as typeof writeJsonAtomic;
     expect(() => writeMark(root, { to: '0.10.2', why: 'go-back' }, new Date(), garbled)).toThrow('EIO');
   });
@@ -358,8 +331,6 @@ describe('the update contract', () => {
     expect(readMark(root)).toBeNull();
     expect(existsSync(paths.mark)).toBe(false);
 
-    // A spent mark that can't be removed is the filesystem's own error, so no
-    // start takes it as gone while it stays.
     writeJsonAtomic(paths.mark, { ...mark, id: 'm3' });
     const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
     const unlink = spyOn(fs, 'unlinkSync').mockImplementation(() => { throw denied; });
@@ -375,8 +346,6 @@ describe('the update contract', () => {
     const paths = installPaths(root);
     const { id: _, ...noId } = mark;
     moveCurrent(root, '0.10.2');
-    // A fallback line that names no mark, which mustn't spend a mark without an
-    // id, and one that names this mark's, which spends one that has it.
     appendJournal(root, line('fallback'));
     appendJournal(root, { ...line('fallback'), mark: mark.id });
     const remedy = 'Removing the mark file drops its request, which can then be made again, unless the request is ' +
@@ -395,9 +364,7 @@ describe('the update contract', () => {
       [noId, noUsableId], [{ ...mark, id: '' }, noUsableId], [{ ...mark, id: '.' }, noUsableId],
       [{ ...mark, id: '..' }, noUsableId], [{ ...mark, id: '../m1' }, noUsableId], [{ ...mark, id: 'm\0' }, noUsableId],
       [{ ...mark, id: 'm'.repeat(256) }, noUsableId],
-      // Spent by the fallback line naming its id, and refused all the same.
       [{ ...mark, to: '../releases/0.10.2' }, noUsableRelease],
-      // Spent, since current names its release, and refused all the same.
       [{ ...mark, id: 'a/b', to: '0.10.2' }, noUsableId],
     ];
     for (const [unusable, refusal] of cases) {
@@ -410,11 +377,9 @@ describe('the update contract', () => {
   test('a release or a mark id that is not one path segment names no directory, and a refused move changes nothing', () => {
     const release = (bad: string) => new ContractError(`The release ${JSON.stringify(bad)} isn't one path segment, so it can't name a directory.`);
     const markId = (bad: string) => new ContractError(`The mark id ${JSON.stringify(bad)} isn't one path segment, so it can't name a directory.`);
-    // A temporary link a crash left, which a refused move must leave as it is.
     const leftover = `${installPaths(root).current}.tmp`;
     symlinkSync(join('releases', '0.9.0'), leftover);
-    // 256 bytes, in ASCII and in two-byte characters, which are only 128.
-    for (const bad of ['', '.', '..', '../x', 'a/b', 'a\0b', 'x'.repeat(256), '\u00e9'.repeat(128)]) {
+    for (const bad of ['', '.', '..', '../x', 'a/b', 'a\0b', 'x'.repeat(NAME_MAX + 1), '\u00e9'.repeat((NAME_MAX + 1) / 2)]) {
       expect(() => releaseDir('/r', bad)).toThrow(release(bad));
       expect(() => moveCurrent(root, bad)).toThrow(release(bad));
       expect(() => setAsideDir('/r', bad)).toThrow(markId(bad));
@@ -422,23 +387,21 @@ describe('the update contract', () => {
     }
     expect(readdirSync(root)).toEqual(['current.tmp']);
     expect(readlinkSync(leftover)).toBe(join('releases', '0.9.0'));
-    // The host's ids name one directory each, and an entry's name may take 255 bytes.
     expect(setAsideDir('/r', mark.id)).toBe(`/r/set-aside/${mark.id}`);
     expect(itemSetAsideDir('/srv/data', mark.id)).toBe(`/srv/data/.connectome-update/set-aside/${mark.id}`);
-    expect(releaseDir('/r', 'x'.repeat(255))).toBe(`/r/releases/${'x'.repeat(255)}`);
-    expect(releaseDir('/r', `${'\u00e9'.repeat(127)}x`)).toBe(`/r/releases/${'\u00e9'.repeat(127)}x`);
+    expect(releaseDir('/r', 'x'.repeat(NAME_MAX))).toBe(`/r/releases/${'x'.repeat(NAME_MAX)}`);
+    expect(releaseDir('/r', `${'\u00e9'.repeat((NAME_MAX - 1) / 2)}x`)).toBe(`/r/releases/${'\u00e9'.repeat((NAME_MAX - 1) / 2)}x`);
   });
 
   test('copy item names start with their position, so no two fold into one name, and each fits one entry', () => {
     expect(copyItemName(0, '/srv/host/data')).toBe('0-data');
     expect(copyItemName(1, '/srv/host/mcpl-servers.json')).toBe('1-mcpl-servers.json');
     expect(copyItemName(2, '/srv/fleet/child-a/data/')).toBe('2-data');
-    // Folding case and Unicode form, as a default macOS volume does, keeps them apart.
+    // A default macOS volume folds case and Unicode form.
     const names = [copyItemName(0, '/a/Data'), copyItemName(1, '/b/data'), copyItemName(10, '/c/DATA')];
     expect(new Set(names.map((name) => name.normalize('NFD').toLowerCase())).size).toBe(3);
-    // A long last part is cut to fit one entry, 255 bytes, at the end of a character.
-    expect(copyItemName(0, `/srv/${'a'.repeat(300)}`)).toBe(`0-${'a'.repeat(253)}`);
-    expect(copyItemName(10, `/srv/${'a'.repeat(300)}`)).toBe(`10-${'a'.repeat(252)}`);
+    expect(copyItemName(0, `/srv/${'a'.repeat(300)}`)).toBe(`0-${'a'.repeat(NAME_MAX - '0-'.length)}`);
+    expect(copyItemName(10, `/srv/${'a'.repeat(300)}`)).toBe(`10-${'a'.repeat(NAME_MAX - '10-'.length)}`);
     const long = copyItemName(0, `/srv/${'\u{1F600}'.repeat(80)}`);
     expect(long).toBe(`0-${'\u{1F600}'.repeat(63)}`);
     expect(Buffer.byteLength(long)).toBe(254);
@@ -447,7 +410,6 @@ describe('the update contract', () => {
   test('the copy is what its label says while every item it lists is there, damaged when one is missing, and none once its label goes', () => {
     const { copy, copyTmp } = installPaths(root);
     expect(lastCopy(root)).toBeNull();
-    // Taken as copy.tmp: its items, then its label, then the rename.
     const data = '/srv/host/data';
     const servers = '/srv/host/mcpl-servers.json';
     mkdirSync(join(copyTmp, copyItemName(0, data)), { recursive: true });
@@ -460,8 +422,6 @@ describe('the update contract', () => {
     expect(lastCopy(root)).toBeNull();
     renameSync(copyTmp, copy);
     expect(lastCopy(root)).toEqual(label);
-    // A restore copies the items back, so the copy reads as it was afterwards.
-    // An item that has gone from it, whichever it is, is damage, which no restore can use.
     renameSync(join(copy, '1-mcpl-servers.json'), join(root, 'lost.json'));
     expect(() => lastCopy(root)).toThrow(new ContractError(
       `The copy at ${copy} has lost 1-mcpl-servers.json, its copy of ${servers}, so it's damaged and no restore can use it.`,
@@ -472,7 +432,6 @@ describe('the update contract', () => {
       `The copy at ${copy} has lost 0-data, its copy of ${data}, so it's damaged and no restore can use it.`,
     ));
     renameSync(join(root, 'lost'), join(copy, '0-data'));
-    // An item that can't be looked at is the filesystem's error, not damage.
     const realLstat = fs.lstatSync;
     const unreadable = spyOn(fs, 'lstatSync').mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
       if (String(path) === join(copy, '0-data')) throw Object.assign(new Error('EIO: i/o error, lstat'), { code: 'EIO' });
@@ -483,7 +442,6 @@ describe('the update contract', () => {
     } finally {
       unreadable.mockRestore();
     }
-    // A copy that has lost its label, as only damage leaves one, is no copy.
     unlinkSync(copyLabelPath(copy));
     expect(lastCopy(root)).toBeNull();
   });
@@ -505,24 +463,19 @@ describe('the update contract', () => {
       [{ name: '0-data' }],
       [{ path: '/srv/host/data' }],
       [item('0-data', 'srv/host/data')],
-      // Each name is its own position's, so two items can't share an entry, nor one be the label.
       [item('data')], [item('copy.json')], [item('0-data'), item('0-data', '/srv/host/child/data')],
-      [item('0-a/b')], [item('0-a\0b')], [item(`0-${'a'.repeat(254)}`)], [item(`0-${'\u00e9'.repeat(127)}`)],
-      // The position and its "-": position 1 can't take position 10's name.
+      [item('0-a/b')], [item('0-a\0b')], [item(`0-${'a'.repeat(NAME_MAX + 1 - '0-'.length)}`)], [item(`0-${'\u00e9'.repeat((NAME_MAX + 1 - '0-'.length) / 2)}`)],
       [item('0data')], [item('0-data'), item('10-data', '/srv/host/child/data')],
     ]) {
       writeFileSync(path, JSON.stringify({ v: 1, from: '0.10.2', at: 'T1', items }));
       expect(() => lastCopy(root)).toThrow(unreadable);
     }
-    // Past its position, a name is the writer's: a later release's naming still reads.
     mkdirSync(join(copy, '0-named-otherwise'));
     const later = { v: 1, from: '0.10.2', at: 'T1', items: [item('0-named-otherwise')] };
     writeFileSync(path, JSON.stringify(later));
     expect(lastCopy(root)).toEqual(later as CopyLabel);
     writeFileSync(path, JSON.stringify({ v: 2, from: '0.10.2', at: 'T1', items: [] }));
     expect(() => lastCopy(root)).toThrow(new ContractError(`The copy's label at ${path} has version 2, and this release reads only version 1.`));
-    // The places that weren't there are numbered on from the items, and the
-    // copy holds nothing for them.
     const absent = { ...later, absent: [item('1-mcpl-servers.agent.json', '/srv/host/mcpl-servers.agent.json')] };
     writeFileSync(path, JSON.stringify(absent));
     expect(lastCopy(root)).toEqual(absent as CopyLabel);
@@ -530,7 +483,6 @@ describe('the update contract', () => {
       writeFileSync(path, JSON.stringify({ ...later, absent: list }));
       expect(() => lastCopy(root)).toThrow(unreadable);
     }
-    // A mark, when there is one, is a mark's id: one path segment.
     writeFileSync(path, JSON.stringify({ ...later, mark: 'm1' }));
     expect(lastCopy(root)).toEqual({ ...later, mark: 'm1' } as CopyLabel);
     for (const mark of [7, '', '..', 'a/b', null, {}]) {
@@ -558,16 +510,13 @@ describe('the update contract', () => {
     for (const places of [
       undefined, 'none', [], [null], [{ ...place, path: 'srv/host/data' }], [{ ...place, path: 7 }], [{ ...place, name: '0-a/b' }],
       [{ ...place, before: 'link' }], [{ ...place, target: undefined }],
-      // Each name is numbered by its place in the list, as copyItemName gives it, so no two share an entry.
       [{ ...place, name: 'data' }], [{ ...place, name: 'places.json' }], [place, { ...place, path: '/srv/kid' }],
-      // The position and its "-": position 1 can't take position 10's name, and a name must be there to read.
       [{ ...place, name: '0data' }], [place, { ...place, path: '/srv/kid', name: '10-kid' }],
       [{ ...place, name: undefined }], [{ ...place, name: 7 }],
     ]) {
       writeFileSync(path, JSON.stringify({ v: 1, places }));
       expect(() => readGoBackList(root, 'g1')).toThrow(unreadable);
     }
-    // A list the filesystem can't read is its own error, not one this release can't read.
     rmSync(path);
     mkdirSync(path);
     expect(() => readGoBackList(root, 'g1')).toThrow(expect.objectContaining({ code: 'EISDIR' }));
@@ -579,7 +528,6 @@ describe('the update contract', () => {
     const agent = '/srv/host/mcpl-servers.agent.json';
     moveCurrent(root, '0.10.2');
     expect(trialPlaces(root)).toBeNull();
-    // A switch's trial: the copy it took, its items and the places that weren't there.
     mkdirSync(join(copy, copyItemName(0, data)), { recursive: true });
     const label: CopyLabel = {
       v: 1, from: '0.10.2', at: 'T1', mark: 'm1',
@@ -589,13 +537,10 @@ describe('the update contract', () => {
     appendJournal(root, { ...line('copy'), mark: 'm1' });
     appendJournal(root, { ...line('trial-start'), mark: 'm1' });
     expect(trialPlaces(root)).toEqual([data, agent]);
-    // A label with no places that weren't there gives its items.
     const whole: CopyLabel = { ...label };
     delete whole.absent;
     writeJsonAtomic(copyLabelPath(copy), whole);
     expect(trialPlaces(root)).toEqual([data]);
-    // Another switch's copy, one of another release's data, or one that names
-    // no mark, isn't this trial's: the fallback would refuse it.
     for (const other of [{ ...label, mark: 'm0' }, { ...label, from: '0.9.0' }, { ...whole, mark: undefined }]) {
       writeJsonAtomic(copyLabelPath(copy), other);
       expect(() => trialPlaces(root)).toThrow(new ContractError(
@@ -603,27 +548,21 @@ describe('the update contract', () => {
         `(it holds ${other.from}'s data for mark ${other.mark ?? 'none'}), so what its fallback would undo can't be told.`,
       ));
     }
-    // The fallback checks the copy against the release current names, so the reader does too.
     writeJsonAtomic(copyLabelPath(copy), label);
     moveCurrent(root, '0.9.0');
     expect(() => trialPlaces(root)).toThrow(/under mark m1 took from 0\.9\.0, the release current names \(it holds 0\.10\.2's/);
-    // With no current at all, which the launcher refuses to start without, the copy is no one's.
     unlinkSync(installPaths(root).current);
     expect(() => trialPlaces(root)).toThrow(/under mark m1 took from no release, the release current names \(it holds 0\.10\.2's/);
-    // A label the filesystem can't read is passed on as its own error.
     moveCurrent(root, '0.10.2');
     rmSync(copyLabelPath(copy));
     mkdirSync(copyLabelPath(copy));
     expect(() => trialPlaces(root)).toThrow(expect.objectContaining({ code: 'EISDIR' }));
     rmSync(copy, { recursive: true });
     expect(() => trialPlaces(root)).toThrow(/isn't the one the switch to 0\.11\.0 under mark m1 took from 0\.10\.2, the release current names, so/);
-    // Once current names the release it tried, the trial is over, though the
-    // commit's line hasn't gone in; and once that line is in.
     moveCurrent(root, '0.11.0');
     expect(trialPlaces(root)).toBeNull();
     appendJournal(root, line('commit'));
     expect(trialPlaces(root)).toBeNull();
-    // A Go back's trial: every place in its list, though the last switch's copy is still there.
     mkdirSync(join(copy, copyItemName(0, data)), { recursive: true });
     writeJsonAtomic(copyLabelPath(copy), label);
     const back = (step: JournalLine['step'], outcome: JournalLine['outcome'] = 'ok'): JournalLine =>
@@ -641,7 +580,6 @@ describe('the update contract', () => {
       ],
     } satisfies GoBackList);
     expect(trialPlaces(root)).toEqual([data, agent, kid]);
-    // A trial-start that names no mark can't say whose places they are.
     appendJournal(root, back('fallback'));
     appendJournal(root, { ...line('trial-start', 'ok', '0.12.0'), from: '0.11.0' });
     expect(() => trialPlaces(root)).toThrow(/trial-start line for 0\.12\.0 names no mark/);
@@ -653,7 +591,6 @@ describe('the update contract', () => {
     moveCurrent(root, '0.11.0');
     mkdirSync(join(copy, copyItemName(0, data)), { recursive: true });
     writeJsonAtomic(copyLabelPath(copy), { v: 1, from: '0.11.0', at: 'T2', mark: 'm2', items: [{ path: data, name: '0-data' }] } satisfies CopyLabel);
-    // An earlier Go back, under its own mark, then a switch's trial: the copy's places.
     const goBack = (mark: string, outcome: JournalLine['outcome']): JournalLine =>
       ({ ...line('go-back', outcome, '0.10.2'), from: '0.11.0', mark, keptData: true });
     appendJournal(root, goBack('g1', 'ok'));
@@ -662,7 +599,6 @@ describe('the update contract', () => {
     const trial = (mark: string): JournalLine => ({ ...line('trial-start', 'ok', '0.12.0'), from: '0.11.0', mark });
     appendJournal(root, trial('m2'));
     expect(trialPlaces(root)).toEqual([data]);
-    // A go-back line that isn't ok, under the trial's own mark, left the data untouched.
     appendJournal(root, { ...line('fallback', 'ok', '0.12.0'), from: '0.11.0', mark: 'm2' });
     appendJournal(root, goBack('m3', 'refused'));
     writeJsonAtomic(copyLabelPath(copy), { v: 1, from: '0.11.0', at: 'T3', mark: 'm3', items: [{ path: data, name: '0-data' }] } satisfies CopyLabel);
@@ -674,16 +610,12 @@ describe('the update contract', () => {
     const goBack = (mark: string, outcome: JournalLine['outcome'] = 'ok'): JournalLine => ({ ...line('go-back', outcome, '0.10.2'), mark });
     expect(pendingGoBack([])).toBeNull();
     expect(pendingGoBack([goBack('g1')])).toEqual(goBack('g1'));
-    // A refused or failed go-back left the data untouched.
     expect(pendingGoBack([goBack('g1', 'refused')])).toBeNull();
     expect(pendingGoBack([goBack('g1', 'failed')])).toBeNull();
-    // Each ok line after it ends it; a refused trial-start or a failed
-    // fallback leaves the data as it may be, so the Go back goes on.
     for (const step of ['trial-start', 'commit', 'fallback'] as const) {
       expect(pendingGoBack([goBack('g1'), line(step)])).toBeNull();
       expect(pendingGoBack([goBack('g1'), line(step, step === 'fallback' ? 'failed' : 'refused')])).toEqual(goBack('g1'));
     }
-    // The last one counts.
     expect(pendingGoBack([goBack('g1'), line('fallback'), goBack('g2')])).toEqual(goBack('g2'));
     expect(pendingGoBack([goBack('g1'), goBack('g2'), line('trial-start')])).toBeNull();
   });

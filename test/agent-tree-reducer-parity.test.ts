@@ -1,15 +1,3 @@
-/**
- * Parity test: AgentTreeReducer's output matches what tui.ts currently builds
- * from the same event stream.
- *
- * Approach: replicate the TUI's per-event fold inline (mirror of the
- * subagentPhase, agentContextTokens, agentParent maps in tui.ts) and feed both
- * folds the same canonical event stream. Assert they produce equivalent state.
- *
- * This test exists to prevent silent drift during Phase 2's extraction. Once
- * the TUI is migrated to the reducer (Phase 4), the inline fold here can stay
- * as a frozen reference of the pre-extraction behavior.
- */
 import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../src/state/stream-usage.js';
@@ -28,10 +16,7 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
   const inputTokensByAgent = new Map<string, number>();
   const parentByChild = new Map<string, string>();
   const toolCountByAgent = new Map<string, number>();
-  // Mirror SubagentModule's callIdIndex so tool events route to the correct agent.
   const callIdIndex = new Map<string, string>();
-  // Mirror tui.ts's streamUsage and noteUsageSample: a sample is the stream's
-  // running total, so the context size is the prompt of the call it adds.
   const streamUsage = new Map<string, UsageCounts>();
   const noteUsageSample = (agent: string, sample: UsageSample | undefined) => {
     if (!sample) return;
@@ -115,10 +100,6 @@ function reducerFold(events: Array<Record<string, unknown>>): InlineFold {
 function assertParity(events: Array<Record<string, unknown>>): void {
   const inline = inlineFold(events);
   const reducer = reducerFold(events);
-  // The reducer creates nodes for agents the inline fold never explicitly
-  // tracked (e.g. it preserves them after seeing only spawn-call events without
-  // an inference:started). We only assert that the inline fold's keys are a
-  // subset and agree on values.
   for (const [agent, phase] of inline.phaseByAgent) {
     expect(reducer.phaseByAgent.get(agent)).toBe(phase);
   }
@@ -201,8 +182,6 @@ describe('AgentTreeReducer parity with inline fold', () => {
   });
 
   test('multiple usage events accumulate context size correctly', () => {
-    // Each sample is the stream's running total; the context size is the
-    // prompt of the latest call (fresh input plus cache reads and writes).
     assertParity([
       { type: 'inference:started', agentName: 'a', timestamp: t(0) },
       { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 1000, output: 50, cacheCreation: 3000 }, timestamp: t(1) },

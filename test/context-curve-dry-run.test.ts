@@ -1,11 +1,3 @@
-/**
- * The context curve panel shows a compile and never sends it, so the compile
- * is a dry run (Ada-1017's finding for context-manager #155). These tests pin
- * what the host controls: the arguments the curve compiles with, the verdict
- * it reports, a summary's first and last dates, and that every strategy the
- * host defines passes the dry run through to the select it extends. What a
- * dry run spares the resident is context-manager's to test.
- */
 import { describe, expect, test } from 'bun:test';
 import { AutobiographicalStrategy } from '@animalabs/context-manager';
 import { buildContextCurve, type PanelAppRef } from '../src/web/panel-data.js';
@@ -38,7 +30,6 @@ function appWith(
 
 const said = (id: string, timestamp: unknown): StoredMessage => ({ id, timestamp, content: [{ type: 'text', text: 'said' }] });
 
-/** The curve's one entry when the compiled context is a single summary of `messages`. */
 async function summaryEntry(messages: StoredMessage[]) {
   const text = 'what was said';
   const app = appWith(
@@ -63,7 +54,7 @@ describe('the context curve', () => {
 
     expect(calls).toEqual([[{ maxTokens: 150_000, reserveForResponse: 8_000 }, undefined, { dryRun: true }]]);
     expect(curve.totals).toEqual({ entries: 1, rendered: 2, rawCovered: 2 });
-    expect(curve.verdict).toBeNull();   // no feasibility preview on this framework
+    expect(curve.verdict).toBeNull();
   });
 
   test("without a live budget it falls back to the recipe's effective budget, the 300k default when unset", async () => {
@@ -82,11 +73,8 @@ describe('the context curve', () => {
   });
 
   test("a summary's first and last dates are its messages' earliest and latest by time", async () => {
-    // The store gives timestamps as Dates, which the default sort orders by
-    // their text, weekday first: these fall out of time order that way in
-    // every time zone, and by day of the month too. The latest is ISO text,
-    // which the curve takes as well, and a timestamp that's missing, null or
-    // not a time is left out.
+    // The default sort orders Dates by their text, weekday first, so these fall
+    // out of time order that way.
     const wednesday = new Date('2026-10-14T12:00:00Z');
     const friday = new Date('2026-10-16T12:00:00Z');
     const monday = new Date('2026-11-02T12:00:00Z');
@@ -128,9 +116,7 @@ describe('the context curve', () => {
         atDescentTarget: false,
       });
     }
-    // Asked at the curve's own budget, the live one.
     expect(asked).toEqual([['scout', 150_000], ['scout', 150_000], ['scout', 150_000]]);
-    // A preview that throws, or has no verdict, leaves the plot without one.
     for (const preview of [() => { throw new Error('zz'); }, () => null]) {
       const curve = await buildContextCurve(appWith(compile, preview), 'scout');
       expect(curve.verdict).toBeNull();

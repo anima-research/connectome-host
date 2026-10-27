@@ -33,7 +33,7 @@ describe('live-image recipe limits', () => {
       }
     });
 
-    test(`${type} preserves zero to disable each limit`, () => {
+    test(`${type} passes zero through unchanged`, () => {
       const built = config({
         type, maxLiveImages: 0, imageStripDepthTokens: 0, maxLiveImageBytes: 0,
       });
@@ -87,7 +87,8 @@ describe('live-image recipe limits', () => {
     }
     expect(built.maxLiveImages).toBe(6);
     expect(built.imageStripDepthTokens).toBe(30000);
-    // CM applies its 20 MiB byte fallback during rendering, not construction.
+    // context-manager applies its 20 MiB byte default when it renders, so the
+    // built config leaves it unset.
     expect(built.maxLiveImageBytes).toBeUndefined();
   });
 

@@ -38,6 +38,7 @@ function harness(responses: Array<string | Error>, lessons: Lesson[]) {
       getModule: (name: string) => name === 'lessons' ? { getLessons: () => lessons } : null,
       queryMessages: () => ({
         messages: [{
+          id: 'm1',
           participant: 'user',
           content: [{ type: 'text', text: 'Please recall the relevant memory context.' }],
         }],
@@ -358,7 +359,7 @@ describe('RetrievalModule observability', () => {
     expect(mod.getRetrievalTraces({ includeInputs: true })[0].context?.messageIds).toEqual([]);
   });
 
-  test('takes its window from the last 10 stored messages, leaving out rows the framework still holds', async () => {
+  test('takes its window from the last 10 stored messages, leaving out rows the framework still holds and counting one marked held: false as stored', async () => {
     const h = harness(['[]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     const row = (id: string, text: string, held?: boolean) => ({
@@ -367,8 +368,6 @@ describe('RetrievalModule observability', () => {
       content: [{ type: 'text', text }],
       ...(held === undefined ? {} : { held }),
     });
-    // A stored row carries no `held`. A row with `held: false` counts as
-    // stored too, so only `held: true` leaves the window.
     const stored = Array.from({ length: 11 }, (_, i) => row(`m${i + 1}`, `stored message ${i + 1}.`, i % 2 === 0 ? undefined : false));
     const reads: unknown[] = [];
     (mod as unknown as { ctx: unknown }).ctx = {
@@ -397,10 +396,7 @@ describe('RetrievalModule observability', () => {
     expect(context?.messageIds).toEqual(Array.from({ length: 10 }, (_, i) => `m${i + 2}`));
   });
 
-  // A row a tune-out holds from the residents (`heldFromResidents`) is stored,
-  // but no resident is shown it, so it isn't conversation to choose lessons
-  // from, whether it's stored or still held.
-  test('leaves out rows a tune-out holds from the residents', async () => {
+  test('leaves out rows a tune-out holds from the residents, whether stored or still held', async () => {
     const h = harness(['[]'], [lesson('l1', 'memory detail')]);
     const mod = new RetrievalModule({ membrane: h.membrane });
     const row = (id: string, text: string, extra: Record<string, unknown> = {}) =>
@@ -953,5 +949,496 @@ describe('RetrievalModule observability', () => {
 
     expect(store.list({ limit: 100, includeInputs: true }).map(trace => trace.id)).toEqual([2]);
     expect(store.retainedBytes).toBeLessThanOrEqual(byteBudget);
+  });
+});
+
+describe('RetrievalModule keyed on the turn\'s opening message', () => {
+  const AGENT = 'alice';
+
+  function turnHarness(
+    responses: Array<string | Error | Promise<string>>,
+    opts: { lessons?: Lesson[]; maxMessageTokens?: number; maxInjectedLessons?: number } = {},
+  ) {
+    const calls: NormalizedRequest[] = [];
+    const membrane = {
+      complete: async (request: NormalizedRequest) => {
+        calls.push(structuredClone(request));
+        const next = await responses.shift();
+        if (next instanceof Error) throw next;
+        if (next === undefined) throw new Error('unexpected retrieval call');
+        return { content: [{ type: 'text', text: next }] };
+      },
+    } as unknown as Membrane;
+    const rows: Array<Record<string, unknown>> = [];
+    const windows = new Map<string, Array<Record<string, unknown>>>();
+    let seq = 0;
+    const addTo = (window: Array<Record<string, unknown>>) =>
+      (participant: string, content: unknown[], metadata?: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+        const row = { id: `m${++seq}`, participant, content, ...(metadata ? { metadata } : {}), ...extra };
+        window.push(row);
+        return row;
+      };
+    const add = addTo(rows);
+    const say = (participant: string, text: string, metadata?: Record<string, unknown>) =>
+      add(participant, [{ type: 'text', text }], metadata);
+    const own = (agent: string) => {
+      const window: Array<Record<string, unknown>> = [];
+      windows.set(agent, window);
+      const addHere = addTo(window);
+      return (participant: string, text: string) => addHere(participant, [{ type: 'text', text }]);
+    };
+    const toolRound = (n: number) => {
+      add(AGENT, [{ type: 'tool_use', id: `t${n}`, name: 'look', input: {} }]);
+      add('user', [{ type: 'tool_result', toolUseId: `t${n}`, content: 'memory detail found' }]);
+    };
+    const mod = new RetrievalModule({
+      membrane,
+      ...(opts.maxMessageTokens !== undefined ? { maxMessageTokens: opts.maxMessageTokens } : {}),
+      ...(opts.maxInjectedLessons !== undefined ? { maxInjectedLessons: opts.maxInjectedLessons } : {}),
+    });
+    const lessons = opts.lessons ?? [lesson('l1', 'memory detail')];
+    (mod as unknown as { ctx: unknown }).ctx = {
+      getModule: (name: string) => name === 'lessons' ? { getLessons: () => lessons } : null,
+      queryMessages: (_filter: unknown, query?: { forAgent?: string }) => {
+        const window = (query?.forAgent !== undefined ? windows.get(query.forAgent) : undefined) ?? rows;
+        return { messages: [...window], totalCount: window.length };
+      },
+    };
+    const block = (injections: Awaited<ReturnType<RetrievalModule['gatherContext']>>) =>
+      (injections[0]?.content[0] as { text: string } | undefined)?.text;
+    return { calls, rows, add, say, own, toolRound, mod, block, responses };
+  }
+
+  test('a budget restart after tool rounds gets the turn\'s block, with no model calls', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.say('user', 'What do you remember about the memory detail?');
+    const first = await h.mod.gatherContext(AGENT);
+    for (let n = 1; n <= 8; n++) h.toolRound(n);
+    const restart = await h.mod.gatherContext(AGENT);
+
+    expect(first).toHaveLength(1);
+    expect(restart).toEqual(first);
+    expect(h.calls).toHaveLength(1);
+    expect(h.mod.getRetrievalTraces()[0].outcome).toBe('cache-hit');
+  });
+
+  test('the heading quotes the opening message\'s start, on one line', async () => {
+    const h = turnHarness(['["memory"]', '["memory"]']);
+    h.say('user', 'What do you remember\n\nabout the memory detail?');
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith('## Retrieved Knowledge, for the message beginning "What do you remember about the memory detail?"\n');
+
+    h.say('user', `${'memory '.repeat(20)}end`);
+    const text = h.block(await h.mod.gatherContext(AGENT))!;
+    expect(/beginning "(.*)"\n/.exec(text)![1]).toBe(`${'memory '.repeat(8)}memo…`);
+  });
+
+  test('an opening message with no text gets the plain heading', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.say('user', 'memory detail please');
+    h.add('user', [{ type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'AAAA' } }]);
+    expect(h.block(await h.mod.gatherContext(AGENT))).toStartWith('## Retrieved Knowledge\n');
+  });
+
+  test('a message stored in shards is quoted from its start, and a budget restart keeps its block', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.add('user', [{ type: 'text', text: 'memory shard zero ' }], undefined, { bodyGroupId: 'g1', shardIndex: 0 });
+    h.add('user', [{ type: 'text', text: 'and shard one' }], undefined, { bodyGroupId: 'g1', shardIndex: 1 });
+    const first = await h.mod.gatherContext(AGENT);
+    expect(h.block(first)).toStartWith('## Retrieved Knowledge, for the message beginning "memory shard zero and shard one"\n');
+    h.toolRound(1);
+    expect(await h.mod.gatherContext(AGENT)).toEqual(first);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  const passedOver: Array<[string, (h: ReturnType<typeof turnHarness>) => void]> = [
+    ['a clock row', h => h.say('user', 'Clock: 10:50 Europe/Berlin (UTC+02:00)', { system: true, kind: 'clock', clock: { at: 1, onBoundary: true, zone: 'Europe/Berlin' } })],
+    ['a framework notice', h => h.say('user', '[turn-interrupted] Your previous turn was stopped', { system: true, kind: 'turn-interrupted' })],
+    ['autoContinue\'s [continue]', h => h.say('user', '[continue]', { system: true, kind: 'auto-continue', agentName: AGENT })],
+    ['a host notice', h => h.say('user', '[host-notice] The host posted this status notice', { system: true, kind: 'host-notice' })],
+    ['a self-wake\'s line', h => h.say('user', '[self-wake] your heartbeat timer (600s) elapsed — now 2026-10-23T19:00:00Z', { source: 'gate:self-wake' })],
+    ['a stored injection', h => h.say('system_context:subagent-fleet', '[Fleet Status]\n  scout [spawn] running', { contextInjection: { agent: AGENT, namespace: 'subagent-fleet', contentHash: 'h1', part: 0, parts: 1 } })],
+    ['the agent\'s own reply', h => h.say(AGENT, 'Here is what I remember.')],
+    ['a tool round', h => h.toolRound(1)],
+    ['another agent\'s tool call', h => h.add('bob', [{ type: 'tool_use', id: 'tb', name: 'look', input: {} }])],
+    ['a host note under participant system', h => h.say('system', '[subscription-gc] Auto-closed channel zulip:qa: it emitted too much')],
+  ];
+  for (const [kind, store] of passedOver) {
+    test(`${kind} isn't the opening message: the block stands, and the heading doesn't quote it`, async () => {
+      const h = turnHarness(['["memory"]']);
+      h.say('user', 'Tell me the memory detail.');
+      const first = await h.mod.gatherContext(AGENT);
+      store(h);
+      const again = await h.mod.gatherContext(AGENT);
+      expect(again).toEqual(first);
+      expect(h.calls).toHaveLength(1);
+      expect(h.block(again)).toStartWith('## Retrieved Knowledge, for the message beginning "Tell me the memory detail."\n');
+    });
+  }
+
+  const opening: Array<[string, (h: ReturnType<typeof turnHarness>) => void, string]> = [
+    ['a new message', h => h.say('user', 'And the memory detail again?'), 'And the memory detail again?'],
+    ['a batched wake\'s [Gate: …] line', h => h.say('user', '[Gate: 2 events matched]\n\n- memory in #general', { source: 'gate:debounce' }), '[Gate: 2 events matched] - memory in #general'],
+    ['another agent\'s message', h => h.say('bob', 'memory detail from bob'), 'memory detail from bob'],
+    ['a subagent\'s result', h => h.say('user', '[Subagent \'scout\' returned]\n\nmemory detail'), '[Subagent \'scout\' returned] memory detail'],
+    ['a note the host stores unmarked', h => h.say('user', '[voice] Your reply was interrupted after: "memory"'), '[voice] Your reply was interrupted after: "memory"'],
+    ['the session\'s start time', h => h.say('user', 'The local time at the start of this session is 20:00.'), 'The local time at the start of this session is 20:00.'],
+    ['a self-restart\'s note', h => h.say('user', 'Back after a restart: the memory detail was saved.'), 'Back after a restart: the memory detail was saved.'],
+    ['a script\'s wake', h => h.say('user', 'script: the memory detail is in the vault', { source: 'code-execution-script', scriptId: 's1', tags: ['script:wake'] }), 'script: the memory detail is in the vault'],
+  ];
+  for (const [kind, store, quoted] of opening) {
+    test(`${kind} opens a turn of its own: retrieval runs for it`, async () => {
+      const h = turnHarness(['["memory"]', '["memory"]']);
+      h.say('user', 'Tell me the memory detail.');
+      await h.mod.gatherContext(AGENT);
+      store(h);
+      const next = await h.mod.gatherContext(AGENT);
+      expect(h.calls).toHaveLength(2);
+      expect(h.block(next)).toStartWith(`## Retrieved Knowledge, for the message beginning "${quoted}"\n`);
+    });
+  }
+
+  test('stored injections are left out of the window the concept step reads', async () => {
+    const h = turnHarness(['["memory"]', '["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    h.say('system_context:retrieval', '## Retrieved Knowledge\n- [90%] an earlier lesson', { contextInjection: { agent: AGENT, namespace: 'retrieval', contentHash: 'h1', part: 0, parts: 1 } });
+    await h.mod.gatherContext(AGENT);
+    const sent = JSON.stringify(h.calls[0].messages);
+    expect(sent).toContain('Tell me the memory detail.');
+    expect(sent).not.toContain('an earlier lesson');
+  });
+
+  test('a turn whose retrieval found nothing keeps that: a budget restart makes no call', async () => {
+    const h = turnHarness(['[]']);
+    h.say('user', 'Nothing to recall here.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    h.toolRound(1);
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+    expect(h.mod.getRetrievalTraces()[0].outcome).toBe('cache-hit');
+  });
+
+  test('a failed retrieval keeps nothing: the turn\'s next start tries again', async () => {
+    const h = turnHarness([new Error('provider unavailable'), '["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await h.mod.gatherContext(AGENT)).toHaveLength(1);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a window with no one\'s message yet is a key of its own', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.say(AGENT, 'I am thinking about the memory detail.');
+    const first = await h.mod.gatherContext(AGENT);
+    h.say('user', 'Clock: 10:50 Europe/Berlin (UTC+02:00)', { system: true, kind: 'clock' });
+    h.say(AGENT, 'Still thinking about the memory detail.');
+    const again = await h.mod.gatherContext(AGENT);
+    expect(first).toHaveLength(1);
+    expect(h.block(first)).toStartWith('## Retrieved Knowledge\n');
+    expect(again).toEqual(first);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  test('each agent keeps its own turn\'s block', async () => {
+    const h = turnHarness(['["memory"]', '["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    const alice = await h.mod.gatherContext(AGENT);
+    h.say(AGENT, 'The memory detail is this.');
+    const bob = await h.mod.gatherContext('bob');
+    const aliceAgain = await h.mod.gatherContext(AGENT);
+    expect(h.calls).toHaveLength(2);
+    expect(h.block(bob)).toStartWith('## Retrieved Knowledge, for the message beginning "The memory detail is this."\n');
+    expect(aliceAgain).toEqual(alice);
+  });
+
+  test('a message whose id is missing or can\'t be read keeps nothing, so each start retrieves', async () => {
+    const unreadable: Array<(row: Record<string, unknown>) => void> = [
+      row => { Object.defineProperty(row, 'id', { get: () => { throw new Error('unreadable id'); } }); },
+      row => { delete row.id; },
+    ];
+    for (const spoil of unreadable) {
+      const h = turnHarness(['["memory"]', '["memory"]']);
+      spoil(h.say('user', 'memory please'));
+      expect(await h.mod.gatherContext(AGENT)).toHaveLength(1);
+      expect(await h.mod.gatherContext(AGENT)).toHaveLength(1);
+      expect(h.calls).toHaveLength(2);
+    }
+  });
+
+  test('past 64 agents, the oldest agent\'s block goes, and it retrieves again', async () => {
+    const h = turnHarness(Array.from({ length: 66 }, () => '["memory"]'));
+    h.say('user', 'Tell me the memory detail.');
+    for (let i = 0; i <= 64; i++) await h.mod.gatherContext(`agent-${i}`);
+    expect(h.calls).toHaveLength(65);
+    await h.mod.gatherContext('agent-64');
+    expect(h.calls).toHaveLength(65);
+    await h.mod.gatherContext('agent-0');
+    expect(h.calls).toHaveLength(66);
+  });
+
+  test('an agent\'s new turn makes its block the newest, so it outlasts older ones', async () => {
+    const h = turnHarness(Array.from({ length: 70 }, () => '["memory"]'));
+    h.say('user', 'Tell me the memory detail.');
+    await h.mod.gatherContext(AGENT);
+    for (let i = 0; i < 63; i++) await h.mod.gatherContext(`agent-${i}`);
+    h.say('user', 'And the memory detail again?');
+    await h.mod.gatherContext(AGENT);
+    await h.mod.gatherContext('agent-63');
+    expect(h.calls).toHaveLength(66);
+    await h.mod.gatherContext(AGENT);
+    expect(h.calls).toHaveLength(66);
+  });
+
+  test('a turn served from its kept block stays the newest, so it outlasts agents that came after', async () => {
+    const h = turnHarness(Array.from({ length: 70 }, () => '["memory"]'));
+    h.say('user', 'Tell me the memory detail.');
+    await h.mod.gatherContext(AGENT);
+    for (let i = 0; i < 63; i++) await h.mod.gatherContext(`agent-${i}`);
+    await h.mod.gatherContext(AGENT);
+    expect(h.calls).toHaveLength(64);
+    await h.mod.gatherContext('agent-63');
+    await h.mod.gatherContext(AGENT);
+    expect(h.calls).toHaveLength(65);
+  });
+
+  test('a subagent\'s key and heading come from its own window, not the primary\'s', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.say('user', 'Prime, find the memory detail.');
+    h.say(AGENT, 'I will send a scout.');
+    const scoutSays = h.own('scout');
+    scoutSays('user', 'Scout task: look for the memory detail.');
+    const first = await h.mod.gatherContext('scout');
+    expect(h.block(first)).toStartWith('## Retrieved Knowledge, for the message beginning "Scout task: look for the memory detail."\n');
+    const sent = JSON.stringify(h.calls[0]!.messages);
+    expect(sent).toContain('Scout task');
+    expect(sent).not.toContain('Prime, find');
+    h.say('user', 'Prime, and the memory detail?');
+    expect(await h.mod.gatherContext('scout')).toEqual(first);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  test('a concept reply that doesn\'t parse keeps nothing: the turn\'s next start asks again', async () => {
+    const h = turnHarness(['I have no concepts to list.', '["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await h.mod.gatherContext(AGENT)).toHaveLength(1);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a retrieval that finishes after a newer turn kept its block leaves that block kept', async () => {
+    let release!: (text: string) => void;
+    const held = new Promise<string>((resolve) => { release = resolve; });
+    const h = turnHarness([held, '["memory"]']);
+    h.say('user', 'First: the memory detail?');
+    const late = h.mod.gatherContext(AGENT);
+    h.say('user', 'Second: the memory detail again?');
+    const second = await h.mod.gatherContext(AGENT);
+    release('["memory"]');
+    await late;
+    expect(await h.mod.gatherContext(AGENT)).toEqual(second);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a turn whose concepts match no lesson keeps that: a budget restart makes no call', async () => {
+    const h = turnHarness(['["zebra"]']);
+    h.say('user', 'Tell me about zebras.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  test('a turn whose relevance check keeps no lesson keeps that: a budget restart makes no call', async () => {
+    const lessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory detail ${n}`));
+    const h = turnHarness(['["memory"]', '[]'], { lessons });
+    h.say('user', 'Tell me the memory detail.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a message in shards is quoted joined as stored, apart from another message\'s shards', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.add('user', [{ type: 'text', text: 'an older pasted note ' }], undefined, { bodyGroupId: 'g0', shardIndex: 0 });
+    h.add('user', [{ type: 'text', text: 'about vaults' }], undefined, { bodyGroupId: 'g0', shardIndex: 1 });
+    h.add(AGENT, [{ type: 'text', text: 'Noted.' }]);
+    h.add('user', [{ type: 'text', text: 'the mem' }], undefined, { bodyGroupId: 'g1', shardIndex: 0 });
+    h.add('user', [{ type: 'text', text: 'ory detail, pasted' }], undefined, { bodyGroupId: 'g1', shardIndex: 1 });
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith('## Retrieved Knowledge, for the message beginning "the memory detail, pasted"\n');
+  });
+
+  test('stored injections are left out before the last ten rows are taken', async () => {
+    const h = turnHarness(['["memory"]']);
+    for (let i = 1; i <= 10; i++) h.say(i % 2 ? 'user' : AGENT, `row ${i} about memory.`);
+    h.say('system_context:retrieval', '## Retrieved Knowledge\n- [90%] an earlier lesson', { contextInjection: { agent: AGENT, namespace: 'retrieval', contentHash: 'h1', part: 0, parts: 1 } });
+    await h.mod.gatherContext(AGENT);
+    const sent = JSON.stringify(h.calls[0]!.messages);
+    for (let i = 1; i <= 10; i++) expect(sent).toContain(`row ${i} about memory.`);
+    expect(sent).not.toContain('an earlier lesson');
+  });
+
+  test('the heading\'s cut keeps a character whole and leaves no space before the ellipsis', async () => {
+    const h = turnHarness(['["memory"]', '["memory"]']);
+    h.say('user', `${'m'.repeat(59)}😀 and the memory detail`);
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith(`## Retrieved Knowledge, for the message beginning "${'m'.repeat(59)}😀…"\n`);
+    h.say('user', `${'m'.repeat(59)} and the memory detail`);
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith(`## Retrieved Knowledge, for the message beginning "${'m'.repeat(59)}…"\n`);
+  });
+
+  test('at a small cap, the block keeps the most relevant lessons that fit and says how many it left out', async () => {
+    const lessons = [lesson('l1', 'memory one'), lesson('l2', `memory ${'large '.repeat(200)}`), lesson('l3', 'memory three')];
+    const h = turnHarness(['["memory"]'], { lessons, maxMessageTokens: 60 });
+    h.say('user', 'Tell me the memory detail.');
+    const text = h.block(await h.mod.gatherContext(AGENT))!;
+    expect(text.split('\n')).toEqual([
+      '## Retrieved Knowledge, for the message beginning "Tell me the memory detail."',
+      '- [90%] memory one (tags: memory)',
+      '- [90%] memory three (tags: memory)',
+      '(1 more relevant lesson left out, to keep this message under its size limit)',
+    ]);
+    expect(Math.ceil(text.length / 4)).toBeLessThanOrEqual(60);
+    expect(h.mod.getRetrievalTraces()[0]!.injected?.lessonIds).toEqual(['l1', 'l3']);
+  });
+
+  test('a lesson that fits with the note its count ends up saying is kept, though the note for more wouldn\'t fit', async () => {
+    const heading = '## Retrieved Knowledge, for the message beginning "Tell me the memory detail."';
+    const note = '(1 more relevant lesson left out, to keep this message under its size limit)';
+    const base = [heading, '- [90%] memory one (tags: memory)', note].join('\n').length;
+    const content = `memory one${'!'.repeat((4 - (base % 4)) % 4)}`;
+    const lessons = [lesson('l1', content), lesson('l2', `memory ${'large '.repeat(200)}`)];
+    const expected = [heading, `- [90%] ${content} (tags: memory)`, note].join('\n');
+    const h = turnHarness(['["memory"]'], { lessons, maxMessageTokens: expected.length / 4 });
+    h.say('user', 'Tell me the memory detail.');
+    expect(h.block(await h.mod.gatherContext(AGENT))).toBe(expected);
+  });
+
+  test('a later lesson\'s room for the note counts only the lessons not kept, so it\'s kept where the note for more wouldn\'t fit', async () => {
+    const heading = '## Retrieved Knowledge, for the message beginning "Tell me the memory detail."';
+    const note = '(1 more relevant lesson left out, to keep this message under its size limit)';
+    const base = [heading, '- [90%] memory one (tags: memory)', '- [90%] memory three (tags: memory)', note].join('\n').length;
+    const three = `memory three${'!'.repeat((4 - (base % 4)) % 4)}`;
+    const lessons = [lesson('l1', 'memory one'), lesson('l2', `memory ${'large '.repeat(200)}`), lesson('l3', three)];
+    const expected = [heading, '- [90%] memory one (tags: memory)', `- [90%] ${three} (tags: memory)`, note].join('\n');
+    const h = turnHarness(['["memory"]'], { lessons, maxMessageTokens: expected.length / 4 });
+    h.say('user', 'Tell me the memory detail.');
+    expect(h.block(await h.mod.gatherContext(AGENT))).toBe(expected);
+  });
+
+  for (const tool of [
+    { type: 'tool_use', id: 't9', name: 'look', input: {} },
+    { type: 'tool_result', toolUseId: 't9', content: 'found it' },
+  ]) {
+    test(`a ${tool.type} stored in shards is passed over whole, its text-only shards included`, async () => {
+      const h = turnHarness(['["memory"]']);
+      h.say('user', 'Tell me the memory detail.');
+      h.add('bob', [{ type: 'text', text: 'looking it up, part one' }, tool], undefined, { bodyGroupId: 'g1', shardIndex: 0 });
+      h.add('bob', [{ type: 'text', text: 'part two of the same reply' }], undefined, { bodyGroupId: 'g1', shardIndex: 1 });
+      expect(h.block(await h.mod.gatherContext(AGENT)))
+        .toStartWith('## Retrieved Knowledge, for the message beginning "Tell me the memory detail."\n');
+    });
+  }
+
+  test('a message of the same text as a tool message stored in shards is a message of its own', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.add('bob', [{ type: 'text', text: 'the memory detail' }, { type: 'tool_use', id: 't9', name: 'look', input: {} }], undefined, { bodyGroupId: 'g1', shardIndex: 0 });
+    h.add('bob', [{ type: 'text', text: ', pasted' }], undefined, { bodyGroupId: 'g1', shardIndex: 1 });
+    h.add('carol', [{ type: 'text', text: 'the memory detail' }], undefined, { bodyGroupId: 'g1', shardIndex: 0 });
+    h.add('carol', [{ type: 'text', text: ', pasted' }], undefined, { bodyGroupId: 'g1', shardIndex: 1 });
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith('## Retrieved Knowledge, for the message beginning "the memory detail, pasted"\n');
+  });
+
+  test('a relevance reply that doesn\'t parse keeps nothing when no lesson fits, or none may be injected', async () => {
+    const lessons = ['one', 'two', 'three', 'four'].map((n, i) => lesson(`l${i + 1}`, `memory ${n} ${'long '.repeat(40)}`));
+    const tight = turnHarness(['["memory"]', 'not a list', '["memory"]', '["l2"]'], { lessons, maxMessageTokens: 20 });
+    tight.say('user', 'Tell me the memory detail.');
+    expect(await tight.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await tight.mod.gatherContext(AGENT)).toEqual([]);
+    expect(tight.calls).toHaveLength(4);
+    const none = turnHarness(['["memory"]', 'not a list', '["memory"]', '["l2"]'], { lessons, maxInjectedLessons: 0 });
+    none.say('user', 'Tell me the memory detail.');
+    expect(await none.mod.gatherContext(AGENT)).toEqual([]);
+    expect(await none.mod.gatherContext(AGENT)).toEqual([]);
+    expect(none.calls).toHaveLength(4);
+  });
+
+  test('a relevance reply that doesn\'t parse injects the top candidates, and keeps nothing, so the next start asks again', async () => {
+    const lessons = ['one', 'two', 'three', 'four'].map((n, i) => lesson(`l${i + 1}`, `memory ${n}`));
+    const h = turnHarness(['["memory"]', 'not a list', '["memory"]', '["l2"]'], { lessons });
+    h.say('user', 'Tell me the memory detail.');
+    expect(h.block(await h.mod.gatherContext(AGENT))).toContain('memory four');
+    const again = h.block(await h.mod.gatherContext(AGENT))!;
+    expect(h.calls).toHaveLength(4);
+    expect(again).toContain('memory two');
+    expect(again).not.toContain('memory four');
+  });
+
+  test('a message a tune-out diverted is neither the opening message nor in what the concept step reads', async () => {
+    const h = turnHarness(['["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    h.say('user', 'a diverted channel line', { tuneOut: { epochId: 'e1' } });
+    expect(h.block(await h.mod.gatherContext(AGENT)))
+      .toStartWith('## Retrieved Knowledge, for the message beginning "Tell me the memory detail."\n');
+    expect(JSON.stringify(h.calls[0])).not.toContain('a diverted channel line');
+  });
+
+  test('a block whose lessons all fit is kept whole, with no room held for a note it doesn\'t need', async () => {
+    const lessons = [lesson('l1', 'memory one'), lesson('l2', 'memory two')];
+    const whole = '## Retrieved Knowledge, for the message beginning "Tell me the memory detail."\n- [90%] memory one (tags: memory)\n- [90%] memory two (tags: memory)';
+    const h = turnHarness(['["memory"]'], { lessons, maxMessageTokens: Math.ceil(whole.length / 4) });
+    h.say('user', 'Tell me the memory detail.');
+    expect(h.block(await h.mod.gatherContext(AGENT))).toBe(whole);
+  });
+
+  test('a cap that isn\'t a positive number is no cap, as the strategy reads it', async () => {
+    const lessons = [lesson('l1', `memory ${'large '.repeat(200)}`)];
+    const h = turnHarness(['["memory"]'], { lessons, maxMessageTokens: 0 });
+    h.say('user', 'Tell me the memory detail.');
+    expect(h.block(await h.mod.gatherContext(AGENT))).toContain('large large');
+    expect(h.mod.getRetrievalTraces()[0]!.outcome).toBe('injected');
+  });
+
+  test('a start the framework\'s timeout left behind doesn\'t replace the block a later start of the same turn kept', async () => {
+    let release!: (text: string) => void;
+    const held = new Promise<string>((resolve) => { release = resolve; });
+    const h = turnHarness([held, '["memory"]']);
+    h.say('user', 'Tell me the memory detail.');
+    const behind = h.mod.gatherContext(AGENT);
+    const later = await h.mod.gatherContext(AGENT);
+    expect(h.block(later)).toContain('memory detail');
+    release('["zebra"]');
+    expect(await behind).toEqual([]);
+    expect(await h.mod.gatherContext(AGENT)).toEqual(later);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('an older start that finishes while a later one still runs keeps nothing, and leaves the later one its keep', async () => {
+    let releaseOlder!: (text: string) => void;
+    let releaseLater!: (text: string) => void;
+    const older = new Promise<string>((resolve) => { releaseOlder = resolve; });
+    const later = new Promise<string>((resolve) => { releaseLater = resolve; });
+    const h = turnHarness([older, later]);
+    h.say('user', 'Tell me the memory detail.');
+    const first = h.mod.gatherContext(AGENT);
+    const second = h.mod.gatherContext(AGENT);
+    releaseOlder('["zebra"]');
+    expect(await first).toEqual([]);
+    releaseLater('["memory"]');
+    const kept = await second;
+    expect(h.block(kept)).toContain('memory detail');
+    expect(await h.mod.gatherContext(AGENT)).toEqual(kept);
+    expect(h.calls).toHaveLength(2);
+    expect((h.mod as unknown as { latestStarts: Map<string, number> }).latestStarts.size).toBe(0);
+  });
+
+  test('when no lesson fits the cap, nothing is injected, and that is kept for the turn', async () => {
+    const h = turnHarness(['["memory"]'], { maxMessageTokens: 20 });
+    h.say('user', 'Tell me the memory detail.');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(h.mod.getRetrievalTraces()[0]!.outcome).toBe('too-large');
+    expect(await h.mod.gatherContext(AGENT)).toEqual([]);
+    expect(h.calls).toHaveLength(1);
   });
 });

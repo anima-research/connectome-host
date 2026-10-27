@@ -1,6 +1,3 @@
-/**
- * ActivityModule: typing stops on a failed/exhausted turn like on a completed one.
- */
 import { describe, expect, test } from 'bun:test';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import { ActivityModule } from '../src/modules/activity-module.js';

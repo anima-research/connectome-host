@@ -1,6 +1,3 @@
-// Black-box coverage of scripts/lockfiles-agree.mjs: each case runs the real
-// script under node, as CI runs it, in a throwaway directory holding the two
-// lockfiles it reads.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -16,19 +13,9 @@ afterAll(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A tree as both lockfiles describe it: an install path ('a/b' for b
- *  nested under a) to the version there and the packages it depends on,
- *  `optional` and `peer` naming those it declares as optional or peer
- *  dependencies. `git` pins it to a GitHub commit instead,
- *  'owner/repo#<sha40>', and `url` to a tarball URL, as each lockfile writes
- *  one; `source` gives each lockfile's text for a pin of another kind, such
- *  as a link. `alias` names the package an alias's folder installs, and
- *  `noResolved` writes a package-lock.json entry with its version and no
- *  `resolved`. */
 type Tree = Record<string, { version: string; deps?: string[]; optional?: string[]; peer?: string[]; git?: string; ssh?: boolean; url?: string; source?: { bun: string; npm: string }; alias?: string; noResolved?: boolean }>;
 
 const ROOT_DEPS = ["@animalabs/agent-framework", "@animalabs/context-manager", "@animalabs/membrane", "discord.js"];
-/** An install path's packages: 'a/@s/b' is ['a', '@s/b']. */
 function packagesOf(path: string): string[] {
   const parts = path.split("/");
   const names: string[] = [];
@@ -37,8 +24,6 @@ function packagesOf(path: string): string[] {
 }
 const nameOf = (path: string) => packagesOf(path).at(-1)!;
 const depsOf = (deps: string[] = []) => Object.fromEntries(deps.map((dep) => [dep, "*"]));
-/** A package's dependencies as both lockfiles write them, the optional and
- *  peer ones only when it has some. */
 const declaring = ({ deps, optional, peer }: Tree[string]) => ({
   dependencies: depsOf(deps),
   ...(optional ? { optionalDependencies: depsOf(optional) } : {}),
@@ -152,8 +137,6 @@ test("a version moved in one lockfile only is named, with each side's version an
 });
 
 test("the same versions placed so an importer gets a different one disagree", async () => {
-  // npm keeps 0.5.69 at the top and nests 0.5.87 under agent-framework:
-  // the same two versions, but the host now imports 0.5.69.
   const npm: Tree = { ...STACK, "@animalabs/membrane": { version: "0.5.69" } };
   delete npm["@animalabs/context-manager/@animalabs/membrane"];
   npm["@animalabs/agent-framework/@animalabs/membrane"] = { version: "0.5.87" };
@@ -164,13 +147,12 @@ test("the same versions placed so an importer gets a different one disagree", as
 });
 
 test("a copy placed differently that every importer resolves the same way agrees", async () => {
-  // A second, nested copy of the same version changes nothing anyone gets.
   const npm: Tree = { ...STACK, "@animalabs/agent-framework/@animalabs/membrane": { version: "0.5.87" } };
   const result = await check(project(bunLock(STACK), npmLock(npm)));
   assert.equal(result.code, 0, result.stderr);
 });
 
-test("a stack package one lockfile has and the other lacks is named", async () => {
+test("a stack package one lockfile has and the other lacks is named, and a root install doesn't stand in for its import", async () => {
   const npm: Tree = {
     ...STACK,
     "@animalabs/agent-framework": { version: "0.22.1", deps: ["@animalabs/chronicle", "@animalabs/context-manager", "@animalabs/membrane"] },
@@ -179,14 +161,10 @@ test("a stack package one lockfile has and the other lacks is named", async () =
   const result = await check(project(bunLock(STACK), npmLock(npm)));
   assert.equal(result.code, 1);
   assert.match(result.stderr, /\n {2}host > @animalabs\/agent-framework > @animalabs\/chronicle: bun\.lock none, package-lock\.json 0\.4\.0\n/);
-  // bun.lock installs chronicle for the root, but its agent-framework doesn't
-  // depend on it, so that import is none there.
   const rootToo = [...ROOT_DEPS, "@animalabs/chronicle"];
   const elsewhere = await check(project(bunLock({ ...STACK, "@animalabs/chronicle": { version: "0.4.0" } }, rootToo), npmLock(npm, rootToo)));
   assert.equal(elsewhere.code, 1);
   assert.match(elsewhere.stderr, /\n {2}host > @animalabs\/agent-framework > @animalabs\/chronicle: bun\.lock none, package-lock\.json 0\.4\.0\n/);
-  // A stack package only bun.lock installs: what it imports is none in
-  // package-lock.json, which has no copy to import it.
   const extra: Tree = { ...STACK, "@animalabs/zz-x": { version: "1.0.0", deps: ["@animalabs/membrane"] } };
   const withX = [...ROOT_DEPS, "@animalabs/zz-x"];
   const lacking = await check(project(bunLock(extra, withX), npmLock(STACK, withX)));
@@ -222,10 +200,8 @@ test("a missing, damaged or shapeless lockfile fails, naming it", async () => {
   assert.equal(shapeless.stderr, "lockfiles-agree: couldn't read the lockfiles: bun.lock has no packages map\n");
 });
 
-// From main's lockfiles at 065b034 (Sep 10 to 14), which pinned membrane to a
-// commit: bun.lock writes `github:antra-tess/membrane#18a86e9`, with its
-// metadata second, and package-lock.json the git source and membrane's own
-// version, 0.5.84.
+// bun.lock writes a GitHub pin as `github:<repo>#<sha7>`, its metadata
+// second, and package-lock.json the git source and the package's own version.
 const MEMBRANE_PIN = "antra-tess/membrane#18a86e9eda277378acd982b07c7fe7c187721119";
 const PINNED: Tree = {
   ...STACK,
@@ -241,8 +217,6 @@ test("a stack package pinned to a GitHub commit compares as its repository and c
 });
 
 test("a git-pinned stack package's own stack dependencies are followed, from where bun keeps its metadata", async () => {
-  // agent-framework pinned to a commit, its metadata in bun's second slot,
-  // depending on a membrane only bun.lock moves.
   const pinned: Tree = { ...STACK, "@animalabs/agent-framework": { version: "0.22.1", deps: ["@animalabs/membrane"], git: "anima-research/agent-framework#1234567890abcdef1234567890abcdef12345678" } };
   const bumped: Tree = { ...pinned, "@animalabs/agent-framework/@animalabs/membrane": { version: "0.5.88" } };
   const result = await check(project(bunLock(bumped), npmLock(pinned)));
@@ -279,11 +253,10 @@ test("npm's ssh form of a GitHub pin, and a repository named in another case, co
   assert.equal(inCase.code, 0, inCase.stderr);
 });
 
-// As each lockfile writes a dependency on a tarball URL (npm 11.17.0 and
-// bun 1.4.3, October 17): package-lock.json the URL as its source, beside
-// the package's own version, and bun.lock `<name>@<url>`, its metadata
-// second. For the registry's own tarball, package-lock.json writes what it
-// writes for a version range.
+// As each lockfile writes a dependency on a tarball URL: package-lock.json
+// the URL as its source, beside the package's own version, and bun.lock
+// `<name>@<url>`, its metadata second. For the registry's own tarball,
+// package-lock.json writes what it writes for a version range.
 const REGISTRY_TARBALL = "https://registry.npmjs.org/@animalabs/chronicle/-/chronicle-0.4.0.tgz";
 const CODELOAD = "https://codeload.github.com/antra-tess/membrane/tar.gz/18a86e9eda277378acd982b07c7fe7c187721119";
 
@@ -307,10 +280,6 @@ test("another tarball URL compares as the URL: the same on both sides agrees, an
 });
 
 test("a registry version against another tarball URL differs, though the tarball's package has that version", async () => {
-  // Another host, the registry's layout on another host or under a mirror's
-  // path, another package's tarball on the registry, a file that isn't a
-  // tarball, and one whose name doesn't end in a version: each is a URL, not
-  // the registry's version.
   for (const url of [
     "https://example.invalid/some-other-chronicle.tgz",
     "https://example.invalid/@animalabs/chronicle/-/chronicle-0.4.0.tgz",
@@ -333,7 +302,6 @@ test("an alias of a stack package compares as the package and version, and a pac
   const alias = await check(project(bunLock(aliased, roots), npmLock(aliased, roots)));
   assert.equal(alias.code, 0, alias.stderr);
   assert.match(alias.stdout, /host > @animalabs\/chronicle-x @animalabs\/chronicle@0\.4\.0[;.]/);
-  // An alias of the registry's own tarball reads as its version on both sides.
   const tarballAlias: Tree = { ...STACK, "@animalabs/chronicle-x": { version: "0.4.0", alias: "@animalabs/chronicle", url: REGISTRY_TARBALL } };
   const aliasedTarball = await check(project(bunLock(tarballAlias, roots), npmLock(tarballAlias, roots)));
   assert.equal(aliasedTarball.code, 0, aliasedTarball.stderr);
@@ -344,7 +312,6 @@ test("an alias of a stack package compares as the package and version, and a pac
   const aliasedVersion = await check(project(bunLock(aliased, roots), npmLock(unresolvedAlias, roots)));
   assert.equal(aliasedVersion.code, 0, aliasedVersion.stderr);
   assert.match(aliasedVersion.stdout, /host > @animalabs\/chronicle-x @animalabs\/chronicle@0\.4\.0[;.]/);
-  // The same alias for another package at the same version differs.
   const other: Tree = { ...STACK, "@animalabs/chronicle-x": { version: "0.4.0", alias: "@animalabs/membrane" } };
   const swapped = await check(project(bunLock(aliased, roots), npmLock(other, roots)));
   assert.equal(swapped.code, 1);
@@ -359,8 +326,6 @@ test("an alias of a stack package compares as the package and version, and a pac
 });
 
 test("the two lockfiles are walked together: a chain that comes back to the copies it holds in both is compared there and followed no further, and a copy either places elsewhere is followed, what it imports compared", async () => {
-  // zz-a depends on zz-b and zz-c, and zz-b on zz-a: with no copy of its
-  // own, zz-b's zz-a is the top one, which the chain already holds.
   const cycle: Tree = {
     ...STACK,
     "@animalabs/zz-a": { version: "1.0.1", deps: ["@animalabs/zz-b", "@animalabs/zz-c"] },
@@ -372,11 +337,6 @@ test("the two lockfiles are walked together: a chain that comes back to the copi
   assert.equal(same.code, 0, same.stderr);
   assert.match(same.stdout, /host > @animalabs\/zz-a > @animalabs\/zz-b > @animalabs\/zz-a 1\.0\.1[;.]/);
   assert.doesNotMatch(same.stdout, /@animalabs\/zz-b > @animalabs\/zz-a > @animalabs\/zz-b/);
-  // A copy of zz-a at the same version, nested under zz-b in one lockfile
-  // only, is another copy there, so the chain follows it once and compares
-  // what it imports on both sides. With a zz-c of its own, at another
-  // version than the top one, it imports another zz-c than the top zz-a
-  // does, and that edge is named.
   const placed = (zzc?: string): Tree => ({
     ...cycle,
     "@animalabs/zz-b/@animalabs/zz-a": { version: "1.0.1", deps: ["@animalabs/zz-b", "@animalabs/zz-c"] },
@@ -394,9 +354,6 @@ test("the two lockfiles are walked together: a chain that comes back to the copi
   const npmNests = await check(project(bunLock(cycle, roots), npmLock(placed("2.0.0"), roots)));
   assert.equal(npmNests.code, 1);
   assert.match(npmNests.stderr, /\n {2}host > @animalabs\/zz-a > @animalabs\/zz-b > @animalabs\/zz-a > @animalabs\/zz-c: bun\.lock 1\.0\.0, package-lock\.json 2\.0\.0\n/);
-  // A copy of zz-a at another version, nested under zz-b in both, is
-  // followed: its own stack dependencies are compared, and its edge back to
-  // zz-b, the top copy the chain holds in both, closes the cycle.
   const nested = (version: string, more: Tree = {}): Tree => ({
     ...cycle,
     "@animalabs/zz-b/@animalabs/zz-a": { version, deps: ["@animalabs/zz-b", "@animalabs/zz-c"] },
@@ -410,8 +367,6 @@ test("the two lockfiles are walked together: a chain that comes back to the copi
   const moved = await check(project(bunLock(nested("1.0.0"), roots), npmLock(nested("0.9.0"), roots)));
   assert.equal(moved.code, 1);
   assert.match(moved.stderr, /\n {2}host > @animalabs\/zz-a > @animalabs\/zz-b > @animalabs\/zz-a: bun\.lock 1\.0\.0, package-lock\.json 0\.9\.0\n/);
-  // The edge that closes the cycle in bun.lock reaches another version in
-  // package-lock.json: that edge is named.
   const oneSided = await check(project(bunLock(cycle, roots), npmLock(nested("0.9.0"), roots)));
   assert.equal(oneSided.code, 1);
   assert.match(oneSided.stderr, /\n {2}host > @animalabs\/zz-a > @animalabs\/zz-b > @animalabs\/zz-a: bun\.lock 1\.0\.1, package-lock\.json 0\.9\.0\n/);
@@ -424,9 +379,6 @@ test("the two lockfiles are walked together: a chain that comes back to the copi
 });
 
 test("optional and peer dependencies are followed too, and a stack package that neither lockfile installs agrees, shown as none", async () => {
-  // context-manager declares two optional stack packages, one installed and
-  // one that installs on neither side, as one for another platform wouldn't,
-  // and a peer.
   const declares = (version: string): Tree => ({
     ...STACK,
     "@animalabs/context-manager": {
@@ -454,7 +406,6 @@ test("a pin of another kind against a version differs, with the relock remedy, a
   const result = await check(project(bunLock(linked), npmLock(linked)));
   assert.equal(result.code, 1);
   assert.match(result.stderr, /resolve the stack's packages differently:\n/);
-  // agent-framework's chain to membrane differs the same way, and sorts first.
   assert.match(result.stderr, /^ {2}host > @animalabs\/membrane: bun\.lock 0\.5\.87, package-lock\.json \.\.\/membrane$/m);
   assert.match(result.stderr, /^ {2}host > @animalabs\/agent-framework > @animalabs\/membrane: bun\.lock 0\.5\.87, package-lock\.json \.\.\/membrane$/m);
   assert.match(result.stderr, /delete bun\.lock/);

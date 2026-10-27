@@ -82,8 +82,6 @@ for (const mode of ['caller-deadline', 'detach']) {
       await closed;
       if (pid === undefined && existsSync(join(dir, 'child-pid.json'))) pid = JSON.parse(readFileSync(join(dir, 'child-pid.json'), 'utf8')).pid;
       if (pid !== undefined && alive(pid)) {
-        // Bind cleanup to this exact fixture and unique launch argument before
-        // signaling a detached PID; never use a broad process match.
         const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
         if (!command.includes(fixture) || !command.includes(join(dir, 'fixture-recipe.json'))) {
           throw new Error(`Refusing cleanup of changed PID ${pid}`);

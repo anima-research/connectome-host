@@ -1,9 +1,3 @@
-/**
- * The optional Web UI bundle can be missing: its build runs in postinstall,
- * which can fail or be skipped (`--ignore-scripts`). At run time, a missing
- * bundle used to show only as a 503 to whoever opened the page. The host now
- * says so once at start, and the page keeps its 503 and its remedy.
- */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,17 +42,16 @@ describe('WebUiModule with a missing bundle', () => {
     const warnings = await startCapturingWarnings(root);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(`bundle not found at ${root}`);
-    expect(warnings[0]).toContain('In a checkout, run `npm run build:web`');
-    expect(warnings[0]).toContain('an installed package carries it built, so reinstall the package');
+    expect(warnings[0]).toContain('In a clone, run `bun run build:web` in its root');
+    expect(warnings[0]).toContain('an install from npm carries the bundle built, so there, install the package again');
 
-    // The server is a process singleton: a later start reuses it and says nothing more.
     expect(await startCapturingWarnings(root)).toHaveLength(0);
 
     const res = await fetch(`http://127.0.0.1:${__getSharedServerPortForTests()}/`);
     expect(res.status).toBe(503);
     const body = await res.text();
-    expect(body).toContain('In a checkout, run `npm run build:web`');
-    expect(body).toContain('so reinstall the package');
+    expect(body).toContain('In a clone, run `bun run build:web` in its root');
+    expect(body).toContain('an install from npm carries the bundle built, so there, install the package again');
   });
 
   test('says nothing when the bundle is there', async () => {

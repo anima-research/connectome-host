@@ -230,7 +230,7 @@ describe('reasoning follows branch state without restarting the module', () => {
     }
   });
 
-  test('real Chronicle branch switch to earlier empty state uses recipe effort and isolates writes', async () => {
+  test('real Chronicle branch switch to earlier empty state uses recipe effort and isolates writes, the first update before any read', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'settings-branch-'));
     const store = JsStore.openOrCreate({ path: join(dir, 'store') });
     try {
@@ -239,9 +239,8 @@ describe('reasoning follows branch state without restarting the module', () => {
       const originalBranch = store.currentBranch().name;
       store.createBranch('earlier');
       const mod = new SettingsModule('medium');
-      // Started through agent-framework's own registry, so its context is the
-      // framework's, which reads the store at each getState; CM's branch
-      // selection calls switchBranch on this same store.
+      // agent-framework's registry gives the module a context that reads the store
+      // at each getState, and a branch switch is on this same store.
       const unused = (): never => { throw new Error('not used by this test'); };
       await new ModuleRegistry(store, {} as never, {
         getAgents: () => [], addMessage: unused, editMessage: unused, removeMessage: unused, getMessage: unused,
@@ -252,7 +251,6 @@ describe('reasoning follows branch state without restarting the module', () => {
       const sourceState = store.getStateJson(stateId);
       store.switchBranch('earlier');
       expect(store.getStateJson(stateId)).toBeNull();
-      // Write first, with no read of the settings before it.
       expect(ext.update('a', { reasoning_display: 'omitted' }).reasoning_effort).toBe('medium');
       expect(store.getStateJson(stateId)).toEqual({ reasoning: { enabled: false, budgetTokens: 8192, display: 'omitted' }, externalIdMap: {} });
       store.switchBranch(originalBranch);

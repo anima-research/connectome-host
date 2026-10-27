@@ -4,7 +4,7 @@ import { SessionManager } from '../src/session-manager.js';
 
 /** The host-mode record agent-framework keeps in the store of a data
  *  directory's active session (`recovery/host-mode.json`): whether the host
- *  is quiesced, and why. Null when there is none. */
+ *  is quiesced, and why. */
 export function hostModeRecord(dataDir: string): { quiesced?: boolean; reason?: string } | null {
   try {
     return JSON.parse(readFileSync(recordPath(dataDir), 'utf8')) as { quiesced?: boolean; reason?: string };
@@ -15,7 +15,7 @@ export function hostModeRecord(dataDir: string): { quiesced?: boolean; reason?: 
 
 /** Leave a data directory's active session quiesced under `reason`, as an
  *  operator's quiesce through agent-framework leaves it: the record as its
- *  quiesce writes it, which its next start reads. */
+ *  quiesce writes it. */
 export function writeHostModeRecord(dataDir: string, reason: string): void {
   const path = recordPath(dataDir);
   mkdirSync(dirname(path), { recursive: true });

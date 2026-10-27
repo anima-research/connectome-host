@@ -4,19 +4,11 @@
  * before the session is opened for real continuation.
  *
  * Bulk-imported sessions (from claude.ai exports, etc.) land in Chronicle with
- * thousands of raw messages and no L1/L2/L3 summaries. At runtime, autobio's
- * uncompressed-fallback would emit everything raw at first compile, blowing
- * the context window. This script pre-computes all summaries so the session
- * is openable.
+ * thousands of raw messages and no L1/L2/L3 summaries. This script
+ * pre-computes all summaries so the session is openable.
  *
- * Compression is driven by the same model used at conversation time
- * (Sonnet 4.5 by default) — autobio's prompts are explicitly first-person
- * ("describe it as you would to yourself"), so the summarizer is literally
- * writing the friend's-Claude's own diary. Haiku here would be a different
- * voice wearing the same name.
- *
- * Resumable: autobio persists its compression and merge queues to Chronicle.
- * If interrupted, re-running this script picks up where it left off.
+ * Resumable: if interrupted, re-running this script picks up where it left
+ * off.
  *
  * Run:
  *   bun scripts/warmup-session.ts <session-name-or-id>
@@ -31,7 +23,8 @@
  *                      session was imported with — Membrane formats the
  *                      assistant role by string-comparing message
  *                      participants against this name.
- *   --max-spend <usd>  Soft cap; halt gracefully if cost exceeds this
+ *   --max-spend <usd>  Soft cap; halt gracefully between ticks once the
+ *                      estimated cost reaches this
  *   --l1-budget <n>    L1 budget tokens (passed to autobio)
  *   --l2-budget <n>    Likewise L2
  *   --l3-budget <n>    Likewise L3
@@ -46,15 +39,6 @@ import { Membrane, AnthropicAdapter, BedrockAdapter, type NormalizedResponse } f
 import { SessionManager } from '../src/session-manager.js';
 import { resolveAgentName } from '../src/agent-name.js';
 
-// ---------------------------------------------------------------------------
-// Pricing (approximate, USD per 1M tokens). Used for the --max-spend gate
-// and the on-screen running cost.
-// Keep in sync with any canonical billing source if/when one is consolidated
-// (per memory: project_billing_tracker.md). Stale entries here only affect
-// the cost displayed during warmup; the actual spend is whatever Anthropic
-// charges.
-// ---------------------------------------------------------------------------
-
 const PRICING: Record<string, { input: number; output: number }> = {
   'claude-sonnet-4-5-20250929': { input: 3.0, output: 15.0 },
   'claude-opus-4-7': { input: 15.0, output: 75.0 },
@@ -65,21 +49,10 @@ function priceOf(model: string): { input: number; output: number } {
   return PRICING[model] ?? { input: 3.0, output: 15.0 };
 }
 
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
-
 interface Opts {
   sessionRef: string;
   dataDir: string;
   model: string;
-  /**
-   * Explicit `--agent <name>` from the CLI. When absent (undefined), the
-   * runner falls back to the session's import-source sidecar, then to
-   * "Claude". Distinguishing "not given" from "given as 'agent'" lets the
-   * sidecar (the durable record of what the importer wrote) override a
-   * stale default without overriding a deliberate operator choice.
-   */
   agentName?: string;
   maxSpend: number | null;
   l1Budget?: number;
@@ -120,10 +93,6 @@ function parseArgs(argv: string[]): Opts {
   return opts;
 }
 
-// ---------------------------------------------------------------------------
-// Progress renderer
-// ---------------------------------------------------------------------------
-
 interface Spend {
   inputTokens: number;
   outputTokens: number;
@@ -141,7 +110,6 @@ function renderProgress(
   const elapsedMs = Date.now() - startedAt;
   const elapsedSec = elapsedMs / 1000;
 
-  // Throughput: L1 chunks processed per second since start
   const l1Done = initialL1Queue - s.l1QueueLength;
   const l1Pct = initialL1Queue > 0 ? (l1Done / initialL1Queue) * 100 : 100;
   const throughput = l1Done > 0 ? l1Done / elapsedSec : 0;
@@ -174,10 +142,6 @@ function formatDuration(sec: number): string {
   if (m > 0) return `${m}m${s.toString().padStart(2, '0')}s`;
   return `${s}s`;
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 async function main() {
   const opts = parseArgs(process.argv);
@@ -221,23 +185,17 @@ async function main() {
   console.error(`Model: ${opts.model}`);
   if (opts.maxSpend !== null) console.error(`Max spend: $${opts.maxSpend.toFixed(2)}`);
 
-  // -- Membrane with token-spend hook --
   const price = priceOf(opts.model);
   const spend: Spend = { inputTokens: 0, outputTokens: 0, cost: 0 };
-  // Bedrock model ids (anthropic.* / <region>.anthropic.*) route through the
-  // BedrockAdapter with AWS_* env creds — legacy Claude models (revival
-  // sessions) exist nowhere else. Caching off: legacy models reject
-  // cache_control outright.
   const isBedrock = /^([a-z]{2,6}\.)?anthropic\./.test(opts.model);
   const adapter = isBedrock
     ? new BedrockAdapter()
     : new AnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY });
   const membrane = new Membrane(adapter, {
     ...(isBedrock ? { defaultPromptCaching: false } : {}),
-    // Imported sessions store assistant turns under participant `agentName`.
-    // Membrane's default assistantParticipant is 'Claude'; if that disagrees
-    // with the stored participant every assistant message maps to role
-    // 'user' and the API rejects tool_use blocks.
+    // Membrane gives the assistant role only to messages whose participant is
+    // assistantParticipant (default 'Claude'); every other message goes as
+    // 'user', its tool blocks aside.
     assistantParticipant: agentName,
     hooks: {
       afterResponse: (response: NormalizedResponse) => {
@@ -253,15 +211,11 @@ async function main() {
     },
   });
 
-  // -- Store + strategy + context manager --
   const store = JsStore.openOrCreate({ path: storePath });
   const strategy = new AutobiographicalStrategy({
     compressionModel: opts.model,
-    // Autobio uses summaryParticipant for the synthetic summary messages it
-    // writes back; aligning with the imported agent name keeps the whole
-    // conversation under a single participant.
     summaryParticipant: agentName,
-    autoTickOnNewMessage: false, // we drive ticks manually
+    autoTickOnNewMessage: false,
     ...(opts.l1Budget !== undefined && { l1BudgetTokens: opts.l1Budget }),
     ...(opts.l2Budget !== undefined && { l2BudgetTokens: opts.l2Budget }),
     ...(opts.l3Budget !== undefined && { l3BudgetTokens: opts.l3Budget }),
@@ -277,7 +231,6 @@ async function main() {
     namespace: `agents/${agentName}`,
   });
 
-  // -- Inspect initial state --
   const initialStats = strategy.getProgressSnapshot();
   const totalMessages = cm.getAllMessages().length;
   console.error(
@@ -292,13 +245,10 @@ async function main() {
   }
   console.error('');
 
-  // -- Drive to convergence --
   const isTty = process.stderr.isTTY ?? false;
   const startedAt = Date.now();
   const initialL1Queue = initialStats.l1QueueLength;
 
-  // Periodic progress refresh (handles long Sonnet calls so the bar doesn't
-  // freeze between ticks).
   const renderTimer = setInterval(
     () => renderProgress(strategy, startedAt, initialL1Queue, spend, isTty),
     isTty ? 1000 : 30_000,

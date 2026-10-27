@@ -1,43 +1,12 @@
-/**
- * FleetTreeAggregator — owns one AgentTreeReducer per fleet child and
- * orchestrates `describe` requests at sync points (cold start,
- * lifecycle:ready, post-restart).
- *
- * Lockstep model (see docs/history/UNIFIED-TREE-PLAN.md §3):
- *   - Live event stream is the primary path. Each child's events are folded
- *     into its reducer as they arrive.
- *   - `describe` is a *recovery* verb, requested rarely:
- *       * once per child on first lifecycle:ready (cold start / reattach)
- *       * once per child after a restart (process:exited → new lifecycle:ready)
- *   - When a `snapshot` arrives, applySnapshot wipes the child's reducer and
- *     reseeds from ground truth. Subsequent events resume the fold.
- *   - Events with `ts < asOfTs` are dropped after a snapshot — they're already
- *     reflected in the snapshot's state (no double-application).
- *
- * The aggregator exposes a clean read API for the TUI (Phase 5) without the
- * TUI needing to know about IPC, describe handshakes, or stale-event dedup.
- *
- * Local-process state is NOT mirrored here. The TUI's existing inline fold
- * (subagentPhase / agentContextTokens / agentParent in tui.ts) is the
- * canonical local store; running a parallel local reducer that nothing reads
- * from would be paid-for-but-unused complexity. If a future pass migrates
- * local rendering off those inline maps, instantiate a local reducer at
- * that point.
- */
-
 import type { FleetModule, FleetEventCallback } from '../modules/fleet-module.js';
 import type { WireEvent } from '../modules/fleet-types.js';
 import { AgentTreeReducer, type AgentTreeSnapshot, type AgentNode } from './agent-tree-reducer.js';
 
 interface ChildState {
   reducer: AgentTreeReducer;
-  /** asOfTs of the last applied snapshot; events older than this are dropped. */
   lastSnapshotTs: number;
-  /** True once we've requested a describe and are awaiting a snapshot. */
   describeInFlight: boolean;
-  /** Set once we've ever received a snapshot — used to detect post-restart. */
   hasInitialSnapshot: boolean;
-  /** Unsubscribe handle for the per-child event subscription. */
   unsubscribe: () => void;
 }
 
@@ -47,15 +16,12 @@ export class FleetTreeAggregator {
   private fleet: FleetModule;
   private childStates = new Map<string, ChildState>();
   private listeners = new Set<TreeUpdateListener>();
-  /** Generation counter for corrIds; debugging convenience. */
   private corrIdSeq = 0;
 
   constructor(fleet: FleetModule) {
     this.fleet = fleet;
   }
 
-  /** Register a child. Idempotent — re-registering with the same name is a noop
-   *  unless the prior subscription was torn down (in which case it re-subscribes). */
   registerChild(name: string): void {
     if (this.childStates.has(name)) return;
 
@@ -74,23 +40,18 @@ export class FleetTreeAggregator {
       unsubscribe,
     });
 
-    // If the child is already ready when we register, request describe right away.
-    // (lifecycle:ready already fired before we subscribed.)
     const fleetChild = this.fleet.getChildren().get(name);
     if (fleetChild?.status === 'ready') {
       this.requestDescribe(name);
     }
   }
 
-  /** Stop tracking a child and tear down its subscription. */
   unregisterChild(name: string): void {
     const state = this.childStates.get(name);
     if (!state) return;
     state.unsubscribe();
     this.childStates.delete(name);
   }
-
-  // ----- read API ---------------------------------------------------------
 
   getChildNodes(name: string): AgentNode[] {
     const state = this.childStates.get(name);
@@ -101,14 +62,11 @@ export class FleetTreeAggregator {
     return [...this.childStates.keys()];
   }
 
-  /** Subscribe to tree-updated notifications. Returns an unsubscribe function.
-   *  Listener fires for any change to local or any child's tree. */
   onTreeUpdate(listener: TreeUpdateListener): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
 
-  /** Tear down all subscriptions. Call on TUI shutdown. */
   dispose(): void {
     for (const [, state] of this.childStates) {
       state.unsubscribe();
@@ -117,15 +75,12 @@ export class FleetTreeAggregator {
     this.listeners.clear();
   }
 
-  // ----- internals --------------------------------------------------------
-
   private handleChildEvent(name: string, event: WireEvent): void {
     const state = this.childStates.get(name);
     if (!state) return;
 
     const eventTs = event.ts;
 
-    // Snapshot response: reseed from ground truth.
     if (event.type === 'snapshot') {
       const snapshotEvent = event as unknown as {
         asOfTs?: number;
@@ -147,29 +102,14 @@ export class FleetTreeAggregator {
       return;
     }
 
-    // Lifecycle: ready fires on initial connect AND after parent reconnect to
-    // a still-running child AND when adopt-on-restart re-establishes a socket
-    // post-spawn-restart. Request describe in all those cases.
     if (event.type === 'lifecycle') {
       const phase = (event as { phase?: string }).phase;
       if (phase === 'ready') {
-        // Always request describe on ready — covers cold-start, reconnect, restart.
-        // The reducer's applySnapshot wipes prior state, so re-requesting is safe
-        // even if we have current data.
         this.requestDescribe(name);
         return;
       }
-      // 'exiting' is purely informational here. There's no reset code below;
-      // the implicit recovery is: when the child restarts and emits a fresh
-      // lifecycle:ready, the branch above triggers a describe, and
-      // applySnapshot wipes the stale reducer state at that point. The
-      // hasInitialSnapshot flag below is what gates stale-event filtering
-      // through the gap.
     }
 
-    // Drop events older than the most recent snapshot — they're already
-    // reflected in the snapshot's state. This handles the in-flight window
-    // between describe-send and snapshot-receive.
     if (state.hasInitialSnapshot && typeof eventTs === 'number' && eventTs < state.lastSnapshotTs) {
       return;
     }
@@ -189,7 +129,7 @@ export class FleetTreeAggregator {
 
   private notify(scope: string | 'local'): void {
     for (const l of this.listeners) {
-      try { l(scope); } catch { /* one bad listener doesn't kill the others */ }
+      try { l(scope); } catch { }
     }
   }
 }

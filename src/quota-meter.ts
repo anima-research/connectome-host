@@ -1,23 +1,3 @@
-/**
- * Subscription quota meter.
- *
- * A subscription credential (Claude OAuth token, ChatGPT/Codex login) is not
- * billed per token: it draws down several overlapping utilization windows
- * (5-hour, weekly, per-model weekly, ...). When one is exhausted the provider
- * answers 429 — which the pay-per-token machinery reads as a throttle and
- * retries into. The windows are readable out-of-band, at no inference cost,
- * so the meter POLLS them instead of scraping inference responses:
- *
- *   - display surfaces (TUI status line, WebUI) poll only while someone is
- *     looking (`watch()` / the `quota` panel op);
- *   - the provider-hold hook reads the cached snapshot synchronously and asks
- *     for a refresh, so a headless host learns "this 429 is a spent quota,
- *     park until it resets" without anyone watching.
- *
- * Both provider surfaces are private to their vendors' own CLIs. Every parse
- * here is defensive: an unreadable answer is "no reading", never a guess.
- */
-
 /** One utilization window, provider-neutral. */
 export interface QuotaWindow {
   /** Stable id: `five_hour`, `seven_day`, `seven_day_opus`, `weekly:<model>`, ... */
@@ -50,17 +30,11 @@ export interface QuotaSource {
   fetchWindows(): Promise<QuotaWindow[]>;
 }
 
-/** A window at or past this utilization is treated as spent. */
 const EXHAUSTED_PCT = 100;
-/** Floor between provider reads, whoever asks. The usage endpoints are
- *  themselves rate-limited; several viewers must not multiply the load. */
 const MIN_REFRESH_INTERVAL_MS = 30_000;
 const WATCH_INTERVAL_MS = 60_000;
-/** Unwatched cadence while a window is spent — notices an early reset. */
 const BLOCKED_INTERVAL_MS = 5 * 60_000;
 const MAX_ERROR_BACKOFF_MS = 15 * 60_000;
-/** A spent window with no reset time grounds a hold only on a reading this
- *  fresh; an old one may describe a window that has since rolled over. */
 const UNKNOWN_RESET_TRUST_MS = 30 * 60_000;
 
 export interface QuotaMeterOptions {
@@ -104,17 +78,10 @@ export class QuotaMeter {
     return () => this.listeners.delete(listener);
   }
 
-  /**
-   * Read the provider unless a read happened within the floor (then the
-   * cached snapshot is the answer). Single-flight. Never throws: a failed
-   * read keeps the previous windows and records `error`.
-   */
   refresh(): Promise<QuotaSnapshot | null> {
     if (this.disposed) return Promise.resolve(this.snapshot);
     if (this.inFlight) return this.inFlight;
     if (this.floorRemainingMs() > 0) {
-      // Suppressed, not abandoned: a timer-driven caller has just spent its
-      // timer, so re-arm for when the floor (or error backoff) lets a read through.
       this.schedule();
       return Promise.resolve(this.snapshot);
     }
@@ -135,7 +102,7 @@ export class QuotaMeter {
         this.inFlight = null;
         const snapshot = this.snapshot!;
         for (const listener of this.listeners) {
-          try { listener(snapshot); } catch { /* a display bug must not stop polling */ }
+          try { listener(snapshot); } catch { }
         }
         this.schedule();
         return snapshot;
@@ -143,11 +110,6 @@ export class QuotaMeter {
     return this.inFlight;
   }
 
-  /**
-   * Hold the meter at display cadence while a surface is visible. Returns the
-   * release; polling stops when the last watcher releases (unless a window is
-   * spent — see `schedule`).
-   */
   watch(): () => void {
     this.watchers++;
     void this.refresh();
@@ -161,13 +123,6 @@ export class QuotaMeter {
     };
   }
 
-  /**
-   * Epoch ms until which inference is pointless because a window is spent, or
-   * undefined. Windows whose reset has already passed are ignored — the
-   * snapshot predates the reset and says nothing about the new window.
-   * A model-scoped window counts only for a `model` it applies to: a spent
-   * Opus window must not park a Sonnet agent over an unrelated throttle.
-   */
   blockedUntil(model?: string): number | undefined {
     const now = this.now();
     let until: number | undefined;
@@ -184,7 +139,6 @@ export class QuotaMeter {
       && (w.model === undefined || (model !== undefined && model.toLowerCase().includes(w.model))));
   }
 
-  /** Ms until the refresh floor (stretched by error backoff) allows a read. */
   private floorRemainingMs(): number {
     if (this.lastAttemptAt === 0) return 0;
     const floor = this.consecutiveErrors > 0
@@ -193,8 +147,6 @@ export class QuotaMeter {
     return Math.max(0, floor - (this.now() - this.lastAttemptAt));
   }
 
-  /** A spent window the provider gave no reset time for, on a reading recent
-   *  enough to act on: grounds for one hold slice, then look again. */
   spentWithUnknownReset(model?: string): boolean {
     if (!this.snapshot || this.now() - this.snapshot.fetchedAt > UNKNOWN_RESET_TRUST_MS) return false;
     return this.spentWindows(model).some((w) => w.resetsAt === undefined);
@@ -211,8 +163,6 @@ export class QuotaMeter {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (this.disposed) return;
-    // Any spent window keeps the unwatched poll alive, model-scoped or not:
-    // which agents it constrains is the hook's question, not the scheduler's.
     const now = this.now();
     const spent = (this.snapshot?.windows ?? []).some((w) =>
       w.utilization >= EXHAUSTED_PCT && !w.advisory && (w.resetsAt === undefined || w.resetsAt > now));
@@ -223,24 +173,11 @@ export class QuotaMeter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Readout
-// ---------------------------------------------------------------------------
-
-/**
- * `10% weekly | 99% 5h` — every window the provider reports, longest first.
- * Null when there is no reading (callers fall back to whatever they showed
- * before; a subscription host must not print a made-up dollar figure).
- */
 export function formatQuotaReadout(snapshot: QuotaSnapshot | null): string | null {
   if (!snapshot || snapshot.windows.length === 0) return null;
   const parts = snapshot.windows.map((w) => `${Math.floor(w.utilization)}% ${w.label}`);
   return parts.join(' | ') + (snapshot.error ? ' (stale)' : '');
 }
-
-// ---------------------------------------------------------------------------
-// Provider-hold hook
-// ---------------------------------------------------------------------------
 
 export interface ProviderHold {
   holdMs: number;
@@ -252,14 +189,6 @@ export interface ProviderHold {
  *  within one slice instead of after days. */
 const MAX_HOLD_SLICE_MS = 10 * 60_000;
 
-/**
- * Build the framework `providerHold` hook: a rate-limit failure while a quota
- * window is spent parks the agent until the window resets, instead of
- * retrying a request that cannot succeed and recording each attempt as a
- * failed turn. Synchronous over the cached snapshot; every consultation also
- * kicks a (rate-floored) refresh, so a stale or empty snapshot is corrected
- * by the ordinary retry that follows.
- */
 export function quotaProviderHold(
   meter: QuotaMeter,
   modelFor: (agentName: string) => string | undefined = () => undefined,
@@ -287,15 +216,10 @@ export function quotaProviderHold(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Sources
-// ---------------------------------------------------------------------------
-
 function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-/** ISO 8601, or — as the vendor's own client also tolerates — epoch seconds. */
 function isoToMs(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value * 1000 : undefined;
   if (typeof value !== 'string') return undefined;
@@ -303,7 +227,6 @@ function isoToMs(value: unknown): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/** Longest window first — the order the readout prints them in. */
 const ANTHROPIC_WINDOWS: Array<[key: string, label: string, model?: string]> = [
   ['seven_day', 'weekly'],
   ['seven_day_opus', 'opus wk', 'opus'],
@@ -338,7 +261,6 @@ export function parseAnthropicUsage(body: unknown): QuotaWindow[] {
     if (!w || typeof w !== 'object') continue;
     push(key, label, (w as Record<string, unknown>).utilization, (w as Record<string, unknown>).resets_at, scope);
     if (key !== 'seven_day') continue;
-    // Model-scoped weekly windows sit with the other weekly readings.
     for (const raw of Array.isArray(doc.limits) ? doc.limits : []) {
       if (!raw || typeof raw !== 'object') continue;
       const limit = raw as Record<string, unknown>;
@@ -352,10 +274,7 @@ export function parseAnthropicUsage(body: unknown): QuotaWindow[] {
 }
 
 export interface AnthropicOAuthQuotaSourceConfig {
-  /** The bearer, or a getter so a rotated credential is read fresh. */
   authToken: string | (() => string);
-  /** Same override the inference adapter honors. A gateway that does not
-   *  proxy the usage path simply yields "no reading". */
   baseURL?: string;
   fetchImpl?: typeof fetch;
 }
@@ -419,7 +338,6 @@ export function parseCodexRateLimits(result: unknown): QuotaWindow[] {
       ...(resetsAt !== undefined ? { resetsAt: resetsAt * 1000 } : {}),
     });
   }
-  // Longest window first, matching the Anthropic readout.
   return windows.sort((a, b) => (parseInt(b.key, 10) || 0) - (parseInt(a.key, 10) || 0));
 }
 

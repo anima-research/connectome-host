@@ -1,9 +1,3 @@
-/**
- * A Web UI host with observers granted and an app bound, for tests of what
- * each client is sent. The module's other harnesses hold one or the other:
- * the WebSocket tests bind an app and grant no observer, and the observer
- * flow grants observers and binds no app.
- */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,39 +32,26 @@ export const BASIC = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 
 type Frame = Record<string, unknown>;
 
-/** A connection and every frame it has been sent, oldest first. */
 export interface Connection {
   ws: WebSocket;
   frames: Frame[];
-  /** The first frame of `type` that `match` accepts, waiting up to 5 s for it. */
   until(type: string, match?: (frame: Frame) => boolean): Promise<Frame>;
-  /** The frames of `type` it has been sent so far. */
   framesOf(type: string): Frame[];
 }
 
 export interface ObservedHost {
   module: WebUiModule;
   port: number;
-  /** A trace, as the bound framework's onTrace gives it. */
   emitTrace(event: Record<string, unknown>): void;
-  /** A connection with the password, once its welcome has come. */
   operator(): Promise<Connection>;
-  /** A connection signed in with the key of the grant labelled `label`, once
-   *  its welcome has come. */
   observer(label: string): Promise<Connection>;
-  /** Bind the same app again, as a session switch does: every client is
-   *  welcomed again once the bind's waits are over. */
   rebind(): void;
-  /** Welcome every client again and wait for each of `connections` to have
-   *  it: a frame sent before this has reached them by its end, since a
-   *  socket keeps its frames in order. */
+  /** A socket keeps its frames in order, so a frame sent before the fence's
+   *  welcome reaches each client before it. */
   fence(connections: Connection[]): Promise<void>;
   stop(): Promise<void>;
 }
 
-/** Start a host whose grants file holds `grants` (label to scopes) and bind
- *  an app: the framework is a stub, with `framework` over its defaults, and
- *  `config` goes to the module with the grants and the password. */
 export async function startObservedHost(options: {
   grants: Record<string, ObserverScope[]>;
   framework?: Record<string, unknown>;
@@ -81,7 +62,6 @@ export async function startObservedHost(options: {
   const keys = new Map<string, ReturnType<typeof makeKeypair>>();
   for (const label of Object.keys(options.grants)) keys.set(label, makeKeypair());
   const observersPath = join(tmp, 'observers.json');
-  // Granted from the start, so a socket without the password may connect and wait for its hello.
   saveObserversFile(observersPath, {
     observers: [...keys].map(([label, kp]) => ({ key: kp.id, label, scopes: options.grants[label]! })),
   });

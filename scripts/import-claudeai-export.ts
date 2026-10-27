@@ -3,47 +3,37 @@
  * Import a claude.ai data export into conhost sessions.
  *
  * Each conversation in `conversations.json` becomes a new conhost session with
- * an isolated Chronicle store, named after the original conversation. The
- * conversation's messages are appended through context-manager's `MessageStore`
- * so the resulting sessions are indistinguishable from native conhost sessions.
+ * an isolated Chronicle store, named after the original conversation.
  *
  * Block-level fidelity:
  *   - text         → TextContent
  *   - thinking     → TextContent wrapped in <recovered_thinking>…</recovered_thinking>
- *                    (original thinking + summaries preserved verbatim in metadata)
+ *                    (the export's thinking summaries are not imported)
  *   - tool_use     → ToolUseContent (claude.ai-internal tool names kept as-is;
  *                    inert at replay since no module advertises them)
  *   - tool_result  → ToolResultContent
  *   - attachments  → leading <attachment …>{extracted_content}</attachment> text
  *   - files (no bytes) → trailing [image: name (file_uuid=…, bytes not in export)]
  *
- * Why wrapped <recovered_thinking> text and not native thinking blocks:
- *   The export omits cryptographic signatures (claude.ai never plumbed them).
- *   Probed empirically (scripts/test-historical-thinking.ts): the API rejects
- *   unsigned thinking blocks AND redacted_thinking with fabricated data. Wrapped
- *   text round-trips cleanly and lets the model run with extended thinking ON
- *   for the *new* turns (which is the cognitive mode the conversation was
- *   originally in on claude.ai web).
+ * Thinking is imported as wrapped text because the export carries no
+ * signatures, and the API refuses unsigned thinking blocks and
+ * redacted_thinking with fabricated data.
  *
  * Tree handling:
  *   The export records branches via `parent_message_uuid`. When a fork is
- *   present, the importer picks the canonical path by depth-first descent
- *   choosing, at each branch point, the subtree whose deepest leaf has the
- *   latest `created_at`. Orphan branches are discarded in v1 (the original
- *   conversation is preserved in `conversations.json` regardless).
+ *   present, the importer picks, at each branch point, the subtree holding the
+ *   latest `created_at`. Other branches are not imported.
  *
  * Run:
  *   bun scripts/import-claudeai-export.ts ../claudeai-export
  *
  * Options:
  *   --out <dir>       Conhost data dir (default: ./data)
- *   --agent <name>    Participant name for assistant turns. Default: "Claude"
- *                     — the natural choice for claude.ai-derived sessions
- *                     and what the bundled `claude-export-revive.json`
- *                     recipe pins `agent.name` to. The chosen value is
- *                     written into the per-session import-source sidecar,
- *                     so warmup and conhost can read it back without
- *                     re-passing the flag.
+ *   --agent <name>    Participant name for assistant turns. Default: "Claude",
+ *                     what the bundled `claude-export-revive.json` recipe pins
+ *                     `agent.name` to. The chosen value is written into the
+ *                     per-session import-source sidecar, so warmup and conhost
+ *                     can read it back without re-passing the flag.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
  */
@@ -55,10 +45,6 @@ import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
 import { createLineReader } from './lib/line-reader.js';
-
-// ---------------------------------------------------------------------------
-// CLI parsing
-// ---------------------------------------------------------------------------
 
 interface Opts {
   exportDir: string;
@@ -99,10 +85,6 @@ function parseArgs(argv: string[]): Opts {
   }
   return { exportDir, outDir, agentName, filter, dryRun, interactive };
 }
-
-// ---------------------------------------------------------------------------
-// Export schema (subset — only what we read)
-// ---------------------------------------------------------------------------
 
 interface ExportTextBlock {
   type: 'text';
@@ -181,18 +163,6 @@ interface ExportConversation {
 
 const ROOT_PARENT = '00000000-0000-4000-8000-000000000000';
 
-// ---------------------------------------------------------------------------
-// Tree linearization
-// ---------------------------------------------------------------------------
-
-/**
- * Pick a canonical path through the message tree. For unbranched conversations
- * this is just topological order. For branched ones, at each fork point we
- * descend into the subtree whose deepest leaf has the latest `created_at`.
- *
- * Single DFS post-order populates a per-node `latestLeafTime` map so the main
- * descent is O(n) — no repeated subtree walks at branch points.
- */
 export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; branched: boolean } {
   const byParent = new Map<string, ExportMessage[]>();
   for (const m of messages) {
@@ -201,10 +171,7 @@ export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; b
     byParent.set(m.parent_message_uuid, arr);
   }
 
-  // Iterative post-order to avoid recursion-depth limits on very long
-  // chains, and to memoize each node's deepest-leaf time in one pass.
   const latestLeafTime = new Map<string, string>();
-  // Build a flat post-order list by DFS from each root.
   const roots = byParent.get(ROOT_PARENT) ?? [];
   const stack: Array<{ msg: ExportMessage; childIdx: number }> = roots.map((r) => ({ msg: r, childIdx: 0 }));
   const postOrder: ExportMessage[] = [];
@@ -252,31 +219,11 @@ export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; b
   return { path, branched };
 }
 
-// ---------------------------------------------------------------------------
-// Block transform
-// ---------------------------------------------------------------------------
-
-/**
- * Transform one export message's content blocks into Anthropic-shape blocks,
- * fixing two claude.ai quirks along the way:
- *
- *   - Internal tools (web_search, web_fetch, conversation_search, artifacts,
- *     etc.) have `tool_use.id === null` and the paired `tool_result` has
- *     `tool_use_id === null`. The API requires non-empty strings. We
- *     synthesize stable IDs (`toolu_imported_<msg.uuid>_<blockIdx>`) and
- *     pair the next null-ID tool_result to the most recent null-ID tool_use
- *     in the same message via FIFO queue.
- *
- *   - tool_use + tool_result get bundled in a single assistant message.
- *     API rules require tool_result to live in the *next* user message.
- *     The block-level transform handled here only emits the blocks; the
- *     message-level split is done in `splitMixedToolMessages` so the
- *     two concerns stay independently testable.
- */
+/** The API requires every tool_use id and tool_result tool_use_id to be a
+ *  non-empty string. */
 export function transformContent(msg: ExportMessage): ContentBlock[] {
   const out: ContentBlock[] = [];
 
-  // Prepend attachment texts (user-side)
   for (const att of msg.attachments ?? []) {
     if (att.extracted_content) {
       const header = `<attachment name="${escapeAttr(att.file_name || 'attachment')}"${
@@ -289,9 +236,6 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
     }
   }
 
-  // Queue of synthetic tool_use IDs awaiting pairing with a null-ID
-  // tool_result. FIFO because tool cycles are sequentially well-ordered
-  // within a single source message.
   const pendingToolUseIds: string[] = [];
 
   for (const [blockIdx, block] of (msg.content ?? []).entries()) {
@@ -301,10 +245,6 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
         break;
 
       case 'thinking': {
-        // Full thinking text is the load-bearing form: it's what the API
-        // sees at replay and what the model reads as its prior reasoning.
-        // The sidecar import-source.json captures provenance separately,
-        // so we don't duplicate into message metadata.
         out.push({
           type: 'text',
           text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
@@ -328,23 +268,14 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
       }
 
       case 'tool_result': {
-        // Pair with the nearest preceding null-ID tool_use in the same
-        // message. If the source provided a tool_use_id, trust it. If
-        // neither pairing nor source ID is available, emit an orphan
-        // marker rather than null (which crashes the API).
         let toolUseId = (block.tool_use_id as string | null | undefined) ?? '';
         if (!toolUseId) {
           toolUseId = pendingToolUseIds.shift() ?? `toolu_imported_orphan_${msg.uuid}_${blockIdx}`;
         }
-        // Membrane's ToolResultContent.content is string | ContentBlock[].
-        // The export's `content` is usually a string or an array of {type,text}
-        // sub-blocks; coerce conservatively to a string when in doubt so the
-        // round-trip is safe.
         let content: string | ContentBlock[];
         if (typeof block.content === 'string') {
           content = block.content;
         } else if (Array.isArray(block.content)) {
-          // Coerce sub-blocks to text where possible.
           const subTexts: ContentBlock[] = [];
           for (const sub of block.content as Array<Record<string, unknown>>) {
             if (sub.type === 'text' && typeof sub.text === 'string') {
@@ -365,9 +296,6 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
       }
 
       default: {
-        // Unknown block type — claude.ai may add new ones (server_tool_use,
-        // citations, etc.) without notice. Don't drop on the floor; emit a
-        // grep-able marker so the operator can audit what was lost.
         const unknownType = (block as { type?: unknown }).type;
         out.push({
           type: 'text',
@@ -377,7 +305,6 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
     }
   }
 
-  // Trailing file placeholders (images, etc., bytes not in dump)
   for (const f of msg.files ?? []) {
     out.push({
       type: 'text',
@@ -388,21 +315,9 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
   return out;
 }
 
-/**
- * claude.ai stores an entire internal-tool cycle (tool_use → tool_result)
- * as consecutive blocks in one assistant message. The Anthropic API requires
- * tool_use blocks in assistant turns and tool_result blocks in user turns,
- * with each tool_result in the *immediately following* user message.
- *
- * Walks `blocks` and, whenever a tool_result is encountered in a non-user
- * source message, flushes the preceding blocks as a `sourceParticipant`
- * message, emits the tool_result alone as a `user` message, then continues
- * collecting blocks for another `sourceParticipant` message. Adjacent
- * tool_results get merged into a single user message (API-legal).
- *
- * If the source is already 'user' (claude.ai never produces this, but be
- * safe), no splitting is needed and the input is returned unchanged.
- */
+/** The Anthropic API takes tool_use blocks only in assistant turns and
+ *  tool_result blocks only in user turns, each in the message right after its
+ *  tool_use. */
 export function splitMixedToolMessages(
   blocks: ContentBlock[],
   sourceParticipant: string,
@@ -440,17 +355,12 @@ export function splitMixedToolMessages(
 }
 
 function escapeAttr(s: string): string {
-  // & must be replaced first so the others' replacements aren't double-escaped.
   return s
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 async function importConversation(
   conv: ExportConversation,
@@ -472,11 +382,8 @@ async function importConversation(
     try {
       for (const msg of path) {
         const blocks = transformContent(msg);
-        if (blocks.length === 0) continue; // skip degenerate messages
+        if (blocks.length === 0) continue;
         const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
-        // claude.ai bundles tool cycles into single assistant turns; the API
-        // requires tool_results in their own user turns. Split here so the
-        // Chronicle store holds API-shape messages from the start.
         const messages = splitMixedToolMessages(blocks, sourceParticipant);
         for (const [idx, m] of messages.entries()) {
           cm.addMessage(m.participant, m.content, {
@@ -499,7 +406,6 @@ async function importConversation(
     store.close?.();
   }
 
-  // Sidecar provenance file (next to the session dir, not inside the store)
   const sidecarPath = join(storePath, '..', `${meta.id}.import-source.json`);
   writeFileSync(
     sidecarPath,
@@ -510,11 +416,6 @@ async function importConversation(
         summary: conv.summary ?? null,
         createdAt: conv.created_at,
         updatedAt: conv.updated_at,
-        // The participant name assigned to assistant turns at import time.
-        // Recorded here so warmup and conhost can read it back and stay in
-        // sync without depending on a CLI flag the operator might forget.
-        // Bug source: warmup using its own default left summaries in one
-        // strategy namespace while the framework read from another.
         agentName: opts.agentName,
         originalMessageCount: conv.chat_messages.length,
         importedMessageCount: path.length,
@@ -526,7 +427,6 @@ async function importConversation(
     ) + '\n',
   );
 
-  // Update messageCount on the session entry so /session listings are accurate
   const idx = sessionMgr.load();
   if (idx.sessions[meta.id]) {
     idx.sessions[meta.id]!.messageCount = path.length;
@@ -535,10 +435,6 @@ async function importConversation(
 
   return { sessionId: meta.id, messageCount: path.length, branched };
 }
-
-// ---------------------------------------------------------------------------
-// Interactive selection UI
-// ---------------------------------------------------------------------------
 
 function formatRow(idx: number, selected: boolean, conv: ExportConversation): string {
   const id6 = conv.uuid.replace(/-/g, '').slice(0, 6);
@@ -557,7 +453,6 @@ function formatShortDate(iso: string | undefined): string {
   return `${months[d.getMonth()]} ${d.getDate().toString().padStart(2, ' ')} ${d.getFullYear().toString().slice(2)}`;
 }
 
-/** Parse comma-and-range index spec like "1,3-5,7" into a set of 1-based indices. */
 export function parseToggleSpec(input: string, max: number): Set<number> {
   const out = new Set<number>();
   for (const piece of input.split(/[,\s]+/)) {
@@ -576,12 +471,9 @@ export function parseToggleSpec(input: string, max: number): Set<number> {
   return out;
 }
 
-// createLineReader is shared via scripts/lib/line-reader.ts (see imports above).
-
 async function chooseInteractively(conversations: ExportConversation[]): Promise<ExportConversation[] | null> {
   const reader = createLineReader();
   try {
-    // Top-level menu
     while (true) {
       const raw = await reader.nextLine(
         `\n${conversations.length} conversation(s) found. Import [A]ll, [C]hoose, e[X]it? `,
@@ -594,7 +486,6 @@ async function chooseInteractively(conversations: ExportConversation[]): Promise
       console.log('Please enter A, C, or X.');
     }
 
-    // Toggle UI
     const selected = new Array<boolean>(conversations.length).fill(false);
     const render = () => {
       console.log('');
@@ -610,7 +501,7 @@ async function chooseInteractively(conversations: ExportConversation[]): Promise
     );
     while (true) {
       const raw = await reader.nextLine('> ');
-      if (raw === null) break; // EOF == commit
+      if (raw === null) break;
       const input = raw.trim();
       if (input === '') break;
       const cmd = input.toLowerCase();
@@ -640,7 +531,6 @@ async function chooseInteractively(conversations: ExportConversation[]): Promise
         continue;
       }
       for (const i of toToggle) selected[i - 1] = !selected[i - 1];
-      // Show what just toggled, not the full list — keeps the scroll usable.
       const summary = [...toToggle]
         .sort((a, b) => a - b)
         .map((i) => `${i}${selected[i - 1] ? '✓' : '·'}`)
@@ -693,10 +583,6 @@ async function main() {
 
   const sessionMgr = new SessionManager(opts.outDir);
 
-  // Snapshot pre-import activeSessionId so a bulk import doesn't silently
-  // steal the operator's working session. createSession() unconditionally
-  // sets activeSessionId; after a 24-convo import we'd land on whichever
-  // conversation was last in the file. Restored at the end.
   const preImportActive = sessionMgr.load().activeSessionId || null;
 
   let succeeded = 0;
@@ -719,14 +605,10 @@ async function main() {
     }
   }
 
-  // Restore the pre-import active session (no-op if there wasn't one — but
-  // we still leave activeSessionId as the last-imported id rather than the
-  // first, which feels less wrong if the operator had no active session).
   if (preImportActive && !opts.dryRun) {
     try {
       sessionMgr.setActiveSession(preImportActive);
     } catch {
-      // Pre-import active session may have been deleted; leave default.
     }
   }
 

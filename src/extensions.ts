@@ -20,13 +20,14 @@
  *     api.registerModule((ctx) => new ZkFeederModule(config));
  *   }
  *
- * Design constraint: this loader is deliberately dumb. It resolves nothing,
- * fetches nothing, and negotiates no versions — it imports a local path and
- * calls `register`. The invariant "this path exists and is compatible with
- * the host's dependency tree" is established at install time by build
- * tooling (connectome-cook), not here. Extensions run in-process and share
- * the host's node_modules, so `extends AutobiographicalStrategy` resolves
- * against the exact @animalabs/* versions the host ships.
+ * It resolves nothing, fetches nothing, and negotiates no versions — it
+ * imports a local path and calls `register`. The invariant "this path
+ * exists and is compatible with the host's dependency tree" is established
+ * at install time by build tooling (connectome-cook), not here. Extensions
+ * run in-process. One whose imports resolve to the host's node_modules
+ * gets the exact @animalabs/* versions the host ships, so `extends
+ * AutobiographicalStrategy` resolves against them; nothing here checks
+ * that they do.
  *
  * `kind` declares the extension's primary purpose. It gates recipe
  * validation (a non-built-in `agent.strategy.type` is only accepted when at
@@ -40,14 +41,9 @@ import { pathToFileURL } from 'node:url';
 import type { ContextStrategy, Module } from '@animalabs/agent-framework';
 import type { Recipe, RecipeExtension, RecipeStrategy } from './recipe.js';
 
-// ---------------------------------------------------------------------------
-// Factory contexts
-// ---------------------------------------------------------------------------
-
 export interface StrategyFactoryContext {
   /** The recipe's `agent.strategy` block verbatim — including keys the
-   *  built-in schema doesn't know about, so custom strategies can define
-   *  their own knobs without upstream schema changes. */
+   *  built-in schema doesn't know about. */
   config: RecipeStrategy & Record<string, unknown>;
   /** Resolved agent model id (recipe/env fallback chain already applied). */
   model: string;
@@ -68,10 +64,6 @@ export interface ModuleFactoryContext {
 }
 
 export type ModuleFactory = (ctx: ModuleFactoryContext) => Module;
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
 
 export interface ExtensionApi {
   /** Register a context-strategy factory under a `agent.strategy.type` name.
@@ -103,23 +95,10 @@ export function isBuiltinStrategyType(type: string): boolean {
   return (BUILTIN_STRATEGY_TYPES as readonly string[]).includes(type);
 }
 
-/** An empty registry — used when a recipe declares no extensions. */
 export function emptyExtensionRegistry(): ExtensionRegistry {
   return { strategies: new Map(), modules: [] };
 }
 
-// ---------------------------------------------------------------------------
-// Loader
-// ---------------------------------------------------------------------------
-
-/**
- * Import every extension declared by the recipe and collect registrations.
- *
- * Paths must be absolute by the time this runs — `loadRecipe` resolves
- * relative extension paths against the recipe file's directory. Errors are
- * wrapped with the extension name + path so a broken deployment names the
- * component instead of surfacing a bare import stack.
- */
 export async function loadExtensions(recipe: Recipe): Promise<ExtensionRegistry> {
   const registry = emptyExtensionRegistry();
   for (const [name, ext] of Object.entries(recipe.extensions ?? {})) {

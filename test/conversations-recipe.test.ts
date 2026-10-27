@@ -1,10 +1,3 @@
-/**
- * Recipe surface for per-channel conversation routing:
- * schema validation of the `conversations` block, and the host-side mapping
- * to the framework's ConversationRouterConfig (templateAgent auto-filled
- * from the recipe agent, strategyFactory building fresh per-fork strategy
- * instances from the recipe's own strategy config).
- */
 import { describe, test, expect } from 'bun:test';
 import { validateRecipe, deprecatedConversationsNotices, type Recipe } from '../src/recipe.js';
 import { buildConversationsConfig } from '../src/framework-strategy.js';

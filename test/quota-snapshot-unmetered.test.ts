@@ -1,9 +1,6 @@
 import { expect, test } from 'bun:test';
 import { buildQuotaSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 
-// No local quota meter: a pay-per-token host shows its dollar estimate, but a
-// subscription read nowhere locally (openai-codex through an inference
-// gateway, which tracks the windows per login) must not present it as spend.
 const app = (extra: Partial<PanelAppRef>): PanelAppRef =>
   ({ framework: {} as PanelAppRef['framework'], recipe: { agent: {} } as PanelAppRef['recipe'], ...extra });
 
@@ -15,8 +12,6 @@ test('no meter on a gateway-held subscription: still a subscription, no windows'
   expect(await buildQuotaSnapshot(app({ quotaMeter: null, subscriptionUnmetered: true }))).toEqual({ subscription: true, windows: [] });
 });
 
-// A failed read is one that carries an error, even an error with no message,
-// as the page and the protocol take it (quotaUnreadable).
 test('a read that failed with no message still answers with its error', async () => {
   const meter = (error: string | undefined) => ({
     provider: 'anthropic',

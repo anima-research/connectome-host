@@ -1,1 +1,0 @@
-- The TUI now reports a subagent's lone inference:exhausted as a failure in the main log and marks its phase failed, while failed followed by exhausted still shows one failure line there.

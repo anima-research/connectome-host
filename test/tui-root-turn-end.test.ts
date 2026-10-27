@@ -1,10 +1,3 @@
-/**
- * The TUI's status line at the end of the root agent's stream (rootTurnEnd):
- * every stream end returns it from "thinking", a turn a tool ended included,
- * an end that follows an end adds nothing, and a failure always shows.
- * rootTurnStep moves the flag that says a turn is showing. Escape's gate and
- * line are pinned here too; test/tui-turns.test.ts runs runTui itself.
- */
 import { describe, expect, test } from 'bun:test';
 import { escapeActs, escapeLine, formatWireEvent, peekEndColor, peekEndLine, rootTurnEnd, rootTurnStep } from '../src/tui.js';
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
@@ -40,21 +33,17 @@ describe('rootTurnEnd', () => {
   });
 
   test('an exhausted stream that nothing ended before shows as a failure, with the framework\'s words', () => {
-    // agent-framework 0.22.3 sends it alone, as "Stream aborted: <reason>",
-    // for a stream aborted for a reason other than a stop, which it doesn't
-    // treat as deliberate; a stop ends with `aborted`.
+    // agent-framework sends inference:exhausted alone, as "Stream aborted: <reason>",
+    // for a stream aborted other than by a stop, which ends with `aborted`.
     expect(rootTurnEnd({ type: 'inference:exhausted', error: 'Stream aborted: timeout' }, true)).toEqual({
       status: 'error', background: 'drop', line: { text: '(turn ended: Stream aborted: timeout)', tone: 'error' },
     });
   });
 
   test('an end while no turn is showing adds nothing, but a failure', () => {
-    // `exhausted` after `failed` or `aborted`, or after the TUI's own interrupt.
     for (const type of STREAM_END_TRACES) {
       if (type !== 'inference:failed') expect(rootTurnEnd({ type, error: 'x' }, false)).toBeNull();
     }
-    // agent-framework sends a failure only for an attempt it started, so it's
-    // the end of a turn whose start the TUI didn't follow: it shows.
     expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, false)).toEqual({
       status: 'error', background: 'drop', line: { text: 'Error: overloaded', tone: 'error' },
     });
@@ -125,7 +114,6 @@ describe("a fleet child's peek log", () => {
     expect(formatWireEvent({ type: 'inference:exhausted', error: 'Stream aborted: timeout' } as never)).toEqual({
       text: '✗ turn ended: Stream aborted: timeout', color: '#cc0000',
     });
-    // A completion, which the subagent's peek doesn't show, keeps its own line.
     expect(formatWireEvent({ type: 'inference:completed' } as never)).toEqual({ text: '─ inference completed ─', color: '#555555' });
   });
 
@@ -177,7 +165,6 @@ describe('escapeActs', () => {
 
   test('on an error, only while the follower has the root\'s turn running, whatever set the error', () => {
     expect(escapeActs('error', true)).toBe(true);
-    // An error shown with no turn running stands.
     expect(escapeActs('error', false)).toBe(false);
   });
 });

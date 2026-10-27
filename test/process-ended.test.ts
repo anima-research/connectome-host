@@ -1,7 +1,3 @@
-/**
- * test/process-ended.ts: the rule tests share for whether a process has
- * ended as /proc shows it, which counts one being reaped as ended.
- */
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { processEnded, waitForEnd } from './process-ended.js';

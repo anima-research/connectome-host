@@ -8,9 +8,6 @@ import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReaso
 
 type Servers = Array<{ id: string; connected: boolean }>;
 
-/** A framework as startFramework uses one: `order` records what it starts,
- *  when its stop or its resume, which each take a moment, has finished, how
- *  either fails, and what it tells the operator. */
 function framework(order: string[], options: {
   fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
 } = {}) {
@@ -31,7 +28,6 @@ function framework(order: string[], options: {
       if (options.stopFails) throw new Error('the stop failed');
       order.push('framework stopped');
     },
-    // The framework finds a module by its own name, so the fake answers to the fleet's.
     getModule: (name: string) => (options.fleet && name === options.fleet.name ? options.fleet : null),
     listMcplServers: () => options.servers ?? [],
   } as unknown as Parameters<typeof startFramework>[0];
@@ -126,8 +122,8 @@ describe('startFramework, for a host an install started', () => {
 
   test("a commit that can't be recorded stops the framework, starts nothing and says why", async () => {
     const order: string[] = [];
-    // Where the move's temporary link goes, a directory with something in it,
-    // which stops the move for root as for anyone.
+    // A directory with something in it where the move's temporary link goes
+    // stops the move, for root as for anyone.
     mkdirSync(join(`${installPaths(root).current}.tmp`, 'in-the-way'), { recursive: true });
     await expect(startFramework(framework(order, { fleet: watchedFleet(order) }), { root, release: '0.11.0' })).rejects.toThrow(
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +

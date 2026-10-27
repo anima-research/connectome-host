@@ -1,9 +1,3 @@
-/**
- * A load's repair of an agent's summaries, in the words its keeper reads
- * (src/web/load-repair-alert.ts): the spans merged per level, how much text
- * left, how to read the old summaries back, the sentence for the agent, and
- * the alert the host sends for each report context-manager makes.
- */
 import { describe, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -51,7 +45,6 @@ function report(dropped: LoadRepairDroppedSummary[], over: Partial<LoadRepairRep
   };
 }
 
-// One damaged L1 and the two summaries above it: the cascade the words merge.
 const cascade = report([
   drop('l1', 1, '2026-10-03T14:02:00.000Z', '2026-10-03T16:40:00.000Z', { tokens: 1210, reason: 'unreadable' }),
   drop('l2', 2, '2026-10-01T09:10:00.000Z', '2026-10-05T22:01:00.000Z', { tokens: 1800 }),
@@ -62,7 +55,6 @@ describe('loadRepairAlert', () => {
   test('a cascade from one damaged L1 reads as one memory changing at three levels, in the words agreed', () => {
     const alert = loadRepairAlert(cascade, 'Alice', '/srv/connectome/sessions/alice/store');
     expect(alert.kind).toBe(LOAD_REPAIR_KIND);
-    // The Health tab shows these words, less the last sentence.
     expect(alert.message).toBe([...loadRepairLines(cascade, 'Alice', '/srv/connectome/sessions/alice/store'), 'The message is in failures.log; the Health tab shows the latest repair, and /healthz its full report.'].join(' '));
     expect(alert.message).toBe(
       "Alice's memory changed at load: context-manager's load repair dropped summaries holding 4,210 tokens of summary text, "
@@ -101,7 +93,6 @@ describe('loadRepairAlert', () => {
     expect(loadRepairAlert(acrossYears, 'Alice').message).toContain('from between Dec 30, 2025 and Jan 2, 2026 (UTC) were removed.');
     const mixed = report([drop('a', 1, '2026-10-03T14:02:00Z', '2026-10-03T16:40:00Z'), drop('b', 2, null, null, { sourceRange: null })]);
     expect(loadRepairAlert(mixed, 'Alice').message).toContain('some of your summaries were removed, among them ones from Oct 3 (UTC). Your messages');
-    // A summary with only one end's time is untimed: its time names no day.
     const halfTimed = report([drop('a', 1, '2026-10-03T14:02:00Z', null), drop('b', 2, null, null, { sourceRange: null })]);
     expect(loadRepairAlert(halfTimed, 'Alice').message).toContain('"When your memory was loaded, some of your summaries were removed. Your messages');
     const otherHalf = report([drop('a', 1, null, '2026-10-03T14:02:00Z'), drop('b', 2, null, null, { sourceRange: null })]);
@@ -128,7 +119,6 @@ describe('loadRepairSpans', () => {
   });
 
   test('a span within one minute is that minute, not a range from it to itself, and one across days at the same clock time is a range', () => {
-    // As a fresh store's first two messages are, a few milliseconds apart.
     const r = report([drop('a', 2, '2026-10-22T23:17:15.418Z', '2026-10-22T23:17:15.427Z')]);
     expect(loadRepairSpans(r)).toBe('2026-10-22 23:17 UTC at level 2');
     expect(loadRepairSpans(report([drop('a', 1, '2025-12-30T10:00:00Z', '2026-01-02T10:00:00Z')]))).toBe('2025-12-30 10:00 – 2026-01-02 10:00 UTC at level 1');
@@ -189,17 +179,15 @@ describe('loadRepairSpans', () => {
     const span = ['2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z'] as const;
     const r = report([drop('a', 1, ...span), drop('b', 3, ...span), drop('c', 2, '2026-10-02T10:00:00Z', '2026-10-02T11:00:00Z')]);
     expect(loadRepairSpans(r)).toBe('2026-10-01 10:00–11:00 UTC at levels 1 and 3; 2026-10-02 10:00–11:00 UTC at level 2');
-    // Two levels whose first three spans and count match, but whose fourth differ.
     const days = (level: number, last: number) => [1, 2, 3, last].map((d) => drop(`s${level}-${d}`, level, `2026-10-0${d}T10:00:00Z`, `2026-10-0${d}T11:00:00Z`));
     expect(loadRepairSpans(report([...days(1, 5), ...days(2, 6)]))).toContain('1 more span at level 1; ');
-    // Two unreadable ranges at two levels can't be shown to be one.
     const unread = report([drop('u', 2, null, null, { sourceRange: null }), drop('v', 3, null, null, { sourceRange: null })]);
     expect(loadRepairSpans(unread)).toBe("a span whose range couldn't be read at level 2 and a span whose range couldn't be read at level 3");
   });
 });
 
 describe('loadRepairLines', () => {
-  test("where no summary's size could be read it says so, where some could, at least their total, and one token is one", () => {
+  test("where no summary's size could be read, or only a size of 0 could, it says so, where some could, at least their total, and one token is one", () => {
     const none = report([drop('a', 1, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', { tokens: null })], { droppedTokens: 0 });
     expect(loadRepairLines(none, 'Alice')[0]).toStartWith(
       "Alice's memory changed at load: context-manager's load repair dropped summaries whose total size couldn't be read, covering 2026-10-01",
@@ -211,20 +199,16 @@ describe('loadRepairLines', () => {
     expect(loadRepairLines(some, 'Alice')[0]).toContain('dropped summaries holding at least 2,500 tokens of summary text, covering');
     const one = report([drop('a', 1, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', { tokens: 1 })]);
     expect(loadRepairLines(one, 'Alice')[0]).toContain('dropped summaries holding 1 token of summary text, covering');
-    // A floor of 0 says nothing where a size couldn't be read.
     const zero = report([
       drop('a', 1, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', { tokens: null }),
       drop('b', 2, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', { tokens: 0 }),
     ]);
     expect(loadRepairLines(zero, 'Alice')[0]).toContain("dropped summaries whose total size couldn't be read, covering");
-    // Every size read and adding up to none is a size, not an unread one.
     const allZero = report([drop('a', 1, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', { tokens: 0 })]);
     expect(loadRepairLines(allZero, 'Alice')[0]).toContain('dropped summaries holding 0 tokens of summary text, covering');
   });
 
   test('a report with more times than a call takes arguments still has its words', () => {
-    // 1,000,000 summaries give 2,000,000 times. Spreading them into Math.min
-    // throws past about 638,000 arguments in Bun 1.4.4.
     const many = report(Array.from({ length: 1_000_000 }, (_, i) => drop(`s${i}`, 1, '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z')));
     expect(loadRepairLines(many, 'Alice')[3]).toContain('some of your summaries from Oct 1 (UTC) were removed.');
   }, 60_000);
@@ -243,7 +227,6 @@ describe('wireLoadRepairAlert', () => {
       },
     };
     expect(wireLoadRepairAlert(strategy, framework, 'Alice', '/srv/store')).toBe(true);
-    // A strategy can make more than one report in its life, each sent in turn.
     const later = report([drop('later', 1, '2026-10-09T10:00:00Z', '2026-10-09T11:00:00Z')], { sequenceBefore: 50001 });
     handler!(cascade);
     handler!(later);
@@ -262,12 +245,6 @@ describe('wireLoadRepairAlert', () => {
 });
 
 describe("wireLoadRepairAlert after a start's load", () => {
-  // A start builds the recipe's strategy (buildFrameworkStrategy), and
-  // AgentFramework.create opens the agent's store with it; the host wires the
-  // alert only after create returns (src/index.ts). So the start-up load's
-  // report is made with no handler set, held by the strategy, and handed over
-  // when the alert sets one. This runs that order on the default recipe's
-  // strategy; src/index.ts's own call isn't run here.
   test("a report the start's load made before the alert was wired is sent when it's wired", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'load-repair-wire-'));
     const path = join(dir, 'store');
@@ -293,7 +270,6 @@ describe("wireLoadRepairAlert after a start's load", () => {
           expect(wireLoadRepairAlert(strategy, framework, 'agent', path)).toBe(true);
           const alert = loadRepairAlert(latest!, 'agent', path);
           expect(sent).toEqual([{ kind: LOAD_REPAIR_KIND, agent: 'agent', message: alert.message, data: alert.data }]);
-          // Handed over once: nothing is held for a later handler.
           expect(wireLoadRepairAlert(strategy, framework, 'agent', path)).toBe(true);
           expect(sent).toHaveLength(1);
         } finally {
@@ -309,8 +285,8 @@ describe("wireLoadRepairAlert after a start's load", () => {
 });
 
 describe('the health snapshot', () => {
-  // An agent with no `latest` has a strategy without the getter, such as a
-  // passthrough strategy.
+  // An agent with no `latest` has a strategy without the getter, such as
+  // context-manager's PassthroughStrategy.
   function appWith(agents: Array<{ name: string; latest?: () => unknown }>): PanelAppRef {
     const framework = {
       agents: agents.map((a) => ({
@@ -357,9 +333,6 @@ describe('the health snapshot', () => {
   test("an observer without 'ops' still gets the report's names, ids, reasons and times, but not its branch", () => {
     const snapshot = buildHealthSnapshot(appWith([{ name: 'alice', latest: () => ({ ...cascade, branch: 'restore-before-the-move-1792' }) }]));
     const sent = JSON.parse(JSON.stringify(keepNamedStrings(snapshot, HEALTH_STRINGS))) as { loadRepair: Record<string, LoadRepairReport> };
-    // HEALTH_STRINGS is what /healthz keeps for an observer without ops; it
-    // leaves the branch out, since a checkpoint's restore names its branch
-    // after the checkpoint.
     expect(sent.loadRepair).toEqual({ alice: { ...cascade, branch: '' } });
     expect(loadRepairReadBack(sent.loadRepair.alice!)).toContain("open it with Chronicle's JsStore.open({ path }), switch to the branch the repair ran on, which /healthz shows an observer with the ops scope, then getStateJsonAt(");
   });

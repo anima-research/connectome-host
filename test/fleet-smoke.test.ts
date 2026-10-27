@@ -1,14 +1,3 @@
-/**
- * Phase 2 smoke test for FleetModule.
- *
- * Drives the module's tool surface directly (no full framework needed) and
- * exercises the end-to-end loop:
- *   launch -> ready, list, status, command (/help, offline-safe), peek
- *   shows command-output events, kill exits the child cleanly.
- *
- * fleet--send is intentionally NOT tested here — it triggers inference and
- * needs a real ANTHROPIC_API_KEY.  That's manual-test territory.
- */
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, lstatSync, readFileSync, readlinkSync, symlinkSync, renameSync, chmodSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -154,7 +143,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     await waitFor(() => old.process?.signalCode === 'SIGKILL', 5_000, 'parent-exit child reaped');
     expect(existsSync(old.socketPath)).toBe(true);
     expect(existsSync(join(dataDir, 'headless.pid'))).toBe(true);
-    state = readyState; // Parent died before its exit handler could persist.
+    state = readyState;
     const restored = await startOwner(dataDir, false, ctx);
     expect(restored.getChildren().get('guard')?.pid).not.toBe(old.pid);
     expect(restored.getChildren().get('guard')?.status).toBe('ready');
@@ -223,7 +212,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
         : retry === 'launch omitted' ? configuredDefault : retry === 'launch empty' ? [] : saved;
       const owner = await startOwner(dataDir, false, ctx, saved);
       const old = owner.getChildren().get('guard')!;
-      // Restart overrides come from the current recipe, not Chronicle state.
       const currentEnv = { ...old.env, GUARD_GENERATION: 'current' };
       const declaredChild: AutoStartChild = {
         name: old.name, recipe: old.recipePath, dataDir: old.dataDir,
@@ -243,7 +231,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
         expect(restored.getChildren().get('guard')?.socket).toBeNull();
         expect(restored.getChildren().get('guard')?.subscription).toEqual(saved);
         expect(state.children.guard.subscription).toEqual(saved);
-        // Capture actual socket writes; the mock child itself ignores subscribe.
         const write = Socket.prototype.write;
         writes = spyOn(Socket.prototype, 'write');
         if (retry === 'launch send error') {
@@ -277,7 +264,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
           expect(readFileSync(join(dataDir, 'startup.log'))).toEqual(log);
           return;
         }
-        // Exercise a previously persisted failed-adoption record on another boot too.
         if (retry === 'boot') {
           state.children.guard.status = 'crashed';
           await restored.stop();
@@ -310,7 +296,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
         expect(subscribes).toHaveLength(1);
         const wire = subscribes[0].events as string[];
         for (const event of expected) expect(wire).toContain(event);
-        // Fixed wire requirements are independent of the production union helper.
         const mandatory = ['inference:started', 'inference:tokens', 'inference:tool_calls_yielded',
           'dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented',
           'inference:usage', 'inference:completed', 'inference:failed', 'inference:exhausted',
@@ -336,10 +321,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     }, 20_000);
   }
 
-  // An earlier version kept an absolute dataDir as it was given. Restored,
-  // such a record still matches a relaunch into its directory, which
-  // reattaches to its own running child.
-  test('a relaunch adopts a restored child whose dataDir an earlier version kept with a trailing slash', async () => {
+  test('a relaunch adopts a restored child whose dataDir an earlier version kept with a trailing slash, and with no boot id', async () => {
     let state: any;
     const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
       pushEvent: () => {}, getModule: () => null } as unknown as Parameters<FleetModule['start']>[0];
@@ -350,12 +332,10 @@ describe('FleetModule — unresolved launch artifacts', () => {
     owner.setDetachMode(true);
     try {
       await owner.stop();
-      // An earlier version kept no boot id either.
       state.children.guard.dataDir = `${dataDir}/`;
       delete state.children.guard.bootId;
       restored = makeFleet();
       spyOn(restored as any, 'bootId').mockReturnValue('this-boot');
-      // Adoption at the start fails once, so the record waits for a relaunch.
       const connectFailure = spyOn(restored as any, 'connectChildSocket').mockRejectedValueOnce(new Error('temporary connection failure'));
       try { await restored.start(ctx); } finally { connectFailure.mockRestore(); }
       expect(restored.getChildren().get('guard')?.socket).toBeNull();
@@ -365,7 +345,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
       expect(adopted.pid).toBe(old.pid);
       expect(adopted.status).toBe('ready');
       expect(adopted.process).toBeNull();
-      // A child that answers runs in this boot, so its record now says so.
       expect(adopted.bootId).toBe('this-boot');
       expect(state.children.guard.bootId).toBe('this-boot');
     } finally {
@@ -373,9 +352,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
     }
   }, 20_000);
 
-  // Beside a record of another name this host isn't attached to, a relaunch's
-  // probe of its own record cuts no connection of the host's, so it still
-  // reattaches to its own running child.
   test('a relaunch adopts its own child beside another record the host is not attached to', async () => {
     let state: any;
     const ctx = { setState: (value: unknown) => { state = value; }, getState: () => state,
@@ -388,10 +364,8 @@ describe('FleetModule — unresolved launch artifacts', () => {
     owner.setDetachMode(true);
     try {
       await owner.stop();
-      // A record of another name in the same directory, whose pid is in use.
       state.children.other = { ...state.children.guard, name: 'other', pid: helper.pid };
       restored = makeFleet();
-      // Adoption at the start fails once, so the record waits for a relaunch.
       const connectFailure = spyOn(restored as any, 'connectChildSocket').mockRejectedValueOnce(new Error('temporary connection failure'));
       try { await restored.start(ctx); } finally { connectFailure.mockRestore(); }
       expect(restored.getChildren().get('guard')?.socket).toBeNull();
@@ -436,14 +410,13 @@ describe('FleetModule — unresolved launch artifacts', () => {
         expect(restored.getChildren().get('guard')?.pid).not.toBe(old.pid);
         if (escalation) expect(old.process?.signalCode).toBe('SIGKILL');
       } finally {
-        try { process.kill(old.pid!, 'SIGCONT'); } catch { /* already reaped */ }
+        try { process.kill(old.pid!, 'SIGCONT'); } catch { }
         await restored.stop(); owner.setDetachMode(false); await owner.stop();
       }
     }, 20_000);
   }
 
-  // A record from this boot: one from before it has no process to guard.
-  function trackedState(dataDir: string, pid: number | null = 2_147_483_647) {
+  function trackedStateFromThisBoot(dataDir: string, pid: number | null = 2_147_483_647) {
     return { children: { guard: { name: 'guard', recipePath: resolve('mock-recipe'), dataDir,
       socketPath: join(dataDir, 'ipc.sock'), pid, status: 'ready', startedAt: Date.now(),
       exitedAt: null, lastEventAt: null, exitCode: null, exitReason: null,
@@ -451,7 +424,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
   }
   async function restoreRecord(dataDir: string, pid: number | null = 2_147_483_647) {
     const fleet = makeFleet();
-    let state: any = trackedState(dataDir, pid);
+    let state: any = trackedStateFromThisBoot(dataDir, pid);
     await fleet.start({ getState: () => state, setState: (s: unknown) => { state = s; } } as any);
     return fleet;
   }
@@ -493,23 +466,20 @@ describe('FleetModule — unresolved launch artifacts', () => {
     writeFileSync(pidPath, '2147483647');
     const fleet = new FleetModule({ childIndexPath: '' });
     fleets.push(fleet);
-    let state: any = trackedState(dataDir);
+    let state: any = trackedStateFromThisBoot(dataDir);
     await fleet.start({ getState: () => state, setState: (s: unknown) => { state = s; } } as any);
     const result = await launch(fleet, dataDir);
-    // Deliberately stop at the existing no-entry-script guard, after reconciliation.
     expect(result.success).toBe(false);
     expect(result.error).toContain("doesn't know where its own entry script is");
     expect(existsSync(pidPath)).toBe(false);
     expect(existsSync(join(dataDir, 'startup.log'))).toBe(false);
   });
 
-  // The refusal comes before the new record would replace the old one, so a
-  // host that can't start children keeps the record a launch began from.
   test('a launch refused for a missing entry script keeps the existing record', async () => {
     const dataDir = mkdtempSync(join(tmpDir, 'no-entry-script-'));
     const fleet = new FleetModule({ childIndexPath: '' });
     fleets.push(fleet);
-    let state: any = trackedState(dataDir);
+    let state: any = trackedStateFromThisBoot(dataDir);
     await fleet.start({ getState: () => state, setState: (s: unknown) => { state = s; } } as any);
     const record = fleet.getChildren().get('guard');
     expect(record?.status).toBe('crashed');
@@ -571,15 +541,13 @@ describe('FleetModule — unresolved launch artifacts', () => {
       expect(readFileSync(join(dataDir, 'headless.pid'), 'utf8')).toBe(String(process.pid));
       expect(await (fleet as any).waitForExitByPid(process.pid, 10)).toBe(false);
       child = (fleet as any).children.get('guard');
-      child.adopted = true; // Validated adoption is the signal authority under test.
+      child.adopted = true;
       const result = await fleet.handleToolCall({ id: 'eperm-restart', name: 'restart', input: { name: 'guard' } });
       expect(result.success).toBe(false);
       expect(result.error).toContain("couldn't confirm that it stopped");
       expect(child.status).toBe('starting');
       expect(child.exitedAt).toBeNull();
     } finally {
-      // The record carries this runner's own pid: left adopted, the fleet's
-      // stop() would signal it, so a failed assertion above must not skip this.
       if (child) child.adopted = false;
       kill.mockRestore();
     }
@@ -634,14 +602,14 @@ describe('FleetModule — unresolved launch artifacts', () => {
       writeFileSync(pidPath, '2147483647');
       const server = createServer();
       await new Promise<void>((ok, no) => { server.once('error', no); server.listen(socketPath, ok); });
-      // Retain a real Unix socket inode after closing its listener.
+      // Closing a Unix-socket listener removes its path, so the socket is moved
+      // aside first to keep a real inode.
       renameSync(socketPath, socketPath + '.retained');
       await new Promise<void>((ok, no) => server.close(err => err ? no(err) : ok()));
       renameSync(socketPath + '.retained', socketPath);
       const fleet = await restoreRecord(dataDir);
       const before = lstatSync(socketPath, { bigint: true });
       const record = (fleet as any).children.get('guard');
-      // Inject a failed probe or mutation after a real native refusal, before cleanup rechecks.
       const probe = (fleet as any).socketRefusesConnection.bind(fleet);
       const connect = spyOn(fleet as any, 'socketRefusesConnection').mockImplementation(async (path: string) => {
         if (drift === 'unknown probe') return false;
@@ -672,7 +640,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const old = owner.getChildren().get('guard')!;
     await owner.handleToolCall({ id: 'generation-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
     await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'old generation exit');
-    // A different live generation's PID replaces our reaped child's metadata.
     writeFileSync(join(dataDir, 'headless.pid'), String(process.pid));
     const inode = lstatSync(old.socketPath).ino;
     const startup = readFileSync(join(dataDir, 'startup.log'), 'utf8');
@@ -692,8 +659,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
     await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'old socket owner exit');
     const pid = readFileSync(join(dataDir, 'headless.pid'), 'utf8');
     const startup = readFileSync(join(dataDir, 'startup.log'), 'utf8');
-    // Preserve the original inode and bind a different live server to its path,
-    // reproducing a replacement runtime whose PID-file write failed.
     renameSync(old.socketPath, old.socketPath + '.retained');
     const server = createServer(socket => socket.end('replacement-owner'));
     try {
@@ -719,7 +684,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
       const dataDir = mkdtempSync(join(tmpDir, 'restore-replacement-'));
       const owner = await startOwner(dataDir, false, ownerCtx);
       const old = owner.getChildren().get('guard')!;
-      const persisted = JSON.parse(JSON.stringify(state)); // Last ready state before parent crash.
+      const persisted = JSON.parse(JSON.stringify(state));
       await owner.handleToolCall({ id: 'restore-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
       await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'persisted owner exit');
       if (failure === 'adoption PID mismatch') persisted.children.guard.pid = process.pid;
@@ -783,7 +748,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
       await owner.handleToolCall({ id: 'crash', name: 'command', input: { name: 'guard', command: '/crash' } });
       await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'owner observes exit');
       expect(existsSync(join(dataDir, 'headless.pid'))).toBe(true);
-      // A fresh Fleet has no cleanup authority, even after the child is dead.
       expect((await launch(makeFleet(), dataDir)).success).toBe(false);
       if (mode === 'manual launch') expect((await launch(owner, dataDir)).success).toBe(true);
       if (mode === 'restart') expect((await owner.handleToolCall({ id: 'restart', name: 'restart',
@@ -800,8 +764,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
     }, 25_000);
   }
 
-  // Owned shutdown reconciliation: only confirmed death of the tracked
-  // generation reuses the existing guarded cleanupStaleChildFiles owner.
   for (const mode of ['graceful stop', 'forced kill tool', 'forced stop'] as const) {
     test(`confirmed ${mode} reconciles the tracked generation's stale artifacts`, async () => {
       const dataDir = mkdtempSync(join(tmpDir, 'owned-stop-'));
@@ -828,7 +790,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
       } finally {
         cleanup.mockRestore();
         if (child.process?.exitCode === null && child.process?.signalCode === null) {
-          try { process.kill(child.pid!, 'SIGCONT'); } catch { /* already gone */ }
+          try { process.kill(child.pid!, 'SIGCONT'); } catch { }
         }
         await owner.stop();
       }
@@ -844,7 +806,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
       if (terminal === 'crashed') {
         await owner.handleToolCall({ id: 'terminal-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
       } else {
-        process.kill(child.pid!, 'SIGTERM'); // External exit; the mock leaves its markers behind.
+        process.kill(child.pid!, 'SIGTERM');
       }
       await waitFor(() => child.exitedAt !== null && child.process?.exitCode === (terminal === 'crashed' ? 1 : 0),
         5_000, `${terminal} child reaped`);
@@ -912,7 +874,6 @@ describe('FleetModule — unresolved launch artifacts', () => {
     await owner.handleToolCall({ id: 'replaced-pid-crash', name: 'command', input: { name: 'guard', command: '/crash' } });
     await waitFor(() => old.exitedAt !== null && old.process?.exitCode === 1, 5_000, 'old generation exit');
     const pidPath = join(dataDir, 'headless.pid');
-    // A different live generation's PID replaces our reaped child's metadata.
     writeFileSync(pidPath, String(process.pid));
     const before = lstatSync(old.socketPath, { bigint: true });
     const cleanup = spyOn(owner as any, 'cleanupStaleChildFiles');
@@ -981,7 +942,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
     } finally {
       cleanup.mockRestore();
       if (old.process?.exitCode === null && old.process?.signalCode === null) {
-        try { process.kill(old.pid!, 'SIGCONT'); } catch { /* already gone */ }
+        try { process.kill(old.pid!, 'SIGCONT'); } catch { }
       }
       await restored.stop(); owner.setDetachMode(false); await owner.stop();
     }
@@ -1021,7 +982,7 @@ describe('FleetModule — unresolved launch artifacts', () => {
       probe.mockRestore();
       cleanup.mockRestore();
       if (old.process?.exitCode === null && old.process?.signalCode === null) {
-        try { process.kill(old.pid!, 'SIGCONT'); } catch { /* already gone */ }
+        try { process.kill(old.pid!, 'SIGCONT'); } catch { }
       }
       await restored.stop(); owner.setDetachMode(false); await owner.stop();
     }
@@ -1040,13 +1001,10 @@ describe('FleetModule — Phase 2', () => {
     dataDir = join(tmpDir, 'leaf');
     writeFileSync(recipePath, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
 
-    // Inject a dummy ANTHROPIC_API_KEY into the env that children inherit;
-    // they validate it on startup but never call the API in this test.
     process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'sk-test-fleet-smoke';
 
     fleet = new FleetModule({
       childIndexPath: INDEX_PATH,
-      // Snappier timeouts for a hermetic test.
       socketWaitTimeoutMs: 15_000,
       readyTimeoutMs: 10_000,
       gracefulShutdownMs: 5_000,
@@ -1055,13 +1013,11 @@ describe('FleetModule — Phase 2', () => {
   });
 
   afterAll(async () => {
-    // Defensive cleanup — kill any children the test left behind.
-    try { await fleet.stop(); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { await fleet.stop(); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('launch → list → status → command/peek → kill round trip', async () => {
-    // -- launch --
     const spawnRes = await fleet.handleToolCall({
       id: 't-launch',
       name: 'launch',
@@ -1073,7 +1029,6 @@ describe('FleetModule — Phase 2', () => {
     expect(spawnData.status).toBe('ready');
     expect(typeof spawnData.pid).toBe('number');
 
-    // -- list --
     const listRes = await fleet.handleToolCall({ id: 't-list', name: 'list', input: {} });
     expect(listRes.success).toBe(true);
     const listData = listRes.data as Array<{ name: string; status: string; eventCount: number }>;
@@ -1081,14 +1036,12 @@ describe('FleetModule — Phase 2', () => {
     expect(listData[0]!.name).toBe('leaf');
     expect(listData[0]!.status).toBe('ready');
 
-    // -- status --
     const statusRes = await fleet.handleToolCall({ id: 't-status', name: 'status', input: { name: 'leaf' } });
     expect(statusRes.success).toBe(true);
     const statusData = statusRes.data as { name: string; status: string; subscription: string[] };
     expect(statusData.status).toBe('ready');
-    expect(statusData.subscription).toContain('*');  // default subscription
+    expect(statusData.subscription).toContain('*');
 
-    // -- command (/help is offline-safe — no LLM call) --
     const cmdRes = await fleet.handleToolCall({
       id: 't-cmd',
       name: 'command',
@@ -1096,7 +1049,6 @@ describe('FleetModule — Phase 2', () => {
     });
     expect(cmdRes.success).toBe(true);
 
-    // Wait for the command-output events to land in the buffer.
     await waitFor(
       () => {
         const child = fleet.getChildren().get('leaf');
@@ -1106,7 +1058,6 @@ describe('FleetModule — Phase 2', () => {
       'command-output events from /help',
     );
 
-    // -- peek --
     const peekRes = await fleet.handleToolCall({
       id: 't-peek',
       name: 'peek',
@@ -1119,16 +1070,13 @@ describe('FleetModule — Phase 2', () => {
     const cmdOutputs = peekData.events.filter((e) => e.type === 'command-output');
     expect(cmdOutputs.length).toBeGreaterThanOrEqual(5);
 
-    // -- kill --
     const killRes = await fleet.handleToolCall({ id: 't-kill', name: 'kill', input: { name: 'leaf' } });
     expect(killRes.success).toBe(true);
 
-    // Final status should be 'exited' (graceful shutdown via socket).
     const child = fleet.getChildren().get('leaf');
     expect(child?.status).toBe('exited');
     expect(child?.exitCode).toBe(0);
 
-    // Socket file should be removed by the child's own cleanup path.
     expect(existsSync(join(dataDir, 'ipc.sock'))).toBe(false);
     expect(existsSync(join(dataDir, 'headless.pid'))).toBe(false);
   }, 60_000);
@@ -1150,7 +1098,6 @@ describe('FleetModule — Phase 2', () => {
     expect(second.success).toBe(false);
     expect(second.error).toMatch(/already/);
 
-    // Cleanup: kill the running one.
     await fleet.handleToolCall({ id: 't-dup-kill', name: 'kill', input: { name: 'dup' } });
   }, 60_000);
 
@@ -1168,13 +1115,10 @@ describe('FleetModule — Phase 2', () => {
     });
     expect(spawnRes.success).toBe(true);
 
-    // The lifecycle:ready event should have been fanned out by the time
-    // launch returned (handleLaunch awaits waitForReady which polls status).
     expect(seen.some((e) => e.child === 'sub' && e.type === 'lifecycle')).toBe(true);
 
     await fleet.handleToolCall({ id: 't-sub-cmd', name: 'command', input: { name: 'sub', command: '/help' } });
 
-    // Wait for command-output events to fan out.
     const start = Date.now();
     while (Date.now() - start < 5_000) {
       if (seen.filter((e) => e.type === 'command-output').length >= 5) break;
@@ -1202,11 +1146,6 @@ describe('FleetModule — Phase 2', () => {
 describe('FleetModule — Phase 4 autoStart + allowlist', () => {
   let tmpDir: string;
   let recipePath: string;
-  // Each test below builds its own FleetModule and (in the happy path) calls
-  // .stop() before returning.  But if a test throws or times out — or, like
-  // adopt-on-restart, intentionally uses detachMode — children spawned with
-  // detached:true survive and orphan to PID 1.  Push every fleet here so
-  // afterAll can defensively reap whatever the test bodies missed.
   const activeFleets: FleetModule[] = [];
 
   beforeAll(() => {
@@ -1217,14 +1156,11 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
   });
 
   afterAll(async () => {
-    // Reap in parallel; serial awaits would exceed Bun's hook budget on the
-    // worst-case timeout path. undo any leftover detach-mode (adopt-on-restart
-    // sets it) so stop() actually kills children, not just disconnects sockets.
     await Promise.all(activeFleets.map(async (f) => {
-      try { f.setDetachMode(false); } catch { /* noop */ }
-      try { await f.stop(); } catch { /* noop */ }
+      try { f.setDetachMode(false); } catch { }
+      try { await f.stop(); } catch { }
     }));
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   }, 30_000);
 
   test('autoStart children launch at launchAutoStart() and reach ready', async () => {
@@ -1241,11 +1177,9 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     });
     activeFleets.push(fleet);
 
-    // Minimal ModuleContext stub — start() only uses ctx for .setState which we don't exercise here.
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
     fleet.launchAutoStart();
 
-    // autoStart is fire-and-forget, so wait for both to reach ready.
     const start = Date.now();
     while (Date.now() - start < 30_000) {
       const ready = [...fleet.getChildren().values()].filter((c) => c.status === 'ready').length;
@@ -1264,7 +1198,7 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     const fleet = new FleetModule({
       childIndexPath: INDEX_PATH,
       autoStart: [],
-      allowedRecipes: [recipePath],  // only this one path
+      allowedRecipes: [recipePath],
       socketWaitTimeoutMs: 15_000,
       readyTimeoutMs: 10_000,
       gracefulShutdownMs: 5_000,
@@ -1282,7 +1216,6 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     expect(res.success).toBe(false);
     expect(res.error).toContain("isn't one this host lets its agent launch");
 
-    // Listed path should be accepted.
     const ok = await fleet.handleToolCall({
       id: 't-allow-ok',
       name: 'launch',
@@ -1322,10 +1255,8 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
 
     await new Promise((r) => setTimeout(r, 500));
 
-    // Unfiltered should include both lifecycle and command-output.
     expect(allEvents.some((t) => t === 'lifecycle')).toBe(true);
     expect(allEvents.some((t) => t === 'command-output')).toBe(true);
-    // Filtered should include ONLY lifecycle — no command-output leak-through.
     expect(filteredEvents.some((t) => t === 'lifecycle')).toBe(true);
     expect(filteredEvents.every((t) => t === 'lifecycle')).toBe(true);
 
@@ -1336,7 +1267,6 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
   }, 60_000);
 
   test('adopt-on-restart: second FleetModule with shared state reattaches to running child', async () => {
-    // A minimal in-memory ctx that survives across FleetModule instances.
     const store: { fleet?: unknown } = {};
     const stubCtx = {
       setState: <T>(s: T): void => { store.fleet = s; },
@@ -1345,13 +1275,10 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
       getModule: (): null => null,
     } as unknown as Parameters<FleetModule['start']>[0];
 
-    // First parent: spawn, detach (child keeps running).
     const fleet1 = new FleetModule({
       childIndexPath: INDEX_PATH,
       socketWaitTimeoutMs: 15_000,
       readyTimeoutMs: 10_000,
-      // Snappy shutdown so the afterAll safety net stays within hook budget
-      // if anything between detach and the explicit kill below throws.
       gracefulShutdownMs: 1_000,
       sigtermEscalationMs: 500,
     });
@@ -1369,10 +1296,8 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     fleet1.setDetachMode(true);
     await fleet1.stop();
 
-    // Brief gap to simulate parent restart.
     await new Promise((r) => setTimeout(r, 200));
 
-    // Second parent: same shared state; should adopt rather than respawn.
     const fleet2 = new FleetModule({
       childIndexPath: INDEX_PATH,
       socketWaitTimeoutMs: 15_000,
@@ -1383,13 +1308,11 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     activeFleets.push(fleet2);
     await fleet2.start(stubCtx);
 
-    // The adopted child should be in the new fleet's map, ready, with the SAME pid.
     const adopted = fleet2.getChildren().get('adoptee');
     expect(adopted).toBeDefined();
     expect(adopted?.status).toBe('ready');
     expect(adopted?.pid).toBe(pidBefore);
 
-    // Send a command to confirm the socket works end-to-end.
     const cmd = await fleet2.handleToolCall({
       id: 't-adopt-cmd',
       name: 'command',
@@ -1402,15 +1325,9 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
   }, 60_000);
 
   test('relative launch path matches implicit absolute-path allowlist via CWD resolve', async () => {
-    // Simulates the conductor's post-fix situation: autoStart children carry
-    // absolute paths (resolved at recipe-load time), so the implicit allowlist
-    // is absolute; but the agent calls fleet--launch with a CWD-relative
-    // string.  The launch check must try both forms.
     const fleet = new FleetModule({
       childIndexPath: INDEX_PATH,
       autoStart: [
-        // Registers an absolute path in the implicit allowlist without
-        // actually starting (autoStart: false).
         { name: 'placeholder', recipe: recipePath, autoStart: false },
       ],
       socketWaitTimeoutMs: 15_000,
@@ -1421,8 +1338,6 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     activeFleets.push(fleet);
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
 
-    // Run the launch from the recipe's directory so CWD-resolving "recipe.json"
-    // lands on the absolute path registered above.
     const originalCwd = process.cwd();
     process.chdir(tmpDir);
     try {
@@ -1453,7 +1368,6 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     activeFleets.push(fleet);
     await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
 
-    // Any recipe under tmpDir/ should match.
     const ok = await fleet.handleToolCall({
       id: 't-glob-ok',
       name: 'launch',
@@ -1461,7 +1375,6 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
     });
     expect(ok.success).toBe(true);
 
-    // Something outside tmpDir should not.
     const bad = await fleet.handleToolCall({
       id: 't-glob-bad',
       name: 'launch',

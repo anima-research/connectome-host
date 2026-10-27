@@ -27,8 +27,6 @@ await runHeadless({
     async stop() {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // A synthetic caller deadline expires before Fleet's actual 10s/5s waits.
-        // This does not exercise Framework.stop(timeoutMs).
         await Promise.race([
           fleet.stop(),
           new Promise<never>((_, reject) => {

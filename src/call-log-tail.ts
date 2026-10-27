@@ -1,48 +1,23 @@
-// Reading a call log (`llm-calls.<iso>.jsonl`) from its end, a whole line at
-// a time.
-//
-// The log's readers, the call ledger's restore and /bug's provider summary,
-// want its newest records, and a line can be as long as the writers' bound,
-// MAX_RECORD_BYTES with its newline (logging-record.ts). A fixed window of
-// bytes that a few long lines fill would leave them nothing. So a reader reads
-// back from the end within a budget taken from that bound: four lines of the
-// bound's length are read whole, the byte before the oldest of them showing
-// where it begins.
-
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { MAX_RECORD_BYTES } from './logging-record.js';
 
-/** The most a reader reads of a call log: four of the longest lines the
- *  writers write, and the byte before them. */
-export const CALL_LOG_READ_BUDGET = 4 * MAX_RECORD_BYTES + 1;
+const LINES_READ_WHOLE = 4;
+const BYTE_BEFORE_OLDEST_LINE = 1;
+export const CALL_LOG_READ_BUDGET = LINES_READ_WHOLE * MAX_RECORD_BYTES + BYTE_BEFORE_OLDEST_LINE;
 
-/** How much is read at a time. */
-const CHUNK_BYTES = 1024 * 1024;
+export const CHUNK_BYTES = 1024 * 1024;
 
 export interface LinesRead {
-  /** Bytes read from the file. */
   bytes: number;
-  /** Lines before the ones handed on were left unread: the budget ran out
-   *  before the file's start, or the line before them was longer than what
-   *  was left of it. */
   truncated: boolean;
 }
 
-/**
- * Hands `onLine` each whole line of the file at `path`, newest first and
- * without its newline, reading back from the end until `budget` bytes are read
- * or the file's start. Empty lines are passed over. A last line with no newline
- * after it is being written now, or was cut off when its process stopped, so
- * it's handed on only if it parses as JSON. Throws if the file can't be read.
- */
 export function readLinesFromEnd(path: string, budget: number, onLine: (line: string) => void): LinesRead {
   const fd = openSync(path, 'r');
   try {
     let position = fstatSync(fd).size;
     let bytes = 0;
-    // The end of a line whose start hasn't been read yet, in file order.
     let parts: Buffer[] = [];
-    // Whether that line runs to the file's end, with no newline after it.
     let unterminated = true;
     const hand = (line: Buffer, last: boolean): void => {
       if (line.length === 0) return;

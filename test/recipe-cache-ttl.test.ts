@@ -1,8 +1,3 @@
-/**
- * Tests for recipe.agent.cacheTtl: accepted values pass validation and an
- * invalid TTL fails at recipe-load time (not as a provider 400 at first
- * inference).
- */
 import { describe, test, expect } from 'bun:test';
 import { DEFAULT_RECIPE, validateRecipe } from '../src/recipe.js';
 

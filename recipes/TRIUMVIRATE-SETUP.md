@@ -21,7 +21,7 @@ You watch it all from one terminal.
 
 | Tool / resource | Why | Install / obtain |
 |---|---|---|
-| [Node.js](https://nodejs.org/) 22.12+ | Builds connectome-host's Web UI when it installs, and runs the Zulip MCP server | `nvm install 22` or download from nodejs.org |
+| [Node.js](https://nodejs.org/) 22.12+ | Builds connectome-host's Web UI (`bun run build:web`), and runs the Zulip MCP server | `nvm install 22` or download from nodejs.org |
 | [Bun](https://bun.sh/) 1.4.3+ | Runs connectome-host itself | `curl -fsSL https://bun.sh/install \| bash` |
 | [Anthropic API key](https://console.anthropic.com/) | LLM access for all four agents | Sign up at console.anthropic.com — note that four agents run concurrently, so expect proportionally higher API spend |
 | A Zulip account with admin access | Needed to create a bot and a dedicated channel | Your organization's Zulip |
@@ -35,6 +35,7 @@ The triumvirate is currently supported on **Linux / macOS / WSL2**. Windows supp
 git clone https://github.com/anima-research/connectome-host.git
 cd connectome-host
 bun install
+bun run build:web     # the Web UI
 ```
 
 Verify it works in isolation before adding any agents:

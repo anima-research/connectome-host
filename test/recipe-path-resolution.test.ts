@@ -1,10 +1,3 @@
-/**
- * Tests for parent-recipe-dir-relative resolution of
- * `modules.fleet.children[].recipe`.
- *
- * Runtime paths (workspace mounts, dataDir) stay CWD-relative — those are
- * intentionally NOT touched by this resolver and are covered elsewhere.
- */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,7 +56,6 @@ describe('resolveRecipeRelative', () => {
     expect(dirname(here)).toBe(dir);
     expect(basename(here)).toBe('child.json');
 
-    // `..` must climb out of `dir` and land in a sibling directory.
     const up = resolveRecipeRelative('../other/child.json', { kind: 'file', dir });
     expect(basename(up)).toBe('child.json');
     expect(basename(dirname(up))).toBe('other');
@@ -84,7 +76,7 @@ describe('loadRecipe — children[].recipe resolution', () => {
   });
 
   afterEach(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('external bundle: bare filename resolves to sibling of parent', async () => {
@@ -151,7 +143,7 @@ describe('loadRecipe — children[].recipe resolution', () => {
 
     const originalCwd = process.cwd();
     try {
-      process.chdir(tmpDir); // NOT the bundle dir
+      process.chdir(tmpDir);
       const recipe = await loadRecipe(parentPath);
       expect(fleetChildren(recipe)[0].recipe).toBe(resolve(nested, 'child.json'));
     } finally {
@@ -160,9 +152,6 @@ describe('loadRecipe — children[].recipe resolution', () => {
   });
 
   test('in-tree triumvirate: children resolve to siblings in recipes/', async () => {
-    // The shipped triumvirate.json references ${ZULIP_CHANNEL} in its
-    // conductor prompt; substituteEnvVars throws on missing vars, so set
-    // a placeholder for the load.  We're only testing path resolution.
     const prevZulipChannel = process.env.ZULIP_CHANNEL;
     process.env.ZULIP_CHANNEL = 'test-channel';
     try {

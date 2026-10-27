@@ -1,7 +1,3 @@
-// scripts/pack-contents.mjs, which this repository's prepack runs: each case
-// packs a throwaway package that has this repository's prepack and the
-// script beside it, in a git checkout or a plain directory, with npm kept to
-// that directory.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -18,11 +14,6 @@ afterAll(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway package with this repository's prepack and the script, whose
- *  files lists recipes and the built Web UI unless `files` says otherwise,
- *  and whose .gitignore names dist/, my-recipe.json and data/ as the host's
- *  does unless `gitignore` says otherwise: with the built Web UI unless
- *  `webUi` is false, and in a git checkout unless `git` is false. */
 function project({ webUi = true, git = true, files = ["recipes", "dist/web"], gitignore = "dist/\nmy-recipe.json\ndata/\n" } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "pack-contents-"));
   made.push(dir);
@@ -42,8 +33,6 @@ function project({ webUi = true, git = true, files = ["recipes", "dist/web"], gi
   return dir;
 }
 
-/** npm's settings for `dir`: its own home, cache and user config there, and a
- *  registry nothing answers on, so no npm these tests start reaches the network. */
 function npmEnv(dir: string): Record<string, string> {
   return {
     PATH: process.env.PATH ?? "",
@@ -56,17 +45,13 @@ function npmEnv(dir: string): Record<string, string> {
   };
 }
 
-/** npm in `dir`, with npmEnv(). */
 function npm(dir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  // As in release-holds.test.ts: npm's own CLI under `npm test`, the npm on
-  // PATH otherwise.
+  // Under `npm test`, npm_execpath names npm's own CLI.
   const cli = process.env.npm_execpath;
   const [file, argv] = cli && /npm-cli\.c?js$/.test(cli) ? ["node", [cli, ...args]] : ["npm", args];
   return run(file, argv, dir, npmEnv(dir));
 }
 
-/** `bun pm pack --dry-run` in `dir`, with the bun running these tests and
- *  npmEnv(), which reaches the npm that the prepack runs, and `extra`. */
 function bunPack(dir: string, extra: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return run(process.execPath, ["pm", "pack", "--dry-run"], dir, { ...npmEnv(dir), ...extra });
 }
@@ -98,7 +83,6 @@ test("a tree where git ignores none of the files to pack packs without a word", 
   assert.doesNotMatch(result.stderr, /pack-contents: /);
 }, 30_000);
 
-/** project(), with two local files git ignores in recipes/, which files lists. */
 function withLocalFiles(): string {
   const dir = project();
   writeFileSync(join(dir, "recipes", "my-recipe.json"), "{}\n");
@@ -172,7 +156,6 @@ test("a tree without the built Web UI doesn't pack", async () => {
   );
 }, 30_000);
 
-/** project() outside a git checkout, with a local file the host's .gitignore names. */
 function outsideCheckout(): string {
   const dir = project({ git: false });
   writeFileSync(join(dir, "recipes", "my-recipe.json"), "{}\n");
@@ -192,8 +175,8 @@ test("outside a git checkout an npm publish stops, saying why", async () => {
 }, 30_000);
 
 test("in a git checkout git can't read, the pack stops, saying why", async () => {
-  // A .git that points at a missing repository: git exits 128 here, as it
-  // does for a checkout another user owns or an unreadable index.
+  // A .git that points at a missing repository: git exits 128, as for any fatal
+  // error.
   const dir = project({ git: false });
   writeFileSync(join(dir, ".git"), `gitdir: ${join(dir, "missing")}\n`);
   const result = await npm(dir, ["pack", "--dry-run"]);

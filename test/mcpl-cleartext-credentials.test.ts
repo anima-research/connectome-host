@@ -1,10 +1,3 @@
-/**
- * A credential sent over ws:// to another machine can be read on the
- * network between: the framework puts a token, or the credential an access
- * grant attaches, in the url's query, and the WebSocket client sends a url's
- * user and password as a header. mcpl_deploy refuses such an entry;
- * agent-framework warns when it connects one.
- */
 import { describe, expect, test } from 'bun:test';
 import { cleartextCarrierText, cleartextCredential, isLoopbackHost } from '../src/mcpl-config.js';
 
@@ -18,7 +11,6 @@ describe('cleartextCredential', () => {
     expect(cleartextCredential({ url: 'ws://user@tools.example/mcpl' })).toEqual({ carrier: 'url', host: 'tools.example' });
     expect(cleartextCredential({ url: 'ws://:secret@tools.example/mcpl' })).toEqual({ carrier: 'url', host: 'tools.example' });
     expect(cleartextCredential({ url: 'ws://user:pass@tools.example/mcpl', access: 'eidoverse' })).toEqual({ carrier: 'access', host: 'tools.example' });
-    // A grant named only spaces still resolves to whatever its issuer returns.
     expect(cleartextCredential({ url: 'ws://tools.example/mcpl', access: '  ' })).toEqual({ carrier: 'access', host: 'tools.example' });
     expect(cleartextCarrierText('access', '  ')).toBe('the credential of its access grant "  "');
     expect(cleartextCredential({ url: 'ws://tools.example?token=abc', token: 't' })).toEqual({ carrier: 'token', host: 'tools.example' });
@@ -47,7 +39,6 @@ describe('cleartextCredential', () => {
   });
 
   test('counts only an entry the framework dials', () => {
-    // A command with a url and no transport is refused, so nothing is dialed.
     expect(cleartextCredential({ command: 'node', url: 'ws://tools.example', token: 't' })).toBeUndefined();
     expect(cleartextCredential({ command: 'node', url: 'ws://tools.example', token: 't', transport: 'stdio' })).toBeUndefined();
     expect(cleartextCredential({ url: 'ws://tools.example', token: 't', transport: 'stdio' })).toBeUndefined();

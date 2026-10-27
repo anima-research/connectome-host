@@ -5,22 +5,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/**
- * A session resumed with no recipe argument, whose saved recipe can't be
- * used, stops at startup naming the file and the ways out. Starting the
- * default recipe instead would put it in the resumed agent's place without a
- * word.
- */
-
 const INDEX_PATH = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'src', 'index.ts');
 
-// A whole host start, on a loaded machine.
 const START_MS = 60_000;
 
-/**
- * Start the host with `place` putting something at the saved recipe's path,
- * in a data directory it may also make one the host can't write.
- */
 function start(place: (path: string) => void, args: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'resume-startup-'));
   const dataDir = join(dir, 'data');
@@ -28,11 +16,7 @@ function start(place: (path: string) => void, args: string[] = []) {
     mkdirSync(dataDir);
     const path = join(dataDir, '.recipe.json');
     place(path);
-    // cwd=dir keeps the developer's own mcpl-servers.json out of the run.
-    // Without the developer's credentials, a startup that ran the default
-    // recipe instead would stop at once, at their check, rather than call the API.
     const noCredentials = { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_OAUTH_CREDENTIALS_FILE: '' };
-    // Inside the test's own budget, so a slow start fails here, with its output.
     const r = spawnSync(process.execPath, [INDEX_PATH, '--headless', ...args], {
       cwd: dir, env: { ...process.env, DATA_DIR: dataDir, ...noCredentials }, encoding: 'utf-8', timeout: START_MS - 5_000,
     });
@@ -52,11 +36,8 @@ function start(place: (path: string) => void, args: string[] = []) {
 
 const startWithSaved = (text: string) => start((path) => writeFileSync(path, text));
 
-/** The line for a directory at the saved recipe's path, whichever way startup met it. */
 const directoryLine = 'Move or remove it, then start again: the host saves its recipe there as a file, so the source of a bind mount there has to be a file that exists before the container starts.';
 
-// A refusal stops startup there. Without it, startup would go on to the
-// default recipe, which stops at the credential check instead.
 const NO_CREDENTIALS_STOP = 'Missing ANTHROPIC_API_KEY';
 
 describe('startup with a saved recipe it can\'t use', () => {
@@ -81,8 +62,6 @@ describe('startup with a saved recipe it can\'t use', () => {
     expect(r.stderr).not.toContain(NO_CREDENTIALS_STOP);
   }, START_MS);
 
-  // A recipe file can't be written over a directory, and --no-recipe leaves
-  // one, so the error gives the fix that works instead of those.
   test('a directory at the path stops startup, saying to move or remove it', () => {
     const r = start((path) => mkdirSync(path));
     expect(r.status).toBe(1);
@@ -110,10 +89,6 @@ describe('--no-recipe, the way out it names', () => {
     expect(r.left).toBe(true);
   }, START_MS);
 
-  // Root writes any directory, so this case needs another user. A link to a
-  // directory is removed like any link, so where removing it fails, that
-  // failure is the cause, and the directory's line would send the operator
-  // to a fix that fails the same way.
   test.skipIf(process.getuid?.() === 0)("stops with the clear's own error where the link to a directory there can't be removed", () => {
     const r = start((path) => {
       mkdirSync(join(dirname(path), 'target'));
@@ -130,7 +105,6 @@ describe('--no-recipe, the way out it names', () => {
 });
 
 describe('a recipe file, the other way out', () => {
-  /** A recipe file outside the data directory, valid on its own. */
   function recipeFile(): { path: string; done: () => void } {
     const dir = mkdtempSync(join(tmpdir(), 'resume-recipe-'));
     const path = join(dir, 'fresh.json');

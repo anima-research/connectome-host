@@ -92,6 +92,15 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
   },
   {
     file: 'src/modules/subagent-module.ts',
+    call: 'ctx.addMessage (untargeted)',
+    count: 1,
+    why: "An async run's result or failure with no listed agent to write it for (addForLauncher): no launcher named, " +
+      'or a launcher or launching attempt that has ended. It lands in the residents\' slot naming whom it was for, ' +
+      'meant for every resident, and wakes none of them but the unnamed launcher\'s, as main has it (#467); a run ' +
+      'whose launcher or current attempt is listed is written for that agent.',
+  },
+  {
+    file: 'src/modules/subagent-module.ts',
     call: 'storeOwnRow',
     count: 7,
     why: "A spawn's or fork's seed rows (its orientation and task, a fork's copy of its parent's context and the fork " +

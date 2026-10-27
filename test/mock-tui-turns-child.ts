@@ -1,14 +1,7 @@
 /**
- * runTui driven through its own key handler and its own trace subscription,
- * for test/tui-turns.test.ts. The fake app's framework sends the traces each
- * step names to every listener, as agent-framework's emitTrace calls each
- * one, and its abortInference aborts only once told an agent's model call is
- * in flight, then sends `inference:aborted` alone, as agent-framework
- * 0.22.3's does. In the `subagents` and `subagent-exhausted` scenarios its
- * subagent module stands in for the host's. In `undone` the agent's record
+ * The fake framework sends each trace to every listener in turn, as
+ * agent-framework's emitTrace calls each one. In `undone` the agent's record
  * holds two rows, and its window's undone ones are the test's to set.
- * Prints one `TUI_STEP` line of JSON per step: the frame's text and the
- * aborts asked for so far.
  */
 import { mock } from 'bun:test';
 import * as core from '@opentui/core';
@@ -30,7 +23,6 @@ let ready!: () => void;
 const initialized = new Promise<void>(resolve => { ready = resolve; });
 const aborts: string[] = [];
 
-/** The subagent module, as runTui reads it: in `subagents`, one live attempt, spawn-1. */
 const subagents = {
   name: 'subagent',
   activeSubagents: new Map(),
@@ -56,7 +48,6 @@ function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
   const abortable = new Set<string>();
   return {
-    /** Whether an agent's model call is in flight, so an abort finds it. */
     setAbortable(value: boolean, agentName = 'agent') {
       if (value) abortable.add(agentName);
       else abortable.delete(agentName);
@@ -64,7 +55,7 @@ function fakeFramework(name: string) {
     send(type: string, extra: Trace = {}) {
       for (const listener of [...listeners]) listener({ type, agentName: 'agent', ...extra });
     },
-    getAllModules: () => (['subagents', 'subagent-exhausted'].includes(scenario) ? [subagents] : []),
+    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
@@ -95,6 +86,7 @@ let endSwitch!: (outcome: 'switched' | 'failed') => void;
 const app = {
   membrane: {},
   recipe: { name: 'tui-turns-test', agent: { name: 'agent' } },
+  credentials: { provider: 'anthropic', snapshot: () => ({ kind: 'ok' }) },
   branchState: { checkpoints: new Map() },
   sessionManager: {
     getActiveSession: () => active,
@@ -113,23 +105,23 @@ const app = {
   },
 };
 
-// runTui sends stderr to its error log, so what goes wrong is told on stdout.
-// The watchdog only catches a hang: each wait below has its own deadline.
 const watchdog = setTimeout(() => { process.stdout.write(`TUI_ERROR timed out in ${scenario}\n`); process.exit(2); }, 25000);
 void runTui(app as unknown as Parameters<typeof runTui>[0]);
 await initialized;
 
-// runTui registered its key handler before it followed the framework, so a
-// listener registered now hears each key after runTui's handler has run.
+// keyInput calls its keypress listeners in the order they were added, and
+// runTui added its key handler before it followed the framework, so a
+// listener added now hears each key after runTui's handler has run.
 let keysHandled = 0;
 renderer.keyInput.on('keypress', () => { keysHandled++; });
+
+const letAKeptInterruptTry = (): Promise<void> => Promise.resolve();
 
 async function pressed(press: () => void, what: string): Promise<void> {
   const before = keysHandled;
   press();
   await until(() => keysHandled > before, `${what} handled`);
-  // A kept interrupt's abort runs on a microtask.
-  await Promise.resolve();
+  await letAKeptInterruptTry();
 }
 
 const escape = (): Promise<void> => pressed(() => mockInput.pressEscape(), 'Escape');
@@ -161,13 +153,11 @@ async function play(): Promise<void> {
     await escape();
     await step('idle');
 
-    // A message sent, before its turn starts: the status line shows a turn
-    // the follower has none of.
     await command('hello');
     await until(async () => (await frame()).includes('You: hello'), 'the message to show');
-    await step('sent');
+    await step('sent, before its turn starts');
     await escape();
-    await step('sent, Escape');
+    await step('sent, before its turn starts, Escape');
 
     first.send('inference:started');
     first.setAbortable(true);
@@ -179,11 +169,9 @@ async function play(): Promise<void> {
     await step('compiling');
     first.setAbortable(true);
     first.send('inference:tokens');
-    await Promise.resolve();
+    await letAKeptInterruptTry();
     await step('compiled');
 
-    // A turn moved to the background with Ctrl+B, which the status line
-    // shows from its next tool call.
     first.send('inference:started');
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
@@ -198,10 +186,10 @@ async function play(): Promise<void> {
     await escape();
     await step('retry wait, Escape');
     first.send('inference:started');
-    await Promise.resolve();
+    await letAKeptInterruptTry();
     first.setAbortable(true);
     first.send('inference:tokens');
-    await Promise.resolve();
+    await letAKeptInterruptTry();
     await step('retried');
 
     first.send('inference:started');
@@ -211,12 +199,8 @@ async function play(): Promise<void> {
     await escape();
     await step('ended error, Escape');
   } else if (scenario === 'missed-start') {
-    // A turn whose start the TUI didn't follow, as one that began before it
-    // followed the framework: its running traces show it, and its own end,
-    // or its failure, shows.
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await step('no start, then tools');
-    // Running tools, so nothing to abort yet: the interrupt is kept.
     await escape();
     await step('no start, Escape');
     first.send('inference:completed');
@@ -224,8 +208,6 @@ async function play(): Promise<void> {
     first.send('inference:failed', { error: 'a turn the TUI never saw start' });
     await step('no start, then failed');
   } else if (scenario === 'switch' || scenario === 'switch-fails') {
-    // A turn is running when the switch starts; the switch stops its
-    // framework, so no turn is running once it ends.
     first.send('inference:started');
     await command('/session switch other');
     await until(async () => (await frame()).includes('switching'), 'the switch to start');
@@ -235,17 +217,10 @@ async function play(): Promise<void> {
     const settled = scenario === 'switch' ? 'Session: other' : 'Session switch failed';
     await until(async () => (await frame()).includes(settled), 'the switch to end');
     await step('switch ended');
-    // An end with no start since the switch, from the framework the host
-    // holds: the turn that was showing went with the switch, so it shows
-    // nothing.
     (scenario === 'switch' ? second : first).send('inference:aborted', { reason: 'from before the switch' });
     await step('late end');
-    // A failure always shows, with no start since the switch too.
     (scenario === 'switch' ? second : first).send('inference:failed', { error: 'a late failure' });
     await step('late failure');
-    // The trace of the framework the host doesn't hold goes first: by the
-    // time the other's line shows, its own would have, had it reached the
-    // TUI.
     const [gone, held] = scenario === 'switch' ? [first, second] : [second, first];
     gone.send('inference:started');
     gone.send('inference:failed', { error: 'from the framework the TUI left' });
@@ -253,20 +228,109 @@ async function play(): Promise<void> {
     held.send('inference:failed', { error: 'from the framework the host holds' });
     await step('after the switch');
   } else if (scenario === 'subagents') {
-    // The root's model call is in flight; spawn-1's turn is compiling.
     first.send('inference:started');
     first.send('inference:started', { agentName: 'spawn-1' });
     first.setAbortable(true);
     await escape();
     await step('subagents, Escape');
-    // spawn-1's call goes out: its kept interrupt aborts it.
     first.setAbortable(true, 'spawn-1');
     first.send('inference:tokens', { agentName: 'spawn-1' });
-    await Promise.resolve();
+    await letAKeptInterruptTry();
     await step('subagent compiled');
+  } else if (scenario === 'numbered-fork-failed' || scenario === 'numbered-fork-exhausted') {
+    for (const name of ['web', 'web-1']) {
+      subagents.activeSubagents.set(name, {
+        name, status: 'running', startedAt: Date.now(),
+        task: 'Check numbered fork attribution', toolCallsCount: 0,
+      });
+    }
+    const tab = () => pressed(() => mockInput.pressTab(), 'Tab');
+    await until(async () => (await frame()).includes('Session: first'), 'initial render');
+    await tab();
+    await until(async () => {
+      const text = await frame();
+      return /web  \[sending /.test(text) && /web-1  \[sending /.test(text);
+    }, 'both running subagent rows');
+    await step('before');
+
+    const agentName = 'web-1-d1-1700000000001';
+    first.send('inference:started', { agentName });
+    first.send(scenario === 'numbered-fork-failed' ? 'inference:failed' : 'inference:exhausted', {
+      agentName, error: 'numbered fork failure',
+    });
+    await tab();
+    await tab();
+    await step('after');
+  } else if (scenario === 'fork-figures' || scenario === 'fork-figures-reversed') {
+    for (const name of ['web-retry1', 'web']) {
+      subagents.activeSubagents.set(name, {
+        name, status: 'running', startedAt: Date.now(),
+        task: 'Check each row reads its own figure', toolCallsCount: 0,
+      });
+    }
+    const usage: Array<[string, number]> = [['web-retry1-d1-1700000000000', 50000], ['web-d1-1700000000001', 20000]];
+    if (scenario === 'fork-figures-reversed') usage.reverse();
+    for (const [agentName, input] of usage) {
+      first.send('inference:started', { agentName });
+      first.send('inference:usage', { agentName, tokenUsage: { input, output: 10 } });
+    }
+    await until(async () => (await frame()).includes('Session: first'), 'initial render');
+    await pressed(() => mockInput.pressTab(), 'Tab');
+    await until(async () => /web  \[sending /.test(await frame()), 'the rows');
+    await step('fleet');
+  } else if (scenario === 'fleet-parents') {
+    for (const name of ['web', 'web-retry1', 'saved-child', 'live-child']) {
+      subagents.activeSubagents.set(name, {
+        name, status: 'running', startedAt: Date.now(),
+        task: 'Check which row each child hangs under', toolCallsCount: 0,
+      });
+    }
+    subagents.parentMap.set('saved-child', 'web-retry2');
+    subagents.parentMap.set('live-child', 'web-retry1-d1-1700000000001');
+    await until(async () => (await frame()).includes('Session: first'), 'initial render');
+    first.send('branches:changed', { event: 'switched', branch: 'restored', previous: 'main', source: 'test' });
+    await pressed(() => mockInput.pressTab(), 'Tab');
+    await until(async () => /web  \[sending /.test(await frame()), 'the rows');
+    await pressed(() => mockInput.pressArrow('down'), 'Down');
+    await pressed(() => mockInput.pressEnter(), 'Enter');
+    await pressed(() => mockInput.pressArrow('down'), 'Down');
+    await pressed(() => mockInput.pressArrow('down'), 'Down');
+    await pressed(() => mockInput.pressEnter(), 'Enter');
+    await step('fleet');
+  } else if (scenario === 'repeated-failures') {
+    const sub = 'spawn-web-1700000000000';
+    for (let i = 0; i < 3; i++) {
+      first.send('inference:started');
+      first.send('inference:failed', { error: 'zz connection refused' });
+    }
+    await step('three failures');
+    first.send('inference:started');
+    first.send('inference:failed', { error: 'zz credential rejected' });
+    await step('other words');
+    first.send('inference:exhausted', { error: 'zz credential rejected', errorType: 'auth' });
+    await step('gave up');
+    for (let i = 0; i < 2; i++) {
+      first.send('inference:started', { agentName: sub });
+      first.send('inference:started');
+      first.send('inference:failed', { agentName: sub, error: 'zz subagent failure' });
+      first.send('inference:failed', { error: 'zz root again' });
+    }
+    await step('subagent twice');
+    first.send('inference:started');
+    first.send('inference:exhausted', { error: 'zz stream aborted' });
+    await step('aborted retry');
+    first.send('inference:started');
+    first.send('inference:failed', { error: 'zz before the switch' });
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('switched');
+    await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
+    second.send('inference:started');
+    second.send('inference:failed', { error: 'zz before the switch' });
+    await step('after the switch');
   } else if (scenario === 'subagent-exhausted') {
     const agentName = 'spawn-web-1700000000000';
-    subagents.activeSubagents.set(agentName, {
+    subagents.activeSubagents.set('spawn-web', {
       name: 'web', status: 'running', startedAt: Date.now(),
       task: 'Check stream failures', toolCallsCount: 0,
     });

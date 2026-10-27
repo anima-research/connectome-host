@@ -1,9 +1,3 @@
-/**
- * The switch's quiesce (src/update/quiesce.ts): every host quiesced under the
- * switch's reason before Restart stops the install's host, the operator's
- * view of who is still mid-turn, and the resume that leaves any other
- * quiesce.
- */
 import { describe, expect, spyOn, test } from 'bun:test';
 import type { HostModeStatus } from '@animalabs/agent-framework';
 import { isSwitchQuiesce, switchQuiesceReason } from '../src/update/contract.js';
@@ -11,15 +5,9 @@ import {
   type QuiesceFramework, type SwitchFleet, type SwitchRequest, answerSwitchRequest, quiesceForSwitch, resumeAfterSwitchQuiesce, resumeIfSwitch,
 } from '../src/update/quiesce.js';
 
+const TIMER_LIMIT_LESS_ANSWER_MARGIN = 2 ** 31 - 1 - 10_000;
 const SWITCH = switchQuiesceReason('0.14.0');
 
-/** A framework as the switch's quiesce uses one: `holders` hold a turn, and
- *  `drainAfter` reads of its status pass before it says drained, or `drain()`
- *  ends their turns at a moment the test chooses, and `set()` puts any
- *  field of its status in place, from then on. `calls`
- *  records each quiesce that answers and each resume, and `entered` counts
- *  each quiesce as it's entered, one that fails included; `resumeBy` ends its
- *  quiesce from elsewhere after that many reads, and `reads` counts them. */
 function fakeFramework(options: {
   quiesced?: boolean; reason?: string; holders?: string[]; drainAfter?: number; resumeFails?: 'before' | 'after'; quiesceFails?: Error;
   quiesceWaits?: Promise<void>; resumeBy?: number;
@@ -64,9 +52,6 @@ function fakeFramework(options: {
 
 type Answer = { ok: boolean; data?: unknown; error?: string };
 
-/** A fleet whose children answer as `answers` says, by name, each answer
- *  told how many times that child has been asked. `later` adds children to
- *  it once the first is asked. */
 function fakeFleet(
   answers: Record<string, (times: number) => Answer | Promise<Answer>>, later: Record<string, (times: number) => Answer> = {},
 ) {
@@ -85,7 +70,6 @@ function fakeFleet(
 
 const drained = (holders: string[] = []) => () => ({ ok: true, data: { drained: true, activeTurnAgents: holders, backgroundScripts: 0 } });
 
-/** A promise and the function that settles it. */
 function held<T = void>(): { promise: Promise<T>; settle: (value: T) => void } {
   let settle!: (value: T) => void;
   return { promise: new Promise<T>((done) => { settle = done; }), settle };
@@ -182,7 +166,6 @@ describe('quiesceForSwitch', () => {
   test("a host whose quiesce is ended while the switch waits can't be counted, and the wait stops on it", async () => {
     const { framework, reads } = fakeFramework({ drainAfter: 1_000_000, holders: ['agent'], resumeBy: 2 });
     const result = await quiesceForSwitch(framework, null, { to: '0.14.0', timeoutMs: 5_000 });
-    // The wait's second read finds it serving, and the look reads it twice more.
     expect(reads()).toBe(4);
     expect(result).toEqual({
       drained: false,
@@ -213,17 +196,12 @@ describe('quiesceForSwitch', () => {
   });
 
   test("an answer from the wait that no longer holds at the look isn't counted, for a child or for this host", async () => {
-    // A child drained during the wait, then resumed and taking a turn: the
-    // look quiesces it again, and it answers busy.
     const busy = { ok: true, data: { drained: false, activeTurnAgents: ['kid-agent'], backgroundScripts: 0 } };
     const { fleet } = fakeFleet({ kid: (times) => (times === 1 ? drained()() : busy) });
     const child = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', timeoutMs: 1_000 });
     expect(child.hosts[1]).toEqual({ host: 'kid', answered: true, drained: false, activeTurnAgents: ['kid-agent'], backgroundScripts: 0 });
     expect(child.drained).toBe(false);
 
-    // This host drains at once, and is resumed from elsewhere while a child's
-    // answer is still out, during the wait and then during the look: it's
-    // read last, as it is.
     for (const during of [1, 2]) {
       const answer = held<Answer>();
       const host = fakeFramework();
@@ -240,8 +218,6 @@ describe('quiesceForSwitch', () => {
   });
 
   describe('this host counts as drained only when it was quiesced and drained as the look starts, and is still quiesced at its end', () => {
-    /** Quiesce `host` with one child, hold the child's answer to the look,
-     *  and do `meanwhile` while it's held. */
     async function look(host: ReturnType<typeof fakeFramework>, meanwhile: (kids: ReturnType<typeof fakeFleet>) => Promise<void> | void) {
       const answer = held<Answer>();
       const kids = fakeFleet({ kid: (times) => (times === 2 ? answer.promise : drained()()) });
@@ -265,14 +241,11 @@ describe('quiesceForSwitch', () => {
     });
 
     test('one quiesced and drained as the look starts is counted as it is at its end', async () => {
-      // A script left running outside any turn ends during the look.
       const scripts = fakeFramework();
       const { result } = await look(scripts, () => scripts.set({ backgroundScripts: 0 }));
       expect(result.hosts[0]).toEqual({ host: 'this host', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 });
       expect(result.drained).toBe(true);
 
-      // A turn alive at its end, as one resumed and quiesced again within the
-      // look could have, keeps it from draining.
       const turn = fakeFramework();
       const busy = await look(turn, () => turn.set({ drained: false, activeTurnAgents: ['late-agent'] }));
       expect(busy.result.hosts[0]).toEqual({ host: 'this host', answered: true, drained: false, activeTurnAgents: ['late-agent'], backgroundScripts: 1 });
@@ -294,8 +267,6 @@ describe('quiesceForSwitch', () => {
       await until(() => host.calls.length === 1 && kids.asked.length === 1, "this host has quiesced and the child's answer is out");
       await host.framework.resume();
       answers[0]!.settle(drained()());
-      // While the child's answer to the look is out, this host is quiesced
-      // again, from elsewhere.
       await until(() => kids.asked.length === 2, "the child's answer to the look is out");
       await host.framework.quiesce({ reason: 'operator', timeoutMs: 1_000 });
       answers[1]!.settle(drained()());
@@ -307,7 +278,7 @@ describe('quiesceForSwitch', () => {
   });
 
   test('the longest wait a timer can hold with the margin is taken', async () => {
-    const longest = 2 ** 31 - 1 - 10_000;
+    const longest = TIMER_LIMIT_LESS_ANSWER_MARGIN;
     const { framework, calls } = fakeFramework();
     const { fleet, asked } = fakeFleet({ kid: drained() });
     expect((await quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: longest })).drained).toBe(true);
@@ -317,9 +288,7 @@ describe('quiesceForSwitch', () => {
   });
 
   test("a wait that isn't a number of milliseconds a timer can hold is refused before anything is quiesced", async () => {
-    // A request's timer holds the wait and ten seconds' margin, so a wait
-    // that fits a timer only without the margin is refused too.
-    for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.NaN, -1, 2 ** 31, 2 ** 31 - 1 - 10_000 + 1]) {
+    for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.NaN, -1, 2 ** 31, TIMER_LIMIT_LESS_ANSWER_MARGIN + 1]) {
       const { framework, entered } = fakeFramework();
       const { fleet, asked } = fakeFleet({ kid: drained() });
       await expect(quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs }), String(timeoutMs)).rejects.toThrow(RangeError);
@@ -455,7 +424,7 @@ describe("a fleet child's answer", () => {
     for (const request of [
       null, {}, { op: 'resum' }, { op: 'quiesce', waitMs: 0 }, { op: 'quiesce', to: '', waitMs: 0 },
       { op: 'quiesce', to: '0.14.0' }, { op: 'quiesce', to: '0.14.0', waitMs: -1 }, { op: 'quiesce', to: '0.14.0', waitMs: Number.NaN },
-      { op: 'quiesce', to: '0.14.0', waitMs: 2 ** 31 - 1 - 10_000 + 1 },
+      { op: 'quiesce', to: '0.14.0', waitMs: TIMER_LIMIT_LESS_ANSWER_MARGIN + 1 },
     ]) {
       const { framework, calls } = fakeFramework({ quiesced: true, reason: SWITCH });
       await expect(answerSwitchRequest(framework, request), JSON.stringify(request)).rejects.toThrow("This fleet child can't read the switch's request");

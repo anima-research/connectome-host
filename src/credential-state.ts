@@ -1,27 +1,3 @@
-/**
- * Credential monitor — turns what the host can observe about its provider
- * credential (provider errors, quota-meter readings, token expiry metadata,
- * a pending device-code login) into ONE named state, and moves that state
- * through the ops-alert pipeline (failures.log + `ops:alert` trace + webhook)
- * so the TUI status bar, the WebUI alert strip and fleet parents all learn
- * about it on the wire they already watch.
- *
- * The alert payload carries the operator actions the host can run for that
- * state (`refresh`, `login`, `set-token`, `recheck`). Nothing here runs an
- * action on its own: the operator clicks (WebUI) or types `/auth …` (TUI),
- * the panel op `credential-action` lands on `runAction`, and the resulting
- * state is announced the same way. Membrane's own single 401 retry with
- * `forceRefresh` is the only automatic rotation, and each source decides
- * whether it honours that (see AnthropicOAuthCredentials.autoRefresh).
- *
- * Why not just wait for hard-down: a 401 is non-retryable, so the framework
- * records one failed turn per wake and only alarms after three; nothing in
- * that path says "auth", and nothing offers a fix. A spent subscription
- * window parks the agent BEFORE inference, so no failure is ever seen by
- * anyone but the provider-hold hook. Both are silent to the humans who
- * pinged the agent — see ActivityModule's jam notices.
- */
-
 import type { QuotaMeter, QuotaSnapshot } from './quota-meter.js';
 
 export type CredentialStateKind =
@@ -69,59 +45,31 @@ export interface CredentialState {
   lastAction?: { id: CredentialActionId; at: number; ok: boolean; message: string };
 }
 
-/**
- * What the host implements per provider. Every method is optional except the
- * identity: a source that can do nothing still yields useful alerts (the
- * operator learns WHAT is wrong even when the only fix is a restart).
- */
 export interface CredentialSource {
   readonly provider: string;
-  /** True when `refresh()` can rotate without operator input. */
   canRefresh(): boolean;
-  /** Rotate the credential (refresh token, app-server refresh). Rejects on failure. */
   refresh?(): Promise<void>;
-  /** Start an interactive login; resolves when it completes. */
   login?(): Promise<void>;
-  /** Abandon the login in progress (its `login()` rejects) so a restart can
-   *  begin at once. Without it, a restart during a pending login is refused. */
   cancelLogin?(): Promise<boolean>;
-  /** Replace the credential with one the operator pasted. */
   setToken?(token: string): Promise<void> | void;
-  /** Epoch ms the current credential expires, when known. */
   expiresAt?(): number | undefined;
-  /**
-   * Cheap validity check that costs no inference (usage endpoint, account
-   * read). Resolves on success; rejects with `{ status?: number }` on
-   * failure — only 401/403 count as an auth verdict, anything else is
-   * inconclusive (the KR-class inference-only token answers 429 here).
-   */
+  /** Only 401/403 count as an auth verdict: an inference-only token answers
+   *  429 on the usage endpoint. */
   probe?(): Promise<void>;
-  /** The live bearer, for in-process callers that must send the same
-   *  credential as inference (count_tokens). Never put in a snapshot. */
   currentToken?(): string | undefined;
-  /** A rotation that took effect in memory but could not be persisted —
-   *  reported with the action outcome so the operator knows a restart
-   *  would reload the old credential. */
   persistWarning?(): string | undefined;
 }
 
 export interface CredentialMonitorOptions {
   source: CredentialSource;
-  /** Subscription meter, when the host runs on one. */
   quotaMeter?: QuotaMeter | null;
-  /** Model the meter's model-scoped windows are matched against. */
   modelFor?: () => string | undefined;
-  /** Sink for state transitions — the host wires notifyOpsAlert. */
   alert: (kind: string, message: string, data: Record<string, unknown>) => void;
   now?: () => number;
-  /** Warn this long before a known expiry (default 30 min). */
   expiryWarningMs?: number;
-  /** A meter that has never read successfully alarms after this many
-   *  consecutive failed reads (default 3). */
   unreadableAfterErrors?: number;
 }
 
-/** Alert kinds whose presence means the agent cannot answer right now. */
 export const JAM_ALERT_KINDS: ReadonlySet<string> = new Set([
   'quota-spent',
   'auth-expired',
@@ -131,7 +79,6 @@ export const JAM_ALERT_KINDS: ReadonlySet<string> = new Set([
 
 const DEFAULT_EXPIRY_WARNING_MS = 30 * 60_000;
 const DEFAULT_UNREADABLE_AFTER = 3;
-/** A meter error this old is stale news, not a live condition. */
 const EXPIRING_RECHECK_MS = 60_000;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -156,8 +103,6 @@ export class CredentialMonitor {
   private readonly unreadableAfter: number;
   private state: CredentialState;
   private meterErrors = 0;
-  /** The meter's standing verdict (quota-spent / quota-unreadable), kept
-   *  aside while an auth state has precedence and re-applied when it lifts. */
   private meterVerdict: PendingState | null = null;
   private unsubMeter: (() => void) | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -190,8 +135,6 @@ export class CredentialMonitor {
     return { ...this.state, actions: [...this.state.actions] };
   }
 
-  /** The live bearer for in-process callers (count_tokens must authenticate
-   *  exactly as inference does). Not part of any snapshot or alert. */
   bearer(): string | undefined {
     try {
       return this.source.currentToken?.();
@@ -200,16 +143,10 @@ export class CredentialMonitor {
     }
   }
 
-  /** Auth states outrank meter states: an expired token is actionable, a
-   *  spent window is a wait. `auth-expiring` is a warning and yields. */
   private authHasPrecedence(): boolean {
     return this.state.kind.startsWith('auth-') && this.state.kind !== 'auth-expiring';
   }
 
-  /** Show the meter's verdict, or ok, unless an auth state outranks it. A
-   *  clean quota read is not news about the credential's expiry: an
-   *  `auth-expiring` warning stands until the token rotates or expires, and
-   *  is re-raised when a spent window clears while the token is still short. */
   private applyMeterVerdict(): void {
     if (this.authHasPrecedence()) return;
     if (this.meterVerdict) {
@@ -229,16 +166,9 @@ export class CredentialMonitor {
     this.expiryTimer = null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Observations
-  // ---------------------------------------------------------------------------
-
-  /** A provider call failed. Only auth verdicts change state here; rate
-   *  limits are the meter's business (the hold hook already kicks a read). */
   observeError(error: unknown): void {
     if (this.disposed) return;
     if (!isAuthFailure(error)) return;
-    // A device-code login already in progress explains the rejection.
     if (this.state.kind === 'auth-login-required') return;
     const expiresAt = this.expiry();
     const expired = expiresAt !== undefined && expiresAt <= this.now();
@@ -254,17 +184,12 @@ export class CredentialMonitor {
     });
   }
 
-  /** A provider call succeeded: whatever auth state we held is over; the
-   *  meter's standing verdict (if any) shows again — directly, never via an
-   *  intermediate `ok`, which would read as recovery while quota still blocks. */
   observeSuccess(): void {
     if (this.disposed) return;
     if (this.authHasPrecedence()) this.settleAfterAuth();
     else if (this.state.kind === 'auth-expiring') this.checkExpiry();
   }
 
-  /** Leave an auth state for whatever stands beneath it: the meter's verdict,
-   *  else the expiry warning if the token is short, else ok. One transition. */
   private settleAfterAuth(): void {
     if (this.meterVerdict) {
       this.transition(this.meterVerdict);
@@ -274,7 +199,6 @@ export class CredentialMonitor {
     this.checkExpiry();
   }
 
-  /** The Codex app-server needs a human at a browser. */
   loginRequired(details: { verificationUrl: string; userCode: string }): void {
     if (this.disposed) return;
     this.transition({
@@ -331,8 +255,6 @@ export class CredentialMonitor {
       this.meterVerdict = null;
       this.applyMeterVerdict();
     }
-    // A failed read on a snapshot that HAS windows keeps the previous verdict
-    // (stale windows are still the best information; the meter says so).
   }
 
   private checkExpiry(): void {
@@ -351,8 +273,6 @@ export class CredentialMonitor {
       return;
     }
     if (remaining <= 0) {
-      // The credential's own expiry passed on an idle host: say so now
-      // instead of repeating "expires in ~1 min" until a 401 proves it.
       if (this.state.kind !== 'ok' && this.state.kind !== 'auth-expiring') return;
       this.transition({
         kind: 'auth-expired',
@@ -383,31 +303,13 @@ export class CredentialMonitor {
     if (expiresAt === undefined) return;
     const warnAt = expiresAt - this.expiryWarningMs;
     const delay = Math.max(1_000, Math.min(warnAt - this.now(), EXPIRING_RECHECK_MS * 60));
-    // Past the warning threshold, re-check every minute so the countdown in
-    // the message stays roughly honest without spamming transitions.
     const wait = warnAt <= this.now() ? EXPIRING_RECHECK_MS : delay;
     this.expiryTimer = setTimeout(() => this.checkExpiry(), wait);
     this.expiryTimer.unref?.();
   }
 
-  // ---------------------------------------------------------------------------
-  // Actions
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Run one operator action. Serialized, not coalesced: a request that
-   * arrives while another runs queues behind it and runs with its own
-   * parameters (a pasted token must never be swallowed by a slow refresh).
-   * Never throws — the outcome lands in `lastAction` and the state moves
-   * accordingly.
-   */
   runAction(id: CredentialActionId, params: { token?: string } = {}): Promise<CredentialState> {
     let queued: { token?: string; restart?: boolean } = params;
-    // A device-code login is a ceremony with a human in it. "Restart login"
-    // while one is pending cancels it when the source can (the pending
-    // action fails as cancelled, the restart runs next with a fresh code);
-    // otherwise it is refused at once — queued behind the wait it could only
-    // log the freshly signed-in account out again.
     if (id === 'login' && this.loginInFlight) {
       if (this.source.cancelLogin) {
         void this.source.cancelLogin().catch(() => false);
@@ -439,10 +341,6 @@ export class CredentialMonitor {
         }
         case 'login': {
           if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
-          // A RESTART that reaches the queue after the login it meant to
-          // restart already succeeded has nothing to log out of. A fresh
-          // login request always runs: switching a spent Codex account is a
-          // login from `ok` / `quota-spent`, and Codex has no set-token.
           if (params.restart && !this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
           this.loginInFlight = true;
           try {
@@ -460,7 +358,6 @@ export class CredentialMonitor {
           return done(...(await this.settle('token replaced', id)));
         }
         case 'recheck': {
-          // Awaited: the meter's fresh verdict is part of the answer.
           await this.meter?.refresh();
           return done(...(await this.settle('re-checked', id)));
         }
@@ -469,20 +366,10 @@ export class CredentialMonitor {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      // A failed refresh/login leaves the standing state alone: the alert the
-      // operator acted on is still true. The outcome is what the panel shows.
       return done(false, `${id} failed: ${trim(reason)}`);
     }
   }
 
-  /**
-   * After an action: probe when the source can, and move the state on the
-   * verdict. A probe that cannot judge (429, network) leaves auth alarms
-   * standing but reports the action as done; the next real call decides.
-   * Without a probe, only an action that changed the credential (refresh,
-   * login, set-token) clears an auth state — a bare re-check has nothing to
-   * go on and must not dismiss a pending login.
-   */
   private async settle(what: string, id: CredentialActionId): Promise<[boolean, string]> {
     this.armExpiryTimer();
     const persistWarning = this.source.persistWarning?.();
@@ -497,9 +384,6 @@ export class CredentialMonitor {
     try {
       await this.source.probe();
       if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
-      // quota-unreadable lifts only on the meter's own good read (a gateway
-      // can answer the probe 200 with a body the meter cannot parse); the
-      // awaited recheck refresh has already updated the verdict by now.
       return [true, `${what}; credential verified${warn}`];
     } catch (err) {
       if (isAuthFailure(err)) {
@@ -516,10 +400,6 @@ export class CredentialMonitor {
       return [true, `${what}; verification inconclusive (${trim(reason)})${warn}`];
     }
   }
-
-  // ---------------------------------------------------------------------------
-  // State plumbing
-  // ---------------------------------------------------------------------------
 
   private okState(): CredentialState {
     const expiresAt = this.expiry();
@@ -581,7 +461,6 @@ export class CredentialMonitor {
     }
   }
 
-  /** Alert payload: the state minus anything an operator UI cannot use. */
   private alertData(state: CredentialState): Record<string, unknown> {
     const { message: _m, lastAction: _l, ...rest } = state;
     return { ...rest };

@@ -1,11 +1,3 @@
-/**
- * What each client of the Web UI is sent: an operator, and observers granted
- * health, messages, the conversation's interior, and everything. Each
- * grant's scopes are what the grant tool promises the resident ("'health' =
- * liveness/usage only; ...") and the deployment doc promises the operator
- * ("Each observer sees only its grant's scopes"), so a frame reaches an
- * observer only when its grant covers what the frame carries.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
@@ -19,7 +11,6 @@ describe('what each client is sent', () => {
   let transcript: Record<string, unknown>[] = [];
   let appended: ((event: { type: string; message?: unknown }) => void) | undefined;
   let ledgerNow: unknown;
-  // Failure text, as each place in health that carries one would hold it.
   const TEXT = {
     call: 'overloaded_error: the provider is overloaded',
     cooldown: 'cooling down after overloaded_error',
@@ -31,25 +22,20 @@ describe('what each client is sent', () => {
     credential: 'anthropic rejected the credential (invalid x-api-key)',
     action: 'refresh failed: the token endpoint answered 400',
   };
-  // The credential monitor's state, a rejected credential after a failed refresh.
   const login = { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' };
   const credentialState = {
     kind: 'auth-rejected', provider: 'anthropic', message: TEXT.credential, since: 1, rotatable: true,
     actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
   };
-  // Told of each windowed read, before it's answered: where it begins and how many slots it asks for.
   let onRead: ((offset: number, limit: number) => void) | undefined;
   // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
   let undone = new Set<string>();
-  // The store's windowed reads, which the welcome and history pages take, and
-  // its listener, which message-appended comes from.
   const cm = {
     getMessageCount: () => transcript.length,
     getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
       onRead?.(offset, limit);
-      // As the store does with alignToBodyGroups, a window that begins inside
-      // a sharded body begins at its first shard. (The store also carries a
-      // window's end to its body's last shard, which no test here needs.)
+      // As context-manager's store does with alignToBodyGroups, a window that
+      // begins inside a sharded body begins at its first shard.
       let start = offset;
       while (opts?.alignToBodyGroups && start > 0 && continuesBody(transcript[start - 1] as BodyShard, transcript[start] as BodyShard)) start--;
       return { messages: transcript.slice(start, offset + limit), startIndex: start, totalCount: transcript.length };
@@ -74,9 +60,7 @@ describe('what each client is sent', () => {
     },
   };
   const agent = { name: 'main', model: 'a-model', getContextManager: () => cm };
-  // The framework's agents: a test empties it to bind a host with no agent store.
   let agents = [agent];
-  // A child's panel answers, as a fleet child's panel ops give them.
   const panels: Record<string, unknown> = {
     'pin-add': { agent: 'main', pins: [], pinsSupported: true, levelHonored: false, candidates: [{ id: 'm1', index: 0, participant: 'user', text: 'a pinned line' }] },
     'settings-update': { agent: 'main', settings: { contextBudgetTokens: 1000, transition: 'stable' }, overrides: [], hotKeys: [], hotConfigurable: true, previewAvailable: false },
@@ -106,8 +90,6 @@ describe('what each client is sent', () => {
         getAgent: (name: string) => (name === 'main' ? agent : undefined),
         getHostModeStatus: () => hostStatus,
         getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
-        // agent-framework's healthSnapshot, with a failure in each place it
-        // carries one.
         healthSnapshot: () => ({
           at: '2026-10-22T06:00:00.000Z',
           uptimeSec: 5,
@@ -186,10 +168,8 @@ describe('what each client is sent', () => {
     for (const event of events) fleetEvents.handleFleetEvent('kid', event);
     await host.fence(Object.values(c));
     const kinds = (conn: Connection) => conn.framesOf('child-event').map((f) => (f.event as { type: string }).type);
-    // An operator gets each event as the child sent it, named for the child.
     expect(c.operator.framesOf('child-event')).toEqual(events.map((event) => ({ type: 'child-event', childName: 'kid', event })));
     expect(kinds(c.dashboard)).toEqual(['lifecycle', 'usage:updated']);
-    // A client that holds messages gets the stand-in for the failure, as a child event.
     expect(kinds(c.reader)).toEqual(['message:added', 'stream-ended']);
     expect(kinds(c.interior)).toEqual(['message:added', 'inference:tokens', 'inference:speech', 'stream-ended']);
     for (const conn of [c.reader, c.interior]) {
@@ -199,12 +179,11 @@ describe('what each client is sent', () => {
       'message:added', 'inference:tokens', 'inference:speech', 'lifecycle', 'snapshot', 'inference:failed', 'usage:updated',
     ]);
     for (const conn of Object.values(c)) expect(conn.framesOf('stream-ended')).toEqual([]);
-    // The fleet's total that the child's usage updated is usage, which needs health.
     for (const conn of [c.operator, c.dashboard, c.everything]) expect(conn.framesOf('usage').length).toBe(1);
     for (const conn of [c.reader, c.interior]) expect(conn.framesOf('usage')).toEqual([]);
   });
 
-  test("a child's answers to the fleet's own requests, a panel's or a switch's, reach no client", async () => {
+  test("a child's answers to the fleet's own requests, a panel's or a switch's, reach no client, where the event sent after them does", async () => {
     const c = await everyone();
     const fleetEvents = host.module as unknown as { handleFleetEvent(name: string, event: unknown): void };
     fleetEvents.handleFleetEvent('kid', { type: 'panel-response', corrId: 'panel-health-1', op: 'health', ok: true, data: {} });
@@ -215,7 +194,6 @@ describe('what each client is sent', () => {
       expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('update-response');
       expect(conn.framesOf('child-event').map((f) => (f.event as { type: string }).type)).not.toContain('panel-response');
     }
-    // The event after them arrives, so the two were dropped rather than not yet sent.
     expect(c.operator.framesOf('child-event').at(-1)).toEqual({ type: 'child-event', childName: 'kid', event: { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/data/kid' } });
   });
 
@@ -252,9 +230,6 @@ describe('what each client is sent', () => {
     for (const conn of [c.operator, c.everything]) {
       expect(ends(conn)).toEqual(['inference:failed', 'inference:completed', 'inference:aborted']);
     }
-    // Without ops the failure's error and stack stay back, and why the turn
-    // was stopped; without health the completion's usage. That the stream
-    // ended still arrives.
     for (const conn of [c.reader, c.interior]) {
       expect(ends(conn)).toEqual([
         { type: 'stream-ended', agentName: 'main' },
@@ -315,10 +290,6 @@ describe('what each client is sent', () => {
       expect(live(c.reader).map((e) => e.blocks)).toEqual([[{ kind: 'text', text: 'and another' }]]);
       expect(media(live(c.interior))).toEqual([{ kind: 'media', mediaType: 'image/png', ref: 'm3/0.0', toolUseId: 't2' }]);
 
-      // /media: a message's own image is a top-level block (`<n>`); any other
-      // path, such as a tool result's nested one, takes tools as well, an
-      // encoded dot and a fleet child's request included. The stub fleet
-      // answers every child's media request with CCCC.
       const get = async (conn: Connection, path: string) => {
         const res = await fetch(`http://127.0.0.1:${host.port}${path}`, {
           headers: { cookie: `fkm_obs=${conn.framesOf('observer-ack')[0]!.sessionToken as string}` },
@@ -350,7 +321,6 @@ describe('what each client is sent', () => {
       const f = await conn.until('history-page', (p) => p.corrId === corrId);
       return { ids: ids(f.entries), startIndex: f.startIndex, totalCount: f.totalCount };
     };
-    // Each read from here on, as [where it began, how many slots it asked for].
     const recordReads = () => {
       const reads: [number, number][] = [];
       onRead = (offset, size) => { reads.push([offset, size]); };
@@ -371,12 +341,9 @@ describe('what each client is sent', () => {
         const c = await everyone();
         expect(ids(c.reader.framesOf('welcome')[0]!.messages)).toEqual(['m2']);
         expect(ids(c.interior.framesOf('welcome')[0]!.messages)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6']);
-        // The reader may see nothing of 3 to 6, so its page reads back to the window holding 2.
         expect(await page(c.reader, 'r-back', 7)).toEqual({ ids: ['m2'], startIndex: 1, totalCount: 7 });
         const backPage = c.reader.framesOf('history-page').find((f) => f.corrId === 'r-back')!;
         expect((backPage.entries as { index: number }[])[0]!.index).toBe(2);
-        // Before 2 it may see nothing, and history starts two windows back: an
-        // empty page, and no read past the start.
         const reads = recordReads();
         expect(await page(c.reader, 'r-start', 2, 1)).toEqual({ ids: [], startIndex: 0, totalCount: 7 });
         expect(reads).toEqual([[1, 1], [0, 1]]);
@@ -410,7 +377,6 @@ describe('what each client is sent', () => {
       ];
       try {
         const c = await everyone();
-        // The window asked for at 4 begins at the body's first shard, 2.
         const reads = recordReads();
         expect(await page(c.reader, 'r-body', 6)).toEqual({ ids: ['m0'], startIndex: 0, totalCount: 6 });
         expect(reads).toEqual([[4, 2], [0, 2]]);
@@ -421,7 +387,7 @@ describe('what each client is sent', () => {
       }
     });
 
-    test('a welcome whose tail such messages fill reads back too, on connecting and when a refresh welcomes the client again', async () => {
+    test('a welcome whose tail such messages fill reads back too, on connecting and when a refresh welcomes the client again, and comes empty past ten windows of 200 before its tail, from where the reading stopped', async () => {
       transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 250 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
       try {
         const c = await everyone();
@@ -432,14 +398,11 @@ describe('what each client is sent', () => {
         const tail = Array.from({ length: 200 }, (_, i) => `m${i + 51}`);
         expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
         expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
-        // Without messages there's nothing to read back for.
         expect(welcomed(c.dashboard)).toEqual({ ids: [], history: { startIndex: 251, totalCount: 251 } });
-        // A refresh, as a change of branch sends, welcomes every client again.
         await host.fence([c.reader, c.interior]);
         expect(c.reader.framesOf('welcome').length).toBe(2);
         expect(welcomed(c.reader)).toEqual({ ids: ['m0'], history: { startIndex: 0, totalCount: 251 } });
         expect(welcomed(c.interior)).toEqual({ ids: tail, history: { startIndex: 51, totalCount: 251 } });
-        // Past ten windows of 200 before the tail, the welcome comes empty, from where the reading stopped.
         transcript = [say('m0', 'user', [{ type: 'text', text: 'a word' }]), ...Array.from({ length: 2300 }, (_, i) => toolUse(`m${i + 1}`, `t${i}`))];
         await host.fence([c.reader, c.interior]);
         expect(welcomed(c.reader)).toEqual({ ids: [], history: { startIndex: 101, totalCount: 2301 } });
@@ -507,7 +470,6 @@ describe('what each client is sent', () => {
       ],
       summary: { calls: 2, input: 2, output: 1, cacheRead: 9, cacheWrite: 0, cacheHitRatio: 0.9, byVerdict: { ERROR: 1, HIT: 1 } },
     };
-    // A failed call's cause is its error's text; a cache hit's is the host's own words.
     const ledgerWithoutText = { ...ledger, rows: [{ ...ledger.rows[0]!, cause: '', error: '' }, ledger.rows[1]!] };
     ledgerNow = ledger;
     ledgerUpdate!(ledger);
@@ -527,11 +489,9 @@ describe('what each client is sent', () => {
       expect(res.status).toBe(200);
       return (await res.json()) as Record<string, any>;
     };
-    // Which failure texts a body carries, as JSON writes them.
     const texts = (body: unknown) => Object.entries(TEXT)
       .filter(([, text]) => JSON.stringify(body).includes(JSON.stringify(text).slice(1, -1)))
       .map(([place]) => place);
-    // A child answers with the snapshot and the quota it builds, as the host does.
     panels.health = await get('/healthz', null);
     panels.quota = await get('/quota', null);
     for (const path of ['/healthz', '/healthz?scope=kid']) {
@@ -540,7 +500,6 @@ describe('what each client is sent', () => {
       }
       const health = await get(path, c.dashboard);
       expect(texts(health)).toEqual([]);
-      // Its names, codes, ids and times stay, and every key and list keeps its shape.
       const main = health.agents[0];
       expect(main).toMatchObject({ name: 'main', status: 'inferring', consecutiveInferenceFailures: 1, refusalStats: { lastCategory: 'policy', byCategory: { policy: 1 } } });
       expect(main.providerAdmission).toMatchObject({ cooldownUntil: 2, cooldownReason: '' });
@@ -552,7 +511,6 @@ describe('what each client is sent', () => {
       expect(health.readFailures).toEqual({ main: { contextComposition: '' } });
       expect(health.runtimeSettings.main).toEqual({ contextBudgetTokens: 1000, transition: 'stable' });
       expect(health.callLedger).toEqual(ledgerWithoutText);
-      // The credential keeps its kind and its device-code login.
       expect(health.credential).toMatchObject({ kind: 'auth-rejected', message: '', login, lastAction: { id: 'refresh', ok: false, message: '' } });
     }
     for (const path of ['/quota', '/quota?scope=kid']) {
@@ -560,8 +518,6 @@ describe('what each client is sent', () => {
       expect(await get(path, c.dashboard)).toMatchObject({ subscription: true, provider: 'anthropic', windows: [], fetchedAt: 1, error: '' });
     }
 
-    // The credential's state, by each route that carries it: /credential, the
-    // request-credential reply, and the broadcast after an action.
     panels.credential = await get('/credential', null);
     for (const path of ['/credential', '/credential?scope=kid']) {
       for (const who of [null, c.everything]) expect(texts(await get(path, who))).toEqual(['credential', 'action']);
@@ -599,7 +555,6 @@ describe('what each client is sent', () => {
       return { status: res.status, body: await res.json() };
     };
     try {
-      // The host's own snapshot throws, and a child answers each panel op with its failure.
       app.framework.healthSnapshot = () => { throw new Error(TEXT.read); };
       (fleet as { requestPanel: unknown }).requestPanel = async () => ({ ok: false, status: 500, error: TEXT.read });
       for (const path of ['/healthz', '/healthz?scope=kid', '/quota?scope=kid', '/credential?scope=kid']) {
@@ -620,7 +575,6 @@ describe('what each client is sent', () => {
     branch = { id: 'b1', name: 'main' };
     const c = await everyone();
     branch = { id: 'b2', name: 'experiment' };
-    // What a switch does after it lands: tell clients, then welcome them again.
     (host.module as unknown as { broadcastBranchChanged(): void }).broadcastBranchChanged();
     await host.fence(Object.values(c));
     for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
@@ -699,8 +653,6 @@ describe('what each client is sent', () => {
   test('a connection gets no live frame between a bind and its new welcome', async () => {
     const c = await host.operator();
     open.push(c);
-    // A bind clears every client's welcome at once and sends each a new one
-    // later, so a trace emitted in the same turn finds this one unwelcomed.
     host.rebind();
     host.emitTrace({ type: 'message:added', messageId: 'before', source: 'agent' });
     await host.fence([c]);

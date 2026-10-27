@@ -1,27 +1,12 @@
-/**
- * Subscription quota readout, polled only while someone is looking.
- *
- * On a subscription credential the host's dollar estimate is fiction; what
- * matters is how much of each utilization window is left. The server answers
- * `/quota` from a rate-floored meter, so this poll is what keeps the meter
- * warm: a hidden or unfocused tab asks for nothing.
- */
-
 import { createEffect, createSignal, on, onCleanup, onMount, type Accessor } from 'solid-js';
 import type { QuotaSnapshotData } from '@conhost/web/protocol';
 
 const POLL_MS = 60_000;
 
-/**
- * `scope` names the process whose credential is read: 'local' (the parent) or
- * a fleet child, through the host's `?scope=` proxy. A fleet can mix
- * subscription and pay-per-token processes, so each is asked for itself.
- * A null scope idles the poll (nothing is showing it).
- */
 export function createQuotaPoll(scope: Accessor<string | null> = () => 'local'): Accessor<QuotaSnapshotData | null> {
   const [quota, setQuota] = createSignal<QuotaSnapshotData | null>(null);
   let timer: number | undefined;
-  let metered = false;
+  let stopAsking = false;
 
   const looking = (): boolean => document.visibilityState === 'visible' && document.hasFocus();
 
@@ -31,29 +16,23 @@ export function createQuotaPoll(scope: Accessor<string | null> = () => 'local'):
     try {
       const query = asked !== 'local' ? `?scope=${encodeURIComponent(asked)}` : '';
       const res = await fetch(`/quota${query}`, { credentials: 'same-origin' });
-      if (asked !== scope()) return; // scope switched mid-flight — stale
-      // Only a definite answer ends the polling. A 401 can be the observer
-      // session cookie not written yet, a 503 the host still binding, a 5xx a
-      // child restarting: all of them are "ask again next tick".
-      if (res.status === 403 || res.status === 404) { metered = true; return; }
+      if (asked !== scope()) return;
+      if (res.status === 403 || res.status === 404) { stopAsking = true; return; }
       if (!res.ok) return;
-      // An older host answers the SPA shell here: no readout, stop asking.
-      if (!(res.headers.get('content-type') ?? '').includes('json')) { metered = true; return; }
+      if (!(res.headers.get('content-type') ?? '').includes('json')) { stopAsking = true; return; }
       const data = (await res.json()) as QuotaSnapshotData;
-      // A pay-per-token host never becomes a subscription host mid-session.
-      if (!data.subscription) metered = true;
+      if (!data.subscription) stopAsking = true;
       setQuota(data);
     } catch {
-      // Transient network failure: keep the last reading, try next tick.
     }
   };
 
   const sync = (): void => {
-    const want = looking() && !metered && scope() !== null;
+    const want = looking() && !stopAsking && scope() !== null;
     if (want && timer === undefined) {
       void load();
       timer = window.setInterval(() => {
-        if (metered) sync(); else void load();
+        if (stopAsking) sync(); else void load();
       }, POLL_MS);
     } else if (!want && timer !== undefined) {
       window.clearInterval(timer);
@@ -61,9 +40,8 @@ export function createQuotaPoll(scope: Accessor<string | null> = () => 'local'):
     }
   };
 
-  // A different process is a different credential: forget the old answer.
   createEffect(on(scope, () => {
-    metered = false;
+    stopAsking = false;
     setQuota(null);
     if (timer !== undefined) { window.clearInterval(timer); timer = undefined; }
     sync();
@@ -86,9 +64,8 @@ export function createQuotaPoll(scope: Accessor<string | null> = () => 'local'):
 }
 
 /**
- * What a spent window means right now. "Parked" is claimed only when the
- * framework says it is holding an agent; a spent window by itself parks
- * nothing (the hold arms on a 429, and only on a framework with the hook).
+ * "Parked" is claimed only when agent-framework says it holds an agent: a
+ * spent window parks nothing until a call fails on it.
  */
 export function quotaStatus(q: QuotaSnapshotData): string | null {
   if (!q.blockedUntil) return q.parked ? 'inference parked on a spent quota window' : null;
@@ -96,20 +73,15 @@ export function quotaStatus(q: QuotaSnapshotData): string | null {
   return q.parked ? `inference parked until ${at}` : `quota window spent — resets ${at}`;
 }
 
-/** `10% weekly | 99% 5h` */
 export function quotaReadout(q: QuotaSnapshotData): string {
   return q.windows.map((w) => `${Math.floor(w.utilization)}% ${w.label}`).join(' | ');
 }
 
-/** Worst window drives the colour: amber from 75%, rose from 90%. */
 export function quotaTone(q: QuotaSnapshotData): string {
   const worst = Math.max(0, ...q.windows.filter((w) => !w.advisory).map((w) => w.utilization));
   return worst >= 90 ? 'text-rose-400' : worst >= 75 ? 'text-amber-400' : 'text-emerald-300';
 }
 
-/** A subscription meter with nothing to show: no windows, and a failed read,
- *  whose text an observer without 'ops' gets empty. A meter that fails while
- *  it still holds windows from an earlier read shows those instead. */
 export function quotaUnreadable(q: QuotaSnapshotData | null): boolean {
   return q?.subscription === true && q.windows.length === 0 && q.error !== undefined;
 }

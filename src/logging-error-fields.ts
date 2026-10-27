@@ -1,12 +1,5 @@
-// The error fields of an llm-calls record, shared by the three writers: the
-// generic decorator (logging-provider-wrapper.ts) and the Anthropic and
-// Bedrock subclasses (logging-adapter.ts, logging-bedrock-adapter.ts).
-//
 // The error text is bounded (MAX_ERROR_CHARS): a provider can echo the whole
-// rejected request in its error body, and that text would otherwise sit in
-// the record beside the request it echoes. The size guard all three writers
-// share (logging-record.ts) drops raw bodies before the error, so the error
-// bounds itself.
+// rejected request in its error body.
 //
 // `errorChars`, set when the text was cut, is the whole length of the one text
 // that was cut: the generic record's `error` ("Name: message"), or the other
@@ -14,23 +7,10 @@
 // `error` text itself. A cut stack states its own length only in its omission
 // marker. Lengths here, the omission marker's included, are JavaScript string
 // lengths (UTF-16 code units).
-//
-// Reading a hostile error never throws: logging must never break inference,
-// and a throw inside a writer's catch block would replace the provider's
-// error with its own.
 
-/** Longest error text a record keeps (head and tail, the omission stated). */
 const MAX_ERROR_CHARS = 4_000;
-/** Longest provider error code or type kept; real ones are short tokens. */
 const MAX_CODE_CHARS = 128;
 
-/**
- * `text` when it fits; otherwise its head and tail around a marker stating
- * how many of how many characters were omitted. The whole stays within `max`
- * whenever `max` fits the marker itself (at most 49 characters), as both
- * bounds here do; a smaller `max` gets the marker alone, longer than `max`.
- * Cuts move only toward omission, so no surrogate pair is split.
- */
 export function boundText(text: string, max: number): string {
   if (text.length <= max) return text;
   const isLow = (index: number): boolean => {
@@ -47,28 +27,21 @@ export function boundText(text: string, max: number): string {
   return `${text.slice(0, headEnd)} …[${tailStart - headEnd} of ${text.length} characters omitted]… ${text.slice(tailStart)}`;
 }
 
-/** Calls `get`, giving undefined where it throws. */
 function read<T>(get: () => T): T | undefined {
   try { return get(); } catch { return undefined; }
 }
 
 interface ReadError {
-  /** True when the thrown value is an Error (the test itself guarded). */
   isError: boolean;
   name: string;
-  /** The message, or undefined where it couldn't be read. */
   message?: string;
   stack?: string;
-  /** The text of a thrown value that isn't an Error. */
   text?: string;
-  /** The classification a membrane error carries, each field read on its own. */
   classification: Record<string, unknown>;
 }
 
-/** Reads each part of a thrown value on its own: a part whose getter throws
- *  loses only itself, never the provider's text or the rest. The stack is
- *  read only when asked for: the runtime formats it on first read, which
- *  repeats a huge message, and a custom getter may do anything. */
+/** The runtime formats a stack on its first read, which repeats a huge
+ *  message, and a custom getter may do anything. */
 function readError(error: unknown, withStack: boolean): ReadError {
   // Even the type test is guarded: a revoked Proxy or a throwing
   // getPrototypeOf trap makes `instanceof` itself throw.
@@ -111,16 +84,15 @@ export function describeError(error: unknown): Record<string, unknown> {
 }
 
 /**
- * The Anthropic and Bedrock writers' error fields, keeping the shape their
- * records have always had: `error` is `{ name, message }` for an Error (with
- * `stack` where the writer keeps one), or the text of anything else. The
- * message and stack are bounded like the generic decorator's text, and the
- * name like a classification code. A stack whose header is the error's own
- * "Name: message" line, as the runtime formats it, names the message above
- * instead of repeating it, so the bound goes to its frames; any other stack
- * is kept as it is, within the same bound. Beside `error` come the same
- * classification fields, and `errorChars`, the whole message's length, when
- * it was cut.
+ * The Anthropic and Bedrock writers' error fields: `error` is `{ name,
+ * message }` for an Error (with `stack` where the writer keeps one), or the
+ * text of anything else. The message and stack are bounded like the generic
+ * decorator's text, and the name like a classification code. A stack whose
+ * header is the error's own "Name: message" line, as the runtime formats
+ * it, names the message above instead of repeating it, so the bound goes to
+ * its frames; any other stack is kept as it is, within the same bound.
+ * Beside `error` come the same classification fields, and `errorChars`, the
+ * whole message's length, when it was cut.
  */
 export function describeErrorObject(error: unknown, withStack: boolean): Record<string, unknown> {
   const e = readError(error, withStack);

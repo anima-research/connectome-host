@@ -1,10 +1,3 @@
-/**
- * Piped mode's wait for a line's turn (createPipedTurns): it ends at the
- * primary agent's settled-turn traces, a turn a tool ended included, and not
- * at a failure the framework may retry or hold, nor at another agent's end.
- * Every agent's prose still prints, and each stream's first end closes its
- * line.
- */
 import { describe, expect, test } from 'bun:test';
 import { createPipedTurns, switchFollowing, traceFollower, type TraceSource } from '../src/piped-turns.js';
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES } from '../src/state/turn-trace.js';
@@ -21,7 +14,6 @@ function setUp() {
   return { out, turns, emit };
 }
 
-/** Whether `wait` has settled after the microtasks queued so far run. */
 async function settled(wait: Promise<void>): Promise<boolean> {
   let done = false;
   void wait.then(() => { done = true; });
@@ -107,9 +99,6 @@ describe('the wait for a line\'s turn', () => {
     const wait = turns.waitForTurn(300);
     emit('inference:started');
     emit('inference:failed', { error: 'held' });
-    // Nothing else comes, so only the cap can end it; the test's own
-    // timeout catches a wait that never ends. That a failure alone doesn't
-    // end it is the test above's, with a cap no loaded run can reach.
     await wait;
     expect(out.at(-1)).toBe('err:(no answer after 0.3 s: going on without it)');
   });
@@ -148,7 +137,6 @@ describe('what piped mode prints', () => {
     turns.onTrace({ type: 'inference:aborted', agentName: 'spawn-a', reason: 'user' });
     turns.onTrace({ type: 'inference:started', agentName: 'spawn-b' });
     turns.onTrace({ type: 'inference:exhausted', agentName: 'spawn-b', error: 'Stream aborted: timeout' });
-    // `(turn ended: …)` is the primary's line alone: it says this line's own turn ended.
     expect(out).toEqual(['out:\n', 'out:\n', 'out:\n', 'out:\n', 'err:Error: Stream aborted: timeout']);
   });
 
@@ -157,25 +145,21 @@ describe('what piped mode prints', () => {
     emit('inference:started');
     emit('inference:tokens', { content: 'Partial answer' });
     emit('inference:exhausted', { error: 'Stream aborted: timeout' });
-    // A failure whose retries are spent: its exhausted, after failed, prints nothing more.
     emit('inference:started');
     emit('inference:tokens', { content: 'Another' });
     emit('inference:failed', { error: 'bad request' });
     emit('inference:exhausted', { error: 'bad request' });
-    // Another agent's failure, too.
     turns.onTrace({ type: 'inference:started', agentName: 'spawn-c' });
     turns.onTrace({ type: 'inference:tokens', agentName: 'spawn-c', content: 'Half' });
     turns.onTrace({ type: 'inference:failed', agentName: 'spawn-c', error: 'overloaded' });
     expect(out).toEqual([
       'out:\n', 'out:Partial answer', 'out:\n', 'err:(turn ended: Stream aborted: timeout)',
-      'out:\n', 'out:Another', 'out:\n', 'err:Error: bad request',
+      'out:\n', 'out:Another', 'out:\n', 'err:Error: bad request', 'err:Turn ended after 1 attempt.',
       'out:\n', 'out:Half', 'out:\n', 'err:Error: overloaded',
     ]);
   });
 
   test('a stop that cancels a failed attempt\'s retry prints nothing more', () => {
-    // agent-framework sends `failed`, then `aborted` when a stop cancels the
-    // retry or a quiesce abandons it (state/turn-trace.ts).
     const { emit, out } = setUp();
     emit('inference:started');
     emit('inference:failed', { error: 'overloaded' });
@@ -199,9 +183,6 @@ describe('what piped mode prints', () => {
   });
 
   test('how the primary\'s turn ended: a stop on stdout, a turn the framework ended as a failure on stderr', () => {
-    // agent-framework's ends from 0.22.3: a stop ends with a lone `aborted`,
-    // and a lone `exhausted` comes only from an abort whose reason isn't
-    // `user`, which the framework counts as a failure.
     const { emit, out } = setUp();
     emit('inference:started');
     emit('inference:aborted', { reason: 'user' });
@@ -215,7 +196,6 @@ describe('what piped mode prints', () => {
 });
 
 describe('following one framework at a time', () => {
-  /** A framework's trace source: emit reaches its listeners until each unsubscribes. */
   function source(): TraceSource & { emit(event: unknown): void } {
     const listeners = new Set<(event: unknown) => void>();
     return {
@@ -254,7 +234,6 @@ describe('following one framework at a time', () => {
     old.emit('the old one, stopped');
     expect(seen).toEqual(['after']);
 
-    // A switch that throws leaves the host on whatever it holds: followed again.
     seen.length = 0;
     await expect(switchFollowing(traces, async () => { throw new Error('no such session'); }, () => current))
       .rejects.toThrow('no such session');

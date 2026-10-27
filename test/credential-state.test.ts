@@ -1,9 +1,3 @@
-/**
- * Credential monitor: provider errors, quota-meter readings, expiry metadata
- * and device-code logins become one named state; transitions travel the
- * ops-alert pipeline as `<kind>` / `<kind>-clear` pairs with the actions the
- * host can run; runAction moves the state on the probe's verdict.
- */
 import { describe, expect, test } from 'bun:test';
 import { CredentialMonitor, isAuthFailure, type CredentialSource } from '../src/credential-state.js';
 import { QuotaMeter, type QuotaSource, type QuotaWindow } from '../src/quota-meter.js';
@@ -91,7 +85,7 @@ describe('CredentialMonitor — auth verdicts', () => {
     expect(refresh.kind).toBe('auth-rejected');
     const login = await monitor.runAction('login');
     expect(login.lastAction).toMatchObject({ id: 'login', ok: false });
-    expect(login.kind).toBe('auth-rejected'); // nothing clears it but the next accepted call
+    expect(login.kind).toBe('auth-rejected');
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
   });
@@ -115,7 +109,7 @@ describe('CredentialMonitor — auth verdicts', () => {
     monitor.observeError(Object.assign(new Error('429'), { type: 'rate_limit' }));
     expect(monitor.snapshot().kind).toBe('ok');
     monitor.observeError(authErr());
-    monitor.observeError(authErr()); // same state, same message: no re-fire
+    monitor.observeError(authErr());
     expect(alerts.length).toBe(1);
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
@@ -143,7 +137,6 @@ describe('CredentialMonitor — expiry warning', () => {
       expiryWarningMs: 10 * 60_000,
       source: { expiresAt: () => 5 * 60_000, canRefresh: () => true, refresh: async () => {} },
     });
-    // The timer is armed at construction; drive the check by hand.
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(monitor.snapshot().actions[0]!.id).toBe('refresh');
@@ -320,7 +313,7 @@ describe('CredentialMonitor — actions', () => {
     release();
     const done = await first;
     expect(done.kind).toBe('ok');
-    const fresh = await monitor.runAction('login'); // a new login request from ok is a real login
+    const fresh = await monitor.runAction('login');
     expect(fresh.lastAction).toMatchObject({ id: 'login', ok: true });
     expect(logins).toBe(2);
   });
@@ -330,7 +323,7 @@ describe('CredentialMonitor — actions', () => {
     let logins = 0;
     const source: Partial<CredentialSource> = {
       login: async () => { logins++; if (logins === 1) await new Promise<void>((r) => { release = r; }); },
-      cancelLogin: async () => false, // nothing it could cancel (the flow completed on its own)
+      cancelLogin: async () => false,
     };
     const { monitor } = harness({ source });
     monitor.loginRequired({ verificationUrl: 'https://x', userCode: 'ABCD' });
@@ -377,7 +370,7 @@ describe('CredentialMonitor — actions', () => {
     const firstOutcome = await first;
     expect(firstOutcome.lastAction).toMatchObject({ id: 'login', ok: false });
     expect(firstOutcome.lastAction!.message).toContain('cancelled');
-    expect(firstOutcome.kind).toBe('auth-login-required'); // still pending: the restart is next
+    expect(firstOutcome.kind).toBe('auth-login-required');
     const secondOutcome = await second;
     expect(cancels).toBe(1);
     expect(logins).toBe(2);
@@ -390,9 +383,9 @@ describe('CredentialMonitor — actions', () => {
     const { monitor } = harness({ meter, now: () => 0, source: { probe: async () => {} } });
     await meter.refresh(); await meter.refresh(); await meter.refresh();
     expect(monitor.snapshot().kind).toBe('quota-unreadable');
-    const s = await monitor.runAction('recheck'); // 4th read still fails
+    const s = await monitor.runAction('recheck');
     expect(s.kind).toBe('quota-unreadable');
-    const s2 = await monitor.runAction('recheck'); // 5th read succeeds
+    const s2 = await monitor.runAction('recheck');
     expect(s2.kind).toBe('ok');
     meter.dispose();
   });
@@ -406,15 +399,13 @@ describe('CredentialMonitor — precedence', () => {
     expect(monitor.snapshot().kind).toBe('quota-spent');
     monitor.observeError(authErr());
     expect(monitor.snapshot().kind).toBe('auth-rejected');
-    await meter.refresh(); // a later poll with the same spent window must not hide the auth alarm
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-rejected');
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('quota-spent');
     expect(alerts.map((a) => a.kind)).toEqual([
       'quota-spent', 'quota-spent-clear', 'auth-rejected', 'auth-rejected-clear', 'quota-spent',
     ]);
-    // No intermediate "ok": the clear says what took over, so a channel-side
-    // listener does not announce recovery while quota still blocks.
     expect(alerts[3]!.message).toBe('superseded by quota-spent');
     meter.dispose();
   });
@@ -444,12 +435,12 @@ describe('CredentialMonitor — precedence', () => {
     const { monitor, alerts } = harness({ meter, now: () => t, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => 5 * 60_000, canRefresh: () => true, refresh: async () => {} } });
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
-    await meter.refresh(); // clean read: not news about the expiry
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring']);
-    await meter.refresh(); // spent: outranks the warning
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('quota-spent');
-    await meter.refresh(); // reset, token still short: the warning is back
+    await meter.refresh();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear', 'quota-spent', 'quota-spent-clear', 'auth-expiring']);
     meter.dispose();
@@ -461,7 +452,7 @@ describe('CredentialMonitor — precedence', () => {
     const { monitor, alerts } = harness({ now: () => 0, expiryWarningMs: 10 * 60_000, source: { expiresAt: () => expiresAt, canRefresh: () => true, refresh: async () => {} } });
     (monitor as unknown as { checkExpiry(): void }).checkExpiry();
     expect(monitor.snapshot().kind).toBe('auth-expiring');
-    expiresAt = 3 * HOUR; // rotated inside a provider call; only a success tap follows
+    expiresAt = 3 * HOUR;
     monitor.observeSuccess();
     expect(monitor.snapshot().kind).toBe('ok');
     expect(alerts.map((a) => a.kind)).toEqual(['auth-expiring', 'auth-expiring-clear']);

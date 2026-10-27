@@ -1,8 +1,3 @@
-/**
- * The launcher's work on an install's data (src/update/data-swap.ts): its
- * copies, and putting one set of an item's contents in place of another so
- * that a start cut off at any step can finish it in either direction.
- */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
@@ -21,8 +16,6 @@ let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'update-data-swap-')); });
 afterEach(() => { removeTree(dir); });
 
-/** A directory's contents as a map of relative path to file text (links as
- *  `-> target`), leaving out ITEM_UPDATE_DIR at its top. */
 function contents(root: string, rel = ''): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of readdirSync(join(root, rel)).sort()) {
@@ -37,7 +30,6 @@ function contents(root: string, rel = ''): Record<string, string> {
   return out;
 }
 
-/** The paths `run` syncs, in order: each fsync, named by the path its descriptor was opened on. */
 function syncsOf(run: () => void): string[] {
   const paths = new Map<number, string>();
   const synced: string[] = [];
@@ -156,8 +148,6 @@ describe('drive', () => {
     expectBackwardDone();
   });
 
-  // Each state below is where a cut leaves a drive: the set it was moving is
-  // split between the item and an area named for that step.
   const cuts: Array<{ name: string; make(): void }> = [
     {
       name: 'a forward drive cut while draining the item',
@@ -210,7 +200,6 @@ describe('drive', () => {
   }
 
   test("moves a directory its owner can't write, each way, and leaves its mode as it was", () => {
-    // Renaming a directory to another parent rewrites its `..`, which its own mode refuses.
     chmodSync(join(item, 'b'), 0o555);
     chmodSync(join(staging, 'b'), 0o500);
     forward();
@@ -227,7 +216,6 @@ describe('drive', () => {
     const realRename = fs.renameSync;
     let calls = 0;
     const fails = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
-      // The entry moves out of the incoming area, by then named .emptying.
       if (String(from).startsWith(staging) && String(from).endsWith('/b') && ++calls <= 2) {
         throw Object.assign(new Error(calls === 1 ? 'EACCES' : 'EIO'), { code: calls === 1 ? 'EACCES' : 'EIO' });
       }
@@ -249,7 +237,6 @@ describe('drive', () => {
     for (const path of [item, `${aside}.filling`, join(areas, 'set-aside'), `${staging}.emptying`, join(areas, 'staging')]) {
       expect(synced).toContain(path);
     }
-    // The item, drained into the outgoing area, is synced before that area takes its name.
     expect(synced.indexOf(item)).toBeLessThan(synced.lastIndexOf(join(areas, 'set-aside')));
   });
 
@@ -298,18 +285,15 @@ describe('a file item', () => {
 
   test('one that is missing is made with the source\'s mode, in a directory made for it, and its absence is noted', () => {
     rmSync(join(dir, 'work'), { recursive: true });
-    // A mode the usual umasks (022, 002, 077) would each cut.
+    // Each usual umask (022, 002, 077) would cut this mode.
     chmodSync(source, 0o666);
     replaceFile(file, source, keep);
     expect(readFileSync(file, 'utf-8')).toBe('older');
     expect(statSync(file).mode & 0o777).toBe(0o666);
     expect(existsSync(keep.kept)).toBe(false);
     expect(existsSync(keep.absent)).toBe(true);
-    // A replay after a cut reads the note, so it doesn't keep the restored
-    // file as what was there before.
     replaceFile(file, source, keep);
     expect(existsSync(keep.kept)).toBe(false);
-    // Putting back puts back the absence, keeping what's there now.
     putFileBack(file, keep, back);
     expect(existsSync(file)).toBe(false);
     expect(readFileSync(back.kept, 'utf-8')).toBe('older');
@@ -325,8 +309,6 @@ describe('a file item', () => {
     expect(existsSync(back.absent)).toBe(true);
   });
 
-  // Each state below is where a cut leaves a replace: its keep written and
-  // the file not yet, the file torn halfway, or a keep's own temporary file.
   const cuts: Array<{ name: string; make(): void }> = [
     { name: 'kept, not yet written', make: () => { keepFile(file, keep); } },
     { name: 'kept, and the file torn', make: () => { keepFile(file, keep); writeFileSync(file, 'old'); } },
@@ -391,14 +373,11 @@ describe('a file item', () => {
     const tmp = join(keep.kept, '..', '.connectome-update.tmp');
     expect(synced.indexOf(tmp)).toBeGreaterThan(-1);
     expect(synced.indexOf(tmp)).toBeLessThan(synced.lastIndexOf(join(keep.kept, '..')));
-    // A replay finds the keep, and syncs its directory again.
     expect(syncsOf(() => keepFile(file, keep))).toEqual([join(keep.kept, '..')]);
   });
 
   test("a replay after a cut between the write and its sync, which finds the content there, still syncs the file", () => {
     replaceFile(file, source, keep);
-    // As a cut before the sync leaves it: the content is there, and the replay
-    // has nothing to write.
     const synced = syncsOf(() => replaceFile(file, source, keep));
     expect(synced).toContain(file);
     expect(readFileSync(file, 'utf-8')).toBe('older');
@@ -407,7 +386,6 @@ describe('a file item', () => {
   test("a replay after a cut that left owner write on a read-only file gives it back its own mode, from its keep", () => {
     chmodSync(file, 0o444);
     keepFile(file, keep);
-    // As a cut between the added write bit and the write leaves it.
     chmodSync(file, 0o644);
     writeFileSync(file, 'ol');
     replaceFile(file, source, keep);
@@ -440,8 +418,7 @@ describe('a file item', () => {
     expect(syncsOf(() => replaceFile(file, null, keep))).toContain(join(dir, 'work'));
   });
 
-  test("a source that can't be read leaves the file as it was", () => {
-    // Of another size, so the content comparison never opens it.
+  test("a source of another size that can't be read leaves the file as it was", () => {
     writeFileSync(source, 'older, and longer');
     chmodSync(source, 0o000);
     try {
@@ -495,7 +472,6 @@ describe('a file item', () => {
   test("putting back gives the file the mode it had before the restore, not one a restore that failed partway left", () => {
     chmodSync(file, 0o444);
     keepFile(file, keep);
-    // As a restore that failed after adding owner write leaves it.
     chmodSync(file, 0o644);
     writeFileSync(file, 'ol');
     putFileBack(file, keep, back);
@@ -542,7 +518,6 @@ describe('removeTree', () => {
     mkdirSync(join(tree, 'ro', 'deeper'), { recursive: true });
     writeFileSync(join(tree, 'ro', 'deeper', 'f'), 'x');
     writeFileSync(join(tree, 'ro', 'g'), 'y');
-    // Read and search only, as a copy keeps such a directory's mode.
     chmodSync(join(tree, 'ro', 'deeper'), 0o500);
     chmodSync(join(tree, 'ro'), 0o500);
     removeTree(tree);
@@ -557,11 +532,7 @@ describe('removeTree', () => {
 describe('makeDirs', () => {
   test('makes each missing directory with the mode asked, and leaves those there as they are', () => {
     mkdirSync(join(dir, 'a'), { mode: 0o755 });
-    // The parent of each directory on the way is synced, outermost first, a
-    // new one's once it's made.
     expect(syncsOf(() => makeDirs(join(dir, 'a', 'b', 'c'), 0o700)).slice(-3)).toEqual([dir, join(dir, 'a'), join(dir, 'a', 'b')]);
-    // One that's there, as an attempt cut off before its parent's sync leaves
-    // it, has its parent synced too.
     expect(syncsOf(() => makeDirs(join(dir, 'a', 'b'))).slice(-2)).toEqual([dir, join(dir, 'a')]);
     expect(statSync(join(dir, 'a')).mode & 0o777).toBe(0o755);
     expect(statSync(join(dir, 'a', 'b')).mode & 0o777).toBe(0o700);

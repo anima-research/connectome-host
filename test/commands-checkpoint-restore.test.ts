@@ -1,12 +1,9 @@
 import { describe, test, expect } from 'bun:test';
 import { handleCommand, createBranchState } from '../src/commands.js';
 
-// Regression tests for /checkpoint + /restore POSITION semantics. The
-// original bug: checkpoints stored only a branch name, so /restore switched
-// to the branch HEAD — including everything after the checkpoint — rolling
-// back nothing, silently. These tests run over a stub ContextManager that
-// mimics Chronicle's contract: branchAt resolves ids against the CURRENT
-// branch's view of the log and throws for unreachable ids.
+// The stub ContextManager mimics context-manager's branchAt: it resolves an id
+// against the current branch's messages and throws for an id that branch
+// can't reach.
 //
 // Since agent-framework #291 /restore goes through the framework: its
 // rollbackToMessage (branchAt and a switch, with every agent sharing the
@@ -94,7 +91,7 @@ describe('/checkpoint + /restore position semantics', () => {
     const cpMsg = addMessage('agent');
     handleCommand('/checkpoint cp', app);
     addMessage();
-    addMessage('agent'); // work after the checkpoint that must be rolled back
+    addMessage('agent');
 
     const result = handleCommand('/restore cp', app);
     const outcome = await result.asyncWork!;
@@ -115,10 +112,6 @@ describe('/checkpoint + /restore position semantics', () => {
     await handleCommand('/restore cp', app).asyncWork!;
     const branchesAfterFirst = branchCount();
 
-    // Second restore at the same position: the guard must hold even though
-    // we're now on restore-cp-… rather than the original branch (the guard
-    // used to compare branch names and died after the first restore,
-    // minting a sibling branch per repeat).
     const second = handleCommand('/restore cp', app);
     expect(second.asyncWork).toBeUndefined();
     expect(second.lines[0]!.text).toContain('Already at checkpoint');
@@ -131,8 +124,6 @@ describe('/checkpoint + /restore position semantics', () => {
     addMessage('agent');
     handleCommand('/checkpoint cp', app);
 
-    // Simulate /undo: branch truncated BEFORE the checkpoint message, so the
-    // checkpoint id is unreachable from the current branch's view.
     const undoBranch = cm.branchAt(early.id, 'undo-1');
     await cm.switchBranch(undoBranch);
 

@@ -1,11 +1,3 @@
-/**
- * WS client with exponential-backoff reconnect.
- *
- * Designed for one connection per page; the SPA holds a single instance.
- * Subscriptions are signal-based: callers watch `messages` / `status` and
- * react to changes.
- */
-
 import { createSignal, type Accessor } from 'solid-js';
 import type {
   WebUiClientMessage,
@@ -15,14 +7,8 @@ import { buildHelloIdentity } from './observer-identity.js';
 
 export type ConnectionStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
-/**
- * Observer-auth state (docs/observability.md, browser side).
- *   'none'        — basic-auth / open server; historical behavior
- *   'authing'     — server demanded observer auth; hello sent
- *   'observer'    — key-authenticated; `observer()` carries label + scopes
- *   'denied'      — this device's key holds no grant on this agent
- *   'unavailable' — WebCrypto absent (insecure context) — password only
- */
+const OBSERVER_REFUSED_CLOSE_CODE = 4401;
+
 export type ObserverAuthState = 'none' | 'authing' | 'observer' | 'denied' | 'unavailable';
 
 export interface ObserverInfo {
@@ -32,26 +18,17 @@ export interface ObserverInfo {
 
 export interface WireClient {
   status: Accessor<ConnectionStatus>;
-  /** Observer-auth state for this connection. */
   observerState: Accessor<ObserverAuthState>;
-  /** Grant info after a successful observer handshake. */
   observer: Accessor<ObserverInfo | null>;
-  /** Last received message, or null. Useful for reactive folds. */
   lastMessage: Accessor<WebUiServerMessage | null>;
-  /** Subscribe to all incoming messages. Returns an unsubscribe fn. */
   onMessage(handler: (msg: WebUiServerMessage) => void): () => void;
-  /** Send a message. No-ops with a console warning if the socket is closed. */
   send(msg: WebUiClientMessage): void;
-  /** Manually close the connection (also cancels reconnects). */
   close(): void;
 }
 
 export interface WireOptions {
-  /** WS URL. Default: derives from window.location with /ws path. */
   url?: string;
-  /** Initial reconnect delay in ms. Default: 500. */
   initialDelayMs?: number;
-  /** Max reconnect delay in ms. Default: 8000. */
   maxDelayMs?: number;
 }
 
@@ -67,21 +44,14 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
   const handlers = new Set<(m: WebUiServerMessage) => void>();
 
   let socket: WebSocket | null = null;
-  /** Whether this socket's connection signed in as an observer. A welcome on
-   *  a connection that didn't is a full client's: the host sends an observer
-   *  its ack before its welcome. */
   let ackedThisSocket = false;
   let stopped = false;
   let delay = initialDelay;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Server demanded observer auth → sign and reply with this device's key.
-   *  Failure paths surface via observerState so the UI can show the
-   *  fingerprint-grant screen or fall back to password sign-in. */
   async function respondToAuthRequired(sock: WebSocket, host: string): Promise<void> {
     setObserverState('authing');
     const identity = await buildHelloIdentity(host);
-    // A later connection's state is its own.
     if (sock !== socket) return;
     if (!identity) {
       setObserverState('unavailable');
@@ -111,21 +81,17 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
         console.warn('[wire] failed to parse message', event.data);
         return;
       }
-      // Observer handshake frames are handled here (the wire owns the
-      // socket); they also fan out to handlers for any UI that cares.
       if (parsed.type === 'observer-auth-required' && socket) {
         void respondToAuthRequired(socket, parsed.host);
       } else if (parsed.type === 'observer-ack') {
         ackedThisSocket = true;
-        // Session cookie lets the SPA hit /debug/* and /healthz over HTTP.
-        // It's set before the state changes, since what reacts to the state
-        // runs inside that change and may read /healthz at once.
+        // The cookie is set before the state changes: Solid runs what
+        // reacts to the state inside that change, and that may read /healthz
+        // at once.
         document.cookie = `fkm_obs=${parsed.sessionToken}; path=/; SameSite=Lax; max-age=${12 * 3600}`;
         setObserverState('observer');
         setObserver({ label: parsed.label, scopes: parsed.scopes });
       } else if (parsed.type === 'welcome' && !ackedThisSocket) {
-        // A full client's connection, whatever an earlier one on this page
-        // signed in as: a password signed in from another tab since, say.
         setObserverState('none');
         setObserver(null);
       }
@@ -141,14 +107,8 @@ export function createWireClient(opts: WireOptions = {}): WireClient {
         setStatus('closed');
         return;
       }
-      if (ev.code === 4401) {
-        // Observer auth rejected — reconnect loops would spam the server;
-        // hold until the user acts (grant lands / password). The server also
-        // closes never-authenticated connections with 4401 on timeout, so
-        // don't overwrite 'unavailable' (no WebCrypto — a hello was never
-        // possible) with 'denied' (a key exists but holds no grant).
+      if (ev.code === OBSERVER_REFUSED_CLOSE_CODE) {
         if (observerState() !== 'unavailable') setObserverState('denied');
-        // A refused connection holds no grant, whatever an earlier one held.
         setObserver(null);
         setStatus('closed');
         return;

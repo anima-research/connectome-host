@@ -9,7 +9,6 @@ import { loadObserversFile, ObserverRegistry } from '../src/modules/web-ui-obser
 
 // A canonical key: 43 base64url characters whose last one carries no stray bits.
 const key = (c: string) => `ed25519:${c.repeat(42)}A`;
-/** The same 32 bytes in standard base64, padded. */
 const stdSpelling = (k: string) => `ed25519:${Buffer.from(k.slice(8), 'base64url').toString('base64')}`;
 const call = (name: string, input: Record<string, unknown>): ToolCall => ({ id: `t-${name}`, name, input });
 const stored = (path: string) => JSON.parse(readFileSync(path, 'utf-8')) as { observers: Array<Record<string, unknown>> } & Record<string, unknown>;
@@ -18,8 +17,6 @@ const labels = (data: unknown) => (data as { observers: Array<{ label: string }>
 
 const BASELINE = { key: key('A'), label: 'baseline', scopes: ['health'], protected: true };
 const PHONE = { key: key('B'), label: 'antra-phone', scopes: ['messages', 'tool-calls'] };
-// A file an operator set up and then broke by hand: a protected baseline
-// grant, and a second grant with a scope that doesn't exist.
 const BAD_SCOPE = JSON.stringify({ observers: [BASELINE, PHONE] }, null, 2);
 const TRUNCATED = BAD_SCOPE.slice(0, BAD_SCOPE.length - 10);
 const GOOD = JSON.stringify({ observers: [BASELINE, { ...PHONE, scopes: ['messages'] }] }, null, 2);
@@ -112,28 +109,23 @@ describe('observers tools and the grants file', () => {
     expect((await m.handleToolCall(call('revoke', { key: key('B') }))).success).toBe(true);
     expect(keys(path)).toEqual([key('A')]);
 
-    // By label too: revoking the entry in use takes the repeat with it, so
-    // the repeat isn't used in its place.
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, { ...PHONE, scopes: ['messages'] }, narrow] }));
     const byLabel = await m.handleToolCall(call('revoke', { label: 'antra-phone' }));
     expect(byLabel.success).toBe(true);
     expect((byLabel.data as { message: string }).message).toStartWith('Revoked: antra-phone, phone (narrow).');
     expect(keys(path)).toEqual([key('A')]);
 
-    // A label whose key also holds a protected grant is refused.
     const shadow = { key: key('A'), label: 'baseline copy', scopes: ['health'] };
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, shadow] }));
     const overBaseline = await m.handleToolCall(call('revoke', { label: 'baseline copy' }));
     expect(overBaseline.error).toBe(`Nothing was revoked: a revoke takes every grant for a key, and ${PROTECTED_A('remove')}`);
     expect(stored(path).observers).toEqual([BASELINE, shadow]);
 
-    // So is one by key, or a grant, when the protected entry comes second.
     writeFileSync(path, JSON.stringify({ observers: [shadow, BASELINE] }));
     expect((await m.handleToolCall(call('revoke', { key: key('A') }))).error).toBe(`Nothing was revoked: a revoke takes every grant for a key, and ${PROTECTED_A('remove')}`);
     expect((await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'] }))).error).toBe(`Nothing was granted: ${PROTECTED_A('change')}`);
     expect(stored(path).observers).toEqual([shadow, BASELINE]);
 
-    // A label that names two entries is refused.
     const twin = { key: key('D'), label: 'antra-phone', scopes: ['health'] };
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, { ...PHONE, scopes: ['messages'] }, twin] }));
     expect((await m.handleToolCall(call('revoke', { label: 'antra-phone' }))).error).toBe(
@@ -221,7 +213,6 @@ describe('observers tools and the grants file', () => {
     expect(notUsed).toContain('grant 8 ("eight") has no scopes');
     expect(notUsed).toContain('grant 9 ("nine") has an expiry that isn\'t a date: {"toString":1,"valueOf":1}');
     expect(notUsed).toContain('grant 10 ("ten") has a key that doesn\'t decode to 32 bytes');
-    // A grant and a revoke read past the null entry and keep it as found.
     expect((await m.handleToolCall(call('grant', { key: key('J'), label: 'eleven', scopes: ['health'] }))).success).toBe(true);
     expect((await m.handleToolCall(call('revoke', { label: 'eleven' }))).success).toBe(true);
     expect(stored(path).observers[6]).toBeNull();
@@ -243,14 +234,12 @@ describe('observers tools and the grants file', () => {
     expect((await m.handleToolCall(call('revoke', { key: stdSpelling(key('B')) }))).success).toBe(true);
     expect(keys(path)).toEqual([key('A')]);
 
-    // A grant in the other spelling is written in canonical form, in place of both.
     writeFileSync(path, JSON.stringify({ observers: [BASELINE, phone, phoneStd] }));
     expect((await m.handleToolCall(call('grant', { key: stdSpelling(key('B')), label: 'phone', scopes: ['tools'] }))).success).toBe(true);
     expect(stored(path).observers).toEqual([BASELINE, { key: key('B'), label: 'phone', scopes: ['tools'], expires: null }]);
   });
 
   test('a number too large for JSON is written back as text, so the grant it broke stays unused', async () => {
-    // 1e309 parses as Infinity, which JSON.stringify would write as null: no expiry at all.
     writeFileSync(path, `{"observers": [${JSON.stringify(BASELINE)}, {"key": "${key('B')}", "label": "forever?", "scopes": ["health"], "expires": 1e309}]}`);
     const m = new ObserversModule({ path });
     expect((await m.handleToolCall(call('get', {}))).data).toMatchObject({ notUsed: ['grant 2 ("forever?") has an expiry that isn\'t a date: Infinity'] });
@@ -269,7 +258,7 @@ describe('observers tools and the grants file', () => {
 
   test('a grant refuses a key that doesn\'t decode to 32 bytes', async () => {
     writeFileSync(path, GOOD);
-    const dropped = key('C').slice(0, -1); // one character short
+    const dropped = key('C').slice(0, -1);
     const grant = await new ObserversModule({ path }).handleToolCall(call('grant', { key: dropped, label: 'short', scopes: ['health'] }));
     expect(grant.error).toContain('decodes to 32 bytes');
     expect(readFileSync(path, 'utf-8')).toBe(GOOD);
@@ -360,20 +349,14 @@ describe('what grant and revoke say', () => {
       const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
       expect(r.error).toBe(`Nothing was granted: expires must be text, not ${JSON.stringify(expires)}: give a date as ${FORM}, or ${NO_END}.`);
     }
-    // Date.parse reads most of these, its lenient parser "3600." as the year
-    // 3600 and "05/06/2026" as May 6; only the ISO form is taken.
     for (const expires of [
       'tomorrow', '3600', ' 86400 ', '+003600', '3600.5', '3600.', '3600,5', '86400.', '3600;', '3600 .',
       '2027', '2027-01', 'Oct 18 2999', '10/18/2999', '05/06/2999', '2999.01.01', ' 2999-01-01', '2999-01-01T12', '2999-13-01', '2999-01-01T25:00:00Z',
-      // In the form, but out of range, which Date.parse reads anyway in the
-      // form with a space: it read -9999 as an offset of 100 hours and 39
-      // minutes.
       '2999-01-01 12:00:00-9999', '2999-01-01 12:00:00+2400', '2999-01-01t12:00:00-99:99', '2999-01-01 24:00:01Z', '2999-01-01 12:60Z',
     ]) {
       const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
       expect(r.error).toBe(`Nothing was granted: expires ${JSON.stringify(expires)} isn't a date as ${FORM}: give it in that form, or ${NO_END}.`);
     }
-    // A day the month doesn't have is refused, where Date.parse moves it on.
     for (const expires of ['2999-02-29', '2999-04-31', '2999-02-30T00:00:00Z', '2100-02-29']) {
       const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
       expect(r.error).toBe(
@@ -381,8 +364,6 @@ describe('what grant and revoke say', () => {
         `moved into the next month: give a date that exists, as ${FORM}, or ${NO_END}.`,
       );
     }
-    // A year below 100 is that year, so it has passed, where Date.parse reads
-    // the form with a space as 2049 and 1999.
     for (const expires of ['0049-01-01 12:00:00Z', '0099-12-31 23:59Z', '0049-01-01']) {
       const r = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires }));
       expect(r.error).toBe(
@@ -400,15 +381,7 @@ describe('what grant and revoke say', () => {
     const later = await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T00:00:00Z' }));
     expect((later.data as { message: string }).message).toBe('Updated: phone → [health] until 2999-01-01T00:00:00Z. Live within ~3s.');
     expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T00:00:00Z' }]);
-    // Each form taken is written in ECMAScript's own form, with T, Z and an
-    // offset's colon, and the answer names that text. The grant stores it,
-    // apart from a time without a zone, which it stores as the instant it
-    // read, in UTC. The registry's Date.parse reads what's stored as meant:
-    // a date alone as its start in UTC, a time without a zone in the host's
-    // time zone (UTC under bun test, unless TZ is set as the run starts; the
-    // next test takes another), and a zone as given. The answer names the
-    // instant for a date alone or a time without a zone, which don't say
-    // their zone.
+    // bun test runs in UTC unless TZ is set as the run starts.
     const local = (y: number, mo: number, d: number, h: number) => new Date(y, mo - 1, d, h).toISOString().replace('.000Z', 'Z');
     for (const [typed, written, expires, meant, zoned] of [
       ['2999-01-01', '2999-01-01', '2999-01-01', '2999-01-01T00:00:00Z', false],
@@ -431,8 +404,6 @@ describe('what grant and revoke say', () => {
       expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires }]);
       expect(new Date(Date.parse(expires)).toISOString().replace('.000Z', 'Z')).toBe(meant);
     }
-    // The registry reads the stored text as the grant checked it: it admits
-    // the key until the expiry, and not after.
     for (const [typed, end] of [['2999-01-01 12:00:00-0800', '2999-01-01T20:00:00Z'], ['2999-01-01 24:00Z', '2999-01-02T00:00:00Z']] as const) {
       await m.handleToolCall(call('grant', { key: key('C'), label: 'phone', scopes: ['health'], expires: typed }));
       const registry = new ObserverRegistry(path);
@@ -445,10 +416,7 @@ describe('what grant and revoke say', () => {
   });
 
   test('a time without a zone is read in the host\'s zone and stored as that instant, which reads the same in any zone', async () => {
-    // This grants in Europe/Berlin, then reads the stored expiry back in the
-    // zone the run started in: bun test's UTC, unless TZ was set as it
-    // started. The finally restores that zone, or UTC when none was set:
-    // deleting TZ would put the process in the machine's own zone, not bun
+    // Deleting TZ would put the process in the machine's own zone, not bun
     // test's UTC.
     const zone = process.env.TZ;
     const noonHere = new Date(2999, 0, 1, 12).getTime();
@@ -462,7 +430,7 @@ describe('what grant and revoke say', () => {
     } finally {
       process.env.TZ = zone ?? 'Etc/UTC';
     }
-    expect(new Date(2999, 0, 1, 12).getTime()).toBe(noonHere); // back in the zone the run started in
+    expect(new Date(2999, 0, 1, 12).getTime()).toBe(noonHere);
     expect(stored(path).observers).toEqual([{ key: key('C'), label: 'phone', scopes: ['health'], expires: '2999-01-01T11:00:00Z' }]);
     const registry = new ObserverRegistry(path);
     registry.start();
@@ -479,8 +447,6 @@ describe('what grant and revoke say', () => {
     const refusal = `Nothing was granted: expires "1970-01-01T00:00:01Z" has already passed: give a later time, or ${NO_END} ` +
       '(observers--revoke ends this key\'s grants, if it has any and none is protected).';
     expect(passed.error).toBe(refusal);
-    // For a key with a protected grant, the hint holds, and the protection
-    // is named once the inputs are right, when the file is read.
     const overBaseline = await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'], expires: '1970-01-01T00:00:01Z' }));
     expect(overBaseline.error).toBe(refusal);
     expect((await m.handleToolCall(call('grant', { key: key('A'), label: 'mine', scopes: ['health'] }))).error).toBe(`Nothing was granted: ${PROTECTED_A('change')}`);
@@ -498,7 +464,6 @@ describe('what grant and revoke say', () => {
     expect((await m.handleToolCall(call('revoke', { key: key('E') }))).error).toBe(`Nothing was revoked: no grant has the key "${key('E')}". observers--get lists the grants and their keys.`);
     expect((await m.handleToolCall(call('revoke', { label: 'nobody' }))).error).toBe('Nothing was revoked: no grant is labelled "nobody". observers--get lists the grants and their keys.');
     expect(readFileSync(path, 'utf-8')).toBe(GOOD);
-    // Two entries of one key under one label name that key once.
     const twin = { key: key('C'), label: 'twin', scopes: ['health'] };
     writeFileSync(path, JSON.stringify({ observers: [twin, { ...twin, scopes: ['ops'] }] }));
     expect((await m.handleToolCall(call('revoke', { label: 'twin' }))).error).toBe(`Nothing was revoked: 2 grants are labelled "twin". Revoke by key instead: "${key('C')}".`);

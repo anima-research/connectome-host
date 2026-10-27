@@ -1,25 +1,3 @@
-/**
- * Guard tests for the import → warmup → conhost identity handoff.
- *
- * The original bug: warmup-session.ts called ContextManager.open without a
- * namespace argument, so AutobiographicalStrategy persisted summaries to
- * the no-namespace default slot `default/autobio:summaries`. The live
- * framework reads from `agents/${name}/autobio:summaries`. The two never
- * met; the agent saw an empty autobiography on first open.
- *
- * The fix is in two parts:
- *   1. `SessionManager.getImportSource` surfaces the agentName the
- *      importer wrote into the sidecar, so warmup can derive a name
- *      without an explicit CLI flag.
- *   2. `warmup-session.ts` passes `namespace: 'agents/' + agentName`
- *      to `ContextManager.open` so its writes land where the framework
- *      reads.
- *
- * These tests pin both contracts. They don't run an LLM — they just
- * check the surface area that has to remain intact for the handoff to
- * work end-to-end.
- */
-
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,11 +39,6 @@ describe('SessionManager.getImportSource', () => {
   });
 
   test('returns null when sidecar JSON parses to a non-object root', () => {
-    // The trust-boundary gate added in src/session-manager.ts:
-    // valid JSON like `null`, `[]`, `"string"`, or a bare number parses
-    // successfully but would have produced an unusable `ImportSource`
-    // with whatever field accesses the call site does. The gate rejects
-    // these at the boundary so the rest of the code can assume a record.
     const cases: Array<[string, string]> = [
       ['null-root', 'null'],
       ['array-root', '[1,2,3]'],
@@ -79,10 +52,6 @@ describe('SessionManager.getImportSource', () => {
   });
 
   test('surfaces agentName specifically — guards against field rename', () => {
-    // The whole point of this sidecar field is that warmup-session.ts can
-    // read it back. If someone renames `agentName` upstream without
-    // migrating callers, both warmup and conhost lose their fallback and
-    // we silently regress to the original bug.
     const sidecarPath = join(tmpDir, 'sessions', 'guard.import-source.json');
     writeFileSync(sidecarPath, JSON.stringify({ agentName: 'TestAgent' }));
     const result = sm.getImportSource('guard');
@@ -116,9 +85,8 @@ describe('AutobiographicalStrategy state slot under explicit namespace', () => {
       });
 
       const stateIds = store.listStates().map((s: { id: string }) => s.id);
-      // The slot the framework's main-agent ContextManager registers.
-      // If warmup-session.ts ever drops its namespace argument again, this
-      // assertion fails because the strategy lands at `default/` instead.
+      // agent-framework opens an agent's ContextManager in namespace agents/<name>;
+      // context-manager without a namespace uses `default`.
       expect(stateIds).toContain('agents/Claude/autobio:summaries');
       expect(stateIds).not.toContain('default/autobio:summaries');
     } finally {
@@ -127,10 +95,6 @@ describe('AutobiographicalStrategy state slot under explicit namespace', () => {
   });
 
   test("falls back to 'default/autobio:summaries' when namespace is omitted (regression-witness)", async () => {
-    // This is intentionally NOT what warmup wants — it documents the
-    // failure mode and ensures the namespace-on path stays distinct from
-    // the namespace-off path. If both ended up at the same slot the
-    // first test above would be a tautology.
     const storePath = join(tmpDir, 'store');
     const store = JsStore.openOrCreate({ path: storePath });
     try {

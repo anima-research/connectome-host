@@ -1,11 +1,3 @@
-/**
- * Verifies the AgentTreeReducer infers parent edges from fleet--launch tool
- * calls (the actual call name; was fleet--spawn in an earlier draft).
- *
- * This is the seam by which the local-process tree links its conductor agent
- * to the fleet children it launched, so the unified TUI tree can render
- * "conductor → miner-1 → miner's commander" as one visual hierarchy.
- */
 import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 

@@ -5,22 +5,13 @@ import { aggregateTokens, flattenUiTree } from './tree';
 
 export interface TreeSidebarProps {
   roots: UiNode[];
-  /** Currently-selected node id (UiNode.id), if any. */
   selectedId: string | null;
-  /** Set of node ids that are expanded; render contains caret state. */
   expanded: Set<string>;
   onToggleExpand(id: string): void;
-  /** Open / focus the stream view for this node. */
   onSelectStream(node: UiNode): void;
-  /** Open / focus the usage view for this node. */
   onSelectUsage(node: UiNode): void;
-  /** Cancel an in-process subagent by display name. If the subagent lives
-   *  inside a fleet child, pass its name as `childName` so the server can
-   *  forward the cancel to that child's runtime. */
   onCancelSubagent(name: string, childName?: string): void;
-  /** Stop a fleet child gracefully. */
   onFleetStop(name: string): void;
-  /** Restart a fleet child. */
   onFleetRestart(name: string): void;
 }
 
@@ -72,8 +63,6 @@ function NodeRow(props: {
   const isLiveSubagent = (): boolean =>
     props.node.kind === 'subagent' && props.node.agent?.status === 'running';
 
-  // Subagents inside a fleet child carry `child-event-agent` as their stream
-  // source; that's where the owning fleet child's name lives.
   const owningFleetChild = (): string | undefined =>
     props.node.streamSource.kind === 'child-event-agent'
       ? props.node.streamSource.childName
@@ -104,7 +93,6 @@ function NodeRow(props: {
       class={`flex items-center gap-1 py-0.5 pr-1 rounded ${selectedClass()}`}
       style={{ 'padding-left': `${0.25 + props.depth * 0.75}rem` }}
     >
-      {/* Expand caret. Always present so column widths line up; invisible for leaves. */}
       <button
         type="button"
         class={`w-4 text-center text-neutral-500 hover:text-neutral-200 ${hasChildren() ? '' : 'opacity-0 pointer-events-none'}`}
@@ -114,8 +102,6 @@ function NodeRow(props: {
         {props.expanded ? '▾' : '▸'}
       </button>
 
-      {/* Label region — clicking opens the stream view. The token badge inside
-       *  has its own onClick that stops propagation so it can target usage. */}
       <div
         role="button"
         tabIndex={0}
@@ -165,7 +151,6 @@ function NodeLabel(props: { node: UiNode; onUsageClick: () => void }) {
       </>
     );
   }
-  // framework / subagent
   const a = n.agent!;
   return (
     <>
@@ -184,8 +169,6 @@ function NodeLabel(props: { node: UiNode; onUsageClick: () => void }) {
           title="Show agent usage"
         />
         <Show when={a.toolCallsCount > 0}>
-          {/* Use × instead of · to keep the count from reading as a negative
-              ("·11" at this font size is easy to misparse as "-11"). */}
           <span title="tool calls">×{a.toolCallsCount}</span>
         </Show>
       </span>
@@ -267,10 +250,6 @@ function phaseColor(phase: AgentNode['phase']): string {
     case 'executing': return 'bg-amber-500/30 text-amber-200';
     case 'done': return 'bg-neutral-700 text-neutral-400';
     case 'failed': return 'bg-rose-500/40 text-rose-200';
-    // Postmortem 2026-05-28 P1 #3: 'cancelled' is terminal-but-benign.
-    // A slightly warmer dim than 'done' so the operator can spot which
-    // children ended on a cancel vs. a successful turn, without the
-    // false-alarm RED of 'failed'.
     case 'cancelled': return 'bg-neutral-700 text-amber-300/70';
     default: return 'bg-neutral-800 text-neutral-400';
   }

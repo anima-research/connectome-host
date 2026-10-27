@@ -1,18 +1,3 @@
-/**
- * LifecycleModule — the agent restarts its own host (`lifecycle--restart`).
- *
- * Opt-in per recipe (`modules.selfRestart`). The tool arms a restart; the
- * host exits once the turn that asked has ended and nothing is in flight,
- * with exit code 75, for its supervisor to start it again (src/self-restart.ts).
- * Only headless mode has that exit path, so elsewhere the tool refuses: an
- * exit there would stop the agent for good.
- *
- * After the restart, this module's start() says in one context line who
- * asked, when, why, when the host stopped and when it came back. The line
- * goes where the module's writes go (the primary's window, which ordinary
- * residents share), so it names the asker. It never wakes anyone.
- */
-
 import { readFileSync } from 'node:fs';
 import type {
   Module,
@@ -26,6 +11,7 @@ import type {
 } from '@animalabs/agent-framework';
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { hostNoteMetadata } from '../speaker.js';
 import {
   SELF_RESTART_EXIT_CODE,
   selfRestart as processSelfRestart,
@@ -37,16 +23,11 @@ import {
 export const DEFAULT_SELF_RESTART_COOLDOWN_MINUTES = 10;
 
 export interface LifecycleModuleConfig {
-  /** Where `self-restart.json` / `self-restart.last.json` live (the host's DATA_DIR). */
   dataDir: string;
-  /** Minimum time between completed self-restarts. Default 10. */
   cooldownMinutes?: number;
   timeZone?: string;
-  /** For tests; defaults to the process's state. */
   state?: SelfRestartState;
-  /** For tests. */
   now?: () => Date;
-  /** For tests; defaults to the host package's version. */
   hostVersion?: string;
 }
 
@@ -94,7 +75,9 @@ export class LifecycleModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     const record = this.state.takeCompleted(this.dataDir, this.now());
-    if (record) ctx.addMessage('user', [{ type: 'text', text: this.backNote(record) }]);
+    // agent-framework puts a module's write in the primary's window, which
+    // ordinary residents share.
+    if (record) ctx.addMessage('user', [{ type: 'text', text: this.backNote(record) }], hostNoteMetadata('restart'));
   }
 
   async stop(): Promise<void> {}
@@ -229,7 +212,6 @@ export class LifecycleModule implements Module {
     return Number.isFinite(d.getTime()) ? formatZonedDateTime(d, this.timeZone) : iso;
   }
 
-  /** Who asked for a request, as `caller` reads it. */
   private asker(request: SelfRestartRequest, caller?: string): string {
     if (request.requestedBy === undefined) return 'an agent';
     return request.requestedBy === caller ? 'you' : request.requestedBy;

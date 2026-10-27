@@ -1,10 +1,3 @@
-/**
- * The health snapshot's per-agent sections read each agent on its own: one
- * agent whose read throws, such as one whose context manager a store surgery
- * left uninitialized, is left out of that section and named in readFailures,
- * and the others are still reported. An agent with nothing to report is left
- * out with no failure.
- */
 import { describe, test, expect } from 'bun:test';
 import { buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 import { healthEntry } from '../src/web/health-lookup.js';
@@ -135,7 +128,6 @@ describe('health snapshot per agent', () => {
     expect(failures['constructor']!.compressionDebt).toBe(NOT_READY);
     expect(({} as Record<string, unknown>).compressionDebt).toBeUndefined();
     expect((Object as unknown as Record<string, unknown>).compressionDebt).toBeUndefined();
-    // Their readable sections are keyed by their names too.
     expect(Object.keys(snapshot.runtimeSettings as object).sort()).toEqual(['__proto__', 'constructor']);
   });
 
@@ -156,16 +148,13 @@ describe('health panel lookups', () => {
   test('a JSON-parsed snapshot is read by own key, so names that Object.prototype also has read as missing when they are', () => {
     const snapshot = buildHealthSnapshot(appWith([agentStub('constructor', { debt: notReady }), agentStub('steady')]));
     const parsed = JSON.parse(JSON.stringify(snapshot)) as Record<string, Record<string, unknown>>;
-    // The panel's debt line: absent for the agent whose read failed, with its failure recorded.
     expect(healthEntry(parsed.compressionDebt, 'constructor')).toBeUndefined();
     expect(healthEntry(healthEntry(parsed.readFailures, 'constructor') as Record<string, string>, 'compressionDebt')).toBe(NOT_READY);
-    // Names that are Object.prototype members, and absent from every section.
     for (const name of ['toString', '__proto__', 'hasOwnProperty']) {
       for (const section of ['compressionQuarantine', 'compressionDebt', 'contextComposition', 'runtimeSettings', 'readFailures']) {
         expect(healthEntry(parsed[section], name)).toBeUndefined();
       }
     }
-    // The readable agent is found, and its debt read has no failure.
     expect(healthEntry(parsed.compressionDebt, 'steady')).toEqual({ level: 'healthy' });
     expect(healthEntry(parsed.readFailures, 'steady')).toBeUndefined();
   });

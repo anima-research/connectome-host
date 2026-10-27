@@ -1,9 +1,3 @@
-/**
- * Tests for mcpServers.<id>.source validation: both of connectome-cook's
- * source grammars (git `url` form and registry `npm` form) must pass — the
- * shipped knowledge-miner recipe uses `source.npm` for its gitlab server,
- * and a validator that only accepts `url` makes that recipe unloadable.
- */
 import { describe, test, expect } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 

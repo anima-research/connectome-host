@@ -1,11 +1,3 @@
-/**
- * Wire validation for the context-settings messages.
- *
- * These messages mutate a LIVE agent's context budget, so malformed payloads
- * must be rejected at the protocol edge rather than reaching
- * Agent.validateRuntimeSettingsPatch as strings/NaN/fractions.
- */
-
 import { describe, it, expect } from 'bun:test';
 import { isClientMessage } from '../src/web/protocol.js';
 

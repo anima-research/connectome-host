@@ -1,13 +1,3 @@
-/**
- * A recipe's agent.refusalHandling is refused when the recipe loads, in the
- * recipe's words, when agent-framework would refuse what the host passes on.
- * From 0.22.3 the framework's create() refuses it (assertAgentSwitches, which
- * the Agent constructor runs first), and a recipe that loaded then stopped
- * the host at start-up. The host passes it on only when it's truthy
- * (buildFrameworkAgentConfig), so a falsy one loads as before. Beside the
- * framework's rule, the host refuses refusalHandling.primarySummaryFallback
- * on its own (test/recipe-primary-summary-fallback-rejection.test.ts).
- */
 import { describe, expect, test } from 'bun:test';
 import { Agent } from '@animalabs/agent-framework';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
@@ -18,7 +8,6 @@ const recipe = (refusalHandling: unknown) => ({
   agent: { systemPrompt: 'sys', ...(refusalHandling === undefined ? {} : { refusalHandling }) },
 });
 
-/** The message `run` throws, or null when it doesn't throw. */
 function thrown(run: () => unknown): string | null {
   try {
     run();
@@ -53,22 +42,14 @@ describe('recipe agent.refusalHandling', () => {
     });
   }
 
-  // The values in `loads` get no tests of their own: the framework refuses
-  // none of them, so the test below fails if the recipe refuses one. It
-  // checks these 16 values, so a framework release that moves its rule on
-  // one of them fails it.
   test('refuses at load what agent-framework refuses once the host passes it on, for each listed value', () => {
     for (const value of [...refused.map(([v]) => v), ...loads]) {
       const host = thrown(() => validateRecipe(recipe(value))) !== null;
-      // What the host would hand the framework for this value: a recipe that
-      // loads, with the value put in after the check.
       const parsed = validateRecipe(recipe(undefined));
       (parsed.agent as Record<string, unknown>).refusalHandling = value;
       const config = buildFrameworkAgentConfig(parsed, 'agent', 'model', { kind: 'strategy' } as never);
-      // The constructor checks its switches before anything else, so its
-      // refusal names the setting; anything else it throws with these stubs
-      // comes later and isn't about refusalHandling. The setting's name, not
-      // the framework's wording, decides it.
+      // agent-framework's Agent constructor checks its switches before anything
+      // else, so a refusal with these stubs that names the setting is that check's.
       const framework = /refusalHandling/.test(thrown(() => new Agent(config, {} as never, {} as never)) ?? '');
       expect({ value, refused: host }).toEqual({ value, refused: framework });
     }

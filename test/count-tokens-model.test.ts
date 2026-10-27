@@ -1,11 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { anthropicCountModel } from '../src/web/panel-data.js';
 
-// Regression: the makeup panel's exact token count used to call count_tokens
-// with a hardcoded provider-prefixed id, which the Anthropic endpoint 404s —
-// so exactTotalTokens was silently null on every install. The count model is
-// now derived from the model the agent actually runs.
-
 describe('anthropicCountModel', () => {
   test('strips a membrane/OpenRouter provider prefix', () => {
     expect(anthropicCountModel('anthropic/claude-opus-4-6')).toBe('claude-opus-4-6');
