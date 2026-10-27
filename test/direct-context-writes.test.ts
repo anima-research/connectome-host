@@ -94,10 +94,10 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
     file: 'src/modules/subagent-module.ts',
     call: 'ctx.addMessage (untargeted)',
     count: 1,
-    why: "An async run's result or failure with no listed agent to write it for (addForLauncher): no launcher named, " +
-      'or a launcher or launching attempt that has ended. It lands in the residents\' slot naming whom it was for, ' +
-      'meant for every resident, and wakes none of them but the unnamed launcher\'s, as main has it (#467); a run ' +
-      'whose launcher or current attempt is listed is written for that agent.',
+    why: "An async run's result or failure with no launcher named (addForLauncher): the host's unnamed agent's, " +
+      'whom it wakes, as main has it (#467). A run whose launcher or current attempt is listed is written for that ' +
+      'agent; one whose launcher or launching attempt has ended, for the nearest listed agent above the launcher, ' +
+      'else the primary, waking nobody. Only with no agent listed at all is that one written for none.',
   },
   {
     file: 'src/modules/subagent-module.ts',

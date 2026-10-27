@@ -20,7 +20,13 @@
     it, when the run has no route of its own, is written for that agent, and
     tts-relay's note that a voiced reply was interrupted is written for the
     agent that spoke. Each was written for no agent, so every resident
-    sharing the slot was shown it.
+    sharing the slot was shown it. One whose launcher, or the attempt that
+    launched it, has ended (its line says `, which has ended` or `: launched
+    by an attempt that has ended`) was written for no agent too. It is now
+    written for the nearest agent above the launcher that agent-framework
+    lists, such as the resident whose subagent launched it, or the current
+    attempt of a run above it, else for the primary. It wakes nobody, as
+    before.
   - A subagent's first rows (its orientation and task, a fork's copy of its
     parent's context, and the fork call and result a fork without one is
     given) are the subagent's own rows.

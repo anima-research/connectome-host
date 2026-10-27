@@ -17,7 +17,9 @@
  *   its parent's context) are the child's own rows, in its window once its
  *   run takes it on;
  * - a subagent's result or failure told straight to the agent that started
- *   it is written for that agent, so no other resident is shown it.
+ *   it is written for that agent, so no other resident is shown it; one
+ *   whose launcher has ended is written for the nearest listed agent above
+ *   the launcher, else for the primary, and wakes nobody.
  *
  * Each runs a real AgentFramework (test/presented-host.ts) and reads the
  * agents' windows and the requests the provider receives.
@@ -241,6 +243,77 @@ describe("a subagent's result or failure told directly", () => {
       const clerkWire = h.adapter.wireOf('clerk').at(-1)!;
       expect(clerkWire).not.toContain('the search index is down');
       expect(clerkWire).not.toContain('Three ledgers');
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe("a subagent's result or failure whose launcher has ended", () => {
+  // Written for no agent, it was stamped for every resident sharing the slot,
+  // and shown to each of them at rest. It is written for the nearest agent
+  // above the launcher that agent-framework lists, else for the primary, and
+  // wakes nobody (#291).
+  test("is in the window of the nearest listed agent above the launcher, else the primary's, no other resident's, and wakes nobody", async () => {
+    const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'clerk', defaultModel: 'model-kid', maxRetries: 0 });
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], modules: [subagent as unknown as Module], prefix: 'subagent-ended-' });
+    subagent.setFramework(h.framework);
+    const ctx = (subagent as unknown as { ctx: { pushEvent(event: { type: string; agentName?: string }): unknown } }).ctx;
+    const push = ctx.pushEvent.bind(ctx);
+    const woken: string[] = [];
+    ctx.pushEvent = (event) => {
+      if (event.type === 'inference-request' && event.agentName) woken.push(event.agentName);
+      return push(event);
+    };
+    try {
+      expect(h.framework.getPrimaryAgentName()).toBe('clerk');
+      await h.turn('clerk');
+      await h.turn('mira');
+      // mira's subagent 'lead' runs and ends.
+      const led = await subagent.handleToolCall({
+        id: 'call-lead', name: 'spawn', callerAgentName: 'mira',
+        input: { name: 'lead', task: 'Check the ledgers.', model: 'model-lead', sync: true, systemPrompt: 'p' },
+      } as unknown as ToolCall);
+      expect(led.success).toBe(true);
+      const lead = h.framework.listAgents({ includeEnded: true }).find((record) => record.name.startsWith('spawn-lead-'))!;
+      expect(lead.ended).toBeDefined();
+      expect(lead.relationships.spawnedBy).toBe('mira');
+      const calls = { clerk: h.adapter.callsFor('clerk'), mira: h.adapter.callsFor('mira') };
+      const inner = subagent as unknown as {
+        deliverAsyncError(name: string, err: unknown, launcher: string, launcherShown?: string): void;
+        deliverAsyncResult(name: string, result: { summary: string }, launcher: string, launcherShown?: string): void;
+      };
+      inner.deliverAsyncResult('scout', { summary: 'LEAD-CHILD-RESULT' }, lead.name, 'lead');
+      inner.deliverAsyncError('miner', new Error('LEAD-CHILD-FAIL'), lead.name, 'lead');
+      inner.deliverAsyncResult('stray', { summary: 'NO-LISTED-ANCESTOR' }, 'gone-launcher');
+      const forMira = [
+        h.rowWith('mira', "[Subagent 'scout' returned, for 'lead', which has ended]")!,
+        h.rowWith('mira', "[Subagent 'miner' failed, for 'lead', which has ended]")!,
+      ];
+      for (const row of forMira) {
+        expect(audienceOf(row.metadata)).toEqual({ audience: ['mira'] });
+        expect(h.inWindow('mira', row.id)).toBe(true);
+        expect(h.inWindow('clerk', row.id)).toBe(false);
+      }
+      const forPrimary = h.rowWith('clerk', "[Subagent 'stray' returned, for 'gone-launcher', which has ended]")!;
+      expect(audienceOf(forPrimary.metadata)).toEqual({ audience: ['clerk'] });
+      expect(h.inWindow('clerk', forPrimary.id)).toBe(true);
+      expect(h.inWindow('mira', forPrimary.id)).toBe(false);
+      // Nobody is woken: no request is asked for, and none is sent.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(woken).toEqual([]);
+      expect({ clerk: h.adapter.callsFor('clerk'), mira: h.adapter.callsFor('mira') }).toEqual(calls);
+      // Each one's next request carries its own rows and not the other's.
+      await h.turn('clerk');
+      const clerkWire = h.adapter.wireOf('clerk').at(-1)!;
+      expect(clerkWire).toContain('NO-LISTED-ANCESTOR');
+      expect(clerkWire).not.toContain('LEAD-CHILD-RESULT');
+      expect(clerkWire).not.toContain('LEAD-CHILD-FAIL');
+      await h.turn('mira');
+      const miraWire = h.adapter.wireOf('mira').at(-1)!;
+      expect(miraWire).toContain('LEAD-CHILD-RESULT');
+      expect(miraWire).toContain('LEAD-CHILD-FAIL');
+      expect(miraWire).not.toContain('NO-LISTED-ANCESTOR');
     } finally {
       await h.cleanup();
     }

@@ -557,6 +557,9 @@ describe('observer sessions and connections end with their grant', () => {
   });
 });
 
+/** A trace raised at an emitTrace call (emitTrace, emitTraceFn, hooks.emitTrace): the type of the event it's given. */
+const EMIT = /\bemitTrace(?:Fn)?\(\s*\{\s*type: '([^']+)'/g;
+
 describe('scope filters', () => {
   const entry: WelcomeMessageEntry = {
     index: 0,
@@ -697,14 +700,27 @@ describe('scope filters', () => {
     expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
     // And the table names no type the framework has dropped, such as the
     // branch-moving undo's undo:completed and redo:completed (#291). The gate,
-    // MCPL and tune-out traces main's table gives entries (#462) are emitted
-    // where they're raised, outside trace.ts's union, so this reads every
-    // `type:` literal in the framework's source.
+    // MCPL and tune-out traces main's table gives entries (#462) are outside
+    // trace.ts's union: they're those raised at an emitTrace call, as the
+    // first key of the event it's given. Any other `type:` literal (a
+    // process event, a workspace event) is no trace and has no entry.
     const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? sources(join(dir, entry.name)) : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
-    const emitted = new Set(sources(dirname(index)).flatMap((path) =>
-      [...readFileSync(path, 'utf-8').matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!)));
-    expect(Object.keys(TRACE_SCOPES).filter((type) => !emitted.has(type))).toEqual([]);
+    const raised = new Set([...types, ...sources(dirname(index)).flatMap((path) =>
+      [...readFileSync(path, 'utf-8').matchAll(EMIT)].map((m) => m[1]!))]);
+    expect(Object.keys(TRACE_SCOPES).filter((type) => !raised.has(type))).toEqual([]);
+  });
+
+  test("the scan for the traces raised outside trace.ts's union reads only an emitTrace call's event", () => {
+    const code = [
+      "this.emitTrace({ type: 'gate:decided', agentName });",
+      "hooks.emitTrace({\n      type: 'mcpl:channel-open',\n    });",
+      "emitTraceFn({ type: 'tune-out:started' });",
+      "this.pushEvent({ type: 'inference-request', agentName });",
+      "const event = { type: 'workspace:created', path };",
+      "emitTrace(build({ type: 'discord:message' }));",
+    ].join('\n');
+    expect([...code.matchAll(EMIT)].map((m) => m[1])).toEqual(['gate:decided', 'mcpl:channel-open', 'tune-out:started']);
   });
 
   test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {

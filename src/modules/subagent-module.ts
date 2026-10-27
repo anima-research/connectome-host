@@ -2523,11 +2523,49 @@ export class SubagentModule implements Module {
         say(`, for '${shown}': launched by an earlier attempt`, current);
         return current;
       }
-      say(`, for '${shown}': launched by an attempt that has ended`);
-      return null;
     }
-    say(`, for '${shown}', which has ended`);
+    // The launcher, or the attempt that launched the run, has ended: the row
+    // is written for the nearest agent up the launcher's tree that
+    // agent-framework lists, else for the primary, and wakes nobody (#291).
+    // Written for no agent, it would be stamped for every resident, so each
+    // of them would be shown a run that was none of theirs.
+    const why = run !== undefined ? `, for '${shown}': launched by an attempt that has ended` : `, for '${shown}', which has ended`;
+    const reader = this.nearestListedAbove(launcher, listed);
+    if (reader !== undefined) say(why, reader);
+    else say(why);
     return null;
+  }
+
+  /**
+   * The nearest agent above `agent` in its tree that agent-framework lists:
+   * an ancestor itself, or the current attempt of an ancestor's run that
+   * goes on, else the primary (the first listed agent when none is). Up the
+   * tree by the registry's spawner links, an orphan's through its former
+   * parent, as agent-framework offers an orphan's candidates; and for an
+   * attempt of a run this module holds, by the run's launcher. Undefined
+   * only when no agent is listed.
+   */
+  private nearestListedAbove(agent: string, listed: ReadonlySet<string>): string | undefined {
+    const seen = new Set<string>([agent]);
+    for (let cur = this.launcherOf(agent); cur !== undefined && cur !== '' && !seen.has(cur); cur = this.launcherOf(cur)) {
+      seen.add(cur);
+      if (listed.has(cur)) return cur;
+      const run = this.runOfAttempt.get(cur);
+      const current = run === undefined ? undefined : this.liveSubagents.get(run)?.frameworkAgentName;
+      if (current !== undefined && listed.has(current)) return current;
+    }
+    const primary = this.framework?.getPrimaryAgentName() ?? null;
+    if (primary !== null && listed.has(primary)) return primary;
+    return listed.values().next().value;
+  }
+
+  /** Who launched `agent`: its record's spawner, else, for an attempt of a run still going on, the run's launcher. */
+  private launcherOf(agent: string): string | undefined {
+    const record = this.framework?.getAgentRecord(agent) ?? null;
+    const spawner = record?.orphaned?.formerParent.agent ?? record?.relationships.spawnedBy;
+    if (spawner !== undefined) return spawner;
+    const run = this.runOfAttempt.get(agent);
+    return run === undefined ? undefined : this.parentMap.get(run);
   }
 
   private failedRun(name: string, kind: 'spawn' | 'fork', err: unknown, run: { started: boolean; attempts: number }): Error {
