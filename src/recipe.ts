@@ -20,19 +20,29 @@ import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
+import { recipeFit, type RecipeFit } from './recipe-fit.js';
 
 export interface RecipeStrategy {
   /** Built-in strategy name, or a custom type registered by a
    *  `kind: "strategy"` extension (see `Recipe.extensions`). */
   type: 'autobiographical' | 'passthrough' | 'frontdesk' | (string & {});
   headWindowTokens?: number;
-  /** Verbatim tail. When unset, 40% of the compile budget (120k of 300k). */
+  /** Verbatim tail. When unset, 40% of the compile budget (120k of a 300k
+   *  budget), or 40% of the budget less agent.maxTokens where the head and
+   *  that tail wouldn't fit beside agent.maxTokens with overBudgetGraceRatio's
+   *  grace. */
   recentWindowTokens?: number;
   compressionModel?: string;
   /** Cap compression `max_tokens` at the compression model's OUTPUT ceiling.
    *  Required for pre-4.x models (Claude 3 Opus caps at 4096) — without it the
    *  summarizer's 16k floor is rejected and the agent never folds. */
   compressionMaxTokens?: number;
+  /**
+   * Opt-in compatibility for a non-reasoning model that authors the complete
+   * compression result inside one closed literal `<thinking>…</thinking>`
+   * text wrapper. Recovers only that exact whole-response shape as prose.
+   */
+  recoverLiteralThinkingWrappedCompression?: boolean;
   maxMessageTokens?: number;
   /** Maximum live image count, newest-first (default 6). Zero means up to
    * context-manager's image ceiling, 500, and a larger value is held to it. */
@@ -275,18 +285,28 @@ export interface RecipeAgent {
   /** Agent Framework exact-name tool allowlist. Omitted preserves its 'all' default.
    * This configures tool visibility; dispatch enforcement belongs to the framework. */
   allowedTools?: 'all' | string[];
+  /** The reply's max_tokens; 16,384 when unset. On a model the host knows a
+   *  window for (on Anthropic's API, recipe-fit.ts), a load that resolves
+   *  the system prompt refuses one over the model's maximum output. */
   maxTokens?: number;
   /**
    * Per-agent stream token budget — the accumulated-input ceiling at which the
    * framework breaks the stream and lets the strategy compress. Mirrors the
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
-   * budget is unset too (320k), else 150k — a recipe that sets its own budget
-   * may be on a 200k-window model.
+   * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
+   * which with prompt caching on are only those after the last cache marker.
    */
   maxStreamTokens?: number;
-  /** Per-agent context compile budget (input tokens). When unset, 300k —
-   *  sized for 1M-window models; set it lower on a smaller window
-   *  (budget + maxTokens must fit). */
+  /** Per-agent context compile budget (input tokens), which holds
+   *  maxTokens for the reply. When unset: on a model the host knows a window
+   *  for (on Anthropic's API, recipe-fit.ts), with a maxTokens that is unset
+   *  or a positive number, the smaller of 300k and the window less the system
+   *  prompt and 32k for the tools; otherwise 300k. Where the host knows the
+   *  window, a load that resolves the system prompt refuses a budget that
+   *  leaves too little room for the head and the verbatim tail once
+   *  maxTokens is kept for the reply, or one whose prompt (the budget less
+   *  maxTokens, or the head and tail where they come to more, plus the
+   *  system prompt) is over the window. */
   contextBudgetTokens?: number;
   /** Prompt-cache TTL ('5m' | '1h') forwarded to the provider. Defaults to
    *  '1h'; set '5m' explicitly for high-frequency, sub-5-minute workloads.
@@ -366,9 +386,8 @@ export interface RecipeAgent {
   clock?: ClockConfig | false;
   /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
-   * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
-   * models where it is opt-in, like claude-sonnet-4-5). Merged with any
-   * transport-required betas (OAuth). Anthropic provider only.
+   * request. Merged with any transport-required betas (OAuth). Anthropic
+   * provider only.
    */
   anthropicBetas?: string[];
   strategy?: RecipeStrategy;
@@ -820,6 +839,66 @@ export interface RecipeWorkspaceMount {
   followSymlinks?: boolean;
 }
 
+/** `modules.wake` as an object: starting rules, and the reply judge. */
+export interface RecipeWake extends Partial<import('@animalabs/agent-framework').GateConfig> {
+  /**
+   * The reply judge: the small model a `judge` wake rule asks whether now is a
+   * good time for the agent to reply, before it wakes the agent
+   * (agent-framework's `GateOptions.judge`). Every key is optional, and
+   * agent-framework's defaults apply where one is left out: Claude Haiku 5.5
+   * on this host's provider, 90,000 input tokens, low effort, a 20 s timeout,
+   * and a wake when the judge fails.
+   */
+  judge?: RecipeReplyJudge;
+}
+
+/** `modules.wake.judge`, as agent-framework's `ReplyJudgeOptions` takes it. */
+export interface RecipeReplyJudge {
+  /** False leaves the judge unwired: `judge` rules then wake as debounces. */
+  enabled?: boolean;
+  /** The judge's model id as this host's provider names it (e.g. an
+   *  `anthropic.`/`anthropic/` prefix on Bedrock/OpenRouter). */
+  model?: string;
+  /** The most input tokens one judge request may carry (4000 or more; default 90000). */
+  maxInputTokens?: number;
+  /** How long a judge request may take, in ms. */
+  timeoutMs?: number;
+  /** What a failed judge does: wake the agent (default) or not. */
+  onError?: 'wake' | 'skip';
+  /** The judge's effort; `none` sends none, for a provider without Anthropic's `output_config`. */
+  effort?: 'low' | 'medium' | 'high' | 'none';
+  /** The prompt cache's lifetime for the judge's context document. */
+  cacheTtl?: '5m' | '1h';
+}
+
+/** `modules.heartbeat` as an object. */
+export interface RecipeHeartbeat {
+  /** The state file; relative to the install directory. Default `{dataDir}/heartbeat.json`: the
+   *  install's, so every session reads the same schedule, as heartbeat-mcpl's state was. */
+  statePath?: string;
+  /** The schedule a first start writes when there's nothing to import. */
+  defaults?: RecipeHeartbeatDefaults;
+  /** heartbeat-mcpl's files (its HEARTBEAT_CONFIG_FILE and HEARTBEAT_REMINDERS_FILE),
+   *  read once by a start that finds no state file; relative to the install directory. */
+  importFrom?: { configPath?: string; remindersPath?: string };
+}
+
+/** `modules.heartbeat.defaults`. */
+export interface RecipeHeartbeatDefaults {
+  /** 60 or more. */
+  intervalSeconds?: number;
+  paused?: boolean;
+  message?: string;
+  deliveryMode?: 'message' | 'silent';
+}
+
+const RECIPE_HEARTBEAT_KEYS = ['statePath', 'defaults', 'importFrom'] as const;
+const RECIPE_HEARTBEAT_DEFAULTS_KEYS = ['intervalSeconds', 'paused', 'message', 'deliveryMode'] as const;
+const RECIPE_HEARTBEAT_IMPORT_KEYS = ['configPath', 'remindersPath'] as const;
+
+/** `modules.wake.judge`'s keys, kept in step with RecipeReplyJudge (recipeKeyListsInStep). */
+const RECIPE_REPLY_JUDGE_KEYS = ['enabled', 'model', 'maxInputTokens', 'timeoutMs', 'onError', 'effort', 'cacheTtl'] as const;
+
 export interface RecipeModules {
   /**
    * Subagent forking (spawn/fork parallel agents). OPT-IN — defaults to off
@@ -865,7 +944,23 @@ export interface RecipeModules {
      */
     reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   };
-  wake?: boolean | import('@animalabs/agent-framework').GateConfig;
+  /**
+   * The gate (wake rules). `true` or left out: on, with the rules the agent
+   * keeps in its gate.json. `false`: off. An object: on, with `policies` and
+   * `default` as the host's starting rules (agent-framework's GateConfig),
+   * and `judge` configuring the reply judge that `judge` wake rules ask.
+   */
+  wake?: boolean | RecipeWake;
+  /**
+   * The heartbeat, kept by agent-framework (its `FrameworkConfig.heartbeat`):
+   * the agent's own periodic check-in and reminders, with the tools
+   * `heartbeat--heartbeat_status`, `--heartbeat_configure`, `--heartbeat_trigger`,
+   * `--reminder_add`, `--reminder_list` and `--reminder_cancel`. OPT-IN: off
+   * by default. It replaces the heartbeat-mcpl server, so a recipe that turns
+   * it on can't also name an `mcpServers.heartbeat`. `importFrom` brings that
+   * server's schedule and reminders along on the first start.
+   */
+  heartbeat?: boolean | RecipeHeartbeat;
   /**
    * The workspace's mounts. `configMount: true` adds `_config`, the
    * session's config directory, holding only files named `gate.json`,
@@ -875,7 +970,8 @@ export interface RecipeModules {
    * agent-framework keeps none of its own files there: a recipe whose other
    * mounts are each read-only, have an include, or are configured direct
    * keeps no over-cap tool result, saved payload or fetched reference in a
-   * file. No mount of the recipe's own is named `_config`.
+   * file. No mount of the recipe's own is named `_config`, and no two of
+   * them share a name, compared exactly.
    */
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
@@ -1460,6 +1556,13 @@ export function resolveProvider(recipe: Recipe): RecipeProvider {
   return recipe.agent.provider ?? 'anthropic';
 }
 
+/** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
+ *  when it's set, else the recipe's own, else its provider's default. */
+export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
+  return envModel || recipe.agent.model ||
+    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
+}
+
 export const DEFAULT_RECIPE: Recipe = {
   name: 'Agent',
   description: 'General-purpose assistant with tool access',
@@ -1583,7 +1686,7 @@ export async function loadRecipeDetailed(source: string, options: { fetchSystemP
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  const resolved = options.fetchSystemPrompt === false ? recipe : await resolveSystemPrompt(recipe);
+  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
   copyResolvedPathsIntoRaw(persistable, resolved);
   return { recipe: resolved, persistable };
 }
@@ -1655,6 +1758,23 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
       agent: { ...recipe.agent, systemPrompt: await res.text() },
     };
   }
+  return recipe;
+}
+
+export function runningFit(recipe: Recipe, envModel: string | undefined): RecipeFit {
+  const fit = recipeFit(recipe, recipeModel(recipe, envModel));
+  const own = recipeModel(recipe, undefined);
+  if (!envModel || envModel === own || !fit.checked || fit.fits) return fit;
+  const replaced = recipe.agent.model ? 'agent.model' : `its default, ${own}`;
+  return {
+    ...fit,
+    refusal: `${fit.refusal} ${envModel} is MODEL in the environment, which the host runs in place of ${replaced}.`,
+  };
+}
+
+function refuseUnfit(recipe: Recipe): Recipe {
+  const fit = runningFit(recipe, process.env.MODEL || undefined);
+  if (fit.checked && !fit.fits) throw new Error(fit.refusal);
   return recipe;
 }
 
@@ -1800,7 +1920,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart',
+  'channelMode', 'selfRestart', 'heartbeat',
 ] as const;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
@@ -1824,7 +1944,10 @@ const recipeKeyListsInStep: [
   ListsExactly<keyof RecipeKvUnifiedConfig['policy'] & string, typeof RECIPE_KV_UNIFIED_POLICY_KEYS>,
   ListsExactly<keyof ClockConfig & string, typeof RECIPE_AGENT_CLOCK_KEYS>,
   ListsExactly<keyof RecipeAutoContinue & string, typeof RECIPE_AGENT_AUTO_CONTINUE_KEYS>,
-] = [true, true, true, true, true, true, true, true];
+  ListsExactly<keyof RecipeReplyJudge & string, typeof RECIPE_REPLY_JUDGE_KEYS>,
+  ListsExactly<keyof RecipeHeartbeat & string, typeof RECIPE_HEARTBEAT_KEYS>,
+  ListsExactly<keyof RecipeHeartbeatDefaults & string, typeof RECIPE_HEARTBEAT_DEFAULTS_KEYS>,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 void recipeKeyListsInStep;
 
 const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
@@ -1960,6 +2083,88 @@ const MAX_PENDING_RECIPE_WARNINGS = 50;
 
 export function takeRecipeWarnings(): string[] {
   return pendingRecipeWarnings.splice(0);
+}
+
+/**
+ * `modules.heartbeat`: true, false, or an object of the keys agent-framework
+ * reads, each checked. On, it can't stand beside an `mcpServers.heartbeat`
+ * (heartbeat-mcpl): agent-framework refuses both at create, and saying so at
+ * load names the fix.
+ */
+function validateRecipeHeartbeat(heartbeat: unknown, servers: unknown): void {
+  if (heartbeat === undefined || heartbeat === false) return;
+  if (heartbeat !== true) {
+    if (heartbeat === null || typeof heartbeat !== 'object' || Array.isArray(heartbeat)) {
+      throw new Error('Recipe modules.heartbeat must be true, false or an object, such as {"defaults": {"intervalSeconds": 14400}}.');
+    }
+    const h = heartbeat as Record<string, unknown>;
+    rejectUnknownKeys('modules.heartbeat', h, RECIPE_HEARTBEAT_KEYS);
+    if (h.statePath !== undefined && nonEmptyText(h.statePath)) {
+      throw new Error(`Recipe modules.heartbeat.statePath is ${JSON.stringify(h.statePath)}; it must be ${nonEmptyText(h.statePath)}.`);
+    }
+    for (const [key, keys] of [['defaults', RECIPE_HEARTBEAT_DEFAULTS_KEYS], ['importFrom', RECIPE_HEARTBEAT_IMPORT_KEYS]] as const) {
+      const value = h[key];
+      if (value === undefined) continue;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`Recipe modules.heartbeat.${key} must be an object.`);
+      }
+      rejectUnknownKeys(`modules.heartbeat.${key}`, value, keys);
+    }
+    const defaults = (h.defaults ?? {}) as Record<string, unknown>;
+    const checks: { readonly [K in keyof RecipeHeartbeatDefaults]-?: MountValueCheck } = {
+      intervalSeconds: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 60 ? null : 'a number of seconds, 60 or more',
+      paused: trueOrFalse,
+      message: nonEmptyText,
+      deliveryMode: oneOf(['message', 'silent']),
+    };
+    for (const key of RECIPE_HEARTBEAT_DEFAULTS_KEYS) {
+      if (defaults[key] === undefined) continue;
+      const must = checks[key](defaults[key]);
+      if (must) throw new Error(`Recipe modules.heartbeat.defaults.${key} is ${JSON.stringify(defaults[key])}; it must be ${must}.`);
+    }
+    const from = (h.importFrom ?? {}) as Record<string, unknown>;
+    for (const key of RECIPE_HEARTBEAT_IMPORT_KEYS) {
+      if (from[key] === undefined) continue;
+      const must = nonEmptyText(from[key]);
+      if (must) throw new Error(`Recipe modules.heartbeat.importFrom.${key} is ${JSON.stringify(from[key])}; it must be ${must}.`);
+    }
+  }
+  if (servers !== null && typeof servers === 'object' && Object.hasOwn(servers, 'heartbeat')) {
+    throw new Error(
+      'Recipe turns modules.heartbeat on and names mcpServers.heartbeat (heartbeat-mcpl): both would wake the agent, and '
+      + 'their tools share the names heartbeat--…. Remove mcpServers.heartbeat to use the framework\'s heartbeat '
+      + '(modules.heartbeat.importFrom can bring that server\'s schedule and reminders along: its HEARTBEAT_CONFIG_FILE '
+      + 'and HEARTBEAT_REMINDERS_FILE), or turn modules.heartbeat off to keep the server.',
+    );
+  }
+}
+
+/** `modules.wake.judge`, refused with the key and what it must be where it isn't. */
+function validateRecipeReplyJudge(wake: unknown): void {
+  // Only an object can hold a judge; other shapes load as they did before.
+  if (wake === null || typeof wake !== 'object' || Array.isArray(wake)) return;
+  const judge = (wake as Record<string, unknown>).judge;
+  if (judge === undefined) return;
+  if (judge === null || typeof judge !== 'object' || Array.isArray(judge)) {
+    throw new Error('Recipe modules.wake.judge must be an object, such as {"model": "claude-haiku-5-5"}.');
+  }
+  rejectUnknownKeys('modules.wake.judge', judge, RECIPE_REPLY_JUDGE_KEYS);
+  const checks: { readonly [K in keyof RecipeReplyJudge]-?: MountValueCheck } = {
+    enabled: trueOrFalse,
+    model: nonEmptyText,
+    // agent-framework reads a budget under 4000 as 4000.
+    maxInputTokens: (v) => typeof v === 'number' && Number.isInteger(v) && v >= 4000 ? null : 'a whole number of tokens, 4000 or more',
+    timeoutMs: timerMs(1),
+    onError: oneOf(['wake', 'skip']),
+    effort: oneOf(['low', 'medium', 'high', 'none']),
+    cacheTtl: oneOf(['5m', '1h']),
+  };
+  for (const key of RECIPE_REPLY_JUDGE_KEYS) {
+    const value = (judge as Record<string, unknown>)[key];
+    if (value === undefined) continue;
+    const must = checks[key](value);
+    if (must) throw new Error(`Recipe modules.wake.judge.${key} is ${JSON.stringify(value)}; it must be ${must}.`);
+  }
 }
 
 export function validateRecipe(raw: unknown): Recipe {
@@ -2378,6 +2583,7 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionMergeSourceOnlyFallback',
       'compressionSplitFallback',
       'compressionSplitPlaceholder',
+      'recoverLiteralThinkingWrappedCompression',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
@@ -2630,6 +2836,7 @@ export function validateRecipe(raw: unknown): Recipe {
       if (!Array.isArray(ws.mounts) || ws.mounts.length === 0) {
         throw new Error('workspace.mounts must be a non-empty array');
       }
+      const firstIndexByName = new Map<string, number>();
       for (let i = 0; i < ws.mounts.length; i++) {
         const m = ws.mounts[i] as Record<string, unknown>;
         const where = `workspace.mounts[${i}]`;
@@ -2648,6 +2855,12 @@ export function validateRecipe(raw: unknown): Recipe {
           const mustBe = MOUNT_KEY_CHECKS[key](m[key]);
           if (mustBe) throw new Error(`${where}.${key} must be ${mustBe}`);
         }
+        const name = m.name as string;
+        const first = firstIndexByName.get(name);
+        if (first !== undefined) {
+          throw new Error(`${where} is named ${JSON.stringify(name)}, as workspace.mounts[${first}] is: a workspace takes each mount name once, since its tools and the instructions find a mount by its name. Give one of them another name.`);
+        }
+        firstIndexByName.set(name, i);
         if (m.backend === 'direct' && m.mode === undefined) {
           throw new Error(`${where} is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo`);
         }
@@ -2828,6 +3041,12 @@ export function validateRecipe(raw: unknown): Recipe {
         }
       }
     }
+
+    // Validate the reply judge when configured: the host hands it to
+    // agent-framework as written, and agent-framework reads a value it can't
+    // use as its default, so a typo would load as no setting at all.
+    validateRecipeReplyJudge(mods.wake);
+    validateRecipeHeartbeat(mods.heartbeat, (raw as { mcpServers?: unknown }).mcpServers);
 
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {
@@ -3281,13 +3500,14 @@ export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPro
   }
 
   if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
-    return validateRecipe(raw);
+    const legacy = validateRecipe(raw);
+    return options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy);
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
   const substituted = substituteEnvVars(unresolved, path);
   const recipe = validateRecipe(substituted);
-  return options.fetchSystemPrompt === false ? recipe : resolveSystemPrompt(recipe);
+  return options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
 }
 
 /**

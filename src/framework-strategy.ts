@@ -8,7 +8,8 @@ import {
 } from '@animalabs/agent-framework';
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
-import { effectiveContextBudgetTokens, resolvePromptCaching } from './framework-agent-config.js';
+import { resolvePromptCaching } from './framework-agent-config.js';
+import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
 
@@ -27,6 +28,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSplitMaxCallsPerChunk',
   'compressionSplitMaxCallsPer10Min',
   'compressionRecallBudgetTokens',
+  'recoverLiteralThinkingWrappedCompression',
   'positionedRecallPairs',
   'recallHeaderTemplate',
   'carrierPolicy',
@@ -62,8 +64,6 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'witnessedIdentityReminder',
   'identityReminderSilent',
 ];
-
-export const DEFAULT_RECENT_WINDOW_RATIO = 0.4;
 
 /**
  * Cache prices are multiples of the model's base input price, as the
@@ -144,9 +144,8 @@ export function buildFrameworkStrategy(
     });
   }
   const autobiographicalOpts: Record<string, unknown> = {
-    headWindowTokens: strategyConfig?.headWindowTokens ?? 4000,
-    recentWindowTokens: strategyConfig?.recentWindowTokens
-      ?? Math.round(effectiveContextBudgetTokens(recipe) * DEFAULT_RECENT_WINDOW_RATIO),
+    headWindowTokens: headWindowTokens(recipe),
+    recentWindowTokens: strategyConfig?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model),
     compressionModel: strategyConfig?.compressionModel ?? model,
     ...(strategyConfig?.compressionMaxTokens !== undefined
       ? { compressionMaxTokens: strategyConfig.compressionMaxTokens }

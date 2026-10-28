@@ -14,6 +14,50 @@ function recipe(workspace: unknown) {
 const mount = (extra: Record<string, unknown> = {}) => ({ name: 'notes', path: './notes', ...extra });
 
 describe('workspace mount keys', () => {
+
+  test('refuses adjacent and nonadjacent duplicate mount names, naming both indexes', () => {
+    expect(() => validateRecipe(recipe({ mounts: [mount(), mount({ path: './second' })] })))
+      .toThrow(/^workspace\.mounts\[1\] is named "notes", as workspace\.mounts\[0\] is: /);
+    expect(() => validateRecipe(recipe({
+      mounts: [mount(), mount({ name: 'other', path: './middle' }), mount({ path: './last' })],
+    }))).toThrow(/^workspace\.mounts\[2\] is named "notes", as workspace\.mounts\[0\] is: /);
+  });
+
+  test('refuses two mounts named instructions in either order, naming the duplicate rather than what the instructions check makes of the first', () => {
+    const instructionsRecipe = (mounts: unknown[]) => ({
+      name: 'instr-dup',
+      agent: { systemPrompt: 'test' },
+      modules: { instructions: true, workspace: { mounts } },
+    });
+    expect(() => validateRecipe(instructionsRecipe([
+      mount({ name: 'instructions', path: './a', mode: 'read-only' }),
+      mount({ name: 'instructions', path: './b', mode: 'read-write' }),
+    ]))).toThrow(/^workspace\.mounts\[1\] is named "instructions", as workspace\.mounts\[0\] is: /);
+    expect(() => validateRecipe(instructionsRecipe([
+      mount({ name: 'instructions', path: './a', mode: 'read-write' }),
+      mount({ name: 'instructions', path: './b', mode: 'read-only' }),
+    ]))).toThrow(/^workspace\.mounts\[1\] is named "instructions", as workspace\.mounts\[0\] is: /);
+  });
+
+  test('accepts mounts that each have their own name, two differing only in case among them, and a single instructions mount; no workspace and workspace: true are controls', () => {
+    for (const workspace of [
+      undefined,
+      true,
+      { mounts: [mount(), mount({ name: 'out', path: './out' })] },
+      { mounts: [mount({ name: 'Notes', path: './upper' }), mount()] },
+    ]) {
+      expect(() => validateRecipe(recipe(workspace))).not.toThrow();
+    }
+    expect(() => validateRecipe({
+      ...recipe(true),
+      modules: {
+        instructions: true,
+        workspace: {
+          mounts: [mount({ name: 'instructions', path: './i', mode: 'read-only' }), mount({ path: './n' })],
+        },
+      },
+    })).not.toThrow();
+  });
   test('passes every mount key through to the framework, backend, include, walkCap, followSymlinks, watchDebounceMs and watchRootPollMs included', () => {
     const keys = {
       mode: 'read-only', backend: 'chronicle', watch: 'always', watchDebounceMs: 50, watchRootPollMs: 500, ignore: ['*.tmp'],

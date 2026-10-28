@@ -176,10 +176,11 @@ test("outside a git checkout an npm publish stops, saying why", async () => {
 
 test("in a git checkout git can't read, the pack stops, saying why", async () => {
   // A .git that points at a missing repository: git exits 128, as for any fatal
-  // error.
+  // error. Its words differ by git version: "not a git repository" on some,
+  // "gitfile does not point to a valid repository" on newer ones (CI, 10-27).
   const dir = project({ git: false });
   writeFileSync(join(dir, ".git"), `gitdir: ${join(dir, "missing")}\n`);
   const result = await npm(dir, ["pack", "--dry-run"]);
   assert.notEqual(result.code, 0, result.stdout);
-  assert.match(result.stderr, /pack-contents: git couldn't say which of the files to pack it ignores \(fatal: not a git repository.*?\)\. This is a git checkout \(.*?\.git\), where a local file could ship, so the pack stops: fix what git reports and pack again\./);
+  assert.match(result.stderr, /pack-contents: git couldn't say which of the files to pack it ignores \(fatal: (?:not a git repository|gitfile does not point to a valid repository).*?\)\. This is a git checkout \(.*?\.git\), where a local file could ship, so the pack stops: fix what git reports and pack again\./);
 }, 30_000);

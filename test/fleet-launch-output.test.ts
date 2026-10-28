@@ -57,6 +57,25 @@ const openPaths = (): string[] => readdirSync('/proc/self/fd').flatMap((fd) => {
   try { return [readlinkSync(join('/proc/self/fd', fd))]; } catch { return []; }
 });
 
+describe('a launch\'s data directory', () => {
+  test('a launch creates it readable by its owner alone, and leaves an existing one its mode', async () => {
+    const umask = process.umask(0o022);
+    try {
+      const fresh = setup();
+      await fresh.launch({ crashBeforeSocket: true });
+      expect(lstatSync(fresh.dataDir).mode & 0o777).toBe(0o700);
+      const existing = setup();
+      mkdirSync(existing.dataDir);
+      chmodSync(existing.dataDir, 0o755);
+      await existing.launch({ crashBeforeSocket: true });
+      expect(lstatSync(existing.log).isFile()).toBe(true);
+      expect(lstatSync(existing.dataDir).mode & 0o777).toBe(0o755);
+    } finally {
+      process.umask(umask);
+    }
+  });
+});
+
 describe('a failed launch quotes the child\'s own output', () => {
   test('a child that exits before its socket has its error quoted', async () => {
     const { fleet, launch, log } = setup();

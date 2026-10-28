@@ -57,6 +57,9 @@ function makeStubWorld() {
       getAgent: () => undefined,
       getAllAgents: () => [{ name: 'stub-agent', getContextManager: () => cm }],
       getAllModules: () => [],
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
+      getStore: () => ({ currentBranch: () => cm.currentBranch() }),
       switchBranch: async (name: string) => store.switchBranch(name),
       rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
         if (!messagesByBranch.get(currentName)!.some(m => m.id === opts.messageId)) {

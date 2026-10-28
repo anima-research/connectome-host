@@ -1,1 +1,0 @@
-- `/files/<mount>/<path>` answers `403` for a path its mount's `include` doesn't cover, where it answered `404`, and an upload (`fromFile`) of such a path says so, where it gave a disk read's remedy (connectome-host#337). `saveAs`'s remedy names, for a writable mount with an `include`, the files that mount holds, and no longer offers `_config`.

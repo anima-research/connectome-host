@@ -142,11 +142,24 @@ them through its merged view.
 **Memory defaults**: `agent.strategy` may be omitted entirely. The default is
 the autobiographical memory strategy with adaptive resolution, **kv-unified
 folding** (a cost-aware solver that weighs budget fit, prompt-cache cost and
-continuity), a 300k context budget with a 120k verbatim tail, compression by
+continuity), a context budget with a verbatim tail of 40% of it, compression by
 the agent's own model, and summaries voiced as the agent itself
-(`summaryParticipant` defaults to `agent.name`). The 300k budget assumes a
-1M-window model: on a 200k-window model, set `agent.contextBudgetTokens`
-yourself. Set a `strategy` block only to tune windows/budgets, to pin
+(`summaryParticipant` defaults to `agent.name`). On a model the host knows a
+window for (Claude from 4.5 on, on Anthropic's API), with an `agent.maxTokens`
+that is unset or a positive number, the budget is the smaller
+of 300k and the window less the system prompt and 32k for the tools: 300k (a
+120k tail) on a 1M-window model with a system prompt under 668k tokens, and on
+a 200k-window model 168k less the system prompt, so a compile that keeps to
+the budget less `maxTokens` leaves `maxTokens` of the window for the reply. Otherwise it's 300k, so set
+`agent.contextBudgetTokens` yourself. Where the
+head and a tail of 40% of the budget wouldn't fit in the budget less
+`maxTokens` (with context-manager's over-budget grace), the tail is 40% of the
+budget less `maxTokens`. On Anthropic's API
+a recipe load that resolves the system prompt refuses a `maxTokens` over the
+model's maximum output, a budget that leaves the conversation too little room
+for the head and the tail once `maxTokens` is kept for the reply, or a budget
+whose prompt, not counting the tools, would pass the window, and says which
+number to change. Set a `strategy` block only to tune windows/budgets, to pin
 `foldingStrategy: "kv-stable"` for a resident whose store was built under it,
 or to opt into a different strategy type (`frontdesk`
 for channel-staffing agents, `passthrough` for none) — see
@@ -825,7 +838,7 @@ headless socket.
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
-| `/history [n]` | Show recent state transitions |
+| `/history [n]` | Show the last n messages (20 by default) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
 | `/mcp add <id> <cmd> [args...]` | Add or overwrite a registry server (keeps its env) |
@@ -840,20 +853,22 @@ headless socket.
 | `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
-`/branchto`, `/newtopic`) are refused while a turn is in flight. A bare
-`/newtopic` writes its summary first, and if a turn starts meanwhile, stores
-the transition once that turn has ended. `/checkout`, `/restore` and
-`/branchto` go through agent-framework's branch switch and rollback, which are
-refused unless every agent sharing the store is idle, take every agent's
-context to the new branch, and are written to the operator log (as a
-`checkout` or a `rollback`). A rollback says which rows after its message it
-kept: rows one write showed the agent together with the message stay in its
-window after it (suppress or hide them to take them out), and rows stored
-before the message was shown and shown after it stay in the record and enter
-the window at the agent's next turn. `/undo` and `/redo` are its undo and
-redo on the agent's window; the TUI's history and the Web UI's transcript
-mark an undone turn's rows, and the Web UI's context panels read the window
-again.
+`/branchto`, `/newtopic`) are refused while a turn is in flight: `/checkout`,
+`/restore` and `/branchto` while any agent sharing the store is mid-turn, the
+subconscious included, and `/undo`, `/redo` and `/newtopic` while the agent
+the command acts for is. A bare `/newtopic` writes its summary first, and if a
+turn starts meanwhile, stores the transition once that turn has ended.
+`/checkout`, `/restore` and `/branchto` go through agent-framework's branch
+switch and rollback, which are refused unless every agent sharing the store is
+idle, take every agent's context to the new branch, and are written to the
+operator log (as a `checkout` or a `rollback`). A rollback says which rows
+after its message it kept: rows one write showed the agent together with the
+message stay in its window after it (suppress or hide them to take them out),
+and rows stored before the message was shown and shown after it stay in the
+record and enter the window at the agent's next turn. `/undo` and `/redo` are
+its undo and redo on the agent's window; the TUI's history and the Web UI's
+transcript mark an undone turn's rows, and the Web UI's context panels read
+the window again.
 
 ## TUI controls
 

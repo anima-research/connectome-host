@@ -707,6 +707,28 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
+  test('a save creates either servers file readable by its owner alone, and leaves an existing file its mode', () => {
+    const umask = process.umask(0o022);
+    try {
+      withTmp((dir) => {
+        const overlay = join(dir, 'mcpl-servers.agent.json');
+        const servers = join(dir, 'mcpl-servers.json');
+        saveAgentOverlay(overlay, { shell: { command: 'node', env: { TOKEN: 'secret' } } });
+        saveMcplServers(servers, { shell: { command: 'node', env: { TOKEN: 'secret' } } });
+        expect(statSync(overlay).mode & 0o777).toBe(0o600);
+        expect(statSync(servers).mode & 0o777).toBe(0o600);
+        chmodSync(overlay, 0o640);
+        chmodSync(servers, 0o644);
+        saveAgentOverlay(overlay, { shell: { disabled: true } });
+        saveMcplServers(servers, {});
+        expect(statSync(overlay).mode & 0o777).toBe(0o640);
+        expect(statSync(servers).mode & 0o777).toBe(0o644);
+      });
+    } finally {
+      process.umask(umask);
+    }
+  });
+
   test("a host variable in an env name the host sets itself isn't named: the server never gets that text", () => {
     expect(hostVariableReferences({ command: 'node', env: { AGENT_TIMEZONE: '${TZ}', OTHER: '${OTHER}' } })).toEqual(['env OTHER']);
   });

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { AutobiographicalStrategy } from '@animalabs/context-manager';
 import { buildContextCurve, type PanelAppRef } from '../src/web/panel-data.js';
 import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
@@ -43,6 +43,10 @@ async function summaryEntry(messages: StoredMessage[]) {
 }
 
 describe('the context curve', () => {
+  const originalModel = process.env.MODEL;
+  beforeEach(() => { delete process.env.MODEL; });
+  afterEach(() => { if (originalModel === undefined) delete process.env.MODEL; else process.env.MODEL = originalModel; });
+
   test('compiles as a dry run, at the live budget', async () => {
     const calls: unknown[][] = [];
     const app = appWith(async (...args: unknown[]) => {
@@ -70,6 +74,20 @@ describe('the context curve', () => {
     await buildContextCurve(app, 'scout');
 
     expect(calls.map((c) => (c[0] as { maxTokens: number }).maxTokens)).toEqual([300_000, 180_000]);
+  });
+
+  test("without a live budget, the default it falls back to is the running model's, MODEL first", async () => {
+    const calls: unknown[][] = [];
+    const app = appWith(async (...args: unknown[]) => {
+      calls.push(args);
+      return { messages: [] };
+    });
+    (app.framework as unknown as { getAgentRuntimeSettings: () => unknown }).getAgentRuntimeSettings = () => ({});
+    Object.assign(app.recipe.agent, { model: 'claude-opus-4-6', systemPrompt: '' });
+    process.env.MODEL = 'claude-haiku-4-5';
+    const curve = await buildContextCurve(app, 'scout');
+    expect((calls[0]![0] as { maxTokens: number }).maxTokens).toBe(200_000 - 32_000);
+    expect(curve.budget).toEqual({ maxTokens: 200_000 - 32_000, reserveForResponse: 8_000 });
   });
 
   test("a summary's first and last dates are its messages' earliest and latest by time", async () => {

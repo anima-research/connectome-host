@@ -1,21 +1,9 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
 import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
-
-export const DEFAULT_CONTEXT_BUDGET_TOKENS = 300_000;
-const STREAM_HEADROOM_TOKENS = 20_000;
-const FRAMEWORK_DEFAULT_MAX_STREAM_TOKENS = 150_000;
-
-export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
-  return envModel || recipe.agent.model ||
-    (recipe.agent.provider === 'openai-codex' ? 'gpt-5.4' : 'claude-opus-4-6');
-}
-
-export function effectiveContextBudgetTokens(recipe: Recipe): number {
-  return recipe.agent.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS;
-}
 
 /**
  * An agent-framework that predates `agent.autoContinue` (agent-framework#744)
@@ -75,6 +63,7 @@ export function buildFrameworkAgentConfig(
   strategy: FrameworkAgentConfig['strategy'],
 ): FrameworkAgentConfig {
   const promptCaching = resolvePromptCaching(recipe, model);
+  const contextBudgetTokens = effectiveContextBudgetTokens(recipe, model);
   let thinking: FrameworkAgentConfig['thinking'];
   if (recipe.agent.thinking) {
     // Effort is a host setting sent as output_config.effort, never as thinking.effort.
@@ -89,12 +78,10 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
-    maxTokens: recipe.agent.maxTokens ?? 16384,
+    maxTokens: effectiveMaxTokens(recipe),
     maxStreamTokens: recipe.agent.maxStreamTokens
-      ?? (recipe.agent.contextBudgetTokens === undefined
-        ? DEFAULT_CONTEXT_BUDGET_TOKENS + STREAM_HEADROOM_TOKENS
-        : FRAMEWORK_DEFAULT_MAX_STREAM_TOKENS),
-    contextBudgetTokens: effectiveContextBudgetTokens(recipe),
+      ?? (recipe.agent.contextBudgetTokens === undefined ? contextBudgetTokens + 20_000 : 150_000),
+    contextBudgetTokens,
     // Bedrock offers only the default 5m cache, so cacheTtl isn't forwarded
     // there. agent-framework sends its own default ('1h') when the host omits it.
     ...(recipe.agent.cacheTtl && recipe.agent.provider !== 'bedrock'

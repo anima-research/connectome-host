@@ -93,7 +93,7 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { loadRecipe } from '../recipe.js';
+import { loadRecipeDetailed } from '../recipe.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -741,7 +741,7 @@ export class WebUiModule implements Module {
     const cache = sharedServer?.childRecipeCache;
     if (cache?.has(path)) return cache.get(path);
     try {
-      const recipe = await loadRecipe(path);
+      const recipe = (await loadRecipeDetailed(path, { fetchSystemPrompt: false })).recipe;
       const info = {
         name: recipe.name,
         ...(recipe.description ? { description: recipe.description } : {}),

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, lstatSync, chmodSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
@@ -149,6 +149,86 @@ describe('headless daemon — Phase 1', () => {
     expect(existsSync(logPath)).toBe(true);
     expect(readFileSync(logPath, 'utf-8').length).toBeGreaterThan(0);
   }, 60_000);
+});
+
+describe('headless daemon: its data directory', () => {
+  test('a host creates its data directory, and a directory above it, readable by its owner alone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(dir, 'agent', 'data');
+    try {
+      await startUntilItsSocketFails(dir, dataDir);
+      expect(lstatSync(join(dir, 'agent')).mode & 0o777).toBe(0o700);
+      expect(lstatSync(dataDir).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('a host leaves a data directory that is already there its mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(dir, 'data');
+    try {
+      mkdirSync(dataDir);
+      chmodSync(dataDir, 0o755);
+      await startUntilItsSocketFails(dir, dataDir);
+      expect(lstatSync(dataDir).mode & 0o777).toBe(0o755);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a host whose data directory can't be made stops, naming it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fkm-headless-datadir-'));
+    const dataDir = join(realpathSync(dir), 'data');
+    let child: ChildProcess | undefined;
+    try {
+      writeFileSync(dataDir, 'a file where the data directory goes\n');
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+      child = spawn('bun', [INDEX_PATH, recipe, '--headless', '--socket-path', join(dir, 'ipc.sock')], {
+        cwd: dir,
+        env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-headless-datadir', DATA_DIR: 'data' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = child;
+      const code = await new Promise<number | null>((resolveExit) => exited.once('close', (c) => resolveExit(c)));
+      expect(code).toBe(1);
+      expect(stderr).toContain(`The host can't make its data directory ${dataDir}, so it stops: `);
+      expect(stderr).toMatch(/, so it stops: E[A-Z]+: /);
+      expect(stderr).toContain('Set DATA_DIR to a path where this user has or can make a directory');
+      expect(stderr).not.toContain('Fatal error');
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  async function startUntilItsSocketFails(dir: string, dataDir: string): Promise<void> {
+    let child: ChildProcess | undefined;
+    const umask = process.umask(0o022);
+    try {
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify(MINIMAL_RECIPE), 'utf-8');
+      const socketPath = join(dir, 'ipc.sock');
+      mkdirSync(join(socketPath, 'taken'), { recursive: true });
+      child = spawn('bun', [INDEX_PATH, recipe, '--headless', '--socket-path', socketPath], {
+        cwd: dir,
+        env: { ...process.env, ANTHROPIC_API_KEY: 'sk-test-headless-datadir', DATA_DIR: dataDir },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = child;
+      const code = await new Promise<number | null>((resolveExit) => exited.once('exit', (c) => resolveExit(c)));
+      if (code !== 1) throw new Error(`the host exited ${code}, not 1; its stderr: ${stderr}`);
+      expect(readFileSync(join(dataDir, 'headless.log'), 'utf-8')).toContain('server error:');
+    } finally {
+      process.umask(umask);
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  }
 });
 
 describe('headless daemon: a fatal error', () => {

@@ -38,6 +38,8 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
+import { gateOptionsFor } from './gate-options.js';
+import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
 import { CredentialMonitor } from './credential-state.js';
 import { AnthropicOAuthCredentials } from './anthropic-credentials.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
@@ -50,7 +52,7 @@ import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { SubagentModule } from './modules/subagent-module.js';
 import { historyModuleOptions, assertSemanticSearchRegistered } from './history-semantic.js';
 import { LessonsModule } from './modules/lessons-module.js';
@@ -82,6 +84,7 @@ import { currentForStart, releaseHere, type ReleaseHere } from './update/host.js
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
+import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
@@ -99,9 +102,11 @@ import {
   parseRecipeArg,
   deprecatedConversationsNotices,
   resolveProvider,
+  recipeModel,
+  runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, recipeModel, autoContinueSupportWarning } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
@@ -208,7 +213,7 @@ async function resolveRecipe(): Promise<Recipe> {
     );
     console.error(err instanceof SavedRecipeDirectoryError
       ? SAVED_RECIPE_DIRECTORY_LINE
-      : 'Fix what it names (the file, or a variable missing from the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.');
+      : 'Fix what it names (the file, a variable missing from the environment, a number the recipe sets, or MODEL in the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.');
     process.exit(1);
   }
 
@@ -322,19 +327,9 @@ async function createFramework(
     moduleInstances.push(historyModule);
   }
 
-  let gateOptions: import('@animalabs/agent-framework').GateOptions | undefined;
-  if (modules.wake !== false) {
-    gateOptions = { configPath: join(storePath, 'config', 'gate.json') };
-    if (typeof modules.wake === 'object' && 'policies' in modules.wake) {
-      gateOptions.config = modules.wake as import('@animalabs/agent-framework').GateConfig;
-    }
-    // The `sleep` tool's privileged users, who may wake the agent through a
-    // sleep window: ./sleep-privileged.json in the working directory, shared by
-    // every session, unless SLEEP_PRIVILEGED_FILE names another. Edit the file
-    // to change the list.
-    gateOptions.privilegedUsersPath =
-      process.env.SLEEP_PRIVILEGED_FILE || resolve('./sleep-privileged.json');
-  }
+  // Gate config — core AF EventGate feature, with the reply judge
+  // (gate-options.ts). Path is per-session: {storePath}/config/gate.json
+  const gateOptions = gateOptionsFor(modules.wake, storePath);
 
   let workspaceModule: WorkspaceModule | null = null;
   const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
@@ -500,13 +495,21 @@ async function createFramework(
   for (const notice of deprecatedConversationsNotices(recipe.conversations)) console.warn(`[deprecated] ${notice}`);
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
+  // The framework's heartbeat (heartbeat-options.ts), with heartbeat-mcpl
+  // left out beside it.
+  const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
+  const mcplServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+
   const framework = await AgentFramework.create({
     storePath,
     membrane,
 agents: [agentConfig],
     modules: moduleInstances,
-    mcplServers: finalServers,
+    mcplServers,
     gate: gateOptions,
+    // Passed by spread, so an agent-framework without it reads nothing it
+    // doesn't know (and the line after create says so).
+    ...(heartbeatOptions !== undefined ? { heartbeat: heartbeatOptions } : {}),
     timeZone,
     // A 429 while a subscription window is spent is a quota, not a throttle:
     // park until it resets instead of retrying into it.
@@ -520,6 +523,14 @@ agents: [agentConfig],
     ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     ...(toolClassConfig(recipe) as object),
   });
+
+  // An agent-framework without the heartbeat ignores modules.heartbeat: the
+  // agent then has no heartbeat or reminders at all, which is said here.
+  if (heartbeatOptions && !framework.getAllTools().some((tool) => tool.name.startsWith('heartbeat--'))) {
+    console.warn('[heartbeat] modules.heartbeat is on, but this agent-framework has no heartbeat (it came after 0.27.0), so the '
+      + 'agent has no heartbeat or reminders. Update agent-framework, or turn modules.heartbeat off and run heartbeat-mcpl '
+      + 'under mcpServers.heartbeat.');
+  }
 
   if (historyModule) {
     const cm = framework.getAgent(agentName)?.getContextManager();
@@ -801,8 +812,18 @@ async function main() {
   await waitToBeListed();
   installHere = releaseHere();
   if (installHere !== null) armTrialLog(installHere);
+  try {
+    // mkdirSync's mode applies only to the directories it creates.
+    mkdirSync(config.dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  } catch (err) {
+    console.error(`The host can't make its data directory ${resolve(config.dataDir)}, so it stops: ${err instanceof Error ? err.message : String(err)}`);
+    console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
+    process.exit(1);
+  }
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
+  const fit = runningFit(recipe, config.model);
+  if (!fit.checked) console.log(fit.line);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');

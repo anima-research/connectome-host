@@ -285,7 +285,7 @@ describe('fleet refusals name what the agent can do', () => {
   });
 
   test('a relay from a child with no finished reply says what would bring one', async () => {
-    const { fleet, call, launch } = setup();
+    const { fleet, call, launch } = setup({ sigtermEscalationMs: 2_000 });
     const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host began ` +
       'tracking it. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay passes ' +
       `it on then; if '${name}' has nothing to answer, fleet--send gives it something.`;

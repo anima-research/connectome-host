@@ -6,6 +6,218 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.15.0 — 2026-10-27
+
+### Breaking
+
+- **Operators of a fleet with an agent overlay (`mcpl-servers.agent.json`) in its working directory:** each child now has an agent overlay of its own, `mcpl-servers.agent.child.json` in its data directory, and its parent's no longer reaches it. The boot reads an agent overlay whether or not `modules.mcplAdmin` is on, so this includes one written by hand.
+  - A child's file can hold tokens, as the working directory's can, and it now sits in the child's data directory, so it's made its owner's alone, never wider than 0600, and a copy never wider than the original. A child that starts from a copy holds the parent's tokens there too, so a backup of the data directories carries them.
+  - At a child's first launch on this version, a child launched into its data directory before, whose `startup.log` is there, starts from a copy of the overlay in the working directory as it stands at that launch, which it read as its own before: the parent's deployments and tombstones, and whatever the children deployed or unloaded into it. So each such child loads what it loaded before. A new child starts from an empty overlay, even in a directory made for it ahead of time, and so does a child from before this version whose `startup.log` is gone, which then loses what it deployed for itself.
+  - A child still running from before the upgrade, which the upgraded host reattaches to, keeps reading the working directory's overlay until it next starts.
+  - From then on, a deploy or unload by the parent or a child changes only that agent's own file, unless someone links a child's file to another agent's, which a launch keeps as made. To give a child a server on purpose, name it in the child's recipe `mcpServers`, with its own `command` or `url`, or by the id of a server `mcpl-servers.json` defines, which every agent of the fleet still shares and which loads only for a recipe that names it; and remove from the child's file any entry or tombstone of that id its copy brought, which would otherwise still decide it.
+  - To separate them, remove from the working directory's `mcpl-servers.agent.json` the entries a child wrote there, which the parent still loads, and from each child's `mcpl-servers.agent.child.json` what isn't that child's own: the parent's entries and those its siblings wrote. A child's file emptied to `{"mcplServers": {}}` starts it with none; a deleted one is copied from the working directory again at the child's next launch, where its `startup.log` is there, and written empty where it isn't.
+  - Going back to an earlier version, every child reads the working directory's overlay again, so what each deployed for itself since the upgrade goes unread, and what each unloaded for itself loads again. With the newer data kept, each child's file is still there, and the next upgrade's launch keeps it; what an agent deploys or unloads on the earlier version goes into the working directory's file, which after that upgrade the parent reads, and a child copies only if it has no file of its own yet. A Go back that restores the data from before the upgrade restores each child's data directory as it was then, with no file of its own, so the next upgrade copies again, as this one does.
+  - Unchanged: a host outside a fleet, whose overlay stays in its working directory; `mcpl-servers.json`, which every agent of a fleet still shares; relative `./` args, which resolve against the working directory as before; a child whose data directory is the working directory, which launches and restarts there as before, with its own file beside the parent's; and a child launched into a data directory another child used, once that one has stopped, which takes its file with the rest of that directory's state.
+
+- **Operators with `configMount`:** the `_config` mount now versions only files named `gate.json`, `gate.js` or `gate.recipe.json`, the names of the gate's files, anywhere in the session's config directory, subdirectories included (connectome-host#278). `gate.recipe.json` is the recipe a start last applied to `gate.json`, which agent-framework writes beside it from 0.27.0 (anima-research/agent-framework#677), and versioning it with `gate.json` lets a rewind take both back. Every other file there, such as an Emacs autosave (`#gate.json#`) or a copy kept beside the config, is no longer versioned, or written back after an undo, a redo or a branch switch. Such files stay on disk as they are, and history from before is left as it was. A copy that keeps one of those names in a subdirectory is still versioned and written back, as before, so give a copy you keep there another name. Vim's `.swp` and `.swx` files and `~` backups were already passed over, and a restored file kept its mode, since agent-framework 0.22.3, first in connectome-host 0.11.0. A file you keep there and want versioned belongs in a mount of its own.
+- **Operators whose `gate.js` uses other files beside it:** `_config` versions `gate.js` itself but not files it imports or reads, so an undo or a branch switch takes back `gate.js` and leaves those as they are. Keep `gate.js` self-contained, or put such files in a mount of their own.
+- **Recipe authors and operators:** a mount of the recipe's own named `_config` loaded before, and now stops the load, naming the mount: `_config` is the name of the host's own mount of the session's config directory, which `configMount: true` adds, and which the host already took any mount of that name for. Rename the mount. A start without a recipe argument, in a data directory whose saved recipe has such a mount, stops, naming it: start once with the renamed recipe as its argument, which saves it in the saved one's place.
+- **Agents:** a write to any other path under `_config/` is refused as outside the mount's include, and `saveAs` refuses `_config`. Change `gate.json` with `wake_add_rule` and `wake_remove_rule`, and write `gate.js` on disk with your shell, as before.
+- **Recipes with `configMount` whose other mounts are each read-only, have an `include`, or are `backend: 'direct'`:** agent-framework kept spilled tool results, saved payloads and fetched references in `_config` (such as `tool-results/` and `refs/`). It now keeps none in a file, since it keeps them only in the first writable mount with no `include` that isn't configured direct (a direct mount can be writable from agent-framework 0.27.0), and a note from before that points at one is refused. The files stay on disk under the session's `config/`. A writable mount of the recipe's own with no `include`, not configured direct, keeps them.
+- **`/files` clients:** a file under `_config/` other than those is answered `403`, where it was served.
+
+- **Operators, from agent-framework 0.28.0 (see its notes):** workspace mounts'
+  `ignore` and `include` patterns now read the gitignore grammar only, and a
+  pattern of any other form stops the workspace from being built, naming the
+  mount and the pattern; on a disk that tells names apart, a name that differs
+  from a nested mount's directory only in case is now read as that mount's; and
+  a server with `toolHints: true` gets the reminder of its open toolsets at an
+  agent's next start only when it's granted `pushEvents`.
+
+- **Operators who run the host from a clone:** `bun install` no longer
+  builds the Web UI, as the README used to say it did. After updating a
+  clone, run `bun run build:web` in it, and again after each later update.
+  Until then its Web UI serves the bundle it already had, or, with none,
+  answers 503 and names that command. Installs from npm are unchanged:
+  the package carries the Web UI built.
+
+### Added
+
+- `modules.heartbeat` in recipes turns on agent-framework's heartbeat (`FrameworkConfig.heartbeat`), which replaces the heartbeat-mcpl server: the agent's periodic check-in and reminders, with the same `heartbeat--…` tools. It's off by default.
+  - `true` uses agent-framework's defaults. An object takes `statePath`, `defaults` (`intervalSeconds` of 60 or more, `paused`, `message`, `deliveryMode`) and `importFrom` (`configPath`, `remindersPath`: heartbeat-mcpl's files, brought along on the first start). Each is validated at load, and paths are read from the install directory.
+  - Its state defaults to `{dataDir}/heartbeat.json`, the install's, so every session reads the same schedule and reminders, as heartbeat-mcpl's did, and a new session doesn't import the old files again.
+  - A recipe that turns it on and names `mcpServers.heartbeat` is refused at load, naming both fixes. A heartbeat-mcpl from `mcpl-servers.json` or the agent's overlay is recognized by its id, a heartbeat tool prefix, or its command. It's left out with a startup line, rather than stopping the host.
+  - Takes effect with an agent-framework that has the heartbeat. On today's it's passed through and ignored, and a startup line says the agent has no heartbeat.
+  - docs/ATTENTION-AND-GATING.md, docs/AGENT-ONBOARDING.md and docs/DEPLOYMENTS.md say how to move a resident over. A resident's existing wake rules for `source: "heartbeat"` keep applying, since agent-framework's ticks reach the gate as heartbeat-mcpl's pushes did.
+
+- `modules.wake.judge` in recipes configures agent-framework's reply judge,
+  the small model that `judge` wake rules ask before they wake the agent
+  (`GateOptions.judge`: `enabled`, `model`, `maxInputTokens`, `timeoutMs`,
+  `onError`, `effort`, `cacheTtl`). Each key is validated at load, and a bad
+  one stops the load, naming the key and what it must be. The starting rules
+  (`policies`, `default`) are passed to the gate without it. Takes effect with
+  an agent-framework that has the reply judge; with today's it's passed
+  through and ignored. docs/ATTENTION-AND-GATING.md documents `judge` rules
+  for agents and the recipe keys for hosts.
+
+- `agent.strategy.recoverLiteralThinkingWrappedCompression` in recipes (off by
+  default) is passed through to context-manager's autobiographical strategy,
+  which then keeps a compression answer that a model without native reasoning
+  wrote entirely inside one closed literal `<thinking>…</thinking>` wrapper, as
+  the prose inside it, instead of stripping it to nothing. Takes effect with a
+  context-manager that has the option; an earlier one ignores it.
+
+### Changed
+
+- **Dependencies:** `@animalabs/agent-framework` ^0.28.0 (was ^0.27.0),
+  `@animalabs/context-manager` ^0.23.1 (was ^0.22.1) and `@animalabs/membrane`
+  ^0.8.0 (was ^0.7.2). `package-lock.json` and `bun.lock` move those three
+  packages and nothing else. What operators and agents meet comes from those
+  releases; see their changelogs. Among it: `modules.heartbeat` and
+  `modules.wake.judge`, which this host already validates and passes through,
+  take effect (agent-framework's own heartbeat in place of heartbeat-mcpl, and
+  `judge` wake rules that ask a small model before waking the agent); a
+  `chat:system` notice no longer decides where an agent's plain speech goes; a
+  529 is retried for about as long as before 0.27.0; a response cut off at the
+  output limit runs none of its last round's calls; workspace `ignore` and
+  `include` patterns read the gitignore grammar only; and
+  `agent.strategy.recoverLiteralThinkingWrappedCompression`, which this host
+  passes through, takes effect.
+
+- A recipe whose `modules.instructions` path is on a mount configured direct (`backend: 'direct'`) that's read-write, which agent-framework allows from 0.27.0, loads with no `autoMaterialize`. It was refused whatever it set: the host asked for `autoMaterialize`, which agent-framework refuses on a direct mount.
+
+- The package has no install script, so `bun add` no longer reports a
+  blocked postinstall and npm no longer warns of one. The README's Quick
+  start now leads with the npm install and says what differs for a clone.
+
+- `/update` on a host not started through an install's entry point now says
+  what to run: for an install from npm, the setup command, which says how to
+  start the host afterwards; for a clone, where updating it by hand is
+  described.
+
+### Fixed
+
+- A fleet child keeps its own MCPL agent overlay (`mcpl-servers.agent.child.json`) in its data directory, which the fleet names in `MCPL_AGENT_OVERLAY_FILE`. Each child runs in its parent's working directory, so it read and wrote the parent's overlay as its own: it loaded the servers its parent deployed for itself and lost the recipe servers its parent unloaded, and with `modules.mcplAdmin` its deploys and unloads went into the parent's file, which the parent loaded at its next start (#262). A host outside a fleet keeps its overlay in its working directory. Relative `./` args in any overlay resolve against the working directory, as `mcpl_deploy`'s description says, wherever the file is.
+
+- The TUI fleet view keeps a requested subagent name's own suffixes, such as the `-1` of a fork named `web-1` or the `-d2` of a spawn named `build-d2`, when it shortens framework names, so a failure or exhaustion marks that subagent's own row, and a fork's row shows its own context figure. An agent that isn't a subagent, such as a resident named `helper-2`, no longer marks the row of a subagent named `helper` (#461).
+
+- Docs that said something the host doesn't do now say what it does. What the
+  host does is unchanged:
+  - **Command line and environment:** the model defaults to `gpt-5.4` for an
+    `openai-codex` recipe. Recipe provider `anthropic` needs one of
+    `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
+    `ANTHROPIC_OAUTH_CREDENTIALS_FILE`, not the API key in particular.
+    `sleep-privileged.json` is read from the working directory, not the
+    install. Batch mode reads all of stdin first, and waits for a line's turn
+    before it takes the next line. Headless mode's doc names the fleet
+    protocol's `IncomingCommand` and `WireEvent` in place of a partial list.
+    `setup.ts` checks each systemd service it finds running from its
+    directory, and says what the service needs where it finds none or can't
+    ask systemd. The agent overlay's path is `MCPL_AGENT_OVERLAY_FILE` where
+    the environment sets it. The recipe argument is the first that doesn't
+    start with `--`: every `--` flag is passed over, not only `--no-tui` and
+    `--no-recipe`.
+  - **Recipes:** a keepalive's read costs the model's cache-read price, 0.1x
+    for most models. An MCPL server may give both `command` and `url`, with
+    `transport` saying which to use. A fleet launch of a recipe outside
+    `allowedRecipes` has no approval step: it fails, telling the agent to ask
+    the user to extend the list, and with neither the list nor a recipe in
+    `children` there is no allowlist. `ttsRelay` isn't a pure tap: an
+    interruption puts a note in the agent's context. `subscriptionGc` and
+    `channelMode` read nothing from `toolPrefix`, and `subscriptionGc` leaves
+    a channel the agent opened itself open unless a limit is configured for
+    it, and a tuned-out channel alone. A read-only `instructions` mount's
+    edits reach `workspace--read` too.
+  - **MCPL server files:** `mcpl-servers.json` and the agent overlay can hold
+    credentials, in env values and a token. A recipe can set a file server's
+    `token` and `access` too. A server file entry doesn't carry every
+    serializable field of agent-framework's server config: `requestTimeoutMs`
+    is one it leaves out.
+  - **Fleet protocol:** `shutdown`'s `graceful: false` runs the same shutdown
+    and changes only the reason `lifecycle:exiting` gives. A `panel-request`
+    takes any of `PANEL_OPS`, six of which the old list left out. A snapshot's
+    `asOfTs` is compared with events' `ts`. A wire event can be a command's
+    response. A child's early output reaches `startup.log` only where the
+    fleet could open it.
+  - **Web UI protocol:** an observer's `welcome` comes once its
+    `observer-hello` verifies, and an `error` for a failed hello is followed
+    by the server closing the connection. A connection without full authority,
+    basic auth or a full session cookie, gets `observer-auth-required`.
+    `branch-changed` is followed by a fresh `welcome`. `session-changed` is
+    never sent: a session switch re-welcomes every client. A credential's
+    fields are top-level, and all but `type`, `scope` and `subscription` are
+    absent on an API-key host. The settings' `overrides` include keys not
+    persisted. Host mode's `since` is when the quiesce began. An operator
+    action can fail with code `'failed'`. A pin's `level` is honoured under
+    `kv-stable`, and under `kv-unified` with adaptive resolution. An observer
+    grant is protected only when its file entry says so: the tools can't make
+    one.
+  - **HTTP routes:** every route answers GET and HEAD only, and isn't
+    read-only: `/debug/context?injections=1` runs gathers and hooks, and a
+    compile of `/debug/context` or its `makeup` releases a compression hold
+    whose deadline has passed. `/healthz` also opens to a full session or an
+    observer's `health` scope. `/debug/context` reads `agent`, `injections`
+    and `pretty`, and no `hooks`. `withinGrace`, in a context preview's
+    accounting and the curve's verdict, is true when the plan fits the request
+    as well. A context preview's `elapsedMs` is its compile's time, which the
+    agent is paused for at least. `lastBilledInputTokens` is null from a
+    stream's start until a call reports one. The `/ws` check accepts an
+    `Origin` whose host and port are the request's `Host`, whatever its
+    scheme.
+  - **Logs:** the Anthropic call log keeps no normalized request. Of a
+    response that holds tool calls under a stop reason other than `tool_use`,
+    membrane runs the complete calls only when that reason is a literal
+    `end_turn`, not when there is none. Gate telemetry's doc no longer names a
+    `streamed` flag: the call log records the lane in `kind`.
+  - **Slash commands:** `/history [n]` shows the last n messages, 20 by
+    default. `/bug` copies a frame's package-relative path in the host's own
+    code, cuts the report to fit the link, saying what it leaves out, and says
+    so when it can't save the file.
+  - **Extensions:** an extension gets the host's `@animalabs/*` versions only
+    where its imports resolve to the host's `node_modules`, and nothing checks
+    that they do.
+  - **Scripts:** `evacuator.ts` detects the model from `conversations.json`,
+    has that model adjust the prompt at step 3, opens `memories.json`'s
+    `conversations_memory` entries at step 5, and aborts on an empty buffer at
+    step 4. `warmup-session.ts --max-spend` stops between ticks once the
+    script's own estimate reaches it. `import-claudeai-export.ts` doesn't
+    import thinking summaries, and picks at each branch the subtree holding
+    the latest `created_at`. `audit-module-optins.ts` skips `web/` too, and
+    counts only source recipes toward exit 2. `connectome-doctor`'s delivery
+    stage is the agent log's last write.
+
+- `/files/<mount>/<path>` answers `403` for a path its mount's `include` doesn't cover, where it answered `404`, and an upload (`fromFile`) of such a path says so, where it gave a disk read's remedy (connectome-host#337). `saveAs`'s remedy names, for a writable mount with an `include`, the files that mount holds, and no longer offers `_config`.
+
+- The TUI's session history and the Web UI's conversation call a message
+  "you" only when it came in as the host's own input: typed in the TUI or
+  the Web UI, a piped line, or a fleet parent's message to its child. The
+  host's own messages read as the host's, by kind: agent-framework's clock
+  and notices, and the host's notes of a session's start time, a restart
+  it asked for, a subagent's return or failure and a voice reply cut off,
+  which now carry `hostNote` in their metadata. A channel message reads as
+  its author's in its channel, and a push as the author it names or else
+  as its server's. Anything else, such as an imported history, reads as
+  `user`. Before, every one of them read "You:" in the TUI and "you" in
+  the Web UI. The host's notes stored before this release carry no
+  `hostNote`, so they read as `user`, and so do typed messages stored
+  before agent-framework 0.22.3 marked where input came from. The Web
+  UI's message entries carry who each `user` entry is as `speaker`. The
+  model's requests are unchanged.
+- A turn the framework retries shows a repeated failure once: the TUI
+  updates the line's count in place (`Error (×3): …`), and batch mode
+  prints nothing more until the failure's words change. When the turn
+  gives up, a line says how many attempts it made and what to check: for a
+  network failure or a timeout, the network, any proxy and the provider's
+  base URL setting (its host when it's set, or that it isn't); for an
+  authentication failure, the credential the host used.
+
+- `/help` and the README say `/history [n]` shows the last n messages, 20 by default, which is what it shows, rather than "state transitions".
+- The Web UI's protocol-mismatch banner tells every install what to do, the least disruptive step first: reload the page; if the banner stays and the host runs from a clone, rebuild the SPA and reload; if it still stays, restart the host and reload. Before, its whole sentence began "In a clone,", so it read as advice for a clone alone.
+
+- The Web UI's **Detach & exit** leaves the host's fleet children running, as
+  its dialog says and as the TUI's `d` does. It stopped them as the host
+  exited, the same as **Stop children & exit**.
+
 ## 0.14.1 — 2026-10-26
 
 ### Changed

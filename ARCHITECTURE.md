@@ -183,8 +183,12 @@ conditions are required so the headers can never reach a vendor endpoint.
   weighs budget fit, cache cost and continuity. Memories are written by the agent's own model
   (`compressionModel` defaults to `agent.model`) in the agent's own voice
   (`summaryParticipant` defaults to `agent.name`). Host defaults:
-  `contextBudgetTokens` 300000, `headWindowTokens` 4000,
-  `recentWindowTokens` 40% of the budget (120000 at the default),
+  `contextBudgetTokens` 300000, or, on a model the host knows a window for (on
+  Anthropic's API) with a `maxTokens` that is unset or a positive number, the
+  smaller of 300000 and the window less the system prompt and 32000 for the tools,
+  `headWindowTokens` 4000, `recentWindowTokens` 40% of the budget (120000 at
+  300000), or 40% of the budget less `maxTokens` where the head and 40% of the
+  budget wouldn't fit beside `maxTokens` with context-manager's over-budget grace,
   `maxMessageTokens` 10000. Without a `kvUnified` block the host supplies its
   standard one (`standardKvUnifiedConfig`), with cache prices matched to the
   provider, `cacheTtl` and model; a written block must be complete, set

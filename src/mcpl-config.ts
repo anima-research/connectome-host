@@ -494,7 +494,8 @@ function writeServersFile(path: string, servers: Record<string, unknown>): void 
     }
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) root = parsed as Record<string, unknown>;
   }
-  writeFileSync(path, JSON.stringify({ ...root, mcplServers: servers }, null, 2) + '\n', 'utf-8');
+  // writeFileSync's mode applies only to a file it creates.
+  writeFileSync(path, JSON.stringify({ ...root, mcplServers: servers }, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 
 /**

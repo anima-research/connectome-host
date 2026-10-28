@@ -41,7 +41,7 @@ const directoryLine = 'Move or remove it, then start again: the host saves its r
 const NO_CREDENTIALS_STOP = 'Missing ANTHROPIC_API_KEY';
 
 describe('startup with a saved recipe it can\'t use', () => {
-  const remedy = 'Fix what it names (the file, or a variable missing from the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.';
+  const remedy = 'Fix what it names (the file, a variable missing from the environment, a number the recipe sets, or MODEL in the environment), start with a recipe file to replace it, or start with --no-recipe to clear it.';
 
   test('a torn file stops startup, naming the file and the ways out', () => {
     const r = startWithSaved('{"name": "Torn", "agent');

@@ -27,9 +27,56 @@ A matched rule resolves to one behavior:
 | `{ "debounce": ms }` | Wake once after `ms` (100–300000) pass with no new match **for this rule** — a trailing timer per rule, not per channel, so a rule matching several channels batches them all into one wake. Good for "wake me when a burst settles." The wake arrives as a `[Gate: N events matched]` note; messages already in your context are counted per channel, not re-quoted. |
 | `{ "rate_limit": { "tokens": n, "refillIntervalMs": ms, "keyBy": "channelId" } }` | Token bucket: at most `n` wakes, refilling one every `ms`; a match that finds the bucket empty doesn't wake. Steady cadence regardless of volume. |
 | `{ "passive_sample": { "every": n, "keyBy": "channelId" } }` | Wake on every nth matching event. |
+| `{ "judge": { "debounceMs": ms, "maxWaitMs": ms, "instructions": "…" } }` | Batch like a debounce, then ask the **reply judge**, a small, cheap model, whether now is a good time for you to reply. It reads your context (its newest part), your `instructions` and the batch, and either wakes you or lets the batch go by (the messages stay in your context, as for `defer`). `maxWaitMs` (optional) makes it decide by then even while messages keep coming. Needs an agent-framework release newer than 0.27.0; see below. |
 
 `keyBy` is optional on both counting behaviors: it names a metadata field, and
 each distinct value gets its own bucket/counter (without it, one shared one).
+
+### The reply judge
+
+A `judge` rule is for rooms where you'd like to speak when it fits rather
+than on every burst. It needs an agent-framework release newer than 0.27.0
+with the reply judge: on earlier ones `wake_add_rule` refuses `judge`, a
+`gate.json` rule with it is left out (gate_status names it), and
+`judgeState` isn't in `gate_status`. Write `instructions` as you'd brief someone watching the
+room for you: when you want to be woken (asked something, a topic you follow,
+a person you're waiting on) and what to let go by (banter between others,
+things you've already answered). They go to the judge with every batch, up
+to 4000 characters.
+
+- Keep DM and mention rules ahead of it as `always` if those should never
+  wait on the judge: first match wins, as for every rule.
+- A batch that fires while you're mid-turn is judged after your turn, against
+  the context it left, so it won't wake you for something you just answered.
+- If the judge fails or times out you're woken, as a debounce would wake you,
+  unless your host set it to stay quiet then. `gate_status` shows each judge
+  rule's verdict counts and its newest verdict with the judge's reason, and
+  says if the judge keeps failing.
+- The judge reads; it never writes into your context or speaks.
+
+Hosts configure the judge in the recipe under `modules.wake.judge`. Every key
+is optional, and agent-framework's defaults apply to what's left out:
+
+```json
+"modules": { "wake": { "judge": {
+  "model": "claude-haiku-5-5",
+  "maxInputTokens": 90000,
+  "timeoutMs": 20000,
+  "onError": "wake",
+  "effort": "low",
+  "cacheTtl": "5m",
+  "enabled": true
+} } }
+```
+
+`model` is the id as this host's provider names it, so an OpenRouter or Bedrock
+host gives its own form. `maxInputTokens` (4000 or more; a small one reads only a short tail of the room) caps one judge request;
+the default keeps it under the 100K-token line past which Claude Haiku 5.5
+costs five times as much. `effort: "none"` sends no effort, for a provider
+that doesn't take Anthropic's `output_config`. `enabled: false` leaves the judge
+unwired, and `judge` rules then wake as debounces of the same quiet period. A
+`judge` set alongside `policies` and `default` doesn't become part of the
+starting rules.
 
 ## Declarative rules — `gate.json`
 
@@ -95,15 +142,34 @@ Two optional per-rule fields:
 Ordering matters: put your "always" rules (DMs, mentions) **above** broad
 defer/debounce rules, since the first match wins. A matching rule *consumes* the
 event even when it decides not to wake — a non-`passthrough` sampler placed above
-your mention rule silently eats mentions. `wake_add_rule` and `gate_status`
-report `shadowWarnings` for rules an earlier rule provably makes unreachable; the
-check is conservative, so no warning isn't proof of safety.
+your mention rule silently eats mentions. `wake_add_rule` and `gate_status` note,
+under `shadowWarnings`, any rule an earlier one keeps from applying. The check is
+conservative, so no note isn't proof of safety.
+
+From the agent-framework release after 0.28.0 (agent-framework#859), each note
+also says what to do, and which of three kinds it is:
+
+- **never applies**: the earlier rule matches every event the later rule would.
+- **applies only to some**: the earlier rule takes some of the event types the
+  later rule is for (the later rule's scope names them, or its source sends them).
+- **may not matter**: the later rule names no event types, and the earlier rule
+  takes a type the later rule's source may never send. Nothing to do unless the
+  later rule is meant for that type; giving the later rule a `scope` clears the note.
+
+From that release, event types a rule's source never sends are also left out: an
+MCPL server's events are only its pushes and channel messages, so a rule like
+`{ source: "world" }` for a server with the id `world` isn't told about a
+`cli-input` rule that takes every `external-message`. Before it, such a rule is told
+the earlier rule makes it "unreachable" for `external-message`; that note needs no
+action.
 
 ## Changing your rules
 
 - **`wake_add_rule`** — the easiest way. Give a `name`, a `match`, and exactly
   one behavior: `behavior` (`"always"` / `"defer"`), `debounceMs`, `rateLimit`
-  `{ tokens, refillIntervalMs, keyBy? }` or `passiveSample` `{ every, keyBy? }`;
+  `{ tokens, refillIntervalMs, keyBy? }`, `passiveSample` `{ every, keyBy? }` or
+  `judge` `{ debounceMs, maxWaitMs?, instructions? }` (with an agent-framework
+  that has the reply judge, see below);
   plus optional `passthrough` / `resets`. It's validated like the file (an
   invalid rule is an error and nothing is written), applied immediately, and
   saved to `gate.json`. New rules append; `insertBefore` / `insertAfter:
@@ -112,8 +178,8 @@ check is conservative, so no warning isn't proof of safety.
   Reusing a name replaces that rule in place — or moves it, if you also give a
   placement. The result has a before/after **probe table** (which rule wins, and
   whether you'd wake, for a DM, a mention, a reply, ambient human and bot
-  chatter, and a heartbeat) and any `shadowWarnings`. Read them before ending the
-  turn.
+  chatter, and a heartbeat) and any `shadowWarnings`, the notes above: worth a
+  look before ending the turn.
 - **`wake_remove_rule`** `{ name }` — removes a rule (a pending debounce batch is
   delivered first) and says whether anything was removed.
 - **`channel-mode--set_channel_mode`** `{ channelId, mode, debounceMs? }` — present
@@ -242,6 +308,19 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
   ends the turn without replying and arms a one-shot self-wake. Unlike `sleep` it
   suppresses nothing, and *any* turn start cancels it — it fires only if nothing
   else woke you first, arriving as a `[self-wake]` note.
+- **Your heartbeat and reminders** — your own schedule of wakes:
+  `heartbeat--heartbeat_status` / `--heartbeat_configure` (interval, `paused`,
+  `deliveryMode` `"message"` or `"silent"`, `message`) / `--heartbeat_trigger`, and
+  `heartbeat--reminder_add` (a delay, an `atIso` time, or a repeat interval) /
+  `--reminder_list` / `--reminder_cancel`. On a host with `modules.heartbeat` on,
+  agent-framework keeps them. Their wakes reach your rules as heartbeat-mcpl's
+  did, as `mcpl:push-event`s from `heartbeat`, so a rule for `source:
+  "heartbeat"` still applies, and a sleep still lets them through. A reply judge
+  (`judge` rules) is told your next tick and pending reminders, so it can let a
+  batch wait when you'll be up soon anyway; one your rules would hold back it
+  hears of as only a "maybe". On a host that still runs the heartbeat-mcpl
+  server instead, the tools are the same (named `mcpl--heartbeat--…`), and the
+  judge doesn't know its schedule.
 - **`tune_out`** (when you have a subconscious, or the recipe sets
   `tuneOut.enabled`) — holds a channel: its traffic stops entering your
   context and waking you. With a subconscious, it reads the held traffic,
@@ -252,8 +331,9 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
 ## Debugging
 
 - `gate_status` — the live picture: `configPath`; per-policy `matchCount` /
-  `lastMatchTimestamp` plus debounce (`pendingCount`), rate-limit (`deniedCount`)
-  and sampler (`fireCount`) state; `errors` (a `gate.json` that failed to load);
+  `lastMatchTimestamp` plus debounce (`pendingCount`), rate-limit (`deniedCount`),
+  sampler (`fireCount`) and, with the reply judge, judge (`judgeState`: verdict
+  counts, the newest verdict and its reason, what's held for the judge) state; `errors` (a `gate.json` that failed to load);
   `shadowWarnings`; `script` (your `gate.js`: `active`, `runs`, `errors`,
   `timeouts`, `lastError`); `totalEvaluations`; `defaultDecisions` — events that
   fell through to `default`, as triggered/skipped totals and `byEventType`; and a

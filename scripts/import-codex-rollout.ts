@@ -16,6 +16,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { PRIVATE_DIR_MODE } from '../src/update/data-swap.js';
 
 interface RolloutRecord {
   timestamp?: string;
@@ -194,7 +195,7 @@ async function main() {
 
   const dataDir = join(opts.outDir, 'data');
   const sourceDir = join(opts.outDir, 'source');
-  mkdirSync(sourceDir, { recursive: true });
+  mkdirSync(sourceDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const snapshotPath = join(sourceDir, basename(opts.source));
   writeFileSync(snapshotPath, raw);
 

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 
 export interface SessionMeta {
   id: string;
@@ -50,7 +51,7 @@ export class SessionManager {
   }
 
   save(index: SessionIndex): void {
-    mkdirSync(this.dataDir, { recursive: true });
+    mkdirSync(this.dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
     writeFileSync(this.indexPath, JSON.stringify(index, null, 2) + '\n');
   }
 
@@ -73,7 +74,7 @@ export class SessionManager {
 
     // Not the store directory itself: JsStore.openOrCreate needs it absent to
     // know it should create (not open) the store.
-    mkdirSync(this.sessionsDir, { recursive: true });
+    mkdirSync(this.sessionsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
 
     index.sessions[id] = session;
     index.activeSessionId = id;
@@ -173,7 +174,7 @@ export class SessionManager {
     const id = this.generateId();
     const now = new Date().toISOString();
 
-    mkdirSync(this.sessionsDir, { recursive: true });
+    mkdirSync(this.sessionsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
     const newPath = join(this.sessionsDir, id);
     renameSync(legacyStorePath, newPath);
 

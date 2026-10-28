@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/connectome-host",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Recipe-configured host for long-lived agents on the Connectome stack: TUI, headless daemon, fleets, and a web operator console",
   "type": "module",
   "files": [
@@ -51,6 +51,6 @@
     "url": "https://github.com/anima-research/connectome-host/issues"
   },
   "connectomeRelease": {
-    "breaking": false
+    "breaking": true
   }
 }

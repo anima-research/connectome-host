@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { defaultTokenEstimator } from '@animalabs/context-manager';
 import { buildFrameworkStrategy, standardKvUnifiedConfig, strategyMessageCap } from '../src/framework-strategy.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { DEFAULT_RECIPE, validateRecipe } from '../src/recipe.js';
@@ -92,9 +93,13 @@ describe('standard-recipe memory defaults', () => {
     expect(tail({ contextBudgetTokens: 160_000 })).toBe(64_000);
     expect(tail({ contextBudgetTokens: 600_000 })).toBe(240_000);
     expect(tail({ strategy: { type: 'autobiographical', recentWindowTokens: 30_000 } })).toBe(30_000);
+    const haiku = recipe({ maxTokens: 16_000 });
+    const budget = buildFrameworkAgentConfig(haiku, 'agent', 'claude-haiku-4-5', buildFrameworkStrategy(haiku, 'claude-haiku-4-5', 'UTC')).contextBudgetTokens as number;
+    expect(budget).toBe(200_000 - 32_000 - defaultTokenEstimator('sys'));
+    expect(configView(buildFrameworkStrategy(haiku, 'claude-haiku-4-5', 'UTC')).recentWindowTokens).toBe(Math.round(budget * 0.4));
   });
 
-  test('budget defaults to 300k; maxStreamTokens follows it only when the budget is defaulted too', () => {
+  test('on a model with no window row the budget defaults to 300k; maxStreamTokens follows it only when the budget is defaulted too', () => {
     const agentConfig = (agent: Record<string, unknown>) => {
       const r = recipe(agent);
       return buildFrameworkAgentConfig(r, 'agent', 'some-model', buildFrameworkStrategy(r, 'some-model', 'UTC'));
@@ -184,6 +189,32 @@ describe('standard-recipe memory defaults', () => {
       'America/Los_Angeles',
     );
     expect(configView(omitted).productionBudgetTokens).toBeUndefined();
+  });
+
+  test('literal thinking-wrapper compression recovery is explicit opt-in and passed through', () => {
+    const configured = buildFrameworkStrategy(
+      recipe({
+        name: 'Mira',
+        strategy: { type: 'autobiographical', recoverLiteralThinkingWrappedCompression: true },
+      }),
+      'claude-3-opus-20240229',
+      'America/Los_Angeles',
+    );
+    expect(configView(configured).recoverLiteralThinkingWrappedCompression).toBe(true);
+
+    const omitted = buildFrameworkStrategy(
+      recipe({ name: 'Mira', strategy: { type: 'autobiographical' } }),
+      'claude-3-opus-20240229',
+      'America/Los_Angeles',
+    );
+    expect(configView(omitted).recoverLiteralThinkingWrappedCompression).toBeUndefined();
+
+    for (const bad of ['false', 1, 'no', null]) {
+      expect(() => recipe({
+        name: 'Mira',
+        strategy: { type: 'autobiographical', recoverLiteralThinkingWrappedCompression: bad as never },
+      })).toThrow('recoverLiteralThinkingWrappedCompression must be a boolean');
+    }
   });
 
   test('explicit recipe values override the defaults', () => {

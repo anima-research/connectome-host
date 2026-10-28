@@ -143,6 +143,26 @@ describe('the welcome', () => {
     }
   });
 
+  test("carries the recipe of a child whose numbers don't fit this host's MODEL", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'welcome-unfit-'));
+    const model = process.env.MODEL;
+    process.env.MODEL = 'claude-haiku-4-5';
+    try {
+      const recipe = join(dir, 'kid.json');
+      writeFileSync(recipe, JSON.stringify({
+        name: 'Kid', description: 'Writes long', agent: { name: 'kid', systemPrompt: 'never asked', model: 'claude-opus-4-6', maxTokens: 100_000 },
+      }));
+      bindFleet(new Map([['kid', { status: 'starting', recipePath: recipe }]]), new Set(), () => Promise.resolve());
+      delete (webUiModule as unknown as { loadChildRecipeInfo?: unknown }).loadChildRecipeInfo;
+      expect(await welcomeNow(7)).toEqual([expect.objectContaining({
+        name: 'kid', recipe: { name: 'Kid', description: 'Writes long', agentModel: 'claude-opus-4-6' },
+      })]);
+    } finally {
+      if (model === undefined) delete process.env.MODEL; else process.env.MODEL = model;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('waits once per bind, a second at most: a launch not recorded by then is listed by name, and later welcomes do not wait', async () => {
     const launching = new Set(['kid']);
     delete (webUiModule as unknown as { loadChildRecipeInfo?: unknown }).loadChildRecipeInfo;

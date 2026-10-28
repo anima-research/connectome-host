@@ -2,9 +2,11 @@
  * WebUI wire protocol — JSON-over-WebSocket envelope for the web admin client.
  *
  * Versioning: v2. Breaking changes bump `WEB_PROTOCOL_VERSION`. On a
- * mismatch the Web UI page shows a banner asking for a reload and keeps the
- * conversation it had; its socket stays open, and the welcome's other fields
- * and later frames still apply.
+ * mismatch the Web UI page shows a banner saying what to do and keeps the
+ * welcome, session and messages it had: `applyWelcome` returns before taking
+ * any of them. The welcome's other readers still read it, among them the
+ * usage, costs, call ledger and host mode, and the agent trees when they're
+ * shown; later frames still apply, and its socket stays open.
  *
  * v2: an observer gets only the frames its grant's scopes cover, live as well
  * as in its welcome, and a `stream-ended` frame in place of a stream-end trace

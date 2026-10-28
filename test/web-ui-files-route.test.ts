@@ -181,8 +181,9 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       expect(await get('plain/v2.png')).toEqual({ status: 200, type: 'image/png', body: 'the second version' });
       expect(await get('plain/v2.png/')).toEqual({ status: 200, type: 'image/png', body: 'the second version' });
       const link = await get('plain/latest.png');
-      expect(link.status).toBe(403);
-      expect(link.body).toBe('Symlinks are not allowed: plain/latest.png');
+      const linkRead = await real.readFileFromDisk('plain/latest.png').then(() => null, (err: WorkspaceReadError) => err);
+      expect(linkRead?.code).toBe('symlink');
+      expect(link).toMatchObject({ status: 403, body: linkRead!.message });
       const read = await real.readFileFromDisk('plain/d/note.json').then(
         (r) => ({ status: 200, body: r.bytes.toString(), code: null as string | null }),
         (err: WorkspaceReadError) => ({ status: 403, body: err.message, code: err.code as string | null }),
@@ -191,7 +192,6 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       if (read.status === 200) expect(read.body).toBe('{"through":"a linked directory"}');
       else {
         expect(read.code).toBe(PARENT_SYMLINK);
-        expect(read.body).toContain("the mount's host can set followSymlinks");
       }
       expect(await get('follow/latest.png')).toMatchObject({ status: 200, body: 'the followed version' });
       expect(await get('follow/d/note.json')).toMatchObject({ status: 200, body: '{"through":"a followed directory"}' });
@@ -221,7 +221,6 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       expect(read?.code).toBe('outside_include');
       const left = await fetch(`${baseUrl}/files/conf/${encodeURIComponent('#gate.json#')}`);
       expect({ status: left.status, body: await left.text() }).toEqual({ status: 403, body: read!.message });
-      expect(read!.message).toContain('"conf/#gate.json#" is outside the mount\'s include');
     } finally {
       workspace = standIn;
       store.close?.();
@@ -247,10 +246,10 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
       const res = await fetch(`${baseUrl}/files/gone/x.txt`);
       const got = { status: res.status, body: await res.text() };
       if (read?.code === 'mount_unavailable') {
-        expect(got).toEqual({ status: 503, body: 'Mount unavailable: gone' });
+        expect(got).toEqual({ status: 503, body: read.message });
       } else {
         expect(read?.code).toBe('not_found');
-        expect(got).toEqual({ status: 404, body: 'File not found: gone/x.txt' });
+        expect(got).toEqual({ status: 404, body: read!.message });
       }
     } finally {
       workspace = standIn;

@@ -11,7 +11,7 @@ import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
 
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
-function makeStubWorld(agentStatus: string | undefined = 'idle') {
+function makeStubWorld(agentStatus: string | null = 'idle') {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
@@ -45,7 +45,7 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
 
   const agent = {
     name: 'stub-agent',
-    ...(agentStatus !== undefined ? { state: { status: agentStatus } } : {}),
+    ...(agentStatus !== null ? { state: { status: agentStatus } } : {}),
     getContextManager: () => cm,
   };
 
@@ -63,6 +63,9 @@ function makeStubWorld(agentStatus: string | undefined = 'idle') {
       getAllModules: () => [],
       undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
       redo: () => ({ redone: false }),
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
+      getStore: () => ({ currentBranch: () => cm.currentBranch() }),
       switchBranch: async (name: string) => store.switchBranch(name),
       rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
         const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
@@ -167,7 +170,7 @@ describe('in-flight guard on head-moving commands', () => {
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, undone, text } = makeStubWorld(undefined);
+    const { app, addMessage, undone, text } = makeStubWorld(null);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
     expect(text(r)).toContain('Undone');

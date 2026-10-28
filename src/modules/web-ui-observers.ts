@@ -512,6 +512,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'host:quiesce': HEALTH,
   'host:resume': HEALTH,
   'host:quiesced_boot': HEALTH,
+  'inference:waiting': HEALTH,
   // Alerts: failures and refusals, the gate's decisions, modules coming and
   // going, MCPL servers and conversations, and what operators did.
   'ops:alert': OPS,
@@ -574,6 +575,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'gate:policy-removed': OPS,
   'gate:config-reconciled': OPS,
   'gate:shadow-warnings': OPS,
+  'gate:judge-verdict': ['health', 'ops'],
   'mcpl:push-event-rejected': OPS,
   'mcpl:channel-incoming-rejected': OPS,
   'mcpl:empty-content-dropped': OPS,

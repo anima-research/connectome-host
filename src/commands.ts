@@ -28,7 +28,7 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { asOwnRow, type Agent, type AgentFramework, type OperatorRequester } from '@animalabs/agent-framework';
+import { asOwnRow, OperatorActionError, type Agent, type AgentFramework, type OperatorRequester } from '@animalabs/agent-framework';
 import { isResettableStrategy, type ContextManager, type MessageMetadata, type StrategyContext } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import type { CredentialActionId, CredentialState } from './credential-state.js';
@@ -124,14 +124,17 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 
 /**
  * agent-framework writes a turn's reply onto whatever branch is current when
- * it lands, and a branch switch moves the branch of every context manager
- * sharing the store, so the head moves only between turns: stop the
- * generation, then move the head.
+ * it lands, and a branch switch moves the branch of every agent sharing the
+ * store, so the head moves only between turns: stop the generation, then
+ * move the head.
  *
- * This checks the agent the command acts for, so the refusal comes at once.
- * The framework, which each of these commands goes through, refuses a branch
- * move or a rollback while any agent sharing the store has a turn alive, and
- * an undo or a redo while the agent's own has.
+ * This checks the agent the command acts for, so the refusal comes at once
+ * and offers to stop its turn, the one an operator can stop. The framework,
+ * which each of these commands goes through, refuses a branch move or a
+ * rollback while any agent sharing the store, the subconscious included, is
+ * busy or has a turn alive, naming each, and writes the refusal to the
+ * operator log; and an undo or a redo while the agent's own turn is alive,
+ * not another agent's, since neither moves a branch.
  */
 function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
   const agent = commandAgent(app);
@@ -141,9 +144,87 @@ function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
     lines: [
       { text: `/${cmd} refused: a turn is in flight (${(agent as { name?: string }).name ?? 'agent'}: ${status}).`, style: 'system' },
       { text: '  Moving the head mid-generation would attach the streaming reply to the wrong', style: 'system' },
-      { text: '  branch/request. Stop the generation first, then retry.', style: 'system' },
+      { text: '  branch/request. Wait for the turn to end, or stop it, then retry.', style: 'system' },
     ],
   };
+}
+
+/**
+ * The last line of a branch move or a rollback that didn't happen (#264):
+ * this command moved nothing, and, when the store was busy, to try again
+ * once what the framework's refusal names (an agent's turn, a fork being
+ * created, a surgery or a switch) has finished. The framework's own words
+ * say only "quiesce the host first".
+ */
+function movedNothing(err: unknown): Line {
+  return {
+    text: err instanceof OperatorActionError && err.code === 'agent-busy'
+      ? '  This command moved nothing. Try again once what it names has finished.'
+      : '  This command moved nothing.',
+    style: 'system',
+  };
+}
+
+/**
+ * Move the store to an existing branch through the framework's switch
+ * (/checkout, and /restore to a checkpoint's branch head; chronicle is
+ * name-keyed, so it takes the name). The branch moves under every agent
+ * sharing the store, so it is refused unless every one of them is idle;
+ * each agent's context follows it (its strategy initialized again on the
+ * branch, its window written down there if the branch predates it), and so
+ * does the `_config` mount. The operator log records it as a checkout.
+ *
+ * What the framework answers decides what this says (#264). A refusal
+ * (OperatorActionError) comes before anything moves, so it is never taken
+ * for a move, whatever branch the store is on by then. Another rejection
+ * with the store on the target is the one the framework documents after
+ * the move, the `_config` mount failing: that is the move it was, so it is
+ * answered as one, saying the gate's files may still be the previous
+ * branch's and that `/checkout <branch>` runs the refresh again (a switch
+ * to the branch the store is on re-initializes every agent's context and
+ * re-materializes the mount).
+ */
+function switchStore(
+  app: AppContext,
+  target: string,
+  note: string,
+  words: { done: string; failed: string },
+): Promise<CommandResult> {
+  const framework = app.framework;
+  const from = framework.getStore().currentBranch().name;
+  return Promise.resolve()
+    .then(() => framework.switchBranch(target, { requester: HOST_COMMAND, note }))
+    .then(
+      (): CommandResult => ({ lines: [{ text: words.done, style: 'system' }], branchChanged: true }),
+      (err: unknown): CommandResult => {
+        const message = messageOf(err);
+        if (!(err instanceof OperatorActionError) && from !== target && framework.getStore().currentBranch().name === target) {
+          return {
+            lines: [
+              { text: `${words.done} Refreshing the _config mount from it failed: ${message}`, style: 'system' },
+              { text: `  The gate's files may still be the previous branch's. /checkout ${target} runs the refresh again.`, style: 'system' },
+            ],
+            branchChanged: true,
+          };
+        }
+        return { lines: [{ text: `${words.failed}: ${message}`, style: 'system' }, movedNothing(err)] };
+      },
+    );
+}
+
+/**
+ * The answer to a rollback (/restore to a checkpoint's message, /branchto)
+ * that the framework rejected. rollbackToMessage refuses an unknown agent
+ * or message, an invalid branch name and a busy store before it makes the
+ * branch, so then this command moved nothing and made no branch to remove.
+ * Its 'failed' comes once the branch was made and the switch to it failed:
+ * its words say where it put the store back, and it keeps the branch for
+ * diagnosis.
+ */
+function rollbackFailed(failed: string, err: unknown): CommandResult {
+  const lines: Line[] = [{ text: `${failed}: ${messageOf(err)}`, style: 'system' }];
+  if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
+  return { lines };
 }
 
 export function handleCommand(command: string, app: AppContext): CommandResult {
@@ -180,7 +261,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /restore [name]        Roll back to a checkpoint, on a new branch (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
-          { text: '  /history [n]           Show state transitions (last n)', style: 'system' },
+          { text: '  /history [n]           Show the last n messages (20 by default)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
           { text: '  /branchto <msgId>      Roll back to a message, on a new branch', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
@@ -1058,27 +1139,26 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
     }
   }
 
-  const toHead = (note: boolean): Promise<CommandResult> => app.framework.switchBranch(point.branchName, {
-    requester: HOST_COMMAND,
-    note: `/restore ${name}`,
-  })
-    .then(() => ({
-      lines: [
-        { text: `Restored to checkpoint "${name}" (branch: ${point.branchName}).`, style: 'system' as const },
-        ...(note
-          ? [{ text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }]
-          : []),
-      ],
-      branchChanged: true,
-    }));
-  const asyncWork = (point.messageId
+  const toHead = (note: boolean): Promise<CommandResult> => switchStore(app, point.branchName, `/restore ${name}`, {
+    done: `Restored to checkpoint "${name}" (branch: ${point.branchName}).`,
+    failed: 'Restore failed',
+  }).then((result) => (result.branchChanged && note
+    ? { ...result, lines: [...result.lines, { text: '  (note: exact checkpoint position unreachable from the current branch — restored to the branch head instead)', style: 'system' as const }] }
+    : result));
+  // The checkpoint moves to the rollback's branch only once the rollback has
+  // landed, and only if it is still the one this restore read (#264): saved
+  // again, or cleared by a session reset, while the rollback waited, it is
+  // left as it is now.
+  const asyncWork = point.messageId
     ? app.framework.rollbackToMessage(agent.name, {
         messageId: point.messageId,
         requester: HOST_COMMAND,
         branchName: `restore-${name}-${Date.now()}`,
         note: `/restore ${name}`,
       }).then((rolled): CommandResult => {
-        app.branchState.checkpoints.set(name, { branchName: rolled.targetBranch, messageId: point.messageId });
+        if (app.branchState.checkpoints.get(name) === point) {
+          app.branchState.checkpoints.set(name, { branchName: rolled.targetBranch, messageId: point.messageId });
+        }
         return {
           lines: [
             { text: `Restored to checkpoint "${name}" (branch: ${rolled.targetBranch}).`, style: 'system' },
@@ -1091,12 +1171,11 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
         // with 'unknown-message' when it isn't there, as after a /branchto:
         // the restore then goes to the checkpoint's branch head.
         if ((err as { code?: unknown } | null)?.code === 'unknown-message') return toHead(true);
-        throw err;
-      })
-    : toHead(false))
-    .catch((err: unknown) => ({
-      lines: [{ text: `Restore failed: ${messageOf(err)}`, style: 'system' as const }],
-    }));
+        return rollbackFailed('Restore failed', err);
+      }).catch((err: unknown) => ({
+        lines: [{ text: `Restore failed: ${messageOf(err)}`, style: 'system' as const }],
+      }))
+    : toHead(false);
 
   return {
     lines: [{ text: `Restoring to checkpoint "${name}"...`, style: 'system' }],
@@ -1146,20 +1225,12 @@ function handleCheckout(app: AppContext, name?: string): CommandResult {
     return { lines: [{ text: `Branch "${name}" not found. Use /branches to list.`, style: 'system' }] };
   }
 
-  // The framework's switch (chronicle is name-keyed, so it takes the name):
-  // the branch moves under every agent sharing the store, so it is refused
-  // unless every one of them is idle; each agent's context follows it (its
-  // strategy initialized again on the branch, its window written down there
-  // if the branch predates it), and so does the `_config` mount. The
-  // operator log records it as a checkout.
-  const asyncWork = app.framework.switchBranch(target.name, { requester: HOST_COMMAND, note: `/checkout ${name}` })
-    .then(() => ({
-      lines: [{ text: `Switched to branch ${target.name}.`, style: 'system' as const }],
-      branchChanged: true,
-    }))
-    .catch((err: unknown) => ({
-      lines: [{ text: `Checkout failed: ${messageOf(err)}`, style: 'system' as const }],
-    }));
+  // The framework's switch, every agent's context and the `_config` mount
+  // following it (switchStore).
+  const asyncWork = switchStore(app, target.name, `/checkout ${name}`, {
+    done: `Switched to branch ${target.name}.`,
+    failed: 'Checkout failed',
+  });
 
   return {
     lines: [{ text: `Switching → branch ${target.name}...`, style: 'system' }],
@@ -1263,9 +1334,7 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
         branchChanged: true,
       };
     })
-    .catch((err: unknown) => ({
-      lines: [{ text: `branchto failed: ${messageOf(err)}`, style: 'system' as const }],
-    }));
+    .catch((err: unknown) => rollbackFailed('branchto failed', err));
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 

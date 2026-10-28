@@ -23,12 +23,13 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { uptime } from 'node:os';
 import { type IncomingCommand, type WireEvent, type PanelResponseEvent, type UpdateResponseEvent, matchesSubscription } from './fleet-types.js';
 import type { SwitchRequest } from '../update/quiesce.js';
-import { loadRecipe } from '../recipe.js';
+import { loadRecipeDetailed } from '../recipe.js';
 import { REDUCER_REQUIRED_EVENTS } from '../state/agent-tree-reducer.js';
 import { parseCommand } from '../command-name.js';
 import { AGENT_OVERLAY_FILE_ENV, AGENT_OVERLAY_FILE_NAME, CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, isChildEntry, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
+import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 
 const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated'];
@@ -1192,7 +1193,7 @@ export class FleetModule implements Module {
       : resolve(process.cwd(), input.recipe);
 
     try {
-      const childRecipe = await loadRecipe(recipePath);
+      const childRecipe = (await loadRecipeDetailed(recipePath, { fetchSystemPrompt: false })).recipe;
       const fleetField = childRecipe.modules?.fleet;
       const declaresFleet = fleetField === true ||
         (typeof fleetField === 'object' && fleetField !== null);
@@ -1334,7 +1335,7 @@ export class FleetModule implements Module {
     }
 
     try {
-      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
     } catch (err) {
       return {
         success: false, isError: true,

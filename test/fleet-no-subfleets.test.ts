@@ -88,6 +88,32 @@ describe('FleetModule — no-subfleets invariant', () => {
     expect(result.error).toContain('nested fleets are not supported');
   });
 
+  test('a recipe with a fleet module that fits its own model but not this host\'s MODEL is still rejected as a nested fleet', async () => {
+    const model = process.env.MODEL;
+    process.env.MODEL = 'claude-haiku-4-5';
+    try {
+      const result = await runLaunch({
+        name: 'NestedFleetUnfit',
+        agent: { name: 'inner', systemPrompt: 'x', model: 'claude-opus-4-6', maxTokens: 100_000 },
+        modules: { fleet: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('nested fleets are not supported');
+    } finally {
+      if (model === undefined) delete process.env.MODEL; else process.env.MODEL = model;
+    }
+  });
+
+  test('a recipe with a fleet module whose system prompt can\'t be fetched is still rejected as a nested fleet', async () => {
+    const result = await runLaunch({
+      name: 'NestedFleetUnfetchable',
+      agent: { name: 'inner', systemPrompt: 'http://127.0.0.1:9/prompt.txt' },
+      modules: { fleet: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('nested fleets are not supported');
+  });
+
   test('recipe without fleet module is accepted (passes validation, may fail later in spawn path)', async () => {
     const result = await runLaunch({
       name: 'PlainChild',

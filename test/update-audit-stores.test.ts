@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from 'bun:test';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import {
@@ -11,7 +11,8 @@ import { AgentFramework, resolveTimeZone, storeOwnRow, subconsciousContextOption
 import { JsStore } from '@animalabs/chronicle';
 import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@animalabs/context-manager';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
-import { buildFrameworkAgentConfig, recipeModel } from '../src/framework-agent-config.js';
+import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
+import { recipeModel } from '../src/recipe.js';
 import { buildFrameworkStrategy, standardKvUnifiedConfig } from '../src/framework-strategy.js';
 import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
@@ -76,6 +77,22 @@ async function makeStore(path: string, namespace: string, crossed: boolean): Pro
   manager.close();
 }
 
+let templates: string;
+const templateOf = new Map<string, Promise<string>>();
+beforeAll(() => { templates = mkdtempSync(join(tmpdir(), 'update-audit-templates-')); });
+afterAll(() => { rmSync(templates, { recursive: true, force: true }); });
+
+async function copyStore(path: string, namespace: string, crossed: boolean): Promise<void> {
+  const key = JSON.stringify([namespace, crossed]);
+  let template = templateOf.get(key);
+  if (template === undefined) {
+    const at = join(templates, String(templateOf.size));
+    template = makeStore(at, namespace, crossed).then(() => at);
+    templateOf.set(key, template);
+  }
+  cpSync(await template, path, { recursive: true });
+}
+
 /** The seed opens with auditOnly, which never chunks the uncovered frontier,
  *  so adding the messages makes no chunk records. */
 async function makeSpanStore(path: string, run?: 'tuned-out' | 'injected' | 'own-injected'): Promise<void> {
@@ -106,7 +123,7 @@ async function makeSpanStore(path: string, run?: 'tuned-out' | 'injected' | 'own
 /** context-manager's ContextLog reads each entry's fields to index it
  *  (rebuildSourceIndex), so a null entry fails the open. */
 async function makeBrokenSubconsciousStore(path: string): Promise<void> {
-  await makeStore(path, 'agents/agent', false);
+  await copyStore(path, 'agents/agent', false);
   const store = JsStore.openOrCreate({ path });
   store.registerState({ id: 'subconscious/agent/context', strategy: 'append_log', deltaSnapshotEvery: 50, fullSnapshotEvery: 10 });
   store.appendToStateJson('subconscious/agent/context', null);
@@ -139,7 +156,7 @@ async function makeDataDirWith(name: string, makers: Array<(store: string) => Pr
 }
 
 function makeDataDir(name: string, sessions: Array<{ namespace: string; crossed: boolean }>): Promise<{ dir: string; stores: string[] }> {
-  return makeDataDirWith(name, sessions.map((session) => (store: string) => makeStore(store, session.namespace, session.crossed)));
+  return makeDataDirWith(name, sessions.map((session) => (store: string) => copyStore(store, session.namespace, session.crossed)));
 }
 
 async function audit(dirs: string[], options: AuditOptions = {}): Promise<{ status: number; lines: string[]; failed: string[] }> {
@@ -375,13 +392,13 @@ describe('the store audit', () => {
     const recipe = { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, strategy: { headWindowTokens: 500, recentWindowTokens: 1000 } } };
     const subconscious = { enabled: true, systemPrompt: 'attend to the agent' };
     const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true }> = {
-      crossed: { make: (store) => makeStore(store, 'agents/agent', true) },
-      plain: { make: (store) => makeStore(store, 'agents/agent', false) },
+      crossed: { make: (store) => copyStore(store, 'agents/agent', true) },
+      plain: { make: (store) => copyStore(store, 'agents/agent', false) },
       'unowned run inside a span': { make: (store) => makeSpanStore(store) },
       'tuned-out run inside a span': { make: (store) => makeSpanStore(store, 'tuned-out') },
       "another agent's stored injections inside a span": { make: (store) => makeSpanStore(store, 'injected') },
       "the agent's own stored injections inside a span": { make: (store) => makeSpanStore(store, 'own-injected') },
-      'a subconscious that opens': { make: (store) => makeStore(store, 'agents/agent', false), subconscious: true },
+      'a subconscious that opens': { make: (store) => copyStore(store, 'agents/agent', false), subconscious: true },
       "a subconscious whose context a start can't read": { make: makeBrokenSubconsciousStore, subconscious: true },
       'the same store, its subconscious off': { make: makeBrokenSubconsciousStore, off: true },
     };
@@ -527,7 +544,7 @@ describe('the store audit', () => {
   });
 
   test("the audit opens a named subconscious with its own name's view, and the resident with the resident's", async () => {
-    const { dir } = await makeDataDirWith('named-subconscious', [(store) => makeStore(store, 'agents/agent', false)]);
+    const { dir } = await makeDataDirWith('named-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
     saveRecipe(dir, { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } });
     const views = new Map<string, (message: never) => boolean>();
     const open = ContextManager.open.bind(ContextManager);
@@ -556,7 +573,7 @@ describe('the store audit', () => {
     // agent-framework's own options (subconsciousContextOptions, #291), so
     // the two are read from the opens, not from an export of the audit's.
     const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } };
-    const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => makeStore(store, 'agents/agent', false)]);
+    const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
     saveRecipe(dir, raw as never);
     let frameworkView: ((message: never) => boolean) | undefined;
     let ours: ((message: never) => boolean) | undefined;
@@ -1040,7 +1057,7 @@ describe('the store audit', () => {
 
   test('an index that is a link to nothing is no index, as for a start, which then takes the legacy store', async () => {
     const dir = join(root, 'legacy');
-    await makeStore(join(dir, 'store'), 'agents/agent', true);
+    await copyStore(join(dir, 'store'), 'agents/agent', true);
     symlinkSync(join(root, 'nowhere.json'), join(dir, 'sessions.json'));
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
@@ -1049,7 +1066,7 @@ describe('the store audit', () => {
 
   test('a legacy store, from before sessions, is audited where a start would find it, and no index is made', async () => {
     const dir = join(root, 'legacy');
-    await makeStore(join(dir, 'store'), 'agents/agent', true);
+    await copyStore(join(dir, 'store'), 'agents/agent', true);
     const { status, failed } = await audit([dir]);
     expect(status).toBe(1);
     expect(failed[0]).toStartWith(`${join(dir, 'store')} (agents/agent): refused: `);
@@ -1194,7 +1211,7 @@ describe("what a strategy's open and an index can do", () => {
     delete index.sessions[second!];
     writeFileSync(join(dir, 'sessions.json'), JSON.stringify(index));
     const outside = new SessionManager(dir).getStorePath(escaped);
-    await makeStore(outside, 'agents/agent', false);
+    await copyStore(outside, 'agents/agent', false);
     const opened: string[] = [];
     const openStore = JsStore.openOrCreate.bind(JsStore);
     const opening = spyOn(JsStore, 'openOrCreate').mockImplementation((config) => {
@@ -1219,7 +1236,7 @@ describe("a fleet child's audit, in a process of its own", () => {
     const entries = [];
     const dirs: Record<string, { dir: string; stores: string[] }> = {};
     for (const child of children) {
-      dirs[child.name] = await makeDataDirWith(child.dir ?? child.name, [(store) => makeStore(store, 'agents/agent', false)]);
+      dirs[child.name] = await makeDataDirWith(child.dir ?? child.name, [(store) => copyStore(store, 'agents/agent', false)]);
       const recipe = join(root, `${child.name}.json`);
       const extension = child.extension === undefined ? undefined : join(root, `${child.name}-extension.ts`);
       if (extension !== undefined) writeFileSync(extension, child.extension!);
@@ -1366,7 +1383,7 @@ describe("a fleet child's audit, in a process of its own", () => {
       { name: 'cleaned', extension: "process.on('exit', () => { process.exit(0); });\nexport function register() {}" },
     ]);
     rmSync(dirs.cleaned!.stores[0]!, { recursive: true, force: true });
-    await makeStore(dirs.cleaned!.stores[0]!, 'agents/agent', true);
+    await copyStore(dirs.cleaned!.stores[0]!, 'agents/agent', true);
     const { status, failed } = await audit([parent.dir]);
     expect(status).toBe(1);
     const setThat = "Something in its process, such as an extension's exit handler, set that status: " +
@@ -1714,8 +1731,8 @@ describe("which fleet children an audit follows, and how", () => {
   test("a child's opens line isn't a failure whatever its path holds, though another of its stores was refused", async () => {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const child = await makeDataDirWith('kid ): refused: dir', [
-      (store) => makeStore(store, 'agents/agent', false),
-      (store) => makeStore(store, 'agents/agent', true),
+      (store) => copyStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', true),
     ]);
     saveRecipe(parent.dir, { ...DEFAULT_RECIPE, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: [{ name: 'kid', recipe: childRecipe('kid'), dataDir: child.dir }] } } });
     const { status, lines, failed } = await audit([parent.dir]);
@@ -2066,7 +2083,7 @@ describe("which fleet children an audit follows, and how", () => {
       index.sessions[away] = { ...index.sessions[index.activeSessionId], id: away };
       writeFileSync(join(child.dir, 'sessions.json'), JSON.stringify(index));
       const outsideStore = new SessionManager(child.dir).getStorePath(away);
-      await makeStore(outsideStore, 'agents/agent', false);
+      await copyStore(outsideStore, 'agents/agent', false);
       const outside = await audit([parent.dir], { within: [root] });
       expect(outside.status).toBe(1);
       expect(outside.failed).toEqual([outsideLine(outsideStore, TRIAL_PLACES, true, false)]);
@@ -2190,8 +2207,8 @@ describe('which stores an audit opens, by where they lie', () => {
 
   test("a store a session names that isn't there, under a data directory reached through a link, gets a line and no failure, on a trial and by hand", async () => {
     const real = await makeDataDirWith('real', [
-      (store) => makeStore(store, 'agents/agent', false),
-      (store) => makeStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
     ]);
     const linked = join(root, 'linked');
     symlinkSync(real.dir, linked);
@@ -2386,8 +2403,8 @@ describe('which stores an audit opens, by where they lie', () => {
 
   test("on a trial, a store under a place whose name starts with '..' lies under it", async () => {
     const { dir, stores } = await makeDataDirWith('..data', [
-      (store) => makeStore(store, 'agents/agent', false),
-      (store) => makeStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
     ]);
     const { status, lines } = await audit([dir], { skip: [stores[0]!], within: [root] });
     expect(status, lines.join('\n')).toBe(0);
@@ -2438,7 +2455,7 @@ describe('a host on trial, before its commit', () => {
       { namespace: 'agents/agent', crossed: false },
       { namespace: 'agents/agent', crossed: true },
     ]);
-    const child = await makeDataDirWith(join('data', 'kid'), [(store) => makeStore(store, 'agents/agent', true)]);
+    const child = await makeDataDirWith(join('data', 'kid'), [(store) => copyStore(store, 'agents/agent', true)]);
     const outside = await makeDataDir('outside', [{ namespace: 'agents/agent', crossed: true }]);
     const kidRecipe = join(root, 'kid.json');
     writeFileSync(kidRecipe, JSON.stringify(DEFAULT_RECIPE));
@@ -2785,7 +2802,7 @@ describe('a host on trial, before its commit', () => {
 
   test("each load repair the trial's audit causes is also sent through the framework's ops path, and the trial commits", async () => {
     const { dir, stores } = await makeDataDirWith('data', [
-      (store) => makeStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
       (store) => makeRepairStore(store),
       (store) => makeRepairStore(store),
     ]);
@@ -2810,7 +2827,7 @@ describe('a host on trial, before its commit', () => {
 
   test("a trial whose commit is refused after its audit has still sent the load repair the audit caused, since the release it goes back to may not report it", async () => {
     const { dir, stores } = await makeDataDirWith('data', [
-      (store) => makeStore(store, 'agents/agent', false),
+      (store) => copyStore(store, 'agents/agent', false),
       (store) => makeRepairStore(store),
     ]);
     const sent: string[] = [];
@@ -2835,7 +2852,8 @@ describe('a host on trial, before its commit', () => {
     await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places });
     expect(counts.started).toBe(1);
     expect(readCurrent(install)).toBe('0.11.0');
-    await makeStore(stores[1]!, 'agents/agent', true);
+    rmSync(stores[1]!, { recursive: true, force: true });
+    await copyStore(stores[1]!, 'agents/agent', true);
     const opening = spyOn(JsStore, 'openOrCreate');
     try {
       await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places });

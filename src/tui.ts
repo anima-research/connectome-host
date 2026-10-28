@@ -31,10 +31,10 @@ import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
 import { formatQuotaReadout } from './quota-meter.js';
-import { takeRecipeWarnings } from './recipe.js';
+import { recipeModel, takeRecipeWarnings } from './recipe.js';
 import { bunFloorNotice } from './bun-floor-check.js';
 import { hostUpdate } from './update/update.js';
-import { effectiveContextBudgetTokens } from './framework-agent-config.js';
+import { effectiveContextBudgetTokens } from './recipe-fit.js';
 import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
@@ -635,7 +635,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }).getAgentRuntimeSettings?.(name)?.contextBudgetTokens;
       if (typeof live === 'number' && live > 0) return live;
     } catch { }
-    return name === rootAgentName && app.recipe ? effectiveContextBudgetTokens(app.recipe) : undefined;
+    return name === rootAgentName && app.recipe
+      ? effectiveContextBudgetTokens(app.recipe, recipeModel(app.recipe, process.env.MODEL))
+      : undefined;
   }
 
   function updateStatus() {

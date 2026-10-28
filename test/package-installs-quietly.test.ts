@@ -6,7 +6,7 @@ const scripts = (JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.js
   scripts?: Record<string, string>;
 }).scripts ?? {};
 
-test('the package declares no install script, which `bun add` would report blocked and npm would warn of', () => {
-  const installScripts = ['preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare'];
+test("the package declares no script that npm warns of, or `bun add` blocks, when a consumer installs it from npm", () => {
+  const installScripts = ['preinstall', 'install', 'postinstall', 'prepare'];
   expect(Object.keys(scripts).filter((name) => installScripts.includes(name))).toEqual([]);
 });

@@ -129,7 +129,7 @@ export const HOST_LOG_TAGS = new Set([
   'agent-settings', 'anthropic-credentials', 'autobiographical', 'batch', 'budget-preflight',
   'cache-keepalive', 'channel', 'cm-cache', 'coalescing', 'compression-quarantine', 'context-maintenance',
   'credential', 'credential-monitor', 'deprecated', 'diagnostics', 'discord', 'discord-awareness', 'echo',
-  'estimator-calibration', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
+  'estimator-calibration', 'fit', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
   'host-mode', 'host-notice', 'identity', 'image', 'inference-dropped', 'inference-failed',
   'inference-hard-down', 'inference-refusal', 'inference-rewind', 'inference-stale', 'interrupt',
   'kv-continuity-relaxation', 'kv-diag', 'kv-escalation', 'kv-overlap', 'kv-timing', 'kv-unified',

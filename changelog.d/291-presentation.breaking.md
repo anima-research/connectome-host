@@ -13,6 +13,12 @@
     before the record's newest reply, whoever's it was. `/redo` puts the turn
     back. Both are refused while the agent's turn is alive, and for an agent
     whose window couldn't be written down when it started.
+  - The `_config` mount's files are written back after a branch switch or a
+    rollback, and not after an undo or a redo, which act on the window only
+    and never touch them. 0.15.0's `configMount` note said a file there other
+    than the gate's is no longer versioned "or written back after an undo, a
+    redo or a branch switch", and that "an undo or a branch switch takes back
+    `gate.js`": from this release each reads "a branch switch or a rollback".
   - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
     `/branchto` its `rollbackToMessage`: a new branch whose last row is the
     checkpoint's or the given message, and the store moved to it. Each is

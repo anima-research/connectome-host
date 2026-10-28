@@ -1,1 +1,0 @@
-- A recipe whose `modules.instructions` path is on a mount configured direct (`backend: 'direct'`) that's read-write, which agent-framework allows from 0.27.0, loads with no `autoMaterialize`. It was refused whatever it set: the host asked for `autoMaterialize`, which agent-framework refuses on a direct mount.
