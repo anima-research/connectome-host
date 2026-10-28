@@ -1,0 +1,1 @@
+- Attribute off-path refusal alerts from the shared Anthropic adapter to the process (`host`), since the caller is unknown, while preserving the model, message count and input-token diagnostics (#148).

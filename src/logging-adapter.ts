@@ -341,8 +341,13 @@ export interface OffPathRefusal {
   inputTokens: number;
 }
 
+/**
+ * The shared adapter has no caller identity, so this alert names the process.
+ * Model, message count and input tokens help operators identify the call size.
+ */
 export function offPathRefusalAlert(info: OffPathRefusal): {
   kind: 'refusal-offpath';
+  agent: 'host';
   message: string;
   data: Record<string, unknown>;
 } {
@@ -351,7 +356,7 @@ export function offPathRefusalAlert(info: OffPathRefusal): {
   const message = `off-path refusal (category=${category}) on a ${info.messages}-message complete() call ` +
     `(${size}) — likely compression/summarizer`;
   const { kind: call, ...rest } = info;
-  return { kind: 'refusal-offpath', message, data: { call, ...rest } };
+  return { kind: 'refusal-offpath', agent: 'host', message, data: { call, ...rest } };
 }
 
 export class LoggingAnthropicAdapter extends AnthropicAdapter {

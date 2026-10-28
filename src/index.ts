@@ -1134,7 +1134,7 @@ async function main() {
         notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
       };
       const alert = offPathRefusalAlert(info);
-      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
+      fw.notifyOpsAlert?.(alert.kind, alert.agent, alert.message, alert.data);
     };
   }
 
