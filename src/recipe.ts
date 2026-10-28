@@ -16,11 +16,13 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
+import { noteRecipeWarning } from './recipe-warnings.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
+import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
 
 export interface RecipeStrategy {
   /** Built-in strategy name, or a custom type registered by a
@@ -156,13 +158,19 @@ export interface RecipeStrategy {
    *  speculative compression queue (default 1); demand still overrides. */
   l1HoldbackChunks?: number;
   // Self-voice / compression framing. The host defaults summaryParticipant to
-  // `agent.name`, so self-recollections speak as the agent itself. Set
+  // the agent's name (`agent.name`, or the name it runs under when that's
+  // unset), so self-recollections speak as the agent itself. Set
   // explicitly only to voice summaries as someone else — a mismatched
   // participant surfaces in the compiled prompt as another voice speaking in
   // first person about the agent.
   summaryParticipant?: string;
   summarySystemPrompt?: string;
   summaryUserPrompt?: string;
+  /** The `Context Manager` turn before a summary in the compiled context,
+   *  under adaptive resolution (the default) or `positionedRecallPairs:
+   *  false`. The host defaults it to a sentence saying that a summary
+   *  follows, standing in for earlier conversation, tool calls and results
+   *  included, and that the exact text it replaces isn't shown. */
   summaryContextLabel?: string;
   /** As-of perspective pin: chunks wholly below this message sequence are
    *  compressed as inherited/witnessed record, not first-person memory.
@@ -295,6 +303,9 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
    * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
    * which with prompt caching on are only those after the last cache marker.
+   * On a model whose thinking binds and whose window the host passes (Fable
+   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
+   * framework doesn't break a turn's stream at it; the window still does.
    */
   maxStreamTokens?: number;
   /** Per-agent context compile budget (input tokens), which holds
@@ -408,7 +419,9 @@ export interface RecipeAgent {
      * reasoning_enabled on, a config carrying agent_settings'
      * reasoning_display goes in place of this block's whole thinking
      * config, binding controls included, on a model that takes adaptive
-     * thinking. On a streamed call through it to a model
+     * thinking; on a streamed call to a model the host sends the drop
+     * control to, the control is then added to that config
+     * (LoggingAnthropicAdapter.withBinding). On a streamed call through it to a model
      * modelReturnsNotesInThinking lists, a request that would go with
      * display 'omitted', or with no thinking config, goes with 'updates'
      * instead, so the notes between tool calls come back as text
@@ -534,14 +547,25 @@ export interface RecipeMcpServer {
   /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
   /**
-   * MCPL RFC-014 opt-in: whether this host advertises `toolHints` to the
+   * MCPL RFC-014: whether this host advertises `toolHints` to the
    * server, so it lists every tool with its hints (static or dynamic,
    * visible or not, which toolset) and its toolsets can be opened and
    * closed, instead of tailoring its list to a host that reads no hints.
    * Hints confer no authority. Passed through to agent-framework; omitted,
-   * the framework's default applies.
+   * the framework's default applies (on, from agent-framework 0.29.0).
    */
   toolHints?: boolean;
+  /**
+   * How agents are shown this server at first (agent-framework's host
+   * toolsets, 0.29.0): `'full'` (the default) puts its tools in the tool
+   * list; `'tab'` keeps it connected, its events still arriving, with none of
+   * its tools in the list until an agent opens its tab
+   * (`toolsets--open {server}`) and calls them through `toolsets--act`;
+   * `'closed-tab'` leaves it disconnected until an agent opens it. Each agent
+   * can switch it later, and its choice is kept over this default. Passed
+   * through to agent-framework; an earlier one ignores it.
+   */
+  presentation?: 'full' | 'tab' | 'closed-tab';
   /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
@@ -908,18 +932,20 @@ export interface RecipeModules {
     defaultModel?: string;
     defaultMaxTokens?: number;
     /**
-     * What a forked or spawned stream is told at its start (connectome-host
-     * #213's orientation and the fork's "two parallel streams of you"
-     * framing). `'full'` (default) describes the launch and the stream's
-     * place in it; `'none'` hands the stream its task alone. What a stream
-     * is told is the deployment's to decide, not the host's.
+     * What a forked or spawned stream is told at its start. `'full'`
+     * (default) describes the launch and the stream's place in it, and
+     * gives a fork the "two parallel streams of you" framing; `'none'` hands
+     * a spawn its task alone, and a fork its task after one line saying it
+     * is the forked stream. What a stream is told is the deployment's to
+     * decide, not the host's.
      */
     orientation?: 'full' | 'none';
     /**
-     * How far the lifecycle tools (list, stop, message, adopt) reach.
-     * `'subtree'` (default): a caller sees and acts on the subagents it
-     * started and theirs, as `peek` is scoped (postmortem 2026-05-28 P3 #8);
-     * `'all'`: every subagent the host knows.
+     * How far the lifecycle tools (list, stop, message, adopt, resume)
+     * reach. `'subtree'` (default): a caller sees and acts on the subagents
+     * it started and theirs, as `peek` is scoped; `'all'`: every subagent
+     * the host knows, though an orphan is still adopted only by an agent it
+     * was offered to or in whose tree it hung.
      */
     lifecycleReach?: 'subtree' | 'all';
   };
@@ -1068,10 +1094,11 @@ export interface RecipeModules {
    * SECURITY: `mcpl_deploy` spawns arbitrary commands as the host user —
    * enabling this module means trusting the agent with code execution.
    *
-   * `{ surface: 'utilities' }` keeps the module but parks its four tools
-   * behind the framework's single `utils` meta-tool (mcpl management is
-   * rare; it needn't cost four schemas on every inference). `true` keeps
-   * the historical first-class surface.
+   * Its four tools live in agent-framework's built-in toolset ("settings",
+   * 0.29.0): out of the tool list, opened with
+   * `toolsets--open {toolset:"settings"}` and called with `toolsets--act`.
+   * `surface` is no longer read (it chose between the tool list and the
+   * removed `utils` tool); it's accepted so older recipes still load.
    */
   mcplAdmin?: boolean | { surface?: 'tools' | 'utilities' };
 
@@ -1130,8 +1157,9 @@ export interface RecipeModules {
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
    * an ed25519 keypair in the data dir, enrolled at the home node via an
    * operator invite, exchanged for fresh aid1 audience tokens on demand.
-   * Utilities-only (`utils run identity--status/enroll/token`) — costs no
-   * tool slots. `home` defaults to id.animalabs.ai; `audience` is the
+   * Its tools are utilities, in agent-framework's built-in toolset
+   * ("settings": `toolsets--open {toolset:"settings"}`, then
+   * `toolsets--act {tool:"identity--status"}`) — costs no tool slots. `home` defaults to id.animalabs.ai; `audience` is the
    * default for `token` calls.
    */
   identity?: boolean | { home?: string; audience?: string };
@@ -1247,10 +1275,12 @@ export interface RecipeWebUi {
   port?: number;
   host?: string;
   /**
-   * Where the observer grant tools (observers--get/grant/revoke) surface:
-   * 'tools' (default, historical) or 'utilities' (behind the `utils`
-   * meta-tool — grant edits are rare). Consent semantics unchanged: the
-   * agent holds the pen either way.
+   * No longer read: the observer grant tools (observers--get/grant/revoke)
+   * live in agent-framework's built-in toolset ("settings", 0.29.0), out of
+   * the tool list, opened with `toolsets--open {toolset:"settings"}` and
+   * called with `toolsets--act`. It chose between the tool list and the
+   * removed `utils` tool; it's accepted so older recipes still load.
+   * Consent semantics unchanged: the agent holds the pen.
    */
   observersSurface?: 'tools' | 'utilities';
   /**
@@ -2078,13 +2108,6 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   return found;
 }
 
-const pendingRecipeWarnings: string[] = [];
-const MAX_PENDING_RECIPE_WARNINGS = 50;
-
-export function takeRecipeWarnings(): string[] {
-  return pendingRecipeWarnings.splice(0);
-}
-
 /**
  * `modules.heartbeat`: true, false, or an object of the keys agent-framework
  * reads, each checked. On, it can't stand beside an `mcpServers.heartbeat`
@@ -2182,8 +2205,7 @@ export function validateRecipe(raw: unknown): Recipe {
   if (unknownKeys.length > 0) {
     const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
     console.warn(warning);
-    pendingRecipeWarnings.push(warning);
-    if (pendingRecipeWarnings.length > MAX_PENDING_RECIPE_WARNINGS) pendingRecipeWarnings.shift();
+    noteRecipeWarning(warning);
   }
 
   const agent = obj.agent as Record<string, unknown>;
@@ -2682,6 +2704,9 @@ export function validateRecipe(raw: unknown): Recipe {
       if (server.toolHints !== undefined && typeof server.toolHints !== 'boolean') {
         throw new Error(`mcpServers.${id}.toolHints must be true or false`);
       }
+      if (server.presentation !== undefined && !isServerPresentation(server.presentation)) {
+        throw new Error(`mcpServers.${id}.presentation must be ${SERVER_PRESENTATIONS_TEXT}`);
+      }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
         throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
@@ -2977,6 +3002,17 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
+    const subagents = mods.subagents;
+    if (subagents && typeof subagents === 'object' && !Array.isArray(subagents)) {
+      const options = subagents as Record<string, unknown>;
+      if (options.orientation !== undefined && options.orientation !== 'full' && options.orientation !== 'none') {
+        throw new Error(`Recipe modules.subagents.orientation is ${JSON.stringify(options.orientation)}; it must be "full" or "none".`);
+      }
+      if (options.lifecycleReach !== undefined && options.lifecycleReach !== 'subtree' && options.lifecycleReach !== 'all') {
+        throw new Error(`Recipe modules.subagents.lifecycleReach is ${JSON.stringify(options.lifecycleReach)}; it must be "subtree" or "all".`);
+      }
+    }
+
     const history = mods.history;
     if (history !== undefined && typeof history !== 'boolean') {
       if (!history || typeof history !== 'object' || Array.isArray(history)) {
@@ -3252,10 +3288,25 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe subconscious.reader must be "persistent" or "forks".');
     }
     const forks = sub.reader === 'forks';
-    const allowedSubconsciousKeys = new Set(forks
-      ? ['enabled', 'reader', 'model', 'voice', 'allowChannelSpeech', 'forkIdleTimeoutMs']
-      : ['enabled', 'reader', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction']);
+    const reader = forks ? 'forks' : 'persistent';
+    const other = forks ? 'persistent' : 'forks';
+    const keysFor = {
+      forks: ['enabled', 'reader', 'model', 'voice', 'allowChannelSpeech', 'forkIdleTimeoutMs'],
+      persistent: ['enabled', 'reader', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction'],
+    };
+    const allowedSubconsciousKeys = new Set(keysFor[reader]);
+    const onlyFor = (r: 'forks' | 'persistent') => keysFor[r].filter((key) => !keysFor[r === 'forks' ? 'persistent' : 'forks'].includes(key));
+    const otherReadersKeys = new Set(onlyFor(other));
     for (const key of Object.keys(sub)) {
+      if (otherReadersKeys.has(key)) {
+        const misplaced = Object.keys(sub).filter((k) => otherReadersKeys.has(k));
+        const alsoRemove = onlyFor(reader).filter((own) => Object.hasOwn(sub, own));
+        throw new Error(
+          `Recipe ${misplaced.map((k) => `subconscious.${k}`).join(' and ')} ${misplaced.length > 1 ? 'are' : 'is'} for reader "${other}", and this recipe's reader is "${reader}". ` +
+          `Remove ${misplaced.join(' and ')}, or set subconscious.reader to "${other}"` +
+          `${alsoRemove.length > 0 ? ` and remove ${alsoRemove.join(' and ')}, which only reader "${reader}" takes` : ''}.`,
+        );
+      }
       if (!allowedSubconsciousKeys.has(key)) {
         throw new Error(
           `Recipe subconscious has unknown field ${JSON.stringify(key)} ` +

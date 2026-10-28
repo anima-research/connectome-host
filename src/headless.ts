@@ -23,19 +23,21 @@
  * See docs/fleet-protocol.md for the protocol reference.
  */
 
+// Keep this module's imports light: the headless tests start a host per test, many at once.
 import { createServer, type Socket, type Server } from 'node:net';
 import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
-import { sessionMarker } from './bug-report.js';
+import { sessionMarker } from './session-marker.js';
 import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
-import { takeRecipeWarnings } from './recipe.js';
+import { takeRecipeWarnings } from './recipe-warnings.js';
 import { workspaceReadFields } from './workspace-read-result.js';
 import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
+import { traceFollower } from './piped-turns.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -161,6 +163,21 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   let bootDropped = 0;
   const BOOT_EVENT_CAP = 1000;
   let subscription = new Set<string>(['*']);
+  let textsReceived = 0;
+  const textsProcessing = new Map<unknown, unknown>();
+  const pushText = (message: Parameters<typeof app.framework.pushEvent>[0]): void => {
+    textsProcessing.set(message, app.framework);
+    try {
+      app.framework.pushEvent(message);
+    } catch (error) {
+      textsProcessing.set(message, null);
+      log(`text refused, kept in flight for the next framework a session switch installs, if one does: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  let hadAtLeastOneInference = false;
+  let idleEmitted = false;
+  let idleSince = 0;
+  let exitSince = 0;
 
   const FILTER_EXEMPT = new Set<string>([
     'snapshot',
@@ -188,11 +205,14 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   }
 
   const treeReducer = new AgentTreeReducer();
-  try {
-    treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
-  } catch (err) {
-    log(`seed framework agents failed: ${String(err)}`);
-  }
+  const seedTree = (): void => {
+    try {
+      treeReducer.seedFrameworkAgents(app.framework.getAllAgents().map(a => a.name));
+    } catch (err) {
+      log(`seed framework agents failed: ${String(err)}`);
+    }
+  };
+  seedTree();
   const startedAt = Date.now();
 
   // The boot comes first: main() holds what create() replays and what
@@ -200,18 +220,51 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // cut off, resumed tune-out epochs), so the tree sees the boot whole. No
   // client is connected yet and emit() would drop them, so until the first
   // client connects the events are kept for it instead.
-  const onFrameworkTrace = (traceEvent: TraceEvent): void => {
+  const forwardTrace = (trace: unknown): void => {
+    const traceEvent = trace as TraceEvent;
     treeReducer.applyEvent(traceEvent);
     const event = traceEvent as unknown as Record<string, unknown>;
     if (bootEvents && !currentClient) {
-      if (bootEvents.length < BOOT_EVENT_CAP) bootEvents.push(event);
+      const lost = event.type === 'dendrite:early-traces-dropped' ? event.dropped : undefined;
+      if (typeof lost === 'number') bootDropped += lost;
+      else if (bootEvents.length < BOOT_EVENT_CAP) bootEvents.push(event);
       else bootDropped++;
       return;
     }
     emit(event);
   };
-  if (app.bootTraces) bootDropped += app.bootTraces.handOver(onFrameworkTrace);
-  else app.framework.onTrace(onFrameworkTrace);
+  let traced = app.framework;
+  const forwarding = traceFollower(forwardTrace, { replay: true });
+  // The hold stays subscribed to the boot framework, so its traces stop
+  // here once a session switch replaces that framework.
+  const bootFramework = traced;
+  if (app.bootTraces) {
+    const lost = app.bootTraces.handOver((traceEvent) => {
+      if (traced === bootFramework) forwardTrace(traceEvent);
+    });
+    bootDropped += lost;
+  } else {
+    forwarding.follow(traced);
+  }
+  const followers = [forwarding];
+  const followFramework = (): void => {
+    if (app.framework === traced) return;
+    traced = app.framework;
+    treeReducer.reset();
+    seedTree();
+    if (bootEvents) {
+      bootEvents = [];
+      bootDropped = 0;
+    }
+    for (const follower of followers) follower.follow(traced);
+    const carried = [...textsProcessing].filter(([, framework]) => framework !== traced).map(([text]) => text);
+    for (const text of carried) {
+      textsProcessing.delete(text);
+      pushText(text as Parameters<typeof app.framework.pushEvent>[0]);
+    }
+    if (carried.length > 0) log(`carried ${carried.length} text(s) the replaced framework hadn't finished to the new one`);
+  };
+  app.onFrameworkReplaced = followFramework;
 
   const droppedCommands = new WeakMap<Socket, number>();
 
@@ -253,7 +306,12 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
           log('text rejected: content must be string');
           return;
         }
-        app.framework.pushEvent({
+        textsReceived += 1;
+        hadAtLeastOneInference = true;
+        idleEmitted = false;
+        idleSince = 0;
+        exitSince = 0;
+        pushText({
           type: 'external-message',
           source: 'headless',
           content: cmd.content,
@@ -450,6 +508,19 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     }
   }
 
+  const quietButScripts = (): boolean => {
+    if (app.switching || textsProcessing.size > 0) return false;
+    const host = app.framework.getHostModeStatus();
+    if (!host.drained || host.gatedRequests > 0) return false;
+    if (app.framework.getQueueDepth() > 0) return false;
+    const subagents = (app.framework.getAllModules().find((m) => m.name === 'subagent') as
+      | { getConcurrencyStatus(): { active: number; queued: number } }
+      | undefined)?.getConcurrencyStatus();
+    return !subagents || (subagents.active === 0 && subagents.queued === 0);
+  };
+  const nothingInFlight = (): boolean =>
+    quietButScripts() && app.framework.getHostModeStatus().backgroundScripts === 0;
+
   const server: Server = createServer((socket) => {
     if (currentClient) {
       log('new client connecting; closing previous client');
@@ -459,6 +530,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     log('client connected');
 
     subscription = new Set<string>(['*']);
+    textsReceived = 0;
 
     socket.setEncoding('utf8');
     let buffer = '';
@@ -509,12 +581,19 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Send ready event as soon as the socket is live.  The framework was
     // already started before runHeadless was invoked, so 'ready' here means
     // the IPC channel is open and the framework is accepting events.
+    if (hadAtLeastOneInference && idleEmitted &&
+      !(app.framework.getAllAgents().every((a) => a.state.status === 'idle') && quietButScripts())) {
+      // Work in flight that started no turn: the quiet after it is a new idle.
+      idleEmitted = false;
+      idleSince = 0;
+    }
     emit({
       type: 'lifecycle',
       phase: 'ready',
       pid: process.pid,
       dataDir,
       recipe: app.recipe.name,
+      idle: hadAtLeastOneInference && idleEmitted,
     });
 
     // The first client then hears the boot it missed, oldest first and each
@@ -570,11 +649,13 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },
   });
 
-  // `lifecycle:idle` fires on every work→quiescent transition so the parent
-  // can implement fleet--await (block until child finished its task).
-  // --exit-when-idle is a strict overlay: same detection, additionally
-  // shuts down at the first quiet poll with no self-restart armed. While one
-  // is armed, quiet also means nothing in flight, and it exits 75 instead.
+  // `lifecycle:idle` fires once quiet follows an inference:started or a text, so the
+  // parent can implement fleet--await (block until child finished its task).
+  // Quiet is every agent reading idle with nothing in flight but a background
+  // script left running, since a script that ends cleanly wakes no one
+  // (agent-framework 0.28.0). --exit-when-idle, and an armed self-restart,
+  // which exits 75 instead, also wait for scripts: they shut down once
+  // nothing at all has been in flight for the same 500 ms.
   //
   // `inference:speech` fires once per "final" inference round — the round
   // that completed without yielding tool calls.  It carries the accumulated
@@ -582,30 +663,22 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // to subscribe to the whole token stream.
   {
     const IDLE_CONFIRM_MS = 500;
-    const nothingInFlight = (): boolean => {
-      const host = app.framework.getHostModeStatus();
-      if (!host.drained || host.gatedRequests > 0 || host.backgroundScripts > 0) return false;
-      if (app.framework.getQueueDepth() > 0) return false;
-      const subagents = (app.framework.getAllModules().find((m) => m.name === 'subagent') as
-        | { getConcurrencyStatus(): { active: number; queued: number } }
-        | undefined)?.getConcurrencyStatus();
-      return !subagents || (subagents.active === 0 && subagents.queued === 0);
-    };
     const primaryAgentName = app.recipe.agent.name ?? 'agent';
-    let hadAtLeastOneInference = false;
-    let idleSince = 0;
     let windowArmed = false;
-    let idleEmitted = false;
 
     let currentSpeech = '';
 
-    app.framework.onTrace((event) => {
+    const idleTrace = (event: unknown): void => {
       const t = (event as { type?: string }).type;
       const agentName = (event as { agentName?: string }).agentName;
 
-      if (t === 'inference:started') {
+      if (t === 'process:completed') {
+        textsProcessing.delete((event as { processEvent?: unknown }).processEvent);
+      } else if (t === 'inference:started') {
         hadAtLeastOneInference = true;
         idleEmitted = false;
+        idleSince = 0;
+        exitSince = 0;
         if (agentName === primaryAgentName) currentSpeech = '';
       } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
         const content = (event as { content?: string }).content;
@@ -618,7 +691,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         }
         currentSpeech = '';
       }
-    });
+    };
+    const idling = traceFollower(idleTrace);
+    idling.follow(traced);
+    followers.push(idling);
 
     const idlePoll = setInterval(() => {
       if (shuttingDown) { clearInterval(idlePoll); return; }
@@ -626,18 +702,26 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       const allIdle = agents.every((a) => a.state.status === 'idle');
       const armed = selfRestart.isArmed();
       if (armed) hadAtLeastOneInference = true;
-      if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; }
-      if (!hadAtLeastOneInference || !allIdle || (armed && !nothingInFlight())) {
+      if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; exitSince = 0; }
+      if (!hadAtLeastOneInference || !allIdle || !quietButScripts()) {
         idleSince = 0;
+        exitSince = 0;
         return;
       }
-      if (idleSince === 0) { idleSince = Date.now(); return; }
-      if (Date.now() - idleSince < IDLE_CONFIRM_MS) return;
-      if (!idleEmitted) {
+      const now = Date.now();
+      if (idleSince === 0) idleSince = now;
+      if (!idleEmitted && now - idleSince >= IDLE_CONFIRM_MS) {
         idleEmitted = true;
         log('quiescent — emitting lifecycle:idle');
-        emit({ type: 'lifecycle', phase: 'idle' });
+        emit({ type: 'lifecycle', phase: 'idle', texts: textsReceived });
       }
+      if (!armed && !opts.exitWhenIdle) return;
+      if (!nothingInFlight()) {
+        exitSince = 0;
+        return;
+      }
+      if (exitSince === 0) { exitSince = now; return; }
+      if (now - exitSince < IDLE_CONFIRM_MS || !idleEmitted) return;
       if (armed) {
         clearInterval(idlePoll);
         void gracefulShutdown('self-restart', SELF_RESTART_EXIT_CODE);

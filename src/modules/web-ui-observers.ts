@@ -548,6 +548,7 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'dendrite:agent-orphaned': ['health', 'ops'],
   'dendrite:agent-reparented': ['health', 'ops'],
   'dendrite:activation-cancelled': ['health', 'ops'],
+  'dendrite:early-traces-dropped': OPS,
   'dendrite:mail-held': OPS,
   // Mail held in memory behind a live surgery, stored at its release.
   'dendrite:mail-deferred': OPS,

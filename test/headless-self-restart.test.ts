@@ -47,21 +47,21 @@ function expectSelfRestart(dir: string, result: { code: number | null; signal: s
   expect(typeof request.exitedAt).toBe('string');
 }
 
-test('an armed self-restart exits 75 once the turn has ended, and records the exit', async () => {
+test.concurrent('an armed self-restart exits 75 once the turn has ended, and records the exit', async () => {
   const { dir, result, output } = await runFixture('self-restart');
   expectSelfRestart(dir, result, output);
   expect(readFileSync(join(dir, 'headless.log'), 'utf-8')).toContain('shutdown: self-restart');
   expect(existsSync(join(dir, 'ipc.sock'))).toBe(false);
 }, 15_000);
 
-test('another shutdown that comes first exits as it would, and the request records it', async () => {
+test.concurrent('another shutdown that comes first exits as it would, and the request records it', async () => {
   const { dir, result } = await runFixture('sigterm-first');
   expect(result.code).toBe(0);
   const request = JSON.parse(readFileSync(join(dir, SELF_RESTART_FILE), 'utf-8'));
   expect(request).toMatchObject({ exitReason: 'SIGTERM', exitCode: 0 });
 }, 15_000);
 
-test('under --exit-when-idle, an armed self-restart still exits 75', async () => {
+test.concurrent('under --exit-when-idle, an armed self-restart still exits 75', async () => {
   const { dir, result, output } = await runFixture('exit-when-idle');
   expectSelfRestart(dir, result, output);
 }, 15_000);
@@ -70,35 +70,36 @@ for (const [hold, what] of [
   ['turn', 'a turn the framework still counts alive'],
   ['gated', 'a gated wake'],
   ['script', 'a running background script'],
+  ['late-script', 'a background script that starts while the restart waits out its 500 ms'],
   ['queue', 'an event not yet taken off the queue'],
   ['subagent-active', 'a subagent run holding a slot'],
   ['subagent-queued', 'a queued subagent run'],
   ['wake-gap', "a subagent's end, with its wake a loop pass behind,"],
 ] as const) {
-  test(`${what} holds the restart back, though every agent reads idle`, async () => {
+  test.concurrent(`${what} holds the restart back, though every agent reads idle`, async () => {
     const { dir, result, output } = await runFixture('held', hold);
     expectSelfRestart(dir, result, output);
   }, 15_000);
 }
 
-test('under --exit-when-idle, a restart cancelled while it waits gives the exit back: the host exits 0', async () => {
+test.concurrent('under --exit-when-idle, a restart cancelled while it waits gives the exit back: the host exits 0', async () => {
   const { dir, result, output } = await runFixture('cancel-in-wait');
   expect({ code: result.code, signal: result.signal, output: result.code === 0 ? '' : output }).toEqual({ code: 0, signal: null, output: '' });
   expect(readFileSync(join(dir, 'headless.log'), 'utf-8')).toContain('shutdown: exit-when-idle');
   expect(existsSync(join(dir, SELF_RESTART_FILE))).toBe(false);
 }, 15_000);
 
-test('a restart armed after the host has gone quiet still goes', async () => {
+test.concurrent('a restart armed after the host has gone quiet still goes', async () => {
   const { dir, result, output } = await runFixture('arm-after-idle');
   expectSelfRestart(dir, result, output);
 }, 15_000);
 
-test('a restart armed while already quiet waits out its own confirm, so work that starts just after holds it', async () => {
+test.concurrent('a restart armed while already quiet waits out its own confirm, so work that starts just after holds it', async () => {
   const { dir, result, output } = await runFixture('late-arm-gap');
   expectSelfRestart(dir, result, output);
 }, 15_000);
 
-test('a restart armed in a turn the host never saw start still goes', async () => {
+test.concurrent('a restart armed in a turn the host never saw start still goes', async () => {
   const { dir, result, output } = await runFixture('unseen-turn');
   expectSelfRestart(dir, result, output);
 }, 15_000);

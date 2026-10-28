@@ -44,8 +44,10 @@ Other keys in the `webui` block:
   `reverse_proxy` does) you need nothing; set it — e.g.
   `["https://admin.example.internal"]` — only if the proxy rewrites `Host`.
   `[]` disables the check.
-- `observersSurface` — where the agent's observer-grant tools appear:
-  `"tools"` (default) or `"utilities"` (behind the `utils` meta-tool).
+- `observersSurface` — no longer read: from agent-framework 0.29.0 the
+  agent's observer-grant tools live in the built-in `settings` toolset
+  (`toolsets--open {"toolset": "settings"}`). Still accepted, with a startup
+  line, so older recipes load.
 
 Front the module with a reverse proxy (Caddy/nginx) to terminate TLS; the
 proxy handles transport security while Basic-Auth gates the app layer.

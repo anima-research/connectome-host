@@ -134,6 +134,8 @@ interface FleetChild {
   events: WireEvent[];
   buffer: string;
   subscription: string[];
+  idleSinceWork: boolean;
+  textsSent: number;
   autoRestart: boolean;
   bootId?: string;
   killRequested: boolean;
@@ -504,6 +506,8 @@ export class FleetModule implements Module {
       events: [],
       buffer: '',
       subscription: [...p.subscription],
+      idleSinceWork: false,
+      textsSent: 0,
       autoRestart: p.autoRestart,
       bootId: typeof p.bootId === 'string' ? p.bootId : undefined,
       ...(p.groupEnded === true ? { groupEnded: true } : {}),
@@ -1004,9 +1008,17 @@ export class FleetModule implements Module {
       {
         name: 'await',
         description:
-          'Block until the named children go idle (framework quiescent for >=500ms). ' +
-          'Returns when all (or any, if requireAll:false) are idle, or on timeout. ' +
-          'Fails fast if a waited-for child crashes or exits before going idle. ' +
+          'Block until the named children go idle: every agent idle with nothing in flight, subagent runs ' +
+          'included, for >=500ms; a background script left running doesn\'t hold it. ' +
+          'After a text sent to a child, only an idle that covers that text counts; ' +
+          'a fleet--command isn\'t work, so an await after one answers from the child\'s earlier idle until a turn ' +
+          'the command starts begins. ' +
+          'Returns when all (or any, if requireAll:false) have gone idle since this host last sent them a text, and ' +
+          'started no turn of their own since, or on timeout. While the wait goes on, a child sent work again is ' +
+          'waited for again, and one that went idle and then exited or was restarted still counts. ' +
+          'The call blocks your turn for up to timeoutMs; fleet--peek shows a child\'s latest events. ' +
+          'Fails fast if a waited-for child crashes or exits before going idle, or has stopped when the call ' +
+          'begins. ' +
           'Requires each child\'s subscription to include `lifecycle` events.',
         inputSchema: {
           type: 'object',
@@ -1377,6 +1389,8 @@ export class FleetModule implements Module {
       events: [],
       buffer: '',
       subscription: [...subscription],
+      idleSinceWork: false,
+      textsSent: 0,
       autoRestart: input.autoRestart ?? false,
       bootId: this.bootId(),
       killRequested: false,
@@ -1747,9 +1761,17 @@ export class FleetModule implements Module {
     }
 
     const done = new Set<string>();
-    for (const name of names) {
-      if (this.isMostRecentLifecycleIdle(this.children.get(name)!)) done.add(name);
-    }
+    const counted = new Map<string, FleetChild>();
+    const reread = (): void => {
+      for (const name of names) {
+        const child = this.children.get(name);
+        if (child?.idleSinceWork) counted.set(name, child);
+        else if (counted.get(name) === child || (child !== undefined && child.textsSent > 0)) counted.delete(name);
+      }
+      done.clear();
+      for (const name of counted.keys()) done.add(name);
+    };
+    reread();
 
     for (const name of names) {
       const c = this.children.get(name)!;
@@ -1786,22 +1808,18 @@ export class FleetModule implements Module {
         resolve(result);
       };
 
+      const settle = (): boolean => {
+        reread();
+        if (!metCriterion()) return false;
+        finish({ success: true, data: { names: [...done], waitedMs: Date.now() - startedAt, completed: true } });
+        return true;
+      };
       for (const name of names) {
-        const unsub = this.onChildEvent(name, (childName, evt) => {
-          if (evt.type !== 'lifecycle') return;
-          if ((evt as { phase?: string }).phase !== 'idle') return;
-          done.add(childName);
-          if (metCriterion()) {
-            finish({
-              success: true,
-              data: { names: [...done], waitedMs: Date.now() - startedAt, completed: true },
-            });
-          }
-        });
-        unsubs.push(unsub);
+        unsubs.push(this.onChildEvent(name, () => { settle(); }));
       }
 
       const crashPoll = setInterval(() => {
+        if (settle()) return;
         for (const name of names) {
           if (done.has(name)) continue;
           const c = this.children.get(name);
@@ -1814,13 +1832,15 @@ export class FleetModule implements Module {
       }, 200);
 
       const timeoutHandle = setTimeout(() => {
+        reread();
         finish({
           success: false,
           isError: true,
           error:
             `fleet--await timed out after ${timeoutMs} ms. Idle: ${listed([...done])}. Not yet idle: ` +
             `${listed(names.filter((n) => !done.has(n)))}. The wait changed nothing in the children: to keep ` +
-            `waiting, call fleet--await again with the names not yet idle, and a larger timeoutMs if needed.`,
+            `waiting, call fleet--await again with the names not yet idle, and a larger timeoutMs if needed. ` +
+            `fleet--peek shows what each of them is doing.`,
         });
       }, timeoutMs);
     });
@@ -1834,16 +1854,6 @@ export class FleetModule implements Module {
     return `Child '${c.name}' has ${c.status}${stoppedHow(c)}, so there's no idle to wait for. Idle so far: ` +
       `${listed(running)}. fleet--peek for '${c.name}' shows its last events, and ` +
       `fleet--restart for '${c.name}' starts it again.`;
-  }
-
-  private isMostRecentLifecycleIdle(child: FleetChild): boolean {
-    for (let i = child.events.length - 1; i >= 0; i--) {
-      const e = child.events[i]!;
-      if (e.type === 'lifecycle') {
-        return (e as { phase?: string }).phase === 'idle';
-      }
-    }
-    return false;
   }
 
   private requireRunning(name: string, outcome: string): { child: FleetChild } | ToolResult {
@@ -1954,6 +1964,7 @@ export class FleetModule implements Module {
         clearTimeout(timer);
         child.socket = sock;
         child.buffer = '';
+        child.textsSent = 0;
         sock.on('data', (chunk: string) => {
           if (child.socket === sock) this.handleChildData(child, chunk);
         });
@@ -2007,6 +2018,13 @@ export class FleetModule implements Module {
 
   private recordEvent(child: FleetChild, event: WireEvent): void {
     child.lastEventAt = Date.now();
+    if (event.type === 'inference:started' && (event as { replay?: unknown }).replay !== true) {
+      child.idleSinceWork = false;
+    } else if (event.type === 'lifecycle') {
+      const { phase, idle, texts } = event as { phase?: string; idle?: unknown; texts?: unknown };
+      if (phase === 'idle') child.idleSinceWork = typeof texts !== 'number' || texts >= child.textsSent;
+      else if (phase === 'ready') child.idleSinceWork = idle === true && child.textsSent === 0;
+    }
     child.events.push(event);
     if (child.events.length > this.config.bufferSize) {
       child.events.splice(0, child.events.length - this.config.bufferSize);
@@ -2058,6 +2076,10 @@ export class FleetModule implements Module {
         }
       }
       outgoing = { type: 'subscribe', events: augmented };
+    }
+    if (cmd.type === 'text') {
+      child.idleSinceWork = false;
+      child.textsSent += 1;
     }
     child.socket.write(JSON.stringify(outgoing) + '\n');
   }

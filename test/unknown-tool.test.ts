@@ -22,14 +22,27 @@ describe('unknownToolResult', () => {
     expect(unknownToolResult(module, 'x').error).toContain('m--a, m--b and m--c.');
   });
 
-  test('utilities are named with how to run them through utils', () => {
+  test('utilities are named with how to reach them in the built-in settings toolset', () => {
     const r = unknownToolResult(
       { name: 'identity', getTools: () => [], getUtilities: () => [def('status'), def('request')] },
       'stat',
     );
-    expect(r.error).toContain('identity--status and identity--request');
-    expect(r.error).toContain('{"action": "run", "name": "identity--status"}');
+    expect(r.error).toContain('The identity tools in the built-in "settings" toolset are identity--status and identity--request');
+    expect(r.error).toContain('toolsets--open {"toolset": "settings"}, then call one with toolsets--act, such as {"tool": "identity--status"}');
+    expect(r.error).not.toContain('utils');
     expect(r.error).not.toContain('no tools of its own');
+  });
+
+  test('tools a module places in the built-in toolset are named there, and the rest as its listed tools', () => {
+    const module = {
+      name: 'm',
+      getTools: () => [def('often'), def('rare'), def('rarer')],
+      toolPlacement: (name: string) => (name === 'often' ? undefined : 'builtin' as const),
+    };
+    const r = unknownToolResult(module, 'x');
+    expect(r.error).toContain("The m module's one tool is m--often.");
+    expect(r.error).toContain('The m tools in the built-in "settings" toolset are m--rare and m--rarer:');
+    expect(r.error).toContain('{"tool": "m--rare"}');
   });
 
   test('a module with nothing to offer says so, and the module can add where to go instead', () => {
@@ -45,7 +58,7 @@ describe('unknownToolResult', () => {
 
   test('one utility reads as one', () => {
     const r = unknownToolResult({ name: 'identity', getTools: () => [], getUtilities: () => [def('status')] }, 'stat');
-    expect(r.error).toContain("The identity module's one utility is identity--status, run through the utils tool");
+    expect(r.error).toContain('The identity module\'s one tool in the built-in "settings" toolset is identity--status:');
   });
 
   test('one tool reads as one', () => {

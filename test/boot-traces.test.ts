@@ -8,12 +8,13 @@ import { describe, test, expect } from 'bun:test';
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { holdBootTraces, BOOT_TRACE_CAP } from '../src/boot-traces.js';
 
-function fakeFramework() {
+function fakeFramework(early: Array<Record<string, unknown>> = []) {
   const listeners: Array<{ listener: (event: TraceEvent) => void; options?: { replay?: boolean } }> = [];
   return {
     listeners,
     onTrace(listener: (event: TraceEvent) => void, options?: { replay?: boolean }) {
       listeners.push({ listener, options });
+      if (options?.replay) for (const event of early) listener(event as unknown as TraceEvent);
       return () => {};
     },
     emit(event: Record<string, unknown>) {
@@ -52,6 +53,20 @@ describe('holdBootTraces', () => {
     expect(seen).toEqual([1, 2, 3]);
     expect(dropped).toBe(2);
     expect(BOOT_TRACE_CAP).toBe(1000);
+  });
+
+  test('the framework\'s replay comes first, and its count of what it didn\'t keep is added to the hold\'s own, not held', () => {
+    const fw = fakeFramework([
+      ev(1) as unknown as Record<string, unknown>,
+      ev(2) as unknown as Record<string, unknown>,
+      { type: 'dendrite:early-traces-dropped', dropped: 5, timestamp: 3 },
+    ]);
+    const hold = holdBootTraces(fw, 1);
+    fw.emit(ev(4) as unknown as Record<string, unknown>);
+    const seen: Array<{ type: string; timestamp: number }> = [];
+    const dropped = hold.handOver((event) => seen.push(event as unknown as { type: string; timestamp: number }));
+    expect(seen).toEqual([{ type: 'inference:started', agentName: 'a', timestamp: 1 }]);
+    expect(dropped).toBe(7);
   });
 
   test('a second handover does nothing and redelivers nothing', () => {

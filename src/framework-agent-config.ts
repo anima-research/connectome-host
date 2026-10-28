@@ -1,7 +1,9 @@
 import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
-import { DEFAULT_RECIPE_CLOCK } from './recipe.js';
+import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
+import { modelThinking } from './logging-adapter.js';
+import { getDefaultModelLimits } from './model-limits.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
 
@@ -22,7 +24,45 @@ export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
   autoContinue?: Recipe['agent']['autoContinue'];
+  thinkingBinding?: { binds?: boolean; dropBlock?: boolean };
 };
+
+/** The drop control and the window go only on the Anthropic route, the one
+ *  they were tried on (anima-research/context-manager#155). */
+export function thinkingBindingSettings(model: string, provider: string | undefined): {
+  thinkingBinding?: { binds: true; dropBlock: boolean };
+  physicalWindowTokens?: number;
+} {
+  const facts = modelThinking(model);
+  if (!facts.binds) return {};
+  const direct = provider === 'anthropic';
+  const window = direct && facts.windowShownByRefusal ? getDefaultModelLimits(model)?.maxContextTokens : undefined;
+  return {
+    thinkingBinding: { binds: true, dropBlock: direct && facts.dropBlock },
+    ...(window !== undefined ? { physicalWindowTokens: window } : {}),
+  };
+}
+
+/** The system-text line the host gives an agent whose model binds, since a
+ *  fold takes its earlier replies' reasoning (anima-research/context-manager#155). */
+export const FOLD_REASONING_LINE =
+  'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
+  'so a reply of yours that shows no reasoning may still have had some.';
+
+export function hasFoldLine(systemPrompt: string): boolean {
+  return systemPrompt === FOLD_REASONING_LINE || systemPrompt.endsWith(`\n\n${FOLD_REASONING_LINE}`);
+}
+
+/** No agent under an `anthropic-xml` recipe gets the line: membrane's XML
+ *  transcript renders no thinking, so a reply's reasoning never reaches the
+ *  model again, fold or none. */
+export function systemPromptFor(systemPrompt: string, model: string, formatter?: Recipe['agent']['formatter']): string {
+  const base = !hasFoldLine(systemPrompt) ? systemPrompt
+    : systemPrompt === FOLD_REASONING_LINE ? ''
+      : systemPrompt.slice(0, -(FOLD_REASONING_LINE.length + 2));
+  if (!modelThinking(model).binds || formatter === 'anthropic-xml') return base;
+  return base ? `${base}\n\n${FOLD_REASONING_LINE}` : FOLD_REASONING_LINE;
+}
 
 /**
  * Prompt caching went GA on Bedrock in April 2025 for 3.5 Haiku, 3.7 Sonnet,
@@ -74,7 +114,7 @@ export function buildFrameworkAgentConfig(
     name: agentName,
     ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
-    systemPrompt: recipe.agent.systemPrompt,
+    systemPrompt: systemPromptFor(recipe.agent.systemPrompt, model, recipe.agent.formatter),
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
@@ -109,6 +149,7 @@ export function buildFrameworkAgentConfig(
     }),
     strategy,
     ...(thinking && { thinking }),
+    ...thinkingBindingSettings(model, resolveProvider(recipe)),
     ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }

@@ -13,7 +13,7 @@ import { AutobiographicalStrategy, ContextManager, type StoredMessage } from '@a
 import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { recipeModel } from '../src/recipe.js';
-import { buildFrameworkStrategy, standardKvUnifiedConfig } from '../src/framework-strategy.js';
+import { buildFrameworkStrategy, standardKvUnifiedConfig, dendriteCreateOptions } from '../src/framework-strategy.js';
 import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
 import { SessionManager } from '../src/session-manager.js';
@@ -391,7 +391,8 @@ describe('the store audit', () => {
   test("each store's answer is the one agent-framework's own open of it gives", async () => {
     const recipe = { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, strategy: { headWindowTokens: 500, recentWindowTokens: 1000 } } };
     const subconscious = { enabled: true, systemPrompt: 'attend to the agent' };
-    const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true }> = {
+    const forks = { enabled: true, reader: 'forks', model: 'claude-sonnet-4-5', voice: 'You are reading for the agent.' };
+    const cases: Record<string, { make: (store: string) => Promise<void>; subconscious?: true; off?: true; forks?: true }> = {
       crossed: { make: (store) => copyStore(store, 'agents/agent', true) },
       plain: { make: (store) => copyStore(store, 'agents/agent', false) },
       'unowned run inside a span': { make: (store) => makeSpanStore(store) },
@@ -401,13 +402,14 @@ describe('the store audit', () => {
       'a subconscious that opens': { make: (store) => copyStore(store, 'agents/agent', false), subconscious: true },
       "a subconscious whose context a start can't read": { make: makeBrokenSubconsciousStore, subconscious: true },
       'the same store, its subconscious off': { make: makeBrokenSubconsciousStore, off: true },
+      'the same store, its reader forks': { make: makeBrokenSubconsciousStore, forks: true },
     };
     const audited: Record<string, string> = {};
     const started: Record<string, string> = {};
     const said: Record<string, { audit: string; start: string }> = {};
-    for (const [index, [name, { make, subconscious: on, off }]] of Object.entries(cases).entries()) {
+    for (const [index, [name, { make, subconscious: on, off, forks: forked }]] of Object.entries(cases).entries()) {
       const { dir, stores } = await makeDataDirWith(`case-${index}`, [make]);
-      const caseRecipe = on ? { ...recipe, subconscious } : off ? { ...recipe, subconscious: { ...subconscious, enabled: false } } : recipe;
+      const caseRecipe = on ? { ...recipe, subconscious } : off ? { ...recipe, subconscious: { ...subconscious, enabled: false } } : forked ? { ...recipe, subconscious: forks } : recipe;
       saveRecipe(dir, caseRecipe);
       const copy = join(root, `case-${index}-framework`);
       cpSync(stores[0]!, copy, { recursive: true });
@@ -422,7 +424,7 @@ describe('the store audit', () => {
           membrane: new Membrane(new MockAdapter()),
           agents: [buildFrameworkAgentConfig(validated, 'agent', model, strategy)],
           modules: [],
-          ...(validated.subconscious ? { subconscious: validated.subconscious } : {}),
+          ...dendriteCreateOptions(validated, model, resolveTimeZone(validated.agent.timezone)),
         });
         await framework.stop();
         started[name] = 'opens';
@@ -442,6 +444,7 @@ describe('the store audit', () => {
       'a subconscious that opens': 'opens',
       "a subconscious whose context a start can't read": 'refused',
       'the same store, its subconscious off': 'opens',
+      'the same store, its reader forks': 'opens',
     });
     for (const [name, { audit: line, start }] of Object.entries(said)) {
       expect(line, name).toContain(start.replace(/\s*\n\s*/g, ' '));

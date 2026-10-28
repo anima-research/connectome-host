@@ -30,7 +30,7 @@ bun src/index.ts <recipe> --headless [--exit-when-idle] [--socket-path <path>]
 | Flag | Effect |
 |---|---|
 | `--headless` | Start the framework as usual, then run the headless runtime instead of the TUI or the piped loop. Takes precedence over `--no-tui`. |
-| `--exit-when-idle` | One-shot: after the first work→quiet transition (see `lifecycle:idle` below), shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the next quiet poll exits 0. FleetModule never passes this flag. |
+| `--exit-when-idle` | One-shot: once the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a running background script included, shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the host exits 0 once nothing at all has been in flight for 500 ms after the poll, every 100 ms, that sees the cancel. FleetModule never passes this flag. |
 | `--socket-path <p>` | Override the socket location. FleetModule never passes this either; it always expects `{dataDir}/ipc.sock`. |
 
 **Put the recipe first.** The recipe argument is the *first argument that does
@@ -61,10 +61,9 @@ dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
 **Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
 `command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
-armed self-restart (`modules.selfRestart`), which goes at the first quiet
-poll after its turn (the `lifecycle:idle` test below) once nothing is in
-flight: no turn, gated wake or background script in the framework, and no
-subagent run. The child emits
+armed self-restart (`modules.selfRestart`), which goes once the host has said
+`lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a
+running background script included. The child emits
 `lifecycle:exiting`, waits ~50 ms for it to flush, calls `framework.stop()`
 (which cancels in-flight streams rather than letting them finish), closes the
 server, unlinks the socket and pid file, and exits once `headless.log` has
@@ -97,7 +96,7 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 | `type` | Fields | Behavior / reply |
 |---|---|---|
 | `subscribe` | `events: string[]` | **Replaces** the filter (not additive; `[]` blocks every non-exempt event). No reply. |
-| `text` | `content` | Pushes an `external-message` with `source: 'headless'` and triggers inference. The agent is told the message has no channel locus, so a plain-prose reply won't reach a chat surface. |
+| `text` | `content` | Pushes an `external-message` with `source: 'headless'`, which requests inference; a recipe's wake gate may decline it, and then no turn starts. The agent is told the message has no channel locus, so a plain-prose reply won't reach a chat surface. A received text counts as activity, and stays in flight until a framework has processed it: the next `lifecycle:idle` covers it (its `texts`). In a session switch, a text the replaced framework hadn't taken from its queue, and one the stopped framework refuses, goes to the new session's framework when the host follows the switch. If the switch fails, no framework runs, so those texts stay in flight, no idle comes, and an `--exit-when-idle` host doesn't exit on its own. While a switch is under way the host isn't quiet, and a second switch is refused until it has finished, before any session is made or made active. |
 | `command` | `command` (e.g. `"/status"`) | Runs through the slash-command handler (`src/commands.ts`). Each output line comes back as a `command-output` event. `/quit` triggers shutdown. |
 | `shutdown` | `graceful?` | See Shutdown above. |
 | `describe` | `corrId?` | → `snapshot` |
@@ -119,10 +118,10 @@ subject to the subscription filter: `inference:*`, `tool:*`, `usage:updated`,
 
 | Event | Payload | When |
 |---|---|---|
-| `lifecycle` (`phase: "ready"`) | `pid, dataDir, recipe` | On every socket accept, sent before the parent's `subscribe` can arrive. `recipe` is the recipe's display name, not a path. |
+| `lifecycle` (`phase: "ready"`) | `pid, dataDir, recipe, idle` | On every socket accept, sent before the parent's `subscribe` can arrive. `recipe` is the recipe's display name, not a path. `idle` is whether the host has said `lifecycle:idle` since its last `inference:started` or `text` received and is still quiet as that idle reads it: every agent idle, with nothing in flight but a background script. When it has said idle and isn't quiet, the quiet that follows brings a new `lifecycle:idle`. A parent that sends texts on this connection counts them from zero. |
 | any framework trace, with `replay: true` | the trace's own fields | To the first client only, right after its `ready`: the events from before it connected, oldest first. Timestamps are the events' own; `ts` is the send time. |
 | `lifecycle` (`phase: "replay-truncated"`) | `dropped, kept` | After that replay, only when the boot outran the 1,000 kept: how many events were cut after them. |
-| `lifecycle` (`phase: "idle"`) | — | When every framework agent has been idle for ≥500 ms after at least one `inference:started`. Fires once per work→quiet transition. |
+| `lifecycle` (`phase: "idle"`) | `texts` | When, after at least one `inference:started` or `text` received (or once a self-restart is armed), every framework agent has read idle with nothing in flight but a background script left running for ≥500 ms. An `inference:started`, a `text` received, arming or cancelling a self-restart, or a client's `ready` that finds the host not quiet after its idle, starts the 500 ms again. `texts` is how many texts the host has received on this connection, all of which this quiet covers. Nothing in flight means no turn the framework counts alive (one assembling, or waiting to retry, included), no gated wake, no event on the framework's queue, no `text` whose processing (every module's `onProcess`) is still under way, and no subagent run. A background script left running doesn't hold it: in agent-framework 0.28.0, a script that ends cleanly wakes no one. A text a recipe's wake-gate debounce holds isn't seen: agent-framework 0.28.0 doesn't count it, so the idle can come before that turn. Fires once, and again only after the next `inference:started` or `text` received, or a client's `ready` that finds the host not quiet. A text a wake gate declines still ends in an idle, once nothing has been in flight for 500 ms after its processing; texts that arrive together share one. |
 | `lifecycle` (`phase: "exiting"`) | `reason` | `shutdown:graceful`, `shutdown:immediate`, `command:/quit`, `SIGTERM`, `SIGINT`, `exit-when-idle`, `self-restart`. A crash emits nothing. |
 | `inference:speech` | `agentName, content` | Primary agent only: the text of an inference round that ended without tool calls. Used by `fleet--relay`. |
 | `command-output` | `text, style` | One per line of a `command` reply. A response, not telemetry (see below). |
@@ -248,7 +247,7 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send `from`'s last `inference:speech` to `to`. |
-| `fleet--await` | `names[], timeoutMs?=300000, requireAll?=true` | Block until the named children emit `lifecycle:idle`; fails fast on crash/exit, partial result on timeout. |
+| `fleet--await` | `names[], timeoutMs?=300000, requireAll?=true` | Block until the named children emit `lifecycle:idle`; fails fast on crash/exit, partial result on timeout. A child counts as idle while its last `lifecycle:idle` came after its last `inference:started` and covers every `text` this host has sent it on the connection (`texts`), read again on each of its events and every 200 ms. An idle with no `texts`, from an older child, counts. A text a wake-gate debounce holds can be covered before its turn (the idle row). An adopted or reconnected child counts as idle when its `ready` says `idle`. An await already waiting counts a child that went idle and then exited, or was restarted; one that exits before going idle fails the wait, and so does an await begun after a child has exited. A `command` isn't work: an await before a command's turn starts answers from the earlier idle. |
 
 The conductor is not fed fleet state in its context and is not woken by fleet
 events; it learns about children by calling these tools.

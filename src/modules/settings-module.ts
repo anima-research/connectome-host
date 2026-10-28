@@ -99,7 +99,8 @@ export class SettingsModule implements Module {
       this,
       call.name,
       'Reasoning is set through agent_settings, in its fields reasoning_enabled, reasoning_budget_tokens, ' +
-      'reasoning_display and reasoning_effort.',
+      'reasoning_display and reasoning_effort; agent_settings is in the built-in "settings" toolset: ' +
+      'toolsets--open {"toolset": "settings"}, then toolsets--act.',
     );
   }
 

@@ -1423,12 +1423,15 @@ describe('identity: what the agent reads when a call fails', () => {
     expect(res.error).not.toContain(dir);
   });
 
-  it('answers a utility it lacks with its utilities and how to run them', async () => {
+  it('answers a utility it lacks with its utilities, in the built-in settings toolset, and how to reach them', async () => {
     const { mod } = registeredModule({ register: false });
+    const said = (await mod.handleToolCall(call('nope', {}))).error;
     expectSays(
-      (await mod.handleToolCall(call('nope', {}))).error,
-      'There\'s no tool "identity--nope", so nothing ran', 'identity--status', 'identity--request', 'identity--accept_invite', 'utils',
+      said,
+      'There\'s no tool "identity--nope", so nothing ran', 'identity--status', 'identity--request', 'identity--accept_invite',
+      'the built-in "settings" toolset', 'toolsets--act',
     );
+    expect(said).not.toContain('utils');
   });
 });
 
@@ -1451,27 +1454,21 @@ describe('mcpl-admin access grants', () => {
     expect(refused.error).toContain('identity');
   });
 
-  it('surface flags: default keeps four first-class tools; utilities parks them', () => {
-    const asTools = new McplAdminModule({});
-    expect(asTools.getTools().length).toBe(4);
-    expect(asTools.getUtilities().length).toBe(0);
-
-    const asUtils = new McplAdminModule({ surface: 'utilities' });
-    expect(asUtils.getTools().length).toBe(0);
-    expect(asUtils.getUtilities().map((u) => u.name).sort()).toEqual(
-      ['mcpl_deploy', 'mcpl_list', 'mcpl_restart', 'mcpl_unload'],
-    );
+  it('places its four tools in the built-in settings toolset', () => {
+    const mod = new McplAdminModule({});
+    expect(mod.getTools().map((t) => t.name).sort()).toEqual(['mcpl_deploy', 'mcpl_list', 'mcpl_restart', 'mcpl_unload']);
+    for (const t of mod.getTools()) expect(mod.toolPlacement(t.name)).toBe('builtin');
+    expect((mod as { getUtilities?: unknown }).getUtilities).toBeUndefined();
   });
 });
 
-describe('observers surface flag', () => {
-  it('same definitions on either surface', () => {
+describe('observers placement', () => {
+  it('places its three tools in the built-in settings toolset', () => {
     const dir = tempDir('obs-');
-    const asTools = new ObserversModule({ path: join(dir, 'observers.json') });
-    const asUtils = new ObserversModule({ path: join(dir, 'observers.json'), surface: 'utilities' });
-    expect(asTools.getTools().map((t) => t.name)).toEqual(asUtils.getUtilities().map((u) => u.name));
-    expect(asTools.getUtilities().length).toBe(0);
-    expect(asUtils.getTools().length).toBe(0);
+    const mod = new ObserversModule({ path: join(dir, 'observers.json') });
+    expect(mod.getTools().map((t) => t.name)).toEqual(['get', 'grant', 'revoke']);
+    for (const t of mod.getTools()) expect(mod.toolPlacement(t.name)).toBe('builtin');
+    expect((mod as { getUtilities?: unknown }).getUtilities).toBeUndefined();
   });
 });
 

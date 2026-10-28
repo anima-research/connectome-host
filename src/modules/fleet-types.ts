@@ -45,8 +45,8 @@ export type IncomingCommand =
 
 /** Lifecycle events added by the headless runtime (not framework TraceEvents). */
 export type LifecycleEvent =
-  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; ts?: number }
-  | { type: 'lifecycle'; phase: 'idle'; ts?: number }
+  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; idle?: boolean; ts?: number }
+  | { type: 'lifecycle'; phase: 'idle'; texts?: number; ts?: number }
   | { type: 'lifecycle'; phase: 'exiting'; reason: string; ts?: number };
 
 /** Output line from a slash-command run, surfaced as an event. */

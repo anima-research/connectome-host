@@ -59,6 +59,7 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
   test.each([
     'claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-5',
     'claude-opus-4-1', 'anthropic.claude-haiku-4-5', 'claude-opus-4-5@20251101',
+    'claude-haiku-5-50', 'claude-haiku-5-6', 'claude-haiku-5-5-1',
   ])('no thinking for %s (rejects adaptive)', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const req = { ...baseRequest, model };
@@ -70,7 +71,7 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
   test.each([
     'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
     'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1',
-    'claude-mythos-5-1', 'anthropic.claude-opus-5-5',
+    'claude-mythos-5-1', 'anthropic.claude-opus-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5-20260301',
   ])('adaptive thinking for %s', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
@@ -219,15 +220,21 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await wire.send('claude-opus-5-5');
     await wire.send('claude-fable-5-1');
     await wire.send('claude-opus-4-8');
-    expect(wire.bodies).toHaveLength(3);
-    for (const i of [0, 1]) {
-      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
-      // membrane adds the beta 'updates' needs; without it the API refuses the value.
+    await wire.send('claude-fable-5');
+    expect(wire.bodies).toHaveLength(4);
+    for (const i of [0, 1, 3]) {
+      // membrane >= 0.7.0 adds the beta 'updates' needs; without it the API refuses the value.
       expect(wire.betas(i)).toContain('thinking-display-updates-2026-08-18');
-      expect(wire.betas(i)).not.toContain('thinking-binding-controls-2026-08-01');
     }
+    for (const i of [0, 1]) {
+      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
+      expect(wire.betas(i)).toContain('thinking-binding-controls-2026-08-01');
+    }
+    expect(wire.bodies[3]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.betas(3)).not.toContain('thinking-binding-controls-2026-08-01');
     expect(wire.bodies[2]?.thinking).toBeUndefined();
     expect(wire.betas(2)).not.toContain('thinking-display-updates-2026-08-18');
+    expect(wire.betas(2)).not.toContain('thinking-binding-controls-2026-08-01');
   });
 
   test("with reasoning on, stream() applies the reasoning setting before the progress-note step", async () => {
@@ -235,7 +242,7 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await wire.send('claude-opus-5-5');
     await wire.send('claude-opus-4-8');
     expect(wire.bodies).toHaveLength(2);
-    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(wire.betas(0)).toContain('thinking-display-updates-2026-08-18');
     expect(wire.bodies[1]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
     const summarized = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'summarized' as const }));
@@ -243,8 +250,10 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await summarized.send('claude-fable-5-1');
     expect(summarized.bodies).toHaveLength(2);
     for (const i of [0, 1]) {
-      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      // Membrane applies extra.thinking in place of its own config, control included.
+      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
       expect(summarized.betas(i)).not.toContain('thinking-display-updates-2026-08-18');
+      expect(summarized.betas(i)).toContain('thinking-binding-controls-2026-08-01');
     }
   });
 
@@ -257,6 +266,7 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
       config: { model, maxTokens: 64, thinking: { enabled, type: 'adaptive', display: 'summarized' } },
     }, { onChunk: () => {} });
     const updates = { type: 'adaptive', display: 'updates' };
+    const bound = { prefix_mismatch_behavior: 'drop_block' };
     const off = wireAdapter(disabled);
     const viaOff = new Membrane(off.live, { formatter: new NativeFormatter() });
     for (const model of ['claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1']) await recipeSend(viaOff, model);
@@ -265,10 +275,10 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await recipeSend(viaOff, 'claude-mythos-5');
     expect(off.bodies).toHaveLength(6);
     for (const i of [0, 1, 2, 3]) {
-      expect(off.bodies[i]?.thinking).toEqual(updates);
+      expect(off.bodies[i]?.thinking).toEqual(i === 1 || i === 3 ? { ...updates, block_binding: bound } : updates);
       expect(off.betas(i)).toContain('thinking-display-updates-2026-08-18');
     }
-    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: bound });
     expect(off.betas(4)).not.toContain('thinking-display-updates-2026-08-18');
     expect(off.bodies[5]?.thinking).toBeUndefined();
     const on = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));

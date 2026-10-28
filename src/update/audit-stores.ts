@@ -7,10 +7,11 @@
  * update takes ("Updating an install" and "Updating checkouts" in
  * docs/DEPLOYMENTS.md).
  *
- * Each namespace, the agent's and, when the recipe enables it, the
- * subconscious's, is opened with the options agent-framework opens it with
- * (residentContextOptions and subconsciousContextOptions, #291), so the audit
- * reads the view and the window the framework's own opens read.
+ * Each namespace, the agent's and, when the recipe enables the persistent
+ * reader, the subconscious's, is opened with the options agent-framework
+ * opens it with (residentContextOptions and subconsciousContextOptions,
+ * #291), so the audit reads the view and the window the framework's own opens
+ * read.
  *
  * An open is a load, so context-manager's load repair runs in the audit as at
  * a start, and writes what it repairs to the store. Each load repair that
@@ -216,7 +217,7 @@ export interface AuditRepair {
 
 /** What the audit opens in a store: the agent's namespace with the options
  *  agent-framework opens it with, its strategy, and the subconscious's, when
- *  the recipe enables it. */
+ *  the recipe enables the persistent reader (reader forks open none). */
 interface Resident {
   namespace: string;
   /** residentContextOptions: the namespace and the resident's view of the residents' slot. */
@@ -913,9 +914,10 @@ async function residentOf(dataDir: string, read: RecipeRead, loaded?: ExtensionR
     indexed,
     as: (name) => {
       const options = residentContextOptions(name);
-      // A persistent reader has a name of its own and a re-anchor fraction;
-      // reader forks (Dendrite) have neither.
-      const reader = subconscious?.enabled
+      // Under the persistent reader, the subconscious's own namespace, with
+      // its name and re-anchor fraction. Reader forks (Dendrite) read the
+      // resident's own context and open no subconscious namespace.
+      const reader = subconscious?.enabled && subconscious.reader !== 'forks'
         ? (maxMessageTokens: number | undefined) => subconsciousContextOptions({
             serves: name,
             ...('name' in subconscious && subconscious.name !== undefined ? { name: subconscious.name } : {}),

@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { applyAgentOverlay, loadMcplServers, mergeRecipeServers } from './mcpl-config.js';
 import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
+import { SESSION_MARKER } from './session-marker.js';
 
 export const BUG_REPORT_REPO = 'anima-research/connectome-host';
 /** The issue form the link fills (.github/ISSUE_TEMPLATE/bug_report.yml). */
@@ -453,11 +454,6 @@ export function summarizeProviderCalls(
   return { calls, failed, skipped, recent, omitted: failures.length - recent.length };
 }
 
-export function sessionMarker(now: Date): string {
-  return `--- session ${now.toISOString()} ---`;
-}
-
-const SESSION_MARKER = /^--- session \d{4}-\d{2}-\d{2}T[\d:.]+Z ---$/;
 const LEADING_STAMP = /^\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]\s*/;
 const TAG = /^\[([A-Za-z0-9:_./-]{1,40})\]/;
 const FRAME_LINE = /^\s+at\s+/;

@@ -13,7 +13,9 @@ export interface BootTraceHold {
   /**
    * Deliver what is held, oldest first, then everything that follows, to
    * `sink`. Takes effect once; a second call does nothing. Returns how many
-   * traces the hold dropped past its cap, which the sink may want to say.
+   * boot traces were lost before the sink, which the sink may want to say:
+   * those the hold dropped past its cap, and those the framework's replay
+   * said it didn't keep.
    */
   handOver(sink: (event: TraceEvent) => void): number;
 }
@@ -30,7 +32,10 @@ export function holdBootTraces(framework: Pick<AgentFramework, 'onTrace'>, cap =
   let dropped = 0;
   let sink: ((event: TraceEvent) => void) | null = null;
   framework.onTrace((event) => {
+    const lost = (event as { type: string }).type === 'dendrite:early-traces-dropped'
+      ? (event as unknown as { dropped?: unknown }).dropped : undefined;
     if (sink) sink(event);
+    else if (typeof lost === 'number') dropped += lost;
     else if (held) {
       if (held.length < cap) held.push(event);
       else dropped++;

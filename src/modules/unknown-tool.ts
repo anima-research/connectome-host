@@ -9,28 +9,39 @@ export interface ToolOffering {
   readonly name: string;
   getTools(): ToolDefinition[];
   getUtilities?(): ToolDefinition[];
+  /** As agent-framework's Module.toolPlacement: `'builtin'` puts a tool in the built-in toolset. */
+  toolPlacement?(toolName: string): 'header' | 'builtin' | undefined;
 }
+
+/** agent-framework's built-in toolset, where utilities and the tools a module places there live. */
+const SETTINGS = 'the built-in "settings" toolset';
 
 export function unknownToolResult(module: ToolOffering, called: string, also?: string): ToolResult {
   const full = (name: string) => `${module.name}--${name}`;
-  const tools = module.getTools().map((t) => full(t.name));
-  const utilities = (module.getUtilities?.() ?? []).map((u) => full(u.name));
+  const own = module.getTools();
+  const listed = own.filter((t) => module.toolPlacement?.(t.name) !== 'builtin').map((t) => full(t.name));
+  // A module's tools placed in the built-in toolset and its utilities live in
+  // the same place, out of the tool list, and are reached the same way.
+  const inSettings = [
+    ...own.filter((t) => module.toolPlacement?.(t.name) === 'builtin').map((t) => full(t.name)),
+    ...(module.getUtilities?.() ?? []).filter((u) => !own.some((t) => t.name === u.name)).map((u) => full(u.name)),
+  ];
   const parts = [`There's no tool ${JSON.stringify(full(called))}, so nothing ran.`];
-  if (tools.length === 1) {
-    parts.push(`The ${module.name} module's one tool is ${tools[0]}.`);
-  } else if (tools.length > 1) {
-    parts.push(`The ${module.name} tools are ${listOf(tools)}.`);
+  if (listed.length === 1) {
+    parts.push(`The ${module.name} module's one tool is ${listed[0]}.`);
+  } else if (listed.length > 1) {
+    parts.push(`The ${module.name} tools are ${listOf(listed)}.`);
   }
-  if (utilities.length > 0) {
-    const which = utilities.length === 1
-      ? `The ${module.name} module's one utility is ${utilities[0]}`
-      : `The ${module.name} utilities are ${listOf(utilities)}`;
+  if (inSettings.length > 0) {
+    const which = inSettings.length === 1
+      ? `The ${module.name} module's one tool in ${SETTINGS} is ${inSettings[0]}`
+      : `The ${module.name} tools in ${SETTINGS} are ${listOf(inSettings)}`;
     parts.push(
-      `${which}, run through the utils tool with action "run" and the utility's name, ` +
-      `such as {"action": "run", "name": "${utilities[0]}"}.`,
+      `${which}: open it with toolsets--open {"toolset": "settings"}, then call one with toolsets--act, ` +
+      `such as {"tool": "${inSettings[0]}"}.`,
     );
   }
-  if (tools.length === 0 && utilities.length === 0) {
+  if (listed.length === 0 && inSettings.length === 0) {
     parts.push(`The ${module.name} module has no tools of its own; call one of the tools listed for you.`);
   }
   if (also) parts.push(also);

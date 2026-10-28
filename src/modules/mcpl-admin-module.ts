@@ -35,12 +35,12 @@ import {
 } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from '../server-presentation.js';
 
 export interface McplAdminModuleConfig {
   timeZone?: string;
   overlayPath?: string;
   configPath?: string;
-  surface?: 'tools' | 'utilities';
 }
 
 function ok(text: string): ToolResult {
@@ -132,13 +132,10 @@ export class McplAdminModule implements Module {
   private configPath: string;
   private timeZone: string;
 
-  private surface: 'tools' | 'utilities';
-
   constructor(config?: McplAdminModuleConfig) {
     this.overlayPath = config?.overlayPath ?? DEFAULT_AGENT_OVERLAY_PATH;
     this.configPath = config?.configPath ?? DEFAULT_CONFIG_PATH;
     this.timeZone = resolveTimeZone(config?.timeZone);
-    this.surface = config?.surface ?? 'tools';
   }
 
   setFramework(framework: AgentFramework): void {
@@ -155,6 +152,19 @@ export class McplAdminModule implements Module {
   setOperatorServers(servers: ReadonlyArray<{ id: string } & Record<string, unknown>>): void {
     this.operatorDefinitions = [...servers];
     this.operatorServers = new Map(servers.map((server) => [server.id, serverProvisions(server)]));
+  }
+
+  /** How agents are shown a server at first, as configured: by the agent's own
+   *  overlay entry where it defines the server (it replaces the operator's
+   *  definition whole, so without a presentation it's full), else by the
+   *  operator's definition, else in full; unknown while the overlay can't be
+   *  read, as its source is. Each agent's own switch since isn't shown. */
+  private configuredPresentation(id: string, overlay: Record<string, AgentOverlayEntry> | null): string {
+    if (overlay === null) return 'unknown';
+    const own = entryOf(overlay, id);
+    if (own && overlayEntryReplaces(own)) return isServerPresentation(own.presentation) ? own.presentation : 'full';
+    const operator = this.operatorDefinitions.find((d) => d.id === id)?.presentation;
+    return isServerPresentation(operator) ? operator : 'full';
   }
 
   private replacement(id: string, overlay: Record<string, AgentOverlayEntry>): { lost: string | null } | null {
@@ -219,11 +229,13 @@ export class McplAdminModule implements Module {
   }
 
   getTools(): ToolDefinition[] {
-    return this.surface === 'tools' ? this.definitions() : [];
+    return this.definitions();
   }
 
-  getUtilities(): ToolDefinition[] {
-    return this.surface === 'utilities' ? this.definitions() : [];
+  /** MCPL administration is rare: its tools live in agent-framework's built-in
+   *  toolset ("settings"), out of the tool list. */
+  toolPlacement(_toolName: string): 'builtin' {
+    return 'builtin';
   }
 
   private definitions(): ToolDefinition[] {
@@ -272,6 +284,16 @@ export class McplAdminModule implements Module {
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
             disabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool deny-list; wins over enabledTools.' },
+            presentation: {
+              type: 'string',
+              enum: ['full', 'tab', 'closed-tab'],
+              description: 'How you are shown this server. "full" (the default): its tools in your tool list. "tab": ' +
+                'connected and its events still arrive, but none of its tools is in your list until you ' +
+                'toolsets--open {server}; toolsets--close {server} hides them again. "closed-tab": like a tab, and it ' +
+                'starts disconnected whenever the host starts, until you toolsets--open {server}; the deploy itself ' +
+                'connects it now. A tab suits a server you use now and then; you can switch later with ' +
+                'toolsets--open/--close either way.',
+            },
           },
           required: ['id'],
         },
@@ -380,6 +402,8 @@ export class McplAdminModule implements Module {
           lastNegotiatedAt: number | null;
         };
         toolClasses?: ServerToolClass[];
+        /** agent-framework 0.29: kept disconnected as a closed tab until it's opened. */
+        closedTab?: boolean;
       }
     >;
     const notes: string[] = [];
@@ -418,7 +442,9 @@ export class McplAdminModule implements Module {
         source = fileServers === null ? 'unknown' : Object.hasOwn(fileServers, s.id) ? 'file/recipe' : 'recipe';
       }
       const target = s.command ?? s.url ?? '?';
-      const connectionState = s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
+      const connectionState = s.closedTab
+        ? `CLOSED TAB (disconnected until it's opened: toolsets--open {"server": "${s.id}"}, or ${RESTART} connects it)`
+        : s.connected ? 'CONNECTED' : s.retrying ? 'RETRYING' : 'DISCONNECTED';
       const policyState = s.policyEstablished === undefined
         ? 'unknown'
         : s.policyEstablished ? 'established' : 'not-established';
@@ -433,6 +459,7 @@ export class McplAdminModule implements Module {
         `hostCommands=${hostCommands}, ` +
         `manifest=${formatManifestState(s.manifestState)}; ${s.toolCount} tools, ` +
         `classes=${formatServerToolClasses(s.toolClasses)}, ` +
+        `presentation=${this.configuredPresentation(s.id, overlay)}, ` +
         `prefix=${s.toolPrefix}, source=${source}, ${target}`,
       );
     }
@@ -561,6 +588,15 @@ export class McplAdminModule implements Module {
     if (given(input.reconnect)) fields.reconnect = input.reconnect;
     for (const k of ['enabledFeatureSets', 'disabledFeatureSets', 'enabledTools', 'disabledTools']) {
       if (givenList(input[k])) fields[k] = list(input[k]);
+    }
+    if (givenText(input.presentation)) {
+      if (isServerPresentation(input.presentation)) fields.presentation = input.presentation;
+      else {
+        problems.push(
+          `\`presentation\` is ${JSON.stringify(input.presentation)}, which isn't ${SERVER_PRESENTATIONS_TEXT}: leave it out ` +
+          'for "full", the default.',
+        );
+      }
     }
 
     const problem = overlayEntryProblem(fields, { strict: true });

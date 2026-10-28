@@ -26,6 +26,7 @@ const server = createServer((sock) => {
     try { currentClient.end(); } catch { }
   }
   currentClient = sock;
+  textsReceived = 0;
 
   sock.setEncoding('utf8');
   let buf = '';
@@ -45,15 +46,34 @@ const server = createServer((sock) => {
   sock.on('end', () => { if (currentClient === sock) currentClient = null; });
   sock.on('error', () => { });
 
-  emit({ type: 'lifecycle', phase: 'ready', pid: process.pid, dataDir });
+  emit({ type: 'lifecycle', phase: 'ready', pid: process.pid, dataDir, idle: idleSaid });
+  if (bootTurn) {
+    bootTurn = false;
+    emit({ type: 'inference:started', agentName: 'mock', replay: true });
+    emit({ type: 'inference:completed', agentName: 'mock', replay: true });
+  }
 });
 
-function simulateFinalInference(text: string, emitIdleAfter: boolean): void {
+let bootTurn = process.env.MOCK_BOOT_TURN === '1';
+let idleSaid = bootTurn;
+let textsReceived = 0;
+
+function started(): void {
+  idleSaid = false;
   emit({ type: 'inference:started', agentName: 'mock' });
+}
+
+function idle(texts: number | null = textsReceived): void {
+  idleSaid = true;
+  emit({ type: 'lifecycle', phase: 'idle', ...(texts === null ? {} : { texts }) });
+}
+
+function simulateFinalInference(text: string, emitIdleAfter: boolean): void {
+  started();
   emit({ type: 'inference:speech', agentName: 'mock', content: text });
   emit({ type: 'inference:completed', agentName: 'mock' });
   if (emitIdleAfter) {
-    setTimeout(() => emit({ type: 'lifecycle', phase: 'idle' }), 30);
+    setTimeout(idle, 30);
   }
 }
 
@@ -87,13 +107,55 @@ function dispatch(msg: Record<string, unknown>): void {
     return;
   }
   if (t === 'text' && typeof msg.content === 'string') {
+    textsReceived += 1;
+    idleSaid = false;
+    const held = /^held:(.+)$/.exec(msg.content);
+    if (held) {
+      started();
+      const releasedAt = held[1];
+      const watching = setInterval(() => {
+        if (!existsSync(releasedAt)) return;
+        clearInterval(watching);
+        emit({ type: 'inference:speech', agentName: 'mock', content: `echo: ${msg.content}` });
+        emit({ type: 'inference:completed', agentName: 'mock' });
+        setTimeout(idle, 30);
+      }, 20);
+      return;
+    }
+    const late = /^late:(\d+)/.exec(msg.content);
+    if (late) {
+      setTimeout(started, Number(late[1]));
+      return;
+    }
+    const slow = /^slow:(\d+)/.exec(msg.content);
+    if (slow) {
+      started();
+      setTimeout(() => {
+        emit({ type: 'inference:speech', agentName: 'mock', content: `echo: ${msg.content}` });
+        emit({ type: 'inference:completed', agentName: 'mock' });
+        setTimeout(idle, 30);
+      }, Number(slow[1]));
+      return;
+    }
+    if (msg.content === 'stale-start-and-idle-first') {
+      emit({ type: 'inference:started', agentName: 'mock' });
+      emit({ type: 'lifecycle', phase: 'idle', texts: textsReceived - 1 });
+      setTimeout(() => simulateFinalInference(`echo: ${msg.content}`, true), 300);
+      return;
+    }
+    if (msg.content === 'no-texts') {
+      started();
+      emit({ type: 'inference:completed', agentName: 'mock' });
+      setTimeout(() => idle(null), 30);
+      return;
+    }
     simulateFinalInference(`echo: ${msg.content}`, true);
     return;
   }
   if (t === 'command' && typeof msg.command === 'string') {
     const cmd = msg.command;
     if (cmd === '/hang') {
-      emit({ type: 'inference:started', agentName: 'mock' });
+      started();
       emit({ type: 'inference:speech', agentName: 'mock', content: 'still thinking' });
       emit({ type: 'inference:completed', agentName: 'mock' });
       return;
@@ -103,11 +165,31 @@ function dispatch(msg: Record<string, unknown>): void {
     }
     if (cmd.startsWith('/tool-use-then-speak ')) {
       const finalText = cmd.slice('/tool-use-then-speak '.length);
-      emit({ type: 'inference:started', agentName: 'mock' });
+      started();
       emit({ type: 'inference:tokens', agentName: 'mock', content: 'let me think' });
       emit({ type: 'inference:tool_calls_yielded', agentName: 'mock', calls: [{ id: 't1', name: 'dummy', input: {} }] });
       emit({ type: 'inference:completed', agentName: 'mock' });
       setTimeout(() => simulateFinalInference(finalText, true), 20);
+      return;
+    }
+    if (cmd === '/exit-after-idle') {
+      started();
+      emit({ type: 'inference:completed', agentName: 'mock' });
+      idle();
+      setTimeout(() => {
+        emit({ type: 'lifecycle', phase: 'exiting', reason: 'test' });
+        setTimeout(() => process.exit(0), 50);
+      }, 100);
+      return;
+    }
+    if (cmd === '/turn-later') {
+      setTimeout(() => {
+        started();
+        setTimeout(() => {
+          emit({ type: 'inference:completed', agentName: 'mock' });
+          idle();
+        }, 400);
+      }, 50);
       return;
     }
     if (cmd === '/help') {

@@ -145,22 +145,27 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     }
   },
 
-  // Dendrite (agent-framework#546): every agent the framework derives
-  // announces itself with the agent it was made from — reader forks and
-  // task forks their source, the persistent reader the resident it serves —
-  // so they hang under it without a tool call to infer the edge from. A
-  // resident announces no parent and stays top-level. These are framework
-  // agents (their own traces carry their name; SubagentModule owns none of
-  // them), so they are `framework` nodes with a parent, as fleet--launch's
-  // children are: the panel streams their own traces and offers no
-  // subagent stop. An agent the tree already has keeps its node.
+  // Every agent the framework derives announces itself with the agent it
+  // was made from — reader forks and task forks their source, the
+  // persistent reader the resident it serves — so it hangs under it without
+  // a tool call to infer the edge from. A resident announces no parent and
+  // stays top-level. An agent the tree already has keeps its node; any
+  // other is a `framework` node with a parent, as fleet--launch's children
+  // are: the panel streams its own traces and offers no subagent stop.
   'dendrite:agent-created': (r, e, ts) => {
     if (!e.agentName) return;
     const inherit = e.inherit as { from?: string } | undefined;
     const parent = (e.spawnedBy as string | undefined) ?? inherit?.from;
     const node = r._ensureNode(e.agentName);
     if (parent) node.parent = parent;
-    if (node.startedAt === undefined) node.startedAt = ts;
+    if (node.status !== 'running') {
+      node.status = 'running';
+      node.phase = 'idle';
+      delete node.completedAt;
+      node.startedAt = ts;
+    } else if (node.startedAt === undefined) {
+      node.startedAt = ts;
+    }
     node.lastEventAt = ts;
   },
 
@@ -176,6 +181,27 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
     if (typeof e.parent === 'string') node.parent = e.parent;
+    node.lastEventAt = ts;
+  },
+
+  'dendrite:agent-ended': (r, e, ts) => {
+    if (!e.agentName) return;
+    const unseen = r.getNode(e.agentName) === undefined;
+    const node = r._ensureNode(e.agentName);
+    if (unseen && typeof e.spawnedBy === 'string') node.parent = e.spawnedBy;
+    const end = e.reason === 'completed' ? 'completed' : e.reason === 'failed' ? 'failed' : 'cancelled';
+    node.status = end;
+    node.phase = end === 'completed' ? 'done' : end;
+    node.completedAt = ts;
+    node.lastEventAt = ts;
+  },
+
+  'dendrite:agent-interrupted': (r, e, ts) => {
+    if (!e.agentName) return;
+    const node = r._ensureNode(e.agentName);
+    node.status = 'cancelled';
+    node.phase = 'cancelled';
+    node.completedAt = ts;
     node.lastEventAt = ts;
   },
 

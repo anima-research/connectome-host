@@ -339,43 +339,31 @@ describe('subagent allowed-tools inheritance', () => {
 });
 
 describe('maximum-depth utility permissions', () => {
+  // From agent-framework 0.29 a utility is a tool of the built-in "settings"
+  // toolset, reached with toolsets--open and toolsets--act under its own name
+  // and permissions; there is no `utils` tool.
   const utilityNames = probeUtilityNames.map(name => `probe--${name}`);
-  const surface = (framework: AgentFramework, utilities = true) => {
-    const catalogue = utilityNames.map(name => ({name, description: 'Inert utility', inputSchema: {type:'object',properties:{}}}));
-    Object.assign(framework, { getAllUtilities: utilities ? () => catalogue : undefined });
-  };
+  const META = ['toolsets--open', 'toolsets--act'];
   for (const [label, parent, requested, expected] of [
     ['all', 'all', undefined, utilityNames],
-    ['explicit utility', 'all', ['utils','probe--allowed_util'], ['probe--allowed_util']],
-    ['inherited utility', ['utils','probe--allowed_util'], undefined, ['probe--allowed_util']],
-    ['parent restriction', ['utils','probe--allowed_util'], ['utils', ...utilityNames], ['probe--allowed_util']],
-    ['utils only', 'all', ['utils'], []],
+    ['explicit utility', 'all', [...META, 'probe--allowed_util'], ['probe--allowed_util']],
+    ['inherited utility', [...META, 'probe--allowed_util'], undefined, ['probe--allowed_util']],
+    ['parent restriction', [...META, 'probe--allowed_util'], [...META, ...utilityNames], ['probe--allowed_util']],
+    ['meta-tools only', 'all', [...META], []],
   ] as Array<[string,'all'|string[],string[]|undefined,string[]]>) {
     test(label + ' preserves the per-utility policy at the depth limit', async () => {
       const h = await harness(parent,1);
       try {
-        surface(h.framework);
-        expect(h.framework.getAllTools().some(tool => tool.name === 'utils')).toBe(true);
+        const offered = h.framework.getAllTools().map(tool => tool.name);
+        expect(offered).not.toContain('utils');
+        for (const name of [...META, ...utilityNames]) expect(offered).toContain(name);
         expect((await h.call('spawn',requested)).success).toBe(true);
         const child=h.captured[0];
-        expect(child.canUseTool('utils')).toBe(true);
+        for(const name of META) expect(child.canUseTool(name)).toBe(true);
         for(const name of utilityNames) expect(child.canUseTool(name)).toBe(expected.includes(name));
         expect(child.canUseTool('subagent--spawn')).toBe(false);
         expect(child.canUseTool('subagent--return')).toBe(true);
       } finally { await h.cleanup(); }
     });
   }
-  test('published Framework without the catalogue keeps its existing tool surface',async()=>{
-    const h=await harness('all',1);
-    try {
-      surface(h.framework,false);
-      expect((await h.call('spawn')).success).toBe(true);
-      expect(h.framework.getAllTools().some(tool => tool.name === 'utils')).toBe(true);
-      expect(h.captured[0].canUseTool('probe--allowed')).toBe(true);
-      expect(h.captured[0].canUseTool('utils')).toBe(true);
-      for (const name of utilityNames) expect(h.captured[0].canUseTool(name)).toBe(false);
-      expect(h.captured[0].canUseTool('subagent--spawn')).toBe(false);
-      expect(h.captured[0].canUseTool('subagent--return')).toBe(true);
-    } finally { await h.cleanup(); }
-  });
 });

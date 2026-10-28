@@ -5,6 +5,7 @@ import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
 import { validateToolLifecycle } from './tool-lifecycle-config.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
+import { isServerPresentation, SERVER_PRESENTATIONS_TEXT, type ServerPresentation } from './server-presentation.js';
 
 /** Default config file path, resolved from cwd. */
 export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
@@ -55,8 +56,10 @@ export interface ServerFileEntry {
   access?: string;
   /** MCPL tool lifecycle (RFC-007) policy — see RecipeMcpServer.toolLifecycle. */
   toolLifecycle?: RecipeToolLifecycle;
-  /** MCPL RFC-014 opt-in — see RecipeMcpServer.toolHints. */
+  /** MCPL RFC-014 tool hints (on by default from agent-framework 0.29.0) — see RecipeMcpServer.toolHints. */
   toolHints?: boolean;
+  /** How the server is presented to agents at first — see RecipeMcpServer.presentation. */
+  presentation?: ServerPresentation;
 }
 
 export interface McplServersFile {
@@ -101,6 +104,7 @@ export function loadMcplServers(configPath: string): LoadedServerConfig[] {
       channelSubscription: entry.channelSubscription,
       ...(entry.toolLifecycle !== undefined ? { toolLifecycle: checkedToolLifecycle(entry.toolLifecycle, id) } : {}),
       ...(entry.toolHints !== undefined ? { toolHints: checkedToolHints(entry.toolHints, id) } : {}),
+      ...(entry.presentation !== undefined ? { presentation: checkedPresentation(entry.presentation, id) } : {}),
     });
   }
 
@@ -114,6 +118,13 @@ function checkedInheritEnv(value: unknown, where: string): boolean {
 
 function checkedToolHints(value: unknown, id: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`mcpl-servers.json: mcplServers.${id}.toolHints must be true or false`);
+  return value;
+}
+
+function checkedPresentation(value: unknown, id: string): ServerPresentation {
+  if (!isServerPresentation(value)) {
+    throw new Error(`mcpl-servers.json: mcplServers.${id}.presentation must be ${SERVER_PRESENTATIONS_TEXT}`);
+  }
   return value;
 }
 
@@ -139,6 +150,9 @@ export const RECIPE_OVERRIDABLE_SERVER_FIELDS = [
   // whether its toolsets open and close, is how the agent is shown its
   // tools, which is the recipe's to decide.
   'toolHints',
+  // How the server is presented to agents at first (full, tab, closed tab):
+  // how the agent is shown its tools, likewise the recipe's to decide.
+  'presentation',
 ] as const;
 
 export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
@@ -340,6 +354,9 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
     }
     if (e.reconnect !== undefined && typeof e.reconnect !== 'boolean') problems.push('its reconnect is neither true nor false');
     if (e.toolHints !== undefined && typeof e.toolHints !== 'boolean') problems.push('its toolHints is neither true nor false');
+    if (e.presentation !== undefined && !isServerPresentation(e.presentation)) {
+      problems.push(`its presentation isn't ${SERVER_PRESENTATIONS_TEXT}`);
+    }
     if (problems.length > 0) return { problem: problems.join('; ') };
   }
   const notes: string[] = [];
@@ -367,6 +384,10 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
   if (e.toolHints !== undefined && typeof e.toolHints !== 'boolean') {
     notes.push('its toolHints isn\'t true or false, so it\'s left out and the server gets the default: write true or false, without quotes');
     delete e.toolHints;
+  }
+  if (e.presentation !== undefined && !isServerPresentation(e.presentation)) {
+    notes.push(`its presentation isn't ${SERVER_PRESENTATIONS_TEXT}, so it's left out and the server is presented in full: write one of those`);
+    delete e.presentation;
   }
   for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) {
     if (setsSomething(e[k])) notes.push(`its ${k} is left out, since only the operator's config grants that: set it in ${OPERATOR_FIELD_HOME[k]}${k === 'enabledCapabilities' ? NARROW_INSTEAD : ''}`);

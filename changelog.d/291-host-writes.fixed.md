@@ -33,8 +33,8 @@
 - `modules.retrieval` chooses lessons from the conversation of the agent whose
   request they go into, where it read the primary's for every agent.
 - The store audit (`--audit-stores`, and a host on trial) opens the resident's
-  and the subconscious's namespaces with the options agent-framework opens them
-  with (`residentContextOptions`, `subconsciousContextOptions`), the recipe's
-  `subconscious.name` included. Its resident view kept the other residents'
+  namespace and, under the persistent reader, the subconscious's with the
+  options agent-framework opens them with (`residentContextOptions`,
+  `subconsciousContextOptions`), the recipe's `subconscious.name` included. Its resident view kept the other residents'
   stored context injections, and the subconscious had no view, so a store
   could be audited over messages a start's compiles leave out.

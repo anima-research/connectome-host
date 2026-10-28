@@ -132,10 +132,13 @@ export function createPipedTurns(
 }
 
 export interface TraceSource {
-  onTrace(listener: (event: unknown) => void): () => void;
+  onTrace(listener: (event: unknown) => void, options?: { replay?: boolean }): () => void;
 }
 
-export function traceFollower(listener: (event: unknown) => void): { follow(source: TraceSource): void; stop(): void } {
+export function traceFollower(
+  listener: (event: unknown) => void,
+  options?: { replay?: boolean },
+): { follow(source: TraceSource): void; stop(): void } {
   let off: (() => void) | undefined;
   const stop = (): void => {
     off?.();
@@ -144,7 +147,7 @@ export function traceFollower(listener: (event: unknown) => void): { follow(sour
   return {
     follow(source) {
       stop();
-      off = source.onTrace(listener);
+      off = source.onTrace(listener, options);
     },
     stop,
   };

@@ -144,7 +144,9 @@ the autobiographical memory strategy with adaptive resolution, **kv-unified
 folding** (a cost-aware solver that weighs budget fit, prompt-cache cost and
 continuity), a context budget with a verbatim tail of 40% of it, compression by
 the agent's own model, and summaries voiced as the agent itself
-(`summaryParticipant` defaults to `agent.name`). On a model the host knows a
+(`summaryParticipant` defaults to the agent's name), each introduced as standing
+in for earlier conversation whose exact text isn't shown
+(`summaryContextLabel`). On a model the host knows a
 window for (Claude from 4.5 on, on Anthropic's API), with an `agent.maxTokens`
 that is unset or a positive number, the budget is the smaller
 of 300k and the window less the system prompt and 32k for the tools: 300k (a
@@ -173,7 +175,7 @@ delivered by Agent Framework according to `agent.proseRouting`:
 
 | Mode | Behavior |
 |------|----------|
-| `"locus"` (default) | Text is auto-published to the current locus — the channel that last woke the agent. Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply` or an explicit send tool. |
+| `"locus"` (default) | Text is auto-published to the turn's locus: the channel of the delivery that woke the turn, a conversation fork's home channel, or a channel the agent opened during the turn (`speech.locus: "delivery"`, the default). A turn with none of these keeps its text private, unless an open all-except tune-out names a channel (a heartbeat's turn takes no fallback). Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply` or an explicit send tool. |
 | `"hybrid"` | Like `locus`, but a leading `>>>destination` envelope routes that segment elsewhere through the authorized channel resolver. |
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
@@ -268,7 +270,7 @@ loads only when a recipe names its id. For a named id the registry supplies
 the command, args and env, and the recipe entry may carry only policy fields —
 no `command` or `url` needed: `channelSubscription`, `toolPrefix`, feature-set
 and tool toggles, reconnect settings, WebSocket transport, `access`,
-`toolLifecycle`, `toolHints` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
+`toolLifecycle`, `toolHints`, `presentation` and `inheritEnv` (`RECIPE_OVERRIDABLE_SERVER_FIELDS` in
 `src/mcpl-config.ts`).
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
@@ -361,15 +363,30 @@ Servers an agent deploys for itself (`mcpl-servers.agent.json`, or a fleet child
 
 ### Tool hints and toolsets (MCPL RFC-014)
 
-`toolHints: true` on a server's entry turns on RFC-014 for that server. The host advertises `toolHints` to it, and the server then lists every tool with hints: static or dynamic, visible or not, and which toolset it belongs to. Its toolsets (a game, a builder) can then be opened and closed instead of all being present at once. Hints confer no authority: what the server may do is still its grant.
+From agent-framework 0.29.0 the host advertises RFC-014 `toolHints` to every server unless its entry says `toolHints: false`. A server that speaks RFC-014 then lists every tool with hints: static or dynamic, visible or not, and which toolset it belongs to. Its toolsets (a game, a builder) can then be opened and closed instead of all being present at once. Hints confer no authority: what the server may do is still its grant. A server that doesn't speak RFC-014 ignores the advertisement.
 
 ```json
 "mcpServers": {
-  "surfaces": { "url": "wss://surfaces.example/mcpl", "toolHints": true }
+  "games": { "url": "wss://games.example/mcpl", "access": "games" },
+  "legacy": { "url": "wss://legacy.example/mcpl", "toolHints": false }
 }
 ```
 
-Set it in the recipe, or in `mcpl-servers.json` for a server the recipe names. A recipe naming such a server may override it, so `false` there turns it off. It must be `true` or `false`: anything else stops the load. In the agent's own overlay (`mcpl-servers.agent.json`, or a fleet child's `mcpl-servers.agent.child.json`), anything else is left out and named in a startup line, and the server gets the default. Omitted, agent-framework's default applies. It takes effect with an agent-framework that implements RFC-014; older ones ignore it.
+Set `toolHints` in the recipe, or in `mcpl-servers.json` for a server the recipe names. A recipe naming such a server may override it. It must be `true` or `false`: anything else stops the load. In the agent's own overlay (`mcpl-servers.agent.json`, or a fleet child's `mcpl-servers.agent.child.json`), anything else is left out and named in a startup line, and the server gets the default.
+
+### The host's own toolsets: `settings` and server tabs
+
+From agent-framework 0.29.0 the tools an agent reaches for rarely live in a built-in toolset, `settings`, out of the tool list: agent-framework's own (agent settings, wake rules, gate status, event tags, tool visibility, heartbeat status and trigger, workspace status), every module utility, and this host's MCPL administration (`mcpl-admin--*`) and observer grants (`observers--*`). An agent opens it with `toolsets--open {"toolset": "settings"}`, calls one with `toolsets--act {"tool": "<name>", "args": {...}}`, and `toolsets--look {"toolset": "settings"}` lists them. The framework's single `utils` tool is gone; its utilities are in `settings`.
+
+Each MCPL server can also be presented as a tab. `presentation` on its entry sets how agents are shown it at first: `"full"` (the default: its tools in the tool list), `"tab"` (connected, its events still arriving, none of its tools listed until an agent opens it with `toolsets--open {"server": "<id>"}`), or `"closed-tab"` (disconnected until an agent opens it). Each agent can switch later, and its choice is kept over this default.
+
+```json
+"mcpServers": {
+  "games": { "url": "wss://games.example/mcpl", "access": "games", "presentation": "tab" }
+}
+```
+
+Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line. Older agent-framework releases ignore it.
 
 ### Included recipes
 
@@ -746,7 +763,7 @@ bun src/index.ts                    # Interactive TUI
 bun src/index.ts --no-tui           # Readline mode
 echo "Hello" | bun src/index.ts     # Batch mode: run each line, then stop
 bun src/index.ts <recipe> --headless                     # Daemon: JSONL IPC over $DATA_DIR/ipc.sock, no terminal
-bun src/index.ts <recipe> --headless --exit-when-idle    # One-shot: exit once the agent goes idle
+bun src/index.ts <recipe> --headless --exit-when-idle    # One-shot: exit once the agent is idle with nothing in flight
 bun src/index.ts <recipe> --headless --socket-path <p>   # Custom socket path
 bun --watch src/index.ts            # Dev mode
 bun src/index.ts --audit-stores --recipe <recipe> <data dir>  # Store audit: starts no agent (below)

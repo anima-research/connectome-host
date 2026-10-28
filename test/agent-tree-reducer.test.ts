@@ -51,7 +51,7 @@ describe('AgentTreeReducer', () => {
     });
     expect(r.getNode('scout')!.parent).toBeUndefined();
     expect(r.getRoots().map(n => n.name)).toEqual(['scout']);
-    for (const type of ['dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented']) {
+    for (const type of ['dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented', 'dendrite:agent-ended', 'dendrite:agent-interrupted']) {
       expect(REDUCER_REQUIRED_EVENTS).toContain(type);
     }
   });
@@ -69,6 +69,74 @@ describe('AgentTreeReducer', () => {
     r.applyEvent({ type: 'dendrite:agent-reparented', agentName: 'scout.worker-1', parent: 'archivist', by: 'archivist', timestamp: ts(2) });
     expect(r.getNode('scout.worker-1')!.parent).toBe('archivist');
     expect(r.getChildren('archivist').map(n => n.name)).toEqual(['scout.worker-1']);
+  });
+
+  test('a Dendrite agent\'s end ends its node: completed and failed as they say, every other reason as cancelled', () => {
+    const ended = (reason: string) => {
+      const r = new AgentTreeReducer();
+      r.applyEvent({
+        type: 'dendrite:agent-created', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1,
+        lifetime: { kind: 'task', deadlineMs: 60_000 }, spawnedBy: 'scout', timestamp: ts(0),
+      });
+      r.applyEvent({ type: 'inference:started', agentName: 'scout.worker-1', timestamp: ts(1) });
+      r.applyEvent({ type: 'dendrite:agent-ended', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1, reason, timestamp: ts(2) });
+      const node = r.getNode('scout.worker-1')!;
+      return { status: node.status, phase: node.phase, completedAt: node.completedAt, parent: node.parent };
+    };
+    expect(ended('completed')).toEqual({ status: 'completed', phase: 'done', completedAt: ts(2), parent: 'scout' });
+    expect(ended('failed')).toEqual({ status: 'failed', phase: 'failed', completedAt: ts(2), parent: 'scout' });
+    for (const reason of ['stopped', 'deadline', 'idle-ttl', 'parent-ended', 'host-restart', 'not-configured', 'a reason added later']) {
+      expect(ended(reason)).toEqual({ status: 'cancelled', phase: 'cancelled', completedAt: ts(2), parent: 'scout' });
+    }
+  });
+
+  test('an end the tree saw no creation for, as a restart ends a job a stop cut off, makes the node, ended', () => {
+    const r = new AgentTreeReducer();
+    r.seedFrameworkAgents(['scout']);
+    r.applyEvent({ type: 'dendrite:agent-ended', agentName: 'scout.reader-7', kind: 'task-fork', incarnation: 1, reason: 'host-restart', timestamp: ts(0) });
+    expect(r.getNode('scout.reader-7')).toMatchObject({ kind: 'framework', status: 'cancelled', phase: 'cancelled' });
+  });
+
+  test('an agent created again after its end, as a resume makes it, reads as a new run until its first inference', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1,
+      lifetime: { kind: 'task', deadlineMs: 60_000 }, spawnedBy: 'scout', timestamp: ts(0),
+    });
+    r.applyEvent({ type: 'dendrite:agent-ended', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1, reason: 'host-restart', timestamp: ts(1) });
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout.worker-1', kind: 'worker', incarnation: 2,
+      lifetime: { kind: 'task', deadlineMs: 60_000 }, spawnedBy: 'scout', timestamp: ts(2),
+    });
+    const node = r.getNode('scout.worker-1')!;
+    expect({ status: node.status, phase: node.phase, startedAt: node.startedAt, completedAt: node.completedAt, parent: node.parent })
+      .toEqual({ status: 'running', phase: 'idle', startedAt: ts(2), completedAt: undefined, parent: 'scout' });
+  });
+
+  test('an end the tree saw no creation for hangs the node under the spawner the end names', () => {
+    const r = new AgentTreeReducer();
+    r.seedFrameworkAgents(['scout']);
+    r.applyEvent({ type: 'dendrite:agent-ended', agentName: 'scout.reader-7', kind: 'task-fork', incarnation: 1, reason: 'host-restart', spawnedBy: 'scout', timestamp: ts(0) });
+    expect(r.getNode('scout.reader-7')).toMatchObject({ parent: 'scout', status: 'cancelled' });
+    expect(r.getChildren('scout').map(n => n.name)).toEqual(['scout.reader-7']);
+  });
+
+  test('an orphan that ends stays parentless, though its end names the spawner it lost', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1,
+      lifetime: { kind: 'task', deadlineMs: 60_000 }, spawnedBy: 'scout', timestamp: ts(0),
+    });
+    r.applyEvent({ type: 'dendrite:agent-orphaned', agentName: 'scout.worker-1', formerParent: 'scout', reason: 'parent ended', candidates: [], timestamp: ts(1) });
+    r.applyEvent({ type: 'dendrite:agent-ended', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1, reason: 'deadline', spawnedBy: 'scout', timestamp: ts(2) });
+    expect(r.getNode('scout.worker-1')!.parent).toBeUndefined();
+  });
+
+  test('an agent a stop cut off reads as cancelled, not running', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'scout.worker-1', timestamp: ts(0) });
+    r.applyEvent({ type: 'dendrite:agent-interrupted', agentName: 'scout.worker-1', kind: 'worker', incarnation: 1, reason: 'host-stop', timestamp: ts(1) });
+    expect(r.getNode('scout.worker-1')).toMatchObject({ status: 'cancelled', phase: 'cancelled', completedAt: ts(1) });
   });
 
   test('phase transitions follow the canonical mapping', () => {
@@ -243,6 +311,10 @@ function makeRepresentativeEvent(eventType: string): Record<string, unknown> {
       return { type: eventType, agentName: 'agent.fork-1', formerParent: 'agent', reason: 'parent ended', candidates: [], timestamp: 1000 };
     case 'dendrite:agent-reparented':
       return { type: eventType, agentName: 'agent.fork-1', parent: 'agent', timestamp: 1000 };
+    case 'dendrite:agent-ended':
+      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, reason: 'stopped', timestamp: 1000 };
+    case 'dendrite:agent-interrupted':
+      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, reason: 'host-stop', timestamp: 1000 };
     default:
       return { type: eventType, agentName: 'agent', content: '', timestamp: 1000 };
   }

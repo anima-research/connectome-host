@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { takeRecipeWarnings, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { takeRecipeWarnings } from '../src/recipe-warnings.js';
 
 const base = (extra: Record<string, unknown> = {}, agent: Record<string, unknown> = {}) => ({
   name: 'Test',

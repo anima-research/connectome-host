@@ -23,12 +23,12 @@ import {
   frameScope,
   setupFacts,
   type FrameScope,
-  sessionMarker,
   setCallLogPath,
   summarizeProviderCalls,
   tailLines,
   type BugReportFacts,
 } from '../src/bug-report.js';
+import { sessionMarker } from '../src/session-marker.js';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { parseCommand } from '../src/command-name.js';
 import { createBranchState, handleCommand } from '../src/commands.js';

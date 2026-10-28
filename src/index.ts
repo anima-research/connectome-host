@@ -8,7 +8,7 @@
  *   bun src/index.ts --no-tui                  # Readline mode on a terminal
  *   echo "hi" | bun src/index.ts <recipe>      # Batch mode (any non-TTY stdin): run lines, stop at EOF
  *   bun src/index.ts --headless                # Daemon mode: JSONL over Unix socket at $DATA_DIR/ipc.sock
- *   bun src/index.ts --headless --exit-when-idle   # One-shot: exit when agents go idle after first inference
+ *   bun src/index.ts --headless --exit-when-idle   # One-shot: exit when, after the first inference or text, agents are idle with nothing in flight
  *
  * Environment variables:
  *   ANTHROPIC_API_KEY   - Recipe provider "anthropic" needs this or one of
@@ -165,6 +165,8 @@ interface AppContext {
    */
   bootTraces?: BootTraceHold;
   stopping?: boolean;
+  switching?: boolean;
+  onFrameworkReplaced?: () => void;
 
   switchSession(id: string): Promise<void>;
 }
@@ -267,6 +269,7 @@ async function createFramework(
     subagentModule = new SubagentModule({
       parentAgentName: agentName,
       provider: resolveProvider(recipe),
+      formatter: recipe.agent.formatter,
       defaultModel: subagentConfig.defaultModel || model,
       defaultMaxTokens: subagentConfig.defaultMaxTokens,
       ...(subagentConfig.orientation ? { orientation: subagentConfig.orientation } : {}),
@@ -400,8 +403,10 @@ async function createFramework(
 
   let mcplAdminModule: McplAdminModule | null = null;
   if (modules.mcplAdmin === true || typeof modules.mcplAdmin === 'object') {
-    const surface = typeof modules.mcplAdmin === 'object' ? modules.mcplAdmin.surface : undefined;
-    mcplAdminModule = new McplAdminModule({ timeZone, ...(surface ? { surface } : {}) });
+    if (typeof modules.mcplAdmin === 'object' && modules.mcplAdmin.surface !== undefined) {
+      console.warn('[deprecated] modules.mcplAdmin.surface is no longer read: mcpl-admin\'s tools are in the built-in "settings" toolset (toolsets--open {toolset:"settings"}).');
+    }
+    mcplAdminModule = new McplAdminModule({ timeZone });
     moduleInstances.push(mcplAdminModule);
   }
 
@@ -444,10 +449,10 @@ async function createFramework(
       ...(subscriptionUnmetered ? { subscriptionUnmetered } : {}),
     });
     moduleInstances.push(webUiModule);
-    moduleInstances.push(new ObserversModule({
-      path: observersPath,
-      ...(webuiConfig.observersSurface ? { surface: webuiConfig.observersSurface } : {}),
-    }));
+    if (webuiConfig.observersSurface !== undefined) {
+      console.warn('[deprecated] modules.webui.observersSurface is no longer read: the observer tools are in the built-in "settings" toolset (toolsets--open {toolset:"settings"}).');
+    }
+    moduleInstances.push(new ObserversModule({ path: observersPath }));
   }
 
   if (modules.ttsRelay) {
@@ -489,7 +494,7 @@ async function createFramework(
     return withEnv;
   });
 
-  const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
+  const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry, agentName);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
   for (const notice of deprecatedConversationsNotices(recipe.conversations)) console.warn(`[deprecated] ${notice}`);
@@ -1123,6 +1128,7 @@ async function main() {
         },
         install: async (next) => {
           this.framework = next;
+          this.onFrameworkReplaced?.();
           await startFramework(next, null);
           this.userMessageCount = 0;
           resetBranchState(this.branchState);

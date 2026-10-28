@@ -124,6 +124,7 @@ export function buildFrameworkStrategy(
   model: string,
   timeZone: string,
   extensions?: ExtensionRegistry,
+  agentName?: string,
 ): ContextStrategy {
   const strategyConfig = recipe.agent.strategy;
   const strategyType = strategyConfig?.type ?? 'autobiographical';
@@ -171,8 +172,10 @@ export function buildFrameworkStrategy(
   // leaves them out: under adaptive resolution its folding strategy is
   // 'flat-profile', which plans layouts without regard for the prompt cache;
   // kv-unified takes no defaults and refuses an incomplete kvUnified block;
-  // and its summary participant is the literal 'Claude', which voices the
-  // agent's own recollections as a stranger's.
+  // its summary participant is the literal 'Claude', which voices the
+  // agent's own recollections as a stranger's; and its summary label asks
+  // "What do you remember from earlier?", which doesn't tell the agent that
+  // a summary has replaced the exact text.
   if (
     (strategyType === 'autobiographical' || strategyType === 'frontdesk') &&
     autobiographicalOpts.adaptiveResolution !== false &&
@@ -183,8 +186,13 @@ export function buildFrameworkStrategy(
   if (autobiographicalOpts.foldingStrategy === 'kv-unified' && autobiographicalOpts.kvUnified === undefined) {
     autobiographicalOpts.kvUnified = standardKvUnifiedConfig(recipe, model);
   }
-  if (autobiographicalOpts.summaryParticipant === undefined && recipe.agent.name) {
-    autobiographicalOpts.summaryParticipant = recipe.agent.name;
+  const voice = agentName ?? recipe.agent.name;
+  if (autobiographicalOpts.summaryParticipant === undefined && voice) {
+    autobiographicalOpts.summaryParticipant = voice;
+  }
+  if (autobiographicalOpts.summaryContextLabel === undefined) {
+    autobiographicalOpts.summaryContextLabel =
+      "A summary follows, standing in for earlier conversation, tool calls and results included. The exact text it replaces isn't shown.";
   }
 
   return strategyType === 'passthrough'

@@ -11,7 +11,7 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { type Socket } from 'node:net';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectWhenAccepting } from './ipc-connect.js';
@@ -26,7 +26,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
 
 type Client = { socket: Socket; events: Array<Record<string, unknown>>; send: (command: object) => void };
 
-async function withChild(body: (open: () => Promise<Client>) => Promise<void>): Promise<void> {
+async function withChild(body: (open: () => Promise<Client>, dir: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'headless-boot-replay-'));
   const sockets: Socket[] = [];
   const child = spawn(process.execPath, [new URL('./mock-headless-boot-child.ts', import.meta.url).pathname], {
@@ -54,7 +54,7 @@ async function withChild(body: (open: () => Promise<Client>) => Promise<void>): 
   };
   try {
     await until(() => existsSync(join(dir, 'ipc.sock')), 'socket');
-    await body(open);
+    await body(open, dir);
   } finally {
     for (const socket of sockets) socket.destroy();
     if (!exited()) child.kill('SIGTERM');
@@ -65,7 +65,7 @@ async function withChild(body: (open: () => Promise<Client>) => Promise<void>): 
 }
 
 test('the first client hears the boot after ready, marked and in order; the next client does not', async () => {
-  await withChild(async (open) => {
+  await withChild(async (open, dir) => {
     const first = await open();
     await until(() => first.events.filter(event => event.replay === true).length >= 3, 'boot replay');
     await until(() => first.events.some(event => event.type === 'lifecycle' && event.phase === 'replay-truncated'), 'truncation line');
@@ -86,17 +86,52 @@ test('the first client hears the boot after ready, marked and in order; the next
     expect(fork?.parent).toBe('fixture');
     expect(fork?.kind).toBe('framework');
     expect(fork?.subagentType).toBeUndefined();
+    expect(fork?.status).toBe('cancelled');
 
     // A live trace after the handover reaches the client unmarked.
-    first.send({ type: 'command', command: '/puppet live {}' });
+    writeFileSync(join(dir, 'live'), '');
     await until(() => first.events.some(event => event.type === 'inference:started'), 'live trace');
     const liveTrace = first.events.find(event => event.type === 'inference:started')!;
     expect(liveTrace.replay).toBeUndefined();
     expect(liveTrace.timestamp).toBe(1_700_000_000_010);
 
     const second = await open();
-    await Bun.sleep(50);
+    second.send({ type: 'describe', corrId: 'fence' });
+    await until(() => second.events.some(event => event.type === 'snapshot' && event.corrId === 'fence'), 'the second client\'s snapshot');
     expect(second.events.some(event => event.replay === true)).toBe(false);
     expect(second.events[0]).toMatchObject({ type: 'lifecycle', phase: 'ready' });
+  });
+});
+
+test('after a session switch, what the new framework replays from its create() reaches the connected client unmarked, and the tree folds it', async () => {
+  await withChild(async (open, dir) => {
+    const client = await open();
+    await until(() => client.events.some(event => event.type === 'lifecycle' && event.phase === 'replay-truncated'), 'boot replay');
+    writeFileSync(join(dir, 'switch'), '');
+    await until(() => client.events.some(event => event.type === 'dendrite:agent-ended' && event.agentName === 'fixture.reader-9'), 'the switched-to session\'s replay');
+    const restored = client.events.find(event => event.agentName === 'fixture.reader-9')!;
+    expect(restored.replay).toBeUndefined();
+    expect(restored.timestamp).toBe(1_700_000_000_020);
+    writeFileSync(join(dir, 'live'), '');
+    client.send({ type: 'describe', corrId: 'd2' });
+    await until(() => client.events.some(event => event.type === 'snapshot'), 'snapshot');
+    const snapshot = client.events.find(event => event.type === 'snapshot') as { tree: { nodes: Array<Record<string, unknown>> } };
+    expect(snapshot.tree.nodes.find(node => node.name === 'fixture.reader-9')).toMatchObject({ status: 'cancelled' });
+    expect(client.events.filter(event => event.agentName === 'fixture.reader-9')).toHaveLength(1);
+    await until(() => existsSync(join(dir, 'live-emitted')), 'the replaced framework\'s trace');
+    client.send({ type: 'describe', corrId: 'd3' });
+    await until(() => client.events.some(event => event.type === 'snapshot' && event.corrId === 'd3'), 'a later snapshot');
+    expect(client.events.some(event => event.type === 'inference:started')).toBe(false);
+  });
+});
+
+test('a session switch before any client connects leaves the first client the new session\'s boot, with its own count of what its replay didn\'t keep', async () => {
+  await withChild(async (open, dir) => {
+    writeFileSync(join(dir, 'switch'), '');
+    await until(() => existsSync(join(dir, 'switched')), 'the switch');
+    const client = await open();
+    await until(() => client.events.some(event => event.type === 'lifecycle' && event.phase === 'replay-truncated'), 'truncation line');
+    expect(client.events.filter(event => event.replay === true).map(event => event.agentName)).toEqual(['fixture.reader-9']);
+    expect(client.events.find(event => event.phase === 'replay-truncated')).toMatchObject({ dropped: 250, kept: 1 });
   });
 });

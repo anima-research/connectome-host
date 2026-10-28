@@ -13,7 +13,7 @@ import {
   stripAnsiSequences,
 } from '@opentui/core';
 import { createWriteStream, mkdirSync } from 'node:fs';
-import { sessionMarker } from './bug-report.js';
+import { sessionMarker } from './session-marker.js';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
 import type { AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
@@ -31,7 +31,8 @@ import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
 import { formatQuotaReadout } from './quota-meter.js';
-import { recipeModel, takeRecipeWarnings } from './recipe.js';
+import { recipeModel } from './recipe.js';
+import { takeRecipeWarnings } from './recipe-warnings.js';
 import { bunFloorNotice } from './bun-floor-check.js';
 import { hostUpdate } from './update/update.js';
 import { effectiveContextBudgetTokens } from './recipe-fit.js';

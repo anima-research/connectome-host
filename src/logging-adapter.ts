@@ -89,7 +89,7 @@ export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
  *  older reject it with a 400 ("adaptive thinking is not supported on this
  *  model"). */
 export function modelAcceptsAdaptiveThinking(model: string): boolean {
-  return /claude-(fable|mythos)-|claude-opus-(4-[6-9]|[5-9])|claude-sonnet-(4-6|[5-9])/.test(model);
+  return /claude-(fable|mythos)-|claude-opus-(4-[6-9]|[5-9])|claude-sonnet-(4-6|[5-9])|claude-haiku-5-5(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
 
 /** Whether `model` returns the notes it writes between tool calls ("found X,
@@ -107,6 +107,69 @@ export function modelAcceptsAdaptiveThinking(model: string): boolean {
 export function modelReturnsNotesInThinking(model: string): boolean {
   return /claude-(fable-5(-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
+
+/** What a model does with its signed thinking (anima-research/context-manager#155). */
+export interface ModelThinking {
+  /** A reply's thinking is bound to the request it was minted in: in a later
+   *  request whose earlier conversation or head (system text, tools, model)
+   *  differs, an enforcing account refuses the block, and others drop it. */
+  binds: boolean;
+  /** It takes `block_binding: { prefix_mismatch_behavior: 'drop_block' }`,
+   *  which has the provider drop such a block rather than refuse the request. */
+  dropBlock: boolean;
+  /** It thinks, minting signed thinking, when a request carries no thinking
+   *  config. */
+  thinksWithoutConfig: boolean;
+  /** The provider's own refusal of a longer prompt showed its context window. */
+  windowShownByRefusal?: true;
+}
+
+const BINDS_WITH_CONTROL: ModelThinking = { binds: true, dropBlock: true, thinksWithoutConfig: true, windowShownByRefusal: true };
+const BINDS_WITHOUT_CONTROL: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: true };
+const THINKS_UNBOUND: ModelThinking = { binds: false, dropBlock: false, thinksWithoutConfig: true };
+const NEITHER: ModelThinking = { binds: false, dropBlock: false, thinksWithoutConfig: false };
+const UNREACHED: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: false };
+
+const MODEL_THINKING: ReadonlyArray<readonly [string, ModelThinking]> = [
+  ['fable-5-1', BINDS_WITH_CONTROL],
+  ['opus-5-5', BINDS_WITH_CONTROL],
+  ['sonnet-5-5', BINDS_WITH_CONTROL],
+  ['haiku-5-5', BINDS_WITH_CONTROL],
+  // Membrane's changelog records the Mythos family refusing thinking configs
+  // with a 400, so it isn't sent the control untried.
+  ['mythos-5-1', BINDS_WITHOUT_CONTROL],
+  ['mythos-5', BINDS_WITHOUT_CONTROL],
+  ['mythos-preview', BINDS_WITHOUT_CONTROL],
+  ['fable-5', THINKS_UNBOUND],
+  ['opus-5', THINKS_UNBOUND],
+  ['sonnet-5', THINKS_UNBOUND],
+  ['opus-4-8', NEITHER],
+  ['opus-4-7', NEITHER],
+  ['opus-4-6', NEITHER],
+  ['opus-4-5', NEITHER],
+  ['sonnet-4-6', NEITHER],
+  ['sonnet-4-5', NEITHER],
+  ['haiku-4-5', NEITHER],
+  ['opus-4-1', NEITHER],
+  ['opus-4-0', NEITHER],
+  ['opus-4', NEITHER],
+  ['sonnet-4-0', NEITHER],
+  ['sonnet-4', NEITHER],
+];
+const MODEL_THINKING_PATTERNS = MODEL_THINKING.map(
+  ([name, facts]) => [new RegExp(`claude-${name}(?!\\d|-\\d{1,2}(?!\\d))`), facts] as const,
+);
+
+export function modelThinking(model: string): ModelThinking {
+  const id = model.toLowerCase().replace(/(\d)\.(\d)/g, '$1-$2');
+  if (!/(^|[/.:])claude-/.test(id)) return NEITHER;
+  // Before Claude 4, Anthropic's ids named the version before the family
+  // (claude-3-5-sonnet, claude-2-1, Bedrock's claude-v2), or were Instant.
+  if (/(^|[/.:])claude-([1-3]|v[12]|instant)(?!\d)/.test(id)) return NEITHER;
+  return MODEL_THINKING_PATTERNS.find(([pattern]) => pattern.test(id))?.[1] ?? UNREACHED;
+}
+
+const DROP_BLOCK = { prefix_mismatch_behavior: 'drop_block' } as const;
 export type ProviderCallObserver = (record: ProviderCallRecord) => void;
 
 /** Exact first-system-block identity Anthropic requires on subscription
@@ -376,6 +439,31 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         thinking: { type: 'adaptive', display: r.display ?? 'summarized' },
       },
     };
+  }
+
+  /** Membrane applies request.extra after the config it builds, so the
+   *  reasoning setting's config replaces that one whole, control included:
+   *  this step runs after withReasoning. With no thinking config, a model that
+   *  thinks anyway is sent an adaptive 'omitted' config to carry the control:
+   *  membrane sends none there. Needs membrane >= 0.7.0, which adds the
+   *  `thinking-binding-controls-2026-08-01` beta whenever the body carries
+   *  the control. */
+  private withBinding(request: ProviderRequest): ProviderRequest {
+    const facts = modelThinking(request.model);
+    if (!facts.binds || !facts.dropBlock) return request;
+    const extraThinking = (request.extra as { thinking?: unknown } | undefined)?.thinking;
+    const current = (extraThinking ?? request.thinking) as Record<string, unknown> | null | undefined;
+    let thinking: Record<string, unknown>;
+    if (current) {
+      const type = current.type ?? 'enabled';
+      if (type !== 'adaptive' && type !== 'enabled') return request;
+      if (current.block_binding !== undefined && current.block_binding !== null) return request;
+      thinking = { ...current, block_binding: DROP_BLOCK };
+    } else {
+      if (!facts.thinksWithoutConfig) return request;
+      thinking = { type: 'adaptive', display: 'omitted', block_binding: DROP_BLOCK };
+    }
+    return { ...request, extra: { ...request.extra, thinking } };
   }
 
   /** Needs membrane >= 0.7.0, which adds the
@@ -662,7 +750,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withReasoning(request))));
+    const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(request)))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let response: ProviderResponse;

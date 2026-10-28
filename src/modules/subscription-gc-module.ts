@@ -161,7 +161,12 @@ export class SubscriptionGcModule implements Module {
           },
         };
       default:
-        return unknownToolResult(this, call.name, 'Idle-limit controls live in agent_settings (field channel_idle_limits).');
+        return unknownToolResult(
+          this,
+          call.name,
+          'Idle-limit controls live in agent_settings (field channel_idle_limits), in the built-in "settings" toolset: ' +
+          'toolsets--open {"toolset": "settings"}, then toolsets--act.',
+        );
     }
   }
 
@@ -325,7 +330,8 @@ export class SubscriptionGcModule implements Module {
                     `[subscription-gc] Auto-closed channel ${channelId}: it emitted ` +
                     `over ${limit} characters of ambient traffic since your last activation without ` +
                     `engagement. Direct addresses there still reach you. Reopen with channel_open, ` +
-                    `or raise/disable its limit via agent_settings (field channel_idle_limits).`,
+                    `or raise/disable its limit via agent_settings (field channel_idle_limits), in the built-in ` +
+                    `"settings" toolset: toolsets--open {"toolset": "settings"}, then toolsets--act.`,
                 },
               ],
             },

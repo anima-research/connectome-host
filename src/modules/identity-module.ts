@@ -284,8 +284,8 @@ export class IdentityModule implements Module {
         `to give "${aud}"`;
       throw new IdentityError(
         `${none}; registering takes an invitation code, which the agent redeems through identity--accept_invite`,
-        `${none}. Registering takes an invitation code from your operator: run identity--accept_invite through utils ` +
-          'with the code and a name',
+        `${none}. Registering takes an invitation code from your operator: call identity--accept_invite, in the ` +
+          'built-in "settings" toolset (toolsets--open {"toolset": "settings"}, then toolsets--act), with the code and a name',
       );
     }
     const timestamp = new Date().toISOString();
@@ -460,7 +460,8 @@ export class IdentityModule implements Module {
         : {
             registeredAs: null,
             note: `No registration with ${this.config.home} is recorded on this host. To register, ask your operator for an ` +
-              'invitation code, then run identity--accept_invite through utils with it.',
+              'invitation code, then call identity--accept_invite with it, in the built-in "settings" toolset ' +
+              '(toolsets--open {"toolset": "settings"}, then toolsets--act).',
           },
     );
   }
