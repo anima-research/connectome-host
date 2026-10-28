@@ -395,6 +395,22 @@ describe('fork orientation', () => {
     }
   });
 
+  test("a fork's orientation names the tools its first request carries: the settings toolset's stay out, the toolsets tools are in", async () => {
+    const h = await makeHarness({ parent: null });
+    try {
+      const res = await h.subagent.handleToolCall(call('fork', 'toolu_fork_present', { name: 'present', task: 'look around' }, null));
+      expect(res.success).toBe(true);
+      await h.asyncPromise('present');
+      const start = startSection(h.runs[0]!.launchAsStored);
+      const tools = start.split('\n').find((line) => line.startsWith('- Tools: '))!;
+      expect(tools).toContain('toolsets--open');
+      expect(tools).toContain('toolsets--act');
+      expect(tools).not.toContain('agent_settings');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test('a fork call with no id inherits the whole context, and says why', async () => {
     const h = await makeHarness({});
     try {
