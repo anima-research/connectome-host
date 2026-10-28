@@ -1265,6 +1265,37 @@ describe('the first request a fork actually sends', () => {
     }
   });
 
+  // On a framework with host toolsets, what a request lists turns on whether
+  // the stream may call both toolsets--open and toolsets--act, so the
+  // orientation is checked against the request for each.
+  const hostToolsets = typeof (AgentFramework.prototype as { presentedTools?: unknown }).presentedTools === 'function';
+  for (const [tools, sends] of [
+    [['agent_settings'], ['agent_settings', 'subagent--return']],
+    [['toolsets--open', 'agent_settings'], ['agent_settings', 'subagent--return', 'toolsets--open']],
+    [['toolsets--act', 'agent_settings'], ['agent_settings', 'subagent--return', 'toolsets--act']],
+    [['toolsets--open', 'toolsets--act', 'agent_settings'], ['subagent--return', 'toolsets--act', 'toolsets--open']],
+  ]) {
+    test.skipIf(!hostToolsets)(`a spawn listing ${tools.join(', ')} is sent exactly the tools its orientation lists`, async () => {
+      const { adapter, subagent, cleanup } = await realHarness();
+      try {
+        const input = { name: 'worker', systemPrompt: 'p', task: 'say done', model: 'mock-spawn', sync: true, tools };
+        const res = await subagent.handleToolCall(call('spawn', 'toolu_worker', input));
+        expect(res.success).toBe(true);
+        const request = adapter.getRequestLog().map((r) => r.request).find((r) => r.model === 'mock-spawn');
+        expect(request).toBeDefined();
+        const toolNames = (request!.tools ?? []).map((t) => (t as { name: string }).name);
+        expect([...toolNames].sort()).toEqual(sends);
+        const opening = `- Tools: ${toolNames.length} available to this stream: `;
+        const toolsLine = JSON.stringify(request!.messages).split('\\n').find((l) => l.startsWith('- Tools: '));
+        expect(toolsLine).toStartWith(opening);
+        const named = toolsLine!.slice(opening.length).split('.')[0].split(/, | and /);
+        expect(named.sort()).toEqual(sends);
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+
   test('carries the orientation, and its tools are the ones the orientation names', async () => {
     const { adapter, subagent, framework, cleanup } = await realHarness();
     try {
