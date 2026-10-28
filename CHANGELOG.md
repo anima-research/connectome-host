@@ -6,6 +6,177 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.16.0 — 2026-10-28
+
+### Breaking
+
+- **Recipe authors and operators:** a recipe whose `modules.workspace.mounts` gives two mounts the same name loaded before, and now stops the load, naming the name and where each of the two mounts is in the list (#478). Before, agent-framework's workspace ran its tools on the last mount of that name, while the instructions check read the first, so it could approve one mount while another ran. Give each mount its own name. A start without a recipe argument, in a data directory whose saved recipe has such mounts, stops, naming them: start once with the renamed recipe as its argument, which saves it in the saved one's place. Names are compared exactly, as before, so `notes` and `Notes` are two names, and a recipe whose mounts each have their own name loads as it did.
+
+- **Operators who read a data directory as another user that isn't
+  root,** such as a backup run as its own user: a data directory that a
+  host, a fleet launch, an import script or the evacuator creates from
+  this version on is readable by its owner alone (`0700`), and so is the
+  `sessions` directory made in one, so that reader can't open them. That
+  includes the data directory of a fleet child whose directory doesn't
+  exist yet when it's launched, on an install that was already running.
+  The evacuator's recipe and saved state are `0600` after every write,
+  even in a directory that was already there. To keep such a reader
+  working, run it as the agent's user or as root, or give its group
+  access to the directories yourself once they're made (`chgrp` and
+  `chmod g+rX`): a directory's mode, once it's there, stays as it is.
+  A Go back that restores the copy (`/update back restore`, or
+  `start.js --go-back` without `--keep-data`), or the next start after
+  an updated release ends before its commit, puts what's inside each
+  directory an update copies (`docs/DEPLOYMENTS.md` lists them) back as
+  new copies, each with its mode but in the group a new file or
+  directory there gets, so run the `chgrp` again after one. Group
+  access doesn't reach the files kept for their owner alone, the
+  evacuator's recipe and state and the host's saved recipe, which each
+  write leaves `0600`: a reader that needs them runs as the agent's user
+  or as root. Unchanged: every data directory made before this version,
+  and what a reader running as the agent's user or as root can read.
+
+- **Recipe authors and operators, on Anthropic's API:** a recipe load that resolves the system prompt, a saved recipe's at a start included, now refuses a recipe that can't work on its model, naming the numbers and the changes it found that would let it load. Three kinds are refused: an `agent.maxTokens` over the model's maximum output, which the API refuses on every reply; an `agent.contextBudgetTokens` that leaves the conversation too little room for the head and the verbatim tail once `agent.maxTokens` is kept for the reply (none at all where it's no larger than `agent.maxTokens`, 0 and below included), so every reply fails once the conversation fills them; and an `agent.contextBudgetTokens` whose prompt, the budget less `maxTokens` (or the head and tail, where they come to more) plus the system prompt, is over the model's window, which the API refuses on every reply once the conversation fills the budget. A recipe that sets no budget, and whose system prompt leaves the conversation too little room in the window, is refused too, naming the prompt's size. The head and tail are held to context-manager's own rule, its over-budget grace included, whether the tail is the default or the recipe's own `strategy.recentWindowTokens`. A load checks the model the host will run, so a `MODEL` in the environment is checked in place of `agent.model` (or of the default, where the recipe names no model), and where `MODEL` changes the model the recipe runs, the refusal says so. The host knows the windows and maximum outputs of Claude models from 4.5 on, by their exact ids or those ids with a snapshot date. Such a recipe loaded before, and its replies failed: at once for a `maxTokens` over the maximum, and otherwise once the conversation filled its budget, or its head and tail. Now a host that runs one stops at its start until the number is changed. An update's trial start that meets the refusal exits before the update commits, so the current release stays the one before, whose replies fail as they did, and the trial's log holds the refusal.
+
+- **Operators of `--exit-when-idle` hosts whose agents leave a background script running:** the host now stays up until the script ends, and a long-lived server an agent starts on purpose keeps it up. `lifecycle:idle`, and so `fleet--await`, doesn't wait for a script left running.
+- **Operators of `--exit-when-idle` hosts:** a received text now counts as activity, so a host whose only text a wake gate declines exits 500 ms after its processing ends, where it waited before.
+
+### Changed
+
+- **Agents on a model whose signed thinking binds** (Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5,
+  and, as the host records them, the Mythos models and any later Claude model its record doesn't name): the
+  host now records per model whether its thinking binds, whether it takes `block_binding`'s
+  `drop_block` control, whether it thinks with no thinking config, and whether the provider's refusal of a longer prompt
+  showed its context window, and passes agent-framework `thinkingBinding` from that record, and
+  `physicalWindowTokens` from the model limits table where it did, for the resident and each
+  subagent (anima-research/context-manager#155).
+  - **The drop control:** on the four models that take it, streamed calls through the Anthropic API
+    (agent turns) carry `block_binding: { prefix_mismatch_behavior: 'drop_block' }` in their
+    thinking config, so the provider drops a signed thinking block that a change has invalidated
+    instead of refusing the call. An adaptive or enabled thinking config a call already has keeps
+    its fields and gains the control, unless it carries a binding control of its own: with
+    reasoning on that's the setting's, and with it off, the one membrane builds from a recipe's
+    `agent.thinking`, if any. A call with none is sent `{ type: 'adaptive',
+    display: 'omitted' }` with the control, which goes as `'updates'` on Fable 5.1, Opus 5.5 and
+    Sonnet 5.5. One-shot `complete()` calls get no control.
+  - **The window:** those four get `physicalWindowTokens` on the Anthropic route, at the
+    1,000,000 tokens the model limits table holds for each, under its id or a dated snapshot of it.
+    With binding and a window both set, agent-framework doesn't break a turn's stream at
+    `maxStreamTokens`, a recipe's or `/budget`'s: such an agent's stream breaks mid-turn for its
+    size only where its next request would pass the window, and a fresh compile carries the turn
+    on. `/budget` says so: its listing marks each such agent, and setting a budget names them.
+  - **The system prompt:** on a binding model it ends with one more paragraph: "When your context
+    folds, the reasoning behind your earlier replies leaves it, though their words stay, so a reply
+    of yours that shows no reasoning may still have had some." An empty prompt gets it as its whole
+    system text. No agent under an `anthropic-xml` recipe gets it: every agent there sends in XML
+    mode, whose transcript carries none of a reply's reasoning into the next request, fold or none.
+    On the binding models named above, such a recipe's agents can't run at all, since membrane
+    refuses their assistant prefill.
+  - **Bedrock and the other routes:** an agent there on a binding model binds without the control
+    and has no window, since nobody has tried the control or read a window there.
+    `LoggingBedrockAdapter` adds no control, as before.
+- **Haiku 5.5 with reasoning on:** the host now sends it the reasoning setting's adaptive thinking
+  config, as on the other 5.5 models. Before, `modelAcceptsAdaptiveThinking` didn't list it, so
+  turning reasoning on for a Haiku 5.5 agent sent nothing and logged that the model "does not accept
+  adaptive thinking", though it takes the config. As on every model the setting reaches, one-shot
+  calls on Haiku 5.5 (its compression, and retrieval where a recipe sets that model) carry the
+  setting's config too.
+
+- The data directory (`DATA_DIR`, `./data` by default) is now created
+  readable by its owner alone (`0700`), along with any directory above it
+  that the same call creates, by whichever makes it first: a host, a
+  fleet launch for a child's, an import script, or the evacuator. It holds
+  the agent's history, its saved recipe and its call logs. The `sessions`
+  directory in it is made the same way, and so is the Codex importer's
+  instance directory, which also holds a copy of the rollout. The
+  evacuator's recipe and saved state, which can hold the claude.ai
+  memories, are readable and writable by their owner alone (`0600`) after
+  every write, each written as a new file that takes the place of what
+  was at its path, a link included, and the copy it opens in your editor
+  is created `0600` too.
+  Before, these took the umask's default, commonly readable by every user
+  on the machine. A directory that's already there keeps its mode: to
+  make one private, `chmod 700` it. The onboarding guide's setup now makes
+  the data directory with `mkdir -p -m 700`.
+
+- **Residents on Anthropic's 200k-window models (Claude Haiku 4.5, Opus 4.5 and Sonnet 4.5) whose recipe sets no `agent.contextBudgetTokens`, with an `agent.maxTokens` that is unset or a positive number:** the budget is now the smaller of 300k and the window less the system prompt and 32k for the tools, so a compile that keeps to the budget less `maxTokens` leaves `maxTokens` of the window for the reply, where it was 300k, which let a full conversation's prompt pass the window so that every reply was refused. `maxStreamTokens`, when the recipe sets neither, follows it at the budget plus 20k, and a verbatim tail the recipe doesn't set stays 40% of it, so it shrinks with it: 67,200 for an empty system prompt, where it was 120,000. Where the head and that tail can't fit beside `maxTokens`, the tail is smaller, as the last entry here says. On the first turns after the update, such a resident whose conversation is longer than its new budget compiles smaller, and its prompt cache is written again as the folds settle. On a 1M-window model that's 300k, as before, for any system prompt under 668k tokens.
+- **A model the host knows no window for, a provider other than `anthropic`, an `agent.maxTokens` that isn't a positive number, or an `agent.contextBudgetTokens` that isn't a number:** the start prints one line saying the fit wasn't checked and why, the recipe loads and runs as before, and a budget it leaves unset is 300k. On an autobiographical or frontdesk strategy (autobiographical is the default), a `strategy.headWindowTokens`, `strategy.recentWindowTokens` or `strategy.overBudgetGraceRatio` set to anything but a number or null leaves the fit unchecked the same way, and where the recipe sets no budget, the line gives the budget the host runs. One exception: on Anthropic's API, for a model the host knows, an `agent.maxTokens` over its maximum output is refused whatever the other sizes hold, since the API refuses every reply. A null budget counts as unset for the budget, as before, and keeps the 150k `maxStreamTokens` it had.
+- **A recipe without its own `strategy.recentWindowTokens`, whose budget less `maxTokens` can't hold the head and a tail of 40% of the budget by context-manager's own rule, its over-budget grace included:** every compile failed once the conversation filled them. The tail is now 40% of the budget less `maxTokens` there. Every other such recipe's tail is still 40% of its budget.
+
+- An agent whose recipe uses the host's autobiographical or frontdesk
+  strategy and sets no `summaryContextLabel` now reads "A summary follows,
+  standing in for earlier conversation, tool calls and results included.
+  The exact text it replaces isn't shown." in the `Context Manager` turn
+  before each summary of folded conversation, where
+  context-manager's default asked "What do you remember from earlier?".
+  That's under adaptive resolution, the default. With adaptive resolution
+  off, a recipe with `positionedRecallPairs: false` reads it once, before
+  its combined summaries, and one that keeps positioned pairs shows
+  `recallHeaderTemplate` there instead, as before. A recipe's own label is
+  kept.
+- The new label takes about 33 more tokens of the context budget each time
+  it shows, by context-manager's estimate (45 against 12): once for each
+  summary under adaptive resolution, and once for each combined block when
+  adaptive resolution is off and `positionedRecallPairs` is false.
+  context-manager also prices each positioned pair with the label where it
+  shows `recallHeaderTemplate`, so those pairs take the same 33 more tokens
+  of budget, though what the agent reads there doesn't change. Where prompt
+  caching is on, an agent's first request after the update that shows the
+  label can't reuse its cache from the first label on.
+
+### Fixed
+
+- `/undo`, `/redo`, `/restore`, `/checkout` and `/branchto` move the branch
+  through the framework, so every agent sharing the store is re-initialized
+  for the new branch, not only the first agent. Before, another agent on an
+  `AutobiographicalStrategy` (a conversation fork, for one) failed every
+  compile with "requires reinitialization for the current branch generation"
+  until a restart (#264).
+- They are refused while any agent sharing the store is mid-turn, naming it,
+  the subconscious included. A move the framework refuses leaves the branch,
+  the branches, the session's undo and redo history and its checkpoints as
+  they were (a branch made for the move is removed), says this command moved
+  nothing, and, when the store is busy, to try again once what it names has
+  finished. A `/redo` whose branch no longer exists drops that step and says
+  so.
+- The README now says `/newtopic` is refused only while the main agent is
+  mid-turn. It said the commands that move the head "are refused while a turn
+  is in flight", which read as any agent's turn; `/newtopic` was refused only
+  for the main agent's turn in 0.15.0 too, and still is. Its refusal now ends
+  "Wait for the turn to end, or stop it, then retry." where it ended "Stop the
+  generation first, then retry."
+
+- A headless host says `lifecycle:idle` only once every agent reads idle and nothing is in flight for 500 ms: no turn the framework counts alive, no gated wake, no event on its queue, no text whose processing is still under way and no subagent run. `--exit-when-idle`, and an armed self-restart, also wait for a background script left running. An agent's status reads idle while its turn assembles and while it waits to retry, so a fleet's `fleet--await` could call a child done mid-turn, and `--exit-when-idle` could stop a host in the middle of one.
+- `fleet--await` counts a child as idle only while its last `lifecycle:idle` came after its last `inference:started` and covers every text the fleet has sent it on the connection (`fleet--send`, `fleet--relay`): a headless host now counts the texts it receives on a connection and says on each `lifecycle:idle` how many it covers. An idle from an older child, which doesn't say, counts. It took a child whose latest lifecycle event was an idle as done, so once a child had been idle, an await after sending it a task answered at once, `waitedMs: 0`, until the child's next idle, and an idle the child emitted before a text, read after it, answered for the text. An await already waiting kept a child it had counted, though the child was sent work again; it now drops one sent work, and keeps one that went idle and then exited or was restarted. A child adopted by a new host now counts as idle when its `ready` says it has said idle since its last activity, where an await on it waited to its timeout. A received text now counts as activity, so a text a wake gate declines gets an idle 500 ms after its processing ends, and ends an await on it. A text sent in a session switch, refused by the stopped framework or not yet taken from its queue, goes to the new session's framework, and an idle covers it only once that has processed it. A session switch asked for while another is under way, from the TUI, the Web UI or a `/session` sent to a headless host, is refused, saying to try again once the first has finished, before any session is made or made active, where it started and could leave the first switch's framework running; while a switch is under way a headless host isn't quiet. A `fleet--command` doesn't count as work, since most commands start no turn, so an await before a command's turn starts answers from the earlier idle.
+- A headless host follows a session switch: its socket's clients hear the new session's events, and `describe`'s agent tree starts again from the new session's agents, where the host's trace listeners and its tree stayed on the replaced framework (connectome-host#483's headless case; a fleet parent's copy of a child's tree is still the replaced session's after a switch).
+
+- `mcpl-servers.json` and `mcpl-servers.agent.json`, when a save creates
+  them (a `/mcp` command or the Web UI's MCPL editor, or an agent's deploy
+  or unload), are now created readable and writable by their owner alone,
+  as a saved recipe is, since an entry can hold a token or another
+  credential. Before, they took the umask's default, commonly readable by
+  every user. A file that's already there keeps its mode: to make one
+  private, `chmod 600` it.
+
+- A recipe that uses the host's autobiographical or frontdesk strategy and
+  sets neither `agent.name` nor `summaryParticipant` now has its agent's
+  summaries voiced by the name the agent runs under (an imported session's
+  name, or `agent`), as the agent's own turns. Before,
+  they took context-manager's default participant, `Claude`, so the agent
+  read its own recollections in a user turn as "Claude: …". The compiled
+  context of such an agent changes from its first summary on, so where
+  prompt caching is on, its first request after the update that shows a
+  summary can't reuse its cache from there. A conversation's agents keep
+  the voice they had.
+- Under the frontdesk strategy, such an agent's compression now tells the
+  agent's own messages apart when it lists the questions a summary is asked
+  to keep verbatim. A question or mention followed by one of the agent's
+  messages within the next eight is no longer listed, and neither is a
+  question the agent asked. Before, every question and mention was listed.
+- A subagent's summaries, spawned or forked, are now voiced by the name it
+  runs under, as its own turns. Before, they read as "Claude: …" in a user
+  turn.
+
 ## 0.15.0 — 2026-10-27
 
 ### Breaking

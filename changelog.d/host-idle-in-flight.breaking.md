@@ -1,2 +1,0 @@
-- **Operators of `--exit-when-idle` hosts whose agents leave a background script running:** the host now stays up until the script ends, and a long-lived server an agent starts on purpose keeps it up. `lifecycle:idle`, and so `fleet--await`, doesn't wait for a script left running.
-- **Operators of `--exit-when-idle` hosts:** a received text now counts as activity, so a host whose only text a wake gate declines exits 500 ms after its processing ends, where it waited before.
