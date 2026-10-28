@@ -2075,17 +2075,25 @@ export class SubagentModule implements Module {
   }
 
   /**
-   * agent-framework builds an agent's tool surface from the shared board
-   * filtered by its permissions, leaving out `utils` when they permit no
-   * utility, plus prose_help under explicit prose routing when they allow it
-   * (availableToolsForPresentation). It reads the board again when it
+   * agent-framework builds an agent's tool list from the shared board filtered
+   * by its permissions, less what its own toolsets present out of the list
+   * (the built-in "settings" toolset and servers shown as tabs, from 0.29.0;
+   * presentedTools), plus prose_help under explicit prose routing when they
+   * allow it (availableToolsForPresentation). It reads the board again when it
    * assembles the first request, and it lists an ephemeral agent only once its
    * run starts, so listToolClasses can't be asked yet.
    */
-  private streamSurface(agent: { canUseTool(name: string): boolean; proseRouting: ProseRouting }): string[] {
-    const names = this.getFramework().getAllTools()
-      .filter((t) => agent.canUseTool(t.name))
-      .map((t) => t.name);
+  private streamSurface(agent: { name?: string; canUseTool(name: string): boolean; proseRouting: ProseRouting }): string[] {
+    const framework = this.getFramework();
+    let tools = framework.getAllTools().filter((t) => agent.canUseTool(t.name));
+    const present = (framework as AgentFramework & {
+      presentedTools?: (agentName: string, tools: ToolDefinition[], canUseMeta?: boolean) => ToolDefinition[];
+    }).presentedTools;
+    if (typeof present === 'function' && agent.name) {
+      const canUseMeta = agent.canUseTool('toolsets--open') && agent.canUseTool('toolsets--act');
+      tools = present.call(framework, agent.name, tools, canUseMeta);
+    }
+    const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');
     return names;
   }

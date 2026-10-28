@@ -334,7 +334,41 @@ describe('subagent allowed-tools inheritance', () => {
   });
 });
 
-describe('maximum-depth utility permissions', () => {
+// The two blocks below each hold one framework's utility surface: with host
+// toolsets (which bring presentedTools) or with the `utils` tool.
+const hostToolsets = typeof (AgentFramework.prototype as { presentedTools?: unknown }).presentedTools === 'function';
+
+describe.skipIf(!hostToolsets)('maximum-depth utility permissions, settings toolset', () => {
+  // From agent-framework 0.29 a utility is a tool of the built-in "settings"
+  // toolset, reached with toolsets--open and toolsets--act under its own name
+  // and permissions; there is no `utils` tool.
+  const utilityNames = probeUtilityNames.map(name => `probe--${name}`);
+  const META = ['toolsets--open', 'toolsets--act'];
+  for (const [label, parent, requested, expected] of [
+    ['all', 'all', undefined, utilityNames],
+    ['explicit utility', 'all', [...META, 'probe--allowed_util'], ['probe--allowed_util']],
+    ['inherited utility', [...META, 'probe--allowed_util'], undefined, ['probe--allowed_util']],
+    ['parent restriction', [...META, 'probe--allowed_util'], [...META, ...utilityNames], ['probe--allowed_util']],
+    ['meta-tools only', 'all', [...META], []],
+  ] as Array<[string,'all'|string[],string[]|undefined,string[]]>) {
+    test(label + ' preserves the per-utility policy at the depth limit', async () => {
+      const h = await harness(parent,1);
+      try {
+        const offered = h.framework.getAllTools().map(tool => tool.name);
+        expect(offered).not.toContain('utils');
+        for (const name of [...META, ...utilityNames]) expect(offered).toContain(name);
+        expect((await h.call('spawn',requested)).success).toBe(true);
+        const child=h.captured[0];
+        for(const name of META) expect(child.canUseTool(name)).toBe(true);
+        for(const name of utilityNames) expect(child.canUseTool(name)).toBe(expected.includes(name));
+        expect(child.canUseTool('subagent--spawn')).toBe(false);
+        expect(child.canUseTool('subagent--return')).toBe(true);
+      } finally { await h.cleanup(); }
+    });
+  }
+});
+
+describe.skipIf(hostToolsets)('maximum-depth utility permissions', () => {
   const utilityNames = probeUtilityNames.map(name => `probe--${name}`);
   const surface = (framework: AgentFramework, utilities = true) => {
     const catalogue = utilityNames.map(name => ({name, description: 'Inert utility', inputSchema: {type:'object',properties:{}}}));
