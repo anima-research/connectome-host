@@ -36,7 +36,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { gateOptionsFor } from './gate-options.js';
 import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
@@ -1129,13 +1129,7 @@ async function main() {
   appForAlerts = app;
 
   if (adapter instanceof LoggingAnthropicAdapter) {
-    adapter.onRefusal = (info) => {
-      const fw = app.framework as unknown as {
-        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
-      };
-      const alert = offPathRefusalAlert(info);
-      fw.notifyOpsAlert?.(alert.kind, alert.agent, alert.message, alert.data);
-    };
+    adapter.onRefusal = createOffPathRefusalCallback(() => app.framework);
   }
 
   await startFramework(framework, installHere, {

@@ -62,6 +62,10 @@ const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
  *  agent. */
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
 
+function isProcessRefusal(key: string, kind: string): boolean {
+  return key === 'host' && kind === 'refusal-offpath';
+}
+
 type MarkerForm = 'unanswered' | 'status';
 
 const DEFAULT_QUIET_MS = 60_000;
@@ -337,7 +341,7 @@ export class NoticesModule implements Module {
           const ep = this.agentEpisode();
           if (ep) {
             for (const kind of [...ep.kinds.keys()]) {
-              if (CLOSES_ON_SUCCESS.has(kind)) this.removeKind(ep, kind, { message: 'inference completed', superseded: false });
+              if (CLOSES_ON_SUCCESS.has(kind) && !isProcessRefusal(ep.key, kind)) this.removeKind(ep, kind, { message: 'inference completed', superseded: false });
             }
           }
         }
@@ -378,9 +382,9 @@ export class NoticesModule implements Module {
     }
 
     const component = COMPONENT_KINDS.has(kind);
-    if (!component && this.config.agentName && key && key !== this.config.agentName) return;
+    if (!component && !isProcessRefusal(key, kind) && this.config.agentName && key && key !== this.config.agentName) return;
     let tier = this.tierFor(kind);
-    if (component && tier === 'reply') tier = 'status';
+    if ((component || isProcessRefusal(key, kind)) && tier === 'reply') tier = 'status';
     if (tier === 'silent') return;
 
     const data = (event.data ?? {}) as { until?: unknown };
@@ -406,9 +410,9 @@ export class NoticesModule implements Module {
 
   private agentEpisode(): Episode | undefined {
     const ep = this.config.agentName ? this.episodes.get(this.config.agentName) : undefined;
-    if (ep) return ep;
+    if (ep && [...ep.kinds.keys()].some((k) => !isProcessRefusal(ep.key, k))) return ep;
     if (this.config.agentName) return undefined;
-    for (const e of this.episodes.values()) if (![...e.kinds.keys()].some((k) => COMPONENT_KINDS.has(k))) return e;
+    for (const e of this.episodes.values()) if (![...e.kinds.keys()].some((k) => COMPONENT_KINDS.has(k)) && [...e.kinds.keys()].some((k) => !isProcessRefusal(e.key, k))) return e;
     return undefined;
   }
 
@@ -628,7 +632,7 @@ export class NoticesModule implements Module {
     }
     if (result.success) {
       ep?.pending.delete(channelId);
-      if (ep && opts.track && opts.kind !== undefined && !COMPONENT_KINDS.has(opts.kind)) {
+      if (ep && opts.track && opts.kind !== undefined && !COMPONENT_KINDS.has(opts.kind) && !isProcessRefusal(ep.key, opts.kind)) {
         const form = this.markerForm(opts.kind);
         if (!ep.markedForms.has(form)) {
           ep.markedForms.add(form);

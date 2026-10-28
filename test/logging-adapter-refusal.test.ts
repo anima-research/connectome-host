@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { LoggingAnthropicAdapter, offPathRefusalAlert } from '../src/logging-adapter.js';
+import { LoggingAnthropicAdapter, offPathRefusalAlert, createOffPathRefusalCallback } from '../src/logging-adapter.js';
 
 function makeAdapter() {
   const adapter = new LoggingAnthropicAdapter({ apiKey: 'test-key' }, '/tmp/llm-test.jsonl', () => ({ enabled: false, budgetTokens: 0 }));
@@ -100,10 +100,7 @@ test('the shared adapter forwards complete refusal alerts as host and suppresses
   const notifyOpsAlert = (kind: string, agent: string, message: string, data?: Record<string, unknown>) => {
     notifications.push([kind, agent, message, data]);
   };
-  adapter.onRefusal = (info) => {
-    const alert = offPathRefusalAlert(info);
-    notifyOpsAlert(alert.kind, alert.agent, alert.message, alert.data);
-  };
+  adapter.onRefusal = createOffPathRefusalCallback(() => ({ notifyOpsAlert }));
 
   observe('complete', 'refusal', 'reasoning_extraction');
   expect(notifications).toEqual([[
@@ -127,4 +124,33 @@ test('the shared adapter forwards complete refusal alerts as host and suppresses
 
   observe('stream', 'refusal', 'reasoning_extraction');
   expect(notifications.length).toBe(1);
+});
+
+test('the production callback resolves replaced frameworks and retains the notifier receiver', () => {
+  const { adapter, observe } = makeAdapter();
+  const first = {
+    notifications: [] as unknown[][],
+    notifyOpsAlert(...args: [string, string, string, Record<string, unknown>?]) {
+      this.notifications.push(args);
+    },
+  };
+  const replacement = { ...first, notifications: [] as unknown[][] };
+  let framework: { notifyOpsAlert?: typeof first.notifyOpsAlert } = first;
+  let reads = 0;
+  adapter.onRefusal = createOffPathRefusalCallback(() => { reads++; return framework; });
+  observe('complete', 'refusal', 'cyber');
+  framework = {};
+  observe('complete', 'refusal');
+  framework = replacement;
+  observe('complete', 'refusal', 'reasoning_extraction');
+  observe('stream', 'refusal');
+  observe('complete', 'end_turn');
+  observe('complete');
+  expect(reads).toBe(3);
+  expect(first.notifications.length).toBe(1);
+  expect(replacement.notifications).toEqual([[
+    'refusal-offpath', 'host',
+    'off-path refusal (category=reasoning_extraction) on a 37-message complete() call (~64k tok) — likely compression/summarizer',
+    { call: 'complete', category: 'reasoning_extraction', model: 'claude-fable-5', messages: 37, inputTokens: 64_000 },
+  ]]);
 });

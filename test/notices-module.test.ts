@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from '../src/logging-adapter.js';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import {
   NoticesModule,
@@ -1103,5 +1104,145 @@ describe('the marker the agent reads', () => {
     expect(h.markers.length).toBe(2);
     expect(h.markers[0]).toStartWith('[host-notice] While you could not respond (quota-spent), the host posted this in zulip:ops:');
     expect(h.markers[1]).toStartWith('[host-notice] The host posted this status notice in zulip:ops about auth-expiring');
+  });
+});
+
+describe('process off-path refusal notices', () => {
+  for (const agentName of ['clerk', undefined]) {
+    test(`production callback delivers a quiet host status with agentName=${agentName}`, async () => {
+      const h = await started({ agentName, quietMs: 60_000, statusChannels: ['zulip:ops'] });
+      const adapter = new LoggingAnthropicAdapter({ apiKey: 'test-key' }, '/tmp/llm-test.jsonl');
+      adapter.onRefusal = createOffPathRefusalCallback(() => ({
+        notifyOpsAlert: (kind, agent, message, data) => h.alert(kind, message, data, agent),
+      }));
+      const observed = adapter as unknown as {
+        observeCall: (...args: unknown[]) => void;
+      };
+      observed.observeCall('complete', '2026-10-28T00:00:00Z', 100,
+        { model: 'claude-opus-5-5', messages: new Array(19).fill({}) }, {},
+        { response: { usage: { inputTokens: 1_000, cacheReadTokens: 43_000, cacheCreationTokens: 3_000 },
+          raw: { stop_reason: 'refusal', stop_details: { category: 'cyber' } } } });
+      const message = 'off-path refusal (category=cyber) on a 19-message complete() call (~47k tok) — likely compression/summarizer';
+      expect(h.module.episodeState()).toEqual([expect.objectContaining({ key: 'host', tier: 'status' })]);
+      await h.incoming('zulip:dev');
+      expect(h.posts).toEqual([]);
+      await h.fireTimers();
+      expect(h.posts).toEqual([{ channelId: 'zulip:ops', agentName: agentName ?? 'host',
+        text: statusNoticeText('host', { kind: 'refusal-offpath', message }) }]);
+      h.alert('refusal-offpath', message, undefined, 'host');
+      h.alert('refusal-offpath-clear', 'wrong subject', undefined, 'other');
+      for (const type of ['inference:completed', 'inference:turn_ended']) {
+        h.emit({ type, agentName: 'clerk' });
+      }
+      await h.fireTimers();
+      expect(h.posts.length).toBe(1);
+      expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+      expect(h.markers).toEqual([]);
+    });
+  }
+
+  test('reply overrides cap the process notice at status and ordinary foreign agents remain filtered', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], kinds: { 'refusal-offpath': 'reply' } });
+    h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk' });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    h.alert('refusal-offpath', 'foreign refusal', undefined, 'other');
+    h.alert('hard-down', 'foreign outage', undefined, 'other');
+    h.alert('hard-down', 'host is not a general agent bypass', undefined, 'host');
+    await h.incoming('zulip:dev');
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([expect.objectContaining({ key: 'host', kinds: ['refusal-offpath'], tier: 'status' })]);
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops']);
+    expect(h.markers).toEqual([]);
+  });
+
+  test('silent overrides keep process notices silent', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], kinds: { 'refusal-offpath': 'silent' } });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    await h.fireTimers();
+    await h.incoming('zulip:dev');
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts).toEqual([]);
+    expect(h.markers).toEqual([]);
+  });
+
+  for (const type of ['inference:completed', 'inference:turn_ended']) {
+    for (const agentName of ['clerk', undefined, 'host']) {
+      test(`${type} clears agent kinds while retaining process refusal with agentName=${agentName}`, async () => {
+        const h = await started({ agentName });
+        h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+        const agent = agentName ?? 'clerk';
+        for (const kind of ['hard-down', 'context-refusal', 'context-maintenance-failed']) {
+          h.alert(kind, kind, undefined, agent);
+        }
+        if (agent !== 'host') h.alert('refusal-offpath', 'known agent', undefined, agent);
+        await h.incoming('zulip:dev');
+        expect(h.posts[0]!.text).toBe(replyNoticeText(agent, { kind: 'hard-down' }));
+        h.emit({ type, agentName: agent });
+        await h.settle();
+        expect(h.module.episodeState()).toEqual([expect.objectContaining({ key: 'host', kinds: ['refusal-offpath'], tier: 'status' })]);
+        expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText(agent, { kind: 'hard-down' }), replyClearText(agent)]);
+        await h.incoming('zulip:dev');
+        expect(h.posts.length).toBe(2);
+      });
+    }
+  }
+
+  test('mixed component and agent kinds retain their existing selection and recovery signals', async () => {
+    const h = await started({ agentName: undefined });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    h.alert('mcpl-down', 'component down', undefined, 'host');
+    h.alert('context-refusal', 'agent compile refused', undefined, 'host');
+    h.emit({ type: 'inference:completed', agentName: 'host' });
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath', 'mcpl-down', 'context-refusal']);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'host', attempts: 1 });
+    await h.settle();
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath', 'context-refusal']);
+    h.emit({ type: 'inference:completed', agentName: 'host' });
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+  });
+
+  for (const timing of ['before', 'after', 'during']) {
+    test(`explicit process clear ${timing} status delivery uses the existing clear lifecycle`, async () => {
+      const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops'] });
+      h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+      const release = timing === 'during' ? h.hold('zulip:ops') : undefined;
+      if (timing !== 'before') await h.fireTimers();
+      expect(h.posts.length).toBe(timing === 'after' ? 1 : 0);
+      h.alert('refusal-offpath-clear', 'explicit recovery', undefined, 'host');
+      release?.();
+      await h.fireTimers();
+      await h.settle();
+      expect(h.module.episodeState()).toEqual([]);
+      expect(h.markers).toEqual([]);
+      expect(h.posts.map((p) => p.text)).toEqual(timing === 'before' ? [] : [
+        statusNoticeText('host', { kind: 'refusal-offpath', message: 'unknown caller' }),
+        statusClearText('host', 'refusal-offpath', timing === 'during' ? 'cleared while posting' : 'explicit recovery'),
+      ]);
+    });
+  }
+
+  test('reconnect retries parked process delivery without claiming auxiliary recovery', async () => {
+    const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops'] }, { brokenServers: ['zulip'] });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    await h.fireTimers();
+    expect(h.calls.n).toBe(1);
+    expect(h.posts).toEqual([]);
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('host', { kind: 'refusal-offpath', message: 'unknown caller' })]);
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+    expect(h.module.episodeState()[0]!.pending).toEqual([]);
+    expect(h.markers).toEqual([]);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'host', attempts: 1 });
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+    h.alert('refusal-offpath-clear', 'explicit recovery', undefined, 'host');
+    await h.settle();
+    expect(h.posts[1]!.text).toBe(statusClearText('host', 'refusal-offpath', 'explicit recovery'));
+    expect(h.module.episodeState()).toEqual([]);
   });
 });
