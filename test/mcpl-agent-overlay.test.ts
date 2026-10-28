@@ -24,6 +24,7 @@ import {
   OPERATOR_ONLY_OVERLAY_FIELDS,
   type AgentOverlayEntry,
 } from '../src/mcpl-config.js';
+import { mcplPanelServer } from '../src/web/panel-data.js';
 
 function withTmp<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), 'agent-overlay-'));
@@ -179,7 +180,7 @@ describe('resolveOverlayEntry', () => {
 
   test('disabled flag is stripped from resolved config', () => {
     const r = resolveOverlayEntry('s', { command: 'node', disabled: false });
-    expect(r).toEqual({ id: 's', command: 'node', disabledCapabilities: BASELINE });
+    expect(r).toEqual({ id: 's', command: 'node', reconnect: true, disabledCapabilities: BASELINE });
   });
 
   test('empty allow/deny lists resolve as absent (strict-schema [] is "unspecified", never deny-all)', () => {
@@ -203,10 +204,56 @@ describe('resolveOverlayEntry', () => {
     expect(BASELINE).toEqual(['contextHooks', 'inferenceLifecycle', 'inferenceRequest', 'toolLifecycle']);
   });
 
-  test('websocket entries default reconnect: true; explicit false is respected; stdio keeps no default', () => {
+  test('every entry defaults reconnect: true, a stdio command as a websocket url; an explicit false stays false', () => {
     expect(resolveOverlayEntry('a', { url: 'wss://x/mcpl' })?.reconnect).toBe(true);
     expect(resolveOverlayEntry('b', { url: 'wss://x/mcpl', reconnect: false })?.reconnect).toBe(false);
-    expect(resolveOverlayEntry('c', { command: 'node' })?.reconnect).toBeUndefined();
+    expect(resolveOverlayEntry('c', { command: 'node' })?.reconnect).toBe(true);
+    expect(resolveOverlayEntry('d', { command: 'node', reconnect: false })?.reconnect).toBe(false);
+  });
+
+  test("every entry the host's composition gives agent-framework reconnects unless it says false, and a null is handed on as written: recipe, mcpl-servers.json and overlay entries", () => withTmp((dir) => {
+    const filePath = join(dir, 'mcpl-servers.json');
+    writeFileSync(filePath, JSON.stringify({ mcplServers: {
+      fromFile: { command: 'node' },
+      fileOff: { command: 'node', reconnect: false },
+      fileNull: { command: 'node', reconnect: null },
+      recipeOff: { command: 'node', reconnect: true },
+      recipeNull: { command: 'node', reconnect: true },
+    } }));
+    const merged = mergeRecipeServers({
+      inline: { command: 'node' },
+      inlineUrl: { url: 'wss://x/mcpl' },
+      inlineOff: { command: 'node', reconnect: false },
+      inlineNull: { command: 'node', reconnect: null },
+      fromFile: {},
+      fileOff: {},
+      fileNull: {},
+      recipeOff: { reconnect: false },
+      recipeNull: { reconnect: null },
+      replaced: { command: 'node', reconnect: false },
+    }, loadMcplServers(filePath));
+    const overlayPath = join(dir, 'mcpl-servers.agent.json');
+    writeFileSync(overlayPath, JSON.stringify({ mcplServers: {
+      added: { command: 'node' },
+      addedOff: { command: 'node', reconnect: false },
+      replaced: { command: 'bun' },
+    } }));
+    const final = applyAgentOverlay(merged, overlayPath);
+    expect(Object.fromEntries(final.map((s) => [s.id, s.reconnect]))).toEqual({
+      inline: true, inlineUrl: true, inlineOff: false, inlineNull: null, fromFile: true, fileOff: false, fileNull: null, recipeOff: false, recipeNull: null,
+      replaced: true, added: true, addedOff: false,
+    });
+  }));
+
+  test("the Web UI panel's row for a mcpl-servers.json entry keeps the fields it shows and gives reconnect as file and recipe compose it: the recipe's, else the file's, else true", () => {
+    const entry = { command: 'node', args: ['a.mjs'], env: { A: '1' }, toolPrefix: 'p', enabledFeatureSets: ['chat'], disabledFeatureSets: ['chat.admin'] };
+    expect(mcplPanelServer('a', entry)).toEqual({ id: 'a', ...entry, reconnect: true });
+    expect(mcplPanelServer('b', { command: 'node', reconnect: false }).reconnect).toBe(false);
+    expect(mcplPanelServer('c', { command: 'node', reconnect: null as unknown as boolean }).reconnect).toBeNull();
+    expect(mcplPanelServer('d', { command: 'node' }, { reconnect: false }).reconnect).toBe(false);
+    expect(mcplPanelServer('e', { command: 'node', reconnect: false }, { reconnect: true }).reconnect).toBe(true);
+    expect(mcplPanelServer('f', { command: 'node', reconnect: false }, { toolPrefix: 'x' }).reconnect).toBe(false);
+    expect(mcplPanelServer('g', { command: 'node', reconnect: true }, { reconnect: null }).reconnect).toBeNull();
   });
 
   test('entry-supplied disabledCapabilities union with the baseline, never replace it', () => {
@@ -568,10 +615,10 @@ describe('what an overlay replacement lacks of the operator definition', () => {
     });
   });
 
-  test('an entry that names a url gets the reconnect default, as on main, and one the framework refuses is named as refused', () => {
+  test('an entry that names a url gets the reconnect default, as one without does, and one the framework refuses is named as refused', () => {
     const both = { command: 'node', url: 'wss://w/mcpl', env: { SESSION_SERVER_TOKEN: 't' } };
     expect(resolveOverlayEntry('shell', both)!.reconnect).toBe(true);
-    expect(resolveOverlayEntry('shell', { command: 'node' })!.reconnect).toBeUndefined();
+    expect(resolveOverlayEntry('shell', { command: 'node' })!.reconnect).toBe(true);
     expect(lostByReplacement(serverProvisions({ ...shell, token: 'tok' }), both)).toBeNull();
     withTmp((dir) => {
       const path = join(dir, 'mcpl-servers.agent.json');

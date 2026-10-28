@@ -189,7 +189,7 @@ describe('review: a recipe can name a file-defined server by id alone', () => {
 
   test('mergeRecipeServers: recipe-defined servers pass through; unknown id-only entries fail loudly', () => {
     const [own] = mergeRecipeServers({ avatar: { command: 'node', args: ['a.mjs'] } }, []);
-    expect(own).toEqual({ id: 'avatar', command: 'node', args: ['a.mjs'] });
+    expect(own).toEqual({ id: 'avatar', command: 'node', args: ['a.mjs'], reconnect: true });
     expect(() => mergeRecipeServers({ zulpi: { toolPrefix: 'z' } }, [{ id: 'zulip', command: 'python' }]))
       .toThrow(/mcpServers\.zulpi has no "command" or "url", and mcpl-servers\.json defines no "zulpi"/);
   });

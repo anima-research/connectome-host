@@ -267,7 +267,7 @@ export class McplAdminModule implements Module {
             token: { type: 'string', description: 'Token for WebSocket auth, sent as the url\'s `token` parameter (only when the operator hands you one — prefer `access`). mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
             access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle. mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
-            reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
+            reconnect: { type: 'boolean', description: 'Reconnect after losing the server: a websocket url is dialled again, and a stdio command is started again when its process exits or fails to start. Default: true. With false, a lost server stays down until mcpl_restart.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
             disabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set deny-list; wins over enabled.' },
             enabledTools: { type: 'array', items: { type: 'string' }, description: 'Tool allow-list (bare names, * wildcard). Omit or pass [] for all offered.' },
@@ -280,8 +280,10 @@ export class McplAdminModule implements Module {
         name: 'mcpl_restart',
         description:
           'Restart an MCPL server: kill the process and respawn it with its current ' +
-          'config. Use after rebuilding a server\'s dist, or to recover a crashed ' +
-          'server (reconnect:true does not respawn dead children — this does). ' +
+          'config. Use after rebuilding a server\'s dist, or to bring back a server that is ' +
+          'down now: one whose reconnect is false stays down until restarted, and one that ' +
+          'reconnects tries again on its own, at intervals that grow, by default, to about 5 minutes, ' +
+          'while mcpl_list shows it RETRYING. ' +
           'CAUTION: restarting the server that carries your active conversation ' +
           '(e.g. discord) briefly interrupts your own message delivery; it reconnects ' +
           'within a few seconds.',

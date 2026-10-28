@@ -69,7 +69,7 @@ describe('what the host hands agent-framework', () => {
     const merged = mergeRecipeServers({ surfaces: { url: 'ws://127.0.0.1:1/mcpl', toolHints: true } }, []);
     const overlay = serversFile({ mine: { command: 'node' } }, 'mcpl-servers.agent.json');
     const final = applyAgentOverlay(merged, overlay);
-    expect(final.find((s) => s.id === 'surfaces')).toEqual({ id: 'surfaces', url: 'ws://127.0.0.1:1/mcpl', toolHints: true });
+    expect(final.find((s) => s.id === 'surfaces')).toEqual({ id: 'surfaces', url: 'ws://127.0.0.1:1/mcpl', toolHints: true, reconnect: true });
     expect(final.map((s) => s.id)).toEqual(['surfaces', 'mine']);
   });
 });

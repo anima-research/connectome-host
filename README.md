@@ -273,6 +273,16 @@ and tool toggles, reconnect settings, WebSocket transport, `access`,
 An id-only entry the registry doesn't define is a startup error. Changes take
 effect on restart.
 
+Every server reconnects by default: a stdio server whose process exits, or
+fails to start, is started again, and a WebSocket server is dialled again,
+with waits that grow between tries (an entry's `reconnectIntervalMs` and
+`reconnectMaxIntervalMs` set them). One that keeps failing raises an
+`mcpl-down` ops alert. To keep a server down once it's lost, its entry says
+`reconnect: false`; a `null` written in a recipe or `mcpl-servers.json` does
+the same, while `mcpl_deploy` reads a `null` as not given, so the default
+applies. A close the host makes itself, as at batch mode's end, a shutdown or
+an unload, isn't undone.
+
 Agents with `modules.mcplAdmin` can also deploy, restart and unload their own
 servers; those are kept in `mcpl-servers.agent.json` in the working directory,
 or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
@@ -758,8 +768,8 @@ are described in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 
 Whenever stdin is not a TTY and `--headless` is absent, the host runs in
 **batch mode**, with or without `--no-tui`: it reads stdin to EOF, runs each
-line, then stops the agent and closes its MCPL servers. `reconnect: true` does
-not bring them back, because an explicit close is not a failure. That
+line, then stops the agent and closes its MCPL servers. Reconnecting does not
+bring them back, because an explicit close is not a failure. That
 includes a host started by a supervisor or `nohup` with stdin redirected, so
 anything meant to keep serving needs `--headless`. The host prints a
 `[batch]` line at the start and before the teardown. If the recipe enables

@@ -7,8 +7,11 @@ import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor, CredentialActionId } from '../credential-state.js';
 import {
+  applyRecipeServerOverrides,
   readMcplServersFile,
+  reconnectsByDefault,
   DEFAULT_CONFIG_PATH,
+  type ServerFileEntry,
 } from '../mcpl-config.js';
 import {
   countToolClassSources,
@@ -229,6 +232,24 @@ export interface McplLiveServer {
   target?: string;
 }
 
+export function mcplPanelServer(
+  id: string,
+  entry: ServerFileEntry,
+  recipeEntry?: Record<string, unknown>,
+): Record<string, unknown> {
+  const decided = applyRecipeServerOverrides({ reconnect: entry.reconnect }, recipeEntry ?? {});
+  return {
+    id,
+    command: entry.command,
+    ...(entry.args ? { args: entry.args } : {}),
+    ...(entry.env ? { env: entry.env } : {}),
+    ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),
+    reconnect: reconnectsByDefault(decided).reconnect,
+    ...(entry.enabledFeatureSets ? { enabledFeatureSets: entry.enabledFeatureSets } : {}),
+    ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
+  };
+}
+
 export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
   let servers: ReturnType<typeof readMcplServersFile> = {};
   try { servers = readMcplServersFile(DEFAULT_CONFIG_PATH); }
@@ -259,16 +280,8 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
 
   return {
     configPath: DEFAULT_CONFIG_PATH,
-    servers: Object.entries(servers).map(([id, entry]) => ({
-      id,
-      command: entry.command,
-      ...(entry.args ? { args: entry.args } : {}),
-      ...(entry.env ? { env: entry.env } : {}),
-      ...(entry.toolPrefix ? { toolPrefix: entry.toolPrefix } : {}),
-      ...(entry.reconnect !== undefined ? { reconnect: entry.reconnect } : {}),
-      ...(entry.enabledFeatureSets ? { enabledFeatureSets: entry.enabledFeatureSets } : {}),
-      ...(entry.disabledFeatureSets ? { disabledFeatureSets: entry.disabledFeatureSets } : {}),
-    })),
+    servers: Object.entries(servers).map(([id, entry]) =>
+      mcplPanelServer(id, entry, (app.recipe?.mcpServers as Record<string, Record<string, unknown>> | undefined)?.[id])),
     live,
     ...(toolClasses ? { toolClasses } : {}),
   };

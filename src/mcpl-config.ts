@@ -154,6 +154,11 @@ export function applyRecipeServerOverrides<T extends Record<string, unknown>>(
 
 type MergedServer = { id: string; command?: string; url?: string; [k: string]: unknown };
 
+export function reconnectsByDefault<T extends Record<string, unknown>>(server: T): T {
+  if (server.reconnect === undefined) (server as Record<string, unknown>).reconnect = true;
+  return server;
+}
+
 export function mergeRecipeServers(
   recipeServers: Record<string, Record<string, unknown>>,
   fileServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
@@ -163,9 +168,9 @@ export function mergeRecipeServers(
   for (const [id, recipeEntry] of Object.entries(recipeServers)) {
     const fileEntry = fileById.get(id);
     if (fileEntry) {
-      out.push(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer);
+      out.push(reconnectsByDefault(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer));
     } else if (recipeEntry.command || recipeEntry.url) {
-      out.push({ id, ...recipeEntry } as MergedServer);
+      out.push(reconnectsByDefault({ id, ...recipeEntry } as MergedServer));
     } else {
       throw new Error(
         `Recipe mcpServers.${id} has no "command" or "url", and mcpl-servers.json defines no "${id}" ` +
@@ -549,7 +554,7 @@ export function resolveOverlayEntry(
     if (Array.isArray(rec[k]) && (rec[k] as unknown[]).length === 0) delete rec[k];
   }
   for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) delete rec[k];
-  if (read.url && rec.reconnect === undefined) rec.reconnect = true;
+  reconnectsByDefault(rec);
   const denied = new Set<string>([
     ...AGENT_DEPLOY_DENIED_CAPABILITIES,
     // Each item as String() reads it, so a nested list such as [["channels"]]
