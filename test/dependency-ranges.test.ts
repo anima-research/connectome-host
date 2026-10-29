@@ -3,8 +3,8 @@
  *
  * context-manager's range takes only a release with the window APIs
  * agent-framework's presentation index calls. Main published context-manager
- * 0.23.0 without them, so the presentation release is 0.24.0, and a range
- * that admitted 0.23.0 would install a context-manager the host fails to load
+ * 0.23.0, then 0.24.0 (Dendrite's derive), without them, so the presentation
+ * release is 0.25.0, and a range that admitted 0.24.0 would install a context-manager the host fails to load
  * on. Each @animalabs package agent-framework or context-manager depends on
  * too is declared within their range, so an install takes one copy of each:
  * two membrane copies make the host's `Membrane` a type agent-framework's and
@@ -37,18 +37,18 @@ const within = (inner: string, outer: string): boolean => Bun.semver.satisfies(f
 
 describe("the host's dependency ranges (#291's release set)", () => {
   test('the caret reading', () => {
-    expect(Bun.semver.satisfies('0.23.0', '^0.24.0')).toBe(false);
-    expect(Bun.semver.satisfies('0.24.3', '^0.24.0')).toBe(true);
+    expect(Bun.semver.satisfies('0.24.0', '^0.25.0')).toBe(false);
+    expect(Bun.semver.satisfies('0.25.3', '^0.25.0')).toBe(true);
     expect(within('^0.8.2', '^0.8.0')).toBe(true);
     expect(within('^0.7.2', '^0.8.0')).toBe(false);
     expect(within('^0.8.0', '^0.8.2')).toBe(false);
     expect(() => floorOf('>=0.8.0')).toThrow('not a caret range');
   });
 
-  test("takes context-manager only at a release with the window APIs: not main's 0.23.0, which has none", () => {
+  test("takes context-manager only at a release with the window APIs: not main's 0.23.0 or 0.24.0, which have none", () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
     expect(range).toBeDefined();
-    expect(Bun.semver.satisfies('0.23.0', range!)).toBe(false);
+    for (const published of ['0.23.0', '0.24.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
     const linked = installed('@animalabs/context-manager');
     expect(Bun.semver.satisfies(linked.version, range!)).toBe(true);
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
