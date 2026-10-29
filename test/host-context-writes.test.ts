@@ -274,21 +274,28 @@ describe('a bare /newtopic', () => {
     }
   });
 
-  test('when the strategy changed while its summary was written, stores nothing, and its answer gives the summary back', async () => {
+  test("when the strategy changed while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
     const { h, app, releaseSummary } = await bare('newtopic-bare-strategy-');
     try {
       const result = handleCommand('/newtopic', app);
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       await cm.setStrategy(new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }));
       releaseSummary();
-      expect(texts(await result.asyncWork!)).toEqual(refusedWith('the branch or the strategy changed'));
+      // context-manager's generateTransitionSummary() refuses a summary written
+      // while the manager was re-initialized or its branch moved (0.25.0), so
+      // there is no summary to give back: the answer says why and that nothing
+      // was stored (the house's #485 finding 11).
+      const answer = texts(await result.asyncWork!).join('\n');
+      expect(answer).toMatch(/the transition summary couldn't be written \(/);
+      expect(answer).toMatch(/nothing was stored/);
+      expect(answer).not.toMatch(/\[Topic Transition\]/);
       expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
     } finally {
       await h.cleanup();
     }
   });
 
-  test('when only the branch moved while its summary was written, stores nothing, and its answer gives the summary back', async () => {
+  test("when only the branch moved while its summary was written, stores nothing, and its answer says the summary couldn't be written", async () => {
     const { h, app, releaseSummary } = await bare('newtopic-bare-branch-');
     try {
       const result = handleCommand('/newtopic', app);
@@ -298,7 +305,14 @@ describe('a bare /newtopic', () => {
       await h.framework.switchBranch(side, { requester: { via: 'host-console' } });
       expect(cm.getStrategy()).toBe(strategyBefore);
       releaseSummary();
-      expect(texts(await result.asyncWork!)).toEqual(refusedWith('the branch or the strategy changed'));
+      // context-manager's generateTransitionSummary() refuses a summary written
+      // while the manager was re-initialized or its branch moved (0.25.0), so
+      // there is no summary to give back: the answer says why and that nothing
+      // was stored (the house's #485 finding 11).
+      const answer = texts(await result.asyncWork!).join('\n');
+      expect(answer).toMatch(/the transition summary couldn't be written \(/);
+      expect(answer).toMatch(/nothing was stored/);
+      expect(answer).not.toMatch(/\[Topic Transition\]/);
       expect(h.framework.getAgent('clerk')!.getContextManager().getAllMessages().some((m) => textOf(m).startsWith('[Topic Transition]'))).toBe(false);
     } finally {
       await h.cleanup();
