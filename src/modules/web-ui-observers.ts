@@ -624,6 +624,11 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'tune-out:cancelled': OPS,
   'tune-out:timer-failed': OPS,
   'tune-out:ack-failed': OPS,
+  // A tune-out's channel announcement, posted or not (ids and the error, no
+  // text), and an all-except scope's wakes paused at their budget.
+  'tune-out:announced': OPS,
+  'tune-out:announce-failed': OPS,
+  'tune-out:wake-budget-paused': OPS,
   // Held speech's delivery: held, resent, dismissed, with no text.
   'prose:drafts-held': OPS,
   'prose:draft-resent': OPS,

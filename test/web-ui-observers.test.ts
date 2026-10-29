@@ -557,8 +557,28 @@ describe('observer sessions and connections end with their grant', () => {
   });
 });
 
-/** A trace raised at an emitTrace call (emitTrace, emitTraceFn, hooks.emitTrace): the type of the event it's given. */
-const EMIT = /\bemitTrace(?:Fn)?\(\s*\{\s*type: '([^']+)'/g;
+/** The traces raised at each emitTrace call (emitTrace, emitTraceFn,
+ *  hooks.emitTrace) in `code`: the type of the event it's given, or of each
+ *  event a conditional gives it (`ok ? { type: 'a' } : { type: 'b' }`). */
+function emittedTypes(code: string): string[] {
+  const types: string[] = [];
+  for (const call of code.matchAll(/\bemitTrace(?:Fn)?\(/g)) {
+    // The call's argument, up to its closing parenthesis, strings skipped whole.
+    const from = call.index! + call[0].length;
+    let depth = 1;
+    let to = from;
+    for (; to < code.length && depth > 0; to++) {
+      const c = code[to]!;
+      if (c === '"' || c === "'" || c === '`') {
+        for (to++; to < code.length && code[to] !== c; to++) if (code[to] === '\\') to++;
+      } else if (c === '(') depth++;
+      else if (c === ')') depth--;
+    }
+    const argument = code.slice(from, to - 1);
+    for (const m of argument.matchAll(/(?:^\s*|\?\s*|\s:\s*)\{\s*type: '([^']+)'/g)) types.push(m[1]!);
+  }
+  return types;
+}
 
 describe('scope filters', () => {
   const entry: WelcomeMessageEntry = {
@@ -706,9 +726,12 @@ describe('scope filters', () => {
     // process event, a workspace event) is no trace and has no entry.
     const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? sources(join(dir, entry.name)) : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
-    const raised = new Set([...types, ...sources(dirname(index)).flatMap((path) =>
-      [...readFileSync(path, 'utf-8').matchAll(EMIT)].map((m) => m[1]!))]);
+    const emitted = new Set(sources(dirname(index)).flatMap((path) => emittedTypes(readFileSync(path, 'utf-8'))));
+    const raised = new Set([...types, ...emitted]);
     expect(Object.keys(TRACE_SCOPES).filter((type) => !raised.has(type))).toEqual([]);
+    // And each one raised outside the union has an entry too, such as the
+    // tune-out's announcement traces, which a conditional gives emitTrace.
+    expect([...emitted].filter((type) => !Object.hasOwn(TRACE_SCOPES, type)).sort()).toEqual([]);
   });
 
   test("the scan for the traces raised outside trace.ts's union reads only an emitTrace call's event", () => {
@@ -719,8 +742,9 @@ describe('scope filters', () => {
       "this.pushEvent({ type: 'inference-request', agentName });",
       "const event = { type: 'workspace:created', path };",
       "emitTrace(build({ type: 'discord:message' }));",
+      "this.hooks.emitTrace(r.success\n        ? { type: 'tune-out:announced', ...base }\n        : { type: 'tune-out:announce-failed', ...base, error: r.error ?? 'publish failed' }),",
     ].join('\n');
-    expect([...code.matchAll(EMIT)].map((m) => m[1])).toEqual(['gate:decided', 'mcpl:channel-open', 'tune-out:started']);
+    expect(emittedTypes(code)).toEqual(['gate:decided', 'mcpl:channel-open', 'tune-out:started', 'tune-out:announced', 'tune-out:announce-failed']);
   });
 
   test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
