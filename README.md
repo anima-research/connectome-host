@@ -226,7 +226,7 @@ channel that last had a message either),
 so keep the cap low. Ephemeral subagents don't inherit it: their streams run
 with it off, and a fork's or spawn's orientation lists `auto-continue` beside
 the parent's. It rests on `AgentConfig.autoContinue` (agent-framework#744),
-which agent-framework 0.29.0, this host's floor, has. See Agent Framework's
+which every agent-framework this host can install has. See Agent Framework's
 `docs/auto-continue.md`.
 
 ```json

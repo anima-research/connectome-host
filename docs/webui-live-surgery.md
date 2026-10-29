@@ -5,7 +5,7 @@ restart. Everything here follows the idiom the offline surgeries use: fork
 first, mutate the fork, make the fork the live branch. The parent branch
 keeps everything, so "undo" is always `checkout <parent>`.
 
-The agent-framework this host depends on (^0.21.0) provides all of it. The
+Every agent-framework this host can install provides all of it. The
 SPA still feature-detects each affordance from `welcome.features`, so a
 bundle against a host without them simply shows none.
 

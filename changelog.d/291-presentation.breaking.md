@@ -62,10 +62,11 @@
   thinking to what came before it, leaves the thinking after that row out.
   Nothing is lost. A queue of held writes that an earlier release left is
   stored once at this release's first start, and an earlier release then
-  finds it empty. With a chronicle that has the batched identity append, the
-  first window written down with rows moves the store's MANIFEST to version 2,
-  which earlier chronicle builds refuse (context-manager's notes): going back
-  after that needs the copy the update took. `/update back restore` puts it
+  finds it empty. The first window written down with rows, or a presentation
+  of more than one row, moves the store's MANIFEST to version 2, which
+  chronicle 0.5.0 and earlier refuse, and so every earlier release of this
+  host (context-manager's notes): going back after that needs the copy the
+  update took. `/update back restore` puts it
   back. `/update back keep` stops at the older release's store audit, and the
   next start puts this release back.
 
