@@ -9,13 +9,17 @@
     operator changed the agent's context settings, through the settings
     module.
   - `/newtopic`'s `[Topic Transition]` row is the agent's own row: in its
-    window, where its head window starts, and in no other resident's. A
-    bare `/newtopic` writes its summary first and stores the row only while
-    the agent has no turn alive: a turn that started during the summary
-    used to get the row in its window between rounds its requests were sent
-    without, and now the row follows the turn. If the agent is still busy
-    ten minutes later, or the branch moved meanwhile, nothing is stored and
-    the answer gives the summary to pass as `/newtopic <text>`.
+    window, where its head window starts, and in no other resident's. It is
+    stored only while the agent has no turn alive. A turn that started
+    while a bare `/newtopic` wrote its summary used to get the row in its
+    window between rounds its requests were sent without, and so did a turn
+    whose continuation or retry was on its way when `/newtopic <text>` was
+    given (the agent reads idle then, a budget restart's continuation
+    queued or a provider hold's retry waiting); now the row follows the
+    turn, and `/newtopic <text>` says it waits. If the agent is still busy
+    ten minutes later, or the branch moved meanwhile, nothing is stored; a
+    bare `/newtopic`'s answer gives the summary to pass as
+    `/newtopic <text>`.
   - A subagent's result or failure told straight to the agent that started
     it, when the run has no route of its own, is written for that agent, and
     tts-relay's note that a voiced reply was interrupted is written for the

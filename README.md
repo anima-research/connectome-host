@@ -878,8 +878,10 @@ Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
 `/branchto`, `/newtopic`) are refused while a turn is in flight: `/checkout`,
 `/restore` and `/branchto` while any agent sharing the store is mid-turn, the
 subconscious included, and `/undo`, `/redo` and `/newtopic` while the agent
-the command acts for is. A bare `/newtopic` writes its summary first, and if a
-turn starts meanwhile, stores the transition once that turn has ended.
+the command acts for is. `/newtopic` stores its transition only while the
+agent has no turn alive: if a continuation or a retry of the agent's turn is
+on its way, or a turn starts while a bare `/newtopic` writes its summary, it
+stores the transition once that turn has ended.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the

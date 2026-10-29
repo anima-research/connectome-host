@@ -335,8 +335,10 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
   (agent-framework #291); the transcripts mark the undone rows, which the
   record keeps, on the `window:undone` trace. `/newtopic` resets the agent's
   head window at a transition row of its own, stored only while the agent has
-  no turn alive. They are refused while a turn is in flight. Checkpoints are
-  held in memory for the session.
+  no turn alive: one whose continuation or retry is on its way, or that
+  started while a bare `/newtopic` wrote its summary, is waited for. They are
+  refused while a turn is in flight. Checkpoints are held in memory for the
+  session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages
   by forking and switching branches; quiesce/resume the host. Every action is
   appended to `sessions/<id>/operator-actions.jsonl`.

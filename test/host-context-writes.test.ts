@@ -155,6 +155,47 @@ describe('/newtopic', () => {
       await h.cleanup();
     }
   });
+
+  // An idle agent's turn is alive while a continuation of it (a budget
+  // restart's) or a retry (a provider hold's) is on its way: the agent's
+  // status reads idle, and inFlightGuard, which reads only that, lets the
+  // command by. Stored then, the transition entered the window between the
+  // turn's rounds (the review's probe, HOST-1).
+  test("given its text while a continuation of the agent's turn is on its way, stores its transition once the turn has ended", async () => {
+    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix: 'newtopic-alive-' });
+    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
+    const original = fw.pendingContinuationAgents.bind(h.framework);
+    try {
+      await h.turn('clerk');
+      // A continuation of clerk's turn on its way.
+      fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
+      expect(h.framework.getAgent('clerk')!.state.status).toBe('idle');
+      expect(h.framework.getHostModeStatus().activeTurnAgents).toContain('clerk');
+      expect(() => h.framework.undoLastTurn('clerk')).toThrow("a turn of clerk's is alive");
+
+      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
+      const result = handleCommand('/newtopic Moving on.', app);
+      expect(result.lines.map((l) => l.text)).toEqual([
+        'Resetting topic with provided context...',
+        "  A turn of clerk's is still alive (a continuation or a retry of it on its way): the transition is stored once it has ended.",
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+
+      // The turn ends.
+      fw.pendingContinuationAgents = original;
+      const outcome = await result.asyncWork!;
+      expect(outcome.lines.map((l) => l.text)).toEqual(['Topic reset. Transition summary:', 'Moving on.']);
+      const row = h.rowWith('clerk', '[Topic Transition]')!;
+      expect(audienceOf(row.metadata)).toEqual({ audience: ['clerk'], ownRowOf: 'clerk' });
+      expect(h.inWindow('clerk', row.id)).toBe(true);
+      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+    } finally {
+      fw.pendingContinuationAgents = original;
+      await h.cleanup();
+    }
+  });
 });
 
 describe('a bare /newtopic', () => {

@@ -71,12 +71,13 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
   {
     file: 'src/commands.ts',
     call: 'cm.resetHeadWindow',
-    count: 2,
+    count: 1,
     why: "/newtopic's transition, given its text or after its summary, stamped as the agent's own row (asOwnRow). " +
       'context-manager presents it as it stores it, ' +
       "before the head window starts at it, and the command stores it only where it has found the agent idle with no turn " +
-      'alive, with no await between: at once given its text, and for a bare /newtopic once the summary is written and any ' +
-      'turn that started meanwhile has ended.',
+      'alive (idleWithNoTurn, which counts a continuation or a retry on its way), with no await between: given its text, ' +
+      'at once if the agent is so, and for a bare /newtopic once the summary is written; otherwise once the turn alive ' +
+      'has ended.',
   },
   {
     file: 'src/modules/time-module.ts',
