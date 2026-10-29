@@ -464,14 +464,31 @@ describe('reply recovery', () => {
     await h.module.stop();
     expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], notified: ['zulip:dev'], pending: ['zulip:other'] });
     h.broken.clear();
+    // The new session starts the module with its context before it hands it
+    // the framework (index.ts), and the markers go through that context.
+    const nextMarkers: Array<{ text: string; opts: unknown }> = [];
+    const next = { ...h.ctx, addMessage: (_p: string, content: Array<{ text: string }>, _m?: unknown, opts?: unknown) => {
+      nextMarkers.push({ text: content[0]!.text, opts });
+      return 'id';
+    } } as unknown as ModuleContext;
+    const before = h.markers.length;
+    await h.module.start(next);
     h.module.setFramework(h.framework as never);
     for (let i = 0; i < 3; i++) await h.settle();
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev', 'zulip:other']);
+    // The episode wrote its one marker before the swap.
+    expect(h.markers.length).toBe(before);
+    expect(nextMarkers).toEqual([]);
     await h.incoming('zulip:dev');
     expect(h.posts.length).toBe(3);
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
     expect(h.posts.slice(3).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops', 'zulip:other']);
+    // A new outage's marker is written through the new session's context, for the agent.
+    h.alert('auth-rejected', 'rejected');
+    await h.settle();
+    expect(h.markers.length).toBe(before);
+    expect(nextMarkers.map((m) => [m.text.includes('(auth-rejected)'), m.opts])).toEqual([[true, { forAgent: 'clerk' }]]);
   });
 });
 

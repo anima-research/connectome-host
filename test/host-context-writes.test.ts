@@ -456,10 +456,12 @@ describe("a subagent's seed rows", () => {
   /** The child's rows as its run is given them, and its window once the run is done. */
   interface Seeded { name: string; seeds: StoredMessage[]; window: string[] }
 
-  async function launch(calls: Array<{ call: ToolCall; parentRows?: boolean }>) {
+  /** The calls run for clerk, after a turn of clerk's gives its context rows for a fork to copy. */
+  async function launch(calls: Array<{ call: ToolCall }>) {
     const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'clerk', defaultModel: 'model-kid', maxRetries: 0 });
     const h = await bootPresentedHost({ agents: ['clerk'], modules: [subagent as unknown as Module], prefix: 'subagent-seeds-' });
     subagent.setFramework(h.framework);
+    await h.turn('clerk');
     const seeded: Seeded[] = [];
     const fw = h.framework as unknown as { runEphemeralToCompletion: (...args: unknown[]) => Promise<unknown> };
     const run = fw.runEphemeralToCompletion.bind(h.framework);
@@ -494,6 +496,8 @@ describe("a subagent's seed rows", () => {
           expect(window).toContain(seed.id);
         }
       }
+      // The fork's copy of clerk's context is among its own rows.
+      expect(seeded[1]!.seeds.map(textOf)).toContain('clerk reply 1');
       expect(h.adapter.wireOf('scout')[0]).toContain('Read the release notes.');
       expect(h.adapter.wireOf('forked')[0]).toContain('Count the ledger rows.');
     } finally {
