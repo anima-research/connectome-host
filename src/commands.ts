@@ -29,7 +29,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { asOwnRow, OperatorActionError, type Agent, type AgentFramework, type OperatorRequester } from '@animalabs/agent-framework';
-import { isResettableStrategy, type ContextManager, type MessageMetadata, type StrategyContext } from '@animalabs/context-manager';
+import { type ContextManager, type MessageMetadata } from '@animalabs/context-manager';
 import type { Recipe } from './recipe.js';
 import type { CredentialActionId, CredentialState } from './credential-state.js';
 import { readMcplServersFile, saveMcplServers, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
@@ -1491,28 +1491,17 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * refuses one whose branch moved while it was written), nothing is stored
  * and the answer says why.
  *
- * The summary is the one resetHeadWindow writes for itself, from the
- * manager's own strategy context. context-manager has no public call that
- * writes it without storing it, so this reaches the manager's private
- * createStrategyContext through a cast, and says so if a context-manager
- * without it is installed. A public call for that is to come with
- * anima-research/context-manager#350, and will replace the cast.
+ * The summary is the one resetHeadWindow writes for itself: context-manager's
+ * generateTransitionSummary() (0.25.0), which writes it from the manager's own
+ * strategy context and stores nothing.
  */
 async function bareTransition(app: AppContext, agentName: string, cm: ContextManager, metadata: MessageMetadata): Promise<string> {
   const framework = app.framework;
   const strategy = cm.getStrategy();
-  if (!isResettableStrategy(strategy)) throw new Error('Active strategy does not support head window reset');
-  const contextOf = (cm as unknown as { createStrategyContext?: () => StrategyContext }).createStrategyContext;
-  if (typeof contextOf !== 'function') {
-    throw new Error(
-      "this context-manager can't write a transition summary apart from storing it; " +
-        'give the transition yourself: /newtopic <text>',
-    );
-  }
   const branch = cm.currentBranch().id;
   let summary: string;
   try {
-    summary = await strategy.generateTransitionSummary(contextOf.call(cm));
+    summary = await cm.generateTransitionSummary();
   } catch (err) {
     throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
   }
