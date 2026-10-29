@@ -1444,10 +1444,10 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
   };
 }
 
-/** How long /newtopic waits, once it has its transition (its text, or a bare one's summary), for a turn of the agent to end. */
-const NEWTOPIC_IDLE_WAIT_MS = 10 * 60_000;
-/** How often it looks. */
-const NEWTOPIC_IDLE_POLL_MS = 100;
+/** How long /newtopic waits, once it has its transition (its text, or a
+ *  bare one's summary), for a turn of the agent to end, and how often it
+ *  looks. Each wait reads them as it begins; a test shortens them. */
+export const newTopicIdleWait = { waitMs: 10 * 60_000, pollMs: 100 };
 
 /** Whether the agent is idle with no turn alive: no turn token, and no
  *  continuation or retry of its turn on its way (getHostModeStatus's
@@ -1466,11 +1466,12 @@ function idleWithNoTurn(framework: AgentFramework, agentName: string): boolean {
  * so (given its text, resetHeadWindow stores and presents the row before it
  * first awaits). Stored inside a turn, the row would enter the agent's window
  * between rounds its requests were sent without, past the framework's turn
- * gate. A turn alive is waited for, up to NEWTOPIC_IDLE_WAIT_MS, so the
+ * gate. A turn alive is waited for, up to newTopicIdleWait.waitMs, so the
  * transition follows it in the window. Nothing is stored if the agent is
- * still busy then (`begun.waited`), if it has gone, or if the branch or the
- * strategy changed since `begun.strategy` and `begun.branch` were read
- * (`begun.since`). When the agent is
+ * still busy then (`begun.waited`, and the answer says `begun.again`), if
+ * it has gone, or if the branch or the strategy changed since
+ * `begun.strategy` and `begun.branch` were read (`begun.since`, and the
+ * answer gives back `begun.kept`). When the agent is
  * idle with no turn alive as this is called, the row is stored before this
  * returns: nothing awaits before the first check.
  */
@@ -1480,26 +1481,27 @@ async function transitionOnceIdle(
   cm: ContextManager,
   transition: string,
   metadata: MessageMetadata,
-  begun: { strategy: unknown; branch: string; since: string; waited: string; again: string },
+  begun: { strategy: unknown; branch: string; since: string; waited: string; again: string; kept: string },
 ): Promise<string> {
-  const deadline = Date.now() + NEWTOPIC_IDLE_WAIT_MS;
+  const { waitMs, pollMs } = newTopicIdleWait;
+  const deadline = Date.now() + waitMs;
   const nothingStored = 'nothing was stored';
   for (;;) {
     if (framework.getAgent(agentName)?.getContextManager() !== cm) {
-      throw new Error(`${agentName} is no longer registered with this context; ${nothingStored}`);
+      throw new Error(`${agentName} is no longer registered with this context; ${nothingStored}${begun.kept}`);
     }
     if (cm.getStrategy() !== begun.strategy || cm.currentBranch().id !== begun.branch) {
-      throw new Error(`the branch or the strategy changed since ${begun.since}; ${nothingStored}`);
+      throw new Error(`the branch or the strategy changed since ${begun.since}; ${nothingStored}${begun.kept}`);
     }
     // No await from this check to the store: no turn starts between them.
     if (idleWithNoTurn(framework, agentName)) return cm.resetHeadWindow(transition, { metadata });
     if (Date.now() >= deadline) {
       throw new Error(
-        `${agentName} still had a turn alive ${Math.round(NEWTOPIC_IDLE_WAIT_MS / 1000)} s after ${begun.waited}, ` +
+        `${agentName} still had a turn alive ${Math.round(waitMs / 1000)} s after ${begun.waited}, ` +
           `and ${nothingStored}. ${begun.again}`,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, NEWTOPIC_IDLE_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
 
@@ -1523,6 +1525,7 @@ function givenTransitionOnceIdle(
     since: '/newtopic was given',
     waited: '/newtopic was given',
     again: 'Run /newtopic again once its turn has ended.',
+    kept: '',
   });
 }
 
@@ -1532,7 +1535,8 @@ function givenTransitionOnceIdle(
  * can start, and it is stored as the transition once the agent is idle with
  * no turn alive (transitionOnceIdle). Nothing is stored if the branch or the
  * strategy changed since the summary was begun: the summary is of the head
- * window that was there.
+ * window that was there. Whenever nothing is stored, the answer gives the
+ * summary back.
  *
  * The summary is the one resetHeadWindow writes for itself, from the
  * manager's own strategy context: context-manager has no public call that
@@ -1563,6 +1567,7 @@ async function newTopicOnceIdle(
     since: 'the transition summary was begun',
     waited: 'the transition summary was written',
     again: `To store it, run /newtopic with it as the text:\n${summary}`,
+    kept: `. The summary it wrote, of the head window then:\n${summary}`,
   });
 }
 

@@ -28,7 +28,7 @@ import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
-import { createBranchState, handleCommand } from '../src/commands.js';
+import { createBranchState, handleCommand, newTopicIdleWait } from '../src/commands.js';
 import { NoticesModule } from '../src/modules/notices-module.js';
 import { SettingsModule } from '../src/modules/settings-module.js';
 import { SubagentModule } from '../src/modules/subagent-module.js';
@@ -247,6 +247,67 @@ describe('a bare /newtopic', () => {
       expect(h.inWindow('mira', row.id)).toBe(false);
     } finally {
       await h.cleanup();
+    }
+  });
+});
+
+// A bare /newtopic that gives up stores nothing, and its summary, an LLM
+// call's, is in its answer, so the operator can store it with /newtopic
+// <text>. Its wait is shortened here (newTopicIdleWait), and the turn kept
+// alive by a continuation on its way, as the test above keeps one.
+describe('a bare /newtopic that gives up', () => {
+  const SUMMARY = 'The ledger work is done; next is the release.';
+
+  async function bareWithTurnAlive(prefix: string) {
+    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
+    (strategy as unknown as { generateTransitionSummary: () => Promise<string> }).generateTransitionSummary = async () => SUMMARY;
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
+    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
+    const original = fw.pendingContinuationAgents.bind(h.framework);
+    await h.turn('clerk');
+    fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
+    const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
+    const endTurn = () => { fw.pendingContinuationAgents = original; };
+    return { h, app, endTurn, cleanup: async () => { endTurn(); await h.cleanup(); } };
+  }
+
+  test('at the deadline, with a turn still alive, stores nothing, and its answer gives the summary to store', async () => {
+    const saved = { ...newTopicIdleWait };
+    Object.assign(newTopicIdleWait, { waitMs: 1000, pollMs: 20 });
+    const { h, app, endTurn, cleanup } = await bareWithTurnAlive('newtopic-deadline-');
+    try {
+      const outcome = await handleCommand('/newtopic', app).asyncWork!;
+      expect(outcome.lines.map((l) => l.text)).toEqual([
+        'Topic reset failed: clerk still had a turn alive 1 s after the transition summary was written, and nothing was stored. ' +
+          `To store it, run /newtopic with it as the text:\n${SUMMARY}`,
+      ]);
+      endTurn();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+    } finally {
+      Object.assign(newTopicIdleWait, saved);
+      await cleanup();
+    }
+  });
+
+  test('when the strategy changed while its turn was alive, stores nothing, and its answer gives the summary', async () => {
+    const { h, app, endTurn, cleanup } = await bareWithTurnAlive('newtopic-changed-');
+    try {
+      const result = handleCommand('/newtopic', app);
+      // The summary is written; the wait looks while the turn is alive.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      await cm.setStrategy(new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }));
+      const outcome = await result.asyncWork!;
+      expect(outcome.lines.map((l) => l.text)).toEqual([
+        'Topic reset failed: the branch or the strategy changed since the transition summary was begun; nothing was stored. ' +
+          `The summary it wrote, of the head window then:\n${SUMMARY}`,
+      ]);
+      endTurn();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+    } finally {
+      await cleanup();
     }
   });
 });
