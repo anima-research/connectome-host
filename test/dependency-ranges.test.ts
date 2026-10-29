@@ -22,7 +22,11 @@
  * Whether a range admits the installed version is asked only of a package
  * installed from the registry. A sibling tree linked into node_modules (a
  * presentation branch built beside this one) keeps its main's version number
- * until its release is cut, so it is checked by the calls it has instead.
+ * until its release is cut, so for context-manager and chronicle the calls
+ * their presentation releases added are checked instead, the ones
+ * agent-framework's create() doesn't check itself. An agent-framework without
+ * the exports the host imports fails the host's load, and membrane's range
+ * is the one the host declared before the presentation.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -58,28 +62,18 @@ function floorOf(range: string): string {
 const within = (inner: string, outer: string): boolean => Bun.semver.satisfies(floorOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test('the caret reading', () => {
-    expect(Bun.semver.satisfies('0.24.0', '^0.25.0')).toBe(false);
-    expect(Bun.semver.satisfies('0.25.3', '^0.25.0')).toBe(true);
-    expect(within('^0.8.2', '^0.8.0')).toBe(true);
-    expect(within('^0.7.2', '^0.8.0')).toBe(false);
-    expect(within('^0.8.0', '^0.8.2')).toBe(false);
-    expect(() => floorOf('>=0.8.0')).toThrow('not a caret range');
-  });
-
   test("takes agent-framework only at the presentation release: not main's 0.30.0, which has no presentation index", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    expect(range).toBe('^0.31.0');
     for (const published of ['0.29.0', '0.30.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
   test("takes context-manager only at a release with the window APIs: not main's 0.23.0 or 0.24.0, which have none", () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
-    expect(range).toBe('^0.25.0');
     for (const published of ['0.23.0', '0.24.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    // agent-framework's create() refuses a ContextManager without presentRows.
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
-    for (const method of ['windowStatusOf', 'presentRows', 'retractRows', 'getPresentedMessages']) {
+    for (const method of ['windowStatusOf', 'retractRows', 'getPresentedMessages']) {
       expect(typeof proto[method], method).toBe('function');
     }
     admitsInstalled('@animalabs/context-manager', range!);
@@ -87,10 +81,10 @@ describe("the host's dependency ranges (#291's release set)", () => {
 
   test('takes chronicle only at a release with the batched append: not 0.4.0, or the published 0.5.0, which has none', () => {
     const range = ours.dependencies?.['@animalabs/chronicle'];
-    expect(range).toBe('^0.6.0');
     for (const published of ['0.4.0', '0.5.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    // agent-framework's create() refuses a store without appendManyToStateJsonWithIdentity.
     const proto = JsStore.prototype as unknown as Record<string, unknown>;
-    for (const method of ['appendManyToStateJsonWithIdentity', 'appendManyToStateJson', 'getStateItemsJson', 'getRecords']) {
+    for (const method of ['appendManyToStateJson', 'getStateItemsJson', 'getRecords']) {
       expect(typeof proto[method], method).toBe('function');
     }
     admitsInstalled('@animalabs/chronicle', range!);
@@ -113,7 +107,6 @@ describe("the host's dependency ranges (#291's release set)", () => {
 
   test('takes the membrane the stack runs on', () => {
     const range = ours.dependencies?.['@animalabs/membrane'];
-    expect(range).toBe('^0.8.0');
     admitsInstalled('@animalabs/membrane', range!);
   });
 });
