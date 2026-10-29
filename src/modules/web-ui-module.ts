@@ -258,6 +258,28 @@ interface WindowCapableCm {
 }
 
 const DEFAULT_HOST = '0.0.0.0';
+const LOOPBACK_NAMES: ReadonlySet<string> = new Set(['127.0.0.1', '::1', 'localhost']);
+const NOT_LOOPBACK = 'Forbidden: without basicAuth this Web UI answers only loopback\'s own names (127.0.0.1, ' +
+  'localhost, [::1]). Set basicAuth to serve it under another name.';
+
+const HOST_FORM = /^(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d+)?$/i;
+
+const unbracketed = (name: string) => name.replace(/^\[(.*)\]$/, '$1');
+
+function namesLoopback(host: string | null): boolean {
+  const name = host?.match(HOST_FORM)?.[1];
+  return name !== undefined && LOOPBACK_NAMES.has(unbracketed(name.toLowerCase()));
+}
+
+function isOrigin(origin: unknown): origin is string {
+  if (typeof origin !== 'string' || !URL.canParse(origin)) return false;
+  const { protocol } = new URL(origin);
+  return protocol === 'http:' || protocol === 'https:';
+}
+
+function isLoopbackOrigin(origin: unknown): boolean {
+  return isOrigin(origin) && LOOPBACK_NAMES.has(unbracketed(new URL(origin).hostname));
+}
 
 interface SharedServerState {
   server: ReturnType<typeof Bun.serve>;
@@ -332,7 +354,11 @@ export class WebUiModule implements Module {
   private readonly staticRoot: string;
 
   constructor(config: WebUiModuleConfig = {}) {
-    this.config = config;
+    this.config = {
+      ...config,
+      basicAuth: config.basicAuth || undefined,
+      allowedOrigins: config.allowedOrigins ?? undefined,
+    };
     const moduleDir = dirname(fileURLToPath(import.meta.url));
     const packageRoot = resolve(moduleDir, '..', '..');
     this.staticRoot = resolve(config.staticDir ?? join(packageRoot, 'dist', 'web'));
@@ -345,7 +371,9 @@ export class WebUiModule implements Module {
 
     const port = this.config.port ?? DEFAULT_PORT;
     const host = this.config.host ?? DEFAULT_HOST;
+    this.assertCredentials();
     this.assertSafeBind(host);
+    this.assertOriginCheck();
 
     const state: SharedServerState = {
       server: undefined as unknown as ReturnType<typeof Bun.serve>,
@@ -816,6 +844,11 @@ export class WebUiModule implements Module {
   }
 
   private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
+    // A page whose own name an attacker resolves to 127.0.0.1 (DNS rebinding)
+    // sends that name as its Host, so without basic auth only loopback's are served.
+    if (!this.config.basicAuth && !namesLoopback(req.headers.get('host'))) {
+      return new Response(NOT_LOOPBACK, { status: 403 });
+    }
     const url = new URL(req.url);
 
     // Every route answers GET and HEAD only; anything else is a 405.
@@ -2833,7 +2866,7 @@ export class WebUiModule implements Module {
   }
 
   private assertSafeBind(host: string): void {
-    const isLoopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+    const isLoopback = LOOPBACK_NAMES.has(host);
     if (isLoopback) return;
     if (this.config.basicAuth) return;
     throw new Error(
@@ -2845,21 +2878,57 @@ export class WebUiModule implements Module {
     );
   }
 
+  private assertCredentials(): void {
+    const auth = this.config.basicAuth;
+    const filled = (value: unknown) => typeof value === 'string' && value !== '';
+    if (!auth || (filled(auth.username) && filled(auth.password))) return;
+    throw new Error(
+      'WebUiModule refuses basicAuth whose username or password is empty, missing or not a string. Set both. A ' +
+      '${VAR} reference that .env sets to nothing, such as WEBUI_PASS=, gives an empty value.',
+    );
+  }
+
+  private assertOriginCheck(): void {
+    const origins = this.config.allowedOrigins;
+    if (origins === undefined) return;
+    const fits = this.config.basicAuth ? isOrigin : isLoopbackOrigin;
+    let named: string;
+    if (!Array.isArray(origins)) named = `allowedOrigins ${JSON.stringify(origins)}, which isn't a list,`;
+    else if (origins.length === 0) named = 'allowedOrigins: []';
+    else {
+      const at = origins.findIndex((o) => !fits(o));
+      if (at === -1) return;
+      named = `the allowedOrigins entry ${JSON.stringify(origins[at])}`;
+    }
+    if (this.config.basicAuth) {
+      throw new Error(
+        `WebUiModule refuses ${named} with basicAuth: with credentials, allowedOrigins is absent, or a non-empty ` +
+        'list whose every entry is an http or https URL. List the origins to accept, or remove allowedOrigins so ' +
+        'the /ws upgrade checks Origin against the default list.',
+      );
+    }
+    throw new Error(
+      `WebUiModule refuses ${named} without basicAuth:` +
+      ' without credentials, allowedOrigins is absent, or a non-empty list whose every entry is an http or https ' +
+      'URL on 127.0.0.1, localhost or [::1]. Set basicAuth and make allowedOrigins a non-empty list of http or ' +
+      'https origins, or remove allowedOrigins so the /ws upgrade checks Origin against the default list again.',
+    );
+  }
+
   /**
-   * Checks the upgrade's Origin against the allowlist. An empty allowlist
-   * turns the check off. A request with no Origin is accepted: browsers send
-   * one on every WebSocket upgrade, and other clients usually don't.
+   * Checks the upgrade's Origin against the allowlist. A request with no
+   * Origin is accepted: browsers send one on every WebSocket upgrade, and
+   * other clients usually don't.
    */
   private checkOrigin(req: Request): boolean {
     if (!sharedServer) return false;
     const allow = sharedServer.allowedOrigins;
-    if (allow.length === 0) return true;
     const origin = req.headers.get('origin');
     if (!origin) return true;
     if (allow.includes(origin)) return true;
     // An Origin whose host and port are the request's Host is accepted: a page
     // this server served under a name the default list can't predict, such as
-    // a Tailscale or LAN name. A page elsewhere can't forge its Origin.
+    // a Tailscale or LAN name.
     try {
       const originHost = new URL(origin).host;
       const host = req.headers.get('host');

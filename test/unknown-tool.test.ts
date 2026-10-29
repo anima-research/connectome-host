@@ -27,8 +27,9 @@ describe('unknownToolResult', () => {
       { name: 'identity', getTools: () => [], getUtilities: () => [def('status'), def('request')] },
       'stat',
     );
-    expect(r.error).toContain('The identity tools in the built-in "settings" toolset are identity--status and identity--request');
-    expect(r.error).toContain('toolsets--open {"toolset": "settings"}, then call one with toolsets--act, such as {"tool": "identity--status"}');
+    expect(r.error).toContain('The identity tools placed in the built-in "settings" toolset are identity--status and identity--request');
+    expect(r.error).toContain('reach one with toolsets--open {"toolset": "settings"}, then toolsets--act {"tool": "identity--status", "args": {...}}');
+    expect(r.error).toContain('if your tool list lacks toolsets--open or toolsets--act, call it by its name instead');
     expect(r.error).not.toContain('utils');
     expect(r.error).not.toContain('no tools of its own');
   });
@@ -41,8 +42,8 @@ describe('unknownToolResult', () => {
     };
     const r = unknownToolResult(module, 'x');
     expect(r.error).toContain("The m module's one tool is m--often.");
-    expect(r.error).toContain('The m tools in the built-in "settings" toolset are m--rare and m--rarer:');
-    expect(r.error).toContain('{"tool": "m--rare"}');
+    expect(r.error).toContain('The m tools placed in the built-in "settings" toolset are m--rare and m--rarer:');
+    expect(r.error).toContain('{"tool": "m--rare", "args": {...}}');
   });
 
   test('a module with nothing to offer says so, and the module can add where to go instead', () => {
@@ -58,7 +59,7 @@ describe('unknownToolResult', () => {
 
   test('one utility reads as one', () => {
     const r = unknownToolResult({ name: 'identity', getTools: () => [], getUtilities: () => [def('status')] }, 'stat');
-    expect(r.error).toContain('The identity module\'s one tool in the built-in "settings" toolset is identity--status:');
+    expect(r.error).toContain('The identity module\'s one tool placed in the built-in "settings" toolset is identity--status:');
   });
 
   test('one tool reads as one', () => {

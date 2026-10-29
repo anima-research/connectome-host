@@ -4,6 +4,15 @@ This explains how the **gate** decides when an event wakes you for inference, an
 how to shape that yourself. It's fleet-wide; your exact rules live in your own
 `gate.json` (and optionally `gate.js`). Written to be honest about the mechanics.
 
+`wake_add_rule`, `wake_remove_rule`, `gate_status`, `event_tags`, and the
+framework heartbeat's `heartbeat--heartbeat_status` and
+`heartbeat--heartbeat_trigger` are placed in your built-in `settings` toolset:
+open it with
+`toolsets--open {"toolset": "settings"}` and call one with
+`toolsets--act {"tool": "wake_add_rule", "args": {...}}`. If your tool list
+lacks `toolsets--open` or `toolsets--act`, they're in your tool list: call them
+by name.
+
 ## The one thing to internalize
 
 The gate governs **whether an event triggers inference (a "wake")** — not whether

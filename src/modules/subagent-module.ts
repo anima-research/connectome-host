@@ -1241,7 +1241,7 @@ export class SubagentModule implements Module {
             tools: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. To give the subagent a tool from the built-in "settings" toolset, list toolsets--open, toolsets--act and the tool\'s own name (module--name). Note: subagent--return is always included automatically.',
+              description: 'Tool names the subagent can use (default: inherit the caller\'s allowed tools). An explicit list can only narrow the caller\'s tools. A tool in the built-in "settings" toolset, such as agent_settings or a module utility like identity--status, is reached through toolsets--open and toolsets--act, so list both with the tool\'s own name. A list without both leaves the subagent no settings toolset: a framework or module tool it names is then in its tool list, and a utility it names can be called only by its own name, with no schema shown. Note: subagent--return is always included automatically.',
             },
             sync: { type: 'boolean', description: 'If true, block until subagent completes (default: false)' },
             timeoutMs: { type: 'number', description: `Milliseconds. A sync task still running then moves to the background and delivers its result as a message when it ends (default ${this.maxExecutionMs}). An async task is stopped once it has run that long, counted from when it starts after any wait for a concurrency slot, retries included; async tasks have no limit by default, so set one only for a hard deadline.` },
@@ -2314,6 +2314,12 @@ export class SubagentModule implements Module {
     return names;
   }
 
+  private requestTools(agent: { name: string; canUseTool(name: string): boolean }): ToolDefinition[] {
+    const framework = this.getFramework();
+    const canUseMeta = agent.canUseTool('toolsets--open') && agent.canUseTool('toolsets--act');
+    return framework.presentedTools(agent.name, framework.getAllTools().filter((t) => agent.canUseTool(t.name)), canUseMeta);
+  }
+
   private spawnInstead(canSpawn: boolean, withCap = false): string {
     if (!canSpawn) return "do it in this stream instead, since subagent--spawn isn't among your tools";
     const cap = withCap ? ` (${formatTokens(SUBAGENT_STRATEGY.maxMessageTokens)})` : '';
@@ -3282,13 +3288,12 @@ export class SubagentModule implements Module {
           const cut = undeliveredLaunchParts(messages, delivery);
           if (cut.length > 0) throw this.launchRefusal('spawn', cut, delivery, true);
 
-          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
-          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, this.requestTools(agent));
           if (est > this.maxPromptTokens) {
             throw new SubagentFailure(
               `its prompt would be about ${est} tokens, over this host's limit of ${this.maxPromptTokens}`,
-              'Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since every ' +
-                "tool's definition counts.",
+              'Shorten its task or systemPrompt, or pass tools naming only the tools it needs, since the ' +
+                'definition of every tool in its tool list counts.',
             );
           }
 
@@ -3567,8 +3572,7 @@ export class SubagentModule implements Module {
           const cut = undeliveredLaunchParts(messages, delivery);
           if (cut.length > 0) throw this.launchRefusal('fork', cut, delivery, canSpawn);
 
-          const tools = framework.getAllTools().filter(t => agent.canUseTool(t.name));
-          const est = this.estimatePromptTokens(agent.systemPrompt, messages, tools);
+          const est = this.estimatePromptTokens(agent.systemPrompt, messages, this.requestTools(agent));
           if (est > this.maxPromptTokens) {
             const spawn = this.spawnInstead(canSpawn, true);
             throw new SubagentFailure(

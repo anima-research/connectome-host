@@ -334,7 +334,7 @@ reasons unless the grant holds `ops` too.
   aren't waited for, and the stop ends them. Then the host stops, and its
   next start, which the service makes, copies the data, starts the new
   release on trial, and commits once that release has opened its stores and
-  connected its servers. The host comes back quiesced and resumes once its
+  connected its servers, closed tabs aside. The host comes back quiesced and resumes once its
   agents have started; one you'd quiesced yourself stays quiesced. A host
   run in a terminal stops as `/quit` does: once it has stopped, start it
   again.

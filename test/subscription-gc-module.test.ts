@@ -234,8 +234,9 @@ describe('agent_settings extension (channel_idle_limits)', () => {
     const r = await mod.handleToolCall({ id: 't1', name: 'set_idle_limit', input: {} });
     expect(r.error).toBe(
       'There\'s no tool "subscription-gc--set_idle_limit", so nothing ran. The subscription-gc module has no tools of its own; call one of the tools listed for you. ' +
-        'Idle-limit controls live in agent_settings (field channel_idle_limits), in the built-in "settings" toolset: ' +
-        'toolsets--open {"toolset": "settings"}, then toolsets--act.',
+        'Idle-limit controls live in agent_settings (field channel_idle_limits); reach it with ' +
+        'toolsets--open {"toolset": "settings"}, then toolsets--act {"tool": "agent_settings", "args": {...}}; if your tool ' +
+        'list lacks toolsets--open or toolsets--act, call it by its name instead.',
     );
   });
 

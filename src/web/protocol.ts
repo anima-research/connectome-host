@@ -487,6 +487,7 @@ export interface McplListMessage {
     toolPrefix?: string;
     /** command or url — whatever the transport targets. */
     target?: string;
+    closedTab?: boolean;
   }>;
   /** Every tool the scoped process offers, with its effective MCPL class
    *  (RFC-008) and the source that decided it: `override` (recipe

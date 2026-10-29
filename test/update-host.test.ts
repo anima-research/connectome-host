@@ -99,9 +99,9 @@ describe('commitRelease', () => {
   test("a start on trial with a server it couldn't connect commits nothing and says which", () => {
     moveCurrent(root, '0.10.2');
     expect(() => commitRelease(here, { now: at, unconnectedServers: () => ['discord', 'heartbeat'] })).toThrow(new Error(
-      "This release couldn't connect the MCPL servers discord, heartbeat, so it starts none of its agents, and the next " +
-      "start goes back to 0.10.2: a release on trial commits only once every server it's configured with has " +
-      "connected. This start's log says why each one failed.",
+      "The MCPL servers discord, heartbeat weren't connected when this release went to commit, so it starts none of " +
+      "its agents, and the next start goes back to 0.10.2: a release on trial commits only once every server it's " +
+      "configured with is connected, closed tabs aside. This start's log says why each one failed.",
     ));
     expect(readCurrent(root)).toBe('0.10.2');
     expect(existsSync(installPaths(root).journal)).toBe(false);

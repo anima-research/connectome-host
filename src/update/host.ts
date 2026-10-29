@@ -50,8 +50,9 @@ export function releaseHere(
 }
 
 export interface CommitCheck {
-  /** The MCPL servers the framework is configured with and hasn't connected:
-   *  agent-framework logs a server that fails to connect and goes on. */
+  /** The MCPL servers the framework is configured with and hasn't connected, closed tabs aside:
+   *  agent-framework logs a server that fails to connect and goes on, and leaves a closed tab
+   *  disconnected on purpose. */
   unconnectedServers?: () => readonly string[];
   now?: Date;
 }
@@ -94,10 +95,10 @@ export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { fro
   const unconnected = check.unconnectedServers?.() ?? [];
   if (unconnected.length > 0) {
     throw new Error(
-      `This release couldn't connect the MCPL server${unconnected.length === 1 ? '' : 's'} ` +
-      `${unconnected.join(', ')}, so it starts none of its agents, and the next start goes back to ${from}: a ` +
-      "release on trial commits only once every server it's configured with has connected. This start's log " +
-      'says why each one failed.',
+      `The MCPL server${unconnected.length === 1 ? '' : 's'} ${unconnected.join(', ')} ` +
+      `${unconnected.length === 1 ? "wasn't" : "weren't"} connected when this release went to commit, so it starts none ` +
+      `of its agents, and the next start goes back to ${from}: a release on trial commits only once every server it's ` +
+      "configured with is connected, closed tabs aside. This start's log says why each one failed.",
     );
   }
   try {

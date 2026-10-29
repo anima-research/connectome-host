@@ -229,7 +229,7 @@ describe('a host started from an install', () => {
     const { host, stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { working: { command: process.execPath, args: [server] } } });
     await until(() => readJournal(root).some(({ step }) => step === 'commit'), 30_000, `the trial commits (stderr: ${stderr().slice(-1500)})`);
     expect(readCurrent(root)).toBe('9.9.9');
-    expect(stderr()).not.toContain("couldn't connect the MCPL server");
+    expect(stderr()).not.toContain("wasn't connected when this release went to commit");
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start', 'commit']);
     // process.exit runs 'exit' listeners, and a signal nothing handles runs none,
     // so the SIGTERM waits until the host's handlers are on.
@@ -246,14 +246,14 @@ describe('a host started from an install', () => {
     const server = join(dir, 'no-such-server');
     const { stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { lost: { command: server } } });
     expect(await exit).toBe(1);
-    expect(stderr()).toContain("This release couldn't connect the MCPL server lost, so it starts none of its agents, and the next start goes back to 9.9.8: ");
+    expect(stderr()).toContain("The MCPL server lost wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 9.9.8: ");
     expect(readCurrent(root)).toBe('9.9.8');
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start']);
     const log = readRecord<TrialLog>(installPaths(root).trialLog, 'trial log');
     expect(log).toMatchObject({ v: 1, release: '9.9.9', mark: 'm-1' });
     expect(log!.lines.length).toBeGreaterThan(0);
     expect(log!.lines.length).toBeLessThanOrEqual(TRIAL_LOG_LINES);
-    expect(log!.lines.some((line) => line.startsWith("Fatal error: Error: This release couldn't connect the MCPL server lost"))).toBe(true);
+    expect(log!.lines.some((line) => line.startsWith("Fatal error: Error: The MCPL server lost wasn't connected when this release went to commit"))).toBe(true);
     expect(statSync(installPaths(root).trialLog).mode & 0o777).toBe(0o600);
   }, 60_000);
 

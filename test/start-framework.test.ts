@@ -6,7 +6,7 @@ import { FleetModule } from '../src/modules/fleet-module.js';
 import { startFramework } from '../src/start-framework.js';
 import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason } from '../src/update/contract.js';
 
-type Servers = Array<{ id: string; connected: boolean }>;
+type Servers = Array<{ id: string; connected: boolean; closedTab?: boolean }>;
 
 function framework(order: string[], options: {
   fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
@@ -107,8 +107,24 @@ describe('startFramework, for a host an install started', () => {
     const order: string[] = [];
     const servers = [{ id: 'discord', connected: false }, { id: 'heartbeat', connected: true }];
     await expect(startFramework(framework(order, { fleet: watchedFleet(order), servers }), { root, release: '0.11.0' }))
-      .rejects.toThrow("This release couldn't connect the MCPL server discord, so it starts none of its agents, and the next start goes back to 0.10.2: ");
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
     expect(order).toEqual(['framework stopped']);
+    expect(readCurrent(root)).toBe('0.10.2');
+  });
+
+  test('a start on trial whose only unconnected server is a closed tab commits', async () => {
+    const order: string[] = [];
+    const servers = [{ id: 'games', connected: false, closedTab: true }, { id: 'heartbeat', connected: true }];
+    await startFramework(framework(order, { servers }), { root, release: '0.11.0' });
+    expect(order).toEqual(['framework starts its agents']);
+    expect(readCurrent(root)).toBe('0.11.0');
+  });
+
+  test('a start on trial with a closed tab and a server that failed to connect refuses, naming only the failed one', async () => {
+    const order: string[] = [];
+    const servers = [{ id: 'games', connected: false, closedTab: true }, { id: 'discord', connected: false, closedTab: false }];
+    await expect(startFramework(framework(order, { servers }), { root, release: '0.11.0' }))
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
     expect(readCurrent(root)).toBe('0.10.2');
   });
 
@@ -139,7 +155,7 @@ describe('startFramework, for a host an install started', () => {
     const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
     try {
       await expect(startFramework(framework(order, { servers: [{ id: 'discord', connected: false }], stopFails: true }), { root, release: '0.11.0' }))
-        .rejects.toThrow("This release couldn't connect the MCPL server discord");
+        .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit");
     } finally {
       log.mockRestore();
     }

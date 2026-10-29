@@ -2840,7 +2840,7 @@ describe('a host on trial, before its commit', () => {
       notifyOps: (kind: string) => { sent.push(kind); },
     } as never;
     await expect(startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places: () => [dir] }))
-      .rejects.toThrow("couldn't connect the MCPL server discord");
+      .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit");
     expect(readCurrent(install)).toBe('0.10.2');
     expect(sent).toEqual(['memory-load-repair']);
   }, 60_000);

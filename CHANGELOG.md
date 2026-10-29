@@ -6,6 +6,22 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.18.0 — 2026-10-28
+
+### Breaking
+
+- **A Web UI without `basicAuth` reached under a name other than loopback's,** such as through a reverse proxy that forwards its public name as the `Host` to a loopback bind: those requests now get a 403. Set `basicAuth`, which `docs/webui-deployment.md` already requires behind a proxy; with it, the `Host` isn't checked.
+- **A Web UI without `basicAuth` whose `allowedOrigins` is `[]`, isn't a list (a null one reads as absent), or has an entry that isn't an `http` or `https` URL on `127.0.0.1`, `localhost` or `[::1]`:** the host now refuses to start, naming what it refused. Set `basicAuth` and make `allowedOrigins` a non-empty list of `http` or `https` origins, or remove `allowedOrigins` so the `/ws` upgrade checks Origin against the default list again.
+- **A Web UI with `basicAuth` whose `allowedOrigins` is `[]`, isn't a list (a null one reads as absent), or has an entry that isn't an `http` or `https` URL:** the host now refuses to start, naming what it refused. List the origins to accept, or remove `allowedOrigins` so the `/ws` upgrade checks Origin against the default list.
+- **A `basicAuth` whose username or password is empty, missing or not a string,** as a `${VAR}` that `.env` sets to nothing gives an empty one: the host now refuses to start. Set both.
+- An install updating to this release with one of these refused recipes falls back, at the trial, to the release it ran, until the recipe changes.
+
+### Fixed
+
+- An update on a host with an MCPL server set to `closed-tab` no longer rolls back for it. A release on trial counted a closed tab, which agent-framework keeps disconnected on purpose, as a server it couldn't connect, and refused to commit, so the next start went back to the release before. A closed tab beside a server that failed to connect still refuses, naming only the failed one. The refusal now says which servers weren't connected when the release went to commit, closed tabs aside, and the trial's start line says closed tabs are left out too.
+
+- A Web UI on loopback without `basicAuth` now answers only a request whose `Host` names loopback: `127.0.0.1`, `localhost` or `[::1]`, with or without a port. A request under any other name, or with a `Host` carrying userinfo, a path or a fragment, gets a 403 before any route, the `/ws` upgrade included.
+
 ## 0.17.0 — 2026-10-28
 
 ### Breaking

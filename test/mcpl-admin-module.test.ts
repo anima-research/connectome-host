@@ -156,6 +156,8 @@ describe('mcpl_deploy', () => {
 
     const tab = await call(mod, 'mcpl_deploy', { id: 'games', command: 'node', presentation: 'tab' });
     expect(tab.success).toBe(true);
+    expectSays(String(tab.data), 'saved as a tab, whose tools start out of the tool list of an agent that may call ' +
+      'toolsets--open and toolsets--act: toolsets--open {"server": "games"} lists them for toolsets--act.');
     expect(readAgentOverlay(overlayPath).games).toEqual({ command: 'node', presentation: 'tab' });
     expect((connected.find((c) => c.id === 'games') as { presentation?: string } | undefined)?.presentation).toBe('tab');
 
@@ -169,7 +171,9 @@ describe('mcpl_deploy', () => {
   test('presentation left out or empty is the default: nothing saved for it', async () => {
     const { stub } = makeStubFramework();
     const mod = makeModule(stub);
-    expect((await call(mod, 'mcpl_deploy', { id: 'a', command: 'node' })).success).toBe(true);
+    const plain = await call(mod, 'mcpl_deploy', { id: 'a', command: 'node' });
+    expect(plain.success).toBe(true);
+    expect(String(plain.data)).not.toContain('saved as a');
     expect((await call(mod, 'mcpl_deploy', { id: 'b', command: 'node', presentation: '' })).success).toBe(true);
     expect(readAgentOverlay(overlayPath).a).toEqual({ command: 'node' });
     expect(readAgentOverlay(overlayPath).b).toEqual({ command: 'node' });
@@ -963,6 +967,7 @@ describe('mcpl_list', () => {
     expect(text).toMatch(/games: [^\n]*presentation=closed-tab/);
     expect(text).toMatch(/mine: CONNECTED[^\n]*presentation=tab/);
     expect(text).toMatch(/plain: CONNECTED[^\n]*presentation=full/);
+    expect(text).toContain('Each presentation= is as configured, which isn\'t necessarily how that server is shown to you now.');
   });
 
   test('says no server is loaded when none is and the overlay holds nothing', async () => {
@@ -2126,7 +2131,6 @@ describe('a failed call says what changed and what to do', () => {
       'Nothing was restarted: "reason" isn\'t a field of mcpl-admin--mcpl_restart, which takes id.',
     );
     expect(calls).toEqual(['connect:shell']);
-    // A key given no value is absent, as agent-framework's utils validator reads it.
     expect((await call(mod, 'mcpl_restart', { id: 'shell', reason: undefined })).success).toBe(true);
     expect(calls).toEqual(['connect:shell', 'restart:shell']);
   });

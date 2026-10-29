@@ -180,6 +180,8 @@ delivered by Agent Framework according to `agent.proseRouting`:
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
 
+From agent-framework 0.29.0, a turn the heartbeat opens (a tick or a reminder) takes no fallback to the channel that last had a message for its plain speech; an explicit send reaches someone from it. agent-framework's notes say where such text goes in each mode.
+
 Use `"disabled"` for agents that run multi-step tool tasks from a busy shared
 channel: in `locus` mode a stray one-line narration between two tool calls
 ("checking page 2") is published to that channel as an ordinary message, and
@@ -191,8 +193,10 @@ caller's mode.
 `agent.sameRoundThinkTextPolicy` (`"public"` default, or `"private"`) governs
 only text emitted **beside a `think()` call** in the same round. It does not
 cover tool-call rounds without `think()`; use `proseRouting: "disabled"` for
-that. The think policy can be inspected and switched at runtime through the
-agent's `agent_settings` tool and the web UI; `proseRouting` is fixed for the
+that. The think policy can be inspected and switched at runtime through
+`agent_settings` (in the agent's built-in `settings` toolset, or its tool list
+if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`)
+and the web UI; `proseRouting` is fixed for the
 process lifetime.
 
 ```json
@@ -216,13 +220,14 @@ ends the turn), ends on a `>>skip_reply` / `>>>skip_reply` envelope, or has
 continued `maxConsecutive` times in a row (default 3, 1 to 20). Each next turn
 reads a short `[continue]` row naming `skip_reply` as the way to stop, with
 the count once the cap is near, and speaks in the same locus. Every
-continuation is a full inference, and in `locus` mode its prose is published,
+continuation is a full inference, and in `locus` mode its prose is published
+(a continuation in a run the heartbeat started takes no fallback to the
+channel that last had a message either),
 so keep the cap low. Ephemeral subagents don't inherit it: their streams run
 with it off, and a fork's or spawn's orientation lists `auto-continue` beside
-the parent's. It takes effect only with the agent-framework release that adds
-`AgentConfig.autoContinue` (agent-framework#744); with an earlier one, as this
-host's dependency is until it moves, the key validates but turns don't
-continue. See Agent Framework's `docs/auto-continue.md`.
+the parent's. It rests on `AgentConfig.autoContinue` (agent-framework#744),
+which agent-framework 0.29.0, this host's floor, has. See Agent Framework's
+`docs/auto-continue.md`.
 
 ```json
 { "agent": { "autoContinue": { "maxConsecutive": 3 } } }
@@ -367,7 +372,7 @@ From agent-framework 0.29.0 the host advertises RFC-014 `toolHints` to every ser
 
 ```json
 "mcpServers": {
-  "games": { "url": "wss://games.example/mcpl", "access": "games" },
+  "games": { "url": "wss://games.example/mcpl" },
   "legacy": { "url": "wss://legacy.example/mcpl", "toolHints": false }
 }
 ```
@@ -376,17 +381,17 @@ Set `toolHints` in the recipe, or in `mcpl-servers.json` for a server the recipe
 
 ### The host's own toolsets: `settings` and server tabs
 
-From agent-framework 0.29.0 the tools an agent reaches for rarely live in a built-in toolset, `settings`, out of the tool list: agent-framework's own (agent settings, wake rules, gate status, event tags, tool visibility, heartbeat status and trigger, workspace status), every module utility, and this host's MCPL administration (`mcpl-admin--*`) and observer grants (`observers--*`). An agent opens it with `toolsets--open {"toolset": "settings"}`, calls one with `toolsets--act {"tool": "<name>", "args": {...}}`, and `toolsets--look {"toolset": "settings"}` lists them. The framework's single `utils` tool is gone; its utilities are in `settings`.
+From agent-framework 0.29.0 the tools an agent reaches for rarely live in a built-in toolset, `settings`, out of the tool list: agent-framework's own (agent settings, wake rules, gate status, event tags, tool visibility, heartbeat status and trigger, workspace status), every module utility, and this host's MCPL administration (`mcpl-admin--*`) and observer grants (`observers--*`). An agent opens it with `toolsets--open {"toolset": "settings"}`, calls one with `toolsets--act {"tool": "<name>", "args": {...}}`, and `toolsets--look {"toolset": "settings"}` lists them. The framework's single `utils` tool is gone; its utilities are in `settings`. An agent whose `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act` has no `settings` toolset: the tools placed there stay in its tool list, and it calls a module utility, which is never in a tool list, by its own name, with no schema shown.
 
-Each MCPL server can also be presented as a tab. `presentation` on its entry sets how agents are shown it at first: `"full"` (the default: its tools in the tool list), `"tab"` (connected, its events still arriving, none of its tools listed until an agent opens it with `toolsets--open {"server": "<id>"}`), or `"closed-tab"` (disconnected until an agent opens it). Each agent can switch later, and its choice is kept over this default.
+Each MCPL server can also be presented as a tab. `presentation` on its entry sets how agents are shown it at first: `"full"` (the default: its tools in the tool list), `"tab"` (connected, its events still arriving, its tools starting out of the tool list: `toolsets--open {"server": "<id>"}` lists them for `toolsets--act`, and `toolsets--open {"server": "<id>", "full": true}` puts them back in the list), or `"closed-tab"` (a tab that also starts out disconnected). Each agent can change how it's shown a server later, which this setting doesn't decide. An agent whose `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act` isn't shown tabs. A release on trial commits without connecting a closed tab, since it's kept disconnected on purpose.
 
 ```json
 "mcpServers": {
-  "games": { "url": "wss://games.example/mcpl", "access": "games", "presentation": "tab" }
+  "games": { "url": "wss://games.example/mcpl", "presentation": "tab" }
 }
 ```
 
-Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line. Older agent-framework releases ignore it.
+Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
 ### Included recipes
 

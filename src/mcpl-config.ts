@@ -386,7 +386,7 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
     delete e.toolHints;
   }
   if (e.presentation !== undefined && !isServerPresentation(e.presentation)) {
-    notes.push(`its presentation isn't ${SERVER_PRESENTATIONS_TEXT}, so it's left out and the server is presented in full: write one of those`);
+    notes.push(`its presentation isn't ${SERVER_PRESENTATIONS_TEXT}, so it's left out, which configures the server in full: write one of those`);
     delete e.presentation;
   }
   for (const k of OPERATOR_ONLY_OVERLAY_FIELDS) {

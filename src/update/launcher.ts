@@ -726,7 +726,7 @@ async function switchTo(root: string, record: InstallRecord, mark: Mark, current
   appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
   appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
   ops.report(`[update] Starting ${mark.to} on trial, from ${current}. It commits once it has opened its stores and ` +
-    `connected its servers; if it ends before that, the next start goes back to ${current} and its data.`);
+    `connected its servers, closed tabs aside; if it ends before that, the next start goes back to ${current} and its data.`);
   return { release: mark.to, trial: true };
 }
 

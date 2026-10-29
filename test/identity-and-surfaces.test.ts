@@ -8,7 +8,6 @@ import { WorkspaceModule, WorkspaceReadError } from '@animalabs/agent-framework'
 
 import { IdentityError, IdentityModule } from '../src/modules/identity-module.ts';
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.ts';
-import { ObserversModule } from '../src/modules/observers-module.ts';
 
 // agent-framework's code for a link among a path's directories that stays
 // inside the mount.
@@ -291,8 +290,8 @@ describe('identity module', () => {
     (mod as any).ctx = { getModule: (n: string) => (n === 'workspace' ? workspace : null) };
     await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
 
-    // The framework's `utils run` checks args against the advertised enum
-    // before the handler runs, so the schema has to offer every verb.
+    // toolsets--act checks args against the tool's advertised schema, enum
+    // included, before the handler runs, so the schema has to offer every verb.
     const request = mod.getUtilities().find((u) => u.name === 'request')!;
     const methods = (request.inputSchema.properties as any).method.enum as string[];
     expect(methods).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -1454,22 +1453,6 @@ describe('mcpl-admin access grants', () => {
     expect(refused.error).toContain('identity');
   });
 
-  it('places its four tools in the built-in settings toolset', () => {
-    const mod = new McplAdminModule({});
-    expect(mod.getTools().map((t) => t.name).sort()).toEqual(['mcpl_deploy', 'mcpl_list', 'mcpl_restart', 'mcpl_unload']);
-    for (const t of mod.getTools()) expect(mod.toolPlacement(t.name)).toBe('builtin');
-    expect((mod as { getUtilities?: unknown }).getUtilities).toBeUndefined();
-  });
-});
-
-describe('observers placement', () => {
-  it('places its three tools in the built-in settings toolset', () => {
-    const dir = tempDir('obs-');
-    const mod = new ObserversModule({ path: join(dir, 'observers.json') });
-    expect(mod.getTools().map((t) => t.name)).toEqual(['get', 'grant', 'revoke']);
-    for (const t of mod.getTools()) expect(mod.toolPlacement(t.name)).toBe('builtin');
-    expect((mod as { getUtilities?: unknown }).getUtilities).toBeUndefined();
-  });
 });
 
 describe('identity request: fromFile reads only what the mount allows', () => {
