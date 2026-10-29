@@ -534,9 +534,9 @@ describe('the store audit', () => {
 
   test("the subconscious's view leaves out other agents' stored injections", () => {
     // The audit opens the subconscious with agent-framework's own options
-    // (subconsciousContextOptions, #291) and keeps no copy of its view on this
-    // branch, so this reads the view those options give a recipe that names
-    // no subconscious.
+    // (subconsciousContextOptions, #291) and keeps no copy of its view, so
+    // this reads the view those options give a recipe that names no
+    // subconscious.
     const view = subconsciousContextOptions({ serves: 'agent' }).viewFilter as (message: never) => boolean;
     const row = (metadata?: Record<string, unknown>) => ({ id: 'm', participant: 'x', content: [], timestamp: 0, ...(metadata ? { metadata } : {}) }) as never;
     const injection = (agent: string) => ({ system: true, kind: 'context-injection', contextInjection: { agent, namespace: 'retrieval', contentHash: 'h', part: 0, parts: 1 } });
@@ -572,9 +572,9 @@ describe('the store audit', () => {
   test("the audit's subconscious view answers as the filter agent-framework opens a named subconscious with", async () => {
     // This takes the filter agent-framework's start passes to
     // ContextManager.open for the subconscious, and the one the audit passes.
-    // On this branch the audit has no copy of the view: it opens with
-    // agent-framework's own options (subconsciousContextOptions, #291), so
-    // the two are read from the opens, not from an export of the audit's.
+    // The audit has no copy of the view: it opens with agent-framework's own
+    // options (subconsciousContextOptions, #291), so the two are read from
+    // the opens, not from an export of the audit's.
     const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } };
     const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
     saveRecipe(dir, raw as never);

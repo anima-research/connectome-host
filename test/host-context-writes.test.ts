@@ -94,7 +94,9 @@ describe('host notices', () => {
       // it sits before that round's reply, or it didn't, and it entered as the
       // turn ended, after the reply.
       const carried = h.adapter.wireOf('clerk')[before + 1]!.includes('[host-notice]');
-      expect(cm.ordinalOf(row!.id)! < cm.ordinalOf(reply!.id)!).toBe(carried);
+      const [rowAt, replyAt] = [cm.ordinalOf(row!.id), cm.ordinalOf(reply!.id)];
+      expect([rowAt, replyAt].every((at) => at !== undefined)).toBe(true);
+      expect(rowAt! < replyAt!).toBe(carried);
 
       await h.turn('clerk');
       expect(h.adapter.wireOf('clerk').at(-1)).toContain('[host-notice]');
