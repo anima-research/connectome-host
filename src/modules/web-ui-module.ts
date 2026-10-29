@@ -1452,7 +1452,8 @@ export class WebUiModule implements Module {
           });
       // A rollback on a presented window (#291) can keep rows after its
       // target: rows that wait out of the window until the agent's next turn
-      // starts, and rows one write showed with the target. The frame says how
+      // starts (or a restart before then), and rows one write showed with
+      // the target. The frame says how
       // many of each, so the panel doesn't call them gone.
       const kept = r as { returnedToArrivals?: number; keptInWindowAfterTarget?: number };
       this.send(client, {

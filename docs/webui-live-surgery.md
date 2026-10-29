@@ -18,10 +18,11 @@ do not, so they have no button).
 
 What happens (`framework.rollbackToMessage`): the chronicle is forked at that
 message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
-becomes the current branch, `_config` is re-materialized, and Discord
-messages that left the context get the awareness marker through the durable
-outbox (an undo, which acts on the window only, marks none). Nothing is
-deleted.
+becomes the current branch, and `_config` is re-materialized. Nothing is
+deleted. Discord messages that left the context are not marked: agent-framework
+makes marking a separate, explicit choice (`rollbackToMessage`'s `marks`,
+default `none`), and the WebUI's rollback doesn't make it (an undo, which acts
+on the window only, marks none either).
 
 On a presented window (agent-framework #291) the cut is at the write that
 showed the agent the message, so some rows after it can stay, and the result
@@ -29,7 +30,8 @@ says how many: rows that one write showed together with the message stay in
 the agent's context after it (`keptInWindowAfterTarget`; suppress them, or
 hide them by Discord message id), and rows stored before the message was
 shown and shown after it stay in the record, out of the context until the
-agent's next turn starts (`returnedToArrivals`). Neither is counted in
+agent's next turn starts, or the host restarts before then
+(`returnedToArrivals`). Neither is counted in
 `messagesRemoved` or marked.
 
 The framework refuses while the agent is not idle (`agent-busy`); nothing is
@@ -44,7 +46,10 @@ fork newest-to-oldest (a shard of a body group expands to the whole group —
 chronicle refuses to bisect one), and switches. If any removal fails the
 agent is put back on the untouched source branch.
 
-Not retroactive over derived state: a message already folded into an
+On a presented window (agent-framework #291) the removal reaches what every
+reader on the store folded: each agent's strategy drops each summary that
+folded a removed message, and folds the rows it keeps again. In legacy mode it
+is not retroactive over derived state: a message already folded into an
 autobiographical summary stays in that summary. Roll back to before it
 entered if that matters.
 

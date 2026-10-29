@@ -165,7 +165,7 @@ describe('in-flight guard on head-moving commands', () => {
     const { app, addMessage, undone, text } = makeStubWorld('idle');
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows).");
+    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows from its start: the turn's own, and any other, which its next turn shows again).");
     expect(undone).toEqual(['stub-agent']);
   });
 

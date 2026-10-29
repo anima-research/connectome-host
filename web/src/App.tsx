@@ -2334,7 +2334,7 @@ const COMMANDS: CommandHint[] = [
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
   { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
-  { name: '/restore', blurb: 'roll back to checkpoint, on a new branch' },
+  { name: '/restore', blurb: 'roll back to checkpoint, or to its branch head' },
   { name: '/undo', blurb: "take the agent's last turn out of its window" },
   { name: '/redo', blurb: 'put the undone turn back in its window' },
   { name: '/nudge', blurb: 'run inference on current context, no new events' },

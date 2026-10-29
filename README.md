@@ -856,7 +856,7 @@ headless socket.
 | `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
 | `/redo` | Put the turn `/undo` took out back in the agent's window |
 | `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Roll the record back to a checkpoint, on a new branch |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
@@ -891,7 +891,8 @@ operator log (as a `checkout` or a `rollback`). A rollback says which rows
 after its message it kept: rows one write showed the agent together with the
 message stay in its window after it (suppress or hide them to take them out),
 and rows stored before the message was shown and shown after it stay in the
-record and enter the window at the agent's next turn. `/undo` and `/redo` are
+record and enter the window at the agent's next turn, or at a restart of the
+host before then. `/undo` and `/redo` are
 its undo and redo on the agent's window; the TUI's history and the Web UI's
 transcript mark an undone turn's rows, and the Web UI's context panels read
 the window again.

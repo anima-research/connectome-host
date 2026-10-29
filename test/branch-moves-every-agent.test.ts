@@ -442,16 +442,21 @@ describe('a refusal offers stopping only for the turn an operator can stop', () 
       const refusal = said(command, { a: 'streaming', b: 'idle' });
       expect(refusal, command).toContain(`${command.split(' ')[0]} refused: a turn is in flight (a: streaming).`);
       expect(refusal, command).toContain('Wait for the turn to end, or stop it, then retry.');
+      // Only a branch move is said to move the head.
+      const movesBranch = ['/checkout side', '/restore cp', '/branchto m1'].includes(command);
+      expect(refusal.includes('Moving the head mid-generation'), command).toBe(movesBranch);
     }
   });
 
   test('another agent alone mid-turn: /undo, /redo and /newtopic act for the main agent, and a branch move is left to the framework', () => {
+    const askedFor: string[] = [];
     const framework = {
-      undoLastTurn: () => ({ undone: false }),
-      redo: () => ({ redone: false }),
+      undoLastTurn: (agent: string) => { askedFor.push(`undo ${agent}`); return { undone: false }; },
+      redo: (agent: string) => { askedFor.push(`redo ${agent}`); return { redone: false }; },
     };
     expect(said('/undo', { a: 'idle', b: 'streaming' }, framework)).toBe('Nothing to undo.');
     expect(said('/redo', { a: 'idle', b: 'streaming' }, framework)).toBe('Nothing to redo.');
+    expect(askedFor).toEqual(['undo a', 'redo a']);
     const newtopic = said('/newtopic', { a: 'idle', b: 'streaming' });
     expect(newtopic).not.toContain('refused');
     expect(newtopic).toContain('No context manager.');

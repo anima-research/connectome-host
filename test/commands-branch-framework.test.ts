@@ -192,6 +192,9 @@ describe('after /checkout, /restore and /branchto', () => {
         }
       }
       expect(store.currentBranch().name).toStartWith(`rollback-at-${first.id}-`);
+      // The operator log records a /restore to a branch's head as a checkout.
+      const restored = h.framework.getOperatorLog().filter((e) => e.note === '/restore main-head');
+      expect(restored.map((e) => [e.kind, e.requester?.via, e.error])).toEqual([['checkout', 'host-console', undefined]]);
     } finally {
       await h.cleanup();
     }
@@ -230,29 +233,38 @@ describe('/branchto on a presented window', () => {
     }
   });
 
-  test('says a row stored before the target was shown, and shown after it, stays in the record and enters the window at the next turn', async () => {
-    const h = await bootPresentedHost({ agents: ['clerk'], prefix: 'cmd-branchto-returned-' });
-    try {
-      const cm = h.framework.getAgent('clerk')!.getContextManager();
-      const t = arrival(h, 'T');
-      const r = arrival(h, 'R'); // stored before T was shown, shown after it
-      cm.presentRows([t]);
-      cm.presentRows([r]);
-      cm.presentRows([arrival(h, 'Z')]);
-      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+  for (const command of ['/branchto', '/restore']) {
+    test(`${command} says a row stored before the target was shown, and shown after it, stays in the record and enters the window at the next turn`, async () => {
+      const h = await bootPresentedHost({ agents: ['clerk'], prefix: `cmd-${command.slice(1)}-returned-` });
+      try {
+        const cm = h.framework.getAgent('clerk')!.getContextManager();
+        const t = arrival(h, 'T');
+        const r = arrival(h, 'R'); // stored before T was shown, shown after it
+        cm.presentRows([t]);
+        cm.presentRows([r]);
+        cm.presentRows([arrival(h, 'Z')]);
+        const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() };
+        app.branchState.checkpoints.set('at-t', { branchName: h.framework.getStore().currentBranch().name, messageId: t });
 
-      const { follow } = await run(`/branchto ${t}`, app);
-      const said = follow!.lines.map((l) => l.text);
-      expect(said[0]).toContain(`1 message after [${t}] is dropped on this branch; old branch preserved.`);
-      expect(said.slice(1)).toEqual([
-        `  1 row after [${t}] stays in the record: stored before clerk was shown [${t}], it is out of its window until its next turn starts, and enters it then.`,
-      ]);
-      expect(cm.windowStatusOf(r)).toBe('out');
-      // The Web UI's operator log says so too (Surgery.tsx reads these).
-      const entry = h.framework.getOperatorLog().find((e) => e.kind === 'rollback' && !e.error)!;
-      expect([entry.result?.returnedToArrivals, entry.result?.keptInWindowAfterTarget]).toEqual([1, 0]);
-    } finally {
-      await h.cleanup();
-    }
-  });
+        const { follow } = await run(command === '/branchto' ? `/branchto ${t}` : '/restore at-t', app);
+        const said = follow!.lines.map((l) => l.text);
+        expect(said[0]).toContain(command === '/branchto'
+          ? `1 message after [${t}] is dropped on this branch; old branch preserved.`
+          : 'Restored to checkpoint "at-t" (branch: restore-at-t-');
+        expect(said.slice(1)).toEqual([
+          `  1 row after [${t}] stays in the record: stored before clerk was shown [${t}], it is out of its window until its next turn starts, or the host restarts before then, and enters it then.`,
+        ]);
+        expect(cm.windowStatusOf(r)).toBe('out');
+        // The Web UI's operator log says so too (Surgery.tsx reads these).
+        const entry = h.framework.getOperatorLog().find((e) => e.kind === 'rollback' && !e.error)!;
+        expect([entry.result?.returnedToArrivals, entry.result?.keptInWindowAfterTarget]).toEqual([1, 0]);
+
+        // clerk's next turn shows it.
+        await h.turn('clerk');
+        expect(cm.windowStatusOf(r)).toBe('in');
+      } finally {
+        await h.cleanup();
+      }
+    });
+  }
 });

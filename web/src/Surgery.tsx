@@ -197,7 +197,7 @@ export function SurgeryDialog(props: {
                     write that showed the target, so rows after it can stay. */}
                 <Show when={(r().returnedToArrivals ?? 0) > 0}>
                   <div class="text-xs text-amber-200/90 mb-1">
-                    {r().returnedToArrivals} row{r().returnedToArrivals === 1 ? '' : 's'} after it stay in the record: stored before the agent was shown the target, they are out of its context until its next turn starts, and enter it then.
+                    {r().returnedToArrivals} row{r().returnedToArrivals === 1 ? '' : 's'} after it stay in the record: stored before the agent was shown the target, they are out of its context until its next turn starts, or the host restarts before then, and enter it then.
                   </div>
                 </Show>
                 <Show when={(r().keptInWindowAfterTarget ?? 0) > 0}>
@@ -258,14 +258,15 @@ function summarize(e: OperatorLogEntryWire): string {
   switch (e.kind) {
     case 'rollback': {
       // On a presented window (#291) rows after the target can stay: returned
-      // ones until the agent's next turn starts, kept ones in its window.
+      // ones until the agent's next turn starts (or a restart before then),
+      // kept ones in its window.
       const stayed = [
-        typeof r.returnedToArrivals === 'number' && r.returnedToArrivals > 0 ? `${r.returnedToArrivals} back at next turn` : '',
+        typeof r.returnedToArrivals === 'number' && r.returnedToArrivals > 0 ? `${r.returnedToArrivals} back at next turn or restart` : '',
         typeof r.keptInWindowAfterTarget === 'number' && r.keptInWindowAfterTarget > 0 ? `${r.keptInWindowAfterTarget} kept` : '',
       ].filter(Boolean).join(', ');
       return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? '?')} msgs${stayed ? `; ${stayed}` : ''})`;
     }
-    // A host's /checkout, or the framework's switchBranch over its API.
+    // A host's /checkout or /restore to a branch's head, or the framework's switchBranch over its API.
     case 'checkout': return `→ ${String(r.targetBranch ?? p.branch ?? '?')}${r.sourceBranch ? ` (from ${String(r.sourceBranch)})` : ''}`;
     case 'suppress': return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? (Array.isArray(p.messageIds) ? p.messageIds.length : '?'))} msgs)`;
     // An undo on the agent's window (agent-framework #291) moves no branch: say how many rows left it or entered it again.

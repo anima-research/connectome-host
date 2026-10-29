@@ -718,8 +718,9 @@ export interface SurgeryResultMessage {
   lastVisible?: { participant?: string; role?: string; preview?: string } | null;
   /** A rollback on a presented window (agent-framework #291): the rows after
    *  the target that stay in the record, out of the agent's window until its
-   *  next turn starts, which presents them (rollbackToMessage's
-   *  `returnedToArrivals`). Absent when there are none. */
+   *  next turn starts, which presents them, or until a restart of the host
+   *  before then, whose pass over every agent at rest does
+   *  (rollbackToMessage's `returnedToArrivals`). Absent when there are none. */
   returnedToArrivals?: number;
   /** A rollback on a presented window: the rows after the target that one
    *  write presented with it, which stay in the agent's window, since a branch

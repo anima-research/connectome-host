@@ -4,7 +4,7 @@
  *   /redo          — Put the turn /undo took out back in the agent's window
  *   /nudge [agent] — Run inference on current context (no new events)
  *   /checkpoint N  — Save current position as named checkpoint
- *   /restore N     — Roll the record back to a checkpoint, on a new branch
+ *   /restore N     — Roll the record back to a checkpoint on a new branch, or switch to its branch's head
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
  *   /branchto M    — Roll the record back to a message, on a new branch
@@ -145,14 +145,20 @@ function inFlightGuard(app: AppContext, cmd: string): CommandResult | null {
   const agent = commandAgent(app);
   const status = (agent as { state?: { status?: string } } | undefined)?.state?.status;
   if (status === undefined || status === 'idle') return null;
+  // /undo, /redo and /newtopic change the agent's window and move no branch.
+  const why = WINDOW_COMMANDS.has(cmd)
+    ? ["  The agent's window changes only between its turns.", '  Wait for the turn to end, or stop it, then retry.']
+    : ['  Moving the head mid-generation would attach the streaming reply to the wrong', '  branch/request. Wait for the turn to end, or stop it, then retry.'];
   return {
     lines: [
       { text: `/${cmd} refused: a turn is in flight (${(agent as { name?: string }).name ?? 'agent'}: ${status}).`, style: 'system' },
-      { text: '  Moving the head mid-generation would attach the streaming reply to the wrong', style: 'system' },
-      { text: '  branch/request. Wait for the turn to end, or stop it, then retry.', style: 'system' },
+      ...why.map((text) => ({ text, style: 'system' as const })),
     ],
   };
 }
+
+/** The commands inFlightGuard guards that act on the agent's window, not the store's branch. */
+const WINDOW_COMMANDS = new Set(['undo', 'redo', 'newtopic']);
 
 /**
  * The last line of a branch move or a rollback that didn't happen (#264):
@@ -231,7 +237,9 @@ function switchStore(
  */
 function rollbackFailed(app: AppContext, from: string, failed: string, err: unknown): CommandResult {
   const lines: Line[] = [{ text: `${failed}: ${messageOf(err)}`, style: 'system' }];
-  if (app.framework.getStore().currentBranch().name !== from) return { lines, branchChanged: true };
+  // A refusal comes before anything moves, whatever branch the store is on by then.
+  const refused = err instanceof OperatorActionError && err.code !== 'failed';
+  if (!refused && app.framework.getStore().currentBranch().name !== from) return { lines, branchChanged: true };
   if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
   return { lines };
 }
@@ -267,7 +275,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
           { text: '  /puppet <tool> [json]  Admin: execute a tool AS the agent, store the pair', style: 'system' },
           { text: '  /checkpoint [name]     Save current state (no name: list checkpoints)', style: 'system' },
-          { text: '  /restore [name]        Roll back to a checkpoint, on a new branch (no name: list checkpoints)', style: 'system' },
+          { text: '  /restore [name]        Roll back to a checkpoint on a new branch, or to its branch head (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
           { text: '  /history [n]           Show the last n messages (20 by default)', style: 'system' },
@@ -1090,7 +1098,7 @@ function handleUndo(app: AppContext): CommandResult {
   const rows = undone.window?.retracted ?? 0;
   return {
     lines: [
-      { text: `Undone: ${agent.name}'s last turn left its window (${rows} row${rows === 1 ? '' : 's'}).`, style: 'system' },
+      { text: `Undone: ${agent.name}'s last turn left its window (${rows} row${rows === 1 ? '' : 's'} from its start: the turn's own, and any other, which its next turn shows again).`, style: 'system' },
       { text: '  The record keeps it, and no branch moved: /redo puts it back, /branchto <msgId> reverts the record.', style: 'system' },
     ],
   };
@@ -1304,7 +1312,9 @@ function handleFind(app: AppContext, needle: string): CommandResult {
  * is at the write that presented the target, so
  * - rows stored before that write and shown after it (`returnedToArrivals`)
  *   stay in the record: they wait out of the agent's window until its next
- *   turn starts, which presents them after what the window holds then;
+ *   turn starts, which presents them after what the window holds then, or
+ *   until a restart of the host before then, whose pass over every agent at
+ *   rest presents them;
  * - rows that one write presented with the target
  *   (`keptInWindowAfterTarget`) stay in the window after it, since a branch
  *   cut can't separate them, until a suppression or a hide takes them out.
@@ -1319,8 +1329,8 @@ function rollbackKeptLines(
   if (returned > 0) {
     lines.push({
       text: returned === 1
-        ? `  1 row after ${at} stays in the record: stored before ${agentName} was shown ${at}, it is out of its window until its next turn starts, and enters it then.`
-        : `  ${returned} rows after ${at} stay in the record: stored before ${agentName} was shown ${at}, they are out of its window until its next turn starts, and enter it then.`,
+        ? `  1 row after ${at} stays in the record: stored before ${agentName} was shown ${at}, it is out of its window until its next turn starts, or the host restarts before then, and enters it then.`
+        : `  ${returned} rows after ${at} stay in the record: stored before ${agentName} was shown ${at}, they are out of its window until its next turn starts, or the host restarts before then, and enter it then.`,
       style: 'system',
     });
   }

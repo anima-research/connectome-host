@@ -24,9 +24,13 @@
     `gate.js`": from this release each reads "a branch switch or a rollback".
   - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
     `/branchto` its `rollbackToMessage`: a new branch whose last row is the
-    checkpoint's or the given message, and the store moved to it. Each is
-    refused unless every agent sharing the store is idle, as before, and
-    each takes every agent's context to the new branch. The operator log
+    checkpoint's or the given message, and the store moved to it. A
+    `/restore` whose checkpoint has no message (one taken on an empty
+    branch), or whose message isn't on the current branch, is a
+    `switchBranch` to the checkpoint's branch head instead, and one at its
+    checkpoint already moves nothing. Each is refused unless every agent
+    sharing the store is idle, as before, and each takes every agent's
+    context to the branch it moves to. The operator log
     records `/restore` and `/branchto` as `rollback`, `/checkout` and a
     `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
     `undo-turn` and `redo-turn`, each with the requester `host-console`.
@@ -38,7 +42,8 @@
     rows one write showed together with the message stay in the window after
     it, for a suppression or a hide to take out, and rows stored before the
     message was shown and shown after it stay in the record, out of the
-    window until the agent's next turn starts. The Web UI's `surgery-result`
+    window until the agent's next turn starts, or the host restarts before
+    then. The Web UI's `surgery-result`
     frame carries them as `keptInWindowAfterTarget` and `returnedToArrivals`,
     and the Surgery panel's log summarizes a rollback's and a checkout's.
   - The TUI's and the Web UI's transcripts still show the record, so an undo

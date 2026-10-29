@@ -324,10 +324,12 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 
 ## Reversibility
 
-- **Host commands** — `/checkpoint`, `/restore`, `/branches`, `/checkout`,
-  `/branchto` move the head over Chronicle branches, through the framework's
-  `switchBranch` and `rollbackToMessage`, which reserve the store for every
-  agent sharing it and take every agent's context to the new branch. On a
+- **Host commands** — `/restore`, `/checkout` and `/branchto` move the head
+  over Chronicle branches, through the framework's `switchBranch` and
+  `rollbackToMessage`, which reserve the store for every agent sharing it and
+  take every agent's context to the branch they move to; `/checkpoint` saves
+  a point for `/restore`, and `/branches` lists the branches and
+  checkpoints. On a
   presented window a rollback cuts at the write that showed its message, and
   the command says which rows after it stay (`returnedToArrivals`,
   `keptInWindowAfterTarget`). `/undo` and `/redo` are the framework's
@@ -346,8 +348,9 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
   appended to `sessions/<id>/operator-actions.jsonl`.
 
 Both go through the framework, so each move of the branch is in the
-operator log (`checkout`, `rollback`, `suppress`) and waits for every agent to
-be idle.
+operator log (`checkout`, `rollback`, `suppress`) and is refused
+(`agent-busy`) unless every agent sharing the store is idle; nothing is
+queued.
 
 ## Failure handling and observability
 
