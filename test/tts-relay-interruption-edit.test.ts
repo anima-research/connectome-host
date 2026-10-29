@@ -60,13 +60,95 @@ describe('whom the interruption note is for', () => {
     expect(noteFor).toEqual(['mira']);
   });
 
-  test('no agent, when the one that spoke is no longer registered and none was voiced before', async () => {
-    const { notes, noteFor, interrupt } = relayWith({ success: true }, { agents: ['clerk'], speaker: 'gone' });
-    await interrupt();
-    expect(notes).toHaveLength(1);
-    expect(noteFor).toEqual([undefined]);
+  test('none, and no note is written, when the agent whose message it was is no longer registered', async () => {
+    const { notes, interrupt } = relayWith({ success: true }, { agents: ['clerk'], speaker: 'gone' });
+    const logged = await logOf(interrupt);
+    expect(notes).toEqual([]);
+    expect(logged).toContain('the interruption in 42 is told to no agent: gone, whose published message it was matched to, is no longer registered');
+  });
+
+  // With no published message in the interruption's channel, the speaker is
+  // read from the activations: the relay's own record of who it voiced where.
+  describe('with no published message matched', () => {
+    /** The module on traces alone, with `agents` registered, and the notes it writes, each with the agent it was written for. */
+    function relayOnActivations(agents: string[]) {
+      const notes: Array<{ text: string; forAgent?: string }> = [];
+      const ctx = {
+        callTool: async () => ({ success: true }),
+        addMessage: (_role: string, content: Array<{ text: string }>, _metadata?: unknown, target?: { forAgent?: string }) => {
+          notes.push({ text: content.map((b) => b.text).join(''), ...(target?.forAgent !== undefined ? { forAgent: target.forAgent } : {}) });
+        },
+        getAgents: () => agents.map((name) => ({ name })),
+      } as unknown as ModuleContext;
+      const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
+      const inner = module as unknown as {
+        ctx: ModuleContext;
+        onTraceEvent(event: Record<string, unknown>): void;
+        handleInterruption(ev: Interruption): Promise<void>;
+      };
+      inner.ctx = ctx;
+      const started = (agentName: string, channelId: string) => inner.onTraceEvent({ timestamp: 1, type: 'inference:started', agentName, channelId });
+      const ended = (agentName: string) => inner.onTraceEvent({ timestamp: 1, type: 'inference:completed', agentName });
+      const interrupt = () => inner.handleInterruption({ channelId: '42', spokenText: 'The ferry', reason: 'user_speech', timestamp: 2 });
+      return { notes, started, ended, interrupt };
+    }
+
+    test('the agent whose activation is live in its channel, not the first agent the relay voiced', async () => {
+      const { notes, started, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:43');
+      started('mira', 'g:42');
+      await interrupt();
+      expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+    });
+
+    test('the agent last voiced in its channel, once that activation has ended', async () => {
+      const { notes, started, ended, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:43');
+      started('mira', 'g:42');
+      ended('mira');
+      await interrupt();
+      expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+    });
+
+    test('none, and no note is written, when no agent was voiced in its channel', async () => {
+      const { notes, started, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:43');
+      const logged = await logOf(interrupt);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and no agent was voiced in that channel');
+    });
+
+    test('none, and no note is written, when two agents are voicing in its channel', async () => {
+      const { notes, started, interrupt } = relayOnActivations(['clerk', 'mira']);
+      started('clerk', 'g:42');
+      started('mira', 'g:42');
+      const logged = await logOf(interrupt);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the interruption in 42 is told to no agent: no published message matched it, and clerk, mira are each voicing in that channel');
+    });
+
+    test('none, and no note is written, when the agent voiced there is no longer registered', async () => {
+      const { notes, started, interrupt } = relayOnActivations(['clerk']);
+      started('mira', 'g:42');
+      const logged = await logOf(interrupt);
+      expect(notes).toEqual([]);
+      expect(logged).toContain('the interruption in 42 is told to no agent: mira, voicing in that channel, is no longer registered');
+    });
   });
 });
+
+/** What `run` writes to console.error, one line per call. */
+async function logOf(run: () => Promise<void>): Promise<string> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  try {
+    await run();
+  } finally {
+    console.error = original;
+  }
+  return lines.join('\n');
+}
 
 describe('what an interruption may edit', () => {
   function relayOnTraces() {
