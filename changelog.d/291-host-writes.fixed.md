@@ -13,16 +13,15 @@
     stored only while the agent has no turn alive. A turn that started
     while a bare `/newtopic` wrote its summary used to get the row in its
     window between rounds its requests were sent without, and so did a turn
-    whose continuation or retry was on its way when `/newtopic <text>` was
-    given (the agent reads idle then, a budget restart's continuation
-    queued or a provider hold's retry waiting); now the row follows the
-    turn, and `/newtopic <text>` says it waits. If the agent is still busy
-    ten minutes later, or the branch moved meanwhile, nothing is stored; a
-    bare `/newtopic`'s answer gives the summary to pass as
-    `/newtopic <text>`. A waiting `/newtopic` also stores nothing once the
-    session or the branch is switched or the host stops, and a later
-    `/newtopic` for the same agent replaces it, so one turn's end stores
-    one transition.
+    whose continuation or retry was on its way when `/newtopic` was given
+    (the agent reads idle then, a budget restart's continuation queued or a
+    provider hold's retry waiting). Now `/newtopic` is refused while a
+    continuation or a retry of the agent's turn is on its way, and a bare
+    `/newtopic` stores its summary only if, once it is written, the agent
+    still has no turn alive and nothing moved meanwhile (the branch, the
+    strategy, the session, the host's stop). Otherwise it stores nothing,
+    and its answer gives the summary, when one was written, to pass as
+    `/newtopic <text>`.
   - tts-relay's note that a voiced reply was interrupted is written for the
     agent that spoke: the author of the published message the heard words
     start, else the agent voicing in its channel. It was written for no

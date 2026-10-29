@@ -77,10 +77,6 @@ export interface StatePoint {
  */
 export interface BranchState {
   checkpoints: Map<string, StatePoint>;
-  /** Each agent's /newtopic waiting for a turn of it to end
-   *  (transitionOnceIdle), by agent: aborting one ends its wait, with
-   *  nothing stored. */
-  newTopics?: Map<string, AbortController>;
 }
 
 export function createBranchState(): BranchState {
@@ -89,14 +85,9 @@ export function createBranchState(): BranchState {
   };
 }
 
-/** Called as the session or the branch is switched: the checkpoints go, and
- *  each /newtopic still waiting for a turn ends, storing nothing. */
+/** Called as the session or the branch is switched: the checkpoints go. */
 export function resetBranchState(bs: BranchState): void {
   bs.checkpoints.clear();
-  const waits = bs.newTopics;
-  if (!waits) return;
-  bs.newTopics = undefined;
-  for (const wait of waits.values()) wait.abort('the session or the branch was switched');
 }
 
 export interface CommandResult {
@@ -1411,52 +1402,40 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
   return { lines };
 }
 
+/**
+ * /newtopic stores a [Topic Transition] row and starts the agent's head
+ * window there (#291, J-H3), only while the agent is idle with no turn alive
+ * (idleWithNoTurn): stored inside a turn, the row would enter the agent's
+ * window between rounds its requests were sent without, past the framework's
+ * turn gate. inFlightGuard reads the agent's status alone, and an idle
+ * agent's turn is still alive while a continuation or a retry of it is on
+ * its way, so this refuses then. The row is the agent's own (asOwnRow):
+ * stamped for it alone, so no other resident sharing the slot is shown it,
+ * and presented as context-manager stores it, so the head window starts at
+ * a row the agent's window holds.
+ *
+ * Given its text, the row is stored before anything awaits. A bare
+ * /newtopic writes the strategy's summary of the head window first
+ * (bareTransition).
+ */
 function handleNewTopic(app: AppContext, args: string[]): CommandResult {
   const agent = commandAgent(app);
   const cm = agent?.getContextManager();
   if (!agent || !cm) return { lines: [{ text: 'No context manager.', style: 'system' }] };
+  if (!idleWithNoTurn(app.framework, agent.name)) {
+    return {
+      lines: [
+        { text: `/newtopic refused: a turn of ${agent.name}'s is alive (a continuation or a retry of it on its way).`, style: 'system' },
+        { text: '  Nothing was stored. Run /newtopic again once the turn has ended.', style: 'system' },
+      ],
+    };
+  }
 
   const userContext = args.join(' ').trim() || undefined;
-
-  // The transition is the agent's own row (agent-framework #291): stamped for
-  // it alone, so no other resident sharing the slot is shown it, and
-  // presented as context-manager stores it, so the head window starts at a
-  // row the agent's window holds. It is stored only while the agent is idle
-  // with no turn alive (transitionOnceIdle). inFlightGuard reads the agent's
-  // status alone: an idle agent's turn is still alive while a continuation
-  // or a retry of it is on its way, and the transition is then stored once
-  // that turn has ended. Given its text, an agent found idle with no turn
-  // alive has it stored here, before anything awaits. A bare /newtopic
-  // writes the summary first, and the agent can start a turn meanwhile
-  // (newTopicOnceIdle).
   const metadata = asOwnRow(undefined, agent.name);
-  const turnAlive = userContext !== undefined && !idleWithNoTurn(app.framework, agent.name);
-  // One /newtopic waits for each agent. A later one replaces it, as the
-  // operator's later word (a refusal would leave a mistyped transition to be
-  // stored once the turn ends, with no way to correct it), and the earlier
-  // one stores nothing. A wait ends too, storing nothing, at a session or a
-  // branch switch (resetBranchState), at the host's stop, and once the
-  // framework it was given against is no longer the host's.
-  const branchState = app.branchState as BranchState | undefined;
-  const waits = branchState ? (branchState.newTopics ??= new Map()) : new Map<string, AbortController>();
-  const earlier = waits.get(agent.name);
-  earlier?.abort(`a later /newtopic for ${agent.name} replaced it`);
-  const wait = new AbortController();
-  waits.set(agent.name, wait);
-  const release = () => { if (waits.get(agent.name) === wait) waits.delete(agent.name); };
-  const framework = app.framework;
-  const lifetime: NewTopicLifetime = {
-    signal: wait.signal,
-    gone: () => app.stopping ? 'the host is stopping'
-      : app.switching ? 'a session switch began'
-      : app.framework !== framework ? 'the session it was given in has been switched away from'
-      : undefined,
-    storing: release,
-  };
   const reset = userContext !== undefined
-    ? givenTransitionOnceIdle(framework, agent.name, cm, userContext, metadata, lifetime)
-    : newTopicOnceIdle(framework, agent.name, cm, metadata, lifetime);
-  void reset.then(release, release);
+    ? storeTransition(cm, userContext, metadata)
+    : bareTransition(app, agent.name, cm, metadata);
   const asyncWork = reset.then(summary => ({
     lines: [
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
@@ -1467,51 +1446,11 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
   }));
 
   return {
-    lines: [
-      { text: userContext
-        ? 'Resetting topic with provided context...'
-        : 'Generating transition summary...', style: 'system' },
-      ...(turnAlive
-        ? [{ text: `  A turn of ${agent.name}'s is still alive (a continuation or a retry of it on its way): ` +
-            'the transition is stored once it has ended.', style: 'system' as const }]
-        : []),
-      ...(earlier
-        ? [{ text: `  This replaces the /newtopic for ${agent.name} still waiting for a turn to end: that one stores nothing.`, style: 'system' as const }]
-        : []),
-    ],
+    lines: [{ text: userContext
+      ? 'Resetting topic with provided context...'
+      : 'Generating transition summary...', style: 'system' }],
     asyncWork,
   };
-}
-
-/** How long /newtopic waits, once it has its transition (its text, or a
- *  bare one's summary), for a turn of the agent to end, and how often it
- *  looks. Each wait reads them as it begins; a test shortens them. */
-export const newTopicIdleWait = { waitMs: 10 * 60_000, pollMs: 100 };
-
-/** What ends a /newtopic's wait, storing nothing (transitionOnceIdle). */
-interface NewTopicLifetime {
-  /** Aborted, with the reason, by a later /newtopic for the agent or a switch of the session or the branch. */
-  signal: AbortSignal;
-  /** Why the session it was given in has ended, once it has: the host is stopping or switching sessions, or its framework isn't the host's. */
-  gone(): string | undefined;
-  /** Called as it stores the transition, which a later /newtopic no longer replaces. */
-  storing(): void;
-}
-
-/** Wait `ms`, or until `signal` aborts, on a timer that doesn't hold the process open. */
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) { resolve(); return; }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    };
-    timer = setTimeout(done, ms);
-    (timer as { unref?: () => void }).unref?.();
-    signal.addEventListener('abort', done, { once: true });
-  });
 }
 
 /** Whether the agent is idle with no turn alive: no turn token, and no
@@ -1524,107 +1463,33 @@ function idleWithNoTurn(framework: AgentFramework, agentName: string): boolean {
   return !status?.activeTurnAgents.includes(agentName);
 }
 
-/**
- * Store `transition` as the agent's [Topic Transition] row and start its head
- * window there, once the agent is idle with no turn alive (#291, J-H3): by a
- * resetHeadWindow with it as its text, in the same step that finds the agent
- * so (given its text, resetHeadWindow stores and presents the row before it
- * first awaits). Stored inside a turn, the row would enter the agent's window
- * between rounds its requests were sent without, past the framework's turn
- * gate. A turn alive is waited for, up to newTopicIdleWait.waitMs, so the
- * transition follows it in the window. Nothing is stored if `lifetime`
- * ends the wait (its signal aborts, or its session is gone), if the agent is
- * still busy then (`begun.waited`, and the answer says `begun.again`), if
- * it has gone, or if the branch or the strategy changed since
- * `begun.strategy` and `begun.branch` were read (`begun.since`, and the
- * answer gives back `begun.kept`). When the agent is
- * idle with no turn alive as this is called, the row is stored before this
- * returns: nothing awaits before the first check.
- */
-async function transitionOnceIdle(
-  framework: AgentFramework,
-  agentName: string,
-  cm: ContextManager,
-  transition: string,
-  metadata: MessageMetadata,
-  begun: { strategy: unknown; branch: string; since: string; waited: string; again: string; kept: string },
-  lifetime: NewTopicLifetime,
-): Promise<string> {
-  const { waitMs, pollMs } = newTopicIdleWait;
-  const deadline = Date.now() + waitMs;
-  const nothingStored = 'nothing was stored';
-  for (;;) {
-    const ended = lifetime.signal.aborted ? String(lifetime.signal.reason) : lifetime.gone();
-    if (ended !== undefined) throw new Error(`${ended}; ${nothingStored}${begun.kept}`);
-    if (framework.getAgent(agentName)?.getContextManager() !== cm) {
-      throw new Error(`${agentName} is no longer registered with this context; ${nothingStored}${begun.kept}`);
-    }
-    if (cm.getStrategy() !== begun.strategy || cm.currentBranch().id !== begun.branch) {
-      throw new Error(`the branch or the strategy changed since ${begun.since}; ${nothingStored}${begun.kept}`);
-    }
-    // No await from these checks to the store: no turn starts, and the
-    // session doesn't end, between them.
-    if (idleWithNoTurn(framework, agentName)) {
-      lifetime.storing();
-      return cm.resetHeadWindow(transition, { metadata });
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `${agentName} still had a turn alive ${Math.round(waitMs / 1000)} s after ${begun.waited}, ` +
-          `and ${nothingStored}. ${begun.again}`,
-      );
-    }
-    await pause(pollMs, lifetime.signal);
-  }
-}
-
-/**
- * `/newtopic <text>`'s transition (transitionOnceIdle): stored here when the
- * agent is idle with no turn alive, and otherwise once its turn has ended. A
- * strategy that can't reset its head window is refused at once.
- */
-function givenTransitionOnceIdle(
-  framework: AgentFramework,
-  agentName: string,
-  cm: ContextManager,
-  text: string,
-  metadata: MessageMetadata,
-  lifetime: NewTopicLifetime,
-): Promise<string> {
-  const strategy = cm.getStrategy();
-  if (!isResettableStrategy(strategy)) return Promise.reject(new Error('Active strategy does not support head window reset'));
-  return transitionOnceIdle(framework, agentName, cm, text, metadata, {
-    strategy,
-    branch: cm.currentBranch().id,
-    since: '/newtopic was given',
-    waited: '/newtopic was given',
-    again: 'Run /newtopic again once its turn has ended.',
-    kept: '',
-  }, lifetime);
+/** Store `transition` as the agent's [Topic Transition] row and start its
+ *  head window there. Given its text, resetHeadWindow stores and presents
+ *  the row before it first awaits, so a caller that has just found the
+ *  agent idle with no turn alive stores it so. */
+function storeTransition(cm: ContextManager, transition: string, metadata: MessageMetadata): Promise<string> {
+  return cm.resetHeadWindow(transition, { metadata });
 }
 
 /**
  * A bare /newtopic's transition (#291, J-H3): the strategy's summary of the
- * head window is written first, an LLM call during which a turn of the agent
- * can start, and it is stored as the transition once the agent is idle with
- * no turn alive (transitionOnceIdle). Nothing is stored if the branch or the
- * strategy changed since the summary was begun: the summary is of the head
- * window that was there. Whenever nothing is stored, the answer gives the
- * summary back.
+ * head window, an LLM call during which a turn of the agent can start, the
+ * branch or the strategy can change, or the session can end. Once it is
+ * written, it is stored if none of that happened; otherwise nothing is
+ * stored, and the answer gives the summary back, to store with
+ * /newtopic <text>. When the summary can't be written (context-manager's
+ * refuses one whose branch moved while it was written), nothing is stored
+ * and the answer says why.
  *
  * The summary is the one resetHeadWindow writes for itself, from the
- * manager's own strategy context: context-manager has no public call that
- * writes it without storing it, so this reaches the manager's
- * createStrategyContext, and says so if a context-manager without it is
- * installed.
+ * manager's own strategy context. context-manager has no public call that
+ * writes it without storing it, so this reaches the manager's private
+ * createStrategyContext through a cast, and says so if a context-manager
+ * without it is installed. A public call for that is to come with
+ * anima-research/context-manager#350, and will replace the cast.
  */
-async function newTopicOnceIdle(
-  framework: AgentFramework,
-  agentName: string,
-  cm: ContextManager,
-  metadata: MessageMetadata,
-  lifetime: NewTopicLifetime,
-): Promise<string> {
+async function bareTransition(app: AppContext, agentName: string, cm: ContextManager, metadata: MessageMetadata): Promise<string> {
+  const framework = app.framework;
   const strategy = cm.getStrategy();
   if (!isResettableStrategy(strategy)) throw new Error('Active strategy does not support head window reset');
   const contextOf = (cm as unknown as { createStrategyContext?: () => StrategyContext }).createStrategyContext;
@@ -1635,15 +1500,27 @@ async function newTopicOnceIdle(
     );
   }
   const branch = cm.currentBranch().id;
-  const summary = await strategy.generateTransitionSummary(contextOf.call(cm));
-  return transitionOnceIdle(framework, agentName, cm, summary, metadata, {
-    strategy,
-    branch,
-    since: 'the transition summary was begun',
-    waited: 'the transition summary was written',
-    again: `To store it, run /newtopic with it as the text:\n${summary}`,
-    kept: `. The summary it wrote, of the head window then:\n${summary}`,
-  }, lifetime);
+  let summary: string;
+  try {
+    summary = await strategy.generateTransitionSummary(contextOf.call(cm));
+  } catch (err) {
+    throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
+  }
+  // No await from these checks to the store: no turn starts, and nothing
+  // moves, between them.
+  const moved = app.stopping ? 'the host is stopping'
+    : app.switching || app.framework !== framework ? 'the session was switched'
+    : framework.getAgent(agentName)?.getContextManager() !== cm ? `${agentName} is no longer registered with this context`
+    : cm.getStrategy() !== strategy || cm.currentBranch().id !== branch ? 'the branch or the strategy changed'
+    : !idleWithNoTurn(framework, agentName) ? `a turn of ${agentName}'s started`
+    : undefined;
+  if (moved !== undefined) {
+    throw new Error(
+      `${moved} while the transition summary was written; nothing was stored. ` +
+        `To store it, run /newtopic with it as the text:\n${summary}`,
+    );
+  }
+  return storeTransition(cm, summary, metadata);
 }
 
 /**

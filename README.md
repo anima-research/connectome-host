@@ -879,10 +879,11 @@ those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
 refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
 while any agent sharing the store is mid-turn, the subconscious included, and
 `/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
-`/newtopic` stores its transition only while the
-agent has no turn alive: if a continuation or a retry of the agent's turn is
-on its way, or a turn starts while a bare `/newtopic` writes its summary, it
-stores the transition once that turn has ended.
+`/newtopic` stores its transition only while the agent has no turn alive, and
+is refused while a continuation or a retry of the agent's turn is on its way.
+A bare `/newtopic` writes its summary first: if a turn of the agent starts, or
+the branch or the strategy changes, meanwhile, it stores nothing, and its
+answer gives the summary, when one was written, to pass as `/newtopic <text>`.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the

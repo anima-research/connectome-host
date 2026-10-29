@@ -11,8 +11,9 @@
  *   them, and no other resident's;
  * - /newtopic's transition is the agent's own row, presented as it is
  *   written, so the head window starts at a row the window holds, and
- *   never while a turn of the agent is alive, a bare /newtopic's included,
- *   whose summary a turn can start during;
+ *   never stored while a turn of the agent is alive: /newtopic is refused
+ *   then, and a bare /newtopic whose summary a turn started during stores
+ *   nothing and gives the summary back;
  * - a subagent's seed rows (its orientation and task, or a fork's copy of
  *   its parent's context) are the child's own rows, in its window once its
  *   run takes it on;
@@ -27,8 +28,8 @@
 import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
-import { AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
-import { createBranchState, handleCommand, newTopicIdleWait, resetBranchState, type BranchState } from '../src/commands.js';
+import { AutobiographicalStrategy, type StoredMessage, type StrategyContext } from '@animalabs/context-manager';
+import { createBranchState, handleCommand } from '../src/commands.js';
 import { NoticesModule } from '../src/modules/notices-module.js';
 import { SettingsModule } from '../src/modules/settings-module.js';
 import { SubagentModule } from '../src/modules/subagent-module.js';
@@ -161,7 +162,7 @@ describe('/newtopic', () => {
   // status reads idle, and inFlightGuard, which reads only that, lets the
   // command by. Stored then, the transition entered the window between the
   // turn's rounds (the review's probe, HOST-1).
-  test("given its text while a continuation of the agent's turn is on its way, stores its transition once the turn has ended", async () => {
+  test("given its text while a continuation of the agent's turn is on its way, is refused and stores nothing", async () => {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix: 'newtopic-alive-' });
     const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
@@ -177,20 +178,16 @@ describe('/newtopic', () => {
       const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
       const result = handleCommand('/newtopic Moving on.', app);
       expect(result.lines.map((l) => l.text)).toEqual([
-        'Resetting topic with provided context...',
-        "  A turn of clerk's is still alive (a continuation or a retry of it on its way): the transition is stored once it has ended.",
+        "/newtopic refused: a turn of clerk's is alive (a continuation or a retry of it on its way).",
+        '  Nothing was stored. Run /newtopic again once the turn has ended.',
       ]);
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(result.asyncWork).toBeUndefined();
       expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
 
-      // The turn ends.
+      // The turn ends: nothing was left waiting to store it.
       fw.pendingContinuationAgents = original;
-      const outcome = await result.asyncWork!;
-      expect(outcome.lines.map((l) => l.text)).toEqual(['Topic reset. Transition summary:', 'Moving on.']);
-      const row = h.rowWith('clerk', '[Topic Transition]')!;
-      expect(audienceOf(row.metadata)).toEqual({ audience: ['clerk'], ownRowOf: 'clerk' });
-      expect(h.inWindow('clerk', row.id)).toBe(true);
-      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+      await h.settled('clerk');
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
     } finally {
       fw.pendingContinuationAgents = original;
       await h.cleanup();
@@ -198,198 +195,147 @@ describe('/newtopic', () => {
   });
 });
 
+// A bare /newtopic's summary is an LLM call, and the agent can start a turn
+// during it, or the branch or the strategy can change (J-H3). It is stored
+// only if, once written, none of that happened; otherwise nothing is stored,
+// and the answer gives the summary back for /newtopic <text>. The strategy's
+// summary is replaced by one that waits on a gate and reads the context it
+// is given.
 describe('a bare /newtopic', () => {
-  // Its summary is an LLM call, and the agent can start a turn during it
-  // (J-H3). Stored then, the transition entered the window inside the turn,
-  // between rounds its requests were sent without.
-  test('whose summary a turn started during stores its transition once the turn has ended, after it in the window, and the next request carries it', async () => {
+  const SUMMARY = 'The ledger work is done; next is the release.';
+
+  async function bare(prefix: string) {
     const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
     let releaseSummary!: () => void;
     const summaryGate = new Promise<void>((resolve) => { releaseSummary = resolve; });
-    (strategy as unknown as { generateTransitionSummary: () => Promise<string> }).generateTransitionSummary = async () => {
+    const summarized: string[][] = [];
+    (strategy as unknown as { generateTransitionSummary: (ctx: StrategyContext) => Promise<string> }).generateTransitionSummary = async (ctx) => {
+      summarized.push(ctx.messageStore.getAll().map(textOf));
       await summaryGate;
-      return 'The ledger work is done; next is the release.';
+      return SUMMARY;
     };
-    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix: 'newtopic-bare-' });
-    try {
-      await h.turn('clerk');
-      const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
-      const result = handleCommand('/newtopic', app);
-      expect(result.lines[0]!.text).toBe('Generating transition summary...');
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
+    await h.turn('clerk');
+    const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
+    return { h, app, strategy, summarized, releaseSummary };
+  }
+  const texts = (result: { lines: Array<{ text: string }> }) => result.lines.map((l) => l.text);
+  const refusedWith = (why: string) => [
+    `Topic reset failed: ${why} while the transition summary was written; nothing was stored. ` +
+      `To store it, run /newtopic with it as the text:\n${SUMMARY}`,
+  ];
 
+  test("with the agent idle throughout, stores the summary of the agent's context as its own row, where the head window starts", async () => {
+    const { h, app, strategy, summarized, releaseSummary } = await bare('newtopic-bare-');
+    try {
+      const result = handleCommand('/newtopic', app);
+      expect(texts(result)).toEqual(['Generating transition summary...']);
+      releaseSummary();
+      expect(texts(await result.asyncWork!)).toEqual(['Topic reset. Transition summary:', SUMMARY]);
+      // The summary was written from clerk's context.
+      expect(summarized).toHaveLength(1);
+      expect(summarized[0]!.join('\n')).toContain('clerk reply 1');
+      const row = h.rowWith('clerk', '[Topic Transition]')!;
+      expect(audienceOf(row.metadata)).toEqual({ audience: ['clerk'], ownRowOf: 'clerk' });
+      expect(h.inWindow('clerk', row.id)).toBe(true);
+      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
+      await h.turn('clerk');
+      expect(h.adapter.wireOf('clerk').at(-1)).toContain('The ledger work is done');
+      await h.turn('mira');
+      expect(h.inWindow('mira', row.id)).toBe(false);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("whose summary a turn started during stores nothing, the turn's requests go without it, and its answer gives the summary back", async () => {
+    const { h, app, releaseSummary } = await bare('newtopic-bare-turn-');
+    try {
+      const result = handleCommand('/newtopic', app);
       // A turn starts while the summary is written, and waits in a tool call.
       h.adapter.script('clerk', { wait: 'g' }, { text: 'after the tool' });
       h.framework.nudgeAgent('clerk', 'test');
       await until(() => h.gates.entered.has('g'), "clerk's tool call");
       const before = h.adapter.callsFor('clerk');
       releaseSummary();
-      // The summary is in; the turn is alive, so nothing is stored yet.
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(texts(await result.asyncWork!)).toEqual(refusedWith("a turn of clerk's started"));
       expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
 
       h.gates.release('g');
-      const outcome = await result.asyncWork!;
-      expect(outcome.lines.map((l) => l.text)).toEqual(['Topic reset. Transition summary:', 'The ledger work is done; next is the release.']);
-      const row = h.rowWith('clerk', '[Topic Transition]')!;
-      expect(audienceOf(row.metadata)).toEqual({ audience: ['clerk'], ownRowOf: 'clerk' });
-      // The turn's requests went without it, and it follows the turn's rows.
+      await h.settled('clerk');
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
       const sent = h.adapter.wireOf('clerk').slice(before);
       expect(sent.length).toBeGreaterThan(0);
       for (const wire of sent) expect(wire).not.toContain('[Topic Transition]');
-      const cm = h.framework.getAgent('clerk')!.getContextManager();
-      const window = cm.getPresentedMessages();
-      expect(window.at(-1)!.id).toBe(row.id);
-      expect(textOf(window.at(-2)!)).toBe('after the tool');
-      expect((strategy as unknown as { headWindowStartId: string | null }).headWindowStartId).toBe(row.id);
-
-      await h.turn('clerk');
-      expect(h.adapter.wireOf('clerk').at(-1)).toContain('The ledger work is done');
-      expect(h.inWindow('mira', row.id)).toBe(false);
     } finally {
       await h.cleanup();
     }
   });
-});
 
-// A /newtopic waiting for a turn to end belongs to the session it was given
-// in: it ends, storing nothing, at a session or a branch switch, at the
-// host's stop, and once the host's framework is another; and a later
-// /newtopic for the agent replaces it, so one turn's end stores one
-// transition. The turn is kept alive by a continuation on its way.
-describe('a /newtopic waiting for a turn to end', () => {
-  async function givenWithTurnAlive(prefix: string) {
-    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
-    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
-    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
-    const original = fw.pendingContinuationAgents.bind(h.framework);
-    await h.turn('clerk');
-    fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
-    const app = { framework: h.framework as unknown, agentName: 'clerk', branchState: createBranchState() as BranchState, stopping: false, switching: false };
-    const endTurn = () => { fw.pendingContinuationAgents = original; };
-    const transitions = () => h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
-      .filter((m) => textOf(m).startsWith('[Topic Transition]')).map(textOf);
-    return { h, app, endTurn, transitions, cleanup: async () => { endTurn(); await h.cleanup(); } };
-  }
-  const texts = (result: { lines: Array<{ text: string }> }) => result.lines.map((l) => l.text);
-  const pauseFor = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  test("ends, storing nothing, at a session or a branch switch, at the host's stop, at a session switch's start, and once the host's framework is another", async () => {
-    const { h, app, endTurn, transitions, cleanup } = await givenWithTurnAlive('newtopic-ended-');
-    const saved = { ...newTopicIdleWait };
-    try {
-      // A switch's reset ends the wait at once: with a poll longer than the
-      // test's limit, only the abort wakes it.
-      newTopicIdleWait.pollMs = 600_000;
-      const switched = handleCommand('/newtopic Moving on.', app as never);
-      await pauseFor(100);
-      resetBranchState(app.branchState);
-      expect(texts(await switched.asyncWork!)).toEqual(['Topic reset failed: the session or the branch was switched; nothing was stored']);
-      expect(app.branchState.newTopics).toBeUndefined();
-      Object.assign(newTopicIdleWait, saved);
-
-      const ends: Array<{ end: () => void; undo: () => void; why: string }> = [
-        { end: () => { app.stopping = true; }, undo: () => { app.stopping = false; }, why: 'the host is stopping' },
-        { end: () => { app.switching = true; }, undo: () => { app.switching = false; }, why: 'a session switch began' },
-        { end: () => { app.framework = {}; }, undo: () => { app.framework = h.framework; }, why: 'the session it was given in has been switched away from' },
-      ];
-      for (const { end, undo, why } of ends) {
-        const result = handleCommand('/newtopic Moving on.', app as never);
-        await pauseFor(100);
-        end();
-        const outcome = await result.asyncWork!;
-        undo();
-        expect(texts(outcome)).toEqual([`Topic reset failed: ${why}; nothing was stored`]);
-        expect(app.branchState.newTopics?.size ?? 0).toBe(0);
-      }
-
-      endTurn();
-      await h.settled('clerk');
-      await pauseFor(200);
-      expect(transitions()).toEqual([]);
-    } finally {
-      Object.assign(newTopicIdleWait, saved);
-      await cleanup();
-    }
-  });
-
-  test('a later /newtopic for the agent replaces it: the earlier stores nothing, and the later is stored once the turn has ended', async () => {
-    const { app, endTurn, transitions, cleanup } = await givenWithTurnAlive('newtopic-twice-');
-    try {
-      const first = handleCommand('/newtopic First of all.', app as never);
-      const second = handleCommand('/newtopic Second thoughts.', app as never);
-      expect(texts(first)).not.toContain('  This replaces the /newtopic for clerk still waiting for a turn to end: that one stores nothing.');
-      expect(texts(second)).toContain('  This replaces the /newtopic for clerk still waiting for a turn to end: that one stores nothing.');
-      expect(texts(await first.asyncWork!)).toEqual(['Topic reset failed: a later /newtopic for clerk replaced it; nothing was stored']);
-      await pauseFor(200);
-      expect(transitions()).toEqual([]);
-
-      endTurn();
-      expect(texts(await second.asyncWork!)).toEqual(['Topic reset. Transition summary:', 'Second thoughts.']);
-      expect(transitions()).toEqual(['[Topic Transition]\n\nSecond thoughts.']);
-      expect(app.branchState.newTopics?.size ?? 0).toBe(0);
-    } finally {
-      await cleanup();
-    }
-  });
-});
-
-// A bare /newtopic that gives up stores nothing, and its summary, an LLM
-// call's, is in its answer, so the operator can store it with /newtopic
-// <text>. Its wait is shortened here (newTopicIdleWait), and the turn kept
-// alive by a continuation on its way, as the test above keeps one.
-describe('a bare /newtopic that gives up', () => {
-  const SUMMARY = 'The ledger work is done; next is the release.';
-
-  async function bareWithTurnAlive(prefix: string) {
-    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
-    (strategy as unknown as { generateTransitionSummary: () => Promise<string> }).generateTransitionSummary = async () => SUMMARY;
-    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
-    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
-    const original = fw.pendingContinuationAgents.bind(h.framework);
-    await h.turn('clerk');
-    fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
-    const app = { framework: h.framework, agentName: 'clerk', branchState: createBranchState() } as never;
-    const endTurn = () => { fw.pendingContinuationAgents = original; };
-    return { h, app, endTurn, cleanup: async () => { endTurn(); await h.cleanup(); } };
-  }
-
-  test('at the deadline, with a turn still alive, stores nothing, and its answer gives the summary to store', async () => {
-    const saved = { ...newTopicIdleWait };
-    Object.assign(newTopicIdleWait, { waitMs: 1000, pollMs: 20 });
-    const { h, app, endTurn, cleanup } = await bareWithTurnAlive('newtopic-deadline-');
-    try {
-      const outcome = await handleCommand('/newtopic', app).asyncWork!;
-      expect(outcome.lines.map((l) => l.text)).toEqual([
-        'Topic reset failed: clerk still had a turn alive 1 s after the transition summary was written, and nothing was stored. ' +
-          `To store it, run /newtopic with it as the text:\n${SUMMARY}`,
-      ]);
-      endTurn();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
-    } finally {
-      Object.assign(newTopicIdleWait, saved);
-      await cleanup();
-    }
-  });
-
-  test('when the strategy changed while its turn was alive, stores nothing, and its answer gives the summary', async () => {
-    const { h, app, endTurn, cleanup } = await bareWithTurnAlive('newtopic-changed-');
+  test('when the strategy changed while its summary was written, stores nothing, and its answer gives the summary back', async () => {
+    const { h, app, releaseSummary } = await bare('newtopic-bare-strategy-');
     try {
       const result = handleCommand('/newtopic', app);
-      // The summary is written; the wait looks while the turn is alive.
-      await new Promise((resolve) => setTimeout(resolve, 300));
       const cm = h.framework.getAgent('clerk')!.getContextManager();
       await cm.setStrategy(new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false }));
-      const outcome = await result.asyncWork!;
-      expect(outcome.lines.map((l) => l.text)).toEqual([
-        'Topic reset failed: the branch or the strategy changed since the transition summary was begun; nothing was stored. ' +
-          `The summary it wrote, of the head window then:\n${SUMMARY}`,
-      ]);
-      endTurn();
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      releaseSummary();
+      expect(texts(await result.asyncWork!)).toEqual(refusedWith('the branch or the strategy changed'));
       expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
     } finally {
-      await cleanup();
+      await h.cleanup();
+    }
+  });
+
+  test('when only the branch moved while its summary was written, stores nothing, and its answer gives the summary back', async () => {
+    const { h, app, releaseSummary } = await bare('newtopic-bare-branch-');
+    try {
+      const result = handleCommand('/newtopic', app);
+      const cm = h.framework.getAgent('clerk')!.getContextManager();
+      const strategyBefore = cm.getStrategy();
+      const side = cm.branchAt(h.rowWith('clerk', 'clerk reply 1')!.id, 'side');
+      await h.framework.switchBranch(side, { requester: { via: 'host-console' } });
+      expect(cm.getStrategy()).toBe(strategyBefore);
+      releaseSummary();
+      expect(texts(await result.asyncWork!)).toEqual(refusedWith('the branch or the strategy changed'));
+      expect(h.framework.getAgent('clerk')!.getContextManager().getAllMessages().some((m) => textOf(m).startsWith('[Topic Transition]'))).toBe(false);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  // context-manager's summary refuses one whose branch moved while it was
+  // written ("crossed a branch generation"): there is no summary to give back.
+  test("when its summary can't be written, stores nothing, and its answer says why", async () => {
+    const { h, app, strategy } = await bare('newtopic-bare-crossed-');
+    try {
+      (strategy as unknown as { generateTransitionSummary: () => Promise<string> }).generateTransitionSummary = async () => {
+        throw new Error('Transition summary crossed a branch generation; reinitialize before retrying');
+      };
+      expect(texts(await handleCommand('/newtopic', app).asyncWork!)).toEqual([
+        "Topic reset failed: the transition summary couldn't be written " +
+          '(Transition summary crossed a branch generation; reinitialize before retrying); nothing was stored',
+      ]);
+      expect(h.rowWith('clerk', '[Topic Transition]')).toBeUndefined();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  test('with a turn alive as it is given, is refused before any summary is written', async () => {
+    const { h, app, summarized } = await bare('newtopic-bare-alive-');
+    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
+    const original = fw.pendingContinuationAgents.bind(h.framework);
+    try {
+      fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
+      const result = handleCommand('/newtopic', app);
+      expect(texts(result)).toEqual([
+        "/newtopic refused: a turn of clerk's is alive (a continuation or a retry of it on its way).",
+        '  Nothing was stored. Run /newtopic again once the turn has ended.',
+      ]);
+      expect(summarized).toEqual([]);
+    } finally {
+      fw.pendingContinuationAgents = original;
+      await h.cleanup();
     }
   });
 });

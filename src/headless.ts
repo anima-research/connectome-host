@@ -625,7 +625,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     if (shuttingDown) return;
     shuttingDown = true;
     // The host is stopping: a session switch under way goes no further, and
-    // a /newtopic still waiting for a turn stores nothing.
+    // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
     log(`shutdown: ${reason}`);
     emit({ type: 'lifecycle', phase: 'exiting', reason });

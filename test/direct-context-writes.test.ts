@@ -76,8 +76,7 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
       'context-manager presents it as it stores it, ' +
       "before the head window starts at it, and the command stores it only where it has found the agent idle with no turn " +
       'alive (idleWithNoTurn, which counts a continuation or a retry on its way), with no await between: given its text, ' +
-      'at once if the agent is so, and for a bare /newtopic once the summary is written; otherwise once the turn alive ' +
-      'has ended.',
+      'as the command is given, and for a bare /newtopic once the summary is written. Otherwise it stores nothing.',
   },
   {
     file: 'src/modules/time-module.ts',
