@@ -105,8 +105,11 @@ welcome for every client, as its scopes allow.
 An undo or a redo on the conversation agent's window (`/undo`, `/redo`, the
 `window:undone` trace) moves no branch, and the transcript still shows the
 record. A transcript entry whose row left the window by an undo carries
-`undone: true` (the welcome, history pages), and after each such trace the
-server sends `undone-marks` (scope `messages`) naming the undone rows of the
-welcome's tail, which the page dims and labels. The page also reads the
+`undone: true` (the welcome, history pages), and after each such trace, and
+each shed from that window (`presentation:retracted`, reason `shed`), the
+server sends `undone-marks` (scope `messages`) naming every undone row of
+the record, from index 0, which the page dims and labels wherever it holds
+them, clearing the label of each row it holds that the frame doesn't name.
+The page also reads the
 window's panels again (Context's makeup and coverage, the compiled context
 document, the pins), and the pin picker leaves undone rows out.

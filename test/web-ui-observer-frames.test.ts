@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
+import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
 
 describe('what each client is sent', () => {
   let host: ObservedHost;
@@ -620,6 +621,64 @@ describe('what each client is sent', () => {
       c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-undone', beforeIndex: 2, limit: 10 }));
       const page = await c.operator.until('history-page', (f) => f.corrId === 'h-undone');
       expect(marks(page.entries)).toEqual([['u1', true], ['a1', false]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // HOST-1: the frame named undone rows only in the welcome's tail (the
+  // record's last 200 rows), and a page leaves a row before `fromIndex` as
+  // it was. The agent's reply with 200 rows of others' traffic stored after
+  // it stayed shown as in its context after an undo, and a row a redo put
+  // back after it left the tail kept its undone label.
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+    const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
+    transcript = [
+      say('u1', 'user', 'count the ledgers'),
+      say('a1', 'assistant', 'three'),
+      ...Array.from({ length: 250 }, (_, i) => say(`x${i}`, 'user', `traffic ${i}`)),
+    ];
+    try {
+      const c = await everyone();
+      const welcome = c.operator.framesOf('welcome').at(-1)!;
+      expect((welcome.history as { startIndex: number }).startIndex).toBe(52);
+      // The page reads back to the start, so it holds the reply.
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-back', beforeIndex: 52, limit: 100 }));
+      const back = await c.operator.until('history-page', (f) => f.corrId === 'h-back');
+      type Entry = { id?: string; index?: number; undone?: boolean };
+      const rows: MarkableRow[] = [...(back.entries as Entry[]), ...(welcome.messages as Entry[])]
+        .map((e) => ({ storeId: e.id, index: e.index, ...(e.undone ? { undone: true } : {}) }));
+      expect(rows.length).toBe(252);
+      const marked = () => rows.filter((r) => r.undone).map((r) => r.storeId);
+      const frames = () => c.operator.framesOf('undone-marks');
+
+      undone = new Set(['a1']);
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['a1']);
+
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual([]);
+
+      // A shed takes rows out of the window as an undone turn's.
+      undone = new Set(['x3']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x3'], reason: 'shed' });
+      // Neither another reason nor another agent's window marks anything.
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'hide' });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'someone-else', messageIds: ['x5'], reason: 'shed' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3']);
+      expect(frames()).toEqual([
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+      ]);
     } finally {
       transcript = [];
       undone = new Set();

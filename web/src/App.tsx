@@ -26,6 +26,7 @@ import { UpdateBanner, UpdateDialog } from './Update';
 import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
+import { applyUndoneMarksTo } from './undone-marks';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
@@ -545,14 +546,7 @@ export function App() {
   /** Mark the transcript's rows from `fromIndex` on as the server says an
    *  undo left them: in the conversation agent's window, or out of it. */
   const applyUndoneMarks = (marks: UndoneMarksMessage): void => {
-    const undone = new Set(marks.undone);
-    setMessages(produce((arr) => {
-      for (const m of arr) {
-        if (!m.storeId || typeof m.index !== 'number' || m.index < marks.fromIndex) continue;
-        if (undone.has(m.storeId)) m.undone = true;
-        else if (m.undone) delete m.undone;
-      }
-    }));
+    setMessages(produce((arr) => applyUndoneMarksTo(arr, marks)));
   };
 
   const [mounts, setMounts] = createSignal<Mount[]>([]);

@@ -728,16 +728,24 @@ export class WebUiModule implements Module {
       });
     }
     // An undo or a redo on the window of the agent whose record the
-    // transcript shows: the transcript's rows are marked again.
-    if (event.type === 'window:undone') this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+    // transcript shows, or a shed from it, which takes rows out as an undone
+    // turn's: the transcript's rows are marked again.
+    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && (event as { reason?: unknown }).reason === 'shed')) {
+      this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+    }
   }
 
   /** After an undo or a redo on `agentName`'s window (agent-framework #291,
-   *  the `window:undone` trace), when that agent's record is the
-   *  transcript's: which rows of the welcome's tail are now out of its
-   *  window as undone (UndoneMarksMessage). A page marks them, and a row the
-   *  frame doesn't name from `fromIndex` on is no longer marked. Rows before
-   *  the tail are marked when a history page reads them. */
+   *  the `window:undone` trace), or a refusal rewind's or a failed
+   *  inference's shed from it (`presentation:retracted`, reason `shed`),
+   *  when that agent's record is the transcript's: every row of the record
+   *  now out of its window as undone (UndoneMarksMessage), from index 0. A
+   *  page marks each row it holds that the frame names and clears the mark
+   *  of each it doesn't, however far back its history reaches: the reply an
+   *  undo took out with 200 rows stored after it, which no welcome's tail
+   *  holds, and a row a redo put back after it left the tail. It reads the
+   *  whole record, one windowStatusOf a row, at each undo, redo or shed
+   *  while a client is connected. */
   private broadcastUndoneMarks(agentName: unknown): void {
     const agent = sharedServer?.app?.framework.getAllAgents()[0];
     if (!agent || agent.name !== agentName) return;
@@ -745,8 +753,7 @@ export class WebUiModule implements Module {
     if (typeof cmw?.windowStatusOf !== 'function' || typeof cmw.getMessageWindow !== 'function') return;
     try {
       const total = cmw.getMessageCount();
-      const start = Math.max(0, total - WELCOME_HISTORY_LIMIT);
-      const win = cmw.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
+      const win = cmw.getMessageWindow(0, total, { resolveBlobs: false, alignToBodyGroups: true });
       // By each row's id, a shard's too: a page's entry for a sharded body
       // carries its first shard's.
       const undone = (win.messages as Array<{ id?: unknown }>)

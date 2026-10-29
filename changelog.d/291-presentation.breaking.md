@@ -51,9 +51,10 @@
   scope, and `presentation:repaired` needs `health` and `ops`. They carry
   agent names, counts, ids and slots, never content. `window:undone`, an undo
   or a redo on a window, needs `messages`, and so does the new
-  `undone-marks` frame, which names the transcript's rows an undo took out
-  of the conversation agent's window, as a welcome's and a history page's
-  entries mark them (`undone: true`). `undo:completed` and `redo:completed`
+  `undone-marks` frame, sent at each undo, redo or shed on the conversation
+  agent's window, which names every row of the transcript's record that is
+  out of that window as undone (`fromIndex` 0), as a welcome's and a history
+  page's entries mark them (`undone: true`). `undo:completed` and `redo:completed`
   are gone, with agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
