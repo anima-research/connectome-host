@@ -763,6 +763,7 @@ async function runPiped(app: AppContext) {
       await mkdir(dir, { recursive: true }).catch(() => {});
       await Promise.all(serverIds.map((id) => appendMcplLogLine(dir, id, now, BATCH_MCPL_LOG_NOTE)));
     }
+    app.stopping = true;
     await app.framework.stop();
     const webUiUrl = getWebUiModule(app.framework)?.listeningUrl();
     if (webUiUrl) console.log(batchWebUiNotice(webUiUrl));
@@ -780,6 +781,7 @@ async function runPiped(app: AppContext) {
   });
   await new Promise<void>(r => rl.on('close', r));
   console.log('\nShutting down...');
+  app.stopping = true;
   await app.framework.stop();
   if (restarting) {
     await stopWebUiServer().catch((error: unknown) => {

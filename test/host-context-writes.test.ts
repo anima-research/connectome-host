@@ -28,7 +28,7 @@ import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { audienceOf } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
-import { createBranchState, handleCommand, newTopicIdleWait } from '../src/commands.js';
+import { createBranchState, handleCommand, newTopicIdleWait, resetBranchState, type BranchState } from '../src/commands.js';
 import { NoticesModule } from '../src/modules/notices-module.js';
 import { SettingsModule } from '../src/modules/settings-module.js';
 import { SubagentModule } from '../src/modules/subagent-module.js';
@@ -247,6 +247,88 @@ describe('a bare /newtopic', () => {
       expect(h.inWindow('mira', row.id)).toBe(false);
     } finally {
       await h.cleanup();
+    }
+  });
+});
+
+// A /newtopic waiting for a turn to end belongs to the session it was given
+// in: it ends, storing nothing, at a session or a branch switch, at the
+// host's stop, and once the host's framework is another; and a later
+// /newtopic for the agent replaces it, so one turn's end stores one
+// transition. The turn is kept alive by a continuation on its way.
+describe('a /newtopic waiting for a turn to end', () => {
+  async function givenWithTurnAlive(prefix: string) {
+    const strategy = new AutobiographicalStrategy({ headWindowTokens: 4000, recentWindowTokens: 4000, autoTickOnNewMessage: false });
+    const h = await bootPresentedHost({ agents: ['clerk', 'mira'], agentConfig: (name) => (name === 'clerk' ? { strategy } : {}), prefix });
+    const fw = h.framework as unknown as { pendingContinuationAgents: () => Set<string> };
+    const original = fw.pendingContinuationAgents.bind(h.framework);
+    await h.turn('clerk');
+    fw.pendingContinuationAgents = () => new Set([...original(), 'clerk']);
+    const app = { framework: h.framework as unknown, agentName: 'clerk', branchState: createBranchState() as BranchState, stopping: false, switching: false };
+    const endTurn = () => { fw.pendingContinuationAgents = original; };
+    const transitions = () => h.framework.getAgent('clerk')!.getContextManager().getAllMessages()
+      .filter((m) => textOf(m).startsWith('[Topic Transition]')).map(textOf);
+    return { h, app, endTurn, transitions, cleanup: async () => { endTurn(); await h.cleanup(); } };
+  }
+  const texts = (result: { lines: Array<{ text: string }> }) => result.lines.map((l) => l.text);
+  const pauseFor = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("ends, storing nothing, at a session or a branch switch, at the host's stop, at a session switch's start, and once the host's framework is another", async () => {
+    const { h, app, endTurn, transitions, cleanup } = await givenWithTurnAlive('newtopic-ended-');
+    const saved = { ...newTopicIdleWait };
+    try {
+      // A switch's reset ends the wait at once: with a poll longer than the
+      // test's limit, only the abort wakes it.
+      newTopicIdleWait.pollMs = 600_000;
+      const switched = handleCommand('/newtopic Moving on.', app as never);
+      await pauseFor(100);
+      resetBranchState(app.branchState);
+      expect(texts(await switched.asyncWork!)).toEqual(['Topic reset failed: the session or the branch was switched; nothing was stored']);
+      expect(app.branchState.newTopics).toBeUndefined();
+      Object.assign(newTopicIdleWait, saved);
+
+      const ends: Array<{ end: () => void; undo: () => void; why: string }> = [
+        { end: () => { app.stopping = true; }, undo: () => { app.stopping = false; }, why: 'the host is stopping' },
+        { end: () => { app.switching = true; }, undo: () => { app.switching = false; }, why: 'a session switch began' },
+        { end: () => { app.framework = {}; }, undo: () => { app.framework = h.framework; }, why: 'the session it was given in has been switched away from' },
+      ];
+      for (const { end, undo, why } of ends) {
+        const result = handleCommand('/newtopic Moving on.', app as never);
+        await pauseFor(100);
+        end();
+        const outcome = await result.asyncWork!;
+        undo();
+        expect(texts(outcome)).toEqual([`Topic reset failed: ${why}; nothing was stored`]);
+        expect(app.branchState.newTopics?.size ?? 0).toBe(0);
+      }
+
+      endTurn();
+      await h.settled('clerk');
+      await pauseFor(200);
+      expect(transitions()).toEqual([]);
+    } finally {
+      Object.assign(newTopicIdleWait, saved);
+      await cleanup();
+    }
+  });
+
+  test('a later /newtopic for the agent replaces it: the earlier stores nothing, and the later is stored once the turn has ended', async () => {
+    const { app, endTurn, transitions, cleanup } = await givenWithTurnAlive('newtopic-twice-');
+    try {
+      const first = handleCommand('/newtopic First of all.', app as never);
+      const second = handleCommand('/newtopic Second thoughts.', app as never);
+      expect(texts(first)).not.toContain('  This replaces the /newtopic for clerk still waiting for a turn to end: that one stores nothing.');
+      expect(texts(second)).toContain('  This replaces the /newtopic for clerk still waiting for a turn to end: that one stores nothing.');
+      expect(texts(await first.asyncWork!)).toEqual(['Topic reset failed: a later /newtopic for clerk replaced it; nothing was stored']);
+      await pauseFor(200);
+      expect(transitions()).toEqual([]);
+
+      endTurn();
+      expect(texts(await second.asyncWork!)).toEqual(['Topic reset. Transition summary:', 'Second thoughts.']);
+      expect(transitions()).toEqual(['[Topic Transition]\n\nSecond thoughts.']);
+      expect(app.branchState.newTopics?.size ?? 0).toBe(0);
+    } finally {
+      await cleanup();
     }
   });
 });

@@ -60,6 +60,7 @@ interface AppContext {
     runAction(id: CredentialActionId, params?: { token?: string }): Promise<CredentialState>;
   } | null;
   switching?: boolean;
+  stopping?: boolean;
   switchSession(id: string): Promise<void>;
 }
 
@@ -76,6 +77,10 @@ export interface StatePoint {
  */
 export interface BranchState {
   checkpoints: Map<string, StatePoint>;
+  /** Each agent's /newtopic waiting for a turn of it to end
+   *  (transitionOnceIdle), by agent: aborting one ends its wait, with
+   *  nothing stored. */
+  newTopics?: Map<string, AbortController>;
 }
 
 export function createBranchState(): BranchState {
@@ -84,8 +89,14 @@ export function createBranchState(): BranchState {
   };
 }
 
+/** Called as the session or the branch is switched: the checkpoints go, and
+ *  each /newtopic still waiting for a turn ends, storing nothing. */
 export function resetBranchState(bs: BranchState): void {
   bs.checkpoints.clear();
+  const waits = bs.newTopics;
+  if (!waits) return;
+  bs.newTopics = undefined;
+  for (const wait of waits.values()) wait.abort('the session or the branch was switched');
 }
 
 export interface CommandResult {
@@ -1418,9 +1429,32 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
   // (newTopicOnceIdle).
   const metadata = asOwnRow(undefined, agent.name);
   const turnAlive = userContext !== undefined && !idleWithNoTurn(app.framework, agent.name);
+  // One /newtopic waits for each agent. A later one replaces it, as the
+  // operator's later word (a refusal would leave a mistyped transition to be
+  // stored once the turn ends, with no way to correct it), and the earlier
+  // one stores nothing. A wait ends too, storing nothing, at a session or a
+  // branch switch (resetBranchState), at the host's stop, and once the
+  // framework it was given against is no longer the host's.
+  const branchState = app.branchState as BranchState | undefined;
+  const waits = branchState ? (branchState.newTopics ??= new Map()) : new Map<string, AbortController>();
+  const earlier = waits.get(agent.name);
+  earlier?.abort(`a later /newtopic for ${agent.name} replaced it`);
+  const wait = new AbortController();
+  waits.set(agent.name, wait);
+  const release = () => { if (waits.get(agent.name) === wait) waits.delete(agent.name); };
+  const framework = app.framework;
+  const lifetime: NewTopicLifetime = {
+    signal: wait.signal,
+    gone: () => app.stopping ? 'the host is stopping'
+      : app.switching ? 'a session switch began'
+      : app.framework !== framework ? 'the session it was given in has been switched away from'
+      : undefined,
+    storing: release,
+  };
   const reset = userContext !== undefined
-    ? givenTransitionOnceIdle(app.framework, agent.name, cm, userContext, metadata)
-    : newTopicOnceIdle(app.framework, agent.name, cm, metadata);
+    ? givenTransitionOnceIdle(framework, agent.name, cm, userContext, metadata, lifetime)
+    : newTopicOnceIdle(framework, agent.name, cm, metadata, lifetime);
+  void reset.then(release, release);
   const asyncWork = reset.then(summary => ({
     lines: [
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
@@ -1439,6 +1473,9 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
         ? [{ text: `  A turn of ${agent.name}'s is still alive (a continuation or a retry of it on its way): ` +
             'the transition is stored once it has ended.', style: 'system' as const }]
         : []),
+      ...(earlier
+        ? [{ text: `  This replaces the /newtopic for ${agent.name} still waiting for a turn to end: that one stores nothing.`, style: 'system' as const }]
+        : []),
     ],
     asyncWork,
   };
@@ -1448,6 +1485,32 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
  *  bare one's summary), for a turn of the agent to end, and how often it
  *  looks. Each wait reads them as it begins; a test shortens them. */
 export const newTopicIdleWait = { waitMs: 10 * 60_000, pollMs: 100 };
+
+/** What ends a /newtopic's wait, storing nothing (transitionOnceIdle). */
+interface NewTopicLifetime {
+  /** Aborted, with the reason, by a later /newtopic for the agent or a switch of the session or the branch. */
+  signal: AbortSignal;
+  /** Why the session it was given in has ended, once it has: the host is stopping or switching sessions, or its framework isn't the host's. */
+  gone(): string | undefined;
+  /** Called as it stores the transition, which a later /newtopic no longer replaces. */
+  storing(): void;
+}
+
+/** Wait `ms`, or until `signal` aborts, on a timer that doesn't hold the process open. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    timer = setTimeout(done, ms);
+    (timer as { unref?: () => void }).unref?.();
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
 
 /** Whether the agent is idle with no turn alive: no turn token, and no
  *  continuation or retry of its turn on its way (getHostModeStatus's
@@ -1467,7 +1530,8 @@ function idleWithNoTurn(framework: AgentFramework, agentName: string): boolean {
  * first awaits). Stored inside a turn, the row would enter the agent's window
  * between rounds its requests were sent without, past the framework's turn
  * gate. A turn alive is waited for, up to newTopicIdleWait.waitMs, so the
- * transition follows it in the window. Nothing is stored if the agent is
+ * transition follows it in the window. Nothing is stored if `lifetime`
+ * ends the wait (its signal aborts, or its session is gone), if the agent is
  * still busy then (`begun.waited`, and the answer says `begun.again`), if
  * it has gone, or if the branch or the strategy changed since
  * `begun.strategy` and `begun.branch` were read (`begun.since`, and the
@@ -1482,26 +1546,33 @@ async function transitionOnceIdle(
   transition: string,
   metadata: MessageMetadata,
   begun: { strategy: unknown; branch: string; since: string; waited: string; again: string; kept: string },
+  lifetime: NewTopicLifetime,
 ): Promise<string> {
   const { waitMs, pollMs } = newTopicIdleWait;
   const deadline = Date.now() + waitMs;
   const nothingStored = 'nothing was stored';
   for (;;) {
+    const ended = lifetime.signal.aborted ? String(lifetime.signal.reason) : lifetime.gone();
+    if (ended !== undefined) throw new Error(`${ended}; ${nothingStored}${begun.kept}`);
     if (framework.getAgent(agentName)?.getContextManager() !== cm) {
       throw new Error(`${agentName} is no longer registered with this context; ${nothingStored}${begun.kept}`);
     }
     if (cm.getStrategy() !== begun.strategy || cm.currentBranch().id !== begun.branch) {
       throw new Error(`the branch or the strategy changed since ${begun.since}; ${nothingStored}${begun.kept}`);
     }
-    // No await from this check to the store: no turn starts between them.
-    if (idleWithNoTurn(framework, agentName)) return cm.resetHeadWindow(transition, { metadata });
+    // No await from these checks to the store: no turn starts, and the
+    // session doesn't end, between them.
+    if (idleWithNoTurn(framework, agentName)) {
+      lifetime.storing();
+      return cm.resetHeadWindow(transition, { metadata });
+    }
     if (Date.now() >= deadline) {
       throw new Error(
         `${agentName} still had a turn alive ${Math.round(waitMs / 1000)} s after ${begun.waited}, ` +
           `and ${nothingStored}. ${begun.again}`,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    await pause(pollMs, lifetime.signal);
   }
 }
 
@@ -1516,6 +1587,7 @@ function givenTransitionOnceIdle(
   cm: ContextManager,
   text: string,
   metadata: MessageMetadata,
+  lifetime: NewTopicLifetime,
 ): Promise<string> {
   const strategy = cm.getStrategy();
   if (!isResettableStrategy(strategy)) return Promise.reject(new Error('Active strategy does not support head window reset'));
@@ -1526,7 +1598,7 @@ function givenTransitionOnceIdle(
     waited: '/newtopic was given',
     again: 'Run /newtopic again once its turn has ended.',
     kept: '',
-  });
+  }, lifetime);
 }
 
 /**
@@ -1549,6 +1621,7 @@ async function newTopicOnceIdle(
   agentName: string,
   cm: ContextManager,
   metadata: MessageMetadata,
+  lifetime: NewTopicLifetime,
 ): Promise<string> {
   const strategy = cm.getStrategy();
   if (!isResettableStrategy(strategy)) throw new Error('Active strategy does not support head window reset');
@@ -1568,7 +1641,7 @@ async function newTopicOnceIdle(
     waited: 'the transition summary was written',
     again: `To store it, run /newtopic with it as the text:\n${summary}`,
     kept: `. The summary it wrote, of the head window then:\n${summary}`,
-  });
+  }, lifetime);
 }
 
 /**
