@@ -647,7 +647,7 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
+- **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
 - **Importers** — claude.ai exports, Claude Code transcripts and Codex rollouts become sessions ([guides above](#what-people-run-on-it))
@@ -874,11 +874,12 @@ headless socket.
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
-Commands that move the head (`/undo`, `/redo`, `/checkout`, `/restore`,
-`/branchto`, `/newtopic`) are refused while a turn is in flight: `/checkout`,
-`/restore` and `/branchto` while any agent sharing the store is mid-turn, the
-subconscious included, and `/undo`, `/redo` and `/newtopic` while the agent
-the command acts for is. `/newtopic` stores its transition only while the
+The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
+those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
+refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
+while any agent sharing the store is mid-turn, the subconscious included, and
+`/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/newtopic` stores its transition only while the
 agent has no turn alive: if a continuation or a retry of the agent's turn is
 on its way, or a turn starts while a bare `/newtopic` writes its summary, it
 stores the transition once that turn has ended.

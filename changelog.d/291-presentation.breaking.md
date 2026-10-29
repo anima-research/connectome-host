@@ -11,8 +11,11 @@
     checkpoints and the inference log are no longer reverted, and another
     resident's newer row is left alone, where `/undo` used to branch the store
     before the record's newest reply, whoever's it was. `/redo` puts the turn
-    back. Both are refused while the agent's turn is alive, and for an agent
-    whose window couldn't be written down when it started.
+    back. Both are refused while the agent's own turn is alive, and for an
+    agent whose window couldn't be written down when it started. Another
+    agent's turn no longer refuses them: the 0.16.0 entry for #264 had them
+    refused, as a branch move is, while any agent sharing the store was
+    mid-turn.
   - The `_config` mount's files are written back after a branch switch or a
     rollback, and not after an undo or a redo, which act on the window only
     and never touch them. 0.15.0's `configMount` note said a file there other
@@ -22,13 +25,13 @@
   - `/checkout` is agent-framework's `switchBranch`, and `/restore` and
     `/branchto` its `rollbackToMessage`: a new branch whose last row is the
     checkpoint's or the given message, and the store moved to it. Each is
-    refused unless every agent sharing the store is idle, where before only
-    the command's agent was checked, and each takes every agent's context to
-    the new branch. The operator log records `/restore` and `/branchto` as
-    `rollback`, `/checkout` and a `/restore` to a branch's head as
-    `checkout`, and `/undo` and `/redo` as `undo-turn` and `redo-turn`, each
-    with the requester `host-console`. `/branchto` at the branch's last
-    message is refused, as there is nothing after it to roll back.
+    refused unless every agent sharing the store is idle, as before, and
+    each takes every agent's context to the new branch. The operator log
+    records `/restore` and `/branchto` as `rollback`, `/checkout` and a
+    `/restore` to a branch's head as `checkout`, and `/undo` and `/redo` as
+    `undo-turn` and `redo-turn`, each with the requester `host-console`.
+    `/branchto` at the branch's last message is refused, as there is nothing
+    after it to roll back.
   - A rollback cuts at the write that showed the agent its message, so rows
     after the message can stay, and `/branchto`, `/restore` and the Web UI's
     rollback say so where they used to say everything after it was dropped:
@@ -75,10 +78,8 @@
   `/branchto <msgId>` with the id of the last row to keep (`/history` and
   `/find` show ids), or the Web UI's rollback. A client that refreshed its view
   on `undo:completed` or `redo:completed` listens for `window:undone`.
-  **Unchanged:** `/checkpoint`, `/branches`, `/history` and `/find`; every
-  command that moves the head is still refused while the agent's turn is in
-  flight.
-  - `/undo`, `/redo` and `/newtopic` are refused only while the agent the
-    command acts for is mid-turn; `/checkout`, `/restore` and `/branchto`
-    while any agent sharing the store is, the subconscious included, as the
-    0.18.0 entry for #264 has it (the README says so in those words).
+  **Unchanged:** `/checkpoint`, `/branches`, `/history` and `/find`;
+  `/checkout`, `/restore` and `/branchto` are still refused while any agent
+  sharing the store is mid-turn, the subconscious included, as the 0.16.0
+  entry for #264 has it, and `/newtopic` while the agent the command acts
+  for is.

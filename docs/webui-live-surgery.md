@@ -20,7 +20,8 @@ What happens (`framework.rollbackToMessage`): the chronicle is forked at that
 message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
 becomes the current branch, `_config` is re-materialized, and Discord
 messages that left the context get the awareness marker through the durable
-outbox exactly as `/undo` does. Nothing is deleted.
+outbox (an undo, which acts on the window only, marks none). Nothing is
+deleted.
 
 On a presented window (agent-framework #291) the cut is at the write that
 showed the agent the message, so some rows after it can stay, and the result

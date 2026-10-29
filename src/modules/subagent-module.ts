@@ -2613,6 +2613,22 @@ export class SubagentModule implements Module {
    * parent, as agent-framework offers an orphan's candidates; and for an
    * attempt of a run this module holds, by the run's launcher. Undefined
    * only when no agent is listed.
+   *
+   * attemptEdges climbs the same tree by other rules, and for one run the
+   * two can name different agents. It picks a retry attempt's parent and
+   * resultTo, where the attempt's result goes when the attempt ends, which
+   * the registry records with it. So it follows the registry's records alone,
+   * takes the first agent whose record is missing or hasn't ended, and falls
+   * back to the module's parentAgentName, or to no parent once that has
+   * ended. This rule picks the reader of one row written now, for a run with
+   * no route (addForLauncher): it takes only an agent agent-framework
+   * lists, since a write for any other is refused, steps from an ended
+   * attempt to its run's live attempt, and falls back to the framework's
+   * primary, then to the first listed agent. Where they differ, each names
+   * an agent that can take what is written for it (a row written for a
+   * run's agent goes to the primary if that agent ends without reading it:
+   * agent-framework's PRIMARY_IF_UNREAD), so the difference is in who reads
+   * it, not in whether it is read.
    */
   private nearestListedAbove(agent: string, listed: ReadonlySet<string>): string | undefined {
     const seen = new Set<string>([agent]);
