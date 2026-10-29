@@ -43,7 +43,9 @@
     and the Surgery panel's log summarizes a rollback's and a checkout's.
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
-    rows an undo took out (dimmed, and `(undone)` in the TUI), and the Web
+    rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
+    its lines in place and draws an undone row it has no line for below
+    them until a redo puts it back), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
     pins) read the window again at each undo or redo. The pin picker leaves
     undone rows out.
@@ -78,7 +80,9 @@
   `/branchto <msgId>` with the id of the last row to keep (`/history` and
   `/find` show ids), or the Web UI's rollback. A client that refreshed its view
   on `undo:completed` or `redo:completed` listens for `window:undone`.
-  **Unchanged:** `/checkpoint`, `/branches`, `/history` and `/find`;
+  `/history`, `/find` and `/branches` read the context of the agent the
+  commands act for, as `/branchto` does, where they read the first
+  registered agent's. **Unchanged:** `/checkpoint`;
   `/checkout`, `/restore` and `/branchto` are still refused while any agent
   sharing the store is mid-turn, the subconscious included, as the 0.16.0
   entry for #264 has it, and `/newtopic` while the agent the command acts
