@@ -222,10 +222,14 @@ function switchStore(
  * branch, so then this command moved nothing and made no branch to remove.
  * Its 'failed' comes once the branch was made and the switch to it failed:
  * its words say where it put the store back, and it keeps the branch for
- * diagnosis.
+ * diagnosis. When putting the store back failed too, the store is still on
+ * the new branch (`from` is the branch it was on before the rollback): the
+ * answer then says the branch changed, so the TUI and the Web UI show the
+ * branch the store is on.
  */
-function rollbackFailed(failed: string, err: unknown): CommandResult {
+function rollbackFailed(app: AppContext, from: string, failed: string, err: unknown): CommandResult {
   const lines: Line[] = [{ text: `${failed}: ${messageOf(err)}`, style: 'system' }];
+  if (app.framework.getStore().currentBranch().name !== from) return { lines, branchChanged: true };
   if (!(err instanceof OperatorActionError && err.code === 'failed')) lines.push(movedNothing(err));
   return { lines };
 }
@@ -1179,6 +1183,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
   // landed, and only if it is still the one this restore read (#264): saved
   // again, or cleared by a session reset, while the rollback waited, it is
   // left as it is now.
+  const from = app.framework.getStore().currentBranch().name;
   const asyncWork = point.messageId
     ? app.framework.rollbackToMessage(agent.name, {
         messageId: point.messageId,
@@ -1201,7 +1206,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
         // with 'unknown-message' when it isn't there, as after a /branchto:
         // the restore then goes to the checkpoint's branch head.
         if ((err as { code?: unknown } | null)?.code === 'unknown-message') return toHead(true);
-        return rollbackFailed('Restore failed', err);
+        return rollbackFailed(app, from, 'Restore failed', err);
       }).catch((err: unknown) => ({
         lines: [{ text: `Restore failed: ${messageOf(err)}`, style: 'system' as const }],
       }))
@@ -1345,6 +1350,7 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   const target = messages.find(m => String(m.id) === String(messageId));
   if (!target) return { lines: [{ text: `No message with id ${messageId} on current branch.`, style: 'system' }] };
   const newBranchName = `rollback-at-${messageId}-${Date.now()}`;
+  const from = app.framework.getStore().currentBranch().name;
   const asyncWork = app.framework.rollbackToMessage(agent.name, {
     messageId: String(messageId),
     requester: HOST_COMMAND,
@@ -1364,7 +1370,7 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
         branchChanged: true,
       };
     })
-    .catch((err: unknown) => rollbackFailed('branchto failed', err));
+    .catch((err: unknown) => rollbackFailed(app, from, 'branchto failed', err));
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 

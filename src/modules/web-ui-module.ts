@@ -1437,6 +1437,7 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const note = req.note?.trim() || undefined;
+    const from = this.transcriptBranchId();
     try {
       const r = op === 'rollback'
         ? await fw.rollbackToMessage!(agentName, {
@@ -1471,6 +1472,24 @@ export class WebUiModule implements Module {
         error: err instanceof Error ? err.message : String(err),
         ...(typeof code === 'string' ? { code } : {}),
       });
+      // A rollback or a suppression whose switch failed once chronicle had
+      // moved, and whose putting the store back failed too, leaves the store
+      // on the branch it made: the clients follow it there, as after one
+      // that landed.
+      if (from !== undefined && this.transcriptBranchId() !== from) {
+        await this.materializeConfigMount();
+        this.broadcastBranchChanged();
+        this.refreshAllWelcomes();
+      }
+    }
+  }
+
+  /** The branch the transcript agent's context is on (broadcastBranchChanged's), or undefined where it can't be read. */
+  private transcriptBranchId(): string | undefined {
+    try {
+      return sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager()?.currentBranch().id;
+    } catch {
+      return undefined;
     }
   }
 

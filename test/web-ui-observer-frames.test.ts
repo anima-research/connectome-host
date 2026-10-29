@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { OperatorActionError } from '@animalabs/agent-framework';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
 import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
 
@@ -76,6 +77,8 @@ describe('what each client is sent', () => {
     requestPanel: async (_child: string, op: string) => ({ ok: true, data: panels[op] }),
   };
   const open: Connection[] = [];
+  /** What the framework's rollbackToMessage does, for the Surgery panel's rollback. */
+  let rollback: () => Promise<unknown> = async () => { throw new Error('no rollback in this test'); };
 
   beforeAll(async () => {
     host = await startObservedHost({
@@ -90,6 +93,8 @@ describe('what each client is sent', () => {
         getAllModules: () => [fleet],
         getAgent: (name: string) => (name === 'main' ? agent : undefined),
         getHostModeStatus: () => hostStatus,
+        rollbackToMessage: () => rollback(),
+        getModule: () => undefined,
         getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
         healthSnapshot: () => ({
           at: '2026-10-22T06:00:00.000Z',
@@ -588,6 +593,31 @@ describe('what each client is sent', () => {
     const read = c.reader.framesOf('welcome').at(-1)!;
     expect(read.branch).toEqual({ id: 'b2', name: 'experiment' });
     expect(read.session).toEqual({ id: 's1', name: 'Debugging the bridge', autoNamed: true });
+  });
+
+  // HOST-1: a Surgery rollback whose switch failed once chronicle had moved,
+  // and whose putting the store back failed too, left the store on the new
+  // branch while every client went on showing the old one.
+  test("a rollback that failed and left the store on its new branch takes the clients there, and one that moved nothing doesn't", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const c = await everyone();
+    rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while mira is busy'); };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1' }));
+    expect((await c.operator.until('surgery-result', (f) => f.corrId === 'r-busy')).ok).toBe(false);
+    rollback = async () => {
+      branch = { id: 'b2', name: 'rollback/main/1' };
+      throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1');
+    };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1' }));
+    const stuck = await c.operator.until('surgery-result', (f) => f.corrId === 'r-stuck');
+    expect(stuck).toMatchObject({ ok: false, code: 'failed', error: 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1' });
+    await host.fence([c.operator, c.reader]);
+    for (const conn of [c.operator, c.reader]) {
+      expect(conn.framesOf('branch-changed').map((f) => f.branch)).toEqual([{ id: 'b2', name: 'rollback/main/1' }]);
+      expect(conn.framesOf('welcome').at(-1)!.branch).toEqual({ id: 'b2', name: 'rollback/main/1' });
+    }
+    rollback = async () => { throw new Error('no rollback in this test'); };
+    branch = { id: 'b1', name: 'main' };
   });
 
   // DQ-4: the transcript shows the record, which keeps an undone turn's rows,

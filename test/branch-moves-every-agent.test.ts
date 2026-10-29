@@ -328,6 +328,29 @@ describe('the framework\'s answer to a move decides what the session records', (
     expect(outcome.branchChanged).toBe(false);
   });
 
+  // The framework's rollback whose switch failed after chronicle moved, and
+  // whose restore of the source branch failed too, leaves the store on the
+  // new branch. The answer said no branch changed, so the TUI and the Web UI
+  // went on showing the source branch's history.
+  for (const command of ['/branchto u1', '/restore cp']) {
+    test(`${command}: a rollback that failed and couldn't put the store back says the branch changed, in the framework's words`, async () => {
+      let fail = false;
+      const w = stubWorld(async (name, move) => {
+        if (!fail) return move();
+        move();
+        throw new OperatorActionError('failed', `Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on ${name}`);
+      });
+      await w.run('/checkpoint cp');
+      w.add('u2');
+      fail = true;
+      const outcome = await w.run(command);
+      expect(w.branch()).not.toBe('main');
+      expect(outcome.said).toContain(`failed: Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on ${w.branch()}`);
+      expect(outcome.said).not.toContain('moved nothing');
+      expect(outcome.branchChanged).toBe(true);
+    });
+  }
+
   test('a switch that landed before its _config refresh failed is answered as the move it was', async () => {
     let failAfterMove = true;
     const w = stubWorld(async (_name, move) => {
