@@ -31,10 +31,16 @@ import { join, relative } from 'node:path';
 const ROOT = join(import.meta.dir, '..');
 const SRC = join(ROOT, 'src');
 
-/** A context manager's methods that write a context or move the store's branch. */
-const WRITERS = ['addMessage', 'editMessage', 'removeMessage', 'removeMessages', 'resetHeadWindow', 'presentRows', 'retractRows', 'branchAt', 'switchBranch'];
+/** A context manager's methods that write a context or move the store's
+ *  branch, and those that make a branch or a context from one (fork, derive). */
+const WRITERS = [
+  'addMessage', 'editMessage', 'removeMessage', 'removeMessages', 'resetHeadWindow', 'presentRows', 'retractRows',
+  'branchAt', 'switchBranch', 'fork', 'derive',
+];
+/** A writer's call by its receiver: a name, its members, and calls in it
+ *  (`getAgent(name).getContextManager()`), one level of parentheses deep. */
 const CALL = new RegExp(
-  `([A-Za-z_$][\\w$]*(?:\\??\\.[A-Za-z_$][\\w$]*|\\(\\))*)\\??\\.(${WRITERS.join('|')})\\(`,
+  `([A-Za-z_$][\\w$]*(?:\\??\\.[A-Za-z_$][\\w$]*|\\([^()]*\\))*)\\??\\.(${WRITERS.join('|')})\\(`,
   'g',
 );
 
@@ -164,6 +170,8 @@ describe('direct context writes', () => {
     const code = transpiler.transformSync([
       'export class C { m(agent: any, ctx: any, cm: any, app: any, id: string) {',
       "agent?.getContextManager().addMessage('user', []);",
+      "app.framework.getAgent(id)?.getContextManager().addMessage('user', []);",
+      "void cm.fork('f');",
       "this.ctx?.addMessage('user', [], {}, { forAgent: 'a' });",
       'ctx.removeMessage(id);',
       "cm.branchAt(id, 'b');",
@@ -179,6 +187,8 @@ describe('direct context writes', () => {
     }));
     expect(calls).toEqual([
       { call: 'agent.getContextManager().addMessage', through: false },
+      { call: 'app.framework.getAgent(id).getContextManager().addMessage', through: false },
+      { call: 'cm.fork', through: false },
       { call: 'this.ctx.addMessage', through: true },
       { call: 'ctx.removeMessage', through: true },
       { call: 'cm.branchAt', through: false },
