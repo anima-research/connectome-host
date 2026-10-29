@@ -35,7 +35,7 @@ const subagents = {
 };
 
 /** The agent's record in `undone`, and which of its rows an undo took out of its window. */
-const history = [
+const history: Array<{ id: string; participant: string; content: Array<Record<string, unknown>> }> = [
   { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
   { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
 ];
@@ -385,14 +385,20 @@ async function play(): Promise<void> {
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await step('history');
+    // A line that isn't the history's: the operator's message, sent here.
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    // A row stored after the history was drawn, as a turn of this session's is.
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
     // An undo on the agent's window: the history marks its rows.
     undoneRows.add('a1');
-    first.send('window:undone', { retracted: 1 });
-    await until(async () => (await frame()).includes('(undone)'), 'the mark');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) three ledgers'), 'the mark');
     await step('undone');
-    // A redo puts the row back.
+    // A redo puts the rows back.
     undoneRows.clear();
-    first.send('window:undone', { retracted: 0, represented: 1 });
+    first.send('window:undone', { retracted: 0, represented: 2 });
     await until(async () => !(await frame()).includes('(undone)'), 'the mark to go');
     await step('redone');
     // Another agent's window isn't the history's.

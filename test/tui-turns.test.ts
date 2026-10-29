@@ -221,10 +221,11 @@ describe("the TUI's subagent exhaustion, through runTui", () => {
 });
 
 // The history is the record, which keeps an undone turn (agent-framework
-// #291): it marks the rows an undo took out of the agent's window, and draws
-// itself again at each undo or redo on that window (DQ-4).
+// #291): it marks the rows an undo took out of the agent's window, and marks
+// its lines again in place at each undo or redo on that window (DQ-4), so
+// the scrollback's other lines stay.
 describe("the TUI's history after an undo", () => {
-  test("marks the rows an undo took out of the root agent's window, unmarks them at a redo, and leaves another agent's undo alone", async () => {
+  test("marks the rows an undo took out of the root agent's window, unmarks them at a redo, leaves the other lines, and leaves another agent's undo alone", async () => {
     const steps = await play('undone');
     const frameAt = (name: string): string => {
       const step = steps.get(name);
@@ -238,6 +239,18 @@ describe("the TUI's history after an undo", () => {
     // The undone row's thinking is marked with its text.
     expect(frameAt('undone')).toContain('(undone) 💭 tally them first');
     expect(frameAt('undone')).not.toContain('(undone) You: count the ledgers');
+    // Lines that aren't the history's stay: the start's, and the operator's message.
+    for (const at of ['undone', 'redone']) {
+      expect(frameAt(at)).toContain('tui-turns-test. Type /help for commands.');
+      expect(frameAt(at)).toContain('You: and the fifth?');
+      expect(times(frameAt(at), '── end history ──')).toBe(1);
+    }
+    // A row stored after the history was drawn is drawn below it while undone, and taken down at the redo.
+    expect(frameAt('undone')).toContain('(undone) a fifth ledger');
+    expect(frameAt('undone').indexOf('(undone) a fifth ledger')).toBeGreaterThan(frameAt('undone').indexOf('You: and the fifth?'));
+    expect(frameAt('redone')).not.toContain('a fifth ledger');
+    expect(frameAt('redone')).toContain('three ledgers');
+    expect(frameAt('redone')).toContain('💭 tally them first');
     expect(frameAt('redone')).not.toContain('(undone)');
     expect(frameAt('another agent')).not.toContain('(undone)');
   }, 40000);

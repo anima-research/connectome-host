@@ -15,7 +15,7 @@ import {
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { sessionMarker } from './session-marker.js';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
-import type { AutobiographicalStrategy } from '@animalabs/context-manager';
+import type { AutobiographicalStrategy, StoredMessage } from '@animalabs/context-manager';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
@@ -747,71 +747,112 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const HISTORY_REPLAY_MAX = 50;
 
+  /** A line drawn for a row of the root agent's record, with how it is drawn
+   *  while the row is in the agent's window, so an undo or a redo marks it
+   *  again in place (remarkHistory). `appended` marks a line remarkHistory
+   *  drew itself, for an undone row the history had no line for. */
+  interface RecordLine { line: TextRenderable; id: string; text: string; color: string; appended: boolean }
+  let recordLines: RecordLine[] = [];
+  /** How many of the record's rows the session history read: a row past them was stored after it was drawn. */
+  let historyRead = 0;
+
+  /** Whether a row is one an undo took out of the agent's window (agent-framework #291). */
+  function undoneIn(cm: { windowStatusOf?: (id: string) => string }): (id: string) => boolean {
+    return (id) => typeof cm.windowStatusOf === 'function' && cm.windowStatusOf(id) === 'undone';
+  }
+
+  /** Draw one line of a row: marked and dim while the row is undone. */
+  function addRecordLine(id: string, text: string, color: string, out: boolean, appended: boolean): void {
+    const line = addLine(out ? `${UNDONE_MARK}${text}` : text, out ? DIM_GRAY : color);
+    if (line) recordLines.push({ line, id, text, color, appended });
+  }
+
+  /** Draw a row of the record: its text, its thinking and the tools it called, each a line. */
+  function drawRow(msg: StoredMessage, out: boolean, appended: boolean): void {
+    const injected = historyInjectionLine(msg);
+    if (injected !== undefined) {
+      if (injected !== null) addRecordLine(msg.id, injected, DIM_GRAY, out, appended);
+      return;
+    }
+
+    const toolNames: string[] = [];
+    for (const block of msg.content) {
+      if (block.type === 'text' && (block as { text: string }).text.trim()) {
+        if (msg.participant === 'user') {
+          const line = historyUserLine(msg, (block as { text: string }).text);
+          addRecordLine(msg.id, line.text, line.speaker === 'you' ? GREEN : line.speaker === 'host' ? DIM_GRAY : CYAN, out, appended);
+        } else {
+          addRecordLine(msg.id, (block as { text: string }).text, WHITE, out, appended);
+        }
+      } else if (block.type === 'thinking') {
+        const t = (block as { thinking?: string }).thinking;
+        if (t && t.trim()) {
+          const line = t.trim().replace(/\s+/g, ' ');
+          addRecordLine(msg.id, `${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, THINKING_DIM, out, appended);
+        }
+      } else if (block.type === 'tool_use') {
+        toolNames.push((block as { name: string }).name);
+      }
+    }
+
+    if (toolNames.length > 0) {
+      addRecordLine(msg.id, `[tools] ${toolNames.join(', ')}`, YELLOW, out, appended);
+    }
+  }
+
   function loadSessionHistory() {
+    recordLines = [];
+    historyRead = 0;
     const agent = app.framework.getAgent(rootAgentName);
     if (!agent) return;
     const cm = agent.getContextManager();
     const all = cm.getAllMessages();
+    historyRead = all.length;
     if (all.length === 0) return;
     const messages = all.length > HISTORY_REPLAY_MAX ? all.slice(-HISTORY_REPLAY_MAX) : all;
     // The history is the record. A row an undo took out of the agent's
     // window (agent-framework #291) is still in it: drawn dim and marked,
     // since the agent's next request is built without it.
-    const undone = (id: string): boolean =>
-      typeof cm.windowStatusOf === 'function' && cm.windowStatusOf(id) === 'undone';
+    const undone = undoneIn(cm);
 
     addLine(messages.length < all.length
       ? `── session history (last ${messages.length} of ${all.length} messages — full history in the web UI) ──`
       : `── session history (${messages.length} messages) ──`, DIM_GRAY);
 
-    for (const msg of messages) {
-      const injected = historyInjectionLine(msg);
-      if (injected !== undefined) {
-        if (injected !== null) addLine(injected, DIM_GRAY);
-        continue;
-      }
-
-      const toolNames: string[] = [];
-      const out = undone(msg.id);
-      const mark = out ? UNDONE_MARK : '';
-
-      for (const block of msg.content) {
-        if (block.type === 'text' && (block as { text: string }).text.trim()) {
-          if (msg.participant === 'user') {
-            const line = historyUserLine(msg, (block as { text: string }).text);
-            addLine(`${mark}${line.text}`, out ? DIM_GRAY : line.speaker === 'you' ? GREEN : line.speaker === 'host' ? DIM_GRAY : CYAN);
-          } else {
-            addLine(`${mark}${(block as { text: string }).text}`, out ? DIM_GRAY : WHITE);
-          }
-        } else if (block.type === 'thinking') {
-          const t = (block as { thinking?: string }).thinking;
-          if (t && t.trim()) {
-            const line = t.trim().replace(/\s+/g, ' ');
-            addLine(`${mark}${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, out ? DIM_GRAY : THINKING_DIM);
-          }
-        } else if (block.type === 'tool_use') {
-          toolNames.push((block as { name: string }).name);
-        }
-      }
-
-      if (toolNames.length > 0) {
-        addLine(`${mark}[tools] ${toolNames.join(', ')}`, out ? DIM_GRAY : YELLOW);
-      }
-    }
+    for (const msg of messages) drawRow(msg, undone(msg.id), false);
 
     addLine(`── end history ──`, DIM_GRAY);
   }
 
-  /** Draw the session history again, as an undo or a redo on the root
-   *  agent's window marks it (window:undone), and leave the rest as it is. */
-  function redrawHistory() {
-    const children = [...scrollBox.getChildren()];
-    for (const child of children) {
-      scrollBox.remove(child.id);
-      child.destroy();
+  /** Mark the history's lines again in place, as an undo or a redo on the
+   *  root agent's window (window:undone) has left each row in it or out, and
+   *  leave every other line as it is. An undone row the history has no line
+   *  for, one stored after it was drawn (a turn of this session, whose lines
+   *  were streamed), is drawn below, marked, and taken down again once a
+   *  redo puts it back in the window. */
+  function remarkHistory() {
+    const agent = app.framework.getAgent(rootAgentName);
+    if (!agent) return;
+    const cm = agent.getContextManager();
+    const undone = undoneIn(cm);
+    const kept: RecordLine[] = [];
+    for (const record of recordLines) {
+      if (record.line.isDestroyed) continue;
+      const out = undone(record.id);
+      if (record.appended && !out) {
+        scrollBox.remove(record.line.id);
+        record.line.destroy();
+        continue;
+      }
+      record.line.content = out ? `${UNDONE_MARK}${record.text}` : record.text;
+      record.line.fg = out ? DIM_GRAY : record.color;
+      kept.push(record);
     }
-    messageCounter = 0;
-    loadSessionHistory();
+    recordLines = kept;
+    const drawn = new Set(kept.map((record) => record.id));
+    for (const msg of cm.getAllMessages().slice(historyRead)) {
+      if (!drawn.has(msg.id) && undone(msg.id)) drawRow(msg, true, true);
+    }
   }
 
   function refreshFromStore() {
@@ -1845,10 +1886,9 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'window:undone': {
         // An undo or a redo on the root agent's window, from here or from
-        // another client: the history marks its rows again. Not while a
-        // stream is being drawn, whose lines a redraw would take down; the
-        // next redraw marks them.
-        if (agent === rootAgentName && !streaming) redrawHistory();
+        // another client: the history marks its lines again in place, and
+        // the scrollback's other lines stay as they are.
+        if (agent === rootAgentName) remarkHistory();
         break;
       }
 
