@@ -1482,10 +1482,13 @@ export class SubagentModule implements Module {
 
   // context-manager stores a long status in shards, in order, each carrying
   // the mark, so the newest row is its last shard, whose lines are runs'
-  // whenever the status lists one.
+  // whenever the status lists one. A row the agent's window doesn't hold
+  // (`held`, as an undone turn's is) is passed over: the newest status is the
+  // newest one the agent is shown.
   private newestStatusListsRun(agentName: string): boolean {
     const rows = this.ctx!.queryMessages({ participant: FLEET_PARTICIPANT }, { forAgent: agentName }).messages;
     for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.held) continue;
       const mark = storedInjectionMarkOf(rows[i]!.metadata);
       if (mark?.namespace !== FLEET_NAMESPACE || mark.agent !== agentName) continue;
       const text = rows[i]!.content.map((block) => (block.type === 'text' ? block.text : '')).join('');

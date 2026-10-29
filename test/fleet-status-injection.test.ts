@@ -3,7 +3,9 @@ import { SubagentModule, type ActiveSubagent } from '../src/modules/subagent-mod
 
 const T0 = Date.UTC(2026, 9, 23, 14, 5, 9);
 
-type StoredRow = { window: string; participant: string; content: Array<{ type: 'text'; text: string }>; metadata: Record<string, unknown> };
+// `held`, as agent-framework's module context answers a row: stored, and not
+// in the agent's presented window, as an undone turn's row is.
+type StoredRow = { window: string; participant: string; content: Array<{ type: 'text'; text: string }>; metadata: Record<string, unknown>; held?: true };
 
 const FLEET = 'system_context:subagent-fleet';
 const markFor = (agent: string, contentHash: string, namespace = 'subagent-fleet') => ({
@@ -121,6 +123,30 @@ describe('the fleet status', () => {
     expect(await f.status()).toBe('[Fleet Status, as of 2026-10-23 14:05:39 UTC]\n  (none running)');
     expect(await f.status()).toBeUndefined();
     expect(f.stored).toHaveLength(2);
+  });
+
+  // agent-framework's undoLastTurn takes the undone turn's rows out of the
+  // agent's window, and its module context answers such a row `held`: the
+  // window still ends on the status listing the run.
+  test('a clearing status held out of the window is not the newest, so the next start says none is running', async () => {
+    const f = fleet();
+    const scout = f.add('scout');
+    expect(await f.status()).toContain('scout [spawn] running since 14:05:09');
+    scout.status = 'completed';
+    scout.completedAt = T0 + 30_000;
+    expect(await f.status()).toBe('[Fleet Status, as of 2026-10-23 14:05:39 UTC]\n  (none running)');
+    f.stored.at(-1)!.held = true;
+    expect(await f.preview('resident')).toBe('[Fleet Status, as of 2026-10-23 14:05:39 UTC]\n  (none running)');
+  });
+
+  test('a status listing a run, held out of the window, leaves nothing to clear', async () => {
+    const f = fleet();
+    const scout = f.add('scout');
+    await f.status();
+    f.stored.at(-1)!.held = true;
+    scout.status = 'completed';
+    scout.completedAt = T0 + 30_000;
+    expect(await f.preview('resident')).toBeUndefined();
   });
 
   test('a run that ended with no status ever listing it has nothing to tell', async () => {
