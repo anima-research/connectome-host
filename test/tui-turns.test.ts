@@ -232,8 +232,11 @@ describe("the TUI's history after an undo", () => {
       return step.frame;
     };
     expect(frameAt('history')).toContain('three ledgers');
+    expect(frameAt('history')).toContain('💭 tally them first');
     expect(frameAt('history')).not.toContain('(undone)');
     expect(frameAt('undone')).toContain('(undone) three ledgers');
+    // The undone row's thinking is marked with its text.
+    expect(frameAt('undone')).toContain('(undone) 💭 tally them first');
     expect(frameAt('undone')).not.toContain('(undone) You: count the ledgers');
     expect(frameAt('redone')).not.toContain('(undone)');
     expect(frameAt('another agent')).not.toContain('(undone)');

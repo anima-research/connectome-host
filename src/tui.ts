@@ -787,7 +787,7 @@ export async function runTui(app: AppContext): Promise<void> {
           const t = (block as { thinking?: string }).thinking;
           if (t && t.trim()) {
             const line = t.trim().replace(/\s+/g, ' ');
-            addLine(`${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, THINKING_DIM);
+            addLine(`${mark}${THINKING_PREFIX}${line.length > 120 ? line.slice(0, 117) + '…' : line}`, out ? DIM_GRAY : THINKING_DIM);
           }
         } else if (block.type === 'tool_use') {
           toolNames.push((block as { name: string }).name);

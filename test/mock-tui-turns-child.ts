@@ -37,7 +37,7 @@ const subagents = {
 /** The agent's record in `undone`, and which of its rows an undo took out of its window. */
 const history = [
   { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
-  { id: 'a1', participant: 'agent', content: [{ type: 'text', text: 'three ledgers' }] },
+  { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
 ];
 const undoneRows = new Set<string>();
 const contextManager = () => (scenario === 'undone'
