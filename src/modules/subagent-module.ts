@@ -987,6 +987,7 @@ export class SubagentModule implements Module {
   private consecutiveSuccesses = 0;
   private throttled = false;
   private rateLimitCooldownMs = 30_000;
+  private retryBackoffMs = 5_000;
 
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly REAPER_INTERVAL_MS = 60_000;
@@ -1681,6 +1682,10 @@ export class SubagentModule implements Module {
     }
     if (this.effectiveConcurrent >= this.configuredMaxConcurrent) this.throttled = false;
     this.admitWaiters();
+  }
+
+  private retryBackoff(attempt: number): number {
+    return Math.min(this.retryBackoffMs * (attempt + 1), 30_000);
   }
 
   private onRateLimitHit(deadline?: number): number {
@@ -3364,7 +3369,7 @@ export class SubagentModule implements Module {
           }
           if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
 
-          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;
           console.error(
             `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +
@@ -3649,7 +3654,7 @@ export class SubagentModule implements Module {
           }
           if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
 
-          const delay = Math.min(5_000 * (attempt + 1), 30_000);
+          const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;
           console.error(
             `[subagent] ${input.name} attempt ${attempt + 1}/${this.maxRetries + 1} failed: ` +

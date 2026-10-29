@@ -1,13 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule } from '../src/modules/fleet-module.js';
+import { REDUCER_REQUIRED_EVENTS } from '../src/state/agent-tree-reducer.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 const NARROW_RECIPE = {
   name: 'NarrowSubscriptionTest',
@@ -34,18 +33,15 @@ describe('FleetModule subscribe union e2e', () => {
   let tmpDir: string;
   let recipePath: string;
   let fleet: FleetModule;
-  let previousApiKey: string | undefined;
 
   beforeAll(async () => {
-    previousApiKey = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = previousApiKey || 'sk-test-fleet-subscribe-union';
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-sub-union-'));
     recipePath = join(tmpDir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(NARROW_RECIPE), 'utf-8');
 
     fleet = new FleetModule({
       childRuntimePath: 'bun',
-      childIndexPath: INDEX_PATH,
+      childIndexPath: join(TEST_DIR, 'mock-runheadless-child.ts'),
       readyTimeoutMs: 15_000,
     });
   });
@@ -60,8 +56,6 @@ describe('FleetModule subscribe union e2e', () => {
     } catch { }
     await new Promise((r) => setTimeout(r, 500));
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-    if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = previousApiKey;
   });
 
   test('narrow recipe subscription gets reducer-required events forced in by FleetModule', async () => {
@@ -87,23 +81,15 @@ describe('FleetModule subscribe union e2e', () => {
     expect((result as { success?: boolean }).success).toBe(true);
 
     const logPath = join(dataDir, 'headless.log');
-    await waitFor(() => existsSync(logPath), 15_000, 'headless.log appears');
     await waitFor(
-      () => existsSync(logPath) && /subscription set: .*inference:tool_calls_yielded/.test(readFileSync(logPath, 'utf-8')),
-      15_000,
-      'subscribe with reducer events applied',
+      () => existsSync(logPath) && readFileSync(logPath, 'utf-8').includes('subscription set:'),
+      4_000,
+      'child logs the subscription it applied',
     );
 
-    const log = readFileSync(logPath, 'utf-8');
-    const subLines = log.split('\n').filter(l => l.includes('subscription set:'));
-    expect(subLines.length).toBeGreaterThan(0);
-    const lastSet = subLines[subLines.length - 1]!;
-    expect(lastSet).toContain('lifecycle');
-    expect(lastSet).toContain('inference:speech');
-    expect(lastSet).toContain('inference:tool_calls_yielded');
-    expect(lastSet).toContain('inference:started');
-    expect(lastSet).toContain('inference:tokens');
-    expect(lastSet).toContain('inference:usage');
-    expect(lastSet).toContain('tool:started');
+    const lastSet = readFileSync(logPath, 'utf-8').split('\n').filter(l => l.includes('subscription set: ')).at(-1)!;
+    const applied = lastSet.slice(lastSet.indexOf('subscription set: ') + 'subscription set: '.length).split(', ');
+    const expected = [...new Set([...narrowSubscription, ...REDUCER_REQUIRED_EVENTS, 'usage:updated'])];
+    expect(applied.sort()).toEqual(expected.sort());
   });
 });

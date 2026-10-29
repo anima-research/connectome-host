@@ -30,6 +30,9 @@ const app: Record<string, unknown> & { framework: unknown; onFrameworkReplaced?:
   agentName: 'fixture',
   framework: {
     getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
+    getAllModules: () => [],
+    getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
+    getQueueDepth: () => 0,
     onTrace: () => {},
     stop: async () => {},
   },
@@ -54,6 +57,9 @@ const switching = setInterval(() => {
   clearInterval(switching);
   app.framework = {
     getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
+    getAllModules: () => [],
+    getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
+    getQueueDepth: () => 0,
     onTrace: (listener: (event: Record<string, unknown>) => void, options?: { replay?: boolean }) => {
       if (options?.replay) for (const event of restored) listener(event);
       return () => {};

@@ -33,6 +33,8 @@ let secondSignalSent!: () => void;
 const secondSent = new Promise<void>(resolve => { secondSignalSent = resolve; });
 let commandStarted!: () => void;
 const commandUnderWay = new Promise<void>(resolve => { commandStarted = resolve; });
+let errorEmitted!: () => void;
+const errorDuringStop = new Promise<void>(resolve => { errorEmitted = resolve; });
 
 function mockFramework(body: () => Promise<void>) {
   let stopping: Promise<void> | undefined;
@@ -66,7 +68,7 @@ const framework = mockFramework(async () => {
   detachedAtStop ??= traceDetached;
   stopStarted();
   if (mode === 'delayed-failure') await sleep(25);
-  if (mode === 'slow') await (control.startsWith('SIGTERM-then-') ? secondSent.then(() => sleep(2000)) : sleep(1000));
+  if (mode === 'slow') await (control.startsWith('SIGTERM-then-') ? secondSent.then(() => sleep(2000)) : errorDuringStop);
   if (mode === 'failure' || mode === 'delayed-failure') throw failure;
 });
 const switched = mockFramework(async () => {
@@ -189,6 +191,7 @@ if (control === 'ctrl-c') {
   process.kill(process.pid, 'SIGTERM');
   await stopUnderWay;
   process.stdout.emit('error', Object.assign(new Error('write EIO'), { code: 'EIO' }));
+  errorEmitted();
 } else if (control.startsWith('SIGTERM-then-')) {
   process.kill(process.pid, 'SIGTERM');
   await stopUnderWay;

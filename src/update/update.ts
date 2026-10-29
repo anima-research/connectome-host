@@ -58,6 +58,7 @@ const list = (versions: string[]): string => versions.join(', ');
 export class HostUpdate {
   private setup: UpdateSetup | null = null;
   private stopper: HostStop | null = null;
+  private notices: ((line: string) => void) | null = null;
   private check: Check | null = null;
   private readonly logged = new Set<string>();
   private installing: string | null = null;
@@ -73,6 +74,10 @@ export class HostUpdate {
 
   attachStop(stop: HostStop): void {
     this.stopper = stop;
+  }
+
+  attachNotices(log: (line: string) => void): void {
+    this.notices = log;
   }
 
   /** Whether the host reads the registry on its own: not when
@@ -260,7 +265,7 @@ export class HostUpdate {
   }
 
   private log(line: string): void {
-    (this.need().log ?? ((text: string) => { console.error(text); }))(line);
+    (this.need().log ?? this.notices ?? ((text: string) => { console.error(text); }))(line);
   }
 
   private async releases(): Promise<Release[]> {

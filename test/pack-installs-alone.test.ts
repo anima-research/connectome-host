@@ -250,11 +250,14 @@ test("@opentui/core must load in the installed tree, its native package with it"
     "node_modules/@opentui/core/index.js": body,
   });
   const pkg = { dependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
-  const loads = await check(standIn(pkg, HOST, opentui("export const ok = true;\n")));
+  const loads = await check(standIn(pkg, HOST, opentui("export function resolveRenderLib() {}\n")));
   assert.equal(loads.code, 0, loads.stderr);
   assert.match(loads.stdout, /src\/index\.ts's imports resolve, @opentui\/core loads, and the offline smoke run answered\.$/m);
   const missing = await check(standIn(pkg, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(missing.code, 1);
+  const unopened = await check(standIn(pkg, HOST, opentui(`export function resolveRenderLib() { throw new Error("Failed to initialize OpenTUI render library"); }\n`)));
+  assert.equal(unopened.code, 1);
+  assert.match(unopened.stderr, /pack-installs-alone: @opentui\/core doesn't load in the installed zz-host-1\.0\.0\.tgz/);
   const optional = { optionalDependencies: { "@opentui/core": "1.0.0" }, bundleDependencies: ["@opentui/core"] };
   const optionalMissing = await check(standIn(optional, HOST, opentui(`await import(["@opentui", "core-zz-" + process.arch].join("/"));\n`)));
   assert.equal(optionalMissing.code, 1);
@@ -290,12 +293,15 @@ test("an install that fails once and then succeeds passes on its second attempt"
 }, TIMEOUT_MS * 2);
 
 test("an install that runs out of time, even one that ignores SIGTERM, fails at once, saying so, without another attempt", async () => {
-  const slow = npmShim(`if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\nelse pass();`);
+  const slow = npmShim(
+    `if (args[0] === "install") { process.on("SIGTERM", () => {}); setTimeout(() => {}, 90_000); }\n` +
+      `else if (args[0] === "pack") process.stdout.write('[{"filename":"zz-host-1.0.0.tgz","files":[]}]');\nelse pass();`,
+  );
   const start = Date.now();
-  const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "10000" });
+  const result = await check(standIn({}), { ...withPath(slow), PACK_INSTALLS_ALONE_INSTALL_TIMEOUT_MS: "2000" });
   assert.ok(Date.now() - start < 60_000, `took ${Date.now() - start} ms`);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /pack-installs-alone: the install of zz-host-1\.0\.0\.tgz didn't finish within 10 s\.\n$/);
+  assert.match(result.stderr, /pack-installs-alone: the install of zz-host-1\.0\.0\.tgz didn't finish within 2 s\.\n$/);
   assert.doesNotMatch(result.stderr, /attempt 1 of 3/);
 }, TIMEOUT_MS * 2);
 

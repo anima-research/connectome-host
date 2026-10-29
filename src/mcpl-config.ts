@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, lstatSync, unlinkSync, openSync, fstatSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { agentOverlayPath } from './update/agent-overlay-path.js';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
@@ -191,8 +191,6 @@ export function mergeRecipeServers(
 }
 
 export { AGENT_OVERLAY_FILE_NAME, AGENT_OVERLAY_FILE_ENV } from './update/agent-overlay-path.js';
-
-export const CHILD_AGENT_OVERLAY_FILE_NAME = 'mcpl-servers.agent.child.json';
 
 /** The agent overlay's path: MCPL_AGENT_OVERLAY_FILE where the environment
  *  sets it, else mcpl-servers.agent.json, resolved from the working
@@ -465,28 +463,6 @@ export function cleartextCarrierText(carrier: 'access' | 'token' | 'url', access
 
 export function overlayEntryTombstones(entry: unknown): boolean {
   return readOverlayEntry(entry).entry?.disabled === true;
-}
-
-export function seedChildAgentOverlay(childPath: string, fromPath: string, copy: boolean): void {
-  if (lstatSync(childPath, { throwIfNoEntry: false }) !== undefined) return;
-  let content: string | Buffer = JSON.stringify({ mcplServers: {} }, null, 2) + '\n';
-  let mode = 0o600;
-  if (copy && existsSync(fromPath)) {
-    const fd = openSync(fromPath, 'r');
-    try {
-      mode = fstatSync(fd).mode & 0o600;
-      content = readFileSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  }
-  try {
-    writeFileSync(childPath, content, { flag: 'wx', mode });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
-    try { unlinkSync(childPath); } catch {}
-    throw error;
-  }
 }
 
 /**

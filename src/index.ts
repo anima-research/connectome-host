@@ -77,6 +77,8 @@ import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChil
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
+import { openReadlineTerminal } from './readline-terminal.js';
+import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
@@ -523,6 +525,7 @@ agents: [agentConfig],
     // the one field a recipe cannot state.
     ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     ...(toolClassConfig(recipe) as object),
+    maintenanceIntervalMs: recipe.maintenanceIntervalMs,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -699,13 +702,21 @@ async function runPiped(app: AppContext) {
   const { createInterface } = await import('node:readline');
   const { handleCommand } = await import('./commands.js');
 
+  let say = (line: string): void => { console.error(line); };
+  let atPrompt = false;
+  let onAlert: ((event: Record<string, unknown>) => void) | null = null;
   const turns = createPipedTurns(app.agentName, {
-    write: (text) => { process.stdout.write(text); },
-    log: (line) => { console.log(line); },
-    error: (line) => { console.error(line); },
+    write: (text) => { atPrompt = false; process.stdout.write(text); },
+    log: (line) => { atPrompt = false; console.log(line); },
+    error: (line) => { say(line); },
   }, failureHint(app.recipe, process.env, app.credentials));
-  const traces = traceFollower((event) => turns.onTrace(event as { type: string; [key: string]: unknown }));
+  const traces = traceFollower((event) => {
+    const e = event as { type: string; [key: string]: unknown };
+    turns.onTrace(e);
+    if (e.type === 'ops:alert') onAlert?.(e);
+  });
   traces.follow(app.framework);
+  let afterSwitch = (): void => {};
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
@@ -718,7 +729,7 @@ async function runPiped(app: AppContext) {
         try {
           for (const l of (await result.asyncWork).lines) console.log(l.text);
         } catch (error) {
-          console.error(`${trimmed.split(/\s/)[0]} failed: ${error instanceof Error ? error.message : String(error)}`);
+          say(`${trimmed.split(/\s/)[0]} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       if (result.branchChanged) {
@@ -731,6 +742,7 @@ async function runPiped(app: AppContext) {
         const sessionId = result.switchToSessionId;
         turns.switched();
         await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+        afterSwitch();
         console.log('Session switched.');
       }
     } else {
@@ -771,22 +783,44 @@ async function runPiped(app: AppContext) {
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
-  let restarting = false;
-  hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
-  console.log('connectome-host (readline mode). Type /help for commands.');
-  rl.prompt();
-  rl.on('line', async (line: string) => {
-    if (await processLine(line)) { rl.close(); return; }
+  const terminal = openReadlineTerminal(config.dataDir, { showing: () => atPrompt, redraw: () => { rl.prompt(true); } });
+  try {
+    say = terminal.say;
+    hostUpdate.attachNotices(terminal.say);
+    const alerts = new Map<string, OpsAlertEntry>();
+    const showAlert = (alert: { kind: string; agent: string; message: string }): void => {
+      const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message);
+      if (line !== null) terminal.say(line.text);
+    };
+    onAlert = (event) => { showAlert(opsAlertOf(event)); };
+    afterSwitch = () => { alerts.clear(); };
+    let restarting = false;
+    hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
+    console.log('connectome-host (readline mode). Type /help for commands.');
+    if (terminal.logging()) terminal.say(`Error log: ${terminal.logPath}`);
+    let closed = false;
+    rl.on('close', () => { closed = true; atPrompt = false; });
     rl.prompt();
-  });
-  await new Promise<void>(r => rl.on('close', r));
-  console.log('\nShutting down...');
-  app.stopping = true;
-  await app.framework.stop();
-  if (restarting) {
-    await stopWebUiServer().catch((error: unknown) => {
-      console.error(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
+    atPrompt = true;
+    rl.on('line', async (line: string) => {
+      atPrompt = false;
+      if (await processLine(line)) { rl.close(); return; }
+      if (closed) return;
+      rl.prompt();
+      atPrompt = true;
     });
+    await new Promise<void>(r => rl.on('close', r));
+    console.log('\nShutting down...');
+    app.stopping = true;
+    await app.framework.stop();
+    if (restarting) {
+      await stopWebUiServer().catch((error: unknown) => {
+        terminal.say(`[webui] closing the Web UI's server for the restart failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  } finally {
+    onAlert = null;
+    terminal.end();
   }
 }
 

@@ -697,7 +697,7 @@ export const CHILD_AUDIT_MINUTES_ENV = 'CONNECTOME_FLEET_CHILD_AUDIT_MINUTES';
 /** A fleet child's audit's limit: the minutes `env` gives, when they're a
  *  number above 0, up to what a timer holds (Infinity included), or else
  *  CHILD_AUDIT_LIMIT_MS. */
-function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
+export function childAuditLimitMs(env: NodeJS.ProcessEnv): number {
   const minutes = Number(env[CHILD_AUDIT_MINUTES_ENV]);
   return minutes > 0 ? Math.min(minutes * 60_000, 2 ** 31 - 1) : CHILD_AUDIT_LIMIT_MS;
 }

@@ -36,7 +36,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync,
+  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
   symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -185,6 +185,53 @@ export interface InstallRecord {
   /** State kept outside the data directory, which each update copies with it. */
   extraState: string[];
 }
+
+/** How the block setup prints each run with the state kept outside the data directory opens, which the remedy
+ *  below names. */
+export const EXTRA_STATE_LINE = 'State kept outside the data directory';
+
+/** How that block's last line, the command that lists a place, opens. */
+export const LIST_A_PLACE = 'To list another place';
+
+/** The lines of a finished setup's output that say which state outside the data directory each update copies: its
+ *  opening line, one indented line per place, and the line with the command that lists another. */
+export function keptOutsideLines(output: string): string[] {
+  const lines = output.split('\n');
+  const at = lines.findIndex((line) => line.startsWith(EXTRA_STATE_LINE));
+  if (at < 0) return [];
+  let end = at + 1;
+  while (end < lines.length && lines[end].startsWith('  ')) end++;
+  if (end < lines.length && lines[end].startsWith(LIST_A_PLACE)) end++;
+  return lines.slice(at, end);
+}
+
+export function copyShows(those: string): string {
+  return 'shows under "items" and "absent" what the last update copied or found missing: the data directory, its fleet ' +
+    'children\'s data directories and the files every update copies (mcpl-servers.json and the agent overlay, ' +
+    'mcpl-servers.agent.json or the file MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s working ' +
+    `directory), ${those}, and among the rest, those places as that update found them: each through any link to where ` +
+    'it led, and one inside another shown only as the outer one.';
+}
+
+/** How to put an install record right, which setup's refusals of a lost record, or of one that isn't JSON, has no
+ *  version or names no data directory, end with. It holds only words true wherever it's printed. */
+export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
+  'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
+  'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
+  './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
+  'host\'s next start through start.js refuses, naming both.\n' +
+  'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
+  'server\'s state, each a JSON string, or none. Only setup writes that list, and each setup run that finished ' +
+  `printed it, after "${EXTRA_STATE_LINE}". If the install has updated, copy/copy.json beside the record ` +
+  `${copyShows('which stay out of the list')} An update copies only the places the ` +
+  'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
+  'back from that update doesn\'t put it back.\n' +
+  'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
+  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
+  'as a current that names no release. Its service can keep running ' +
+  'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
+  'again: its next start runs start.js, whose launcher reads the record.';
 
 /** mark.json, written by the host's Restart, or by the launcher's Go back
  *  from a shell (writeMark). */
@@ -417,22 +464,41 @@ function writeAll(fd: number, text: string): void {
   for (let done = 0; done < bytes.length;) done += writeSync(fd, bytes, done, bytes.length - done);
 }
 
-/** Write `value` as JSON at `path` so that a reader sees the old file or the
- *  new one, never part of either: a temporary file, synced, renamed over it.
- *  Each file has one writer at a time, so the temporary file's name is fixed,
- *  and one a crash left is overwritten by the next write. Given `mode`, the
- *  file gets that mode whatever a temporary file a crash left had. */
+/** Write `value` as JSON at `path`, as writeTextAtomic writes. */
 export function writeJsonAtomic(path: string, value: unknown, mode?: number): void {
+  writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, mode);
+}
+
+/** Write `text` at `path` so that a reader sees the old file or the new one,
+ *  never part of either: a temporary file, synced, renamed over it, and its
+ *  directory synced. Each file has one writer at a time, so the temporary
+ *  file's name is fixed. One a crash left is taken away and made anew, not
+ *  written over, since a reader holding it open would see the new text through
+ *  it whatever mode it then had; a directory there fails the write, as it did.
+ *  A write that fails at any step up to its rename, the rename included, tries
+ *  to take the temporary file away. Given `mode`, the file gets that mode. */
+export function writeTextAtomic(path: string, text: string, mode?: number): void {
   const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, 'w', mode);
   try {
-    if (mode !== undefined) fchmodSync(fd, mode);
-    writeAll(fd, `${JSON.stringify(value, null, 2)}\n`);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    const left = lstatSync(tmp, { throwIfNoEntry: false });
+    if (left && !left.isDirectory()) rmSync(tmp, { force: true });
+    const fd = openSync(tmp, left?.isDirectory() ? 'w' : 'wx', mode);
+    try {
+      if (mode !== undefined) fchmodSync(fd, mode);
+      writeAll(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (error) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      throw error;
+    }
+    throw error;
   }
-  renameSync(tmp, path);
   syncDir(dirname(path));
 }
 

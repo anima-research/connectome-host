@@ -41,9 +41,9 @@ import { modelThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
-import { SWITCH_UNDER_WAY } from './session-switch.js';
-import { hostUpdate } from './update/update.js';
-import { goBackLines, statusLines } from './web/update-text.js';
+import { SWITCH_UNDER_WAY, refusedWhileSwitching, runningNames, trackRunning } from './session-switch.js';
+import { hostUpdate, type UpdateAnswer } from './update/update.js';
+import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -96,6 +96,7 @@ export interface CommandResult {
   switchToSessionId?: string;
   branchChanged?: boolean;
   asyncWork?: Promise<CommandResult>;
+  refused?: boolean;
   switchToFleetPeek?: string;
   switchToFleetView?: boolean;
 }
@@ -244,10 +245,45 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
   return { lines };
 }
 
+const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
+const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
+const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
+  ['session', new Set(['rename', 'delete', 'rm'])],
+  ['fleet', new Set(['stop', 'kill', 'restart'])],
+]);
+
+function sessionChangeNamed(cmd: string, args: string[]): string | null {
+  if (CHANGES_THE_SESSION.has(cmd)) return `/${cmd}`;
+  if (CHANGES_THE_SESSION_GIVEN_A_VALUE.has(cmd) && args.length > 0) return `/${cmd}`;
+  if (SUBCOMMANDS_THAT_CHANGE_THE_SESSION.get(cmd)?.has(args[0] ?? '')) return `/${cmd} ${args[0]}`;
+  return null;
+}
+
+function stillRunning(app: AppContext): CommandResult | null {
+  const names = runningNames(app);
+  if (names.length === 0) return null;
+  const one = names.length === 1;
+  return {
+    lines: [{
+      text: `${names.join(', ')} ${one ? 'is' : 'are'} still running, so the switch isn't started; try again once ${one ? 'it has' : 'they have'} finished.`,
+      style: 'system',
+    }],
+  };
+}
+
 export function handleCommand(command: string, app: AppContext): CommandResult {
-  const parts = command.slice(1).trim().split(/\s+/);
   const cmd = parseCommand(command).name;
+  const change = sessionChangeNamed(cmd, command.slice(1).trim().split(/\s+/).slice(1));
+  const result = dispatchCommand(command, cmd, change, app);
+  if (result.asyncWork && change) result.asyncWork = trackRunning(app, change, result.asyncWork);
+  return result;
+}
+
+function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext): CommandResult {
+  const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
+  const refused = change ? refusedWhileSwitching(app, change) : null;
+  if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
 
   switch (cmd) {
@@ -302,7 +338,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /fleet                 Show / peek / stop / restart cross-process children', style: 'system' },
           { text: '                         (subcommands: list | status [name] | view | peek <name> | stop <name> | restart <name>)', style: 'system' },
           { text: '  /update                Whether a newer release is out, and this install\'s update state', style: 'system' },
-          { text: '                         (subcommands: install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
+          { text: '                         (subcommands: check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
         ],
       };
 
@@ -402,15 +438,18 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
  *  host refuses rather than act on another one. */
 function handleUpdate(args: string[]): CommandResult {
   const say = (lines: string[]): CommandResult => ({ lines: lines.map((text) => ({ text, style: 'system' as const })) });
-  const after = (first: string, work: Promise<{ lines: string[] }>): CommandResult =>
-    ({ ...say([first]), asyncWork: work.then((answer) => say(answer.lines)) });
+  const after = (first: string, work: Promise<UpdateAnswer>): CommandResult =>
+    ({ ...say([first]), asyncWork: work.then((answer) => ({ ...say(answer.lines), ...(answer.done ? {} : { refused: true }) })) });
   const [sub, choice, release, extra] = args;
-  const usage = say(['Usage: /update [install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]']);
+  const usage = { ...say(['Usage: /update [check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]']), refused: true };
   if (extra !== undefined) return usage;
   const version = (word: string | undefined): word is string => word !== undefined && EXACT_VERSION.test(word);
-  if (sub === undefined) {
+  if (sub === undefined || (sub === 'check' && choice === undefined)) {
     return after('Reading the registry…',
-      hostUpdate.readRegistry().then(() => ({ lines: statusLines(hostUpdate.status()) })));
+      hostUpdate.readRegistry().then(() => {
+        const status = hostUpdate.status();
+        return { done: status.check?.ok !== false, lines: statusLines(status) };
+      }));
   }
   if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install());
   if (sub === 'restart' && release === undefined) {
@@ -422,7 +461,10 @@ function handleUpdate(args: string[]): CommandResult {
     if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice));
   }
   if (sub === 'back') {
-    if (choice === undefined) return say(goBackLines(hostUpdate.status()));
+    if (choice === undefined) {
+      const status = hostUpdate.status();
+      return { ...say(goBackLines(status)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
+    }
     if ((choice === 'keep' || choice === 'restore') && (release === undefined || version(release))) {
       return after('Going back unless refused: turns in progress get up to 2 min to end…', hostUpdate.goBack(choice === 'keep', release));
     }
@@ -605,6 +647,8 @@ const switchUnderWay: CommandResult = {
 
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.switching) return switchUnderWay;
+  const running = stillRunning(app);
+  if (running) return running;
   const session = app.sessionManager.createSession(name);
   resetBranchState(app.branchState);
 
@@ -630,6 +674,8 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
     return { lines: [{ text: `Already on session "${session.name}".`, style: 'system' }] };
   }
 
+  const running = stillRunning(app);
+  if (running) return running;
   resetBranchState(app.branchState);
 
   return {

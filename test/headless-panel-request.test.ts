@@ -178,6 +178,12 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(typeof data.totals.chunks).toBe('number');
   });
 
+  test('op=context-maintenance reports the framework\'s own interval, 5000 ms, for a recipe without maintenanceIntervalMs', async () => {
+    const res = await panel('context-maintenance');
+    expect(res.ok).toBe(true);
+    expect((res.data as { intervalMs?: unknown }).intervalMs).toBe(5000);
+  });
+
   test('unknown agent comes back ok:false with 404', async () => {
     const res = await panel('context-coverage', { agent: 'nonexistent' });
     expect(res.ok).toBe(false);

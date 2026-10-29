@@ -207,7 +207,7 @@ export function takeLock(root: string, ops: LauncherOps): void {
   }
 }
 
-export function readInstall(root: string, ops: LauncherOps): InstallRecord {
+export function readInstallRecord(root: string): InstallRecord {
   const { install } = installPaths(root);
   const record = readRecord<InstallRecord>(install, 'install record');
   if (record === null) {
@@ -217,6 +217,13 @@ export function readInstall(root: string, ops: LauncherOps): InstallRecord {
     !record.extraState.every((path) => typeof path === 'string')) {
     throw new ContractError(`The install record at ${install} has no data directory or list of extra state this release can read. Run setup again.`);
   }
+  return record;
+}
+
+/** The install record, checked against the data directory a host started
+ *  here would serve: an install serves one, the one setup recorded. */
+export function readInstall(root: string, ops: LauncherOps): InstallRecord {
+  const record = readInstallRecord(root);
   const serving = realOrResolved(ops.dataDir());
   if (realOrResolved(record.dataDir) !== serving) {
     throw new ContractError(
@@ -1093,12 +1100,13 @@ export function shellWord(word: string): string {
  * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
  * install's host holds while it runs. A host that keeps exiting gives it up
  * between its exit and the service's next start. With the lock, it checks
- * that a Go back is offered and that no request is under way, writes the
- * mark, and gives the lock up: the service's next start goes back. A host
- * that holds the lock the whole time is up, so its own Go back, which
+ * that a Go back is offered, to `expected` when that's given, and that no
+ * request is under way, writes the mark, and gives the lock up: the
+ * service's next start goes back. A host that holds the lock the whole time
+ * is up, so its own Go back, which
  * quiesces first, is the way.
  */
-export function goBackFromShell(root: string, args: string[], ops: LauncherOps): number {
+export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
   if (unknown.length > 0) {
     ops.report(`[update] ${GO_BACK_FLAG} takes only ${KEEP_DATA_FLAG}, and was given ${unknown.join(' ')}. Nothing ` +
@@ -1143,6 +1151,9 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps):
     if (offer === null) {
       throw new ContractError(`no Go back is offered: ${current} runs, and the copy doesn't hold another installed ` +
         'release\'s data');
+    }
+    if (expected !== undefined && offer.to !== expected) {
+      throw new ContractError(`the Go back offered is to ${offer.to}, not ${expected}`);
     }
     let standing: string | null;
     try {

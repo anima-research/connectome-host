@@ -38,6 +38,8 @@ import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
 import { traceFollower } from './piped-turns.js';
+import { PANEL_OPS_THAT_CHANGE_THE_SESSION, refusedWhileSwitching, trackRunning } from './session-switch.js';
+import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 
 interface HeadlessOptions {
   socketPath?: string;
@@ -79,7 +81,7 @@ export function endHeadlessLog(): Promise<void> {
   });
 }
 
-export async function runHeadless(app: AppContext, argv: string[] = []): Promise<void> {
+export async function runHeadless(app: AppContext, argv: string[] = [], testing: { stoppedReadingMs?: number } = {}): Promise<void> {
   const opts = parseHeadlessArgs(argv);
   const dataDir = resolve(process.env.DATA_DIR || './data');
   const socketPath = opts.socketPath ?? join(dataDir, 'ipc.sock');
@@ -153,6 +155,9 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   let shuttingDown = false;
 
   let currentClient: Socket | null = null;
+  let stalling: (() => void) | null = null;
+  const superseded = new WeakSet<Socket>();
+  const stoppedReadingMs = testing.stoppedReadingMs ?? STOPPED_READING_MS;
   // Framework events from before the first client connected, sent to it on
   // connect so a parent that attaches after the boot still hears it (the
   // restart notices a re-created tune-out epoch or an ended fork leave).
@@ -177,6 +182,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   let hadAtLeastOneInference = false;
   let idleEmitted = false;
   let idleSince = 0;
+  let turnWorkDoneSince = 0;
+  let turnWorkDoneEmitted = true;
   let exitSince = 0;
 
   const FILTER_EXEMPT = new Set<string>([
@@ -189,6 +196,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     'panel-response',
     'update-response',
     'command-output',
+    'command-done',
   ]);
 
   function emit(event: Record<string, unknown>): void {
@@ -198,7 +206,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     const type = typeof event.type === 'string' ? event.type : '';
     if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
     try {
-      currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n');
+      if (!currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n')) stalling?.();
     } catch (err) {
       log(`emit failed for type=${type}: ${String(err)}`);
     }
@@ -215,6 +223,14 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   seedTree();
   const startedAt = Date.now();
 
+  const primaryAgentName = app.agentName;
+  const subagentModule = () => app.framework.getAllModules().find((m) => m.name === 'subagent') as
+    | { getConcurrencyStatus(): { active: number; queued: number }; isSubagentAgent(name: string): boolean }
+    | undefined;
+  const subagentOf = (event: unknown): boolean => {
+    const agentName = (event as { agentName?: unknown }).agentName;
+    return typeof agentName === 'string' && subagentModule()?.isSubagentAgent(agentName) === true;
+  };
   // The boot comes first: main() holds what create() replays and what
   // start() emitted before this sink existed (registry restore, work a stop
   // cut off, resumed tune-out epochs), so the tree sees the boot whole. No
@@ -310,10 +326,12 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         hadAtLeastOneInference = true;
         idleEmitted = false;
         idleSince = 0;
+        turnWorkDoneEmitted = false;
+        turnWorkDoneSince = 0;
         exitSince = 0;
         pushText({
           type: 'external-message',
-          source: 'headless',
+          source: cmd.from === 'console' ? 'cli' : 'headless',
           content: cmd.content,
           metadata: {},
           triggerInference: true,
@@ -323,24 +341,39 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       case 'command': {
         if (typeof cmd.command !== 'string') {
           log('command rejected: command must be string');
+          if (typeof cmd.corrId === 'string') reply({ type: 'command-done', corrId: cmd.corrId, error: 'command must be a string' });
           return;
         }
-        const { handleCommand } = await import('./commands.js');
-        const result = handleCommand(cmd.command, app);
-        for (const line of result.lines) {
-          reply({ type: 'command-output', text: line.text, style: line.style ?? null });
-        }
-        if (result.asyncWork) {
-          const followUp = await result.asyncWork;
-          for (const line of followUp.lines) {
-            reply({ type: 'command-output', text: line.text, style: line.style ?? null });
+        const corrId = typeof cmd.corrId === 'string' ? cmd.corrId : undefined;
+        const output = (text: string, style: string | null | undefined): void =>
+          reply({ type: 'command-output', text, style: style ?? null, ...(corrId === undefined ? {} : { corrId }) });
+        let quit = false;
+        let failed: string | undefined;
+        let refused = false;
+        try {
+          const { handleCommand } = await import('./commands.js');
+          const result = handleCommand(cmd.command, app);
+          for (const line of result.lines) output(line.text, line.style);
+          refused = result.refused === true;
+          if (result.asyncWork) {
+            const followUp = await result.asyncWork;
+            for (const line of followUp.lines) output(line.text, line.style);
+            refused = followUp.refused === true;
+          }
+          if (result.switchToSessionId) {
+            await app.switchSession(result.switchToSessionId);
+            output('Session switched.', 'system');
+          }
+          quit = result.quit === true;
+        } catch (error) {
+          failed = error instanceof Error ? error.message : String(error);
+          throw error;
+        } finally {
+          if (corrId !== undefined) {
+            reply({ type: 'command-done', corrId, ...(failed === undefined ? {} : { error: failed }), ...(refused ? { refused: true } : {}) });
           }
         }
-        if (result.switchToSessionId) {
-          await app.switchSession(result.switchToSessionId);
-          reply({ type: 'command-output', text: 'Session switched.', style: 'system' });
-        }
-        if (result.quit) {
+        if (quit) {
           await gracefulShutdown('command:/quit');
         }
         return;
@@ -462,15 +495,27 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       }
       case 'panel-request': {
         const op = typeof cmd.op === 'string' ? cmd.op : '';
-        const { runPanelOp } = await import('./web/panel-data.js');
-        const result = await runPanelOp(app, op, cmd.params ?? {});
+        const changes = PANEL_OPS_THAT_CHANGE_THE_SESSION.has(op);
+        const refused = changes ? refusedWhileSwitching(app, op) : null;
+        if (refused) {
+          reply({ type: 'panel-response', corrId: cmd.corrId, op, ok: false, error: refused, status: 409 });
+          return;
+        }
+        const running = import('./web/panel-data.js').then(({ runPanelOp }) => runPanelOp(app, op, cmd.params ?? {}));
+        const result = await (changes ? trackRunning(app, op, running) : running);
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }
       case 'update-request': {
-        const { answerSwitchRequest } = await import('./update/quiesce.js');
+        const asked = (cmd.request as { op?: unknown } | null)?.op;
+        const refused = asked === 'quiesce' ? refusedWhileSwitching(app, "the release switch's quiesce") : null;
+        if (refused) {
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: refused });
+          return;
+        }
+        const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
-          const data = await answerSwitchRequest(app.framework, cmd.request);
+          const data = await (asked === 'quiesce' ? trackRunning(app, "the release switch's quiesce", answering) : answering);
           reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -508,15 +553,21 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     }
   }
 
-  const quietButScripts = (): boolean => {
-    if (app.switching || textsProcessing.size > 0) return false;
+  // An agent's status reads idle while its turn assembles and while it waits
+  // to retry (agent-framework 0.30.0), so turn work also reads what the
+  // framework counts as alive.
+  const turnWorkInFlight = (): boolean => {
+    const subagents = subagentModule();
+    const own = (name: string) => !subagents?.isSubagentAgent(name);
+    if (app.framework.getAllAgents().some((a) => own(a.name) && a.state.status !== 'idle')) return true;
     const host = app.framework.getHostModeStatus();
-    if (!host.drained || host.gatedRequests > 0) return false;
-    if (app.framework.getQueueDepth() > 0) return false;
-    const subagents = (app.framework.getAllModules().find((m) => m.name === 'subagent') as
-      | { getConcurrencyStatus(): { active: number; queued: number } }
-      | undefined)?.getConcurrencyStatus();
-    return !subagents || (subagents.active === 0 && subagents.queued === 0);
+    return textsProcessing.size > 0 || host.activeTurnAgents.some(own) || host.parkedAdmissions > 0 ||
+      host.gatedRequests > 0 || app.framework.getQueueDepth() > 0;
+  };
+  const quietButScripts = (): boolean => {
+    if (app.switching || turnWorkInFlight()) return false;
+    const subagents = subagentModule()?.getConcurrencyStatus();
+    return app.framework.getHostModeStatus().drained && (!subagents || (subagents.active === 0 && subagents.queued === 0));
   };
   const nothingInFlight = (): boolean =>
     quietButScripts() && app.framework.getHostModeStatus().backgroundScripts === 0;
@@ -524,9 +575,14 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   const server: Server = createServer((socket) => {
     if (currentClient) {
       log('new client connecting; closing previous client');
+      superseded.add(currentClient);
       try { currentClient.end(); } catch { }
     }
     currentClient = socket;
+    stalling = watchForStall(socket, stoppedReadingMs, (unsent) => {
+      log(`${superseded.has(socket) ? 'superseded client' : 'client'} hadn't taken what was queued for it within ${stoppedReadingMs / 1000} s; closed with ${unsent} bytes unsent`);
+      socket.destroy();
+    });
     log('client connected');
 
     subscription = new Set<string>(['*']);
@@ -581,6 +637,13 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
     // Send ready event as soon as the socket is live.  The framework was
     // already started before runHeadless was invoked, so 'ready' here means
     // the IPC channel is open and the framework is accepting events.
+    const turnWork = turnWorkInFlight();
+    if (turnWork) {
+      turnWorkDoneEmitted = false;
+      turnWorkDoneSince = 0;
+      idleSince = 0;
+      exitSince = 0;
+    }
     if (hadAtLeastOneInference && idleEmitted &&
       !(app.framework.getAllAgents().every((a) => a.state.status === 'idle') && quietButScripts())) {
       // Work in flight that started no turn: the quiet after it is a new idle.
@@ -594,6 +657,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       dataDir,
       recipe: app.recipe.name,
       idle: hadAtLeastOneInference && idleEmitted,
+      turnWork,
+      agent: primaryAgentName,
     });
 
     // The first client then hears the boot it missed, oldest first and each
@@ -666,7 +731,6 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   // to subscribe to the whole token stream.
   {
     const IDLE_CONFIRM_MS = 500;
-    const primaryAgentName = app.recipe.agent.name ?? 'agent';
     let windowArmed = false;
 
     let currentSpeech = '';
@@ -681,6 +745,10 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         hadAtLeastOneInference = true;
         idleEmitted = false;
         idleSince = 0;
+        if (!subagentOf(event)) {
+          turnWorkDoneEmitted = false;
+          turnWorkDoneSince = 0;
+        }
         exitSince = 0;
         if (agentName === primaryAgentName) currentSpeech = '';
       } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
@@ -706,12 +774,26 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
       const armed = selfRestart.isArmed();
       if (armed) hadAtLeastOneInference = true;
       if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; exitSince = 0; }
-      if (!hadAtLeastOneInference || !allIdle || !quietButScripts()) {
+      const turnWork = turnWorkInFlight();
+      const quiet = !turnWork && hadAtLeastOneInference && allIdle && quietButScripts();
+      const exitQuiet = quiet && (armed || opts.exitWhenIdle) && nothingInFlight();
+      // One reading of the clock, after what it times: idleSince is never earlier than turnWorkDoneSince, so an
+      // idle due at this poll finds its turn-work-done due too, and comes after it.
+      const now = Date.now();
+      if (turnWork) {
+        turnWorkDoneSince = 0;
+        turnWorkDoneEmitted = false;
+      } else if (turnWorkDoneSince === 0) {
+        turnWorkDoneSince = now;
+      } else if (!turnWorkDoneEmitted && now - turnWorkDoneSince >= IDLE_CONFIRM_MS) {
+        turnWorkDoneEmitted = true;
+        emit({ type: 'lifecycle', phase: 'turn-work-done', texts: textsReceived });
+      }
+      if (!quiet) {
         idleSince = 0;
         exitSince = 0;
         return;
       }
-      const now = Date.now();
       if (idleSince === 0) idleSince = now;
       if (!idleEmitted && now - idleSince >= IDLE_CONFIRM_MS) {
         idleEmitted = true;
@@ -719,7 +801,7 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         emit({ type: 'lifecycle', phase: 'idle', texts: textsReceived });
       }
       if (!armed && !opts.exitWhenIdle) return;
-      if (!nothingInFlight()) {
+      if (!exitQuiet) {
         exitSince = 0;
         return;
       }

@@ -249,7 +249,7 @@ describe('the notice', () => {
     off.startChecks();
     expect(asked).toHaveLength(2);
     expect(off.status().checks).toBe(false);
-    expect(statusLines(off.status())).toContain("This host doesn't read the registry on its own.");
+    expect(statusLines(off.status())).toContain("This host doesn't read the registry on its own: /update reads it.");
   });
 
   test('a newer release seen later is noticed too, and Update installs what the registry offers then', async () => {
@@ -871,7 +871,7 @@ test("/update's text names an install and a restart under way, and what's instal
     running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: null,
     goBack: null, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null, problems: [],
   };
-  expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet."]);
+  expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet: /update reads it."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
     .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.']);
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
@@ -904,10 +904,11 @@ test("/update's text names an install and a restart under way, and what's instal
 
 describe('/update', () => {
   test('routes each request to its own call, and answers anything else with its usage', async () => {
+    const { fetchManifest, asked } = registry({ '0.12.1': {} });
     theHostUpdate.configure({
       here: null, running: '0.12.1', env: { CONNECTOME_UPDATE_CHECK: '0' },
       host: { framework: () => fakeFramework().framework, fleet: () => null },
-      fetchManifest: registry({ '0.12.1': {} }).fetchManifest, now: () => new Date('2026-10-22T12:00:00.000Z'),
+      fetchManifest, now: () => new Date('2026-10-22T12:00:00.000Z'),
     });
     const app = { framework: {} } as unknown as Parameters<typeof handleCommand>[1];
     const run = async (line: string) => {
@@ -915,11 +916,16 @@ describe('/update', () => {
       return [...result.lines, ...(result.asyncWork ? (await result.asyncWork).lines : [])].map((l) => l.text);
     };
     const notInstall = expect.stringContaining("wasn't started through an install's entry point");
-    expect(await run('/update')).toEqual([
+    const state = [
       'Reading the registry…', 'connectome-host 0.12.1.',
       "No newer release is offered (read at 2026-10-22T12:00:00.000Z): Update offers final releases that aren't deprecated.",
       notInstall,
-    ]);
+    ];
+    expect(await run('/update')).toEqual(state);
+    const reads = asked.length;
+    expect(await run('/update check')).toEqual(state);
+    expect(asked.length).toBeGreaterThan(reads);
+    expect((await run('/help')).join('\n')).toContain('(subcommands: check | install | restart');
     expect(await run('/update back')).toEqual([notInstall]);
     const answer = { done: false, lines: ['answered'] };
     const calls: string[] = [];
@@ -944,8 +950,8 @@ describe('/update', () => {
         expect((await run(line)).at(-1)).toBe('answered');
       }
       expect(calls.slice(-4)).toEqual(['restart undefined', 'back true undefined', 'restart 0.13.1-rc.1', 'back false 0.12.0-rc.2']);
-      const usage = 'Usage: /update [install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]';
-      for (const line of ['/update bogus', '/update install now', '/update restart soon', '/update back later',
+      const usage = 'Usage: /update [check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]';
+      for (const line of ['/update bogus', '/update check now', '/update install now', '/update restart soon', '/update back later',
         '/update restart now please', '/update restart 0.13.1 now', '/update back keep soon', '/update back 0.12.0',
         '/update back keep 0.12.0 now']) {
         expect(await run(line)).toEqual([usage]);
@@ -954,6 +960,48 @@ describe('/update', () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
+  });
+
+  test('an answer that says it didn\'t do what was asked comes back refused, a check that couldn\'t read the registry included, and one that did doesn\'t', async () => {
+    const configure = (fetchManifest: typeof fetch) => theHostUpdate.configure({
+      here: null, running: '0.12.1', env: { CONNECTOME_UPDATE_CHECK: '0' },
+      host: { framework: () => fakeFramework().framework, fleet: () => null },
+      fetchManifest, now: () => new Date('2026-10-22T12:00:00.000Z'),
+    });
+    const app = { framework: {} } as unknown as Parameters<typeof handleCommand>[1];
+    const followUp = (line: string) => handleCommand(line, app).asyncWork!;
+    configure(registry({ '0.12.1': {}, '0.13.0': {} }).fetchManifest);
+    expect((await followUp('/update check')).refused).toBeUndefined();
+    const notInstall = await followUp('/update install');
+    expect(notInstall.refused).toBe(true);
+    expect(notInstall.lines[0]!.text).toContain("wasn't started through an install's entry point");
+    expect(handleCommand('/update bogus', app)).toMatchObject({ refused: true, lines: [{ text: expect.stringContaining('Usage: /update') }] });
+    configure(registry({}, 503).fetchManifest);
+    for (const line of ['/update check', '/update']) {
+      const unread = await followUp(line);
+      expect(unread.refused).toBe(true);
+      expect(unread.lines.map((l) => l.text)).toContainEqual(expect.stringContaining('Reading the registry failed at'));
+    }
+  });
+
+  test('back is refused where it can\'t say whether a Go back is offered, at a host that isn\'t an install too, and not where it says', () => {
+    const { root, dataDir } = install('0.13.0', ['0.12.1']);
+    const configure = (here: UpdateSetup['here']) => theHostUpdate.configure({
+      here, running: '0.13.0', env: { CONNECTOME_UPDATE_CHECK: '0' },
+      host: { framework: () => fakeFramework().framework, fleet: () => null }, fetchManifest: registry({}).fetchManifest,
+    });
+    const app = { framework: {} } as unknown as Parameters<typeof handleCommand>[1];
+    const back = () => handleCommand('/update back', app);
+    configure(null);
+    expect(back()).toMatchObject({ refused: true, lines: [{ text: expect.stringContaining("wasn't started through an install's entry point") }] });
+    configure({ root, release: '0.13.0' });
+    expect(back().refused).toBeUndefined();
+    expect(back().lines[0]!.text).toStartWith('No Go back is offered');
+    placeCopy(root, dataDir, '0.12.1', 'm1');
+    expect(back().refused).toBeUndefined();
+    expect(back().lines[0]!.text).toStartWith('Going back to 0.12.1');
+    writeFileSync(copyLabelPath(installPaths(root).copy), 'not json');
+    expect(back()).toMatchObject({ refused: true, lines: [{ text: expect.stringMatching(/^Whether a Go back is offered can't be told: ./) }] });
   });
 });
 

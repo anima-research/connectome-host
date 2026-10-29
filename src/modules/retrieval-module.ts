@@ -94,6 +94,8 @@ const holdsATool = (row: ShownRow): boolean => row.content.some(b => b.type === 
 
 const SELF_WAKE_SOURCE = 'gate:self-wake';
 
+const TUNE_OUT_RELEASE_KIND = 'tune-out-cancel';
+
 function openingMessageOf(shown: readonly ShownRow[], agentName: string): OpeningMessage | undefined {
   const bodies = bodyShardsOf(shown);
   for (let i = shown.length - 1; i >= 0; i--) {
@@ -117,7 +119,9 @@ function openingMessageOf(shown: readonly ShownRow[], agentName: string): Openin
 
 function isAMessageTo(row: ShownRow, agentName: string): boolean {
   if (row.participant === agentName || row.participant === 'system') return false;
-  const metadata = row.metadata as { system?: unknown; source?: unknown } | undefined;
+  const metadata = row.metadata as { system?: unknown; source?: unknown; kind?: unknown } | undefined;
+  // agent-framework writes a tune-out's release into the residents' window as a system-marked row of this kind, and wakes the primary for it.
+  if (metadata?.kind === TUNE_OUT_RELEASE_KIND) return true;
   return metadata?.system !== true && metadata?.source !== SELF_WAKE_SOURCE;
 }
 

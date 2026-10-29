@@ -17,6 +17,7 @@ const restricted = ['subagent--spawn', 'subagent--fork', 'probe--allowed'];
 async function harness(allowedTools: 'all' | string[] = restricted, maxDepth = 3, maxRetries = 0, defaultMaxTokens?: number) {
   const dir = mkdtempSync(join(tmpdir(), 'sub-tools-'));
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', maxRetries, maxDepth, defaultMaxTokens });
+  (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
   const probe = {
     name: 'probe', start: async () => {}, stop: async () => {},
     getTools: () => ['allowed', 'denied'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),

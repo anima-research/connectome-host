@@ -3,13 +3,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { type Socket } from 'node:net';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 const MINIMAL_RECIPE = {
   name: 'Describe Test',
@@ -67,12 +65,11 @@ describe('headless daemon — describe / snapshot', () => {
 
     child = spawn(
       'bun',
-      [INDEX_PATH, recipePath, '--headless'],
+      [join(TEST_DIR, 'mock-runheadless-child.ts'), recipePath, '--headless'],
       {
         cwd: tmpDir,
         env: {
           ...process.env,
-          ANTHROPIC_API_KEY: 'sk-test-describe',
           DATA_DIR: tmpDir,
         },
         stdio: ['ignore', 'ignore', 'ignore'],

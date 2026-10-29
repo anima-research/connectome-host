@@ -6,7 +6,8 @@ import { join } from 'node:path';
 
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
   'quiet-exit', 'quiet-idle', 'text-exit'];
-const HOLDS = ['turn', 'gated', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'wake-gap'];
+const HOLDS = ['turn', 'gated', 'parked', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'subagent-streaming', 'wake-gap'];
+const TURN_WORK = ['turn', 'gated', 'parked', 'queue', 'wake-gap'];
 const mode = process.argv[2];
 if (!MODES.includes(mode)) throw new Error('Unknown self-restart fixture mode');
 const quiet = mode === 'quiet-exit' || mode === 'quiet-idle' || mode === 'text-exit';
@@ -15,6 +16,8 @@ const textQueued = quiet && process.argv[3] === 'text-queued';
 const textSlow = quiet && process.argv[3] === 'text-slow';
 // late-queue: once the test writes queue-go, an event sits on the queue until it writes release-queue.
 const lateQueue = quiet && process.argv[3] === 'late-queue';
+// With FIXTURE_HOLD_UNTIL_RELEASED=1, the hold lasts from the turn's end until the test writes release-hold.
+const untilReleased = process.env.FIXTURE_HOLD_UNTIL_RELEASED === '1';
 const hold = mode === 'cancel-in-wait' ? 'turn' : quiet && (process.argv[3] === 'none' || blip || textQueued || textSlow || lateQueue || mode === 'text-exit')
   ? undefined : process.argv[3];
 if ((mode === 'held' || (quiet && hold !== undefined)) && !HOLDS.includes(hold!)) throw new Error('Unknown self-restart fixture hold');
@@ -31,9 +34,16 @@ const quietAt = (at: number) => {
   quietFrom = at;
   writeFileSync(join(dataDir, 'quiet-from'), String(at));
 };
+const turnWorkAt = (at: number) => writeFileSync(join(dataDir, 'turn-work-from'), String(at));
+const scout = { name: 'spawn-scout', state: { status: 'streaming' } };
 let textHeld = false;
+let scoutStarted = false;
 const lateQueued = (): boolean => {
-  if (!lateQueue || !existsSync(join(dataDir, 'queue-go')) || existsSync(join(dataDir, 'release-queue'))) return false;
+  if (!lateQueue || !existsSync(join(dataDir, 'queue-go'))) return false;
+  if (existsSync(join(dataDir, 'release-queue'))) {
+    if (!existsSync(join(dataDir, 'queue-released'))) writeFileSync(join(dataDir, 'queue-released'), String(Date.now()));
+    return false;
+  }
   if (!existsSync(join(dataDir, 'queue-seen'))) writeFileSync(join(dataDir, 'queue-seen'), String(Date.now()));
   return true;
 };
@@ -44,12 +54,30 @@ const holding = (kind: string): boolean => {
   if (mode === 'late-arm-gap') return heldFrom > 0 && kind === 'turn' && t >= 150 && t < 800;
   if (hold === 'late-script') return kind === 'script' && heldFrom > 0 && t >= 200 && t < 1200;
   if (hold === 'script-until-released') return kind === 'script' && heldFrom > 0 && !existsSync(join(dataDir, 'release-script'));
+  if (untilReleased) {
+    if (hold !== kind || heldFrom === 0) return false;
+    if (!existsSync(join(dataDir, 'release-hold'))) return true;
+    // The host's first look after the release, so quiet-from is never later than the host's own reading.
+    if (quietFrom === Infinity) {
+      quietAt(Date.now());
+      if (TURN_WORK.includes(hold)) turnWorkAt(Date.now());
+    }
+    return false;
+  }
   return hold === kind && Date.now() < heldUntil;
 };
 
 const arm = () => {
   selfRestart.arm(dataDir, { requestedAt: new Date().toISOString(), reason: 'fixture restart', requestedBy: 'fixture' });
   writeFileSync(join(dataDir, 'armed'), 'yes');
+};
+
+const whenWritten = (name: string, then: () => void) => {
+  const watching = setInterval(() => {
+    if (!existsSync(join(dataDir, name))) return;
+    clearInterval(watching);
+    then();
+  }, 10);
 };
 
 const startTurn = () => {
@@ -64,11 +92,23 @@ const startTurn = () => {
       heldFrom = Date.now();
       heldUntil = heldFrom + (hold === 'wake-gap' ? 1800 : hold === 'late-script' ? 1200 : 1000);
     }
-    if (quiet) quietAt(hold ? heldUntil : Date.now());
+    if (quiet && untilReleased) {
+      if (!TURN_WORK.includes(hold!)) turnWorkAt(Date.now());
+    } else if (quiet) {
+      quietAt(hold ? heldUntil : Date.now());
+      turnWorkAt(hold && TURN_WORK.includes(hold) ? heldUntil : Date.now());
+    }
+    if (hold === 'subagent-streaming') {
+      whenWritten('scout-go', () => {
+        scoutStarted = true;
+        trace({ type: 'inference:started', agentName: scout.name });
+      });
+    }
     if (blip) {
       setTimeout(() => {
         trace({ type: 'inference:started', agentName: 'fixture' });
         quietAt(Date.now());
+        turnWorkAt(Date.now());
       }, 100);
     }
     if (mode === 'cancel-in-wait') setTimeout(() => selfRestart.cancel(), 800);
@@ -161,22 +201,34 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
   const own: Array<(event: unknown) => void> = [];
   listeners = own;
   return {
-    getAllAgents: () => agents,
+    getAllAgents: () => (holding('subagent-streaming') ? [...agents, scout] : agents),
     onTrace: (cb: (event: unknown) => void) => {
       own.push(cb);
       return () => { if (own.includes(cb)) own.splice(own.indexOf(cb), 1); };
     },
-    getHostModeStatus: () => ({
-      drained: !holding('turn'),
-      activeTurns: holding('turn') ? 1 : 0,
-      parkedAdmissions: 0,
-      gatedRequests: holding('gated') ? 1 : 0,
-      backgroundScripts: holding('script') ? 1 : 0,
-    }),
+    getHostModeStatus: () => {
+      // The host's poll reads this: scout-polled says it has polled since the scout's start.
+      if (scoutStarted && !existsSync(join(dataDir, 'scout-polled'))) writeFileSync(join(dataDir, 'scout-polled'), '');
+      return {
+        drained: !holding('turn') && !holding('subagent-streaming') && !holding('parked'),
+        activeTurns: holding('turn') || holding('subagent-streaming') ? 1 : 0,
+        activeTurnAgents: holding('turn') ? ['fixture'] : holding('subagent-streaming') ? [scout.name] : [],
+        parkedAdmissions: holding('parked') ? 1 : 0,
+        gatedRequests: holding('gated') ? 1 : 0,
+        backgroundScripts: holding('script') ? 1 : 0,
+      };
+    },
     getQueueDepth: () => (holding('queue') ? 1 : 0),
     pushEvent,
     getAllModules: () => hold?.startsWith('subagent') || hold === 'wake-gap'
-      ? [{ name: 'subagent', getConcurrencyStatus: () => ({ active: holding('subagent-active') ? 1 : 0, queued: holding('subagent-queued') ? 1 : 0 }) }]
+      ? [{
+          name: 'subagent',
+          getConcurrencyStatus: () => ({
+            active: holding('subagent-active') || holding('subagent-streaming') ? 1 : 0,
+            queued: holding('subagent-queued') ? 1 : 0,
+          }),
+          isSubagentAgent: (name: string) => name === scout.name,
+        }]
       : [],
     async stop() {
       const early = quiet ? Date.now() < quietFrom + 540 : heldUntil > 0 && Date.now() < heldUntil + 540;
@@ -184,11 +236,19 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
     },
   };
 };
+const unnamed = process.env.FIXTURE_UNNAMED_AGENT === '1';
 const app: { recipe: unknown; agentName: string; framework: ReturnType<typeof framework>; onFrameworkReplaced?: () => void; switching?: boolean } = {
-  recipe: { name: 'Self-restart test', agent: { name: 'fixture' } },
-  agentName: 'fixture',
+  recipe: { name: 'Self-restart test', agent: unnamed ? {} : { name: 'fixture' } },
+  agentName: unnamed ? 'imported-name' : 'fixture',
   framework: framework(),
 };
+if (mode === 'quiet-idle') {
+  whenWritten('speak', () => {
+    trace({ type: 'inference:started', agentName: app.agentName });
+    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.' });
+    trace({ type: 'inference:completed', agentName: app.agentName });
+  });
+}
 function replaceFramework(agents?: Array<{ name: string; state: { status: string } }>): void {
   generation += 1;
   app.framework = framework(agents);

@@ -6,6 +6,188 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.19.0 — 2026-10-29
+
+### Breaking
+
+- **Operators whose residents rely on where their words land when nothing
+  names a channel:** with the agent-framework release that carries
+  agent-framework#546, `speech.locus` defaults to `'delivery'`, and a
+  `channel_publish` with no `channelId` goes where the calling turn's plain
+  prose would. This host passes `speech` to the framework only when a recipe
+  sets it, so every recipe without it takes the new default.
+  - **Plain prose** (under prose routing by locus, `"locus"` or `"hybrid"`;
+    `"explicit"` and `"disabled"` don't publish prose to a locus): it lands
+    in the channel of the delivery that woke the turn, a conversation fork's
+    home channel, or a channel the agent opened during the turn. A turn with
+    none of these falls back only to an open all-except tune-out's excepted
+    channel, and otherwise keeps its prose private (a heartbeat's turn, a
+    `noChannel` turn and an ephemeral agent's take no fallback); a
+    `[routing]` notice tells the agent so when it was last told its speech
+    lands in a channel.
+    An addressed message from another channel moves nothing, and a
+    `[routing]` notice names who wrote from where. Before, a turn no channel
+    message woke fell back to the channel of the most recent inbound
+    message, unless it was a conversation fork's, a heartbeat's, a
+    `noChannel` turn or an ephemeral agent's, and an addressed message from
+    another channel arriving during a turn, or between its streams, moved
+    the rest of its prose there.
+  - **`channel_publish` with no `channelId`:** from a turn, it goes to the
+    turn's locus, else a conversation fork's home channel, else the channel
+    of the message that woke the turn, else the fallback above. Made outside
+    any turn, as by a script left running after its turn, it goes to a
+    conversation fork's home channel, else that fallback. A heartbeat's
+    turn, a `noChannel` turn and an ephemeral agent take no fallback, and the
+    call is refused when none of these names a channel. Before, it went to
+    the channel of the most recent inbound message, whichever turn called
+    it, or none, except a conversation fork's own call, which went to its
+    home channel, as now; it was refused when there was no such message or
+    the caller was an ephemeral agent.
+  - **Migration:** `"speech": { "locus": "latest-inbound" }` in a recipe
+    brings back the moves on an addressed message, mid-turn or between
+    streams, and makes the most recent delivered inbound message's channel
+    the fallback again, after an open all-except tune-out's excepted
+    channel, for prose and for a publish. No setting sends a publish there
+    ahead of the turn's own channel, or from a turn that takes no fallback:
+    a publish meant for a particular channel names its `channelId`.
+  - **Unchanged:** a `channel_publish` that names its `channelId` goes to that
+    channel.
+
+### Added
+
+- Recipe `dendrite` (agent-framework `FrameworkConfig.dendrite`):
+  `announceOrphans` and `collapseDerivationNoticesAfter`, the threshold past
+  which an agent hears a count line instead of a line per fork derived from
+  it (agent-framework#270).
+
+- Tune-out mk2 recipe surface (agent-framework#546): `subconscious.reader: 'forks'`
+  runs the tune-out reader as a succession of forks of the resident (`model`
+  and `voice` required; the host supplies the per-fork strategy factory the
+  way it does for `conversations`); top-level `speech.locus` (`delivery` |
+  `latest-inbound`) chooses where plain prose lands when nothing names a
+  destination; top-level `tuneOut.enabled` offers `tune_out` / `focus` without
+  a reader (a silent hold). The recipe fields are typed from the framework's
+  own config and need the agent-framework release that carries #546; the
+  dependency range rises with it.
+- What a forked or spawned stream is told at its start is a recipe policy,
+  `modules.subagents.orientation` (`full`, the default, or `none`). The host
+  carries no consent gate on reader forks: the framework attaches no
+  consent model to a derivation and offers `dendrite.beforeDerive` and
+  `dendrite.derivationNotice` to a deployment that wants one, and a consent
+  module is to come as a package of its own (tel0s, Antra and Ra,
+  2026-10-19). What the host guarantees instead: a reader fork can post
+  nowhere unless `subconscious.allowChannelSpeech` is on.
+
+### Changed
+
+- Subagents are Dendrite agents. A fork is registered as a task-fork of its
+  parent (spawner, result route, copy inheritance, the launch on its record),
+  with #213's materialisation unchanged: the parent's compiled context
+  becomes the fork's own, the parent's tool round in flight is reproduced
+  with this call's result in it, so the fork sees the call that made it and
+  never meets a dangling `tool_use`; a call the parent had stored before the
+  launch is answered after the copy, its siblings with the framework's "no
+  result yet" note, and a launch with no call gets the pair the fallback
+  always made. (Deriving the fork's context through `deriveAgent` is the
+  next step, not this one.) A spawn is a registered worker. Both records
+  name who spawned the subagent and where its result goes, and carry the
+  launch (`metadata`). A result returns by that route: to the awaiting call
+  for a sync run, otherwise as attributed mail under the subagent's own
+  name, and once the caller has ended, a sync run's as well as an async
+  one's is held as mail for that caller until it is adopted, never lost.
+  Before, an async result was a line in the primary's context whatever
+  became of the caller. A failure now follows the same path,
+  except one whose route is the live primary, which is still told to it as a
+  line in its context. A launch whose caller ended before it registered, as
+  one waiting for a slot or a retry can, registers under the caller's
+  nearest live ancestor, or the primary, and its result goes there, saying
+  whose run it was; a fork registered so carries no copy inheritance on its
+  record, since its copy came from the caller.
+  The launch refusal and the concurrency, retry, cancel and time-limit rules
+  are unchanged; what a stream is told at its start is the recipe's
+  `modules.subagents.orientation` (`full`, the default, or `none`).
+- Five tools over the registry: `subagent--list` (the launches within the
+  caller's reach, running, ended or orphaned, with spawner, task and route,
+  and how many of a run's results and messages are held for a recipient that
+  can't take them), `subagent--stop` (a run cancelled children-first, task
+  work it spawned orphaned and offered for adoption, its stopped result
+  saying who stopped it and why), `subagent--message` (a message in a
+  running subagent's context under the sender's name, waking it),
+  `subagent--adopt` (an orphan's new parent, its result following; an orphan
+  that has since ended isn't restarted, and adopting it delivers what it
+  holds for a recipient that has gone), and `subagent--resume` (a subagent a
+  restart cut off, a time limit stopped or that failed, continued from the
+  context it left, under the same name, its result delivered as a message;
+  one that was stopped, that completed or that ended any other way is
+  refused, with what to do instead). The agent tree shows the edges from
+  `dendrite:agent-created`.
+- The tools keep the module's own rules. They reach the caller's subtree —
+  the subagents it started, and theirs — as `peek` does (postmortem
+  2026-05-28 P3 #8); `modules.subagents.lifecycleReach: 'all'` widens them
+  to every subagent the host knows, though not who adopts. A resume is
+  refused when the launch's tools exceed the caller's own rule, since a
+  resume runs the launch's tools and a caller cannot hand out more than it
+  has. An orphan is adopted only by an agent it was offered to — an ancestor
+  of its former parent, or the primary — or one in whose tree it hung, so
+  held results never move to a stranger; `adopt` takes the framework name
+  the offer gives as well as the display name. A resume says where the
+  result will go when the record's route is to someone else who is still
+  running: a resume keeps a route whose recipient is still running, and
+  without one the result goes to the agent that resumed it.
+
+- **Operators:** `@animalabs/agent-framework` is now ^0.30.0 (was ^0.29.0),
+  `@animalabs/context-manager` ^0.24.0 (was ^0.23.1) and `@animalabs/chronicle`
+  ^0.5.0 (was ^0.4.0), the releases that carry Dendrite. What changes for
+  agents and operators is in this release's Dendrite entries and in each
+  library's own notes.
+
+### Fixed
+
+- Headless runs feed the agent tree and the socket from the boot on. The
+  traces `create()` replays (registry restore, work a stop cut off, resumed
+  tune-out epochs) are held across `framework.start()` for the headless sink
+  instead of being dropped by it, and the first client to connect hears the
+  events from before it connected, oldest first and each marked
+  `replay: true`; when the boot outran the 1,000 kept, the replay ends with
+  `lifecycle` `replay-truncated` saying how many were cut. Agents the
+  framework derives (`dendrite:agent-created`) hang under the agent they were
+  made from in the tree, as framework nodes with their own trace stream,
+  without a tool call to infer the edge from; an orphaned agent is parentless
+  until `dendrite:agent-reparented` moves it.
+
+- **Agents:** a text that sends an agent to a tool in the built-in `settings`
+  toolset says how to reach it from that agent's seat:
+  `toolsets--open {"toolset": "settings"}`, then
+  `toolsets--act {"tool": ..., "args": {...}}`, or, for an agent whose tool
+  list lacks `toolsets--open` or `toolsets--act`, a call by the tool's own
+  name, since agent-framework presents the toolset only to an agent that may
+  call both. That covers an unknown tool's answer, identity's notes, the
+  settings and subscription-gc answers, a channel's auto-close notice,
+  `lifecycle--restart`'s pointer to `mcpl-admin--mcpl_restart`, the subagent
+  `tools` description, the shipped clerk recipe's prompt and the agent-facing
+  docs.
+- **Agents:** `mcpl-admin--mcpl_deploy` describes `presentation` as
+  agent-framework 0.29 applies it: a tab's tools start out of the tool list,
+  `toolsets--open {"server": id}` lists them for `toolsets--act`, and
+  `toolsets--open {"server": id, "full": true}` puts them back in the list; a
+  closed tab also starts out disconnected; an agent that may not call both
+  `toolsets--open` and `toolsets--act` isn't shown tabs. Its answer for a
+  server saved as a tab or closed tab says so, and `mcpl-admin--mcpl_list`
+  says its `presentation=` is the configured one, not necessarily how the
+  server is shown to the agent now.
+- **Agents:** a spawn's or fork's prompt-size check no longer counts the tools
+  its first request leaves out, such as module utilities and, for a stream
+  that may call both `toolsets--open` and `toolsets--act`, the built-in
+  toolset's tools, so it no longer refuses a launch for their size (#511).
+- **Agents whose requests carry a changed text:** the descriptions of
+  `lifecycle--restart` and `subagent--spawn`'s `tools` parameter change, and so
+  do `mcpl-admin--mcpl_deploy`'s, which is in the tool list of an agent that
+  may not call both `toolsets--open` and `toolsets--act`, and the shipped clerk
+  recipe's prompt. Where prompt caching is on, such an agent's first request
+  after the update writes its cache in full.
+- **Operators:** the Web UI's MCPL panel shows a closed tab as one, grey and
+  labelled, rather than as a server that failed to connect.
+
 ## 0.18.0 — 2026-10-28
 
 ### Breaking

@@ -2506,6 +2506,26 @@ describe('a Go back from a shell', () => {
     expect(store()).toBe('B wrote this');
   });
 
+  test('with an expected release, asks for nothing when the offer is to another once it holds the lock, which it gives up', async () => {
+    await committedSwitch();
+    release('0.9.0');
+    lockOf(4242);
+    alive.add(4242);
+    const exiting: LauncherOps = { ...ops(), sleep: (ms) => {
+      clock += ms;
+      slept += ms;
+      writeJsonAtomic(copyLabelPath(installPaths(root).copy), { ...lastCopy(root)!, from: '0.9.0' } satisfies CopyLabel);
+      alive.delete(4242);
+    } };
+    expect(goBackFromShell(root, [KEEP_DATA_FLAG], exiting, '0.10.2')).toBe(1);
+    expect(slept).toBeGreaterThan(0);
+    expect(existsSync(installPaths(root).mark)).toBe(false);
+    expect(existsSync(installPaths(root).lock)).toBe(false);
+    expect(reports.at(-1)).toBe('[update] Nothing was asked for: the Go back offered is to 0.9.0, not 0.10.2');
+    expect(goBackFromShell(root, [KEEP_DATA_FLAG], ops(), '0.9.0')).toBe(0);
+    expect(readRecord<Mark>(installPaths(root).mark, 'mark')).toMatchObject({ to: '0.9.0', why: 'go-back', keepData: true });
+  });
+
   test('restores the copy without --keep-data, and replaces a mark that stood', async () => {
     await committedSwitch();
     release('0.12.0');

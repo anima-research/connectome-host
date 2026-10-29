@@ -1,3 +1,5 @@
+import type { PanelOp } from './web/panel-data.js';
+
 export const SWITCH_UNDER_WAY = 'a session switch is under way, so this one isn\'t started; try again once it has finished';
 
 export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
@@ -43,4 +45,37 @@ export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
   } finally {
     app.switching = false;
   }
+}
+
+/** The pin and settings panel ops that change the session they act on. */
+export const PANEL_OPS_THAT_CHANGE_THE_SESSION: ReadonlySet<string> = new Set<PanelOp>([
+  'settings-update',
+  'settings-reset',
+  'settings-cancel-transition',
+  'pin-add',
+  'pin-remove',
+]);
+
+/** The refusal every entry gives an action that would change the session
+ *  while a switch is under way, or null when no switch is. */
+export function refusedWhileSwitching(app: { switching?: boolean }, what: string): string | null {
+  return app.switching
+    ? `${what} refused: a session switch is under way. Nothing changed; try again once the switch has finished.`
+    : null;
+}
+
+const running = new WeakMap<object, Map<symbol, string>>();
+
+/** Holds a switch off while `work` runs, under `what`'s name, until it settles. */
+export function trackRunning<T>(app: object, what: string, work: Promise<T>): Promise<T> {
+  const names = running.get(app) ?? new Map<symbol, string>();
+  running.set(app, names);
+  const token = Symbol(what);
+  names.set(token, what);
+  return work.finally(() => names.delete(token));
+}
+
+/** The names of the work still running on `app`, each once. */
+export function runningNames(app: object): string[] {
+  return [...new Set(running.get(app)?.values() ?? [])];
 }

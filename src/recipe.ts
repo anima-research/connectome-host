@@ -1602,6 +1602,12 @@ export interface Recipe {
    * entry sets `toolPrefix`.
    */
   toolClassOverrides?: Record<string, string[]>;
+  /**
+   * How often agent-framework's context maintenance pass runs, in
+   * milliseconds: a whole number from 0 to 2147483647, where 0 turns the
+   * timer off. Left out, the framework's own interval (5000 ms) stands.
+   */
+  maintenanceIntervalMs?: number;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -1944,6 +1950,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
+  'maintenanceIntervalMs',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -3301,6 +3308,11 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (obj.toolClassOverrides !== undefined) {
     validateToolClassTable(obj.toolClassOverrides, 'Recipe toolClassOverrides');
+  }
+
+  if (obj.maintenanceIntervalMs !== undefined) {
+    const must = timerMs(0)(obj.maintenanceIntervalMs);
+    if (must) throw new Error(`Recipe maintenanceIntervalMs is ${JSON.stringify(obj.maintenanceIntervalMs)}; it must be ${must}.`);
   }
 
   if (obj.subconscious !== undefined) {

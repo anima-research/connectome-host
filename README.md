@@ -168,6 +168,21 @@ for channel-staffing agents, `passthrough` for none) — see
 `docs/AGENT-ONBOARDING.md` for sizing guidance on long-lived agents and
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md) for how it works.
 
+`maintenanceIntervalMs`, at the recipe's top level, is how often
+agent-framework runs its context maintenance pass, in milliseconds: a whole
+number from 0 to 2147483647, and the framework's own 5000 when the recipe
+leaves it out. 0 turns the timer off, and with it the pass at start. Work
+only a pass would take then waits for something else to start it. Queued
+compression waits for, say, the next message, an over-budget compile or a
+`maintain` from an MCPL server the recipe allows host commands. After a
+start, compression that needs the agent's tool definitions (of history that
+holds tool calls, or any with a Fable- or Mythos-family compression model)
+waits for the agent's first request or a `maintain`. And no timer retries
+failed tool-result storage of a subagent run or fork that has ended, so a
+process that ends without a stop can lose it. Set 0 only for a short run in
+which a pass at a point that depends on the machine's load would make runs
+differ, such as a test fixture's.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is
@@ -872,7 +887,7 @@ headless socket.
 | `/auth [status\|refresh\|login\|recheck\|token <tok>]` | Subscription credential state and operator actions (see docs/subscription-transport.md) |
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
-| `/update [install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs; on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
+| `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
 The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
 those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
@@ -896,6 +911,21 @@ host before then. `/undo` and `/redo` are
 its undo and redo on the agent's window; the TUI's history and the Web UI's
 transcript mark an undone turn's rows, and the Web UI's context panels read
 the window again.
+
+While a session switch is under way, these are refused, each saying
+nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,
+`/nudge`, `/puppet`, `/session rename`, `/session delete`, `/fleet stop` and
+`/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
+a value. The forms of those three that only list or show answer as they do
+without a switch. The same goes for the fleet view's stop and restart keys,
+and for the Web UI's rollback, suppress, fleet stop and restart, host
+quiesce and resume, and pin and settings changes. A pin or settings change
+made for a fleet child is passed on to it, and the child refuses it only
+while its own session is switching. Once the switch has stopped the old
+session's framework, the Web UI answers "host not ready" until the next one
+is installed, as before. `/session new` and `/session switch` start no
+switch while one is under way, or while one of the commands above, given
+earlier, or one of these actions on this host is still running.
 
 ## TUI controls
 
