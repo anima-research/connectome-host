@@ -424,15 +424,18 @@ export class TtsRelayModule implements Module {
     return named(voiced, live.length === 1 ? 'voicing in that channel' : 'the last voiced in that channel');
   }
 
+  /** The latest message published in the interruption's channel whose text
+   *  the heard words start, or none. A publish the words don't start is not
+   *  taken: it would be edited to words it never said, and its author told
+   *  of an interruption that cut off another agent. */
   private findInterruptedMessage(ev: InterruptionEvent): PublishedMessage | null {
-    const inChannel = this.published.filter((r) => r.rawChannelId === ev.channelId).reverse();
-    if (inChannel.length === 0) return null;
     const spoken = collapseWs(ev.spokenText);
-    if (spoken.length > 0) {
-      const probe = spoken.slice(0, 80);
-      const match = inChannel.find((r) => collapseWs(r.text).startsWith(probe));
-      if (match) return match;
+    if (spoken.length === 0) return null;
+    const probe = spoken.slice(0, 80);
+    for (let i = this.published.length - 1; i >= 0; i--) {
+      const r = this.published[i]!;
+      if (r.rawChannelId === ev.channelId && collapseWs(r.text).startsWith(probe)) return r;
     }
-    return inChannel[0];
+    return null;
   }
 }

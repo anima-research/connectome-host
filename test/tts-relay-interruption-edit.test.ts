@@ -150,33 +150,39 @@ async function logOf(run: () => Promise<void>): Promise<string> {
   return lines.join('\n');
 }
 
-describe('what an interruption may edit', () => {
-  function relayOnTraces() {
-    const calls: Array<{ name: string; input: unknown }> = [];
-    const ctx = {
-      callTool: async (call: { name: string; input: unknown }) => { calls.push({ name: call.name, input: call.input }); return { success: true }; },
-      addMessage: () => {},
-      getAgents: () => [{ name: 'fable' }],
-    } as unknown as ModuleContext;
-    const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
-    const inner = module as unknown as {
-      ctx: ModuleContext;
-      onTraceEvent(event: Record<string, unknown>): void;
-      handleInterruption(ev: Interruption): Promise<void>;
-    };
-    inner.ctx = ctx;
-    const trace = (event: Record<string, unknown>) => inner.onTraceEvent({ timestamp: 1, ...event });
-    const interrupt = (spokenText: string) => inner.handleInterruption({ channelId: '42', spokenText, reason: 'user_speech', timestamp: 2 });
-    const edited = () => calls.map((c) => (c.input as { messageId: string }).messageId);
-    return { trace, interrupt, edited };
-  }
+/** The module on traces alone, with `agents` registered: what it edits, and
+ *  the notes it writes, each with the agent it was written for. */
+function relayOnTraces(agents: string[] = ['fable']) {
+  const calls: Array<{ name: string; input: unknown }> = [];
+  const notes: Array<{ text: string; forAgent?: string }> = [];
+  const ctx = {
+    callTool: async (call: { name: string; input: unknown }) => { calls.push({ name: call.name, input: call.input }); return { success: true }; },
+    addMessage: (_role: string, content: Array<{ text: string }>, _metadata?: unknown, target?: { forAgent?: string }) => {
+      notes.push({ text: content.map((b) => b.text).join(''), ...(target?.forAgent !== undefined ? { forAgent: target.forAgent } : {}) });
+    },
+    getAgents: () => agents.map((name) => ({ name })),
+  } as unknown as ModuleContext;
+  const module = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
+  const inner = module as unknown as {
+    ctx: ModuleContext;
+    onTraceEvent(event: Record<string, unknown>): void;
+    handleInterruption(ev: Interruption): Promise<void>;
+  };
+  inner.ctx = ctx;
+  const trace = (event: Record<string, unknown>) => inner.onTraceEvent({ timestamp: 1, ...event });
+  const interrupt = (spokenText: string) => inner.handleInterruption({ channelId: '42', spokenText, reason: 'user_speech', timestamp: 2 });
+  const edited = () => calls.map((c) => (c.input as { messageId: string }).messageId);
+  return { trace, interrupt, edited, notes };
+}
 
-  test('a published message is edited, and an announcement routed after it is passed over', async () => {
+describe('what an interruption may edit', () => {
+
+  test('heard words that start an announcement routed after a published message edit neither', async () => {
     const { trace, interrupt, edited } = relayOnTraces();
     trace({ type: 'inference:published', agentName: 'fable', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-prose' });
     trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
-    await interrupt('Something the words never matched');
-    expect(edited()).toEqual(['m-prose']);
+    await interrupt('Going to sleep');
+    expect(edited()).toEqual([]);
   });
 
   test('the published message whose text the heard words start is edited, though a later one was published', async () => {
@@ -192,5 +198,50 @@ describe('what an interruption may edit', () => {
     trace({ type: 'mcpl:speech-routed', conversationId: 'fable', channelId: 'g:42', text: 'Going to sleep for an hour.', messageId: 'm-sleep' });
     await interrupt('Going to sleep');
     expect(edited()).toEqual([]);
+  });
+});
+
+// The note goes to the author of the published message the heard words start,
+// else to the agent voicing in the interruption's channel; a publish the words
+// don't start is neither edited nor taken as the speaker.
+describe('heard words that start no published message', () => {
+  const published = { type: 'inference:published', agentName: 'clerk', serverId: 'discord', channelId: 'g:42', inferenceId: 'i1', index: 0, text: 'The ferry leaves at noon, and the bridge is closed.', messageId: 'm-clerk' };
+
+  test('edit nothing, and the note is for the agent voicing in the channel, not the one that last published there', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    trace(published);
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    const logged = await logOf(() => interrupt('Over the hills and far away'));
+    expect(edited()).toEqual([]);
+    expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+    expect(logged).toContain('no published message matched the interruption');
+  });
+
+  test('the agent voicing in the channel is told though the one that last published there is no longer registered', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['mira']);
+    trace(published);
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    await interrupt('Over the hills and far away');
+    expect(edited()).toEqual([]);
+    expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+  });
+
+  test('the agent live in the channel is told over the one last voiced there', async () => {
+    const { trace, interrupt, notes } = relayOnTraces(['clerk', 'mira']);
+    trace(published);
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    trace({ type: 'inference:started', agentName: 'clerk', channelId: 'g:42' });
+    trace({ type: 'inference:completed', agentName: 'clerk' });
+    await interrupt('Over the hills and far away');
+    expect(notes.map((n) => n.forAgent)).toEqual(['mira']);
+  });
+
+  test('heard words that start the publish still edit it and tell its author', async () => {
+    const { trace, interrupt, edited, notes } = relayOnTraces(['clerk', 'mira']);
+    trace(published);
+    trace({ type: 'inference:started', agentName: 'mira', channelId: 'g:42' });
+    await interrupt('The ferry leaves');
+    expect(edited()).toEqual(['m-clerk']);
+    expect(notes.map((n) => n.forAgent)).toEqual(['clerk']);
   });
 });
