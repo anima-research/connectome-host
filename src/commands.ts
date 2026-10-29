@@ -346,13 +346,13 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
       return inFlightGuard(app, cmd) ?? handleCheckout(app, args.join(' ') || undefined);
 
     case 'history':
-      return handleHistory(framework, args[0]);
+      return handleHistory(app, args[0]);
 
     case 'branchto':
       return inFlightGuard(app, cmd) ?? handleBranchTo(app, args[0]);
 
     case 'find':
-      return handleFind(framework, args.join(' '));
+      return handleFind(app, args.join(' '));
 
     case 'mcp':
       return handleMcp(args);
@@ -1230,7 +1230,7 @@ function handleRestore(app: AppContext, name?: string): CommandResult {
 }
 
 function handleBranches(app: AppContext): CommandResult {
-  const cm = getAgentCM(app.framework);
+  const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const branches = cm.listBranches();
@@ -1284,8 +1284,9 @@ function handleCheckout(app: AppContext, name?: string): CommandResult {
   };
 }
 
-function handleFind(framework: AgentFramework, needle: string): CommandResult {
-  const cm = getAgentCM(framework);
+/** /find, in the command agent's context, as /branchto looks its ids up. */
+function handleFind(app: AppContext, needle: string): CommandResult {
+  const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
   if (!needle) return { lines: [{ text: 'Usage: /find <text>', style: 'system' }] };
   const { messages } = cm.queryMessages({});
@@ -1385,8 +1386,9 @@ function handleBranchTo(app: AppContext, messageId: string | undefined): Command
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 
-function handleHistory(framework: AgentFramework, countArg?: string): CommandResult {
-  const cm = getAgentCM(framework);
+/** /history: the command agent's context, which /branchto looks its ids up in. */
+function handleHistory(app: AppContext, countArg?: string): CommandResult {
+  const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
   const { messages } = cm.queryMessages({});
