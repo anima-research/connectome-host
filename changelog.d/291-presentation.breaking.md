@@ -76,3 +76,7 @@
   **Unchanged:** `/checkpoint`, `/branches`, `/history` and `/find`; every
   command that moves the head is still refused while the agent's turn is in
   flight.
+  - `/undo`, `/redo` and `/newtopic` are refused only while the agent the
+    command acts for is mid-turn; `/checkout`, `/restore` and `/branchto`
+    while any agent sharing the store is, the subconscious included, as the
+    0.18.0 entry for #264 has it (the README says so in those words).
