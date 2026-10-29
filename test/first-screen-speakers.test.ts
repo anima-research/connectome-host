@@ -130,6 +130,7 @@ describe('the host\'s own rows read as the host\'s, by kind', () => {
     const mod = new TtsRelayModule({ url: 'ws://127.0.0.1:1/bot', token: 't' });
     const inner = mod as unknown as {
       ctx: ModuleContext;
+      onTraceEvent(event: Record<string, unknown>): void;
       handleInterruption(ev: { channelId: string; spokenText: string; reason: 'user_speech'; timestamp: number }): Promise<void>;
     };
     inner.ctx = {
@@ -137,8 +138,10 @@ describe('the host\'s own rows read as the host\'s, by kind', () => {
       addMessage: (p: string, _c: unknown, metadata?: unknown) => { written.push(metadata); roles.push(p); return 'm1'; },
       // The relay writes its note for the agent that spoke (#291), which it
       // looks up among the registered agents, as a real ModuleContext lists them.
-      getAgents: () => [],
+      getAgents: () => [{ name: 'fable' }],
     } as unknown as ModuleContext;
+    // The agent voicing in the interruption's channel, whom the note is for.
+    inner.onTraceEvent({ timestamp: 1, type: 'inference:started', agentName: 'fable', channelId: 'g:42' });
     await inner.handleInterruption({ channelId: '42', spokenText: 'The ferry', reason: 'user_speech', timestamp: 2 });
     expect(written).toHaveLength(1);
     expect(shown(written[0]).web).toBe('host · voice interruption');
