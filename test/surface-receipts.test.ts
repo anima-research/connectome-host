@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework, type ModuleContext, type ProcessEvent } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { send } from '../src/cli/connectome.js';
 import {
   SURFACE_TAG_KEY,
   SurfaceAnswers,
@@ -110,24 +111,64 @@ describe('headless', () => {
     });
   });
 
-  test("of a stream with rounds, answers for the reply after its last call and not for a round's prose, which the relay never wrote", async () => {
+  test("of a stream with rounds, answers for the reply after its last call, and not for a round's words asked about as the reply", async () => {
     await withChild(async (dir, connect) => {
       const send = await connect(['inference:speech']);
       send({ type: 'text', content: JSON.stringify({ stream: ['Looking around.', 'Found it. It was here.'] }), from: 'console' });
       await until(() => answers(dir).length === 1, 'the turn');
       const id = answers(dir)[0].tag.connection;
-      const ask = (text: string, final: boolean) => send({ type: 'text', content: JSON.stringify({ ask: { text, final, connections: [id] } }), from: 'console' });
-      ask('Looking around.', false);
-      ask('Looking around.', true);
-      ask('Found it.', true);
-      ask('It was here.', true);
-      await until(() => answers(dir).length === 5, 'the asks');
+      const ask = (text: string) => send({ type: 'text', content: JSON.stringify({ ask: { text, final: true, connections: [id] } }), from: 'console' });
+      ask('Looking around.');
+      ask('Found it.');
+      ask('It was here.');
+      await until(() => answers(dir).length === 4, 'the asks');
       expect(answers(dir).slice(1).map((a) => a.asked)).toEqual([
-        null,
         null,
         'the terminal that sent this turn (`connectome send`)',
         'the terminal that sent this turn (`connectome send`)',
       ]);
+    });
+  });
+
+  test("writes a round's prose as inference:prose when the framework asks about it, not when the round ends, and answers for it", async () => {
+    await withChild(async (dir, connect) => {
+      const send = await connect(['inference:speech', 'inference:prose']);
+      send({ type: 'text', content: JSON.stringify({ stream: ['Looking around.', 'Found it.'] }), from: 'console' });
+      await until(() => answers(dir).length === 1, 'the turn');
+      await until(() => send.frames.some((f) => f.type === 'inference:speech'), 'the reply');
+      expect(send.frames.filter((f) => f.type === 'inference:prose')).toEqual([]);
+      const id = answers(dir)[0].tag.connection;
+      send({ type: 'text', content: JSON.stringify({ ask: { text: 'Looking around.', final: false, connections: [id] } }), from: 'console' });
+      await until(() => answers(dir).length === 2, 'the ask');
+      expect(answers(dir)[1].asked).toBe('the terminal that sent this turn (`connectome send`)');
+      await until(() => send.frames.some((f) => f.type === 'inference:prose'), 'the prose frame');
+      expect(send.frames.filter((f) => f.type === 'inference:prose').map((f) => [f.agentName, f.content])).toEqual([['fixture', 'Looking around.']]);
+    });
+  });
+
+  test("writes a round's prose to no client but the one that sent the turn, and to none not subscribed to inference:prose", async () => {
+    await withChild(async (dir, connect) => {
+      const sender = await connect(['inference:speech', 'inference:prose']);
+      sender({ type: 'text', content: JSON.stringify({ stream: 'Hi.' }), from: 'console' });
+      await until(() => answers(dir).length === 1, 'the turn');
+      const senderId = answers(dir)[0].tag.connection;
+      const another = await connect(['inference:speech', 'inference:prose']);
+      another({ type: 'text', content: JSON.stringify({ ask: { text: 'A note.', final: false, connections: [senderId] } }), from: 'console' });
+      await until(() => answers(dir).length === 2, 'the ask for the turn of a client that has left');
+      // Frames on one socket arrive in order: a prose frame written for the ask comes before this reply's.
+      another({ type: 'text', content: JSON.stringify({ stream: 'After the first ask.' }), from: 'console' });
+      await until(() => another.frames.some((f) => f.type === 'inference:speech' && f.content === 'After the first ask.'), 'the first barrier');
+      const speechOnly = await connect(['inference:speech']);
+      speechOnly({ type: 'text', content: JSON.stringify({ stream: 'Hi.' }), from: 'console' });
+      await until(() => answers(dir).length === 4, 'the second turn');
+      const id = answers(dir)[3].tag.connection;
+      speechOnly({ type: 'text', content: JSON.stringify({ ask: { text: 'A note.', final: false, connections: [id] } }), from: 'console' });
+      await until(() => answers(dir).length === 5, 'the ask for an unsubscribed connection');
+      speechOnly({ type: 'text', content: JSON.stringify({ stream: 'After the second ask.' }), from: 'console' });
+      await until(() => speechOnly.frames.some((f) => f.type === 'inference:speech' && f.content === 'After the second ask.'), 'the second barrier');
+      expect(senderId).toMatch(UUID);
+      expect([answers(dir)[1].asked, answers(dir)[4].asked]).toEqual([null, null]);
+      expect([...sender.frames, ...another.frames, ...speechOnly.frames].filter((f) => f.type === 'inference:prose')).toEqual([]);
     });
   });
 
@@ -243,6 +284,101 @@ describe('headless on a real framework', () => {
       child.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });
     }
+  }, 60_000);
+});
+
+describe('headless on a real framework, a turn whose rounds end with tool calls', () => {
+  const TERMINAL = '[delivered] plain speech → sent to the terminal that sent this turn (`connectome send`) · no channel posted it';
+  async function withRounds(mode: 'notes' | 'kept', body: (dir: string) => Promise<void>): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), 'surface-receipts-rounds-'));
+    const child = spawn(process.execPath, [new URL('./mock-headless-framework-child.ts', import.meta.url).pathname], {
+      env: { ...process.env, DATA_DIR: dir, CHILD_MODE: mode }, stdio: 'ignore',
+    });
+    try {
+      await until(() => existsSync(join(dir, 'ipc.sock')), 'the socket');
+      await body(dir);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  async function client(dir: string, events: string[]) {
+    const socket = await connectWhenAccepting(join(dir, 'ipc.sock'));
+    const frames: Array<Record<string, unknown>> = [];
+    let buffered = '';
+    socket.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString('utf8');
+      const lines = buffered.split('\n');
+      buffered = lines.pop()!;
+      for (const line of lines) if (line.trim()) frames.push(JSON.parse(line));
+    });
+    socket.write(`${JSON.stringify({ type: 'subscribe', events })}\n`);
+    const log = () => existsSync(join(dir, 'headless.log')) ? readFileSync(join(dir, 'headless.log'), 'utf8') : '';
+    await until(() => log().includes(`subscription set: ${events.join(', ')}`), 'the host to take the subscription');
+    return { socket, frames, say: (content: string) => socket.write(`${JSON.stringify({ type: 'text', content, from: 'console' })}\n`) };
+  }
+  const receipts = (context: string[]) => context.filter((t) => t.startsWith('[delivered]') || t.startsWith('[send-undeliverable]'));
+
+  // The context the child last wrote, once it has written one after `since`.
+  async function contextAfter(dir: string, since: number): Promise<string[]> {
+    const path = join(dir, 'context.json');
+    await until(() => existsSync(path) && statSync(path).mtimeMs > since, 'a context written after the turn ended', 20_000);
+    return JSON.parse(readFileSync(path, 'utf8'));
+  }
+  const idle = (frames: Array<Record<string, unknown>>) => frames.some((f) => f.type === 'lifecycle' && f.phase === 'idle' && Number(f.texts) >= 1);
+
+  test("each note the framework routes reaches the terminal that sent the turn as inference:prose, a note asked about after the reply's frame included, and the resident is told so", async () => {
+    await withRounds('notes', async (dir) => {
+      const terminal = await client(dir, ['inference:speech', 'inference:prose', 'lifecycle']);
+      try {
+        terminal.say('please');
+        await until(() => existsSync(join(dir, 'holding-first-note')), "the first note's delivery to be held", 20_000);
+        await until(() => terminal.frames.some((f) => f.type === 'inference:speech'), 'the reply', 20_000);
+        writeFileSync(join(dir, 'release-note'), '');
+        await until(() => idle(terminal.frames), 'the turn to end', 20_000);
+        const ended = Date.now();
+        expect(terminal.frames.filter((f) => f.type === 'inference:prose' || f.type === 'inference:speech').map((f) => [f.type, f.content])).toEqual([
+          ['inference:prose', 'First note.'],
+          ['inference:speech', 'The reply.'],
+          ['inference:prose', 'Second note.'],
+        ]);
+        expect(receipts(await contextAfter(dir, ended))).toEqual([TERMINAL]);
+      } finally {
+        terminal.socket.destroy();
+      }
+    });
+  }, 60_000);
+
+  test("connectome send prints each note, a note that came after the reply's frame included, and the reply last", async () => {
+    await withRounds('notes', async (dir) => {
+      const root = join(dir, 'install');
+      mkdirSync(root);
+      writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: dir, extraState: [] }));
+      const out: string[] = [];
+      const sent = send({ root, argv: ['please'], out: (line) => out.push(line), err: () => {} });
+      await until(() => existsSync(join(dir, 'holding-first-note')), "the first note's delivery to be held", 20_000);
+      // The child marks the stream's end in the same trace that has headless write the reply.
+      await until(() => existsSync(join(dir, 'completed')), 'the reply', 20_000);
+      writeFileSync(join(dir, 'release-note'), '');
+      expect(await sent).toBe(0);
+      expect(out).toEqual(['First note.', 'Second note.', 'The reply.']);
+    });
+  }, 60_000);
+
+  test('words a round keeps with skip_reply never reach the terminal, and nothing says they did', async () => {
+    await withRounds('kept', async (dir) => {
+      const terminal = await client(dir, ['inference:speech', 'inference:prose', 'lifecycle']);
+      try {
+        terminal.say('please');
+        await until(() => idle(terminal.frames), 'the turn to end', 20_000);
+        const context = await contextAfter(dir, Date.now());
+        expect(context).toContain('Kept words.');
+        expect(terminal.frames.filter((f) => f.type === 'inference:prose' || f.type === 'inference:speech')).toEqual([]);
+        expect(context.filter((t) => t.includes('sent to the terminal'))).toEqual([]);
+      } finally {
+        terminal.socket.destroy();
+      }
+    });
   }, 60_000);
 });
 

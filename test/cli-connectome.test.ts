@@ -316,8 +316,8 @@ test('send delivers its text and prints what the agent says until it goes quiet'
       reply({ type: 'inference:started', agentName: 'resident' });
       reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
       reply({ type: 'inference:speech', agentName: 'resident', content: said });
-      await printed(child!, said);
     }
+    await printed(child!, 'Hello back.');
     await Bun.sleep(300);
     runningAtIdle = runningNow(child!.pid);
     socket.write(`${JSON.stringify({ type: 'lifecycle', phase: 'idle', texts: 1 })}\n` +
@@ -328,6 +328,76 @@ test('send delivers its text and prints what the agent says until it goes quiet'
   expect(sent).toEqual(['console: hello there']);
   expect(ran.out).toBe('Hello back.\nAnything else?\n');
   expect(runningAtIdle).toBe(true);
+});
+
+test("send prints the agent's notes as they come and holds its reply until the turn's work ends, so the reply prints last", async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  let child: ChildProcess | undefined;
+  await fakeHost(data, async (message, reply) => {
+    if (message.type !== 'text') return;
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note.' });
+    await printed(child!, 'A note.');
+    reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
+    reply({ type: 'inference:speech', agentName: 'resident', content: 'The reply.' });
+    reply({ type: 'inference:started', agentName: 'helper' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note asked about after the reply.' });
+    reply({ type: 'lifecycle', phase: 'turn-work-done', texts: 1 });
+  });
+  const ran = await run(path, ['send', 'hello'], root, (spawned) => { child = spawned; });
+  expect(ran.status).toBe(0);
+  expect(ran.out).toBe('A note.\nA note asked about after the reply.\nThe reply.\n');
+});
+
+test('send whose turn printed notes and no reply, and ended without giving up, exits 0 and says nothing more', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'text') return;
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note.' });
+    reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
+    reply({ type: 'lifecycle', phase: 'turn-work-done', texts: 1 });
+  });
+  const ran = await run(path, ['send', 'hello'], root);
+  expect({ status: ran.status, out: ran.out }).toEqual({ status: 0, out: 'A note.\n' });
+  expect(ran.err).not.toContain('without saying anything here');
+  expect(ran.err).not.toContain('without a reply');
+});
+
+test('send whose turn printed a note and then gave up without a reply says so and exits 1, since a note is never a reply', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'text') return;
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note.' });
+    reply({ type: 'inference:exhausted', agentName: 'resident', error: 'the round after it gave up' });
+    reply({ type: 'lifecycle', phase: 'turn-work-done', texts: 1 });
+  });
+  const ran = await run(path, ['send', 'hello'], root);
+  expect({ status: ran.status, out: ran.out }).toEqual({ status: 1, out: 'A note.\n' });
+  expect(ran.err).toContain("connectome: the agent's turn ended without a reply.");
+});
+
+test("send prints a turn's reply before the next turn's notes when the turn's work brings another turn", async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'text') return;
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
+    reply({ type: 'inference:speech', agentName: 'resident', content: 'One.' });
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note in the next turn.' });
+    reply({ type: 'inference:completed', agentName: 'resident', durationMs: 5 });
+    reply({ type: 'inference:speech', agentName: 'resident', content: 'Two.' });
+    reply({ type: 'lifecycle', phase: 'turn-work-done', texts: 1 });
+  });
+  const ran = await run(path, ['send', 'hello'], root);
+  expect(ran.status).toBe(0);
+  expect(ran.out).toBe('One.\nA note in the next turn.\nTwo.\n');
 });
 
 test('send to a host with no turn work in flight sends at once', async () => {
@@ -429,7 +499,7 @@ test('send follows only the agent ready names: another agent\'s start, failure a
   expect(ran.err).toContain('the agent started no turn for it');
 });
 
-test('send whose turn gives up after its reply printed exits 0', async () => {
+test('send whose turn gives up after its reply came exits 0', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   await fakeHost(data, (message, reply) => {
@@ -802,6 +872,20 @@ test('send with no host answering sends nothing, starts nothing, and says so', a
   expect({ status: empty.status, err: empty.err }).toEqual({ status: 2, err: 'connectome: usage: connectome send <text>\n' });
   expect(existsSync(join(data, 'ipc.sock'))).toBe(false);
   expect(existsSync(join(data, 'headless.pid'))).toBe(false);
+});
+
+test("send whose connection closes after a note and before any reply says its reply wasn't seen, since a note is never a reply", async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  await fakeHost(data, (message, reply, socket) => {
+    if (message.type !== 'text') return;
+    reply({ type: 'inference:started', agentName: 'resident' });
+    reply({ type: 'inference:prose', agentName: 'resident', content: 'A note.' });
+    socket.end();
+  });
+  const ran = await run(path, ['send', 'hello'], root);
+  expect({ status: ran.status, out: ran.out }).toEqual({ status: 1, out: 'A note.\n' });
+  expect(ran.err).toContain("the connection closed before the agent's turn ended, so its reply wasn't seen here.");
 });
 
 test('send whose connection closes before the agent goes quiet says what was and wasn\'t seen', async () => {

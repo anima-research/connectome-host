@@ -7,18 +7,20 @@
   for what reached it: `connectome send` and other headless clients
   subscribed to `inference:speech` for the primary's final reply written to
   them ("the terminal that sent this turn (`connectome send`)", or "… now
-  connected …, not the one that sent this turn"), readline and batch mode
-  ("the terminal this host runs in", or "this host's standard output"), the
-  TUI for its root agent ("the TUI"), and a Web UI page while it is open, for
-  the agent its pages show ("the Web UI page that sent this turn", or "a Web
-  UI page open now, not the one that sent this turn"). A turn with no
-  channel then gets a `[delivered]` receipt naming the surface instead of a
-  `[send-undeliverable]` notice, and a turn whose speech went to a channel
-  names the surface beside the channel; one whose channel post failed names
-  it in its receipt, and the failed post keeps its own notice. Where no
-  surface that opened the turn showed its speech, as for a turn no surface
-  opened, a turn with no channel still gets the notice, which says another
-  surface may have shown it.
+  connected …, not the one that sent this turn"); the client that sent the
+  turn for a round's words written to it as `inference:prose`; readline and
+  batch mode ("the terminal this host runs in", or "this host's standard
+  output"); the TUI for its root agent ("the TUI"); and a Web UI page while
+  it is open, for the agent its pages show ("the Web UI page that sent this
+  turn", or "a Web UI page open now, not the one that sent this turn"). A
+  turn with no channel that writes a receipt then gets a `[delivered]`
+  receipt naming the surface instead of a `[send-undeliverable]` notice (a
+  turn that is stopped writes none), and a turn whose speech went to a
+  channel names the surface beside the channel; one whose channel post
+  failed names it in its receipt, and the failed post keeps its own notice.
+  Where no surface that opened the turn showed its speech, as for a turn no
+  surface opened, a turn with no channel still gets the notice, which says
+  another surface may have shown it.
 - Residents: a text from a fleet parent no longer carries the
   "[host note: this message arrived over IPC …]" paragraph, which said a
   plain-prose reply would not reach the sender: a parent subscribed to

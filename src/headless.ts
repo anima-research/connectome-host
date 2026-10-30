@@ -205,16 +205,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     'command-done',
   ]);
 
-  function emit(event: Record<string, unknown>): void {
+  /** Writes `event` to the connected client, if its subscription takes it,
+   *  and says whether it did. */
+  function emit(event: Record<string, unknown>): boolean {
     // A socket that has ended or errored takes no more writes. It stops being
     // current at its 'end' or 'close', but an error comes a tick before that.
-    if (!currentClient || currentClient.destroyed || currentClient.writableEnded) return;
+    if (!currentClient || currentClient.destroyed || currentClient.writableEnded) return false;
     const type = typeof event.type === 'string' ? event.type : '';
-    if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return;
+    if (!FILTER_EXEMPT.has(type) && !matchesSubscription(type, subscription)) return false;
     try {
       if (!currentClient.write(JSON.stringify({ ...event, ts: Date.now() }) + '\n')) stalling?.();
+      return true;
     } catch (err) {
       log(`emit failed for type=${type}: ${String(err)}`);
+      return false;
     }
   }
 
@@ -297,8 +301,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     } else if (t === 'inference:completed' && agentName === primaryAgentName) {
       if (roundOpen) {
         const client = currentClient;
-        emit({ type: 'inference:speech', agentName, content: currentSpeech });
-        if (currentSpeech && client && !client.destroyed && !client.writableEnded && matchesSubscription('inference:speech', subscription)) {
+        if (emit({ type: 'inference:speech', agentName, content: currentSpeech }) && currentSpeech && client) {
           speechWritten = { text: currentSpeech, client };
         }
       }
@@ -799,10 +802,25 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     const IDLE_CONFIRM_MS = 500;
     let windowArmed = false;
 
+    // The reply after a turn's last tool call is answered from what the
+    // relay wrote at the stream's end. Words of a round that ended with tool
+    // calls are written here, when the framework asks about them, since it
+    // asks only about words it routes as speech: a round that skip_reply or a
+    // private think keeps is never asked about, so never written. They go
+    // only to the client that sent the turn, as `inference:prose`, which is
+    // never a reply.
+    const writeProse = (agentName: string, text: string, connections: string[]): Socket | undefined => {
+      const client = currentClient;
+      const id = client ? connectionIds.get(client) : undefined;
+      if (!client || id === undefined || !connections.includes(id)) return undefined;
+      return emit({ type: 'inference:prose', agentName, content: text }) ? client : undefined;
+    };
     stopAnswering = surfaceAnswers.answerFor('headless', ({ agentName, text, final, connections }) => {
-      if (agentName !== primaryAgentName || !final) return undefined;
+      if (agentName !== primaryAgentName) return undefined;
       const bare = (words: string): string => words.replace(/\s+/g, '');
-      const shown = speechWritten && bare(speechWritten.text).includes(bare(text)) ? speechWritten.client : undefined;
+      const shown = !final
+        ? writeProse(agentName, text, connections)
+        : speechWritten && bare(speechWritten.text).includes(bare(text)) ? speechWritten.client : undefined;
       if (!shown) return undefined;
       const id = connectionIds.get(shown);
       const what = consoleClients.has(shown) ? 'the terminal' : 'the client';

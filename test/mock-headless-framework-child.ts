@@ -1,7 +1,7 @@
 import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentFramework, type Module } from '@animalabs/agent-framework';
-import { Membrane, MockAdapter } from '@animalabs/membrane';
+import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { runHeadless } from '../src/headless.js';
 import type { AppContext } from '../src/index.js';
 import { TuiModule } from '../src/modules/tui-module.js';
@@ -30,19 +30,69 @@ class TakesTexts extends TuiModule {
   }
 }
 
+// The first note's link on the speech chain is held until `release-note`
+// exists, so the notes after it are asked about only once the turn's reply
+// has been written.
+const holdsFirstNote = {
+  name: 'holds-first-note',
+  async start(): Promise<void> {},
+  async stop(): Promise<void> {},
+  getTools: () => [{ name: 'look', description: 'Look.', inputSchema: { type: 'object', properties: {} } }],
+  async handleToolCall() { return { success: true, data: 'seen' }; },
+  async onProcess() { return {}; },
+  async onSpeechRouted(_agentName: string, text: string): Promise<void> {
+    if (text !== 'First note.') return;
+    writeFileSync(join(dir, 'holding-first-note'), '');
+    while (!existsSync(join(dir, 'release-note'))) await new Promise((resolve) => setTimeout(resolve, 10));
+  },
+};
+
+type Block = { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
+const look = (id: string): Block => ({ type: 'tool_use', id, name: 'holds-first-note--look', input: {} });
+// CHILD_MODE=notes: two rounds that end with a tool call, each with a note,
+// then the reply. CHILD_MODE=kept: a round whose words skip_reply keeps.
+const ROUNDS: Record<string, Block[][]> = {
+  notes: [
+    [{ type: 'text', text: 'First note.' }, look('look-1')],
+    [{ type: 'text', text: 'Second note.' }, look('look-2')],
+    [{ type: 'text', text: 'The reply.' }],
+  ],
+  kept: [[{ type: 'text', text: 'Kept words.' }, { type: 'tool_use', id: 'skip-1', name: 'skip_reply', input: {} }]],
+};
+
+class RoundsAdapter extends MockAdapter {
+  private calls = 0;
+  constructor(private readonly rounds: Block[][]) { super(); }
+  override async stream(...[request, callbacks]: Parameters<MockAdapter['stream']>): ReturnType<MockAdapter['stream']> {
+    const blocks = this.rounds[Math.min(this.calls++, this.rounds.length - 1)]!;
+    for (const block of blocks) if (block.type === 'text') callbacks.onChunk(block.text);
+    return {
+      content: [...blocks],
+      stopReason: blocks.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      model: request.model,
+      rawRequest: request,
+      raw: {},
+    } as Awaited<ReturnType<MockAdapter['stream']>>;
+  }
+}
+
 // CHILD_MODE=wake: a turn no surface opens, woken once `wake` exists.
-const wakeMode = process.env.CHILD_MODE === 'wake';
-const adapter = new MockAdapter();
-adapter.queueResponses(wakeMode ? ['Woken reply.'] : ['Reply one.', 'Reply two.']);
+const mode = process.env.CHILD_MODE;
+const wakeMode = mode === 'wake';
+const rounds = mode ? ROUNDS[mode] : undefined;
+const adapter = rounds ? new RoundsAdapter(rounds) : new MockAdapter();
+if (!rounds) adapter.queueResponses(wakeMode ? ['Woken reply.'] : ['Reply one.', 'Reply two.']);
 const framework = await AgentFramework.create({
   storePath: join(dir, 'store.chronicle'),
-  membrane: new Membrane(adapter),
+  membrane: new Membrane(adapter, rounds ? { formatter: new NativeFormatter() } : undefined),
   agents: [{ name: 'resident', model: 'test-model', systemPrompt: 'Resident.', proseRouting: 'locus' }],
-  modules: [new TakesTexts(), holdsTurnOne as unknown as Module],
+  modules: [new TakesTexts(), (rounds ? holdsFirstNote : holdsTurnOne) as unknown as Module],
 });
 let starts = 0;
 framework.onTrace((event) => {
   if (event.type === 'inference:started') writeFileSync(join(dir, 'starts'), String(++starts));
+  if (event.type === 'inference:completed') writeFileSync(join(dir, 'completed'), '');
 });
 await framework.start();
 await (framework as unknown as { initializeMcpl(servers: []): Promise<void> }).initializeMcpl([]);
