@@ -9,8 +9,7 @@ export type IncomingCommand =
   | { type: 'subscribe'; events: string[] }
   /** Inject a user-like message; equivalent to typing in the child's TUI.
    *  `from: 'console'` sends it as a console line, as batch mode's are, for a
-   *  reader at a shell; without it, it comes as the host's IPC line, whose
-   *  note tells the agent a plain-prose reply won't reach the sender. */
+   *  reader at a shell; without it, it comes as the host's IPC line. */
   | { type: 'text'; content: string; from?: 'console' }
   /** Run a slash command in the child's commands.ts handler. With a corrId,
    *  each output line carries it and a `command-done` ends the answer. */

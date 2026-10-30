@@ -59,7 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
-import { TuiModule } from './modules/tui-module.js';
+import { SURFACE_TAG_KEY, TuiModule, readlineAnswer, surfaceAnswers } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -723,6 +723,7 @@ async function runPiped(app: AppContext) {
     if (e.type === 'ops:alert') onAlert?.(e);
   });
   traces.follow(app.framework);
+  surfaceAnswers.answerFor('readline', readlineAnswer(!!process.stdout.isTTY));
   let afterSwitch = (): void => {};
 
   async function processLine(line: string): Promise<boolean> {
@@ -755,7 +756,7 @@ async function runPiped(app: AppContext) {
     } else {
       app.framework.pushEvent({
         type: 'external-message', source: 'cli',
-        content: trimmed, metadata: {}, triggerInference: true,
+        content: trimmed, metadata: { [SURFACE_TAG_KEY]: { surface: 'readline' } }, triggerInference: true,
       });
       await turns.waitForTurn();
     }
