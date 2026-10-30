@@ -14,9 +14,9 @@ describe('rootTurnEnd', () => {
     expect(rootTurnEnd({ type: 'inference:turn_ended' }, true)).toEqual({ status: 'idle', background: 'show' });
   });
 
-  test('a failure shows its error', () => {
+  test("a failed attempt shows its error and leaves the turn going, cutting a backgrounded turn's output back to the attempt's start", () => {
     expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, true)).toEqual({
-      status: 'error', background: 'drop', line: { text: 'Error: overloaded', tone: 'error' },
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
     });
   });
 
@@ -40,12 +40,12 @@ describe('rootTurnEnd', () => {
     });
   });
 
-  test('an end while no turn is showing adds nothing, but a failure', () => {
+  test('an end while no turn is showing adds nothing, but a failed attempt', () => {
     for (const type of STREAM_END_TRACES) {
       if (type !== 'inference:failed') expect(rootTurnEnd({ type, error: 'x' }, false)).toBeNull();
     }
     expect(rootTurnEnd({ type: 'inference:failed', error: 'overloaded' }, false)).toEqual({
-      status: 'error', background: 'drop', line: { text: 'Error: overloaded', tone: 'error' },
+      status: 'attempt-failed', background: 'cut', line: { text: 'Error: overloaded', tone: 'error' },
     });
   });
 
@@ -57,18 +57,34 @@ describe('rootTurnEnd', () => {
 });
 
 describe('rootTurnStep', () => {
-  test('a start shows a turn, and its first end ends it, once', () => {
+  test('a failed attempt leaves the turn showing, and the end that follows ends it, once', () => {
     let step = rootTurnStep(false, { type: 'inference:started' });
     expect(step).toEqual({ showing: true, end: null });
     step = rootTurnStep(step.showing, { type: 'inference:failed', error: 'overloaded' });
-    expect(step.showing).toBe(false);
-    expect(step.end?.line?.text).toBe('Error: overloaded');
+    expect(step.showing).toBe(true);
+    expect(step.end?.status).toBe('attempt-failed');
     step = rootTurnStep(step.showing, { type: 'inference:exhausted', error: 'overloaded' });
+    expect(step.showing).toBe(false);
+    expect(step.end?.status).toBe('error');
+    step = rootTurnStep(step.showing, { type: 'inference:aborted' });
     expect(step).toEqual({ showing: false, end: null });
   });
 
-  test('each of the five ends ends a turn that is showing', () => {
-    for (const type of ['inference:completed', 'inference:turn_ended', 'inference:aborted', 'inference:failed', 'inference:exhausted']) {
+  test('a stop after a failed attempt ends the turn idle', () => {
+    const failed = rootTurnStep(true, { type: 'inference:failed', error: 'held' });
+    expect(rootTurnStep(failed.showing, { type: 'inference:aborted', reason: 'shutdown' }).end).toEqual({
+      status: 'idle', background: 'drop', line: { text: '(turn aborted: shutdown)', tone: 'note' },
+    });
+  });
+
+  test('a failed attempt the TUI saw no start for shows the turn, so its end shows', () => {
+    const failed = rootTurnStep(false, { type: 'inference:failed', error: 'held' });
+    expect(failed.showing).toBe(true);
+    expect(rootTurnStep(failed.showing, { type: 'inference:exhausted', error: 'held' }).end?.status).toBe('error');
+  });
+
+  test('each of the four turn ends ends a turn that is showing', () => {
+    for (const type of ['inference:completed', 'inference:turn_ended', 'inference:aborted', 'inference:exhausted']) {
       const step = rootTurnStep(true, { type, error: 'x' });
       expect(step.showing).toBe(false);
       expect(step.end).not.toBeNull();

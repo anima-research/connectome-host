@@ -131,8 +131,8 @@ export function resolveQuitConfirm(raw: string): QuitConfirmAction {
 
 
 export interface RootTurnEnd {
-  status: 'idle' | 'error';
-  background: 'show' | 'drop';
+  status: 'idle' | 'error' | 'attempt-failed';
+  background: 'show' | 'drop' | 'cut';
   line?: { text: string; tone: 'error' | 'note' };
 }
 export function rootTurnEnd(
@@ -140,14 +140,14 @@ export function rootTurnEnd(
   turnShowing: boolean,
 ): RootTurnEnd | null {
   // agent-framework sends inference:failed only for an attempt it started, so
-  // a failure ends a turn even when the TUI didn't see the turn start.
+  // a failure shows a turn under way even when the TUI didn't see it start.
   if (!turnShowing && event.type !== 'inference:failed') return null;
   switch (event.type) {
     case 'inference:completed':
     case 'inference:turn_ended':
       return { status: 'idle', background: 'show' };
     case 'inference:failed':
-      return { status: 'error', background: 'drop', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
+      return { status: 'attempt-failed', background: 'cut', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
     case 'inference:aborted': {
       const reason = typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : '';
       return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
@@ -251,6 +251,7 @@ export function rootTurnStep(
   event: { type: string; error?: unknown; reason?: unknown },
 ): { showing: boolean; end: RootTurnEnd | null } {
   if (event.type === 'inference:started' || TURN_RUNNING_TRACES.has(event.type)) return { showing: true, end: null };
+  if (event.type === 'inference:failed') return { showing: true, end: rootTurnEnd(event, true) };
   if (!STREAM_END_TRACES.has(event.type)) return { showing, end: null };
   return { showing: false, end: rootTurnEnd(event, showing) };
 }
@@ -379,6 +380,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
   let backgroundBuffer = '';
+  let attemptStart = 0;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -1549,7 +1551,9 @@ export async function runTui(app: AppContext): Promise<void> {
     state.status = end.status;
     state.tool = null;
     state.toolStartedAt = null;
-    if (backgrounded) {
+    if (backgrounded && end.background === 'cut') {
+      backgroundBuffer = backgroundBuffer.slice(0, attemptStart);
+    } else if (backgrounded) {
       if (end.background === 'show') {
         if (backgroundBuffer.trim()) addLine(backgroundBuffer, WHITE);
         addEvent('  (researcher returned from background)', CYAN);
@@ -1572,13 +1576,14 @@ export async function runTui(app: AppContext): Promise<void> {
       rootEnd = step.end;
     }
     const failure = turnFailures.onTrace(event as { type: string; agentName?: unknown });
-    if (agent === rootAgentName && failure && failure.show !== 'ended' && rootEnd?.line) {
+    if (agent === rootAgentName && failure && (failure.show !== 'ended' || !failure.alone) && rootEnd?.line) {
       rootEnd = { status: rootEnd.status, background: rootEnd.background };
     }
 
     switch (event.type) {
       case 'inference:started': {
         if (agent) streamUsage.set(agent, emptyUsage());
+        if (agent === rootAgentName) attemptStart = backgroundBuffer.length;
         if (agent && agent !== rootAgentName) {
           subagentFailureShown.delete(agent);
           const short = shortAgentName(agent);
@@ -1732,6 +1737,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:stream_resumed': {
         if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
           state.status = 'thinking';
           state.tool = null;
           beginStream();

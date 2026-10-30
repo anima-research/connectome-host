@@ -187,6 +187,19 @@ async function play(): Promise<void> {
     await step('ended error');
     await escape();
     await step('ended error, Escape');
+  } else if (scenario === 'background-retry') {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'first round words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    first.send('inference:stream_resumed');
+    first.send('inference:tokens', { content: 'dead attempt words' });
+    first.send('inference:failed', { error: 'overloaded' });
+    await step('failed in background');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'retry words' });
+    first.send('inference:completed');
+    await step('returned');
   } else if (scenario === 'missed-start') {
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await step('no start, then tools');

@@ -81,7 +81,8 @@ describe("the TUI's Escape, through runTui", () => {
 
     expect(times(at('retry wait').frame, 'overloaded')).toBe(1);
     expect(at('retry wait').frame).toContain('Error: overloaded');
-    expect(at('retry wait').frame).toContain('[✗ error Esc:stop]');
+    expect(at('retry wait').frame).toContain('[… attempt-failed');
+    expect(at('retry wait').frame).toContain('Esc:stop]');
     expect(at('retry wait, Escape').aborts).toHaveLength(6);
     expect(times(at('retry wait, Escape').frame, INTERRUPTING)).toBe(2);
     expect(at('retried').aborts).toHaveLength(8);
@@ -113,7 +114,22 @@ describe("the TUI's status line, through runTui", () => {
     expect(at('no start, Escape').frame).toContain('[… tools');
     expect(at('no start, then completed').frame).toContain('[✓ idle]');
     expect(at('no start, then failed').frame).toContain('Error: a turn the TUI never saw start');
-    expect(at('no start, then failed').frame).toContain('[✗ error');
+    expect(at('no start, then failed').frame).toContain('[… attempt-failed');
+  }, 40000);
+
+  test('a backgrounded turn whose attempt fails stays in background, and returns with its earlier rounds and its retry but not the failed attempt', async () => {
+    const steps = await play('background-retry');
+    const failed = steps.get('failed in background');
+    const returned = steps.get('returned');
+    if (!failed || !returned) throw new Error('missing background-retry frames');
+    expect(failed.frame).toContain('[… attempt-failed');
+    expect(failed.frame).toContain('Error: overloaded');
+    expect(failed.frame).not.toContain('returned from background');
+    expect(returned.frame).toContain('returned from background');
+    expect(returned.frame).toContain('first round words');
+    expect(returned.frame).toContain('retry words');
+    expect(returned.frame).not.toContain('dead attempt words');
+    expect(returned.frame).toContain('[✓ idle]');
   }, 40000);
 });
 
@@ -136,7 +152,7 @@ describe("the TUI's session switch, through runTui", () => {
       expect(late.frame).toContain(status);
       const lateFailure = steps.get('late failure')!;
       expect(lateFailure.frame).toContain('Error: a late failure');
-      expect(lateFailure.frame).toContain('[✗ error');
+      expect(lateFailure.frame).toContain('[… attempt-failed');
 
       const after = steps.get('after the switch')!;
       if (scenario === 'switch-fails') expect(after.frame).toContain('Session switch failed');
