@@ -193,6 +193,33 @@ describe('/budget honest display', () => {
     const r = handleCommand('/budget', app);
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
+
+  test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
+    const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
+      name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
+    });
+    const app = {
+      framework: {
+        getAgent: () => undefined,
+        getAllAgents: () => [
+          agent('bound', 'claude-opus-5-5', 1_000_000),
+          agent('unbound', 'claude-opus-4-8', 1_000_000),
+          agent('nowindow', 'claude-opus-5-5'),
+        ],
+        getAllModules: () => [],
+      },
+      branchState: createBranchState(),
+    } as any;
+    const listed = handleCommand('/budget', app).lines.map(l => l.text);
+    expect(listed.find(l => l.startsWith('  bound:'))).toContain("its stream doesn't break at this budget mid-turn: for its size, only before a request its 1.0M window can't hold");
+    for (const name of ['unbound', 'nowindow']) {
+      expect(listed.find(l => l.startsWith(`  ${name}:`))).not.toContain("doesn't break");
+    }
+    const set = handleCommand('/budget 200k', app).lines.map(l => l.text);
+    expect(set[0]).toBe('Stream budget set to 200.0k tokens for all agents.');
+    expect(set[1]).toContain("doesn't break the stream mid-turn for bound, whose thinking binds and whose window is set");
+    expect(set).toHaveLength(2);
+  });
 });
 
 describe('/mcp add preserves env on overwrite', () => {
@@ -224,5 +251,24 @@ describe('/mcp add preserves env on overwrite', () => {
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;
     expect(saved.argtest.command).toBe('ls');
     expect(saved.argtest.args).toBeUndefined();
+  });
+});
+
+describe('/newtopic cut short by a stop', () => {
+  const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        resetHeadWindow: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
+        : `Topic reset failed: ${CROSSED}`);
+    }
   });
 });

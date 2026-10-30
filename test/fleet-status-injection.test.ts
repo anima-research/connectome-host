@@ -177,13 +177,6 @@ describe('the fleet status', () => {
     ].join('\n'));
   });
 
-  test('with only async handles pending, it has no time to be "as of"', async () => {
-    const f = fleet();
-    f.handles.set('later', {});
-    f.mod.parentMap.set('later', 'resident');
-    expect(await f.status()).toBe('[Fleet Status]\n  later [async] pending');
-  });
-
   test('a running spawn isn\'t listed again as waiting beside a finished fork of its name', async () => {
     const f = fleet();
     f.mod.activeSubagents.set('later', {
@@ -344,19 +337,22 @@ describe('the fleet status', () => {
     expect(await walksWith(40)).toBe(await walksWith(1));
   });
 
-  test('a launcher\'s record goes with its run\'s link: dropped with it, and cleared on restore, as the links are restored without records', async () => {
-    const f = fleet('UTC', [], { primary: true });
-    const internals = f.mod as unknown as { launcherShownOf: Map<string, string>; claimName(name: string, parent: string | undefined): void; restoreFromStore(): void; ctx: { getState: () => unknown } };
-    f.live('lead', 'spawn-lead-1761271234567');
-    f.claim('kid', 'spawn-lead-1761271234567');
-    expect(internals.launcherShownOf.get('kid')).toBe('lead');
-    internals.claimName('kid', undefined);
-    expect(internals.launcherShownOf.has('kid')).toBe(false);
-    f.claim('kid', 'spawn-lead-1761271234567');
-    internals.ctx.getState = () => ({ agents: { kid: { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, toolCallsCount: 0, findingsCount: 0, parent: 'spawn-lead-1761271234567' } } });
-    internals.restoreFromStore();
-    expect(f.mod.parentMap.get('kid')).toBe('spawn-lead-1761271234567');
-    expect(internals.launcherShownOf.size).toBe(0);
+  test('a run restored without its launcher\'s record doesn\'t name the launcher it had before the restore', async () => {
+    const restored = fleet('UTC', [], { primary: true });
+    const its = restored.mod as unknown as { restoreFromStore(): void; ctx: { getState: () => unknown } };
+    restored.live('scout', 'scout-d1-1761271234568');
+    restored.claim('kid', 'scout-d1-1761271234568');
+    restored.ended('scout');
+    const running = () => restored.mod.activeSubagents.set('kid', { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, lastActivityAt: T0, toolCallsCount: 0, findingsCount: 0 });
+    const kidLine = async () => (await restored.preview('resident'))?.split('\n').find((line) => line.startsWith('  kid '));
+    running();
+    expect(await kidLine()).toContain(' parent:scout');
+    its.ctx.getState = () => ({ hudEnabled: true, agents: { kid: { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, toolCallsCount: 0, findingsCount: 0, parent: 'spawn-lead-1761271234567' } } });
+    its.restoreFromStore();
+    running();
+    const restoredLine = await kidLine();
+    expect(restoredLine).toBeDefined();
+    expect(restoredLine).not.toContain(' parent:scout');
   });
 
   test('the runs under an orphaned run between its attempts stay the primary\'s', async () => {

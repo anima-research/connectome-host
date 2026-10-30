@@ -58,7 +58,7 @@ afterEach(async () => {
 
 function startHost(
   dir: string, index: string, root: string | null, modules: Record<string, unknown> = {}, recipeFields: Record<string, unknown> = {},
-  kid = false, more: Record<string, string> = {},
+  kid = false, more: Record<string, string> = {}, preloads: string[] = [],
 ): { host: ChildProcess; stderr: () => string; stdout: () => string; exit: Promise<number | null> } {
   const recipe = kid ? join(dir, 'kid.json') : join(dir, 'recipe.json');
   if (!kid) writeFileSync(recipe, JSON.stringify({ ...RECIPE, ...recipeFields, modules: { ...RECIPE.modules, ...modules } }));
@@ -68,7 +68,7 @@ function startHost(
   if (root !== null) env.CONNECTOME_INSTALL_ROOT = root;
   else delete env.CONNECTOME_INSTALL_ROOT;
   delete env.NO_UPDATE_NOTIFIER;
-  const host = spawn('bun', [index, recipe, '--headless'], {
+  const host = spawn('bun', [...preloads.flatMap((preload) => ['--preload', preload]), index, recipe, '--headless'], {
     cwd: dir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -89,6 +89,33 @@ async function until(check: () => boolean, ms: number, label: string): Promise<v
     if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
     await Bun.sleep(25);
   }
+}
+
+function lineAfter(text: string, start: string): string {
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.startsWith(start));
+  expect(at).toBeGreaterThanOrEqual(0);
+  return lines[at + 1] ?? '';
+}
+
+function workingServer(dir: string): string {
+  const server = join(dir, 'working-mcpl.mjs');
+  writeFileSync(server, [
+    "import { createInterface } from 'node:readline';",
+    "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
+    "createInterface({ input: process.stdin }).on('line', (line) => {",
+    '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+    '  if (msg.id === undefined || msg.method === undefined) return;',
+    "  if (msg.method === 'initialize') {",
+    "    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'working', version: '0.0.0' } } });",
+    "  } else if (msg.method === 'tools/list') {",
+    "    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });",
+    '  } else {',
+    "    send({ jsonrpc: '2.0', id: msg.id, result: {} });",
+    '  }',
+    '});',
+  ].join('\n'));
+  return server;
 }
 
 function install(): { dir: string; root: string; index: string; fleet: Record<string, unknown> } {
@@ -210,26 +237,11 @@ describe('a host started from an install', () => {
   test('a trial whose MCPL server connects commits, so a working server reads as connected when the commit runs', async () => {
     const { dir, root, index } = install();
     onTrial(dir, root);
-    const server = join(dir, 'working-mcpl.mjs');
-    writeFileSync(server, [
-      "import { createInterface } from 'node:readline';",
-      "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
-      "createInterface({ input: process.stdin }).on('line', (line) => {",
-      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
-      '  if (msg.id === undefined || msg.method === undefined) return;',
-      "  if (msg.method === 'initialize') {",
-      "    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'working', version: '0.0.0' } } });",
-      "  } else if (msg.method === 'tools/list') {",
-      "    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });",
-      '  } else {',
-      "    send({ jsonrpc: '2.0', id: msg.id, result: {} });",
-      '  }',
-      '});',
-    ].join('\n'));
+    const server = workingServer(dir);
     const { host, stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { working: { command: process.execPath, args: [server] } } });
     await until(() => readJournal(root).some(({ step }) => step === 'commit'), 30_000, `the trial commits (stderr: ${stderr().slice(-1500)})`);
     expect(readCurrent(root)).toBe('9.9.9');
-    expect(stderr()).not.toContain("couldn't connect the MCPL server");
+    expect(stderr()).not.toContain("wasn't connected when this release went to commit");
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start', 'commit']);
     // process.exit runs 'exit' listeners, and a signal nothing handles runs none,
     // so the SIGTERM waits until the host's handlers are on.
@@ -246,15 +258,43 @@ describe('a host started from an install', () => {
     const server = join(dir, 'no-such-server');
     const { stderr, exit } = startHost(dir, index, root, {}, { mcpServers: { lost: { command: server } } });
     expect(await exit).toBe(1);
-    expect(stderr()).toContain("This release couldn't connect the MCPL server lost, so it starts none of its agents, and the next start goes back to 9.9.8: ");
+    expect(stderr()).toContain("The MCPL server lost wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 9.9.8: ");
     expect(readCurrent(root)).toBe('9.9.8');
     expect(readJournal(root).map(({ step }) => step)).toEqual(['trial-start']);
     const log = readRecord<TrialLog>(installPaths(root).trialLog, 'trial log');
     expect(log).toMatchObject({ v: 1, release: '9.9.9', mark: 'm-1' });
     expect(log!.lines.length).toBeGreaterThan(0);
     expect(log!.lines.length).toBeLessThanOrEqual(TRIAL_LOG_LINES);
-    expect(log!.lines.some((line) => line.startsWith("Fatal error: Error: This release couldn't connect the MCPL server lost"))).toBe(true);
+    expect(log!.lines.some((line) => line.startsWith("The MCPL server lost wasn't connected when this release went to commit"))).toBe(true);
+    expect(log!.lines.filter((line) => line.startsWith('Fatal error') || /^\s+at /.test(line))).toEqual([]);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), "The MCPL server lost wasn't connected")).not.toMatch(/^\s+at /);
     expect(statSync(installPaths(root).trialLog).mode & 0o777).toBe(0o600);
+  }, 60_000);
+
+  test("a trial commits with a server the release before hadn't connected either when it stopped, and says so", async () => {
+    const { dir, root, index } = install();
+    onTrial(dir, root);
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm-1', to: '9.9.9', why: 'update', at: new Date().toISOString(), connected: [] });
+    const { host, stderr, stdout, exit } = startHost(dir, index, root, {}, { mcpServers: { lost: { command: join(dir, 'no-such-server') } } });
+    await until(() => readJournal(root).some(({ step }) => step === 'commit'), 30_000, `the trial commits (stderr: ${stderr().slice(-1500)})`);
+    expect(readCurrent(root)).toBe('9.9.9');
+    const passed = "[update] The MCPL server lost isn't connected, and 9.9.8 hadn't connected it when it stopped either, so it doesn't hold this release's commit.";
+    await until(() => stdout().includes(passed), 30_000, `the start names the server that didn't hold it (stdout: ${stdout().slice(-1500)})`);
+    const log = join(dir, 'data', 'headless.log');
+    await until(() => existsSync(log) && readFileSync(log, 'utf-8').includes('socket listening at'), 30_000, 'headless listens');
+    host.kill('SIGTERM');
+    expect(await exit).toBe(0);
+  }, 60_000);
+
+  test('an install with no current stops the start with a plain line too', async () => {
+    const { dir, root, index } = install();
+    rmSync(installPaths(root).current);
+    const { stderr, exit } = startHost(dir, index, root);
+    expect(await exit).toBe(1);
+    expect(stderr()).toContain(`The install at ${root} has no \`current\` to say which release it runs on, so this host starts none of its agents. Run setup again.`);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), `The install at ${root} has no`)).not.toMatch(/^\s+at /);
   }, 60_000);
 
   test('a host started on its own keeps no children file, though its fleet starts a child', async () => {
@@ -269,7 +309,7 @@ describe('a host started from an install', () => {
     expect(existsSync(childrenFilePath(join(dir, 'data')))).toBe(false);
   }, 60_000);
 
-  test('a root none of whose releases holds it is refused before anything is written', async () => {
+  test('a root none of whose releases holds it is refused with a plain line before anything is written', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'update-commit-e2e-'));
     dirs.push(dir);
     const root = join(dir, 'install');
@@ -278,6 +318,8 @@ describe('a host started from an install', () => {
     const { stderr, exit } = startHost(dir, join(REPO_ROOT, 'src', 'index.ts'), root);
     expect(await exit).toBe(1);
     expect(stderr()).toContain(`CONNECTOME_INSTALL_ROOT names the install at ${root}, but none of its releases holds this host`);
+    expect(stderr()).not.toContain('Fatal error');
+    expect(lineAfter(stderr(), 'CONNECTOME_INSTALL_ROOT names the install at')).not.toMatch(/^\s+at /);
     expect(existsSync(join(dir, 'data'))).toBe(false);
     expect(readCurrent(root)).toBeNull();
   }, 30_000);
@@ -372,7 +414,7 @@ describe("a host's update, on a real start", () => {
     }
   }, 60_000);
 
-  test('/update restart quiesces a headless host, writes the mark and exits 75, for the next start to switch', async () => {
+  test('/update restart quiesces a headless host, writes the mark with the MCPL servers it had connected, and exits 75, for the next start to switch', async () => {
     const { dir, root, index } = install();
     moveCurrent(root, '9.9.9');
     const placed = join(root, 'releases', '9.9.10', 'node_modules', '@animalabs', 'connectome-host');
@@ -380,14 +422,15 @@ describe("a host's update, on a real start", () => {
     writeFileSync(join(placed, 'package.json'), JSON.stringify({ version: '9.9.10' }));
     writeFileSync(join(placed, 'src', 'index.ts'), '');
     writeFileSync(join(placed, 'src', 'update', 'launcher.ts'), '');
-    const { stderr, exit } = startHost(dir, index, root);
+    const servers = { working: { command: process.execPath, args: [workingServer(dir)] }, lost: { command: join(dir, 'no-such-server') } };
+    const { stderr, exit } = startHost(dir, index, root, {}, { mcpServers: servers });
     const socketPath = join(dir, 'data', 'ipc.sock');
     await until(() => existsSync(socketPath), 20_000, `the host serves its socket (stderr: ${stderr().slice(-1500)})`);
     const socket = await connectWhenAccepting(socketPath);
     socket.write(JSON.stringify({ type: 'command', command: '/update restart' }) + '\n');
     expect(await exit).toBe(75);
     socket.destroy();
-    expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update' });
+    expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update', connected: ['working'] });
     expect(hostModeRecord(join(dir, 'data'))).toMatchObject({ quiesced: true, reason: switchQuiesceReason('9.9.10') });
     expect(readCurrent(root)).toBe('9.9.9');
   }, 60_000);
@@ -400,7 +443,9 @@ describe("a host's update, on a real start", () => {
     writeFileSync(join(placed, 'package.json'), JSON.stringify({ version: '9.9.10' }));
     writeFileSync(join(placed, 'src', 'index.ts'), '');
     writeFileSync(join(placed, 'src', 'update', 'launcher.ts'), '');
-    const { stderr, stdout, exit } = startHost(dir, index, root, { webui: { host: '127.0.0.1', port: 0 } });
+    const { stderr, stdout, exit } = startHost(
+      dir, index, root, { webui: { host: '127.0.0.1', port: 0 } }, {}, false, {}, [join(REPO_ROOT, 'test', 'held-socket-listen.ts')],
+    );
     const listening = /\[webui\] listening on http:\/\/127\.0\.0\.1:(\d+)/;
     await until(() => listening.test(stdout()), 30_000, `the host says where its Web UI listens (stderr: ${stderr().slice(-1500)})`);
     const port = Number(listening.exec(stdout())![1]);
@@ -413,15 +458,16 @@ describe("a host's update, on a real start", () => {
     page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.11' }));
     const refusal = 'The release installed to restart onto is now 9.9.10, not 9.9.11, so nothing is restarting. Look at what ' +
       '9.9.10 costs, then ask again.';
-    await until(() => frames.some((frame) => frame.lines?.some((line) => line.text === refusal)), 15_000, 'the refusal');
+    const answers = () => frames.filter((frame) => frame.type === 'command-result').flatMap((frame) => frame.lines!.map((l) => l.text));
+    await until(() => answers().length >= 2, 15_000, "the answer to the page's first restart");
+    expect(answers()).toEqual(['Restarting unless refused: turns in progress get up to 2 min to end…', refusal]);
     expect(closed).toBe(false);
     page.send(JSON.stringify({ type: 'command', command: '/update restart 9.9.10' }));
     expect(await exit).toBe(75);
     // The page's socket closes when the host's process exits, so no frame comes
     // after the close.
     await until(() => closed, 5_000, 'the page sees its connection close');
-    const answers = frames.filter((frame) => frame.type === 'command-result').flatMap((frame) => frame.lines!.map((l) => l.text));
-    expect(answers).toEqual([
+    expect(answers()).toEqual([
       'Restarting unless refused: turns in progress get up to 2 min to end…',
       refusal,
       'Restarting unless refused: turns in progress get up to 2 min to end…',

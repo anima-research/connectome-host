@@ -1026,6 +1026,7 @@ describe('RetrievalModule keyed on the turn\'s opening message', () => {
     ['a tool round', h => h.toolRound(1)],
     ['another agent\'s tool call', h => h.add('bob', [{ type: 'tool_use', id: 'tb', name: 'look', input: {} }])],
     ['a host note under participant system', h => h.say('system', '[subscription-gc] Auto-closed channel zulip:qa: it emitted too much')],
+    ['a tune-out\'s report to the subconscious', h => h.say('user', '[Tune-out cancelled: #ops — duration elapsed.]', { system: true, kind: 'tune-out-cancel-report', channelId: 'ops' })],
   ];
   for (const [kind, store] of passedOver) {
     test(`${kind} isn't the opening message: the block stands, and the heading doesn't quote it`, async () => {
@@ -1049,6 +1050,8 @@ describe('RetrievalModule keyed on the turn\'s opening message', () => {
     ['the session\'s start time', h => h.say('user', 'The local time at the start of this session is 20:00.'), 'The local time at the start of this session is 20:00.'],
     ['a self-restart\'s note', h => h.say('user', 'Back after a restart: the memory detail was saved.'), 'Back after a restart: the memory detail was saved.'],
     ['a script\'s wake', h => h.say('user', 'script: the memory detail is in the vault', { source: 'code-execution-script', scriptId: 's1', tags: ['script:wake'] }), 'script: the memory detail is in the vault'],
+    ['a tune-out\'s release of what it held', h => h.say('user', '[Tune-out: #ops cancelled — duration elapsed, 0 wakes]\n\n<tuned-out-backlog channel="#ops" messages=1>\nbob: the memory detail is in ops\n</tuned-out-backlog>', { system: true, kind: 'tune-out-cancel', channelId: 'ops', epochId: 'e1' }), '[Tune-out: #ops cancelled — duration elapsed, 0 wakes] <tune…'],
+    ['a tune-out\'s release of every channel but one', h => h.say('user', '[Tune-out: all channels except #ops released — duration elapsed, 0 wakes]\n\nThe memory detail came up in #general.', { system: true, kind: 'tune-out-cancel', scope: 'all-except', channelId: 'ops', epochId: 'e2' }), '[Tune-out: all channels except #ops released — duration elap…'],
   ];
   for (const [kind, store, quoted] of opening) {
     test(`${kind} opens a turn of its own: retrieval runs for it`, async () => {
@@ -1058,6 +1061,7 @@ describe('RetrievalModule keyed on the turn\'s opening message', () => {
       store(h);
       const next = await h.mod.gatherContext(AGENT);
       expect(h.calls).toHaveLength(2);
+      expect(JSON.stringify(h.calls[1].messages)).toContain(quoted.slice(0, 20));
       expect(h.block(next)).toStartWith(`## Retrieved Knowledge, for the message beginning "${quoted}"\n`);
     });
   }

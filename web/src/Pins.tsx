@@ -12,6 +12,7 @@ export interface PinRow {
 }
 
 export interface PinsState {
+  sessionId?: string;
   agent: string;
   pins: PinRow[];
   pinsSupported: boolean;

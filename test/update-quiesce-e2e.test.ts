@@ -11,13 +11,13 @@ import { hostModeRecord } from './host-mode-record.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// agent-framework's quiesce waits at least a second, so the reply below, 60
-// characters 150 ms apart, outlasts the first quiesce's wait.
+// agent-framework's quiesce waits at least a second, so the first reply below,
+// 60 characters 150 ms apart, outlasts the first quiesce's wait.
 const RECIPE = {
   name: 'Switch quiesce child',
   agent: {
     name: 'kid', provider: 'mock', systemPrompt: 'answers with the mock reply',
-    mock: { echoMode: false, defaultResponse: 'a'.repeat(60), streamChunkSize: 1, streamChunkDelayMs: 150 },
+    mock: { echoMode: false, responseQueue: ['a'.repeat(60)], defaultResponse: 'b', streamChunkSize: 1, streamChunkDelayMs: 150 },
   },
   modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
 };

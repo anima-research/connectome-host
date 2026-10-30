@@ -16,7 +16,7 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
-import { execFile, spawn as spawnProcess, type ChildProcess } from 'node:child_process';
+import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { connect as netConnect, type Socket } from 'node:net';
 import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync, constants, mkdirSync, unlinkSync, openSync, closeSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
@@ -26,11 +26,13 @@ import type { SwitchRequest } from '../update/quiesce.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import { REDUCER_REQUIRED_EVENTS } from '../state/agent-tree-reducer.js';
 import { parseCommand } from '../command-name.js';
-import { AGENT_OVERLAY_FILE_ENV, AGENT_OVERLAY_FILE_NAME, CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../mcpl-config.js';
+import { AGENT_OVERLAY_FILE_ENV, AGENT_OVERLAY_FILE_NAME } from '../mcpl-config.js';
+import { CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../child-agent-overlay.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, isChildEntry, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
 import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
+import { socketRefusesConnection } from './fleet-socket-probe.js';
 
 const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated'];
 export const CLOCK_SLACK_MS = 60_000;
@@ -699,21 +701,7 @@ export class FleetModule implements Module {
     return [...this.children.values()].filter((c) => c.name !== name && c.dataDir === dataDir && this.mayBeRunning(c));
   }
 
-  /** Bun 1.3 reports ENOENT for Unix refusals; 1.4 also maps EMFILE to
-   *  ECONNREFUSED. The already-required Node runtime preserves the
-   *  actual error. */
-  private socketRefusesConnection(socketPath: string): Promise<boolean> {
-    const probe = `const {connect}=require('node:net');
-      const socket=connect(process.argv[1]);
-      socket.once('connect',()=>{socket.destroy();process.exitCode=1;});
-      socket.once('error',error=>{socket.destroy();process.exitCode=error.code==='ECONNREFUSED'?0:1;});`;
-    return new Promise((resolve) => {
-      execFile('node', ['--input-type=commonjs', '-e', probe, socketPath], {
-        env: { PATH: process.env.PATH ?? '' }, timeout: 3_000,
-        killSignal: 'SIGKILL', maxBuffer: 1_024,
-      }, error => resolve(error === null));
-    });
-  }
+  private socketRefusesConnection = socketRefusesConnection;
 
   private async cleanupStaleChildFiles(child: FleetChild): Promise<void> {
     const { name, pid, dataDir, socketPath, startedAt, recipePath } = child;
@@ -2018,7 +2006,7 @@ export class FleetModule implements Module {
 
   private recordEvent(child: FleetChild, event: WireEvent): void {
     child.lastEventAt = Date.now();
-    if (event.type === 'inference:started') {
+    if (event.type === 'inference:started' && (event as { replay?: unknown }).replay !== true) {
       child.idleSinceWork = false;
     } else if (event.type === 'lifecycle') {
       const { phase, idle, texts } = event as { phase?: string; idle?: unknown; texts?: unknown };

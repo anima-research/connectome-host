@@ -7,10 +7,14 @@
 export type IncomingCommand =
   /** Set which event types the child emits.  Supports glob: ["tool:*", "lifecycle"]. */
   | { type: 'subscribe'; events: string[] }
-  /** Inject a user-like message; equivalent to typing in the child's TUI. */
-  | { type: 'text'; content: string }
-  /** Run a slash command in the child's commands.ts handler. */
-  | { type: 'command'; command: string }
+  /** Inject a user-like message; equivalent to typing in the child's TUI.
+   *  `from: 'console'` sends it as a console line, as batch mode's are, for a
+   *  reader at a shell; without it, it comes as the host's IPC line, whose
+   *  note tells the agent a plain-prose reply won't reach the sender. */
+  | { type: 'text'; content: string; from?: 'console' }
+  /** Run a slash command in the child's commands.ts handler. With a corrId,
+   *  each output line carries it and a `command-done` ends the answer. */
+  | { type: 'command'; command: string; corrId?: string }
   /** Shut down; `graceful: false` changes only the reason `lifecycle:exiting` gives. */
   | { type: 'shutdown'; graceful?: boolean }
   /** Request a state snapshot. The child responds with a single 'snapshot'
@@ -45,7 +49,8 @@ export type IncomingCommand =
 
 /** Lifecycle events added by the headless runtime (not framework TraceEvents). */
 export type LifecycleEvent =
-  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; idle?: boolean; ts?: number }
+  | { type: 'lifecycle'; phase: 'ready'; pid: number; dataDir: string; recipe?: string; idle?: boolean; turnWork?: boolean; agent?: string; ts?: number }
+  | { type: 'lifecycle'; phase: 'turn-work-done'; texts?: number; ts?: number }
   | { type: 'lifecycle'; phase: 'idle'; texts?: number; ts?: number }
   | { type: 'lifecycle'; phase: 'exiting'; reason: string; ts?: number };
 
@@ -54,6 +59,19 @@ export interface CommandOutputEvent {
   type: 'command-output';
   text: string;
   style: string | null;
+  corrId?: string;
+  ts?: number;
+}
+
+/** The end of the answer to a `command` that carried a corrId, with the
+ *  error when the command threw, and `refused` when `/update` answered
+ *  that it didn't do what was asked; its lines say why. No other command
+ *  sets it. */
+export interface CommandDoneEvent {
+  type: 'command-done';
+  corrId: string;
+  error?: string;
+  refused?: true;
   ts?: number;
 }
 
@@ -183,6 +201,7 @@ export interface WorkspaceFileSnapshotEvent {
 export type WireEvent =
   | LifecycleEvent
   | CommandOutputEvent
+  | CommandDoneEvent
   | SnapshotEvent
   | LessonsSnapshotEvent
   | WorkspaceMountsSnapshotEvent

@@ -15,7 +15,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
 }
 
 for (const mode of ['same-client', 'replacement', 'disconnect-and-reconnect'] as const) {
-  test(`pending command result belongs to its caller: ${mode}`, async () => {
+  test(`a pending request's answer reaches only the client that asked: ${mode}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'headless-command-owner-'));
     const sockets: Socket[] = [];
     const child = spawn(process.execPath, [new URL('./mock-headless-command-child.ts', import.meta.url).pathname], {
@@ -39,34 +39,33 @@ for (const mode of ['same-client', 'replacement', 'disconnect-and-reconnect'] as
       });
       await until(() => events.some(event => event.type === 'lifecycle' && event.phase === 'ready'), 'ready');
       const send = (command: object) => socket.write(JSON.stringify(command) + '\n');
-      const hasReply = (text: string) => events.some(event => event.type === 'command-output' && String(event.text).includes(text));
+      const answered = (corrId: string) => events.some(event => event.corrId === corrId);
       send({ type: 'subscribe', events: [] });
-      return { socket, events, send, hasReply };
+      return { socket, events, send, answered };
     };
     try {
       await until(() => existsSync(join(dir, 'ipc.sock')), 'socket');
       const first = await open();
-      const release = join(dir, 'release');
-      const done = join(dir, 'done');
-      first.send({ type: 'command', command: `/puppet delayed ${JSON.stringify({ release, done, result: 'ORIGINAL-CALLER-RESULT' })}` });
-      await until(() => first.hasReply('puppet: executing delayed'), 'command started');
+      first.send({ type: 'request-workspace-tree', corrId: 'pending', mount: '/m' });
+      await until(() => existsSync(join(dir, 'started')), 'request started');
 
       let active = first;
       if (mode !== 'same-client') {
         if (mode === 'disconnect-and-reconnect') first.socket.destroy();
         active = await open();
-        active.send({ type: 'command', command: '/replacement-ready' });
-        await until(() => active.hasReply('/replacement-ready'), 'replacement subscribed');
+        active.send({ type: 'describe', corrId: 'replacement-ready' });
+        await until(() => active.answered('replacement-ready'), 'replacement subscribed');
       }
-      writeFileSync(release, 'go');
-      await until(() => existsSync(done), 'pending command settled');
-      active.send({ type: 'command', command: '/after-result-barrier' });
-      await until(() => active.hasReply('/after-result-barrier'), 'ordered reply after result');
-      expect(active.hasReply('ORIGINAL-CALLER-RESULT')).toBe(mode === 'same-client');
+      writeFileSync(join(dir, 'release'), 'go');
+      await until(() => existsSync(join(dir, 'done')), 'pending request settled');
+      active.send({ type: 'describe', corrId: 'barrier' });
+      await until(() => active.answered('barrier'), 'ordered reply after result');
+      const carriesResult = (event: Record<string, unknown>) => JSON.stringify(event).includes('ORIGINAL-CALLER-RESULT');
+      if (mode === 'same-client') expect(active.events.some(event => event.corrId === 'pending' && carriesResult(event))).toBe(true);
+      else expect(active.events.some(carriesResult)).toBe(false);
       const log = () => readFileSync(join(dir, 'headless.log'), 'utf8');
-      const droppedReply = 'reply dropped: command-output, requester superseded/closed';
+      const droppedReply = 'reply dropped: workspace-tree-snapshot, requester superseded/closed';
       if (mode !== 'same-client') {
-        expect(active.events.some(event => event.type === 'command-output' && String(event.text).includes('puppet fixture: delayed'))).toBe(false);
         await until(() => log().includes(droppedReply), 'dropped-reply diagnostic');
         expect(log()).not.toContain('ORIGINAL-CALLER-RESULT');
       } else {

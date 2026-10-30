@@ -33,6 +33,10 @@ configured**: any recipe that enables webui must supply credentials, so
 is no unauthenticated escape hatch — even behind a reverse proxy, app-level
 Basic-Auth is required. Set `host: "127.0.0.1"` (or `::1` / `localhost`) to
 bind loopback-only for local development, which skips the auth requirement.
+Without `basicAuth`, such a bind answers only a request whose `Host` names
+loopback (`127.0.0.1`, `localhost` or `[::1]`, with or without a port), and
+refuses a request under any other name with a 403, so a page under another
+name that resolves to `127.0.0.1` is refused.
 
 Other keys in the `webui` block:
 
@@ -41,11 +45,22 @@ Other keys in the `webui` block:
   runtime by a same-origin rule: an upgrade whose `Origin` host equals the
   request's `Host` header is accepted, as is one with no `Origin` (non-browser
   clients). Behind a proxy that forwards `Host` unchanged (Caddy's
-  `reverse_proxy` does) you need nothing; set it — e.g.
-  `["https://admin.example.internal"]` — only if the proxy rewrites `Host`.
-  `[]` disables the check.
-- `observersSurface` — where the agent's observer-grant tools appear:
-  `"tools"` (default) or `"utilities"` (behind the `utils` meta-tool).
+  `reverse_proxy` does), with the `basicAuth` a proxy needs, you need
+  nothing; set it — e.g. `["https://admin.example.internal"]` — only if
+  the proxy rewrites `Host`.
+  With `basicAuth`, each entry is an `http` or `https` URL; without it, an
+  `http` or `https` URL on `127.0.0.1`, `localhost` or `[::1]`, any port. The
+  module refuses at start an empty list, a value that isn't a list (a null
+  one reads as absent) and an entry that isn't such a URL. Beyond that it
+  doesn't check how an entry is written, so write each entry as a browser
+  sends its `Origin`: scheme, host and any port that isn't the scheme's
+  default, with no path or trailing slash, since the upgrade compares them
+  exactly.
+- `observersSurface` — no longer read: from agent-framework 0.29.0 the
+  agent's observer-grant tools live in the built-in `settings` toolset
+  (`toolsets--open {"toolset": "settings"}`), or in the tool list of an agent
+  whose `allowedTools` doesn't permit both `toolsets--open` and
+  `toolsets--act`. Still accepted, with a startup line, so older recipes load.
 
 Front the module with a reverse proxy (Caddy/nginx) to terminate TLS; the
 proxy handles transport security while Basic-Auth gates the app layer.
@@ -80,7 +95,9 @@ The module accepts three credentials:
   not send cached Basic credentials on WebSocket upgrades.
 - **Observer device keys** — Ed25519 grants in `$OBSERVERS_FILE` (default
   `DATA_DIR/observers.json`, hot-reloaded; the agent edits it with its
-  `observers--get/grant/revoke` tools). A grant the viewer can't use, such as
+  `observers--get/grant/revoke` tools, in its built-in `settings` toolset, or
+  in its tool list if its `allowedTools` doesn't permit both `toolsets--open`
+  and `toolsets--act`). A grant the viewer can't use, such as
   one with an unknown scope or an expiry that isn't a date, is left out and
   named in its log, and the file's other grants still apply; a file that isn't
   valid JSON leaves a running viewer's previous grants in force until it
@@ -317,9 +334,28 @@ with that pattern.
 - **`refuses to bind ... without auth`**: the default bind is `0.0.0.0`,
   which requires `basicAuth`. Either add credentials, or switch `host` to
   `127.0.0.1` for a loopback-only (local-dev) bind.
-- **`/ws` upgrade gets 403 behind a proxy**: the Origin check rejected it.
-  Forward the original `Host` header, or list the public origin in
-  `allowedOrigins`.
+- **`refuses allowedOrigins: [] without basicAuth`**, or **`refuses the
+  allowedOrigins entry "…" without basicAuth`**, or the same for a value
+  that isn't a list: the host stops at start. Without `basicAuth`, each
+  entry is an `http` or `https` URL on a loopback name. Set `basicAuth` and
+  make `allowedOrigins` a non-empty list of `http` or `https` origins, or
+  remove `allowedOrigins` so the upgrade checks Origin against the default
+  list again.
+- **`refuses allowedOrigins: [] with basicAuth`**, or the same for an entry
+  or a value that isn't a list: the host stops at start. With `basicAuth`,
+  `allowedOrigins` is a non-empty list of `http` or `https` URLs. List
+  the origins to accept, or remove `allowedOrigins` so the upgrade checks
+  Origin against the default list.
+- **`refuses basicAuth whose username or password is empty, missing or not a
+  string`**: the host stops at start. Set both; a `${VAR}` that `.env` sets
+  to nothing gives an empty value.
+- **403 "without basicAuth this Web UI answers only loopback's own names"**:
+  a loopback bind without `basicAuth` was reached under another name, as
+  through a proxy, or by an HTTP/1.0 client that sent no `Host`. Set
+  `basicAuth`.
+- **`/ws` upgrade gets 403 behind a proxy**, with `basicAuth` set: the
+  Origin check rejected it. Forward the original `Host` header, or list the
+  public origin in `allowedOrigins`.
 - **WebUI bundle not found at .../dist/web**: in a clone, run
   `bun run build:web` at the repository root, as the host's warning
   says. The npm package carries the SPA built,

@@ -1,13 +1,11 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule } from '../src/modules/fleet-module.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 interface ToolResultLike {
   success?: boolean;
@@ -18,6 +16,7 @@ interface ToolResultLike {
 describe('FleetModule — no-subfleets invariant', () => {
   let tmpDir: string;
   const activeFleets: FleetModule[] = [];
+  let launches = 0;
 
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-no-subfleets-'));
@@ -29,12 +28,13 @@ describe('FleetModule — no-subfleets invariant', () => {
   }, 30_000);
 
   async function runLaunch(recipeBody: object): Promise<ToolResultLike> {
+    const name = `child-${++launches}`;
     const recipePath = join(tmpDir, `recipe-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     writeFileSync(recipePath, JSON.stringify(recipeBody), 'utf-8');
 
     const fleet = new FleetModule({
       childRuntimePath: 'bun',
-      childIndexPath: INDEX_PATH,
+      childIndexPath: join(TEST_DIR, 'mock-headless-child.ts'),
       gracefulShutdownMs: 1_000,
       sigtermEscalationMs: 500,
     });
@@ -43,9 +43,9 @@ describe('FleetModule — no-subfleets invariant', () => {
       id: 'test-call',
       name: 'launch',
       input: {
-        name: 'subfleet-child',
+        name,
         recipe: recipePath,
-        dataDir: join(tmpDir, 'subfleet-child'),
+        dataDir: join(tmpDir, name),
       },
     }) as ToolResultLike;
 
@@ -114,7 +114,7 @@ describe('FleetModule — no-subfleets invariant', () => {
     expect(result.error).toContain('nested fleets are not supported');
   });
 
-  test('recipe without fleet module is accepted (passes validation, may fail later in spawn path)', async () => {
+  test('recipe without fleet module is accepted and launched', async () => {
     const result = await runLaunch({
       name: 'PlainChild',
       agent: { name: 'inner', systemPrompt: 'x' },
@@ -126,12 +126,10 @@ describe('FleetModule — no-subfleets invariant', () => {
         workspace: false,
       },
     });
-    if (result.success === false && result.error) {
-      expect(result.error).not.toContain('nested fleets');
-    }
+    expect(result.success).toBe(true);
   });
 
-  test('recipe with modules.fleet=false is accepted (explicit opt-out is fine)', async () => {
+  test('recipe with modules.fleet=false is accepted and launched (explicit opt-out is fine)', async () => {
     const result = await runLaunch({
       name: 'ExplicitlyDisabledFleet',
       agent: { name: 'inner', systemPrompt: 'x' },
@@ -144,8 +142,6 @@ describe('FleetModule — no-subfleets invariant', () => {
         workspace: false,
       },
     });
-    if (result.success === false && result.error) {
-      expect(result.error).not.toContain('nested fleets');
-    }
+    expect(result.success).toBe(true);
   });
 });

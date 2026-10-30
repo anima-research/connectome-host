@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type MountConfig } from '@animalabs/agent-framework';
+import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -22,6 +22,7 @@ import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
+import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
 
 export interface RecipeStrategy {
   /** Built-in strategy name, or a custom type registered by a
@@ -157,13 +158,19 @@ export interface RecipeStrategy {
    *  speculative compression queue (default 1); demand still overrides. */
   l1HoldbackChunks?: number;
   // Self-voice / compression framing. The host defaults summaryParticipant to
-  // `agent.name`, so self-recollections speak as the agent itself. Set
+  // the agent's name (`agent.name`, or the name it runs under when that's
+  // unset), so self-recollections speak as the agent itself. Set
   // explicitly only to voice summaries as someone else — a mismatched
   // participant surfaces in the compiled prompt as another voice speaking in
   // first person about the agent.
   summaryParticipant?: string;
   summarySystemPrompt?: string;
   summaryUserPrompt?: string;
+  /** The `Context Manager` turn before a summary in the compiled context,
+   *  under adaptive resolution (the default) or `positionedRecallPairs:
+   *  false`. The host defaults it to a sentence saying that a summary
+   *  follows, standing in for earlier conversation, tool calls and results
+   *  included, and that the exact text it replaces isn't shown. */
   summaryContextLabel?: string;
   /** As-of perspective pin: chunks wholly below this message sequence are
    *  compressed as inherited/witnessed record, not first-person memory.
@@ -296,6 +303,9 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
    * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
    * which with prompt caching on are only those after the last cache marker.
+   * On a model whose thinking binds and whose window the host passes (Fable
+   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
+   * framework doesn't break a turn's stream at it; the window still does.
    */
   maxStreamTokens?: number;
   /** Per-agent context compile budget (input tokens), which holds
@@ -409,7 +419,9 @@ export interface RecipeAgent {
      * reasoning_enabled on, a config carrying agent_settings'
      * reasoning_display goes in place of this block's whole thinking
      * config, binding controls included, on a model that takes adaptive
-     * thinking. On a streamed call through it to a model
+     * thinking; on a streamed call to a model the host sends the drop
+     * control to, the control is then added to that config
+     * (LoggingAnthropicAdapter.withBinding). On a streamed call through it to a model
      * modelReturnsNotesInThinking lists, a request that would go with
      * display 'omitted', or with no thinking config, goes with 'updates'
      * instead, so the notes between tool calls come back as text
@@ -535,14 +547,26 @@ export interface RecipeMcpServer {
   /** Feature-set deny-list; wins over enabledFeatureSets on overlap. */
   disabledFeatureSets?: string[];
   /**
-   * MCPL RFC-014 opt-in: whether this host advertises `toolHints` to the
+   * MCPL RFC-014: whether this host advertises `toolHints` to the
    * server, so it lists every tool with its hints (static or dynamic,
    * visible or not, which toolset) and its toolsets can be opened and
    * closed, instead of tailoring its list to a host that reads no hints.
    * Hints confer no authority. Passed through to agent-framework; omitted,
-   * the framework's default applies.
+   * the framework's default applies (on, from agent-framework 0.29.0).
    */
   toolHints?: boolean;
+  /**
+   * How agents are shown this server at first (agent-framework's host
+   * toolsets): `'full'` (the default) puts its tools in the tool list;
+   * `'tab'` keeps it connected, its events still arriving, with its tools
+   * starting out of the list: `toolsets--open {server}` lists them for
+   * `toolsets--act`, and `toolsets--open {server, full: true}` puts them back
+   * in the list; `'closed-tab'` is a tab that also starts out disconnected.
+   * Each agent can change how it's shown the server later, which this doesn't
+   * decide. An agent without both `toolsets--open` and `toolsets--act` isn't
+   * shown tabs. Passed through to agent-framework.
+   */
+  presentation?: 'full' | 'tab' | 'closed-tab';
   /**
    * Tool allow-list (bare tool names as the server exports them, no toolPrefix).
    * `*` is a substring wildcard (`read_*`, `*_file`, `*`).
@@ -905,7 +929,27 @@ export interface RecipeModules {
    * Subagent forking (spawn/fork parallel agents). OPT-IN — defaults to off
    * and is not part of the standard recipe.
    */
-  subagents?: boolean | { defaultModel?: string; defaultMaxTokens?: number };
+  subagents?: boolean | {
+    defaultModel?: string;
+    defaultMaxTokens?: number;
+    /**
+     * What a forked or spawned stream is told at its start. `'full'`
+     * (default) describes the launch and the stream's place in it, and
+     * gives a fork the "two parallel streams of you" framing; `'none'` hands
+     * a spawn its task alone, and a fork its task after one line saying it
+     * is the forked stream. What a stream is told is the deployment's to
+     * decide, not the host's.
+     */
+    orientation?: 'full' | 'none';
+    /**
+     * How far the lifecycle tools (list, stop, message, adopt, resume)
+     * reach. `'subtree'` (default): a caller sees and acts on the subagents
+     * it started and theirs, as `peek` is scoped; `'all'`: every subagent
+     * the host knows, though an orphan is still adopted only by an agent it
+     * was offered to or in whose tree it hung.
+     */
+    lifecycleReach?: 'subtree' | 'all';
+  };
   /**
    * Lesson library (persistent knowledge store + lesson tools). OPT-IN —
    * defaults to off and is not part of the standard recipe.
@@ -1051,10 +1095,11 @@ export interface RecipeModules {
    * SECURITY: `mcpl_deploy` spawns arbitrary commands as the host user —
    * enabling this module means trusting the agent with code execution.
    *
-   * `{ surface: 'utilities' }` keeps the module but parks its four tools
-   * behind the framework's single `utils` meta-tool (mcpl management is
-   * rare; it needn't cost four schemas on every inference). `true` keeps
-   * the historical first-class surface.
+   * Its four tools live in agent-framework's built-in toolset ("settings"):
+   * out of the tool list, opened with `toolsets--open {toolset:"settings"}`
+   * and called with `toolsets--act`, for an agent that may call both; for
+   * one that may not, they stay in its tool list.
+   * `surface` is no longer read; it's accepted so older recipes still load.
    */
   mcplAdmin?: boolean | { surface?: 'tools' | 'utilities' };
 
@@ -1113,8 +1158,10 @@ export interface RecipeModules {
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
    * an ed25519 keypair in the data dir, enrolled at the home node via an
    * operator invite, exchanged for fresh aid1 audience tokens on demand.
-   * Utilities-only (`utils run identity--status/enroll/token`) — costs no
-   * tool slots. `home` defaults to id.animalabs.ai; `audience` is the
+   * Its tools are utilities, in agent-framework's built-in toolset
+   * ("settings": `toolsets--open {toolset:"settings"}`, then
+   * `toolsets--act {tool:"identity--status"}`, or by its own name for an
+   * agent that may not call both) — costs no tool slots. `home` defaults to id.animalabs.ai; `audience` is the
    * default for `token` calls.
    */
   identity?: boolean | { home?: string; audience?: string };
@@ -1230,23 +1277,34 @@ export interface RecipeWebUi {
   port?: number;
   host?: string;
   /**
-   * Where the observer grant tools (observers--get/grant/revoke) surface:
-   * 'tools' (default, historical) or 'utilities' (behind the `utils`
-   * meta-tool — grant edits are rare). Consent semantics unchanged: the
-   * agent holds the pen either way.
+   * No longer read: the observer grant tools (observers--get/grant/revoke)
+   * live in agent-framework's built-in toolset ("settings"), out of the tool
+   * list, opened with `toolsets--open {toolset:"settings"}` and called with
+   * `toolsets--act`, for an agent that may call both (for one that may not,
+   * they stay in its tool list). It's accepted so older recipes still load.
+   * Consent semantics unchanged: the agent holds the pen.
    */
   observersSurface?: 'tools' | 'utilities';
   /**
    * Basic-Auth credentials. Required whenever the bind host is non-loopback
-   * (which is the default). `${VAR}`-substitutable from .env.
+   * (which is the default). `${VAR}`-substitutable from .env. When set, both
+   * must be non-empty strings: the host refuses anything else at start. A
+   * null or other falsy basicAuth reads as none.
    */
   basicAuth?: { username: string; password: string };
   /**
    * Override the default Origin allowlist for the WebSocket upgrade. Default
-   * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Add
-   * your reverse-proxy origin (e.g. `https://admin.example.com`) here when
-   * fronted by Caddy/nginx. Pass `[]` to disable the Origin check entirely
-   * — only sensible when something else upstream is enforcing it.
+   * is `http(s)://127.0.0.1:<port>` and `http(s)://localhost:<port>`. Write
+   * each entry as an `http` or `https` URL the way a browser sends its
+   * Origin (scheme, host and any non-default port, with no path or trailing
+   * slash); without `basicAuth`, only on 127.0.0.1, localhost or [::1], any
+   * port. With `basicAuth`, add your reverse proxy's origin (e.g.
+   * `https://admin.example.com`) if it rewrites `Host`. The host refuses at
+   * start an empty list, a value that isn't a list, and an entry that isn't
+   * an `http` or `https` URL (without `basicAuth`, one on those three
+   * names); a null list reads as absent. Beyond that it doesn't check how an
+   * entry is written, so one with, say, a path, a trailing slash, a default
+   * port or capital letters starts and never matches.
    */
   allowedOrigins?: string[];
 }
@@ -1387,28 +1445,54 @@ const CODE_EXECUTION_NUMBER_KEYS = [
 ] as const;
 
 /**
- * The subconscious resident (agent-framework
- * FrameworkConfig.subconscious): a persistent same-model side-agent that
- * receives traffic from channels the resident has tuned out and reports to
- * them in its own voice. Passed through verbatim; the framework owns the
- * defaults (name `Subconscious`, model = the resident's).
+ * The tune-out reader (agent-framework FrameworkConfig.subconscious, issues
+ * agent-framework#77 and #232): who reads the channels the resident has
+ * tuned out and reports to them. Two readers exist:
+ *
+ * - `reader: 'persistent'` (the default): a persistent side-agent with its
+ *   own window, reading the shared slot through a merged view. Passed
+ *   through verbatim; the framework owns the defaults (name
+ *   `Subconscious`, model = the resident's).
+ * - `reader: 'forks'` (Dendrite): a succession of forks of the resident
+ *   itself, each derived at the resident's head for one look and ended.
+ *   The fork shares the resident's provider prefix. `model` says whose
+ *   weights run the fork and is never defaulted — the resident's own model
+ *   for a copy of the resident, or another by name. `voice` is the reader's
+ *   voice block, delivered to each fork after the fork point with the held
+ *   traffic, never a system prompt. Two of the framework's fields are
+ *   function-valued, so a recipe cannot state them: the host supplies
+ *   `strategyFactory`, a fresh instance of the recipe's strategy per fork
+ *   (the same pattern as `conversations`; see buildSubconsciousConfig), and
+ *   `framing`, how the fork is prompted, stays the framework's default.
+ *
+ * The types are the framework's own, minus those two fields;
+ * agent-framework's src/tune-out/tools.ts documents each field.
  */
-export interface RecipeSubconscious {
-  /** Master switch. Without it the `tune_out` tool is not offered. */
-  enabled: boolean;
-  /** Registry + participant name (default 'Subconscious'). */
-  name?: string;
-  /** Model id (default: the resident's model — same-model side-process). */
-  model?: string;
-  /** The voice/criteria mode block: report-shaped, second person toward the
-   *  resident. Co-authored with the resident; canary before fleet use. */
-  systemPrompt: string;
-  /** Allow `speak_in_channel` (default false until the voice block has
-   *  passed its canary). */
-  allowChannelSpeech?: boolean;
-  /** WindowedPassthroughStrategy re-anchor fraction in (0, 1] (default 0.5). */
-  reAnchorFraction?: number;
-}
+export type RecipeSubconscious = RecipePersistentReader | RecipeForkReader;
+export type RecipePersistentReader = PersistentReaderConfig;
+export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'framing'>;
+
+/**
+ * Where a turn's plain prose lands when nothing names a destination
+ * (agent-framework FrameworkConfig.speech). `'delivery'` (the framework's
+ * default): only the delivery that woke the turn, a fork's home channel or a
+ * channel the agent opened this turn sets the locus; incoming traffic never
+ * moves it, and a turn without one keeps its prose private.
+ * `'latest-inbound'`: the previous rule, with the most recent delivered
+ * inbound message as a global fallback locus.
+ */
+export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
+
+/**
+ * Tune-out without a reader (agent-framework FrameworkConfig.tuneOut): offer
+ * `tune_out` / `focus` to the resident when no `subconscious` is configured.
+ * A hold is then silent — nothing summarizes or wakes the resident; the
+ * backlog is released on cancel or when the duration ends.
+ */
+export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
+
+/** Dendrite lifecycle options (agent-framework FrameworkConfig.dendrite). */
+export type RecipeDendrite = NonNullable<FrameworkConfig['dendrite']>;
 
 /**
  * Per-channel conversation routing (agent-framework ConversationRouter):
@@ -1455,6 +1539,19 @@ export interface RecipeConversations {
   agentPrefix?: string;
 }
 
+export function deprecatedSurfaceNotices(modules: RecipeModules | undefined): string[] {
+  const notices: string[] = [];
+  if (typeof modules?.mcplAdmin === 'object' && modules.mcplAdmin.surface !== undefined) {
+    notices.push('modules.mcplAdmin.surface is no longer read: mcpl-admin\'s tools are in agent-framework\'s built-in ' +
+      '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
+  }
+  if (typeof modules?.webui === 'object' && modules.webui.observersSurface !== undefined) {
+    notices.push('modules.webui.observersSurface is no longer read: the observer tools are in agent-framework\'s built-in ' +
+      '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
+  }
+  return notices;
+}
+
 export function deprecatedConversationsNotices(conversations: RecipeConversations | undefined): string[] {
   if (!conversations) return [];
   return [
@@ -1486,8 +1583,14 @@ export interface Recipe {
    * at startup when it is set.
    */
   conversations?: RecipeConversations;
-  /** Tune-out's subconscious resident. */
+  /** Tune-out's reader: the persistent subconscious or reader forks (agent-framework#77, #232). */
   subconscious?: RecipeSubconscious;
+  /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
+  speech?: RecipeSpeech;
+  /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
+  tuneOut?: RecipeTuneOut;
+  /** Dendrite lifecycle options (agent-framework `dendrite`). */
+  dendrite?: RecipeDendrite;
   /**
    * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
    * highest-precedence source of a tool's class, and the way to class
@@ -1499,6 +1602,12 @@ export interface Recipe {
    * entry sets `toolPrefix`.
    */
   toolClassOverrides?: Record<string, string[]>;
+  /**
+   * How often agent-framework's context maintenance pass runs, in
+   * milliseconds: a whole number from 0 to 2147483647, where 0 turns the
+   * timer off. Left out, the framework's own interval (5000 ms) stands.
+   */
+  maintenanceIntervalMs?: number;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -1840,7 +1949,8 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
-  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'toolClassOverrides',
+  'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
+  'maintenanceIntervalMs',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -2625,6 +2735,9 @@ export function validateRecipe(raw: unknown): Recipe {
       if (server.toolHints !== undefined && typeof server.toolHints !== 'boolean') {
         throw new Error(`mcpServers.${id}.toolHints must be true or false`);
       }
+      if (server.presentation !== undefined && !isServerPresentation(server.presentation)) {
+        throw new Error(`mcpServers.${id}.presentation must be ${SERVER_PRESENTATIONS_TEXT}`);
+      }
       if (server.requestTimeoutMs !== undefined
           && !(typeof server.requestTimeoutMs === 'number' && Number.isFinite(server.requestTimeoutMs) && server.requestTimeoutMs >= 0)) {
         throw new Error(`mcpServers.${id}.requestTimeoutMs must be a non-negative number (ms; 0 disables)`);
@@ -2920,6 +3033,17 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
+    const subagents = mods.subagents;
+    if (subagents && typeof subagents === 'object' && !Array.isArray(subagents)) {
+      const options = subagents as Record<string, unknown>;
+      if (options.orientation !== undefined && options.orientation !== 'full' && options.orientation !== 'none') {
+        throw new Error(`Recipe modules.subagents.orientation is ${JSON.stringify(options.orientation)}; it must be "full" or "none".`);
+      }
+      if (options.lifecycleReach !== undefined && options.lifecycleReach !== 'subtree' && options.lifecycleReach !== 'all') {
+        throw new Error(`Recipe modules.subagents.lifecycleReach is ${JSON.stringify(options.lifecycleReach)}; it must be "subtree" or "all".`);
+      }
+    }
+
     const history = mods.history;
     if (history !== undefined && typeof history !== 'boolean') {
       if (!history || typeof history !== 'object' || Array.isArray(history)) {
@@ -3186,41 +3310,132 @@ export function validateRecipe(raw: unknown): Recipe {
     validateToolClassTable(obj.toolClassOverrides, 'Recipe toolClassOverrides');
   }
 
+  if (obj.maintenanceIntervalMs !== undefined) {
+    const must = timerMs(0)(obj.maintenanceIntervalMs);
+    if (must) throw new Error(`Recipe maintenanceIntervalMs is ${JSON.stringify(obj.maintenanceIntervalMs)}; it must be ${must}.`);
+  }
+
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
       throw new Error('Recipe subconscious must be an object.');
     }
     const sub = obj.subconscious as Record<string, unknown>;
-    const allowedSubconsciousKeys = new Set([
-      'enabled', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction',
-    ]);
+    if (sub.reader !== undefined && sub.reader !== 'persistent' && sub.reader !== 'forks') {
+      throw new Error('Recipe subconscious.reader must be "persistent" or "forks".');
+    }
+    const forks = sub.reader === 'forks';
+    const reader = forks ? 'forks' : 'persistent';
+    const other = forks ? 'persistent' : 'forks';
+    const keysFor = {
+      forks: ['enabled', 'reader', 'model', 'voice', 'allowChannelSpeech', 'forkIdleTimeoutMs'],
+      persistent: ['enabled', 'reader', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction'],
+    };
+    const allowedSubconsciousKeys = new Set(keysFor[reader]);
+    const onlyFor = (r: 'forks' | 'persistent') => keysFor[r].filter((key) => !keysFor[r === 'forks' ? 'persistent' : 'forks'].includes(key));
+    const otherReadersKeys = new Set(onlyFor(other));
     for (const key of Object.keys(sub)) {
+      if (otherReadersKeys.has(key)) {
+        const misplaced = Object.keys(sub).filter((k) => otherReadersKeys.has(k));
+        const alsoRemove = onlyFor(reader).filter((own) => Object.hasOwn(sub, own));
+        throw new Error(
+          `Recipe ${misplaced.map((k) => `subconscious.${k}`).join(' and ')} ${misplaced.length > 1 ? 'are' : 'is'} for reader "${other}", and this recipe's reader is "${reader}". ` +
+          `Remove ${misplaced.join(' and ')}, or set subconscious.reader to "${other}"` +
+          `${alsoRemove.length > 0 ? ` and remove ${alsoRemove.join(' and ')}, which only reader "${reader}" takes` : ''}.`,
+        );
+      }
       if (!allowedSubconsciousKeys.has(key)) {
         throw new Error(
           `Recipe subconscious has unknown field ${JSON.stringify(key)} ` +
-          `(expected one of: ${[...allowedSubconsciousKeys].join(', ')}).`,
+          `(expected one of: ${[...allowedSubconsciousKeys].join(', ')}` +
+          `${forks ? ' for reader "forks"' : ''}).`,
         );
       }
     }
     if (typeof sub.enabled !== 'boolean') {
       throw new Error('Recipe subconscious.enabled must be a boolean.');
     }
-    if (typeof sub.systemPrompt !== 'string' || !sub.systemPrompt.trim()) {
-      throw new Error('Recipe subconscious.systemPrompt must be a non-empty string.');
-    }
-    for (const k of ['name', 'model'] as const) {
-      if (sub[k] !== undefined && (typeof sub[k] !== 'string' || !(sub[k] as string).trim())) {
-        throw new Error(`Recipe subconscious.${k} must be a non-empty string.`);
+    if (forks) {
+      // A reader fork holds the resident's whole prefix: whose weights run
+      // it is stated, never defaulted; the framework refuses the omission too.
+      if (typeof sub.model !== 'string' || !sub.model.trim()) {
+        throw new Error('Recipe subconscious.model is required for reader "forks": say whose weights run the fork (the agent\'s own model for a copy of the resident, or another by name).');
+      }
+      if (typeof sub.voice !== 'string' || !sub.voice.trim()) {
+        throw new Error('Recipe subconscious.voice must be a non-empty string for reader "forks".');
+      }
+      // Finite: JSON `1e309` parses to Infinity, which saveRecipe() would
+      // write back as null and the next load would refuse.
+      const idle = sub.forkIdleTimeoutMs;
+      if (idle !== undefined && (typeof idle !== 'number' || !Number.isFinite(idle) || !(idle > 0))) {
+        throw new Error('Recipe subconscious.forkIdleTimeoutMs must be a positive finite number of milliseconds.');
+      }
+    } else {
+      if (typeof sub.systemPrompt !== 'string' || !sub.systemPrompt.trim()) {
+        throw new Error('Recipe subconscious.systemPrompt must be a non-empty string.');
+      }
+      for (const k of ['name', 'model'] as const) {
+        if (sub[k] !== undefined && (typeof sub[k] !== 'string' || !(sub[k] as string).trim())) {
+          throw new Error(`Recipe subconscious.${k} must be a non-empty string.`);
+        }
+      }
+      if (sub.reAnchorFraction !== undefined) {
+        const f = sub.reAnchorFraction;
+        if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
+          throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
+        }
       }
     }
     if (sub.allowChannelSpeech !== undefined && typeof sub.allowChannelSpeech !== 'boolean') {
       throw new Error('Recipe subconscious.allowChannelSpeech must be a boolean.');
     }
-    if (sub.reAnchorFraction !== undefined) {
-      const f = sub.reAnchorFraction;
-      if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
-        throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
+  }
+
+  if (obj.speech !== undefined) {
+    if (!obj.speech || typeof obj.speech !== 'object' || Array.isArray(obj.speech)) {
+      throw new Error('Recipe speech must be an object.');
+    }
+    const speech = obj.speech as Record<string, unknown>;
+    for (const key of Object.keys(speech)) {
+      if (key !== 'locus') throw new Error(`Recipe speech has unknown field ${JSON.stringify(key)} (expected: locus).`);
+    }
+    if (speech.locus !== undefined && speech.locus !== 'delivery' && speech.locus !== 'latest-inbound') {
+      throw new Error('Recipe speech.locus must be "delivery" or "latest-inbound".');
+    }
+  }
+
+  if (obj.tuneOut !== undefined) {
+    if (!obj.tuneOut || typeof obj.tuneOut !== 'object' || Array.isArray(obj.tuneOut)) {
+      throw new Error('Recipe tuneOut must be an object.');
+    }
+    const tuneOut = obj.tuneOut as Record<string, unknown>;
+    for (const key of Object.keys(tuneOut)) {
+      if (key !== 'enabled' && key !== 'announce') {
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: enabled, announce).`);
       }
+    }
+    for (const key of ['enabled', 'announce'] as const) {
+      if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
+        throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
+      }
+    }
+  }
+
+  if (obj.dendrite !== undefined) {
+    if (!obj.dendrite || typeof obj.dendrite !== 'object' || Array.isArray(obj.dendrite)) {
+      throw new Error('Recipe dendrite must be an object.');
+    }
+    const dendrite = obj.dendrite as Record<string, unknown>;
+    for (const key of Object.keys(dendrite)) {
+      if (key !== 'announceOrphans' && key !== 'collapseDerivationNoticesAfter') {
+        throw new Error(`Recipe dendrite has unknown field ${JSON.stringify(key)} (expected: announceOrphans, collapseDerivationNoticesAfter).`);
+      }
+    }
+    if (dendrite.announceOrphans !== undefined && typeof dendrite.announceOrphans !== 'boolean') {
+      throw new Error('Recipe dendrite.announceOrphans must be a boolean.');
+    }
+    const after = dendrite.collapseDerivationNoticesAfter;
+    if (after !== undefined && !(typeof after === 'number' && Number.isInteger(after) && after >= 0)) {
+      throw new Error('Recipe dendrite.collapseDerivationNoticesAfter must be a non-negative integer.');
     }
   }
 

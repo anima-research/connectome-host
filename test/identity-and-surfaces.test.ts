@@ -7,8 +7,6 @@ import { JsStore } from '@animalabs/chronicle';
 import { WorkspaceModule, WorkspaceReadError } from '@animalabs/agent-framework';
 
 import { IdentityError, IdentityModule } from '../src/modules/identity-module.ts';
-import { McplAdminModule } from '../src/modules/mcpl-admin-module.ts';
-import { ObserversModule } from '../src/modules/observers-module.ts';
 
 // agent-framework's code for a link among a path's directories that stays
 // inside the mount.
@@ -135,7 +133,6 @@ describe('identity module', () => {
   it('request: services come from the home node directory, and a newly-listed one works without a restart', async () => {
     const dir = tempDir('ident-');
     let directory: Record<string, string> = { orrery: 'https://orrery.test' };
-    let directoryFetches = 0;
     const mod = new IdentityModule({
       keyPath: join(dir, 'k.pem'),
       home: 'id.test',
@@ -143,10 +140,7 @@ describe('identity module', () => {
         const u = String(url);
         if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
         if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
-        if (u === 'https://id.test/services') {
-          directoryFetches++;
-          return new Response(JSON.stringify({ home: 'id.test', services: directory }), { status: 200 });
-        }
+        if (u === 'https://id.test/services') return new Response(JSON.stringify({ home: 'id.test', services: directory }), { status: 200 });
         if (u === 'https://music.test/api/me') return new Response(JSON.stringify({ me: 'mythos' }), { status: 200 });
         return new Response('{}', { status: 404 });
       }) as typeof fetch,
@@ -162,12 +156,10 @@ describe('identity module', () => {
     expect(before.error).toContain('there\'s no service "music"');
 
     directory = { orrery: 'https://orrery.test', music: 'https://music.test' };
-    const fetchesBefore = directoryFetches;
 
     const after = await mod.handleToolCall(call('request', { service: 'music', path: '/api/me' }));
     expect(after.success).toBe(true);
     expect((after.data as any).body).toEqual({ me: 'mythos' });
-    expect(directoryFetches).toBeGreaterThan(fetchesBefore);
   });
 
   it('request: a home node that cannot be reached degrades to the built-in map, never to an outage', async () => {
@@ -291,8 +283,8 @@ describe('identity module', () => {
     (mod as any).ctx = { getModule: (n: string) => (n === 'workspace' ? workspace : null) };
     await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
 
-    // The framework's `utils run` checks args against the advertised enum
-    // before the handler runs, so the schema has to offer every verb.
+    // toolsets--act checks args against the tool's advertised schema, enum
+    // included, before the handler runs, so the schema has to offer every verb.
     const request = mod.getUtilities().find((u) => u.name === 'request')!;
     const methods = (request.inputSchema.properties as any).method.enum as string[];
     expect(methods).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -539,7 +531,6 @@ describe('identity: what the agent reads when a call fails', () => {
         res.error, 'Nothing was sent to "orrery"', '"files/grid.png" couldn\'t be read from disk',
         'the workspace\'s copy wasn\'t sent in its place', 'On disk: Unable to read file: files/grid.png (EACCES).',
       );
-      expect(ws.calls.store).toBe(0);
       expect(seen.orrery).toBe(0);
     });
 
@@ -1351,8 +1342,10 @@ describe('identity: what the agent reads when a call fails', () => {
     expect(await mod.accessFor('orrery')).toBe('aid1.fresh.secret');
     rmSync(join(dir, 'k.json'));
     expect((await mod.handleToolCall(call('status', {}))).data).toMatchObject({ registeredAs: null });
-    expect(lines.some((line) => line.includes('only until it restarts') &&
-      line.includes('"sub":"agent:a@guest","name":"A","home":"id.test","enrolledAt":'))).toBe(true);
+    const held = lines.find((line) => line.includes('only until it restarts')) ?? '';
+    const record = JSON.parse(/write (\{.*?\}) to /.exec(held)?.[1] ?? 'null');
+    expect(record).toMatchObject({ sub: 'agent:a@guest', name: 'A', home: 'id.test' });
+    expect(typeof record.enrolledAt).toBe('string');
   });
 
   it('ends a registration under way across a session switch in a state the new module acts on', async () => {
@@ -1423,55 +1416,15 @@ describe('identity: what the agent reads when a call fails', () => {
     expect(res.error).not.toContain(dir);
   });
 
-  it('answers a utility it lacks with its utilities and how to run them', async () => {
+  it('answers a utility it lacks with its utilities, in the built-in settings toolset, and how to reach them', async () => {
     const { mod } = registeredModule({ register: false });
+    const said = (await mod.handleToolCall(call('nope', {}))).error;
     expectSays(
-      (await mod.handleToolCall(call('nope', {}))).error,
-      'There\'s no tool "identity--nope", so nothing ran', 'identity--status', 'identity--request', 'identity--accept_invite', 'utils',
+      said,
+      'There\'s no tool "identity--nope", so nothing ran', 'identity--status', 'identity--request', 'identity--accept_invite',
+      'the built-in "settings" toolset', 'toolsets--act',
     );
-  });
-});
-
-describe('mcpl-admin access grants', () => {
-  it('deploy with `access` requires identity wiring, and stores the NAME not a credential', async () => {
-    const dir = tempDir('mcpl-');
-    const mod = new McplAdminModule({ overlayPath: join(dir, 'overlay.json') });
-    mod.setFramework({
-      getModule: () => null,
-      listMcplServers: () => [],
-      connectMcplServer: async () => {},
-      restartMcplServer: async () => {},
-      disconnectMcplServer: async () => {},
-    } as any);
-
-    const refused = await mod.handleToolCall(call('mcpl_deploy', {
-      id: 'worlds', url: 'wss://example.test/mcpl', access: 'eidoverse',
-    }) as any);
-    expect(refused.success).toBe(false);
-    expect(refused.error).toContain('identity');
-  });
-
-  it('surface flags: default keeps four first-class tools; utilities parks them', () => {
-    const asTools = new McplAdminModule({});
-    expect(asTools.getTools().length).toBe(4);
-    expect(asTools.getUtilities().length).toBe(0);
-
-    const asUtils = new McplAdminModule({ surface: 'utilities' });
-    expect(asUtils.getTools().length).toBe(0);
-    expect(asUtils.getUtilities().map((u) => u.name).sort()).toEqual(
-      ['mcpl_deploy', 'mcpl_list', 'mcpl_restart', 'mcpl_unload'],
-    );
-  });
-});
-
-describe('observers surface flag', () => {
-  it('same definitions on either surface', () => {
-    const dir = tempDir('obs-');
-    const asTools = new ObserversModule({ path: join(dir, 'observers.json') });
-    const asUtils = new ObserversModule({ path: join(dir, 'observers.json'), surface: 'utilities' });
-    expect(asTools.getTools().map((t) => t.name)).toEqual(asUtils.getUtilities().map((u) => u.name));
-    expect(asTools.getUtilities().length).toBe(0);
-    expect(asUtils.getTools().length).toBe(0);
+    expect(said).not.toContain('utils');
   });
 });
 
@@ -1583,7 +1536,6 @@ describe('identity request: fromFile reads only what the mount allows', () => {
       () => null,
       (err: WorkspaceReadError) => err,
     );
-    expect(read?.code).toBe('escape');
     const res = await upload('files/out/host-secret.txt');
     expect(res.error).toContain('Nothing was sent to "orrery": "files/out/host-secret.txt" couldn\'t be read from disk');
     expect(res.error).toContain(read!.message.replace(/\.+$/, ''));

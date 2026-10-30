@@ -31,6 +31,7 @@ import { healthReadError } from '@conhost/web/health-lookup';
 import {
   AGENT_TREE_SCOPES,
   WEB_PROTOCOL_VERSION,
+  isChildScope,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -123,7 +124,7 @@ export function App() {
   const [protoMismatch, setProtoMismatch] = createSignal<number | null>(null);
   let knownIds = new Set<string>();
   let welcomeKey: string | null = null;
-  let welcomeSessionId: string | null = null;
+  const [shownSession, setShownSession] = createSignal<string | null>(null);
   let atBottom = true;
   let historyCorrSeq = 0;
   let pendingHistoryCorr: string | null = null;
@@ -357,6 +358,7 @@ export function App() {
   const [surgeryPending, setSurgeryPending] = createSignal(false);
   const [surgeryResult, setSurgeryResult] = createSignal<SurgeryResultMessage | null>(null);
   let retryAfterQuiesce: { note: string } | null = null;
+  let pendingSurgeryCorrId: string | null = null;
   const [selecting, setSelecting] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
   const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
@@ -369,13 +371,14 @@ export function App() {
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
   };
 
-  const beginRollback = (storeId: string, preview?: string): void => {
-    if (!canRollback()) return;
+  const beginRollback = (storeId: string, preview?: string, chosenIn: string | null = shownSession()): void => {
+    if (!canRollback() || chosenIn === null) return;
     const idx = messages.findIndex((m) => m.storeId === storeId);
     const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
     setSurgeryResult(null);
     setSurgery({
       op: 'rollback',
+      sessionId: chosenIn,
       messageIds: [storeId],
       previews: [
         `new tail → ${idx >= 0 ? previewOf(messages[idx]) : (preview ?? storeId)}`,
@@ -401,11 +404,13 @@ export function App() {
   };
   const beginSuppressSelected = (): void => {
     const ids = [...selected()];
-    if (ids.length === 0) return;
+    const chosenIn = shownSession();
+    if (ids.length === 0 || chosenIn === null) return;
     const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
     setSurgeryResult(null);
     setSurgery({
       op: 'suppress',
+      sessionId: chosenIn,
       messageIds: ids,
       previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
     });
@@ -414,10 +419,11 @@ export function App() {
   const sendSurgery = (req: SurgeryRequest, note: string): void => {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
+    pendingSurgeryCorrId = corrId;
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -454,6 +460,8 @@ export function App() {
     }
   };
   const onSurgeryResult = (r: SurgeryResultMessage): void => {
+    if (r.corrId !== pendingSurgeryCorrId) return;
+    pendingSurgeryCorrId = null;
     setSurgeryPending(false);
     setSurgeryResult(r);
     if (r.ok) clearSelection();
@@ -464,6 +472,30 @@ export function App() {
     retryAfterQuiesce = null;
     setSurgery(null);
     setSurgeryResult(null);
+  };
+  const stampFor = (scope: string, chosenIn: string | undefined): { sessionId?: string } =>
+    isChildScope(scope) ? {} : { sessionId: chosenIn ?? '' };
+  const panelKey = (): string =>
+    isChildScope(panelScope()) ? `child|${panelScope()}` : `local|${shownSession() ?? ''}`;
+  const dropWhatWasPrepared = (): void => {
+    retryAfterQuiesce = null;
+    pendingSurgeryCorrId = null;
+    setSurgery(null);
+    setSurgeryResult(null);
+    setSurgeryPending(false);
+    clearSelection();
+    pendingHistoryCorr = null;
+    setHistoryLoading(false);
+    setBulkRemaining(0);
+    setBranches([]);
+    setBranchesCurrentId(null);
+    if (isChildScope(panelScope())) return;
+    setSettingsLoaded(false);
+    setSettingsState(null);
+    setPinsLoaded(false);
+    setPinsState(null);
+    if (sidebarTab() === 'settings') refreshSettings();
+    if (sidebarTab() === 'pins') refreshPins();
   };
   const refreshOpLog = (): void => {
     if (!features().has('operator-log')) return;
@@ -720,12 +752,13 @@ export function App() {
     if (panelScope() !== 'local' && !msg.childTrees.some((c) => c.name === panelScope())) {
       changePanelScope('local');
     }
-    if (welcomeSessionId !== null && msg.session.id !== welcomeSessionId) {
+    if (shownSession() !== null && msg.session.id !== shownSession()) {
       clearMcpl();
       if (sidebarTab() === 'mcp') refreshMcpl();
       closePanel();
     }
-    welcomeSessionId = msg.session.id;
+    if (msg.session.id !== shownSession()) dropWhatWasPrepared();
+    setShownSession(msg.session.id);
     const key = `${msg.session.id}/${msg.branch.id}`;
     const entries = msg.messages.map(entryToMessage);
 
@@ -829,6 +862,10 @@ export function App() {
     pendingHistoryCorr = null;
     window.clearTimeout(pendingHistoryTimer);
     setHistoryLoading(false);
+    if (msg.sessionId !== shownSession()) {
+      setBulkRemaining(0);
+      return;
+    }
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
@@ -988,7 +1025,7 @@ export function App() {
   };
 
   const cancelSubagent = (name: string, childName?: string): void => {
-    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : {}) });
+    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : { sessionId: shownSession() ?? '' }) });
   };
 
   const fleetStop = (name: string): void => {
@@ -1074,10 +1111,12 @@ export function App() {
           setMcplToolClasses(toolClasses);
         },
         setSettings: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
           setSettingsLoaded(true);
           setSettingsState(state);
         },
         setPins: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
           setPinsLoaded(true);
           setPinsState(state);
         },
@@ -1378,8 +1417,9 @@ export function App() {
             </Show>}>
               <ContextDocument
                 scope={panelScope()}
+                session={shownSession()}
                 canRollback={canRollback() && panelScope() === 'local'}
-                onRollback={(id, preview) => beginRollback(id, preview)}
+                onRollback={(id, preview, chosenIn) => beginRollback(id, preview, chosenIn)}
               />
             </Show>
           </div>
@@ -1519,35 +1559,39 @@ export function App() {
                 onSetEnv={(id, env) => wire.send({ type: 'mcpl-set-env', id, env })}
               />
             </Show>
-            <Show when={sidebarTab() === 'settings'}>
-              <SettingsPanel
-                loaded={settingsLoaded()}
-                state={settingsState()}
-                scope={panelScope()}
-                onRefresh={refreshSettings}
-                onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...patch })}
-                onReset={(keys, persist) =>
-                  wire.send({ type: 'settings-reset', scope: panelScope(), ...(keys ? { keys } : {}), persist })}
-                onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope() })}
-                onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
-              />
+            <Show when={sidebarTab() === 'settings' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <SettingsPanel
+                  loaded={settingsLoaded()}
+                  state={settingsState()}
+                  scope={panelScope()}
+                  onRefresh={refreshSettings}
+                  onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...patch })}
+                  onReset={(keys, persist) =>
+                    wire.send({ type: 'settings-reset', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...(keys ? { keys } : {}), persist })}
+                  onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId) })}
+                  onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
+                />
+              )}
             </Show>
-            <Show when={sidebarTab() === 'pins'}>
-              <PinsPanel
-                loaded={pinsLoaded()}
-                state={pinsState()}
-                agent={pinsState()?.agent}
-                candidates={panelScope() === 'local'
-                  ? messages
-                      .filter((m) => m.index !== undefined && m.id)
-                      .map<PinCandidate>((m) => ({
-                        id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
-                      }))
-                  : pinsState()?.candidates ?? []}
-                onRefresh={refreshPins}
-                onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...input })}
-                onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), pinId })}
-              />
+            <Show when={sidebarTab() === 'pins' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <PinsPanel
+                  loaded={pinsLoaded()}
+                  state={pinsState()}
+                  agent={pinsState()?.agent}
+                  candidates={panelScope() === 'local'
+                    ? messages
+                        .filter((m) => m.index !== undefined && m.id)
+                        .map<PinCandidate>((m) => ({
+                          id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
+                        }))
+                    : pinsState()?.candidates ?? []}
+                  onRefresh={refreshPins}
+                  onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
+                  onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}
+                />
+              )}
             </Show>
             <Show when={sidebarTab() === 'files'}>
               <FilesPanel

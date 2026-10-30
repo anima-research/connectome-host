@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendJournal, installPaths, moveCurrent, readRecord, writeJsonAtomic } from '../src/update/contract.js';
-import { TRIAL_LOG_CHARS, TRIAL_LOG_LINES, readTrialLog, type TrialLog } from '../src/update/trial-log.js';
+import { TRIAL_LOG_CHARS, readTrialLog, type TrialLog } from '../src/update/trial-log.js';
 
 const TRIAL_LOG = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'update', 'trial-log.ts');
 
@@ -79,17 +79,15 @@ describe('a release on trial', () => {
     expect(kept(root)!.lines).toEqual(['info', 'warn', 'debug', 'around', 'with a callback', '{"calledBack":true,"returned":true}']);
   });
 
-  test('keeps only its last lines, from the end of what it wrote, and writes them at process.exit too', () => {
-    expect([TRIAL_LOG_LINES, TRIAL_LOG_CHARS]).toEqual([40, 64 * 1024]);
+  test('keeps only its last 40 lines, and of a longer write only its tail up to the cap, and writes them at process.exit too', () => {
     const root = install();
     const { status } = run(root, [
-      `for (let i = 0; i < ${TRIAL_LOG_LINES + 10}; i++) console.log('line ' + i);`,
+      'for (let i = 0; i < 50; i++) console.log(\'line \' + i);',
       'process.exit(3);',
     ].join('\n'));
     expect(status).toBe(3);
     const lines = kept(root)!.lines;
-    expect(lines).toHaveLength(TRIAL_LOG_LINES);
-    expect(lines[0]).toBe('line 10');
+    expect(lines).toEqual(Array.from({ length: 40 }, (_, i) => `line ${i + 10}`));
     const long = install();
     run(long, [
       "console.log('before it');",

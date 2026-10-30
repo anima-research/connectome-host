@@ -24,6 +24,7 @@ interface Run {
   maxStreamTokens: number;
   maxMessageTokens: number | undefined;
   strategyConfig: { headWindowTokens?: number; recentWindowTokens?: number; compressionModel?: string; autoTickOnNewMessage?: boolean };
+  summaryVoice: unknown;
   allowedTools: 'all' | string[];
   launchAsStored: string;
   allText: string;
@@ -122,6 +123,7 @@ async function makeHarness(opts: {
         maxStreamTokens: a.maxStreamTokens,
         maxMessageTokens: (a.getContextManager().getStrategy() as { maxMessageTokens?: number }).maxMessageTokens,
         strategyConfig: strategyConfigOf(a.getContextManager().getStrategy()),
+        summaryVoice: (a.getContextManager().getStrategy() as { config?: Record<string, unknown> }).config?.summaryParticipant,
         allowedTools: a.allowedTools,
         launchAsStored: launchText(messages),
         allText: messages.map((m) => textOf(m.content)).join('\n'),
@@ -528,6 +530,27 @@ describe('spawn orientation', () => {
       const start = startSection(run.launchAsStored);
       expect(start).toContain('- Inherited: nothing; a spawn starts from its task.');
       expect(start).toContain('- Tools: 1 available to this stream: subagent--return.');
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe("a stream's own summaries", () => {
+  test('a spawn and a fork each voice their summaries by the name they run under', async () => {
+    const h = await makeHarness({});
+    try {
+      const spawned = await h.subagent.handleToolCall(call('spawn', 'toolu_spawn_v', { name: 'probe', systemPrompt: 'you are a probe', task: 'probe the harness' }));
+      expect(spawned.success).toBe(true);
+      await h.asyncPromise('probe');
+      const forkInput = { name: 'scout', task: 'map the caves' };
+      seedForkCall(h.framework, 'toolu_fork_v', forkInput);
+      const forked = await h.subagent.handleToolCall(call('fork', 'toolu_fork_v', forkInput));
+      expect(forked.success).toBe(true);
+      await h.asyncPromise('scout');
+
+      expect(h.runs.length).toBe(2);
+      for (const run of h.runs) expect(run.summaryVoice).toBe(run.name);
     } finally {
       await h.cleanup();
     }

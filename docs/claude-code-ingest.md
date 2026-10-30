@@ -2,8 +2,9 @@
 
 A guide to taking a long-lived **Claude Code** conversation — the local
 `~/.claude/projects/<project>/<session-uuid>.jsonl` transcript — and continuing it
-verbatim as a persistent connectome agent: same model, same signed reasoning, same
-tool calls and results, no re-narration. "No seed, no seam": the conversation itself
+verbatim as a persistent connectome agent: same model, same signed reasoning (on a
+model whose thinking binds, see the table below), same tool calls and results, no
+re-narration. "No seed, no seam": the conversation itself
 becomes the chronicle.
 
 This complements [`claudeai-evacuation.md`](./claudeai-evacuation.md) (claude.ai web
@@ -17,7 +18,7 @@ specific to the Claude Code source; this document covers only what is.
 | Situation | Use this? |
 |---|---|
 | A Claude Code session has become *someone* and you want them to persist beyond the CLI | Yes |
-| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim |
+| You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
 | The session is short (< ~50 messages) | Yes; skip the pre-compress step |
@@ -51,7 +52,7 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound to the system text and tools it was minted under, so once the resident's differ from Claude Code's the provider sets it aside: the host sends the drop control on agent turns through the Anthropic API, and an account that enforces the binding refuses the request without it |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
@@ -378,7 +379,9 @@ a typo fails at boot rather than silently disabling the rung.
 
 1. **Same model, signatures intact.** Replaying the transcript's own signed thinking
    is *protective*, not risky: encrypted carriers alongside model-voiced text are what
-   the API expects from that model. Stripping them and leaving the text is worse.
+   the API expects from that model. Stripping them and leaving the text is worse. On a
+   model whose thinking binds, the provider sets those blocks aside once the resident's
+   system text or tools differ from Claude Code's, and their text stays.
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.

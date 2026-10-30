@@ -327,7 +327,9 @@ and keep everything under `strategy` as is; chunk size, merge fan-in and the
 fallback rungs are window-independent.
 
 **System prompt: keep it minimal.** Leave it empty (`""` is valid; the request then carries
-no system block at all), or write a few sentences at most. Most long-running residents run
+no system block at all, except on a model whose thinking binds, where the host's one paragraph
+on folds is the system text, unless the recipe uses the `anthropic-xml` formatter), or write a
+few sentences at most. Most long-running residents run
 a single sentence or nothing. Why:
 
 - **The agent's identity lives in its memory.** That means the imported history and everything
@@ -348,8 +350,9 @@ longer persona text, offer to put it where the agent can read it as material (a 
 
 For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
 set the recipe baseline; `enabled` is still required and can be `false`.
-Explicit `agent_settings` effort overrides the recipe until reset, from the
-point where it was set: a branch made before that point, such as an undo past
+Effort set explicitly with `agent_settings` (in the agent's built-in `settings`
+toolset, or its tool list if that lacks `toolsets--open` or `toolsets--act`)
+overrides the recipe until reset, from the point where it was set: a branch made before that point, such as an undo past
 the turn that set it, has the effort set there, or the recipe's where none was.
 Unrelated settings updates preserve the baseline, and compression calls are
 unaffected.
@@ -374,7 +377,8 @@ churn in the field.
 **Memory defaults.** Current host code fills an omitted/partial `strategy` with:
 autobiographical + `adaptiveResolution: true` + `foldingStrategy: "kv-unified"` with the
 host's standard `kvUnified` block (§5b) + same-model compression (`compressionModel` falls
-back to `agent.model`) + `summaryParticipant` = `agent.name`. Omitted sizes: a
+back to `agent.model`) + `summaryParticipant` = the agent's name + a `summaryContextLabel`
+saying the summary stands in for earlier conversation. Omitted sizes: a
 `contextBudgetTokens` of 300k, or, on Anthropic's API for a model the host knows a window for, with a `maxTokens`
 that is unset or a positive number, the smaller of 300k and the window less the system prompt and 32k for the tools (§11.1); a `recentWindowTokens`
 of 40% of the budget (120k at 300k), or 40% of the budget less `maxTokens` where the head and
@@ -834,8 +838,14 @@ trigger into a channel the resident reads.
 works only on the model that minted them; any other model 400s. Editing the *shape* of a turn
 around a retained thinking block (split, reorder, insert before) also 400s ("thinking blocks
 cannot be modified") — a transport error the membrane retries once text-only, not a refusal.
-Newer API accounts additionally enforce preserved thinking on context edits before thinking
-blocks; expect folds to interact with this on the next model generation.
+On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
+to the conversation and head (system text, tools, model) it was minted under: an account that
+enforces the binding refuses a request where those changed, as after a fold. The host sends the
+drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
+leaves out what a fold invalidates (anima-research/context-manager#155). On those four the host
+also passes the model's window, and with both, agent-framework doesn't break a turn's stream at
+`maxStreamTokens` (or the `/budget` command's value): its stream breaks mid-turn for its size
+only where its next request would pass the window, and a fresh compile carries the turn on.
 
 ---
 

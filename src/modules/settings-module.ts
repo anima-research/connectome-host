@@ -8,7 +8,7 @@ import type {
   ToolCall,
   ToolResult,
 } from '@animalabs/agent-framework';
-import { unknownToolResult } from './unknown-tool.js';
+import { settingsRoute, unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
 
 export interface ReasoningSettings {
@@ -77,7 +77,7 @@ export class SettingsModule implements Module {
       this,
       call.name,
       'Reasoning is set through agent_settings, in its fields reasoning_enabled, reasoning_budget_tokens, ' +
-      'reasoning_display and reasoning_effort.',
+      `reasoning_display and reasoning_effort; reach agent_settings with ${settingsRoute('agent_settings')}.`,
     );
   }
 

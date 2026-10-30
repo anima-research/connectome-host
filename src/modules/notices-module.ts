@@ -46,6 +46,7 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'mcpl-down': 'status',
   'quota-unreadable': 'status',
   'auth-expiring': 'status',
+  'credential-unsaved': 'status',
   'refusal-offpath': 'status',
   'context-maintenance-failed': 'status',
   'compression-quarantine': 'status',

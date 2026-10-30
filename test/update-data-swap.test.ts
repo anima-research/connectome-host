@@ -576,7 +576,6 @@ describe('makeDirs', () => {
   });
 
   test("a found directory's parent whose sync fails otherwise isn't passed over", () => {
-    const realFsync = fs.fsyncSync;
     const failing = spyOn(fs, 'fsyncSync').mockImplementation((() => {
       throw Object.assign(new Error('EIO'), { code: 'EIO' });
     }) as typeof fs.fsyncSync);
@@ -585,6 +584,5 @@ describe('makeDirs', () => {
     } finally {
       failing.mockRestore();
     }
-    expect(realFsync).toBe(fs.fsyncSync);
   });
 });

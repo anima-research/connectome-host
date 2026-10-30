@@ -34,6 +34,14 @@ import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
+import {
+  PANEL_OPS_THAT_CHANGE_THE_SESSION,
+  refusedForAnotherSession,
+  refusedWhileSwitching,
+  switchLeftForStop,
+  trackOperatorWork,
+} from '../session-switch.js';
+import { parseCommand } from '../command-name.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
 import { TurnInterrupts, interruptAgents, interruptSubagents } from '../state/turn-interrupt.js';
@@ -41,8 +49,10 @@ import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
   WEB_PROTOCOL_VERSION,
+  isChildScope,
   isClientMessage,
   type WebUiServerMessage,
+  type WebUiClientMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
   type RequestHistoryMessage,
@@ -116,10 +126,12 @@ import {
 
 export interface WebUiAppRef {
   framework: AgentFramework;
+  frameworkSessionId: string;
   sessionManager: SessionManager;
   recipe: Recipe;
   branchState: BranchState;
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<unknown>;
+  switching?: boolean;
 }
 
 export interface WebUiModuleConfig {
@@ -181,8 +193,59 @@ const HEALTH_ROUTE_STRINGS: ReadonlyMap<string, KeptStrings> = new Map<string, K
   ['/credential', CREDENTIAL_STRINGS],
 ]);
 
-function isChildScope(scope: string | undefined): scope is string {
-  return scope !== undefined && scope !== '' && scope !== 'local';
+function refusalReply(
+  message: WebUiClientMessage,
+  refusal: (what: string) => string | null,
+): WebUiServerMessage | null {
+  switch (message.type) {
+    case 'rollback':
+    case 'suppress': {
+      const error = refusal(message.type);
+      return error ? { type: 'surgery-result', corrId: message.corrId, op: message.type, ok: false, error } : null;
+    }
+    case 'fleet-stop':
+    case 'fleet-restart':
+    case 'cancel-subagent': {
+      const text = refusal(`${message.type} ${message.name}`);
+      return text ? { type: 'command-result', lines: [{ text, style: 'tool' }] } : null;
+    }
+    case 'host-quiesce':
+    case 'host-resume': {
+      const text = refusal(message.type);
+      return text ? { type: 'error', corrId: message.corrId, message: text } : null;
+    }
+    default: {
+      if (!PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) return null;
+      if (isChildScope((message as { scope?: string }).scope)) return null;
+      const text = refusal(message.type);
+      return text ? { type: 'error', message: text } : null;
+    }
+  }
+}
+
+export function switchRefusalFor(
+  app: { switching?: boolean },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  if (message.type === 'cancel-subagent') return null;
+  return refusalReply(message, (what) => refusedWhileSwitching(app, what));
+}
+
+const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
+  'rollback',
+  'suppress',
+  'cancel-subagent',
+  ...PANEL_OPS_THAT_CHANGE_THE_SESSION,
+]);
+
+export function sessionRefusalFor(
+  app: Pick<WebUiAppRef, 'frameworkSessionId'> & { sessionManager: Pick<SessionManager, 'findSession'> },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  if (!CHANGES_STAMPED_WITH_THEIR_SESSION.has(message.type)) return null;
+  const chosenIn = (message as { sessionId?: string }).sessionId;
+  if (chosenIn === undefined) return null;
+  return refusalReply(message, (what) => refusedForAnotherSession(app.frameworkSessionId, app.sessionManager, chosenIn, what));
 }
 
 function panelErrorResponse(err: unknown): Response {
@@ -254,6 +317,28 @@ interface WindowCapableCm {
 }
 
 const DEFAULT_HOST = '0.0.0.0';
+const LOOPBACK_NAMES: ReadonlySet<string> = new Set(['127.0.0.1', '::1', 'localhost']);
+const NOT_LOOPBACK = 'Forbidden: without basicAuth this Web UI answers only loopback\'s own names (127.0.0.1, ' +
+  'localhost, [::1]). Set basicAuth to serve it under another name.';
+
+const HOST_FORM = /^(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d+)?$/i;
+
+const unbracketed = (name: string) => name.replace(/^\[(.*)\]$/, '$1');
+
+function namesLoopback(host: string | null): boolean {
+  const name = host?.match(HOST_FORM)?.[1];
+  return name !== undefined && LOOPBACK_NAMES.has(unbracketed(name.toLowerCase()));
+}
+
+function isOrigin(origin: unknown): origin is string {
+  if (typeof origin !== 'string' || !URL.canParse(origin)) return false;
+  const { protocol } = new URL(origin);
+  return protocol === 'http:' || protocol === 'https:';
+}
+
+function isLoopbackOrigin(origin: unknown): boolean {
+  return isOrigin(origin) && LOOPBACK_NAMES.has(unbracketed(new URL(origin).hostname));
+}
 
 interface SharedServerState {
   server: ReturnType<typeof Bun.serve>;
@@ -327,8 +412,14 @@ export class WebUiModule implements Module {
 
   private readonly staticRoot: string;
 
+  private observerPollMs: number | undefined;
+
   constructor(config: WebUiModuleConfig = {}) {
-    this.config = config;
+    this.config = {
+      ...config,
+      basicAuth: config.basicAuth || undefined,
+      allowedOrigins: config.allowedOrigins ?? undefined,
+    };
     const moduleDir = dirname(fileURLToPath(import.meta.url));
     const packageRoot = resolve(moduleDir, '..', '..');
     this.staticRoot = resolve(config.staticDir ?? join(packageRoot, 'dist', 'web'));
@@ -341,7 +432,9 @@ export class WebUiModule implements Module {
 
     const port = this.config.port ?? DEFAULT_PORT;
     const host = this.config.host ?? DEFAULT_HOST;
+    this.assertCredentials();
     this.assertSafeBind(host);
+    this.assertOriginCheck();
 
     const state: SharedServerState = {
       server: undefined as unknown as ReturnType<typeof Bun.serve>,
@@ -352,7 +445,7 @@ export class WebUiModule implements Module {
       allowedOrigins: this.config.allowedOrigins ?? defaultAllowedOrigins(port),
       clients: new Map(),
       nextClientId: 1,
-      observers: this.config.observersPath ? new ObserverRegistry(this.config.observersPath) : null,
+      observers: this.config.observersPath ? new ObserverRegistry(this.config.observersPath, this.observerPollMs) : null,
       observerSessions: new ObserverSessions(),
       latestUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       parentUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -783,6 +876,11 @@ export class WebUiModule implements Module {
   }
 
   private async handleHttp(req: Request, server: ReturnType<typeof Bun.serve>): Promise<Response> {
+    // A page whose own name an attacker resolves to 127.0.0.1 (DNS rebinding)
+    // sends that name as its Host, so without basic auth only loopback's are served.
+    if (!this.config.basicAuth && !namesLoopback(req.headers.get('host'))) {
+      return new Response(NOT_LOOPBACK, { status: 403 });
+    }
     const url = new URL(req.url);
 
     // Every route answers GET and HEAD only; anything else is a 405.
@@ -1086,7 +1184,8 @@ export class WebUiModule implements Module {
     const params = panelParamsFromUrl(url);
     const pretty = url.searchParams.get('pretty') !== null && url.searchParams.get('pretty') !== '0';
     try {
-      const payload = await buildDebugContext(app, resolveAgent(app, params.agent), params);
+      const sessionId = sharedServer!.app!.frameworkSessionId;
+      const payload = { sessionId, ...await buildDebugContext(app, resolveAgent(app, params.agent), params) };
       return new Response(
         JSON.stringify(payload, null, pretty ? 2 : undefined),
         { headers: { 'content-type': 'application/json' } },
@@ -1547,6 +1646,13 @@ export class WebUiModule implements Module {
       this.send(client, { type: 'error', message: 'host not ready' });
       return;
     }
+    const app = sharedServer.app;
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed);
+    if (refused) {
+      this.send(client, refused);
+      if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();
+      return;
+    }
 
     switch (parsed.type) {
       case 'ping':
@@ -1594,19 +1700,19 @@ export class WebUiModule implements Module {
       }
 
       case 'rollback':
-        void this.handleSurgery(client, 'rollback', parsed);
+        void trackOperatorWork(app, 'rollback', this.handleSurgery(client, 'rollback', parsed));
         return;
 
       case 'suppress':
-        void this.handleSurgery(client, 'suppress', parsed);
+        void trackOperatorWork(app, 'suppress', this.handleSurgery(client, 'suppress', parsed));
         return;
 
       case 'host-quiesce':
-        void this.handleHostMode(client, 'quiesce', parsed);
+        void trackOperatorWork(app, 'host-quiesce', this.handleHostMode(client, 'quiesce', parsed));
         return;
 
       case 'host-resume':
-        void this.handleHostMode(client, 'resume', parsed);
+        void trackOperatorWork(app, 'host-resume', this.handleHostMode(client, 'resume', parsed));
         return;
 
       case 'request-host-mode': {
@@ -1655,7 +1761,7 @@ export class WebUiModule implements Module {
 
       case 'fleet-stop':
       case 'fleet-restart': {
-        void this.handleFleetControl(client, parsed.type, parsed.name);
+        void trackOperatorWork(app, `${parsed.type} ${parsed.name}`, this.handleFleetControl(client, parsed.type, parsed.name));
         return;
       }
 
@@ -2413,9 +2519,10 @@ export class WebUiModule implements Module {
 
   private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
     if (!sharedServer?.app) return;
+    const app = sharedServer.app;
     let result;
     try {
-      result = handleCommand(command, sharedServer?.app);
+      result = handleCommand(command, app);
     } catch (err) {
       this.send(client, {
         type: 'error',
@@ -2444,15 +2551,18 @@ export class WebUiModule implements Module {
       this.scheduleShutdown();
     }
 
+    const commandName = `/${parseCommand(command).name}`;
     if (result.branchChanged) {
-      await this.materializeConfigMount();
+      await trackOperatorWork(app, commandName, this.materializeConfigMount());
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     }
 
     if (result.switchToSessionId) {
       try {
-        await sharedServer?.app.switchSession(result.switchToSessionId);
+        if (await app.switchSession(result.switchToSessionId) === false) {
+          this.send(client, { type: 'error', corrId, message: switchLeftForStop(app.sessionManager.getActiveSession()) });
+        }
       } catch (err) {
         this.send(client, {
           type: 'error',
@@ -2474,7 +2584,7 @@ export class WebUiModule implements Module {
           switchToSessionId: follow.switchToSessionId,
         });
         if (follow.branchChanged) {
-          await this.materializeConfigMount();
+          await trackOperatorWork(app, commandName, this.materializeConfigMount());
           this.broadcastBranchChanged();
           this.refreshAllWelcomes();
         }
@@ -2502,8 +2612,9 @@ export class WebUiModule implements Module {
     const app = this.panelApp();
     if (!app) return;
     try {
+      const sessionId = sharedServer!.app!.frameworkSessionId;
       const snap = buildPinsSnapshot(app, resolveAgent(app, agentName));
-      this.send(client, { type: 'pins-list', scope: 'local', ...snap });
+      this.send(client, { type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch (err) {
       this.send(client, {
         type: 'error',
@@ -2540,20 +2651,22 @@ export class WebUiModule implements Module {
     const app = this.panelApp();
     if (!app) return;
     try {
+      const sessionId = sharedServer!.app!.frameworkSessionId;
       const snap = buildPinsSnapshot(app, agentName);
-      this.broadcast({ type: 'pins-list', scope: 'local', ...snap });
+      this.broadcast({ type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch { }
   }
 
   private sendSettingsState(client: ClientState, agentName?: string): void {
     const app = this.panelApp();
     if (!app) return;
+    const sessionId = sharedServer!.app!.frameworkSessionId;
     const msg = buildSettingsState(app, resolveAgent(app, agentName));
     if (!msg) {
       this.send(client, { type: 'error', message: 'runtime settings unavailable on this build' });
       return;
     }
-    this.send(client, { type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+    this.send(client, { type: 'settings-state', scope: 'local', sessionId, ...msg } as WebUiServerMessage);
   }
 
   private async sendScopedSettings(client: ClientState, scope: string, agentName?: string): Promise<void> {
@@ -2577,9 +2690,10 @@ export class WebUiModule implements Module {
   private broadcastSettingsState(agentName: string): void {
     const app = this.panelApp();
     if (!app) return;
+    const sessionId = sharedServer!.app!.frameworkSessionId;
     const msg = buildSettingsState(app, agentName);
     if (!msg) return;
-    this.broadcast({ type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+    this.broadcast({ type: 'settings-state', scope: 'local', sessionId, ...msg } as WebUiServerMessage);
   }
 
   private async requestChildPanel(
@@ -2655,8 +2769,9 @@ export class WebUiModule implements Module {
   }
 
   private handleRequestHistory(client: ClientState, req: RequestHistoryMessage): void {
-    const cm = sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager();
-    if (!cm) {
+    const app = sharedServer?.app;
+    const cm = app?.framework.getAllAgents()[0]?.getContextManager();
+    if (!app || !cm) {
       this.send(client, { type: 'error', corrId: req.corrId, message: 'no context manager' });
       return;
     }
@@ -2670,7 +2785,7 @@ export class WebUiModule implements Module {
     }
     const limit = Math.min(req.limit ?? HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX);
     const beforeIndex = Math.min(req.beforeIndex, cmw.getMessageCount());
-    this.send(client, { type: 'history-page', corrId: req.corrId, ...readHistory(cmw, beforeIndex, limit, client.scopes) });
+    this.send(client, { type: 'history-page', corrId: req.corrId, sessionId: app.frameworkSessionId, ...readHistory(cmw, beforeIndex, limit, client.scopes) });
   }
 
   private async loadWelcomeRecipes(): Promise<Map<string, Awaited<ReturnType<WebUiModule['loadChildRecipeInfo']>>>> {
@@ -2693,10 +2808,14 @@ export class WebUiModule implements Module {
     const app = sharedServer?.app!;
     const fw = app.framework;
     const agents = fw.getAllAgents();
-    const session = app.sessionManager.getActiveSession();
-    if (!session) {
-      throw new Error('cannot build welcome: no active session');
-    }
+    const sessionId = app.frameworkSessionId;
+    let indexed: ReturnType<SessionManager['findSession']> = null;
+    try {
+      indexed = app.sessionManager.findSession(sessionId);
+    } catch { }
+    const session = indexed?.id === sessionId
+      ? indexed
+      : { id: sessionId, name: sessionId, manuallyNamed: false };
 
     const cm = agents[0]?.getContextManager();
     let messages: WelcomeMessageEntry[] = [];
@@ -2790,7 +2909,7 @@ export class WebUiModule implements Module {
   }
 
   private assertSafeBind(host: string): void {
-    const isLoopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+    const isLoopback = LOOPBACK_NAMES.has(host);
     if (isLoopback) return;
     if (this.config.basicAuth) return;
     throw new Error(
@@ -2802,21 +2921,57 @@ export class WebUiModule implements Module {
     );
   }
 
+  private assertCredentials(): void {
+    const auth = this.config.basicAuth;
+    const filled = (value: unknown) => typeof value === 'string' && value !== '';
+    if (!auth || (filled(auth.username) && filled(auth.password))) return;
+    throw new Error(
+      'WebUiModule refuses basicAuth whose username or password is empty, missing or not a string. Set both. A ' +
+      '${VAR} reference that .env sets to nothing, such as WEBUI_PASS=, gives an empty value.',
+    );
+  }
+
+  private assertOriginCheck(): void {
+    const origins = this.config.allowedOrigins;
+    if (origins === undefined) return;
+    const fits = this.config.basicAuth ? isOrigin : isLoopbackOrigin;
+    let named: string;
+    if (!Array.isArray(origins)) named = `allowedOrigins ${JSON.stringify(origins)}, which isn't a list,`;
+    else if (origins.length === 0) named = 'allowedOrigins: []';
+    else {
+      const at = origins.findIndex((o) => !fits(o));
+      if (at === -1) return;
+      named = `the allowedOrigins entry ${JSON.stringify(origins[at])}`;
+    }
+    if (this.config.basicAuth) {
+      throw new Error(
+        `WebUiModule refuses ${named} with basicAuth: with credentials, allowedOrigins is absent, or a non-empty ` +
+        'list whose every entry is an http or https URL. List the origins to accept, or remove allowedOrigins so ' +
+        'the /ws upgrade checks Origin against the default list.',
+      );
+    }
+    throw new Error(
+      `WebUiModule refuses ${named} without basicAuth:` +
+      ' without credentials, allowedOrigins is absent, or a non-empty list whose every entry is an http or https ' +
+      'URL on 127.0.0.1, localhost or [::1]. Set basicAuth and make allowedOrigins a non-empty list of http or ' +
+      'https origins, or remove allowedOrigins so the /ws upgrade checks Origin against the default list again.',
+    );
+  }
+
   /**
-   * Checks the upgrade's Origin against the allowlist. An empty allowlist
-   * turns the check off. A request with no Origin is accepted: browsers send
-   * one on every WebSocket upgrade, and other clients usually don't.
+   * Checks the upgrade's Origin against the allowlist. A request with no
+   * Origin is accepted: browsers send one on every WebSocket upgrade, and
+   * other clients usually don't.
    */
   private checkOrigin(req: Request): boolean {
     if (!sharedServer) return false;
     const allow = sharedServer.allowedOrigins;
-    if (allow.length === 0) return true;
     const origin = req.headers.get('origin');
     if (!origin) return true;
     if (allow.includes(origin)) return true;
     // An Origin whose host and port are the request's Host is accepted: a page
     // this server served under a name the default list can't predict, such as
-    // a Tailscale or LAN name. A page elsewhere can't forge its Origin.
+    // a Tailscale or LAN name.
     try {
       const originHost = new URL(origin).host;
       const host = req.headers.get('host');

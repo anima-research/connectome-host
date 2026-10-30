@@ -533,6 +533,27 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'gate:debounce-delivered': OPS,
   'gate:config-reloaded': OPS,
   'gate:decision': OPS,
+  'gate:held-dropped': OPS,
+  // Admission and the Dendrite registry (agent-framework#546): a decision is
+  // an ops fact; an agent's creation, end, interruption, orphaning and
+  // reparenting are the host's health as the tree shows it, and ops; mail
+  // traces carry ids and routes, never content; a reader fork's run and the
+  // report it delivers are the tune-out's ops, the report a message too.
+  'admission:decided': OPS,
+  'dendrite:agent-created': ['health', 'ops'],
+  'dendrite:agent-ended': ['health', 'ops'],
+  'dendrite:agent-interrupted': ['health', 'ops'],
+  'dendrite:agent-orphaned': ['health', 'ops'],
+  'dendrite:agent-reparented': ['health', 'ops'],
+  'dendrite:activation-cancelled': ['health', 'ops'],
+  'dendrite:early-traces-dropped': OPS,
+  'dendrite:mail-held': OPS,
+  'dendrite:mail-deferred': OPS,
+  'dendrite:mail-delivered': OPS,
+  'tune-out:reader-fork': OPS,
+  // A reader fork whose framing, derive or run threw before it reported; its messages go back to the channel's next reader (agent-framework #793).
+  'tune-out:reader-fork-failed': OPS,
+  'tune-out:reader-prose-delivered': ['messages', 'ops'],
   'gate:wake-line-omitted': OPS,
   'gate:policy-added': OPS,
   'gate:policy-removed': OPS,

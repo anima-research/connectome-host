@@ -23,6 +23,7 @@ import type { AgentNode } from './state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './state/stream-usage.js';
 import { STREAM_END_TRACES, TURN_RUNNING_TRACES, traceError } from './state/turn-trace.js';
 import { createFailureLines, createTurnFailures, turnEndedLine, type FailureStep } from './state/turn-failures.js';
+import { credentialActionHint, opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { failureHint } from './failure-hint.js';
 import { TurnInterrupts, interruptSubagents } from './state/turn-interrupt.js';
 import { switchFollowing, traceFollower } from './piped-turns.js';
@@ -30,6 +31,7 @@ import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
+import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { recipeModel } from './recipe.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
@@ -269,7 +271,8 @@ interface AppContext {
   credentials?: import('./credential-state.js').CredentialMonitor | null;
   subscriptionUnmetered?: boolean;
   stopping?: boolean;
-  switchSession(id: string): Promise<void>;
+  switching?: boolean;
+  switchSession(id: string): Promise<unknown>;
 }
 
 interface TokenUsage {
@@ -279,13 +282,6 @@ interface TokenUsage {
   cacheWrite: number;
   cost?: { total: number; currency: string };
   quota?: string | null;
-}
-
-interface OpsAlertEntry {
-  kind: string;
-  agent: string;
-  message: string;
-  count: number;
 }
 
 interface TuiState {
@@ -371,30 +367,10 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const opsAlerts = new Map<string, OpsAlertEntry>();
 
-  function credentialActionHint(data: unknown): string {
-    const actions = (data as { actions?: unknown } | undefined)?.actions;
-    if (!Array.isArray(actions) || actions.length === 0) return '';
-    const ids = actions
-      .map((a) => (a as { id?: unknown })?.id)
-      .filter((id): id is string => typeof id === 'string')
-      .map((id) => (id === 'set-token' ? '/auth token <tok>' : `/auth ${id}`));
-    return ids.length > 0 ? ` — ${ids.join(' | ')}` : '';
-  }
-
   function handleOpsAlert(kind: string, agent: string, message: string): void {
-    if (kind.endsWith('-clear')) {
-      const baseKey = `${agent}:${kind.slice(0, -'-clear'.length)}`;
-      if (opsAlerts.delete(baseKey)) {
-        addEvent(`✓ [${agent}] ${kind}: ${message}`, CYAN);
-        updateStatus();
-      }
-      return;
-    }
-    const key = `${agent}:${kind}`;
-    const existing = opsAlerts.get(key);
-    opsAlerts.set(key, { kind, agent, message, count: (existing?.count ?? 0) + 1 });
-    const times = existing ? ` (×${existing.count + 1})` : '';
-    addEvent(`⚠ [${agent}] ${kind}${times}: ${message}`, RED);
+    const line = opsAlertLine(opsAlerts, kind, agent, message);
+    if (line === null) return;
+    addEvent(line.text, line.cleared ? CYAN : RED);
     updateStatus();
   }
 
@@ -825,7 +801,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     const ws = app.framework.getModule('workspace');
     if (ws && 'materializeMount' in ws) {
-      (ws as any).materializeMount('_config').catch(() => {});
+      trackOperatorWork(app, "the _config mount's refresh", (ws as any).materializeMount('_config')).catch(() => {});
     }
 
     updateStatus();
@@ -1677,11 +1653,8 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'ops:alert': {
-        handleOpsAlert(
-          typeof event.kind === 'string' ? event.kind : 'unknown',
-          typeof event.agentName === 'string' ? event.agentName : '?',
-          (typeof event.message === 'string' ? event.message : '') + credentialActionHint(event.data),
-        );
+        const alert = opsAlertOf(event);
+        handleOpsAlert(alert.kind, alert.agent, alert.message);
         break;
       }
 
@@ -1877,12 +1850,8 @@ export async function runTui(app: AppContext): Promise<void> {
     fleetOpsUnsub?.();
     fleetOpsUnsub = fleetMod?.onChildEvent('*', (childName, evt) => {
       if (evt.type !== 'ops:alert') return;
-      const e = evt as Record<string, unknown>;
-      handleOpsAlert(
-        typeof e.kind === 'string' ? e.kind : 'unknown',
-        `${childName}/${typeof e.agentName === 'string' ? e.agentName : '?'}`,
-        typeof e.message === 'string' ? e.message : '',
-      );
+      const alert = opsAlertOf(evt as Record<string, unknown>, childName);
+      handleOpsAlert(alert.kind, alert.agent, alert.message);
     }) ?? null;
   }
   subscribeFleetOps();
@@ -2241,7 +2210,12 @@ export async function runTui(app: AppContext): Promise<void> {
         if (node && node.kind !== 'researcher') {
           if (node.kind === 'fleet-child' && fleetMod) {
             const childName = node.fleetChildName!;
-            fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } })
+            const refused = refusedWhileSwitching(app, `stop ${childName}`);
+            if (refused) {
+              showFleetNotice(refused);
+              return;
+            }
+            trackOperatorWork(app, `stop ${childName}`, fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } }))
               .then((res) => {
                 if (!res.success) showFleetNotice(`stop ${childName} failed: ${res.error ?? 'unknown'}`);
                 updateFleetView();
@@ -2261,7 +2235,12 @@ export async function runTui(app: AppContext): Promise<void> {
         const node = nodeId ? visibleNodes.get(nodeId) : undefined;
         if (node?.kind === 'fleet-child' && fleetMod) {
           const childName = node.fleetChildName!;
-          fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } })
+          const refused = refusedWhileSwitching(app, `restart ${childName}`);
+          if (refused) {
+            showFleetNotice(refused);
+            return;
+          }
+          trackOperatorWork(app, `restart ${childName}`, fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } }))
             .then((res) => {
               if (!res.success) showFleetNotice(`restart ${childName} failed: ${res.error ?? 'unknown'}`);
               updateFleetView();

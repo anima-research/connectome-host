@@ -3,6 +3,8 @@ import {
   PassthroughStrategy,
   type ContextStrategy,
   type ConversationRouterConfig,
+  type FrameworkConfig,
+  type SubconsciousConfig,
 } from '@animalabs/agent-framework';
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
@@ -122,6 +124,7 @@ export function buildFrameworkStrategy(
   model: string,
   timeZone: string,
   extensions?: ExtensionRegistry,
+  agentName?: string,
 ): ContextStrategy {
   const strategyConfig = recipe.agent.strategy;
   const strategyType = strategyConfig?.type ?? 'autobiographical';
@@ -169,8 +172,10 @@ export function buildFrameworkStrategy(
   // leaves them out: under adaptive resolution its folding strategy is
   // 'flat-profile', which plans layouts without regard for the prompt cache;
   // kv-unified takes no defaults and refuses an incomplete kvUnified block;
-  // and its summary participant is the literal 'Claude', which voices the
-  // agent's own recollections as a stranger's.
+  // its summary participant is the literal 'Claude', which voices the
+  // agent's own recollections as a stranger's; and its summary label asks
+  // "What do you remember from earlier?", which doesn't tell the agent that
+  // a summary has replaced the exact text.
   if (
     (strategyType === 'autobiographical' || strategyType === 'frontdesk') &&
     autobiographicalOpts.adaptiveResolution !== false &&
@@ -181,8 +186,13 @@ export function buildFrameworkStrategy(
   if (autobiographicalOpts.foldingStrategy === 'kv-unified' && autobiographicalOpts.kvUnified === undefined) {
     autobiographicalOpts.kvUnified = standardKvUnifiedConfig(recipe, model);
   }
-  if (autobiographicalOpts.summaryParticipant === undefined && recipe.agent.name) {
-    autobiographicalOpts.summaryParticipant = recipe.agent.name;
+  const voice = agentName ?? recipe.agent.name;
+  if (autobiographicalOpts.summaryParticipant === undefined && voice) {
+    autobiographicalOpts.summaryParticipant = voice;
+  }
+  if (autobiographicalOpts.summaryContextLabel === undefined) {
+    autobiographicalOpts.summaryContextLabel =
+      "A summary follows, standing in for earlier conversation, tool calls and results included. The exact text it replaces isn't shown.";
   }
 
   return strategyType === 'passthrough'
@@ -215,5 +225,48 @@ export function buildConversationsConfig(
     ...(conv.closurePrompt !== undefined ? { closurePrompt: conv.closurePrompt } : {}),
     ...(conv.agentPrefix !== undefined ? { agentPrefix: conv.agentPrefix } : {}),
     strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions),
+  };
+}
+
+/**
+ * Map a recipe's `subconscious` block to the framework's SubconsciousConfig
+ * (agent-framework#77, #232). The persistent reader passes through verbatim;
+ * the framework owns its defaults. Reader forks get the one field a recipe
+ * cannot state: `strategyFactory`, a FRESH instance of the recipe's strategy
+ * per fork (the `conversations` pattern), so a fork reuses the resident's
+ * fold state and rendering. Without it the framework refuses forks unless
+ * the resident runs a passthrough strategy.
+ */
+export function buildSubconsciousConfig(
+  recipe: Recipe,
+  model: string,
+  timeZone: string,
+  extensions?: ExtensionRegistry,
+): SubconsciousConfig | undefined {
+  const sub = recipe.subconscious;
+  if (!sub) return undefined;
+  if (sub.reader !== 'forks') return sub;
+  return { ...sub, strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions) };
+}
+
+/**
+ * The Dendrite part of what the host hands AgentFramework.create()
+ * (agent-framework#546): the reader (mapped above) and the `speech`,
+ * `tuneOut` and `dendrite` blocks, each present only when the recipe states
+ * it, so the framework's defaults apply to the rest. Spread into create()'s
+ * argument as is.
+ */
+export function dendriteCreateOptions(
+  recipe: Recipe,
+  model: string,
+  timeZone: string,
+  extensions?: ExtensionRegistry,
+): Pick<FrameworkConfig, 'subconscious' | 'speech' | 'tuneOut' | 'dendrite'> {
+  const subconscious = buildSubconsciousConfig(recipe, model, timeZone, extensions);
+  return {
+    ...(subconscious ? { subconscious } : {}),
+    ...(recipe.speech ? { speech: recipe.speech } : {}),
+    ...(recipe.tuneOut ? { tuneOut: recipe.tuneOut } : {}),
+    ...(recipe.dendrite ? { dendrite: recipe.dendrite } : {}),
   };
 }

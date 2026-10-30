@@ -230,6 +230,7 @@ export interface McplLiveServer {
   toolCount: number;
   toolPrefix?: string;
   target?: string;
+  closedTab?: boolean;
 }
 
 export function mcplPanelServer(
@@ -260,7 +261,7 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
     const fw = app.framework as unknown as {
       listMcplServers?: () => Array<{
         id: string; connected?: boolean; toolCount?: number; toolPrefix?: string;
-        command?: string; url?: string;
+        command?: string; url?: string; closedTab?: boolean;
       }>;
     };
     if (typeof fw.listMcplServers === 'function') {
@@ -270,6 +271,7 @@ export function buildMcplSnapshot(app: PanelAppRef): Record<string, unknown> {
         toolCount: s.toolCount ?? 0,
         ...(s.toolPrefix ? { toolPrefix: s.toolPrefix } : {}),
         ...(s.command || s.url ? { target: s.command ?? s.url } : {}),
+        ...(s.closedTab ? { closedTab: true } : {}),
       }));
     }
   } catch { }

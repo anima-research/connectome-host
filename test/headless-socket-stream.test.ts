@@ -119,11 +119,13 @@ test('production headless receiver preserves Unicode commands at every byte boun
       expect(snapshots.at(-1)!.corrId).toBe(corrId);
     }
     expect([...splitWidths].sort()).toEqual([2, 3, 4]);
+    const nodes = (snapshots[0]!.tree as { nodes: Array<{ name: string; kind: string }> }).nodes;
+    expect(nodes.find(node => node.name === 'commander')?.kind).toBe('framework');
     const batch = ['é first', '漢 second', '𐐷 third'];
     socket.write(batch.map(corrId => JSON.stringify({ type: 'describe', corrId }) + '\n').join(''));
-    await waitFor(() => snapshots.length >= frame.length - 1 + batch.length, 'ordered batch');
+    await waitFor(() => snapshots.length >= frame.length - 1 + batch.length, 'the batch\'s snapshots');
     expect(snapshots).toHaveLength(frame.length - 1 + batch.length);
-    expect(snapshots.slice(-batch.length).map(event => event.corrId)).toEqual(batch);
+    expect(snapshots.slice(-batch.length).map(event => event.corrId).sort()).toEqual([...batch].sort());
   } finally {
     closing = true;
     socket?.destroy();

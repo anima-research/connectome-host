@@ -28,7 +28,7 @@ describe('resolveQuitConfirm', () => {
     expect(resolveQuitConfirm('cancel')).toBe('cancel');
   });
 
-  test('a real message cancels AND must be restored to the input', () => {
+  test('a real message cancels, and asks for the input to be kept', () => {
     expect(resolveQuitConfirm('actually, first summarize what miner found')).toBe('cancel-keep-input');
     expect(resolveQuitConfirm('[paste #1: "…" 40000ch, 900L]')).toBe('cancel-keep-input');
     expect(resolveQuitConfirm('/status')).toBe('cancel-keep-input');

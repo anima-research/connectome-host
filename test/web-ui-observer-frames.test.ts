@@ -110,7 +110,8 @@ describe('what each client is sent', () => {
           }],
         }),
       },
-      sessionManager: { getActiveSession: () => ({ id: 's1', name: 'Debugging the bridge', manuallyNamed: false }) },
+      frameworkSessionId: 's1',
+      sessionManager: { findSession: (id: string) => (id === 's1' ? { id: 's1', name: 'Debugging the bridge', manuallyNamed: false } : null) },
       config: {
         callLedger: {
           snapshot: () => ledgerNow,

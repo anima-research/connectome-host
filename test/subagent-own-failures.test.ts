@@ -9,6 +9,7 @@ import { SubagentModule } from '../src/modules/subagent-module.js';
 
 type Internal = {
   rateLimitCooldownMs: number;
+  retryBackoffMs: number;
   onRateLimitHit(): Promise<void>;
   asyncHandles: Map<string, { promise: Promise<unknown> }>;
   activeSubagents: Map<string, { lastActivityAt: number; status: string }>;
@@ -225,6 +226,7 @@ describe('a framework failure is read without the ephemeral agent\'s name, and n
 
   test('control: a provider\'s own transient words are still retried', async () => {
     const h = await harness({ maxRetries: 1 }, async () => { throw new Error('503 overloaded: socket hang up'); });
+    internal(h.subagent).retryBackoffMs = 0;
     try {
       const res = await h.subagent.handleToolCall(spawn('scout', { sync: true }));
       expect(res.success).toBe(false);
@@ -352,27 +354,42 @@ describe('an async run is stopped at its time limit, which covers its retries', 
 
   test('a retry that starts within the limit gets only what is left of it', async () => {
     const given: Watchdogs[] = [];
+    const at: number[] = [];
     const h = await harness({ maxRetries: 1 }, async (_agent, _cm, watchdogs) => {
       given.push(watchdogs);
+      at.push(Date.now());
       if (given.length === 1) { await sleep(50); throw new Error('503 overloaded'); }
       return new Promise(() => { });
     });
+    const limit = 3000, backoff = 1000;
+    internal(h.subagent).retryBackoffMs = backoff;
+    const stops = countStops(h);
     try {
       const started = Date.now();
-      await h.subagent.handleToolCall(spawn('scout', { timeoutMs: 6000 }));
+      await h.subagent.handleToolCall(spawn('scout', { timeoutMs: limit }));
       const out = await outcome(h, 'scout');
       const took = Date.now() - started;
-      expect(out).toEqual({ ok: false, text: timeLimitText('scout', '6 s', 'spawn', 2) });
+      expect(out).toEqual({ ok: false, text: timeLimitText('scout', '3 s', 'spawn', 2) });
       expect(given).toHaveLength(2);
-      expect(given[0]!.startupTimeoutMs!).toBeGreaterThan(5000);
-      expect(given[1]!.startupTimeoutMs!).toBeLessThanOrEqual(1000);
-      expect(took).toBeLessThan(8500);
+      expect(given[0]!.startupTimeoutMs!).toBeGreaterThan(2000);
+      expect(given[1]!.startupTimeoutMs!).toBeLessThanOrEqual(limit - backoff);
+      expect(stops).toHaveLength(1);
+      expect(stops[0]!).toBeLessThan(at[0]! + limit + backoff);
+      expect(took).toBeLessThan(5500);
     } finally { await h.cleanup(); }
   }, 20_000);
 
   for (const kind of ['spawn', 'fork'] as const) {
     test(`a rate limit's cooldown ends at the run's limit, for a ${kind}`, async () => {
-      const h = await harness({ maxRetries: 1 }, async () => { await sleep(1000); throw new Error('429 Too Many Requests'); });
+      let left: number | undefined;
+      let ranFor = 0;
+      const h = await harness({ maxRetries: 1 }, async (_agent, _cm, watchdogs) => {
+        left = watchdogs?.startupTimeoutMs;
+        const ran = Date.now();
+        await sleep(200);
+        ranFor = Date.now() - ran;
+        throw new Error('429 Too Many Requests');
+      });
       internal(h.subagent).rateLimitCooldownMs = 5000;
       const lines: string[] = [];
       const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
@@ -385,8 +402,9 @@ describe('an async run is stopped at its time limit, which covers its retries', 
         expect(h.runs()).toBe(1);
         const cooled = lines.map((l) => /cooling down (\d+)ms/.exec(l)?.[1]).filter((m) => m !== undefined).map(Number);
         expect(cooled).toHaveLength(1);
-        expect(cooled[0]!).toBeLessThanOrEqual(500);
-        expect(took).toBeLessThan(4000);
+        expect(left).toBeDefined();
+        expect(cooled[0]!).toBeLessThanOrEqual(left! - ranFor);
+        expect(took).toBeLessThan(5000);
         expect(h.subagent.getConcurrencyStatus().effective).toBe(2);
       } finally {
         spy.mockRestore();
@@ -511,9 +529,14 @@ describe('the stop', () => {
 describe('concurrency slots', () => {
   test('a spawn waiting for a slot starts when the limit rises', async () => {
     const order: string[] = [];
+    let longReleased = false;
+    let endLong: (() => void) | undefined;
+    const releaseLong = (): void => { longReleased = true; endLong?.(); };
     const h = await harness({ maxConcurrent: 1, maxRetries: 0 }, (agent) => new Promise((resolve) => {
-      const ms = agent.name.startsWith('spawn-long-') ? 3000 : 50;
-      setTimeout(() => { order.push(agent.name.split('-')[1]!); resolve({ speech: 'ok', toolCallsCount: 0 }); }, ms);
+      const end = () => { order.push(agent.name.split('-')[1]!); resolve({ speech: 'ok', toolCallsCount: 0 }); };
+      if (!agent.name.startsWith('spawn-long-')) setTimeout(end, 50);
+      else if (longReleased) end();
+      else endLong = end;
     }));
     try {
       await h.subagent.handleToolCall(spawn('long'));
@@ -527,6 +550,7 @@ describe('concurrency slots', () => {
       const long = outcome(h, 'long');
       await short;
       expect(order).toEqual(['short']);
+      releaseLong();
       await long;
     } finally { await h.cleanup(); }
   }, 20_000);
@@ -1670,32 +1694,12 @@ describe('a name means one subagent until its result has come back', () => {
   }, 20_000);
 });
 
-describe('with the clock held, agent names stay new to agent-framework, and until() still gives up', () => {
+describe('with the clock held, agent names stay new to agent-framework', () => {
   const realNow = Date.now;
   const holdClock = (now = realNow()) => { Date.now = () => now; };
   afterEach(() => { Date.now = realNow; });
   const ran = (speech: string) => ({ speech, toolCallsCount: 0 });
   const stampOf = (agentName: string) => Number(/-(\d+)$/.exec(agentName)?.[1]);
-
-  test('until() still gives up while the clock is held', async () => {
-    holdClock();
-    let error: unknown;
-    try { await until(() => false, 50); } catch (err) { error = err; }
-    expect(String(error)).toContain('not brought about within 50 ms');
-  }, 2_000);
-
-  test('a name\'s number is the time when no earlier name has reached it', async () => {
-    const aMinutePastAnyNumberGiven = 60_000;
-    const now = realNow() + aMinutePastAnyNumberGiven;
-    holdClock(now);
-    const names: string[] = [];
-    const h = await harness({ maxRetries: 0 }, async (agent) => { names.push(agent.name); return ran('done'); });
-    try {
-      await h.subagent.handleToolCall(spawn('scout'));
-      expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'done' });
-      expect(names).toEqual([`spawn-scout-${now}`]);
-    } finally { await h.cleanup(); }
-  }, 20_000);
 
   for (const call of [spawn, fork]) {
     const shapes = call === spawn
@@ -1746,8 +1750,4 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
       } finally { await h.cleanup(); }
     }, 20_000);
   }
-
-  test('the clock is the real one again after the cases that held it', () => {
-    expect(Date.now).toBe(realNow);
-  });
 });

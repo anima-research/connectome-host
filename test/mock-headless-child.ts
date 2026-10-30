@@ -47,9 +47,15 @@ const server = createServer((sock) => {
   sock.on('error', () => { });
 
   emit({ type: 'lifecycle', phase: 'ready', pid: process.pid, dataDir, idle: idleSaid });
+  if (bootTurn) {
+    bootTurn = false;
+    emit({ type: 'inference:started', agentName: 'mock', replay: true });
+    emit({ type: 'inference:completed', agentName: 'mock', replay: true });
+  }
 });
 
-let idleSaid = false;
+let bootTurn = process.env.MOCK_BOOT_TURN === '1';
+let idleSaid = bootTurn;
 let textsReceived = 0;
 
 function started(): void {
@@ -156,15 +162,6 @@ function dispatch(msg: Record<string, unknown>): void {
     }
     if (cmd === '/crash') {
       process.exit(1);
-    }
-    if (cmd.startsWith('/tool-use-then-speak ')) {
-      const finalText = cmd.slice('/tool-use-then-speak '.length);
-      started();
-      emit({ type: 'inference:tokens', agentName: 'mock', content: 'let me think' });
-      emit({ type: 'inference:tool_calls_yielded', agentName: 'mock', calls: [{ id: 't1', name: 'dummy', input: {} }] });
-      emit({ type: 'inference:completed', agentName: 'mock' });
-      setTimeout(() => simulateFinalInference(finalText, true), 20);
-      return;
     }
     if (cmd === '/exit-after-idle') {
       started();

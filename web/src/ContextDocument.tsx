@@ -1,4 +1,5 @@
 import { createEffect, createSignal, on, For, Show } from 'solid-js';
+import { isChildScope } from '@conhost/web/protocol';
 import { MediaView } from './Surgery';
 
 interface Msg { participant?: string; role?: string; content: unknown; sourceMessageId?: string }
@@ -72,11 +73,13 @@ function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
 
 export function ContextDocument(props: {
   scope?: string;
+  session: string | null;
   scrollRoot?: () => HTMLElement | undefined;
   canRollback?: boolean;
-  onRollback?: (messageId: string, preview: string) => void;
+  onRollback?: (messageId: string, preview: string, chosenIn: string | null) => void;
 }) {
   const [msgs, setMsgs] = createSignal<Msg[]>([]);
+  const [msgsSession, setMsgsSession] = createSignal<string | null>(null);
   const [stats, setStats] = createSignal<Stats | null>(null);
   const [exact, setExact] = createSignal<number | null>(null);
   const [err, setErr] = createSignal<string | null>(null);
@@ -86,8 +89,11 @@ export function ContextDocument(props: {
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
 
+  let latestLoad = 0;
   const load = async () => {
-    const scopeAtStart = props.scope;
+    const thisLoad = ++latestLoad;
+    const superseded = () => thisLoad !== latestLoad;
+    const local = !isChildScope(props.scope);
     setLoading(true); setErr(null);
     try {
       const q = query();
@@ -100,16 +106,23 @@ export function ContextDocument(props: {
         throw new Error(body?.error ?? `context HTTP ${ctxRes.status}`);
       }
       const ctx = await ctxRes.json();
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
+      const servedIn = typeof ctx?.sessionId === 'string' ? ctx.sessionId : null;
+      if (local && servedIn !== props.session) return;
       setMsgs((ctx?.request?.messages ?? []) as Msg[]);
-      if (mkRes.ok) { const mk = await mkRes.json(); setStats(mk.stats); setExact(mk.exactTotalTokens); }
+      setMsgsSession(servedIn);
+      if (mkRes.ok) {
+        const mk = await mkRes.json();
+        if (superseded()) return;
+        setStats(mk.stats); setExact(mk.exactTotalTokens);
+      }
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setErr(e instanceof Error ? e.message : String(e));
-    } finally { setLoading(false); }
+    } finally { if (!superseded()) setLoading(false); }
   };
-  createEffect(on(() => props.scope, () => {
-    setMsgs([]); setStats(null); setExact(null); setErr(null);
+  createEffect(on(() => [props.scope, props.session], () => {
+    setMsgs([]); setMsgsSession(null); setStats(null); setExact(null); setErr(null);
     void load();
   }));
 
@@ -204,7 +217,7 @@ export function ContextDocument(props: {
                           type="button"
                           class="opacity-40 group-hover:opacity-100 focus:opacity-100 px-1.5 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 transition-opacity"
                           title="roll back: make this message the tail of the live branch"
-                          onClick={() => props.onRollback?.(m.sourceMessageId!, `${who}: ${t.replace(/\s+/g, ' ').slice(0, 90)}`)}
+                          onClick={() => props.onRollback?.(m.sourceMessageId!, `${who}: ${t.replace(/\s+/g, ' ').slice(0, 90)}`, msgsSession())}
                         >⏪ roll back to here</button>
                       </Show>
                       <span class="text-neutral-600">~{fmt(estTokens(t) + images.length * 1600)} tok</span>

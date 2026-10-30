@@ -92,7 +92,8 @@ three, and in practice is how headless residents are operated.
    the module list,
    merge MCP servers, build the memory strategy and agent config, then
    `AgentFramework.create()` with the gate, provider hold, code execution,
-   conversations and subconscious configuration. Post-create hooks bind the
+   conversations and subconscious configuration, and the recipe's
+   maintenance interval. Post-create hooks bind the
    history module, wire the compression-quarantine alarm to ops alerts, and
    hand the framework to modules that need it.
 8. **Start** the framework, the session auto-namer, per-server MCPL stderr
@@ -182,7 +183,9 @@ conditions are required so the headers can never reach a vendor endpoint.
   L1…L8 memory — just enough to fit the context budget, by a solver that
   weighs budget fit, cache cost and continuity. Memories are written by the agent's own model
   (`compressionModel` defaults to `agent.model`) in the agent's own voice
-  (`summaryParticipant` defaults to `agent.name`). Host defaults:
+  (`summaryParticipant` defaults to the agent's name), each introduced as standing
+  in for earlier conversation whose exact text isn't shown
+  (`summaryContextLabel`). Host defaults:
   `contextBudgetTokens` 300000, or, on a model the host knows a window for (on
   Anthropic's API) with a `maxTokens` that is unset or a positive number, the
   smaller of 300000 and the window less the system prompt and 32000 for the tools,
@@ -243,7 +246,9 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 
 Framework features configured by top-level recipe keys rather than modules:
 `conversations` (per-channel conversation forks from a dormant trunk agent),
-`subconscious` (a secondary agent with `tune_out`), `codeExecution`.
+`subconscious` (a secondary agent with `tune_out`), `codeExecution`,
+`maintenanceIntervalMs` (how often the context maintenance pass runs; 0 turns
+it off).
 
 ## MCPL servers
 
@@ -366,6 +371,7 @@ Under `$DATA_DIR` (default `./data`):
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
+| `readline-error.log` | Readline-mode stderr, on a terminal. |
 
 Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
 `sleep-privileged.json`, `logs/failures.log`, the default workspace mounts

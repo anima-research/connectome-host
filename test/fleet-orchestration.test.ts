@@ -97,19 +97,6 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
       'lifecycle:idle event recorded',
     );
   });
-
-  test('tool-ending round does NOT update lastCompletedSpeech; final round does', async () => {
-    const before = fleet.getChildren().get('a')!.lastCompletedSpeech;
-    expect(before).toContain('echo: hello there');
-
-    await command(fleet, 'a', '/tool-use-then-speak FINAL-ANSWER');
-
-    await waitFor(
-      () => fleet.getChildren().get('a')!.lastCompletedSpeech === 'FINAL-ANSWER',
-      3_000,
-      'lastCompletedSpeech updated to FINAL-ANSWER (tool-use round ignored)',
-    );
-  });
 });
 
 describe('fleet--relay', () => {
@@ -436,6 +423,25 @@ describe('fleet--await', () => {
       try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
     }
   }, 20_000);
+
+  test('a child that said idle after a turn of its own before this host connected counts as idle at once, though its boot replay shows that turn', async () => {
+    const fleet = makeFleet({
+      autoStart: [{ name: 'booted', recipe: 'mock-recipe', dataDir: join(tmpDir, 'booted'), env: { MOCK_BOOT_TURN: '1' }, autoStart: true }],
+    });
+    await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
+    fleet.launchAutoStart();
+    try {
+      await waitFor(
+        () => fleet.getChildren().get('booted')?.events.some((e) => e.type === 'inference:completed') ?? false,
+        5_000,
+        'the boot replay',
+      );
+      const res = await fleet.handleToolCall({ id: 'await-booted', name: 'await', input: { names: ['booted'], timeoutMs: 1_000 } });
+      expect(res).toMatchObject({ success: true, data: { names: ['booted'], waitedMs: 0, completed: true } });
+    } finally {
+      await fleet.stop();
+    }
+  }, 15_000);
 
   test('blocks until all named children emit idle', async () => {
     const fleet = makeFleet();

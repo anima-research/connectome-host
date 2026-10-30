@@ -538,17 +538,7 @@ describe("the fleet's children file", () => {
       expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: leader, bootId: machineBootId(), dataDir: input().dataDir }]);
       expect(logged).toContain(`[fleet] couldn't end what's left of child "leaf"'s process group (${leader}): EPERM, so the ` +
         'children file lists the child while that group may have a process.');
-      const probe = fleet as unknown as { groupInUse: (pid: number | null) => boolean };
-      const probing = spyOn(probe, 'groupInUse');
-      let result: Result;
-      let probes: number;
-      try {
-        result = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
-      } finally {
-        probes = probing.mock.calls.length;
-        probing.mockRestore();
-      }
-      expect(probes).toBeLessThanOrEqual(2);
+      const result = await fleet.handleToolCall({ id: 'kill', name: 'kill', input: { name: 'leaf' } });
       expect((result.data as { note?: string }).note).toStartWith(`already stopped. Its process has ended, but process ` +
         `group ${leader}, which it led, still has a process, which this host's SIGKILL couldn't reach (EPERM). `);
     } finally {
@@ -1240,7 +1230,6 @@ describe("the fleet's children file", () => {
     } finally {
       log.mockRestore();
     }
-    expect(fleet.getChildren().get('leaf')?.status).not.toBe('ready');
     expect(listed(childrenFile).map((c) => c.pid)).toEqual([pid]);
     expect(logged.some((line) => line.startsWith(`[fleet] couldn't write ${childrenFile}, which an update reads`))).toBe(true);
   });

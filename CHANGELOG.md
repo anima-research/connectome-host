@@ -6,6 +6,441 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.19.0 — 2026-10-29
+
+### Breaking
+
+- **Operators whose residents rely on where their words land when nothing
+  names a channel:** with the agent-framework release that carries
+  agent-framework#546, `speech.locus` defaults to `'delivery'`, and a
+  `channel_publish` with no `channelId` goes where the calling turn's plain
+  prose would. This host passes `speech` to the framework only when a recipe
+  sets it, so every recipe without it takes the new default.
+  - **Plain prose** (under prose routing by locus, `"locus"` or `"hybrid"`;
+    `"explicit"` and `"disabled"` don't publish prose to a locus): it lands
+    in the channel of the delivery that woke the turn, a conversation fork's
+    home channel, or a channel the agent opened during the turn. A turn with
+    none of these falls back only to an open all-except tune-out's excepted
+    channel, and otherwise keeps its prose private (a heartbeat's turn, a
+    `noChannel` turn and an ephemeral agent's take no fallback); a
+    `[routing]` notice tells the agent so when it was last told its speech
+    lands in a channel.
+    An addressed message from another channel moves nothing, and a
+    `[routing]` notice names who wrote from where. Before, a turn no channel
+    message woke fell back to the channel of the most recent inbound
+    message, unless it was a conversation fork's, a heartbeat's, a
+    `noChannel` turn or an ephemeral agent's, and an addressed message from
+    another channel arriving during a turn, or between its streams, moved
+    the rest of its prose there.
+  - **`channel_publish` with no `channelId`:** from a turn, it goes to the
+    turn's locus, else a conversation fork's home channel, else the channel
+    of the message that woke the turn, else the fallback above. Made outside
+    any turn, as by a script left running after its turn, it goes to a
+    conversation fork's home channel, else that fallback. A heartbeat's
+    turn, a `noChannel` turn and an ephemeral agent take no fallback, and the
+    call is refused when none of these names a channel. Before, it went to
+    the channel of the most recent inbound message, whichever turn called
+    it, or none, except a conversation fork's own call, which went to its
+    home channel, as now; it was refused when there was no such message or
+    the caller was an ephemeral agent.
+  - **Migration:** `"speech": { "locus": "latest-inbound" }` in a recipe
+    brings back the moves on an addressed message, mid-turn or between
+    streams, and makes the most recent delivered inbound message's channel
+    the fallback again, after an open all-except tune-out's excepted
+    channel, for prose and for a publish. No setting sends a publish there
+    ahead of the turn's own channel, or from a turn that takes no fallback:
+    a publish meant for a particular channel names its `channelId`.
+  - **Unchanged:** a `channel_publish` that names its `channelId` goes to that
+    channel.
+
+### Added
+
+- Recipe `dendrite` (agent-framework `FrameworkConfig.dendrite`):
+  `announceOrphans` and `collapseDerivationNoticesAfter`, the threshold past
+  which an agent hears a count line instead of a line per fork derived from
+  it (agent-framework#270).
+
+- Tune-out mk2 recipe surface (agent-framework#546): `subconscious.reader: 'forks'`
+  runs the tune-out reader as a succession of forks of the resident (`model`
+  and `voice` required; the host supplies the per-fork strategy factory the
+  way it does for `conversations`); top-level `speech.locus` (`delivery` |
+  `latest-inbound`) chooses where plain prose lands when nothing names a
+  destination; top-level `tuneOut.enabled` offers `tune_out` / `focus` without
+  a reader (a silent hold). The recipe fields are typed from the framework's
+  own config and need the agent-framework release that carries #546; the
+  dependency range rises with it.
+- What a forked or spawned stream is told at its start is a recipe policy,
+  `modules.subagents.orientation` (`full`, the default, or `none`). The host
+  carries no consent gate on reader forks: the framework attaches no
+  consent model to a derivation and offers `dendrite.beforeDerive` and
+  `dendrite.derivationNotice` to a deployment that wants one, and a consent
+  module is to come as a package of its own (tel0s, Antra and Ra,
+  2026-10-19). What the host guarantees instead: a reader fork can post
+  nowhere unless `subconscious.allowChannelSpeech` is on.
+
+### Changed
+
+- Subagents are Dendrite agents. A fork is registered as a task-fork of its
+  parent (spawner, result route, copy inheritance, the launch on its record),
+  with #213's materialisation unchanged: the parent's compiled context
+  becomes the fork's own, the parent's tool round in flight is reproduced
+  with this call's result in it, so the fork sees the call that made it and
+  never meets a dangling `tool_use`; a call the parent had stored before the
+  launch is answered after the copy, its siblings with the framework's "no
+  result yet" note, and a launch with no call gets the pair the fallback
+  always made. (Deriving the fork's context through `deriveAgent` is the
+  next step, not this one.) A spawn is a registered worker. Both records
+  name who spawned the subagent and where its result goes, and carry the
+  launch (`metadata`). A result returns by that route: to the awaiting call
+  for a sync run, otherwise as attributed mail under the subagent's own
+  name, and once the caller has ended, a sync run's as well as an async
+  one's is held as mail for that caller until it is adopted, never lost.
+  Before, an async result was a line in the primary's context whatever
+  became of the caller. A failure now follows the same path,
+  except one whose route is the live primary, which is still told to it as a
+  line in its context. A launch whose caller ended before it registered, as
+  one waiting for a slot or a retry can, registers under the caller's
+  nearest live ancestor, or the primary, and its result goes there, saying
+  whose run it was; a fork registered so carries no copy inheritance on its
+  record, since its copy came from the caller.
+  The launch refusal and the concurrency, retry, cancel and time-limit rules
+  are unchanged; what a stream is told at its start is the recipe's
+  `modules.subagents.orientation` (`full`, the default, or `none`).
+- Five tools over the registry: `subagent--list` (the launches within the
+  caller's reach, running, ended or orphaned, with spawner, task and route,
+  and how many of a run's results and messages are held for a recipient that
+  can't take them), `subagent--stop` (a run cancelled children-first, task
+  work it spawned orphaned and offered for adoption, its stopped result
+  saying who stopped it and why), `subagent--message` (a message in a
+  running subagent's context under the sender's name, waking it),
+  `subagent--adopt` (an orphan's new parent, its result following; an orphan
+  that has since ended isn't restarted, and adopting it delivers what it
+  holds for a recipient that has gone), and `subagent--resume` (a subagent a
+  restart cut off, a time limit stopped or that failed, continued from the
+  context it left, under the same name, its result delivered as a message;
+  one that was stopped, that completed or that ended any other way is
+  refused, with what to do instead). The agent tree shows the edges from
+  `dendrite:agent-created`.
+- The tools keep the module's own rules. They reach the caller's subtree —
+  the subagents it started, and theirs — as `peek` does (postmortem
+  2026-05-28 P3 #8); `modules.subagents.lifecycleReach: 'all'` widens them
+  to every subagent the host knows, though not who adopts. A resume is
+  refused when the launch's tools exceed the caller's own rule, since a
+  resume runs the launch's tools and a caller cannot hand out more than it
+  has. An orphan is adopted only by an agent it was offered to — an ancestor
+  of its former parent, or the primary — or one in whose tree it hung, so
+  held results never move to a stranger; `adopt` takes the framework name
+  the offer gives as well as the display name. A resume says where the
+  result will go when the record's route is to someone else who is still
+  running: a resume keeps a route whose recipient is still running, and
+  without one the result goes to the agent that resumed it.
+
+- **Operators:** `@animalabs/agent-framework` is now ^0.30.0 (was ^0.29.0),
+  `@animalabs/context-manager` ^0.24.0 (was ^0.23.1) and `@animalabs/chronicle`
+  ^0.5.0 (was ^0.4.0), the releases that carry Dendrite. What changes for
+  agents and operators is in this release's Dendrite entries and in each
+  library's own notes.
+
+### Fixed
+
+- Headless runs feed the agent tree and the socket from the boot on. The
+  traces `create()` replays (registry restore, work a stop cut off, resumed
+  tune-out epochs) are held across `framework.start()` for the headless sink
+  instead of being dropped by it, and the first client to connect hears the
+  events from before it connected, oldest first and each marked
+  `replay: true`; when the boot outran the 1,000 kept, the replay ends with
+  `lifecycle` `replay-truncated` saying how many were cut. Agents the
+  framework derives (`dendrite:agent-created`) hang under the agent they were
+  made from in the tree, as framework nodes with their own trace stream,
+  without a tool call to infer the edge from; an orphaned agent is parentless
+  until `dendrite:agent-reparented` moves it.
+
+- **Agents:** a text that sends an agent to a tool in the built-in `settings`
+  toolset says how to reach it from that agent's seat:
+  `toolsets--open {"toolset": "settings"}`, then
+  `toolsets--act {"tool": ..., "args": {...}}`, or, for an agent whose tool
+  list lacks `toolsets--open` or `toolsets--act`, a call by the tool's own
+  name, since agent-framework presents the toolset only to an agent that may
+  call both. That covers an unknown tool's answer, identity's notes, the
+  settings and subscription-gc answers, a channel's auto-close notice,
+  `lifecycle--restart`'s pointer to `mcpl-admin--mcpl_restart`, the subagent
+  `tools` description, the shipped clerk recipe's prompt and the agent-facing
+  docs.
+- **Agents:** `mcpl-admin--mcpl_deploy` describes `presentation` as
+  agent-framework 0.29 applies it: a tab's tools start out of the tool list,
+  `toolsets--open {"server": id}` lists them for `toolsets--act`, and
+  `toolsets--open {"server": id, "full": true}` puts them back in the list; a
+  closed tab also starts out disconnected; an agent that may not call both
+  `toolsets--open` and `toolsets--act` isn't shown tabs. Its answer for a
+  server saved as a tab or closed tab says so, and `mcpl-admin--mcpl_list`
+  says its `presentation=` is the configured one, not necessarily how the
+  server is shown to the agent now.
+- **Agents:** a spawn's or fork's prompt-size check no longer counts the tools
+  its first request leaves out, such as module utilities and, for a stream
+  that may call both `toolsets--open` and `toolsets--act`, the built-in
+  toolset's tools, so it no longer refuses a launch for their size (#511).
+- **Agents whose requests carry a changed text:** the descriptions of
+  `lifecycle--restart` and `subagent--spawn`'s `tools` parameter change, and so
+  do `mcpl-admin--mcpl_deploy`'s, which is in the tool list of an agent that
+  may not call both `toolsets--open` and `toolsets--act`, and the shipped clerk
+  recipe's prompt. Where prompt caching is on, such an agent's first request
+  after the update writes its cache in full.
+- **Operators:** the Web UI's MCPL panel shows a closed tab as one, grey and
+  labelled, rather than as a server that failed to connect.
+
+## 0.18.0 — 2026-10-28
+
+### Breaking
+
+- **A Web UI without `basicAuth` reached under a name other than loopback's,** such as through a reverse proxy that forwards its public name as the `Host` to a loopback bind: those requests now get a 403. Set `basicAuth`, which `docs/webui-deployment.md` already requires behind a proxy; with it, the `Host` isn't checked.
+- **A Web UI without `basicAuth` whose `allowedOrigins` is `[]`, isn't a list (a null one reads as absent), or has an entry that isn't an `http` or `https` URL on `127.0.0.1`, `localhost` or `[::1]`:** the host now refuses to start, naming what it refused. Set `basicAuth` and make `allowedOrigins` a non-empty list of `http` or `https` origins, or remove `allowedOrigins` so the `/ws` upgrade checks Origin against the default list again.
+- **A Web UI with `basicAuth` whose `allowedOrigins` is `[]`, isn't a list (a null one reads as absent), or has an entry that isn't an `http` or `https` URL:** the host now refuses to start, naming what it refused. List the origins to accept, or remove `allowedOrigins` so the `/ws` upgrade checks Origin against the default list.
+- **A `basicAuth` whose username or password is empty, missing or not a string,** as a `${VAR}` that `.env` sets to nothing gives an empty one: the host now refuses to start. Set both.
+- An install updating to this release with one of these refused recipes falls back, at the trial, to the release it ran, until the recipe changes.
+
+### Fixed
+
+- An update on a host with an MCPL server set to `closed-tab` no longer rolls back for it. A release on trial counted a closed tab, which agent-framework keeps disconnected on purpose, as a server it couldn't connect, and refused to commit, so the next start went back to the release before. A closed tab beside a server that failed to connect still refuses, naming only the failed one. The refusal now says which servers weren't connected when the release went to commit, closed tabs aside, and the trial's start line says closed tabs are left out too.
+
+- A Web UI on loopback without `basicAuth` now answers only a request whose `Host` names loopback: `127.0.0.1`, `localhost` or `[::1]`, with or without a port. A request under any other name, or with a `Host` carrying userinfo, a path or a fragment, gets a 403 before any route, the `/ws` upgrade included.
+
+## 0.17.0 — 2026-10-28
+
+### Breaking
+
+- **Operators and residents, from agent-framework 0.29.0 (see its notes):**
+  `@animalabs/agent-framework` is now ^0.29.0 (was ^0.28.0); `package-lock.json`
+  and `bun.lock` move that package and nothing else. What changes for agents:
+  - A turn the heartbeat opens (a tick or a reminder, with no channel) keeps
+    its plain words as drafts instead of posting them to the channel that last
+    had a message; a `[routing]` line says so up front. To reach someone from
+    a heartbeat turn, send explicitly (a send tool or a `>>` destination).
+  - Rarely used host tools move out of the tool list into the built-in
+    `settings` toolset (`toolsets--open`, `toolsets--act`, `toolsets--look`,
+    `toolsets--close`); the `utils` tool is gone. MCPL servers can be shown in
+    full, as a tab, or as a closed tab (`presentation`, and
+    `toolsets--close {server, disconnect}`).
+  - MCPL RFC-014 tool hints are on by default for every server; `toolHints:
+    false` opts one out.
+
+- **Agents, and operators whose agents use them:** the MCPL administration tools (`mcpl-admin--mcpl_list`,
+  `--mcpl_deploy`, `--mcpl_restart`, `--mcpl_unload`) and the observer grant
+  tools (`observers--get`, `--grant`, `--revoke`) live in agent-framework's
+  built-in `settings` toolset (0.29.0), out of the tool list: open it with
+  `toolsets--open {"toolset": "settings"}` and call one with `toolsets--act`.
+  The framework's `utils` tool is gone, and every message, description and doc
+  of this host that named it now names the settings toolset: a call of a
+  module's tool it lacks lists the module's tools in the settings toolset and
+  how to reach them, identity's invitation note, and subagent `tools` lists
+  (a subagent that should use a settings-toolset tool lists `toolsets--open`,
+  `toolsets--act` and the tool's own name).
+
+### Added
+
+- **Operators:** a server's `presentation` in recipes and `mcpl-servers.json`
+  (`"full"`, the default, `"tab"` or `"closed-tab"`), passed through to
+  agent-framework's host toolsets (0.29.0): how agents are shown the server at
+  first. `"tab"` keeps it connected with none of its tools in the tool list
+  until an agent opens it (`toolsets--open {"server": "<id>"}`); `"closed-tab"`
+  leaves it disconnected until an agent opens it. Each agent can switch later,
+  and its choice is kept over this default. A recipe naming a
+  `mcpl-servers.json` server may override it. Any other value stops the load,
+  naming the key; in the agent's own overlay it's left out, named in a startup
+  line. An earlier agent-framework ignores it.
+- **Agents:** `mcpl-admin--mcpl_deploy` takes `presentation` (`"full"`,
+  `"tab"` or `"closed-tab"`), saved to the agent overlay and applied to the
+  server it connects; another value refuses the deploy, naming the values.
+
+### Changed
+
+- **Operators:** `modules.mcplAdmin.surface` and `modules.webui.observersSurface`
+  are no longer read (they chose between the tool list and `utils`); they're
+  still accepted, with a `[deprecated]` startup line, so older recipes load.
+- A subagent's orientation lists the tools its stream is shown as
+  agent-framework presents them (`AgentFramework.presentedTools`, from
+  0.29.0): tools in the built-in toolset and servers shown as tabs aren't
+  among them, as they aren't in its first request, so the orientation and the
+  first request agree.
+- Texts that point an agent at `agent_settings` outside the settings toolset
+  (a channel's auto-close notice, and the answers to an unknown reasoning or
+  idle-limit tool) give its route: `toolsets--open {"toolset": "settings"}`,
+  then `toolsets--act`.
+- `mcpl-admin--mcpl_list` shows a closed tab as `CLOSED TAB` (disconnected
+  until it's opened, or `mcpl_restart` connects it), and each server's
+  configured `presentation` (the agent's own overlay entry where it defines
+  the server, else the operator's definition, else `full`).
+
+## 0.16.0 — 2026-10-28
+
+### Breaking
+
+- **Recipe authors and operators:** a recipe whose `modules.workspace.mounts` gives two mounts the same name loaded before, and now stops the load, naming the name and where each of the two mounts is in the list (#478). Before, agent-framework's workspace ran its tools on the last mount of that name, while the instructions check read the first, so it could approve one mount while another ran. Give each mount its own name. A start without a recipe argument, in a data directory whose saved recipe has such mounts, stops, naming them: start once with the renamed recipe as its argument, which saves it in the saved one's place. Names are compared exactly, as before, so `notes` and `Notes` are two names, and a recipe whose mounts each have their own name loads as it did.
+
+- **Operators who read a data directory as another user that isn't
+  root,** such as a backup run as its own user: a data directory that a
+  host, a fleet launch, an import script or the evacuator creates from
+  this version on is readable by its owner alone (`0700`), and so is the
+  `sessions` directory made in one, so that reader can't open them. That
+  includes the data directory of a fleet child whose directory doesn't
+  exist yet when it's launched, on an install that was already running.
+  The evacuator's recipe and saved state are `0600` after every write,
+  even in a directory that was already there. To keep such a reader
+  working, run it as the agent's user or as root, or give its group
+  access to the directories yourself once they're made (`chgrp` and
+  `chmod g+rX`): a directory's mode, once it's there, stays as it is.
+  A Go back that restores the copy (`/update back restore`, or
+  `start.js --go-back` without `--keep-data`), or the next start after
+  an updated release ends before its commit, puts what's inside each
+  directory an update copies (`docs/DEPLOYMENTS.md` lists them) back as
+  new copies, each with its mode but in the group a new file or
+  directory there gets, so run the `chgrp` again after one. Group
+  access doesn't reach the files kept for their owner alone, the
+  evacuator's recipe and state and the host's saved recipe, which each
+  write leaves `0600`: a reader that needs them runs as the agent's user
+  or as root. Unchanged: every data directory made before this version,
+  and what a reader running as the agent's user or as root can read.
+
+- **Recipe authors and operators, on Anthropic's API:** a recipe load that resolves the system prompt, a saved recipe's at a start included, now refuses a recipe that can't work on its model, naming the numbers and the changes it found that would let it load. Three kinds are refused: an `agent.maxTokens` over the model's maximum output, which the API refuses on every reply; an `agent.contextBudgetTokens` that leaves the conversation too little room for the head and the verbatim tail once `agent.maxTokens` is kept for the reply (none at all where it's no larger than `agent.maxTokens`, 0 and below included), so every reply fails once the conversation fills them; and an `agent.contextBudgetTokens` whose prompt, the budget less `maxTokens` (or the head and tail, where they come to more) plus the system prompt, is over the model's window, which the API refuses on every reply once the conversation fills the budget. A recipe that sets no budget, and whose system prompt leaves the conversation too little room in the window, is refused too, naming the prompt's size. The head and tail are held to context-manager's own rule, its over-budget grace included, whether the tail is the default or the recipe's own `strategy.recentWindowTokens`. A load checks the model the host will run, so a `MODEL` in the environment is checked in place of `agent.model` (or of the default, where the recipe names no model), and where `MODEL` changes the model the recipe runs, the refusal says so. The host knows the windows and maximum outputs of Claude models from 4.5 on, by their exact ids or those ids with a snapshot date. Such a recipe loaded before, and its replies failed: at once for a `maxTokens` over the maximum, and otherwise once the conversation filled its budget, or its head and tail. Now a host that runs one stops at its start until the number is changed. An update's trial start that meets the refusal exits before the update commits, so the current release stays the one before, whose replies fail as they did, and the trial's log holds the refusal.
+
+- **Operators of `--exit-when-idle` hosts whose agents leave a background script running:** the host now stays up until the script ends, and a long-lived server an agent starts on purpose keeps it up. `lifecycle:idle`, and so `fleet--await`, doesn't wait for a script left running.
+- **Operators of `--exit-when-idle` hosts:** a received text now counts as activity, so a host whose only text a wake gate declines exits 500 ms after its processing ends, where it waited before.
+
+### Changed
+
+- **Agents on a model whose signed thinking binds** (Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5,
+  and, as the host records them, the Mythos models and any later Claude model its record doesn't name): the
+  host now records per model whether its thinking binds, whether it takes `block_binding`'s
+  `drop_block` control, whether it thinks with no thinking config, and whether the provider's refusal of a longer prompt
+  showed its context window, and passes agent-framework `thinkingBinding` from that record, and
+  `physicalWindowTokens` from the model limits table where it did, for the resident and each
+  subagent (anima-research/context-manager#155).
+  - **The drop control:** on the four models that take it, streamed calls through the Anthropic API
+    (agent turns) carry `block_binding: { prefix_mismatch_behavior: 'drop_block' }` in their
+    thinking config, so the provider drops a signed thinking block that a change has invalidated
+    instead of refusing the call. An adaptive or enabled thinking config a call already has keeps
+    its fields and gains the control, unless it carries a binding control of its own: with
+    reasoning on that's the setting's, and with it off, the one membrane builds from a recipe's
+    `agent.thinking`, if any. A call with none is sent `{ type: 'adaptive',
+    display: 'omitted' }` with the control, which goes as `'updates'` on Fable 5.1, Opus 5.5 and
+    Sonnet 5.5. One-shot `complete()` calls get no control.
+  - **The window:** those four get `physicalWindowTokens` on the Anthropic route, at the
+    1,000,000 tokens the model limits table holds for each, under its id or a dated snapshot of it.
+    With binding and a window both set, agent-framework doesn't break a turn's stream at
+    `maxStreamTokens`, a recipe's or `/budget`'s: such an agent's stream breaks mid-turn for its
+    size only where its next request would pass the window, and a fresh compile carries the turn
+    on. `/budget` says so: its listing marks each such agent, and setting a budget names them.
+  - **The system prompt:** on a binding model it ends with one more paragraph: "When your context
+    folds, the reasoning behind your earlier replies leaves it, though their words stay, so a reply
+    of yours that shows no reasoning may still have had some." An empty prompt gets it as its whole
+    system text. No agent under an `anthropic-xml` recipe gets it: every agent there sends in XML
+    mode, whose transcript carries none of a reply's reasoning into the next request, fold or none.
+    On the binding models named above, such a recipe's agents can't run at all, since membrane
+    refuses their assistant prefill.
+  - **Bedrock and the other routes:** an agent there on a binding model binds without the control
+    and has no window, since nobody has tried the control or read a window there.
+    `LoggingBedrockAdapter` adds no control, as before.
+- **Haiku 5.5 with reasoning on:** the host now sends it the reasoning setting's adaptive thinking
+  config, as on the other 5.5 models. Before, `modelAcceptsAdaptiveThinking` didn't list it, so
+  turning reasoning on for a Haiku 5.5 agent sent nothing and logged that the model "does not accept
+  adaptive thinking", though it takes the config. As on every model the setting reaches, one-shot
+  calls on Haiku 5.5 (its compression, and retrieval where a recipe sets that model) carry the
+  setting's config too.
+
+- The data directory (`DATA_DIR`, `./data` by default) is now created
+  readable by its owner alone (`0700`), along with any directory above it
+  that the same call creates, by whichever makes it first: a host, a
+  fleet launch for a child's, an import script, or the evacuator. It holds
+  the agent's history, its saved recipe and its call logs. The `sessions`
+  directory in it is made the same way, and so is the Codex importer's
+  instance directory, which also holds a copy of the rollout. The
+  evacuator's recipe and saved state, which can hold the claude.ai
+  memories, are readable and writable by their owner alone (`0600`) after
+  every write, each written as a new file that takes the place of what
+  was at its path, a link included, and the copy it opens in your editor
+  is created `0600` too.
+  Before, these took the umask's default, commonly readable by every user
+  on the machine. A directory that's already there keeps its mode: to
+  make one private, `chmod 700` it. The onboarding guide's setup now makes
+  the data directory with `mkdir -p -m 700`.
+
+- **Residents on Anthropic's 200k-window models (Claude Haiku 4.5, Opus 4.5 and Sonnet 4.5) whose recipe sets no `agent.contextBudgetTokens`, with an `agent.maxTokens` that is unset or a positive number:** the budget is now the smaller of 300k and the window less the system prompt and 32k for the tools, so a compile that keeps to the budget less `maxTokens` leaves `maxTokens` of the window for the reply, where it was 300k, which let a full conversation's prompt pass the window so that every reply was refused. `maxStreamTokens`, when the recipe sets neither, follows it at the budget plus 20k, and a verbatim tail the recipe doesn't set stays 40% of it, so it shrinks with it: 67,200 for an empty system prompt, where it was 120,000. Where the head and that tail can't fit beside `maxTokens`, the tail is smaller, as the last entry here says. On the first turns after the update, such a resident whose conversation is longer than its new budget compiles smaller, and its prompt cache is written again as the folds settle. On a 1M-window model that's 300k, as before, for any system prompt under 668k tokens.
+- **A model the host knows no window for, a provider other than `anthropic`, an `agent.maxTokens` that isn't a positive number, or an `agent.contextBudgetTokens` that isn't a number:** the start prints one line saying the fit wasn't checked and why, the recipe loads and runs as before, and a budget it leaves unset is 300k. On an autobiographical or frontdesk strategy (autobiographical is the default), a `strategy.headWindowTokens`, `strategy.recentWindowTokens` or `strategy.overBudgetGraceRatio` set to anything but a number or null leaves the fit unchecked the same way, and where the recipe sets no budget, the line gives the budget the host runs. One exception: on Anthropic's API, for a model the host knows, an `agent.maxTokens` over its maximum output is refused whatever the other sizes hold, since the API refuses every reply. A null budget counts as unset for the budget, as before, and keeps the 150k `maxStreamTokens` it had.
+- **A recipe without its own `strategy.recentWindowTokens`, whose budget less `maxTokens` can't hold the head and a tail of 40% of the budget by context-manager's own rule, its over-budget grace included:** every compile failed once the conversation filled them. The tail is now 40% of the budget less `maxTokens` there. Every other such recipe's tail is still 40% of its budget.
+
+- An agent whose recipe uses the host's autobiographical or frontdesk
+  strategy and sets no `summaryContextLabel` now reads "A summary follows,
+  standing in for earlier conversation, tool calls and results included.
+  The exact text it replaces isn't shown." in the `Context Manager` turn
+  before each summary of folded conversation, where
+  context-manager's default asked "What do you remember from earlier?".
+  That's under adaptive resolution, the default. With adaptive resolution
+  off, a recipe with `positionedRecallPairs: false` reads it once, before
+  its combined summaries, and one that keeps positioned pairs shows
+  `recallHeaderTemplate` there instead, as before. A recipe's own label is
+  kept.
+- The new label takes about 33 more tokens of the context budget each time
+  it shows, by context-manager's estimate (45 against 12): once for each
+  summary under adaptive resolution, and once for each combined block when
+  adaptive resolution is off and `positionedRecallPairs` is false.
+  context-manager also prices each positioned pair with the label where it
+  shows `recallHeaderTemplate`, so those pairs take the same 33 more tokens
+  of budget, though what the agent reads there doesn't change. Where prompt
+  caching is on, an agent's first request after the update that shows the
+  label can't reuse its cache from the first label on.
+
+### Fixed
+
+- `/undo`, `/redo`, `/restore`, `/checkout` and `/branchto` move the branch
+  through the framework, so every agent sharing the store is re-initialized
+  for the new branch, not only the first agent. Before, another agent on an
+  `AutobiographicalStrategy` (a conversation fork, for one) failed every
+  compile with "requires reinitialization for the current branch generation"
+  until a restart (#264).
+- They are refused while any agent sharing the store is mid-turn, naming it,
+  the subconscious included. A move the framework refuses leaves the branch,
+  the branches, the session's undo and redo history and its checkpoints as
+  they were (a branch made for the move is removed), says this command moved
+  nothing, and, when the store is busy, to try again once what it names has
+  finished. A `/redo` whose branch no longer exists drops that step and says
+  so.
+- The README now says `/newtopic` is refused only while the main agent is
+  mid-turn. It said the commands that move the head "are refused while a turn
+  is in flight", which read as any agent's turn; `/newtopic` was refused only
+  for the main agent's turn in 0.15.0 too, and still is. Its refusal now ends
+  "Wait for the turn to end, or stop it, then retry." where it ended "Stop the
+  generation first, then retry."
+
+- A headless host says `lifecycle:idle` only once every agent reads idle and nothing is in flight for 500 ms: no turn the framework counts alive, no gated wake, no event on its queue, no text whose processing is still under way and no subagent run. `--exit-when-idle`, and an armed self-restart, also wait for a background script left running. An agent's status reads idle while its turn assembles and while it waits to retry, so a fleet's `fleet--await` could call a child done mid-turn, and `--exit-when-idle` could stop a host in the middle of one.
+- `fleet--await` counts a child as idle only while its last `lifecycle:idle` came after its last `inference:started` and covers every text the fleet has sent it on the connection (`fleet--send`, `fleet--relay`): a headless host now counts the texts it receives on a connection and says on each `lifecycle:idle` how many it covers. An idle from an older child, which doesn't say, counts. It took a child whose latest lifecycle event was an idle as done, so once a child had been idle, an await after sending it a task answered at once, `waitedMs: 0`, until the child's next idle, and an idle the child emitted before a text, read after it, answered for the text. An await already waiting kept a child it had counted, though the child was sent work again; it now drops one sent work, and keeps one that went idle and then exited or was restarted. A child adopted by a new host now counts as idle when its `ready` says it has said idle since its last activity, where an await on it waited to its timeout. A received text now counts as activity, so a text a wake gate declines gets an idle 500 ms after its processing ends, and ends an await on it. A text sent in a session switch, refused by the stopped framework or not yet taken from its queue, goes to the new session's framework, and an idle covers it only once that has processed it. A session switch asked for while another is under way, from the TUI, the Web UI or a `/session` sent to a headless host, is refused, saying to try again once the first has finished, before any session is made or made active, where it started and could leave the first switch's framework running; while a switch is under way a headless host isn't quiet. A `fleet--command` doesn't count as work, since most commands start no turn, so an await before a command's turn starts answers from the earlier idle.
+- A headless host follows a session switch: its socket's clients hear the new session's events, and `describe`'s agent tree starts again from the new session's agents, where the host's trace listeners and its tree stayed on the replaced framework (connectome-host#483's headless case; a fleet parent's copy of a child's tree is still the replaced session's after a switch).
+
+- `mcpl-servers.json` and `mcpl-servers.agent.json`, when a save creates
+  them (a `/mcp` command or the Web UI's MCPL editor, or an agent's deploy
+  or unload), are now created readable and writable by their owner alone,
+  as a saved recipe is, since an entry can hold a token or another
+  credential. Before, they took the umask's default, commonly readable by
+  every user. A file that's already there keeps its mode: to make one
+  private, `chmod 600` it.
+
+- A recipe that uses the host's autobiographical or frontdesk strategy and
+  sets neither `agent.name` nor `summaryParticipant` now has its agent's
+  summaries voiced by the name the agent runs under (an imported session's
+  name, or `agent`), as the agent's own turns. Before,
+  they took context-manager's default participant, `Claude`, so the agent
+  read its own recollections in a user turn as "Claude: …". The compiled
+  context of such an agent changes from its first summary on, so where
+  prompt caching is on, its first request after the update that shows a
+  summary can't reuse its cache from there. A conversation's agents keep
+  the voice they had.
+- Under the frontdesk strategy, such an agent's compression now tells the
+  agent's own messages apart when it lists the questions a summary is asked
+  to keep verbatim. A question or mention followed by one of the agent's
+  messages within the next eight is no longer listed, and neither is a
+  question the agent asked. Before, every question and mention was listed.
+- A subagent's summaries, spawned or forked, are now voiced by the name it
+  runs under, as its own turns. Before, they read as "Claude: …" in a user
+  turn.
+
 ## 0.15.0 — 2026-10-27
 
 ### Breaking

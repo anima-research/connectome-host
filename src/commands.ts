@@ -37,12 +37,13 @@ import { parseCommand } from './command-name.js';
 import { OperatorActionError, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import type { Line } from './output-line.js';
 import { fmtTokens } from './tui.js';
+import { modelThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
-import { SWITCH_UNDER_WAY } from './session-switch.js';
-import { hostUpdate } from './update/update.js';
-import { goBackLines, statusLines } from './web/update-text.js';
+import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
+import { hostUpdate, type UpdateAnswer } from './update/update.js';
+import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -58,8 +59,9 @@ interface AppContext {
     snapshot(): CredentialState;
     runAction(id: CredentialActionId, params?: { token?: string }): Promise<CredentialState>;
   } | null;
+  stopping?: boolean;
   switching?: boolean;
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<unknown>;
 }
 
 export type { Line };
@@ -95,6 +97,7 @@ export interface CommandResult {
   switchToSessionId?: string;
   branchChanged?: boolean;
   asyncWork?: Promise<CommandResult>;
+  refused?: boolean;
   switchToFleetPeek?: string;
   switchToFleetView?: boolean;
 }
@@ -186,10 +189,45 @@ function moveStore(
     );
 }
 
+const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
+const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
+const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
+  ['session', new Set(['rename', 'delete', 'rm'])],
+  ['fleet', new Set(['stop', 'kill', 'restart'])],
+]);
+
+function sessionChangeNamed(cmd: string, args: string[]): string | null {
+  if (CHANGES_THE_SESSION.has(cmd)) return `/${cmd}`;
+  if (CHANGES_THE_SESSION_GIVEN_A_VALUE.has(cmd) && args.length > 0) return `/${cmd}`;
+  if (SUBCOMMANDS_THAT_CHANGE_THE_SESSION.get(cmd)?.has(args[0] ?? '')) return `/${cmd} ${args[0]}`;
+  return null;
+}
+
+function stillRunning(app: AppContext): CommandResult | null {
+  const names = sessionChangesRunning(app);
+  if (names.length === 0) return null;
+  const one = names.length === 1;
+  return {
+    lines: [{
+      text: `${names.join(', ')} ${one ? 'is' : 'are'} still running, so the switch isn't started; try again once ${one ? 'it has' : 'they have'} finished.`,
+      style: 'system',
+    }],
+  };
+}
+
 export function handleCommand(command: string, app: AppContext): CommandResult {
-  const parts = command.slice(1).trim().split(/\s+/);
   const cmd = parseCommand(command).name;
+  const change = sessionChangeNamed(cmd, command.slice(1).trim().split(/\s+/).slice(1));
+  const result = dispatchCommand(command, cmd, change, app);
+  if (result.asyncWork) result.asyncWork = trackOperatorWork(app, change, result.asyncWork);
+  return result;
+}
+
+function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext): CommandResult {
+  const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
+  const refused = change ? refusedWhileSwitching(app, change) : null;
+  if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
 
   switch (cmd) {
@@ -244,7 +282,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /fleet                 Show / peek / stop / restart cross-process children', style: 'system' },
           { text: '                         (subcommands: list | status [name] | view | peek <name> | stop <name> | restart <name>)', style: 'system' },
           { text: '  /update                Whether a newer release is out, and this install\'s update state', style: 'system' },
-          { text: '                         (subcommands: install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
+          { text: '                         (subcommands: check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
         ],
       };
 
@@ -344,15 +382,18 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
  *  host refuses rather than act on another one. */
 function handleUpdate(args: string[]): CommandResult {
   const say = (lines: string[]): CommandResult => ({ lines: lines.map((text) => ({ text, style: 'system' as const })) });
-  const after = (first: string, work: Promise<{ lines: string[] }>): CommandResult =>
-    ({ ...say([first]), asyncWork: work.then((answer) => say(answer.lines)) });
+  const after = (first: string, work: Promise<UpdateAnswer>): CommandResult =>
+    ({ ...say([first]), asyncWork: work.then((answer) => ({ ...say(answer.lines), ...(answer.done ? {} : { refused: true }) })) });
   const [sub, choice, release, extra] = args;
-  const usage = say(['Usage: /update [install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]']);
+  const usage = { ...say(['Usage: /update [check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]]]']), refused: true };
   if (extra !== undefined) return usage;
   const version = (word: string | undefined): word is string => word !== undefined && EXACT_VERSION.test(word);
-  if (sub === undefined) {
+  if (sub === undefined || (sub === 'check' && choice === undefined)) {
     return after('Reading the registry…',
-      hostUpdate.readRegistry().then(() => ({ lines: statusLines(hostUpdate.status()) })));
+      hostUpdate.readRegistry().then(() => {
+        const status = hostUpdate.status();
+        return { done: status.check?.ok !== false, lines: statusLines(status) };
+      }));
   }
   if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install());
   if (sub === 'restart' && release === undefined) {
@@ -364,7 +405,10 @@ function handleUpdate(args: string[]): CommandResult {
     if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice));
   }
   if (sub === 'back') {
-    if (choice === undefined) return say(goBackLines(hostUpdate.status()));
+    if (choice === undefined) {
+      const status = hostUpdate.status();
+      return { ...say(goBackLines(status)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
+    }
     if ((choice === 'keep' || choice === 'restore') && (release === undefined || version(release))) {
       return after('Going back unless refused: turns in progress get up to 2 min to end…', hostUpdate.goBack(choice === 'keep', release));
     }
@@ -380,6 +424,9 @@ function credentialLines(state: CredentialState): Line[] {
     lines.push({ text: `  expires ${new Date(state.expiresAt).toISOString()}${state.rotatable ? ' (host can refresh)' : ' (no refresh token — paste a new one when it expires)'}`, style: 'system' });
   } else {
     lines.push({ text: `  expiry unknown; ${state.rotatable ? 'host can refresh' : 'not host-rotatable'}`, style: 'system' });
+  }
+  if (state.unsaved !== undefined) {
+    lines.push({ text: `  WARNING: ${state.unsaved}. /auth recheck writes it again.`, style: 'system' });
   }
   if (state.until !== undefined && state.kind === 'quota-spent') {
     lines.push({ text: `  resets ${new Date(state.until).toISOString()}`, style: 'system' });
@@ -544,9 +591,15 @@ function handleSessionList(app: AppContext): CommandResult {
 const switchUnderWay: CommandResult = {
   lines: [{ text: `${SWITCH_UNDER_WAY[0]!.toUpperCase()}${SWITCH_UNDER_WAY.slice(1)}.`, style: 'system' }],
 };
+const hostStopping: CommandResult = {
+  lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
+};
 
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
+  if (app.stopping) return hostStopping;
   if (app.switching) return switchUnderWay;
+  const running = stillRunning(app);
+  if (running) return running;
   const session = app.sessionManager.createSession(name);
   resetBranchState(app.branchState);
 
@@ -557,6 +610,7 @@ function handleSessionNew(app: AppContext, name?: string): CommandResult {
 }
 
 function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult {
+  if (app.stopping) return hostStopping;
   if (app.switching) return switchUnderWay;
   if (!nameOrId) {
     return { lines: [{ text: 'Usage: /session switch <name or id>', style: 'system' }] };
@@ -572,6 +626,8 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
     return { lines: [{ text: `Already on session "${session.name}".`, style: 'system' }] };
   }
 
+  const running = stillRunning(app);
+  if (running) return running;
   resetBranchState(app.branchState);
 
   return {
@@ -779,6 +835,13 @@ function handleStatus(framework: AgentFramework): CommandResult {
   return { lines };
 }
 
+/** For an agent whose thinking binds and whose window is set, agent-framework
+ *  doesn't break the stream at maxStreamTokens mid-turn, only before a request
+ *  the window can't hold (anima-research/context-manager#155). */
+function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: number }): number | undefined {
+  return agent.physicalWindowTokens !== undefined && modelThinking(agent.model).binds ? agent.physicalWindowTokens : undefined;
+}
+
 function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
   const agents = framework.getAllAgents();
   if (agents.length === 0) {
@@ -791,8 +854,12 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
       const budget = agent.maxStreamTokens;
       const last = agent.lastStreamInputTokens;
       const pct = budget > 0 ? ((last / budget) * 100).toFixed(0) : '—';
+      const window = windowInsteadOfBudget(agent);
       lines.push({
-        text: `  ${agent.name}: ${fmtTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)`,
+        text: `  ${agent.name}: ${fmtTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)` +
+          (window !== undefined
+            ? `; its stream doesn't break at this budget mid-turn: for its size, only before a request its ${fmtTokens(window)} window can't hold`
+            : ''),
         style: 'system',
       });
     }
@@ -817,8 +884,18 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     agent.maxStreamTokens = tokens;
   }
 
+  const windowed = agents.filter((agent) => windowInsteadOfBudget(agent) !== undefined).map((agent) => agent.name);
   return {
-    lines: [{ text: `Stream budget set to ${fmtTokens(tokens)} tokens for all agents.`, style: 'system' }],
+    lines: [
+      { text: `Stream budget set to ${fmtTokens(tokens)} tokens for all agents.`, style: 'system' },
+      ...(windowed.length > 0
+        ? [{
+          text: `It's kept, but doesn't break the stream mid-turn for ${windowed.join(', ')}, whose thinking binds and ` +
+            "whose window is set: for their size, their streams break only before a request the window can't hold.",
+          style: 'system' as const,
+        }]
+        : []),
+    ],
   };
 }
 
@@ -1302,9 +1379,15 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
       { text: summary.slice(0, 300) + (summary.length > 300 ? '...' : ''), style: 'system' as const },
     ],
-  })).catch(err => ({
-    lines: [{ text: `Topic reset failed: ${err instanceof Error ? err.message : err}`, style: 'system' as const }],
-  }));
+  })).catch(err => {
+    const said = err instanceof Error ? err.message : String(err);
+    return {
+      lines: [{
+        text: app.stopping ? `Topic reset stopped: the host is stopping. What the reset said: ${said}` : `Topic reset failed: ${said}`,
+        style: 'system' as const,
+      }],
+    };
+  });
 
   return {
     lines: [{ text: userContext

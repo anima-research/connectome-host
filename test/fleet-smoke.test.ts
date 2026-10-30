@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule, type AutoStartChild } from '../src/modules/fleet-module.js';
+import { socketRefusesConnection } from '../src/modules/fleet-socket-probe.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -297,6 +298,8 @@ describe('FleetModule — unresolved launch artifacts', () => {
         const wire = subscribes[0].events as string[];
         for (const event of expected) expect(wire).toContain(event);
         const mandatory = ['inference:started', 'inference:tokens', 'inference:tool_calls_yielded',
+          'dendrite:agent-created', 'dendrite:agent-orphaned', 'dendrite:agent-reparented',
+          'dendrite:agent-ended', 'dendrite:agent-interrupted',
           'inference:usage', 'inference:completed', 'inference:failed', 'inference:exhausted',
           'inference:aborted', 'inference:stream_resumed', 'inference:stream_restarted',
           'inference:turn_ended', 'tool:started', 'tool:completed', 'tool:failed', 'usage:updated'];
@@ -499,23 +502,36 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const executable = join(dir, 'node');
     writeFileSync(executable, '#!/bin/sh\nexec /bin/sleep 30\n');chmodSync(executable, 0o700);
     const fleet = makeFleet();const previous = process.env.PATH;
+    const helpers = (): number[] => execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,args='], { encoding: 'utf8' }).split('\n')
+      .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
+      .filter((m): m is RegExpMatchArray => m !== null && Number(m[2]) === process.pid && (m[3]!.includes(dir) || m[3] === '/bin/sleep 30'))
+      .map((m) => Number(m[1]));
     const start = Date.now();
     try {
       process.env.PATH = dir;
-      expect(await (fleet as any).socketRefusesConnection('/unused-test-socket')).toBe(false);
+      expect(await (fleet as any).socketRefusesConnection('/unused-test-socket', 200)).toBe(false);
+      expect(Date.now() - start).toBeGreaterThanOrEqual(198);
       expect(Date.now() - start).toBeLessThan(5_000);
-    } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; }
+      expect(helpers()).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
+      for (const pid of helpers()) try { process.kill(pid, 'SIGKILL'); } catch { }
+    }
   }, 6_000);
+
+  test('the fleet\'s socket probe is the one the exhaustion test below checks', () => {
+    expect((makeFleet() as any).socketRefusesConnection).toBe(socketRefusesConnection);
+  });
 
   test('resource exhaustion cannot turn a live Unix listener into stale evidence', async () => {
     const path = join(tmpDir, 'resource-probe.sock');
     const server = createServer(socket => socket.destroy());
     await new Promise<void>(resolve => server.listen(path, resolve));
     const script = `import {openSync,closeSync} from 'node:fs';
-      import {FleetModule} from ${JSON.stringify(join(REPO_ROOT, 'src/modules/fleet-module.ts'))};
-      const fleet=new FleetModule({});const fds=[];let exhausted=false;
+      import {socketRefusesConnection} from ${JSON.stringify(join(REPO_ROOT, 'src/modules/fleet-socket-probe.ts'))};
+      const fds=[];let exhausted=false;
       try{for(let i=0;i<512;i++)fds.push(openSync('/dev/null','r'));}catch(e){exhausted=e.code==='EMFILE';}
-      let refused;try{refused=await fleet.socketRefusesConnection(process.argv[2]);}
+      let refused;try{refused=await socketRefusesConnection(process.argv[2]);}
       finally{for(const fd of fds)closeSync(fd);}
       console.log(JSON.stringify({exhausted,refused}));process.exitCode=exhausted && refused===false?0:1;`;
     const file = join(tmpDir, 'resource-probe.ts');writeFileSync(file, script);
@@ -1252,10 +1268,9 @@ describe('FleetModule — Phase 4 autoStart + allowlist', () => {
 
     await fleet.handleToolCall({ id: 't-filt-cmd', name: 'command', input: { name: 'filt', command: '/help' } });
 
-    await new Promise((r) => setTimeout(r, 500));
+    await waitFor(() => allEvents.includes('command-output'), 10_000, "/help's output");
 
     expect(allEvents.some((t) => t === 'lifecycle')).toBe(true);
-    expect(allEvents.some((t) => t === 'command-output')).toBe(true);
     expect(filteredEvents.some((t) => t === 'lifecycle')).toBe(true);
     expect(filteredEvents.every((t) => t === 'lifecycle')).toBe(true);
 

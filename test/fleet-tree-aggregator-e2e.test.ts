@@ -1,14 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { FleetTreeAggregator } from '../src/state/fleet-tree-aggregator.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '..');
-const INDEX_PATH = join(REPO_ROOT, 'src', 'index.ts');
 
 const CHILD_RECIPE = {
   name: 'AggregatorChildRecipe',
@@ -38,14 +36,13 @@ describe('FleetTreeAggregator — e2e against headless child', () => {
   let aggregator: FleetTreeAggregator;
 
   beforeAll(async () => {
-    process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'sk-test-fleet-aggregator';
     tmpDir = mkdtempSync(join(tmpdir(), 'fkm-agg-e2e-'));
     recipePath = join(tmpDir, 'recipe.json');
     writeFileSync(recipePath, JSON.stringify(CHILD_RECIPE), 'utf-8');
 
     fleet = new FleetModule({
       childRuntimePath: 'bun',
-      childIndexPath: INDEX_PATH,
+      childIndexPath: join(TEST_DIR, 'mock-runheadless-child.ts'),
       readyTimeoutMs: 15_000,
     });
     aggregator = new FleetTreeAggregator(fleet);

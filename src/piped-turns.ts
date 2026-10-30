@@ -132,10 +132,13 @@ export function createPipedTurns(
 }
 
 export interface TraceSource {
-  onTrace(listener: (event: unknown) => void): () => void;
+  onTrace(listener: (event: unknown) => void, options?: { replay?: boolean }): () => void;
 }
 
-export function traceFollower(listener: (event: unknown) => void): { follow(source: TraceSource): void; stop(): void } {
+export function traceFollower(
+  listener: (event: unknown) => void,
+  options?: { replay?: boolean },
+): { follow(source: TraceSource): void; stop(): void } {
   let off: (() => void) | undefined;
   const stop = (): void => {
     off?.();
@@ -144,20 +147,20 @@ export function traceFollower(listener: (event: unknown) => void): { follow(sour
   return {
     follow(source) {
       stop();
-      off = source.onTrace(listener);
+      off = source.onTrace(listener, options);
     },
     stop,
   };
 }
 
-export async function switchFollowing(
+export async function switchFollowing<T>(
   traces: { follow(source: TraceSource): void; stop(): void },
-  switchSession: () => Promise<unknown>,
+  switchSession: () => Promise<T>,
   framework: () => TraceSource,
-): Promise<void> {
+): Promise<T> {
   traces.stop();
   try {
-    await switchSession();
+    return await switchSession();
   } finally {
     traces.follow(framework());
   }

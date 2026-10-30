@@ -133,7 +133,7 @@ for (const second of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
   }, 60_000);
 }
 
-test('a command whose work answers once the stop has begun draws nothing, and nothing throws', async () => {
+test('a command whose work answers once the stop has begun doesn\'t fail the stop, and nothing throws', async () => {
   const { receipt, code, signal, stdout } = await runChild('healthy', 'late-command');
   expect(stdout).toContain('LATE_COMMAND_ANSWERED');
   expect(receipt).toEqual({ ...STOPPED_ONCE, status: 'fulfilled', originalError: false });

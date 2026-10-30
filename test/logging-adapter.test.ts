@@ -42,23 +42,26 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
     expect((extra.thinking as { type?: string }).type).toBe('adaptive');
   });
 
-  test('no-op (same reference) when reasoning disabled', () => {
+  test('adds nothing when reasoning is disabled', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', disabled);
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
-  test('no-op when no reasoning getter is wired', () => {
+  test('adds nothing when no reasoning getter is wired', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
   test.each([
     'claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-5',
     'claude-opus-4-1', 'anthropic.claude-haiku-4-5', 'claude-opus-4-5@20251101',
+    'claude-haiku-5-50', 'claude-haiku-5-6', 'claude-haiku-5-5-1',
   ])('no thinking for %s (rejects adaptive)', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const req = { ...baseRequest, model };
@@ -70,7 +73,7 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
   test.each([
     'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
     'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1',
-    'claude-mythos-5-1', 'anthropic.claude-opus-5-5',
+    'claude-mythos-5-1', 'anthropic.claude-opus-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5-20260301',
   ])('adaptive thinking for %s', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
@@ -96,9 +99,10 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect((fable as { extra?: unknown }).extra).toBeUndefined();
   });
 
-  test("no-op (same reference) for 'default' and for unset", () => {
-    expect(withEffort('default')).toBe(fable);
-    expect(withEffort(undefined)).toBe(fable);
+  test("adds no effort for 'default' or for unset", () => {
+    const given = structuredClone(fable);
+    expect(withEffort('default')).toEqual(given);
+    expect(withEffort(undefined)).toEqual(given);
   });
 
   test('merges into an existing output_config instead of replacing it', () => {
@@ -117,7 +121,8 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
   });
 
   test('never sends a level outside the known set, whatever the model', () => {
-    expect(withEffort('minimal')).toBe(fable);
+    const given = structuredClone(fable);
+    expect(withEffort('minimal')).toEqual(given);
     expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
   });
 });
@@ -219,15 +224,21 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await wire.send('claude-opus-5-5');
     await wire.send('claude-fable-5-1');
     await wire.send('claude-opus-4-8');
-    expect(wire.bodies).toHaveLength(3);
-    for (const i of [0, 1]) {
-      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
-      // membrane adds the beta 'updates' needs; without it the API refuses the value.
+    await wire.send('claude-fable-5');
+    expect(wire.bodies).toHaveLength(4);
+    for (const i of [0, 1, 3]) {
+      // membrane >= 0.7.0 adds the beta 'updates' needs; without it the API refuses the value.
       expect(wire.betas(i)).toContain('thinking-display-updates-2026-08-18');
-      expect(wire.betas(i)).not.toContain('thinking-binding-controls-2026-08-01');
     }
+    for (const i of [0, 1]) {
+      expect(wire.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
+      expect(wire.betas(i)).toContain('thinking-binding-controls-2026-08-01');
+    }
+    expect(wire.bodies[3]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.betas(3)).not.toContain('thinking-binding-controls-2026-08-01');
     expect(wire.bodies[2]?.thinking).toBeUndefined();
     expect(wire.betas(2)).not.toContain('thinking-display-updates-2026-08-18');
+    expect(wire.betas(2)).not.toContain('thinking-binding-controls-2026-08-01');
   });
 
   test("with reasoning on, stream() applies the reasoning setting before the progress-note step", async () => {
@@ -235,7 +246,7 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await wire.send('claude-opus-5-5');
     await wire.send('claude-opus-4-8');
     expect(wire.bodies).toHaveLength(2);
-    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates' });
+    expect(wire.bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(wire.betas(0)).toContain('thinking-display-updates-2026-08-18');
     expect(wire.bodies[1]?.thinking).toEqual({ type: 'adaptive', display: 'omitted' });
     const summarized = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'summarized' as const }));
@@ -243,8 +254,10 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await summarized.send('claude-fable-5-1');
     expect(summarized.bodies).toHaveLength(2);
     for (const i of [0, 1]) {
-      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      // Membrane applies extra.thinking in place of its own config, control included.
+      expect(summarized.bodies[i]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
       expect(summarized.betas(i)).not.toContain('thinking-display-updates-2026-08-18');
+      expect(summarized.betas(i)).toContain('thinking-binding-controls-2026-08-01');
     }
   });
 
@@ -257,6 +270,7 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
       config: { model, maxTokens: 64, thinking: { enabled, type: 'adaptive', display: 'summarized' } },
     }, { onChunk: () => {} });
     const updates = { type: 'adaptive', display: 'updates' };
+    const bound = { prefix_mismatch_behavior: 'drop_block' };
     const off = wireAdapter(disabled);
     const viaOff = new Membrane(off.live, { formatter: new NativeFormatter() });
     for (const model of ['claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1']) await recipeSend(viaOff, model);
@@ -265,10 +279,10 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
     await recipeSend(viaOff, 'claude-mythos-5');
     expect(off.bodies).toHaveLength(6);
     for (const i of [0, 1, 2, 3]) {
-      expect(off.bodies[i]?.thinking).toEqual(updates);
+      expect(off.bodies[i]?.thinking).toEqual(i === 1 || i === 3 ? { ...updates, block_binding: bound } : updates);
       expect(off.betas(i)).toContain('thinking-display-updates-2026-08-18');
     }
-    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(off.bodies[4]?.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: bound });
     expect(off.betas(4)).not.toContain('thinking-display-updates-2026-08-18');
     expect(off.bodies[5]?.thinking).toBeUndefined();
     const on = wireAdapter(() => ({ enabled: true, budgetTokens: 0, display: 'omitted' as const }));
@@ -305,41 +319,38 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
 });
 
 describe('LoggingAnthropicAdapter initial recipe effort', () => {
-  test('native index constructs settings with the recipe effort before dispatch', async () => {
+  test("a host started from its recipe sends the recipe's effort on its first request, with no settings update", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'chost-initial-effort-'));
-    const recipePath = join(dir, 'recipe.json');
-    const captured = join(dir, 'settings.json');
-    const preload = join(dir, 'capture-settings.ts');
-    const settingsPath = resolve(import.meta.dir, '../src/modules/settings-module.ts');
-    writeFileSync(recipePath, JSON.stringify({
-      name: 'Initial effort startup',
-      agent: { provider: 'mock', systemPrompt: 'No inference requested', thinking: { enabled: false, effort: 'medium' } },
-      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
-    }));
-    writeFileSync(preload, `
-      import { mock } from 'bun:test';
-      import { writeFileSync } from 'node:fs';
-      import { SettingsModule } from ${JSON.stringify(settingsPath)};
-      class CapturedSettings extends SettingsModule {
-        constructor(...args) {
-          super(...args);
-          writeFileSync(${JSON.stringify(captured)}, JSON.stringify(this.getReasoning()));
-        }
-      }
-      mock.module(${JSON.stringify(settingsPath)}, () => ({ SettingsModule: CapturedSettings }));
-    `);
-    const child = Bun.spawn([process.execPath, '--preload', preload, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
-      cwd: dir, env: { ...process.env, DATA_DIR: join(dir, 'data') },
-      stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
-    });
+    let server: ReturnType<typeof Bun.serve> | undefined;
+    let child: ReturnType<typeof Bun.spawn> | undefined;
     try {
-      const [exit, _stdout, stderr] = await Promise.all([
-        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
-      ]);
-      expect(exit, stderr).toBe(0);
-      expect(JSON.parse(readFileSync(captured, 'utf8')).effort).toBe('medium');
+      const recipePath = join(dir, 'recipe.json');
+      let first: Record<string, unknown> | undefined;
+      server = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          if (new URL(request.url).pathname === '/v1/messages') first ??= await request.json() as Record<string, unknown>;
+          return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+        },
+      });
+      writeFileSync(recipePath, JSON.stringify({
+        name: 'Initial effort startup',
+        agent: { model: baseRequest.model, systemPrompt: 'Answer briefly.', thinking: { enabled: false, effort: 'medium' } },
+        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const host = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
+        cwd: dir,
+        env: { ...process.env, DATA_DIR: join(dir, 'data'), ANTHROPIC_API_KEY: 'sk-ant-effort-test', ANTHROPIC_BASE_URL: server.url.href },
+        stdin: new Blob(['hello\n']), stdout: 'ignore', stderr: 'ignore',
+      });
+      child = host;
+      const deadline = Date.now() + 10_000;
+      while (first === undefined && host.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
+      expect(first).toMatchObject({ output_config: { effort: 'medium' } });
     } finally {
-      child.kill();
+      child?.kill('SIGKILL');
+      await child?.exited;
+      server?.stop(true);
       rmSync(dir, { recursive: true, force: true });
     }
   }, 15_000);
