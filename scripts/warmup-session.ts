@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 /**
- * Warmup a conhost session: drive its AutobiographicalStrategy to convergence
- * before the session is opened for real continuation.
+ * Warmup a conhost session: drive its AutobiographicalStrategy toward
+ * convergence before the session is opened for real continuation.
  *
  * Bulk-imported sessions (from claude.ai exports, etc.) land in Chronicle with
  * thousands of raw messages and no L1/L2/L3 summaries. This script
- * pre-computes all summaries so the session is openable.
+ * pre-computes the summaries it can without the agent's tool definitions, and
+ * names the work that waits for them.
  *
  * Resumable: if interrupted, re-running this script picks up where it left
  * off.
@@ -283,10 +284,13 @@ async function main() {
     );
   } else if (waiting) {
     console.error(
-      `Not converged: ${waiting.description}. This script declares no tool definitions, so it can't compress ` +
-        `history that holds tool calls or results, nor any history on a Fable- or Mythos-family compression model. ` +
-        `The host compresses it once it declares the agent's tool definitions, which its context maintenance does ` +
-        `before each pass; the first pass runs at the host's start unless the recipe sets maintenanceIntervalMs to 0. ` +
+      `Not converged: ${waiting.description}. This script declares no tool definitions. Without them, ` +
+        `context-manager holds back the first chunk whose compression request carries a tool call or result, and ` +
+        `each later chunk whose request carries that one too; on a Fable- or Mythos-family compression model ` +
+        `it holds back every chunk and merge. The host compresses this work once it declares tool definitions for ` +
+        `the agent: its context maintenance does so before each pass, the first at the host's start, unless the ` +
+        `recipe sets maintenanceIntervalMs to 0, when the agent's first request does. An agent with no tools leaves ` +
+        `it waiting. ` +
         `${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
         `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
     );

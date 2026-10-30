@@ -50,22 +50,29 @@ async function runWarmup(options: { toolCalls: boolean; model?: string }) {
   }
 }
 
+function expectWaitingReport(output: string) {
+  const waiting = output.match(/Not converged: (\d+) chunks? wait on the host's tool definitions\./);
+  expect(waiting).not.toBeNull();
+  const count = Number(waiting![1]);
+  expect(count).toBeGreaterThan(0);
+  expect(output).toContain('declares no tool definitions');
+  expect(output).toContain('maintenanceIntervalMs');
+  expect(output).toContain(`[waiting] L1 0/${count} (0.0%)`);
+  expect(output).toContain(`${count} waiting on tool definitions`);
+  expect(output).not.toContain('Converged.');
+  expect(output).not.toContain('[done]');
+}
+
 describe('warmup-session with work that waits on the host', () => {
   test('history holding tool calls: says what waits and why, never "Converged.", and exits 1', async () => {
     const { exitCode, output } = await runWarmup({ toolCalls: true });
-    expect(output).toContain("wait on the host's tool definitions");
-    expect(output).toContain('declares no tool definitions');
-    expect(output).not.toContain('Converged.');
-    expect(output).not.toContain('[done]');
+    expectWaitingReport(output);
     expect(exitCode).toBe(1);
   }, 60_000);
 
   test('a Fable-family compression model on history without tool calls: the same', async () => {
     const { exitCode, output } = await runWarmup({ toolCalls: false, model: 'claude-fable-5-1' });
-    expect(output).toContain("wait on the host's tool definitions");
-    expect(output).toContain('declares no tool definitions');
-    expect(output).not.toContain('Converged.');
-    expect(output).not.toContain('[done]');
+    expectWaitingReport(output);
     expect(exitCode).toBe(1);
   }, 60_000);
 });

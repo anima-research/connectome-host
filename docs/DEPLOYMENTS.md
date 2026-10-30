@@ -98,11 +98,13 @@ resident first, then drain the debt offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
 `--merge-threshold` must pass the same values to the warmup command. The warmup
-declares no tool definitions, so it can't compress history that holds tool calls or
-results, or any history on a Fable- or Mythos-family compression model. It names the
-work it left and exits 1, and that work waits for the restart: the host compresses it
-once it declares the agent's tool definitions, which its context maintenance does
-before each pass.
+declares no tool definitions, so the first chunk whose compression request carries a
+tool call or result waits, as does each later chunk whose request carries that one too,
+and everything on a Fable- or Mythos-family compression model. It names the
+work it left and exits 1, and that work waits for the restarted host to declare tool
+definitions for the agent: its context maintenance does so before each pass, the first
+at start, or with `maintenanceIntervalMs: 0` the agent's first request does. An agent
+with no tools leaves it waiting.
 
 **Logs / observability** (`data/` below is `DATA_DIR`, default `./data` under
 the working directory):

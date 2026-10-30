@@ -59,8 +59,8 @@ Four stages. The first two (import, recipe compose) are independent and can be r
                        ┌────────────────────────────┐
                        │ warmup-session.ts          │
                        │   drives autobio strategy  │
-                       │   to convergence using the │
-                       │   same model that will     │
+                       │   toward convergence, with │
+                       │   the same model that will │
                        │   read summaries back      │
                        └────────────┬───────────────┘
                                     ▼
@@ -139,7 +139,7 @@ The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?
 
 ### Stage 3 — Warmup (compress the message history)
 
-Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes all L1/L2/L3 summaries so the session is openable.
+Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls, and what it can without the agent's tool definitions otherwise (below).
 
 ```
 bun scripts/warmup-session.ts "<conversation name or session id>"
@@ -147,7 +147,7 @@ bun scripts/warmup-session.ts "<conversation name or session id>"
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
-The warmup declares no tool definitions, so it can't compress history that holds tool calls or results, which an export keeps (`scripts/import-claudeai-export.ts` keeps claude.ai's tool calls), or any history on a Fable- or Mythos-family compression model. It names the work it left and exits 1. The host compresses that work once it declares the agent's tool definitions, which its context maintenance does before each pass, first at the host's start unless the recipe sets `maintenanceIntervalMs` to 0.
+The warmup declares no tool definitions, so the first chunk whose compression request carries a tool call or result waits, as does each later chunk whose request carries that one too, and everything on a Fable- or Mythos-family compression model. An export keeps claude.ai's tool calls (`scripts/import-claudeai-export.ts`). The warmup names the work it left and exits 1. The host compresses that work once it declares tool definitions for the agent: its context maintenance does so before each pass, the first at the host's start, or with `maintenanceIntervalMs: 0` the agent's first request does. An agent with no tools leaves it waiting.
 
 Resumable: autobio persists its compression and merge queues to Chronicle, so re-running picks up where it left off. The progress bar shows L1 chunks remaining, queued merges, running token totals, USD cost, elapsed, and ETA.
 
