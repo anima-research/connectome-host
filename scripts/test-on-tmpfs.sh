@@ -20,4 +20,7 @@ fi
 echo "bun's tmpdir(): $(bun -e 'process.stdout.write(require("node:os").tmpdir())' 2>&1 || echo "bun -e failed")"
 df -hT "${TMPDIR:-/tmp}" || true
 trap 'df -h "${TMPDIR:-/tmp}" || true' EXIT
-npm test
+# Four workers fit the 4-CPU hosted runners CI and the publish gate run
+# on; more crowd the tests that wait in real time. Keep the count here,
+# not in package.json's `test`: it belongs to the machine.
+npm test -- --parallel=4
