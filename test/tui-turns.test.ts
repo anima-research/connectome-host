@@ -119,13 +119,20 @@ describe("the TUI's status line, through runTui", () => {
     expect(at('no start, failed, then exhausted').frame).toContain('[✗ error');
   }, 40000);
 
-  test("a session switch while a backgrounded turn's attempt has failed ends the background, so the new session's answer shows alone", async () => {
+  test("a session switch while a backgrounded turn's attempt has failed lets none of its text into the new session's backgrounded answer", async () => {
     const answered = (await play('background-switch')).get('new session answered');
     if (!answered) throw new Error('missing background-switch frame');
     expect(answered.frame).toContain('new session words');
     expect(answered.frame).not.toContain('old session words');
-    expect(answered.frame).not.toContain('returned from background');
     expect(answered.frame).toContain('[✓ idle]');
+  }, 40000);
+
+  test("a session switch that fails keeps the backgrounded turn's earlier rounds, which return with its retry", async () => {
+    const returned = (await play('background-switch-fails')).get('old turn returned');
+    if (!returned) throw new Error('missing background-switch-fails frame');
+    expect(returned.frame).toContain('returned from background');
+    expect(returned.frame).toContain('old round words');
+    expect(returned.frame).toContain('retry words');
   }, 40000);
 
   for (const scenario of ['background-retry', 'background-retry-restarted', 'background-retry-before-resume']) test(`${scenario}: a backgrounded turn whose attempt fails stays in background, and returns with its earlier rounds and its retry but not the failed attempt`, async () => {

@@ -35,10 +35,7 @@
  * A second end can follow the first: a turn a tool ended sends `completed`
  * and then `turn_ended`, and a failed attempt sends `failed` and then
  * `exhausted`, or `aborted` when a quiesce abandons it, a stop cancels its
- * retry or its held retry is dropped. A surface that shows a turn's state (a wait, a notice, the
- * relay) reads an end that follows an end as nothing new; the agent tree and
- * the TUI's status line show a `failed` as an attempt that failed, and the
- * end that follows it as the turn's end. A
+ * retry or its held retry is dropped. A
  * stream panel, which shows each of a stream's events as it comes, shows
  * both.
  *

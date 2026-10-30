@@ -201,17 +201,33 @@ async function play(): Promise<void> {
     first.send('inference:tokens', { content: 'retry words' });
     first.send('inference:completed');
     await step('returned');
+  } else if (scenario === 'background-switch-fails') {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'old round words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    first.send('inference:failed', { error: 'overloaded' });
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('failed');
+    await until(async () => (await frame()).includes('Session switch failed'), 'the switch to fail');
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'retry words' });
+    first.send('inference:completed');
+    await step('old turn returned');
   } else if (scenario === 'background-switch') {
     first.send('inference:started');
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
     first.send('inference:tokens', { content: 'old session words' });
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     first.send('inference:failed', { error: 'overloaded' });
     await command('/session switch other');
     await until(async () => (await frame()).includes('switching'), 'the switch to start');
     endSwitch('switched');
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:started');
-    second.send('inference:tokens', { content: 'new session words', blockType: 'text' });
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    second.send('inference:tokens', { content: 'new session words' });
     second.send('inference:completed');
     await step('new session answered');
   } else if (scenario === 'missed-start') {

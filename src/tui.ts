@@ -2371,9 +2371,6 @@ export async function runTui(app: AppContext): Promise<void> {
         updateStatus();
         interrupts.reset();
         rootTurnShowing = false;
-        backgrounded = false;
-        backgroundBuffer = '';
-        attemptStart = 0;
         turnFailures = createTurnFailures();
         failureLines.clear();
 
@@ -2384,6 +2381,9 @@ export async function runTui(app: AppContext): Promise<void> {
         };
         void switchFollowing(follower, async () => {
           await app.switchSession(sessionId);
+          backgrounded = false;
+          backgroundBuffer = '';
+          attemptStart = 0;
           if (stopping) return;
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
