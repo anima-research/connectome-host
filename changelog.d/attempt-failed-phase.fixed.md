@@ -11,4 +11,7 @@
   last error, or an error in the TUI's status line; one a stop ends shows
   `cancelled`, or idle. A fleet parent on an earlier release can show a
   child's `attempt-failed` agent in a plain colour and leave it out of its
-  count of running agents.
+  count of running agents. On a fleet child running agent-framework older
+  than 0.27.0, a held turn whose retry is dropped ends with no event, so it
+  shows `attempt-failed`, and counts as running, until that agent's next
+  attempt starts.
