@@ -139,7 +139,7 @@ The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?
 
 ### Stage 3 — Warmup (compress the message history)
 
-Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls, and what it can without the agent's tool definitions otherwise (below).
+Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls on a compression model outside the Fable and Mythos families, and what it can without the agent's tool definitions otherwise (below).
 
 ```
 bun scripts/warmup-session.ts "<conversation name or session id>"
