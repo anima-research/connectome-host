@@ -6,7 +6,8 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Module } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderRequest } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter, modelThinking } from '../src/logging-adapter.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { LoggingAnthropicAdapter, accountBinding, clearAccountBindings, modelThinking, recordAccountBinding } from '../src/logging-adapter.js';
 import {
   buildFrameworkAgentConfig,
   systemPromptFor,
@@ -170,9 +171,78 @@ describe('the binding on the wire (through the real adapter)', () => {
     const stream = (model: string) => live.stream(req(model), { onChunk: () => {} });
     const complete = (model: string) => live.complete(req(model));
     const betas = (i: number) => (headers[i]?.['anthropic-beta'] ?? '').split(',').filter(Boolean);
-    return { bodies, betas, stream, complete };
+    return { bodies, betas, stream, complete, live };
   };
   const off: Reasoning = () => ({ enabled: false, budgetTokens: 0 });
+
+  test('on an account found to show such a block, no control goes; a binding refusal turns it on and the turn is sent again', async () => {
+    recordAccountBinding('claude-opus-5-5', 'shows');
+    try {
+      const w = wire(off);
+      await w.stream('claude-opus-5-5');
+      expect((w.bodies[0]?.thinking as Record<string, unknown> | undefined)?.block_binding).toBeUndefined();
+      const live = w.live as unknown as { client: { messages: { stream: (body: Record<string, unknown>, opts?: unknown) => unknown } } };
+      const send = live.client.messages.stream;
+      live.client.messages.stream = (body, opts) => {
+        if (!(body.thinking as Record<string, unknown> | undefined)?.block_binding) {
+          w.bodies.push(body);
+          throw Anthropic.APIError.generate(400, {
+            type: 'error',
+            error: { type: 'invalid_request_error', message: 'messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation.' },
+          }, undefined, new Headers());
+        }
+        return send(body, opts);
+      };
+      const response = await w.stream('claude-opus-5-5');
+      expect(response.content).toEqual([{ type: 'text', text: 'ok' }]);
+      expect(accountBinding('claude-opus-5-5')).toBe('refuses');
+      expect(w.bodies).toHaveLength(3);
+      expect((w.bodies[1]?.thinking as Record<string, unknown> | undefined)?.block_binding).toBeUndefined();
+      expect(w.bodies[2]?.thinking).toEqual({ type: 'adaptive', display: 'updates', block_binding: DROP_BLOCK });
+    } finally {
+      clearAccountBindings();
+    }
+  });
+
+  test('a refusal is answered from the verdict its request was sent under, and never after part of the reply was delivered', async () => {
+    recordAccountBinding('claude-opus-5-5', 'shows');
+    try {
+      const w = wire(off);
+      const live = w.live as unknown as { client: { messages: { stream: (body: Record<string, unknown>, opts?: unknown) => unknown } } };
+      const send = live.client.messages.stream;
+      const refusal = () => Anthropic.APIError.generate(400, {
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation.' },
+      }, undefined, new Headers());
+      live.client.messages.stream = (body, opts) => {
+        if ((body.thinking as Record<string, unknown> | undefined)?.block_binding) return send(body, opts);
+        w.bodies.push(body);
+        // Another agent's refusal changes the verdict while this request is out.
+        recordAccountBinding('claude-opus-5-5', 'refuses');
+        throw refusal();
+      };
+      expect((await w.stream('claude-opus-5-5')).content).toEqual([{ type: 'text', text: 'ok' }]);
+      expect(w.bodies).toHaveLength(2);
+
+      recordAccountBinding('claude-opus-5-5', 'shows');
+      live.client.messages.stream = (body) => {
+        w.bodies.push(body);
+        return {
+          controller: { abort() {} },
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'message_start', message: { model: body.model, usage: { input_tokens: 1 } } };
+            yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+            yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } };
+            throw refusal();
+          },
+        };
+      };
+      await expect(w.stream('claude-opus-5-5')).rejects.toThrow('bound to a different conversation');
+      expect(w.bodies).toHaveLength(3);
+    } finally {
+      clearAccountBindings();
+    }
+  });
 
   test('with reasoning off, an agent turn on each binding model carries the control and its beta', async () => {
     const w = wire(off);

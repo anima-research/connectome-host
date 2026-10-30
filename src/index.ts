@@ -110,6 +110,7 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning } from './framework-agent-config.js';
+import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
@@ -1135,6 +1136,16 @@ async function main() {
   }
 
   const extensions = await loadExtensions(recipe);
+  // Before any agent config is built: what this account does with thinking
+  // whose earlier conversation changed decides whether agents leave it out.
+  await probeAccountBinding(membrane, {
+    provider,
+    formatter: recipe.agent.formatter,
+    assistant: agentName,
+    models: [resolveModel(recipe), typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents.defaultModel : undefined],
+    stateFile: join(config.dataDir, 'thinking-binding.json'),
+    route: `${provider} ${process.env.ANTHROPIC_BASE_URL ?? ''}`.trim(),
+  });
   const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate, extensions);
 
   const app: AppContext = {

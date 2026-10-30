@@ -844,7 +844,18 @@ On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block 
 to the conversation and head (system text, tools, model) it was minted under: an account that
 enforces the binding refuses a request where those changed, as after a fold. The host sends the
 drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
-leaves out what a fold invalidates (anima-research/context-manager#155). On those four the host
+leaves out what a fold invalidates (anima-research/context-manager#155). Not every account
+binds: some still show the model such a block. At start, for each such model the recipe uses (the
+agent's and its subagents' default), the host mints one block and replays it under a changed
+system text, a few small requests that `[thinking-binding]` lines in its log report on. Where the
+account showed the block, the agent and its subagents send their thinking as stored, without the
+drop control, which would have the block dropped. That holds only on the Anthropic route for a model
+that takes the control: if a gateway later moves the agent to an account that refuses such a block,
+the first refusal turns the control on for the rest of the run and the request is sent again. Where
+the account refused or dropped the block they leave such thinking out as above. A start at which the
+check can't tell uses what it last found on the same route (`$DATA_DIR/thinking-binding.json`), or
+leaves such thinking out. `THINKING_BINDING_PROBE=off` skips the check.
+On those four the host
 also passes the model's window, and with both, agent-framework doesn't break a turn's stream at
 `maxStreamTokens` (or the `/budget` command's value): its stream breaks mid-turn for its size
 only where its next request would pass the window, and a fresh compile carries the turn on.

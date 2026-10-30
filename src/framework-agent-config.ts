@@ -2,7 +2,7 @@ import { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from './recipe.js';
 import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
-import { modelThinking } from './logging-adapter.js';
+import { leavesOutChangedThinking, modelThinking } from './logging-adapter.js';
 import { getDefaultModelLimits } from './model-limits.js';
 
 type AgentConfig = Parameters<typeof AgentFramework.create>[0]['agents'][number];
@@ -28,7 +28,10 @@ export type FrameworkAgentConfig = AgentConfig & {
 };
 
 /** The drop control and the window go only on the Anthropic route, the one
- *  they were tried on (anima-research/context-manager#155). */
+ *  they were tried on (anima-research/context-manager#155). Where the start-up
+ *  probe found the account still shows the model a block whose earlier
+ *  conversation changed, neither the binding nor the control goes: the
+ *  thinking is the model's to read, and the control would have it dropped. */
 export function thinkingBindingSettings(model: string, provider: string | undefined): {
   thinkingBinding?: { binds: true; dropBlock: boolean };
   physicalWindowTokens?: number;
@@ -38,7 +41,7 @@ export function thinkingBindingSettings(model: string, provider: string | undefi
   const direct = provider === 'anthropic';
   const window = direct && facts.windowShownByRefusal ? getDefaultModelLimits(model)?.maxContextTokens : undefined;
   return {
-    thinkingBinding: { binds: true, dropBlock: direct && facts.dropBlock },
+    ...(leavesOutChangedThinking(model) ? { thinkingBinding: { binds: true as const, dropBlock: direct && facts.dropBlock } } : {}),
     ...(window !== undefined ? { physicalWindowTokens: window } : {}),
   };
 }
