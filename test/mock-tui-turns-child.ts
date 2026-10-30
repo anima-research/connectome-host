@@ -201,6 +201,16 @@ async function play(): Promise<void> {
     first.send('inference:tokens', { content: 'retry words' });
     first.send('inference:completed');
     await step('returned');
+  } else if (scenario === 'switch-ctrl-b') {
+    first.send('inference:started');
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    endSwitch('switched');
+    await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
+    second.send('inference:started');
+    second.send('inference:tokens', { content: 'new session words', blockType: 'text' });
+    await step('new session streaming');
   } else if (scenario === 'background-switch-fails') {
     first.send('inference:started');
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');

@@ -127,6 +127,13 @@ describe("the TUI's status line, through runTui", () => {
     expect(answered.frame).toContain('[✓ idle]');
   }, 40000);
 
+  test('a Ctrl+B pressed while a switch is under way leaves the new session in the foreground', async () => {
+    const streaming = (await play('switch-ctrl-b')).get('new session streaming');
+    if (!streaming) throw new Error('missing switch-ctrl-b frame');
+    expect(streaming.frame).toContain('new session words');
+    expect(streaming.frame).not.toContain('[↓ background');
+  }, 40000);
+
   test("a session switch that fails keeps the backgrounded turn's earlier rounds, which return with its retry", async () => {
     const returned = (await play('background-switch-fails')).get('old turn returned');
     if (!returned) throw new Error('missing background-switch-fails frame');
