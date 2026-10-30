@@ -60,6 +60,7 @@ interface Coverage {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
@@ -300,6 +301,9 @@ export function ContextPanel(props: {
             </div>
             <Show when={coverage()!.queue.pending}>
               <div class="text-amber-200 truncate" title={coverage()!.queue.pending ?? ''}>{coverage()!.queue.pending}</div>
+            </Show>
+            <Show when={coverage()!.queue.waiting}>
+              <div class="text-amber-200 truncate" title={coverage()!.queue.waiting ?? ''}>{coverage()!.queue.waiting}</div>
             </Show>
             <For each={coverage()!.queue.l1}>
               {(index) => <div class="text-neutral-400">L1 · chunk {index}</div>}
