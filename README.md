@@ -300,10 +300,8 @@ fails to start, is started again, and a WebSocket server is dialled again,
 with waits that grow between tries (an entry's `reconnectIntervalMs` and
 `reconnectMaxIntervalMs` set them). One that keeps failing raises an
 `mcpl-down` ops alert. To keep a server down once it's lost, its entry says
-`reconnect: false`; a `null` written in a recipe or `mcpl-servers.json` does
-the same, while `mcpl_deploy` reads a `null` as not given, so the default
-applies. A close the host makes itself, as at batch mode's end, a shutdown or
-an unload, isn't undone.
+`reconnect: false`. A close the host makes itself, as at batch mode's end, a
+shutdown or an unload, isn't undone.
 
 Agents with `modules.mcplAdmin` can also deploy, restart and unload their own
 servers; those are kept in `mcpl-servers.agent.json` in the working directory,

@@ -294,8 +294,8 @@ export class McplAdminModule implements Module {
       {
         name: 'mcpl_restart',
         description:
-          'Restart an MCPL server: kill the process and respawn it with its current ' +
-          'config. Use after rebuilding a server\'s dist, or to bring back a server that is ' +
+          'Restart an MCPL server: disconnect it and connect it again with its current ' +
+          'config, which starts a stdio command afresh and dials a websocket url again. Use after rebuilding a server\'s dist, or to bring back a server that is ' +
           'down now: one whose reconnect is false stays down until restarted, and one that ' +
           'reconnects tries again on its own, at intervals that grow, by default, to about 5 minutes, ' +
           'while mcpl_list shows it RETRYING. ' +

@@ -12,9 +12,7 @@
   `mcpl-down` ops alert and writes a line to `logs/failures.log`, and an ops
   webhook, if one is set, posts at most once every 15 minutes per server.
   The default was URL-only on the reasoning that reconnecting didn't start a
-  stdio server's process again; agent-framework 0.28.0, which this host
-  runs, does. An entry that should stay down when its server fails says
-  `reconnect: false`, and a `null` written in a recipe or
-  `mcpl-servers.json` stays off as before, while `mcpl_deploy` reads a
-  `null` as not given, so the default applies. A close the host makes
-  itself, at batch mode's end, a shutdown or an unload, isn't undone.
+  stdio server's process again; agent-framework does, and has since at
+  least 0.21.0 (#229). An entry that should stay down when its server fails
+  says `reconnect: false`. A close the host makes itself, at batch mode's
+  end, a shutdown or an unload, isn't undone.

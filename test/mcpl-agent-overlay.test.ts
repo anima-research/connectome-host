@@ -211,7 +211,7 @@ describe('resolveOverlayEntry', () => {
     expect(resolveOverlayEntry('d', { command: 'node', reconnect: false })?.reconnect).toBe(false);
   });
 
-  test("every entry the host's composition gives agent-framework reconnects unless it says false, and a null is handed on as written: recipe, mcpl-servers.json and overlay entries", () => withTmp((dir) => {
+  test("every entry the host's composition gives agent-framework reconnects unless it says false, or a recipe or mcpl-servers.json entry writes null, which is handed on as written: recipe, mcpl-servers.json and overlay entries", () => withTmp((dir) => {
     const filePath = join(dir, 'mcpl-servers.json');
     writeFileSync(filePath, JSON.stringify({ mcplServers: {
       fromFile: { command: 'node' },

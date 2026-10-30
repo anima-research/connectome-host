@@ -173,18 +173,63 @@ export function reconnectsByDefault<T extends Record<string, unknown>>(server: T
   return server;
 }
 
+/** agent-framework's legacy engine waits up to 1.25 times the capped wait
+ *  without clamping it (server-connection.ts), and a timer past
+ *  2,147,483,647 ms fires at once. */
+export const RECONNECT_MAX_INTERVAL_CEILING_MS = Math.floor(2_147_483_647 / 1.25);
+
+const RECONNECT_TIMING = [
+  { field: 'reconnectIntervalMs', fallback: 'the default, 5 seconds', ceiling: Infinity },
+  { field: 'reconnectMaxIntervalMs', fallback: 'the default, 5 minutes', ceiling: RECONNECT_MAX_INTERVAL_CEILING_MS },
+] as const;
+
+/** agent-framework reads both values with JavaScript's arithmetic: 0, a
+ *  negative, or text that isn't a number makes a wait that a timer fires at
+ *  once. */
+export function checkReconnectTiming(server: Record<string, unknown>): string[] {
+  const notes: string[] = [];
+  for (const { field, fallback, ceiling } of RECONNECT_TIMING) {
+    const value = server[field];
+    if (value === undefined || value === null) continue;
+    const quoted = typeof value === 'string';
+    const n = typeof value === 'number' || quoted ? Number(value) : NaN;
+    const is = quoted ? `is text that reads as ${n}` : `is ${n}`;
+    const problem = typeof value === 'boolean' ? `is ${value}, which isn't a number`
+      : typeof value !== 'number' && !quoted ? "isn't a number"
+      : !Number.isFinite(n) ? (quoted ? "is text that doesn't read as a finite number" : `is ${n}, which isn't finite`)
+      : n <= 0 ? `${is}, which isn't above 0`
+      : n > ceiling ? `${is}, above the most it can be, ${ceiling}`
+      : null;
+    if (problem === null) {
+      if (quoted) {
+        server[field] = n;
+        notes.push(`its ${field} is quoted, read as the number ${n}: write it as the number ${n}, without quotes`);
+      }
+      continue;
+    }
+    delete server[field];
+    notes.push(`its ${field} ${problem}, so it's left out and ${fallback}, applies`);
+  }
+  return notes;
+}
+
 export function mergeRecipeServers(
   recipeServers: Record<string, Record<string, unknown>>,
   fileServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
+  onNote?: (id: string, note: string) => void,
 ): MergedServer[] {
   const fileById = new Map(fileServers.map((s) => [s.id, s]));
   const out: MergedServer[] = [];
+  const checked = (server: MergedServer): MergedServer => {
+    if (server.reconnect === true) for (const note of checkReconnectTiming(server)) onNote?.(server.id, note);
+    return server;
+  };
   for (const [id, recipeEntry] of Object.entries(recipeServers)) {
     const fileEntry = fileById.get(id);
     if (fileEntry) {
-      out.push(reconnectsByDefault(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer));
+      out.push(checked(reconnectsByDefault(applyRecipeServerOverrides(fileEntry, recipeEntry) as MergedServer)));
     } else if (recipeEntry.command || recipeEntry.url) {
-      out.push(reconnectsByDefault({ id, ...recipeEntry } as MergedServer));
+      out.push(checked(reconnectsByDefault({ id, ...recipeEntry } as MergedServer)));
     } else {
       throw new Error(
         `Recipe mcpServers.${id} has no "command" or "url", and mcpl-servers.json defines no "${id}" ` +
@@ -384,6 +429,7 @@ export function readOverlayEntry(raw: unknown, opts: { strict?: boolean } = {}):
     notes.push(`its reconnect isn't true or false, so it's read as ${read}: write true or false, without quotes`);
     e.reconnect = read;
   }
+  if (e.reconnect !== false) notes.push(...checkReconnectTiming(e));
   if (e.toolHints !== undefined && typeof e.toolHints !== 'boolean') {
     notes.push('its toolHints isn\'t true or false, so it\'s left out and the server gets the default: write true or false, without quotes');
     delete e.toolHints;
@@ -573,6 +619,28 @@ export function resolveOverlayEntry(
         }
       : {}),
   };
+}
+
+/** `operator`: the recipe's servers composed with mcpl-servers.json's;
+ *  `servers`: those under the agent overlay, as the start connects them;
+ *  `warnings`: the overlay's, then the timing notes of each operator entry
+ *  that runs as composed. */
+export function startServers(
+  recipeServers: Record<string, Record<string, unknown>>,
+  fileServers: ReadonlyArray<{ id: string } & Record<string, unknown>>,
+  overlayPath: string,
+): {
+  operator: MergedServer[];
+  servers: Array<{ id: string } & Record<string, unknown>>;
+  warnings: string[];
+} {
+  const timing: Array<[string, string]> = [];
+  const operator = mergeRecipeServers(recipeServers, fileServers, (id, note) => timing.push([id, note]));
+  const warnings = overlayWarnings(operator, overlayPath);
+  const servers = applyAgentOverlay(operator, overlayPath);
+  const runs = new Set(operator.filter((server) => servers.includes(server)).map((server) => server.id));
+  for (const [id, note] of timing) if (runs.has(id)) warnings.push(`[mcpl] server "${id}": ${note}`);
+  return { operator, servers, warnings };
 }
 
 export function applyAgentOverlay<T extends { id: string }>(
