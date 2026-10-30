@@ -1691,8 +1691,8 @@ export class FleetModule implements Module {
       return {
         success: false,
         isError: true,
-        error: `Nothing was relayed: the latest inference round '${input.from}' ended without tool calls, outside a ` +
-          'silent heartbeat, had no text in it, so there was nothing to pass on.',
+        error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
+          'tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.',
       };
     }
     const unreachable = this.unreachable(fromChild);

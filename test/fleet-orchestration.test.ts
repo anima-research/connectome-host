@@ -159,7 +159,7 @@ describe('fleet--relay', () => {
     const res = await fleet.handleToolCall({ id: 'relay-latest-empty', name: 'relay', input: { from: 'src', to: 'dst' } });
     expect(res.success).toBe(false);
     expect(res.error).toBe(
-      "Nothing was relayed: the latest inference round 'src' ended without tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.",
+      "Nothing was relayed: the latest inference round this host saw from 'src' ended without tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.",
     );
     expect(fleet.getChildren().get('dst')!.textsSent).toBe(sentBefore);
   });

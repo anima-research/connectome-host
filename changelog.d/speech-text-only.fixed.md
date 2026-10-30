@@ -9,7 +9,7 @@
   for one that had no text, where it
   sent nothing for such a round. So `fleet--relay` no longer hands on a
   child's earlier reply as its latest when its latest round said nothing:
-  it relays nothing and says the latest round had no text. `connectome
+  it relays nothing and says the latest round it saw had no text. `connectome
   send` prints nothing for such a round, where with thinking on it printed
   the thinking. A turn that ends on a tool, such as `skip_reply`, still
   sends no frame.
