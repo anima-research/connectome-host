@@ -6,6 +6,274 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.20.0 — 2026-10-30
+
+### Breaking
+
+- **Authors of a Web UI client other than the page this host serves:** the
+  Web UI protocol is now v3, and eight client messages change. `rollback` and
+  `suppress` require `sessionId`. `pin-add`, `pin-remove`, `settings-update`,
+  `settings-reset` and `settings-cancel-transition` require it unless their
+  `scope` names a fleet child, and with such a scope carry none.
+  `cancel-subagent` requires it unless it has a `childName`, and with one
+  carries none. A client that leaves it out where it's required, or includes
+  one on a change whose `scope` or `childName` names a fleet child, is
+  answered "unknown message shape". To migrate, send the session of the data
+  the operator chose the change from: the welcome's `session.id` for its
+  messages and for the subagents its tree shows, or the `sessionId` that a
+  `history-page`, this process's `pins-list` and `settings-state`, and the
+  `/debug/context` answer now carry. Unchanged: every other message, a fleet
+  child's pin, settings and subagent-cancel messages, which carry no session,
+  and the page this host serves, which speaks v3. A page from before this
+  release shows its protocol mismatch banner.
+
+### Added
+
+- The package has a bin, `connectome-host`, and setup (`src/update/setup.ts`) writes an install's own `connectome` command beside `start.js`, which runs the release the install's data last committed on, and says, where its directory isn't on `PATH`, how to put it there. `connectome` alone says which install this is, its release, whether its host is running, and its update state as the host gives it. `connectome send <text>` waits until the running agent is between turns, sends it one line, and prints what it says until that turn's work ends, and never starts a host. `connectome update [check | install | restart … | back …]` asks the running host what `/update` does with the same words, and exits 1 when the host answers no, such as an install with nothing newer offered, a check that couldn't read the registry or a `back` that couldn't read the Go back offer. When nothing listens on the host's socket, `connectome update back keep` or `back restore` asks the next start to go back, as `start.js --go-back` does. Run in a directory with an install that has no `connectome` yet, the bin says how setup writes it.
+- `/update check` reads the registry and shows the update state, as `/update` alone does.
+- The headless socket's `command` takes an optional `corrId`. Each `command-output` line of its answer then carries it, and a `command-done` ends the answer, with `error` when the command threw, and `refused: true` when `/update` answered that it didn't do what was asked: for its refusals, for words it doesn't take, for a check whose read of the registry failed, and for `back` alone when it can't read the Go back offer or asks a host that isn't an install. No other command's answer is marked so. A `command` without one is answered as before (docs/fleet-protocol.md §2).
+- The headless socket's `ready` says whether turn work is in flight (`turnWork`) and names the agent whose speech the socket carries (`agent`), and a new `lifecycle` phase, `turn-work-done`, says when turn work has ended, even while a subagent run keeps the host from idle (docs/fleet-protocol.md §2).
+- A headless `text` with `from: "console"` comes in as a console line, as batch mode's do, without the note that tells the agent a plain-prose reply won't reach an IPC sender.
+
+- When the host can't write a refreshed or pasted Anthropic credential back
+  to its `ANTHROPIC_OAUTH_CREDENTIALS_FILE`, it now raises the
+  `credential-unsaved` ops alert, naming the file and the error, and keeps
+  using the new credential. The alert stands beside the credential's state,
+  which it leaves as it was. While it stands, `/auth status` says so and
+  `/auth recheck` writes the credential to the file again; the next write
+  that succeeds clears it. The notices module tells it in status channels.
+
+- Recipes accept a top-level `maintenanceIntervalMs`: how often
+  agent-framework runs its context maintenance pass, in milliseconds, as a
+  whole number from 0 to 2147483647; any other value stops the load, naming
+  the key. Left out, the framework's 5000 ms stands, as before. 0 turns the
+  pass off, for short runs such as test fixtures; the README's Recipes
+  section says what waits without it.
+
+### Changed
+
+- Retrieval: a tune-out's release now opens a turn (#517). Before, it opened
+  none, like every row marked `system`: agent-framework writes it into the
+  residents' window as one (`kind: 'tune-out-cancel'`), so when no note from
+  the subconscious followed it, the primary's turn it wakes could reuse the
+  previous turn's block with no retrieval for what it released. Now
+  retrieval runs for that turn, and a block it finds is headed with the
+  start of the release row. That can cost a retrieval call the turn didn't
+  make before (two when more than three lessons are candidates), a release
+  that held nothing included. A note that follows a release is newer, and
+  opens the turn as before.
+
+- A headless host closes a socket client that stops reading. Before, it kept
+  every event it couldn't write to that client in memory for as long as the
+  client stayed connected, without bound: a fleet parent whose process was
+  stopped, or any other client stopped with Ctrl-Z, grew the host's memory
+  by every event the host emitted meanwhile, and a second client connecting
+  didn't free it. Now, once a client's socket refuses a write, it has five
+  minutes to empty the host's queue for it; a client whose queue the host
+  still holds then is closed, and the host's log says how much was left
+  unsent. A client that keeps up is never closed; one that reads but can't
+  keep up with the host's events is. A fleet parent closed this way finds
+  its child ready with no connection to it, as it does when another client
+  takes the child's socket. When `connectome send`'s connection closes after
+  the host said it was ready, it names this among the reasons a connection
+  closes, as when the command was suspended.
+
+- Setup refuses an install whose record is gone when its `releases` is there and the journal, or a file setup writes only after the record, shows it: as before, the journal and the entry point, and now also the install's own `connectome` command, a `start.js.tmp` or `connectome.tmp`, and a link at any of those names that points nowhere. That refusal, and those of an install record whose content setup can't use (one that isn't JSON, has no version, or names no data directory), now say that setup changed nothing and which data directory it was given, give the record to fill in on a line of its own, and ask for the absolute path of the data directory the host was started with (a wrong one is refused at the host's next start through `start.js`), where it named the `DATA_DIR` setup was given, which is only a guess once the record is lost; they say where the list of state kept outside the data directory can still be read, that an update copies, beside the data directory and what it finds itself, only the places the record lists, and not to restart or update the host until setup has run again. A root with one of those files but neither a record nor `releases` is told what setup sees there. Where its journal can't be read, holds no whole line, or ends in a line other than an ok commit, setup can't tell whether an update or a Go back stopped part-way, so it says not to start any release on that data, and to put `releases` back from a backup if there is one. Where nothing names a release, or `current` and the journal name different ones, it says not to start any release on that data until the operator knows which one last committed on it and that no update or Go back stopped part-way on it. Otherwise, run from an npm install, it says how to make the install afresh with the old root kept aside, naming the setup command to run, the one in the directory whose `node_modules` holds the setup that ran, from exactly the release its `current` names, or, where `current` names none, the release the journal's last commit names; where the install has no journal, it first says there's then no journal to show whether an update or a Go back ran on that data. An install record whose `dataDir` is empty is refused as naming no data directory. Each setup run's line of the state kept outside the data directory is now a block: what an update copies, each listed place on a line of its own, and the setup command that lists another, with the places already listed. A file written through a temporary name, such as the record, `start.js` and the install's own command, now replaces a link left at that temporary name rather than writing through it to what it points at. The setup command and the `bun add` that setup prints, and docs/DEPLOYMENTS.md's `bun add` for an update by hand, run Bun with `--no-env-file`, so the `.env` of the directory they run in, which can hold the resident's keys, reaches neither setup nor, on Bun 1.4.4 and later, a package's install scripts.
+
+- A refreshed or pasted Anthropic credential that the host can't write
+  back to its file no longer prints `[anthropic-credentials] credential
+  rotated in memory but not written to …` on stderr: the
+  `credential-unsaved` ops alert says it instead. An `/auth` action's
+  outcome no longer ends with `; WARNING: …` about it, so the Web UI's
+  Health section, whose last action showed that warning, no longer shows
+  it; `/auth status` and each `/auth` action's answer print it while it
+  stands.
+
+- An operator's work still under way now holds a headless host's quiet: a
+  command's follow-up, such as `/newtopic`'s transition summary or
+  `/update check` reading the registry, whichever entry sent the command; a
+  credential action, such as `/auth login` waiting for its code to be entered,
+  which the Codex subscription's login gives up on after 10 min by default;
+  and the actions that already held a session switch off. `lifecycle:idle`,
+  `--exit-when-idle` and an armed self-restart wait for it. Before, a
+  self-restart or `--exit-when-idle` could stop the host mid-`/newtopic`,
+  losing the topic reset.
+- A headless, readline or batch host that begins to stop while a session
+  switch is under way, before the switch has installed its new framework,
+  starts no framework for that switch: the switch stops a framework it has
+  made rather than starting it. A headless host waits for the switch to
+  settle before it stops and exits, saying so in its log if the switch
+  outlasts the ~50 ms the host gives its `exiting` line, and exits 1 if
+  stopping what the switch made failed; a switch already installing there
+  finishes, and the stop then stops the framework it installed. `/session new` and
+  `/session switch` asked for after the stop began are refused, saying the
+  host is stopping, before any session is created. For a switch the stop
+  left unfinished, the asker is told it didn't finish and which session the
+  next start opens: in a headless or readline command's answer, in place of
+  `Session switched.`, and as an error to the webui while its server is still
+  up. Before, a headless or readline host could start that framework and exit
+  without stopping it (#499).
+
+- **Readline mode (`--no-tui` with stdin on a terminal):** from its banner
+  until the host has stopped, what the process writes through
+  `process.stderr.write`, `console.error` and `console.warn` goes to
+  `data/readline-error.log` rather than into the conversation, where a
+  library's diagnostic could land in the middle of the agent's reply. The
+  log is created readable by its owner alone, and each line is written to it
+  as it comes, so a crash loses none of what came before it.
+  `[routeSpeech]`, `[routing]` and `[inference-failed]` lines go there too,
+  as does the `[diagnostics]` dump a `SIGUSR2` asks for, so an operator who
+  watched or redirected readline mode's stderr for them reads the log
+  instead. What the person at the terminal needs still prints there, on
+  stderr as before, each on a line of its own, with the prompt drawn again
+  below it, keeping what was typed, if it was waiting: a turn's failure and
+  how it ended, a slash command's failure, an update notice, a
+  self-restart's failure to close the Web UI's server, the log's path at
+  start when it opened, and the host's own ops alerts, worded as the TUI
+  words them, which readline mode didn't show before (a fleet child's alerts
+  aren't printed there, as before). A crash still prints on the terminal. In
+  readline mode, `/bug` now reads the log's current session, as it reads
+  `tui-error.log` in the TUI. If the log can't be opened or written, the
+  host says so, and from then on the lines it would have taken print on the
+  terminal as before. Batch mode (stdin not a terminal) is unchanged, and a
+  library's `console.log` lines still print in the conversation.
+
+- A release on trial now waits, before its commit, only for the MCPL servers
+  it's configured with that the release before it had connected when it
+  stopped for the switch or Go back, closed tabs aside. A server that was
+  already down then, such as Discord with a token that no longer works, no
+  longer holds every update back: the new release commits without it, and if
+  it's still down its log names it and says why it didn't wait. A server the
+  new release is configured with but can't connect, where the old one had it
+  connected, still sends the next start back to the old release. The old
+  release records its servers in the request it writes as it stops, so these
+  still wait for every server, as before: the first update onto this release,
+  asked by a release that doesn't record its servers; a Go back to a release
+  from before this one, whose own check ignores the record; a Go back asked
+  from a shell with `start.js --go-back`, which has no running host to ask;
+  and a request whose record can't be read. The refusal then says that no
+  readable record named the servers.
+
+### Fixed
+
+- `@animalabs/chronicle` is now ^0.5.1 (was ^0.5.0). chronicle 0.5.1 hands
+  back a stored JSON object with its keys in the order they were written
+  (in a JavaScript object, its own property order), where 0.5.0 sorted them.
+  So the request after a turn sends that turn's tool calls with their keys
+  as written, and a prompt cache that serves a request from the prefix it
+  shares with an earlier one can serve it past a tool call whose input has
+  keys written out of sorted order at any level, where on 0.5.0 the request
+  first differed. Objects already stored keep the order they were stored in,
+  except one stored as raw bytes, which 0.5.0 handed back sorted and 0.5.1
+  hands back in the order of its stored bytes. So a request rebuilt from
+  such an object can differ once from the last request before the update,
+  and the prompt cache is written again from there. On an install made with
+  bun, the update takes 0.5.1 for connectome-host's own copy only.
+  agent-framework 0.30.0 and context-manager 0.24.1 ask for ^0.5.0, so bun
+  keeps each one's own 0.5.0, and agent-framework's copy is the one that
+  opens the store. There, stored objects keep coming back sorted until an
+  update brings an agent-framework release that asks for ^0.5.1.
+
+- While a session switch is under way, `/undo`, `/redo`, `/checkout`,
+  `/branchto`, `/newtopic`, `/nudge`, `/puppet`, `/session rename`,
+  `/session delete`, `/fleet stop` and `/fleet restart`, and `/checkpoint`,
+  `/restore` and `/budget` given a name or a value, are refused, saying
+  nothing changed and to try again once the switch has finished. So are the
+  fleet view's stop and restart keys, the Web UI's rollback, suppress, fleet
+  stop and restart, host quiesce and resume, and pin and settings changes
+  (one for a fleet child is passed on, and the child refuses it only while
+  its own session is switching), and a headless host's pin and settings
+  changes and its answer to a release switch's quiesce. Once the switch has
+  stopped the old session's framework, the Web UI answers "host not ready"
+  until the next one is installed, as before.
+  Before, they ran against whichever framework the host held at that moment:
+  the one the switch was stopping, or the next one before its start had
+  finished. A `/session delete` could remove the session being switched to,
+  or the one being left once the switch had made the next one active.
+  The forms of `/checkpoint`, `/restore` and `/budget` that only list or show
+  answer as they do without a switch.
+- `/session new` and `/session switch` start no switch while any of those
+  commands, given earlier, or those actions on this host is still running,
+  saying which, as they already started none while another switch was under
+  way.
+
+- `/auth status`, and the credential state the Web UI and `GET /credential`
+  read, now show the credential's own expiry as it is when read, in every
+  state. After a refresh the host made by itself they kept the expiry from
+  when the state was entered, and a quota state showed none. Whether the
+  host can refresh the credential is read the same way, so it follows a
+  pasted token too, except during a pending login, which still says it
+  can't.
+
+- A headless host now ends a turn its framework ran while it started, before
+  its socket listened, in a `lifecycle:idle`, even one whose start came after
+  the boot's held traces had filled their 1,000: `ready` says `idle: true`
+  once the quiet after it has lasted 500 ms, or the idle follows `ready`.
+  Before, no idle came until a `text` arrived, so a fleet parent's
+  `fleet--await` on a child it had sent no text waited out its timeout, and
+  `--exit-when-idle` didn't exit.
+- `/newtopic` that fails while the host is stopping says the host is
+  stopping, before what the reset said, rather than giving only the reset's
+  error, such as one naming a branch generation and asking for a
+  reinitialize.
+
+- A headless, terminal or readline host's Web UI welcomes a page once the host
+  can stop for a restart. Before, a page that asked to restart just after the
+  host started could be refused with "This host has no stop a restart can use:
+  a batch run ends on its own…", which only a batch run should say.
+
+- When the self-update refuses an installed host's start, before any agent
+  starts, the host now gives the refusal as the plain sentence it is, in its
+  log. That covers an install none or several of whose releases hold the
+  host, or whose releases can't be read; a `current` that is missing or
+  couldn't be read, moved or synced; a release started where `current` names
+  another and no switch or Go back is under way; a trial that can't tell
+  which places its fallback puts back, can't open its active session's
+  store, or can't open every other store it would open after its commit;
+  and a trial whose MCPL server didn't connect. When a release on trial
+  refuses after its trial's log has started, `/update` also shows the
+  refusal among the trial's last lines once it has gone back; a refusal
+  about the install's releases, or about a `current` already missing or
+  unreadable when the start begins, comes before that log starts. Before,
+  each came as `Fatal error:` with a stack, which read as a crash.
+- Installing a release where the copy's label is missing and the journal
+  records no copy taken no longer says the label "was lost".
+
+- The Web UI's rollback, suppress, pin and settings changes and its subagent
+  cancel on this host are made only in the session they were chosen in. Each
+  change carries the session whose messages, pins or settings the operator
+  chose it from, as the host stamped it on that data, and a cancel carries
+  the session shown when it was chosen. The host refuses one chosen in a
+  session other than the one whose framework is open, naming both sessions
+  and saying nothing changed. Before, a rollback or suppress confirmed in a
+  dialog opened before a session switch, or chosen in a Context view still
+  showing the old session, an armed quiesce-and-retry that fired after a
+  switch, or a pin removal clicked as the switch's welcome arrived, acted on
+  whichever of the open session's messages or pins had the same ids, since
+  ids count from the start in each session's store. A subagent cancel sent
+  after a switch had put the next session's framework in place, and before
+  that session's welcome reached the page, or after a switch whose next
+  framework failed to start, stopped the next session's subagent of the same
+  name, if it had one. A fleet child's pins, settings and subagents aren't
+  covered: the page knows no child's session, so those messages carry none
+  and aren't checked.
+- The welcome names the session whose framework is open. Before, a welcome
+  sent while a switch was making the next session's framework named that next
+  session beside the old session's messages.
+- When a new session's welcome reaches the page, the page now drops an open
+  rollback or suppress dialog, its pending retry and result, the selected
+  messages, a pending history page and the branch list, closes the open
+  panel, asks again for the MCP tab if it's the one open, and reloads the
+  Context view. With this process's panels selected, it also drops their pin
+  and settings state and forms, and asks again for the settings or pins tab
+  if it's the one open. A selected fleet child's panels are kept while the
+  welcome still lists that child, and otherwise the page goes back to this
+  process's panels. Until that welcome arrives the page shows the session
+  before it, and a branch checked out from its list after the switch has
+  finished, like any command then, runs in the session now open. It keeps a
+  history page, and this process's pins list, settings state and Context
+  view, only when the session stamped on it is the one it shows.
+
 ## 0.19.0 — 2026-10-29
 
 ### Breaking
