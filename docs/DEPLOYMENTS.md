@@ -97,7 +97,12 @@ when the store has pending maintenance, and it is visible in the new process's
 resident first, then drain the debt offline with `bun scripts/warmup-session.ts
 <session> --agent <recipe agent.name> --data-dir <DATA_DIR> --model <compressionModel>`.
 Recipes that change `--l1-budget`, `--l2-budget`, `--l3-budget`, or
-`--merge-threshold` must pass the same values to the warmup command.
+`--merge-threshold` must pass the same values to the warmup command. The warmup
+declares no tool definitions, so it can't compress history that holds tool calls or
+results, or any history on a Fable- or Mythos-family compression model. It names the
+work it left and exits 1, and that work waits for the restart: the host compresses it
+once it declares the agent's tool definitions, which its context maintenance does
+before each pass.
 
 **Logs / observability** (`data/` below is `DATA_DIR`, default `./data` under
 the working directory):
@@ -573,6 +578,7 @@ repo**:
   launch (uses the recipe's `compressionModel`). Shipped counterpart:
   `scripts/warmup-session.ts <session>`, which drives a session's
   autobiographical compression to convergence offline (model via `--model`,
-  not read from the recipe).
+  not read from the recipe), except for work that waits on tool definitions,
+  which it names and leaves.
 - `scripts/strip-oversized-images.mjs` — remove >5 MB image blocks from the
   chronicle (agent must be stopped). No shipped equivalent.

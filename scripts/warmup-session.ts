@@ -110,16 +110,18 @@ function renderProgress(
   const elapsedMs = Date.now() - startedAt;
   const elapsedSec = elapsedMs / 1000;
 
-  const l1Done = initialL1Queue - s.l1QueueLength;
+  const l1Done = initialL1Queue - s.l1QueueLength - s.l1WaitingOnTools;
   const l1Pct = initialL1Queue > 0 ? (l1Done / initialL1Queue) * 100 : 100;
   const throughput = l1Done > 0 ? l1Done / elapsedSec : 0;
   const remainingL1 = s.l1QueueLength;
   const etaSec = throughput > 0 ? remainingL1 / throughput : 0;
 
-  const phase = s.l1QueueLength > 0 ? 'L1' : s.mergeQueueLength > 0 ? 'merges' : 'done';
+  const waiting = s.l1WaitingOnTools + s.mergesWaitingOnTools;
+  const phase = s.l1QueueLength > 0 ? 'L1' : s.mergeQueueLength > 0 ? 'merges' : waiting > 0 ? 'waiting' : 'done';
   const line =
     `[${phase}] L1 ${l1Done}/${initialL1Queue} (${l1Pct.toFixed(1)}%) │ ` +
     `merges ${s.mergeQueueLength} queued │ ` +
+    (waiting > 0 ? `${waiting} waiting on tool definitions │ ` : '') +
     `L1/L2/L3 ${s.summaryCounts.l1}/${s.summaryCounts.l2}/${s.summaryCounts.l3} │ ` +
     `tok ${(spend.inputTokens / 1000).toFixed(0)}k in / ${(spend.outputTokens / 1000).toFixed(0)}k out │ ` +
     `$${spend.cost.toFixed(2)} │ ` +
@@ -272,12 +274,23 @@ async function main() {
   }
 
   const finalStats = strategy.getProgressSnapshot();
+  const waiting = cm.getWaitingWork();
   console.error('');
   if (aborted) {
     console.error(
       `Halted at $${spend.cost.toFixed(2)} (--max-spend $${opts.maxSpend?.toFixed(2)}). ` +
         `Re-run to resume — autobio state persists in Chronicle.`,
     );
+  } else if (waiting) {
+    console.error(
+      `Not converged: ${waiting.description}. This script declares no tool definitions, so it can't compress ` +
+        `history that holds tool calls or results, nor any history on a Fable- or Mythos-family compression model. ` +
+        `The host compresses it once it declares the agent's tool definitions, which its context maintenance does ` +
+        `before each pass; the first pass runs at the host's start unless the recipe sets maintenanceIntervalMs to 0. ` +
+        `${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
+        `Total: ${spend.inputTokens.toLocaleString()} in / ${spend.outputTokens.toLocaleString()} out, $${spend.cost.toFixed(2)}.`,
+    );
+    process.exitCode = 1;
   } else if (finalStats.l1QueueLength === 0 && finalStats.mergeQueueLength === 0) {
     console.error(
       `Converged. ${finalStats.summaryCounts.l1} L1 + ${finalStats.summaryCounts.l2} L2 + ${finalStats.summaryCounts.l3} L3 summaries. ` +
