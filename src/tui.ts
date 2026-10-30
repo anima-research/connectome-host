@@ -153,9 +153,10 @@ export function rootTurnEnd(
       return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
     }
     case 'inference:exhausted':
-      // Alone, without a `failed` first, it ends a stream aborted for a
-      // reason other than a stop, which agent-framework doesn't treat as
-      // deliberate, so it shows as a failure; a stop ends with `aborted`.
+      // After a `failed`, it ends a turn whose retries ran out. Alone, without
+      // a `failed` first, it ends a stream aborted for a reason other than a
+      // stop, which agent-framework doesn't treat as deliberate. Either way it
+      // shows as a failure; a stop ends with `aborted`.
       return { status: 'error', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'error' } };
     default:
       return null;

@@ -35,9 +35,8 @@
  * A second end can follow the first: a turn a tool ended sends `completed`
  * and then `turn_ended`, and a failed attempt sends `failed` and then
  * `exhausted`, or `aborted` when a quiesce abandons it, a stop cancels its
- * retry or its held retry is dropped. A
- * stream panel, which shows each of a stream's events as it comes, shows
- * both.
+ * retry or its held retry is dropped. A stream panel, which shows each of a
+ * stream's events as it comes, shows both.
  *
  * The second end comes before the turn releases its agent, and the
  * framework starts no next turn of the agent while the turn stands (its
