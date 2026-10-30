@@ -5,7 +5,6 @@ import { AgentTreeReducer, type AgentTreeSnapshot, type AgentNode } from './agen
 interface ChildState {
   reducer: AgentTreeReducer;
   lastSnapshotTs: number;
-  describeInFlight: boolean;
   hasInitialSnapshot: boolean;
   unsubscribe: () => void;
 }
@@ -35,7 +34,6 @@ export class FleetTreeAggregator {
     this.childStates.set(name, {
       reducer,
       lastSnapshotTs: 0,
-      describeInFlight: false,
       hasInitialSnapshot: false,
       unsubscribe,
     });
@@ -96,7 +94,6 @@ export class FleetTreeAggregator {
       };
       state.reducer.applySnapshot(snap);
       state.lastSnapshotTs = asOfTs;
-      state.describeInFlight = false;
       state.hasInitialSnapshot = true;
       this.notify(name);
       return;
@@ -119,12 +116,8 @@ export class FleetTreeAggregator {
   }
 
   private requestDescribe(name: string): void {
-    const state = this.childStates.get(name);
-    if (!state) return;
-    if (state.describeInFlight) return;
-    const corrId = `agg-${++this.corrIdSeq}`;
-    const ok = this.fleet.requestDescribe(name, corrId);
-    if (ok) state.describeInFlight = true;
+    if (!this.childStates.has(name)) return;
+    this.fleet.requestDescribe(name, `agg-${++this.corrIdSeq}`);
   }
 
   private notify(scope: string | 'local'): void {

@@ -292,8 +292,11 @@ describe('FleetModule lifecycle', () => {
         await second.fleet.start(context);
         const adopted = second.fleet.getChildren().get('leaf')!;
         expect(adopted).toMatchObject({ process: null, status: 'ready' });
+        const first = adopted.socket!;
+        first.destroy();
+        await until(() => adopted.socket !== null && adopted.socket !== first, 'its connection opened again');
         adopted.socket!.destroy();
-        await until(() => adopted.socket === null, 'its connection closed');
+        await until(() => adopted.socket === null, 'its connection closed again, and left closed');
         expect(isAlive(leader)).toBe(true);
         recording = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
           signalled.push([pid, signal]);

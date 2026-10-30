@@ -247,8 +247,11 @@ describe('FleetModule — unresolved launch artifacts', () => {
             return typeof encoding === 'function'
               ? write.bind(this)(data, encoding) : write.bind(this)(data, encoding, cb);
           });
+          const fanned: string[] = [];
+          restored.onChildEvent('*', (_, event) => { fanned.push(String(event.type)); });
           const result = await restored.handleToolCall({ id: 'retry-send-error', name: 'launch',
             input: { name: 'guard', recipe: 'mock-recipe', dataDir, subscription: requested } });
+          expect(fanned).toEqual([]);
           expect(result.success).toBe(false);
           expect(result.isError).toBe(true);
           expect(failedSockets).toHaveLength(1);
@@ -710,14 +713,18 @@ describe('FleetModule — unresolved launch artifacts', () => {
       const server = createServer(socket => {
         connections.add(socket);socket.on('close', () => connections.delete(socket));
         socket.on('error', () => {});
-        socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: old.pid }) + '\n');
+        socket.write(JSON.stringify({ type: 'lifecycle', phase: 'ready', pid: old.pid }) + '\n' +
+          JSON.stringify({ type: 'inference:speech', content: 'not from the recorded child' }) + '\n');
       });
       const restored = makeFleet();
       try {
         await new Promise<void>((ok, no) => { server.once('error', no); server.listen(old.socketPath, ok); });
         const inode = lstatSync(old.socketPath).ino;
         const restoredCtx = { ...ownerCtx, getState: () => persisted, setState: () => {} };
+        const fanned: string[] = [];
+        restored.onChildEvent('*', (_, event) => { fanned.push(String(event.type)); });
         await restored.start(restoredCtx);
+        expect(fanned).toEqual([]);
         expect(readFileSync(join(dataDir, 'headless.pid'), 'utf8')).toBe(pidFile);
         expect(lstatSync(old.socketPath).ino).toBe(inode);
         expect(restored.getChildren().get('guard')?.socket).toBeNull();

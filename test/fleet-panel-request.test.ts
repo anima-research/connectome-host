@@ -96,7 +96,7 @@ describe('FleetModule.requestPanel', () => {
 });
 
 describe("the children a switch's quiesce reaches", () => {
-  test("are those that may be running: one that has exited isn't asked, and one whose connection has closed is, and says why it can't answer", async () => {
+  test("are those that may be running: one that has exited isn't asked, and one whose connection has closed is asked once this host has connected to it again", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fkm-switch-reach-'));
     const fleet = makeFleet();
     try {
@@ -127,11 +127,10 @@ describe("the children a switch's quiesce reaches", () => {
           status: 502,
         });
       }
-      await new Promise<void>((done) => { const poll = setInterval(() => { if (up.socket === null) { clearInterval(poll); done(); } }, 5); });
+      await new Promise<void>((done) => { const poll = setInterval(() => { if (up.socket !== null && up.socket !== socket) { clearInterval(poll); done(); } }, 5); });
       expect(fleet.runningChildren()).toEqual([{ name: 'up' }]);
       const answer = await fleet.requestSwitch('up', { op: 'quiesce', to: '9.9.9', waitMs: 0 }, 5_000);
-      expect(answer).toMatchObject({ ok: false, status: 502 });
-      expect(answer.error).toContain("child 'up' is ready, but its connection to this host has closed and its exit hasn't been seen yet");
+      expect(answer).toMatchObject({ ok: true, data: { drained: false, echo: { op: 'quiesce', to: '9.9.9', waitMs: 0 } } });
     } finally {
       try { await fleet.stop(); } catch { }
       rmSync(dir, { recursive: true, force: true });
