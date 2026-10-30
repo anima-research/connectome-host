@@ -287,7 +287,8 @@ describe('fleet refusals name what the agent can do', () => {
   test('a relay from a child with no finished reply says what would bring one', async () => {
     const { fleet, call, launch } = setup({ sigtermEscalationMs: 2_000 });
     const steps = (name: string) => `Nothing was relayed: '${name}' hasn't finished a reply since this host began ` +
-      'tracking it. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay passes ' +
+      'tracking it. A reply counts once one of its inference rounds ends without tool calls, outside a silent ' +
+      'heartbeat, and fleet--relay passes ' +
       `it on then; if '${name}' has nothing to answer, fleet--send gives it something.`;
     expect((await launch('dst')).success).toBe(true);
     expect((await launch('busy')).success).toBe(true);
@@ -625,7 +626,6 @@ describe('fleet refusals name what the agent can do', () => {
       exitCode: null,
       exitReason: 'adoption unresolved; fleet--restart of it, or fleet--launch with its recipe and dataDir, probes it again',
       events: [], buffer: '', subscription: ['*'], autoRestart: false, killRequested: false, restartAttempts: [],
-      lastCompletedSpeech: '',
     });
     const result = await fleet.handleToolCall({ id: 'leaf', name: 'launch', input: { name: 'leaf', recipe, dataDir: shared } });
     expect(result.error).toBe(

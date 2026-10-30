@@ -83,7 +83,7 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
     await send(fleet, 'a', 'hello there');
 
     await waitFor(
-      () => fleet.getChildren().get('a')!.lastCompletedSpeech.length > 0,
+      () => (fleet.getChildren().get('a')!.lastCompletedSpeech ?? '').length > 0,
       2_000,
       'lastCompletedSpeech populated from inference:speech',
     );
@@ -143,11 +143,34 @@ describe('fleet--relay', () => {
     expect(res.data).toMatchObject({ from: 'src', to: 'dst' });
 
     await waitFor(
-      () => fleet.getChildren().get('dst')!.lastCompletedSpeech.startsWith('echo: Miner says:'),
+      () => (fleet.getChildren().get('dst')!.lastCompletedSpeech ?? '').startsWith('echo: Miner says:'),
       3_000,
       'dst received relayed message and echoed',
     );
     expect(fleet.getChildren().get('dst')!.lastCompletedSpeech).toContain('findings summary');
+  });
+
+  test("relays nothing, and says so, when the source's latest final round had no text, though an earlier one had", async () => {
+    await send(fleet, 'src', 'an answer to keep');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === 'echo: an answer to keep', 2_000, 'the first reply');
+    await send(fleet, 'src', 'empty-reply');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === '', 2_000, 'the empty reply');
+    const sentBefore = fleet.getChildren().get('dst')!.textsSent;
+    const res = await fleet.handleToolCall({ id: 'relay-latest-empty', name: 'relay', input: { from: 'src', to: 'dst' } });
+    expect(res.success).toBe(false);
+    expect(res.error).toBe(
+      "Nothing was relayed: the latest inference round 'src' ended without tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.",
+    );
+    expect(fleet.getChildren().get('dst')!.textsSent).toBe(sentBefore);
+  });
+
+  test('relays a latest reply of whitespace alone, which is text', async () => {
+    await send(fleet, 'src', 'whitespace-reply');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === '  ', 2_000, 'the whitespace reply');
+    const res = await fleet.handleToolCall({ id: 'relay-whitespace', name: 'relay', input: { from: 'src', to: 'dst' } });
+    expect(res.success).toBe(true);
+    expect(res.data).toMatchObject({ chars: 2 });
+    await waitFor(() => fleet.getChildren().get('dst')!.lastCompletedSpeech === 'echo:   ', 2_000, 'dst received the whitespace');
   });
 
   test('rejects same-child relay', async () => {

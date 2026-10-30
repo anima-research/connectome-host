@@ -151,7 +151,7 @@ interface FleetChild {
   groupSignal?: string;
   spawnError?: unknown;
   env?: Record<string, string>;
-  lastCompletedSpeech: string;
+  lastCompletedSpeech?: string;
 }
 
 function exitText(code: number | null, signal: NodeJS.Signals | string | null): string {
@@ -515,7 +515,6 @@ export class FleetModule implements Module {
       ...(p.groupEnded === true ? { groupEnded: true } : {}),
       killRequested: false,
       restartAttempts: [],
-      lastCompletedSpeech: '',
     };
     // Resolved env values may contain secrets. Chronicle stores historical
     // snapshots, so env is runtime-only and legacy persisted env is ignored.
@@ -1383,7 +1382,6 @@ export class FleetModule implements Module {
       bootId: this.bootId(),
       killRequested: false,
       restartAttempts: [...(opts.autoRestartOf?.restartAttempts ?? [])],
-      lastCompletedSpeech: '',
     };
     if (input.env !== undefined) child.env = { ...input.env };
     if (existing) this.cancelAutoRestart(existing);
@@ -1701,6 +1699,14 @@ export class FleetModule implements Module {
     if (!('child' in target)) return target;
 
     const speech = fromChild.lastCompletedSpeech;
+    if (speech === '') {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was relayed: the latest inference round '${input.from}' ended without tool calls, outside a ` +
+          'silent heartbeat, had no text in it, so there was nothing to pass on.',
+      };
+    }
     if (!speech) {
       const heard = matchesSubscription('inference:speech', new Set(fromChild.subscription));
       const unreachable = this.unreachable(fromChild);
@@ -1711,7 +1717,8 @@ export class FleetModule implements Module {
           ? `Nothing was relayed: '${input.from}' hasn't finished a reply since this host began tracking it` +
             (unreachable !== null
               ? `, and it ${unreachable}.`
-              : `. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay ` +
+              : `. A reply counts once one of its inference rounds ends without tool calls, outside a silent ` +
+                `heartbeat, and fleet--relay ` +
                 `passes it on then; if '${input.from}' has nothing to answer, fleet--send gives it something.`)
           : `Nothing was relayed: '${input.from}' has no finished reply on record, since its subscription ` +
             `(${fromChild.subscription.join(', ') || 'empty'}) leaves out inference:speech, so its replies never ` +
