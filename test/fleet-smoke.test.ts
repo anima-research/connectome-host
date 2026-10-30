@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, lstatSync, readFileSync, readlinkSync, symlinkSync, renameSync, chmodSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -502,10 +502,16 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const executable = join(dir, 'node');
     writeFileSync(executable, '#!/bin/sh\nexec /bin/sleep 30\n');chmodSync(executable, 0o700);
     const fleet = makeFleet();const previous = process.env.PATH;
-    const helpers = (): number[] => execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,args='], { encoding: 'utf8' }).split('\n')
-      .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
-      .filter((m): m is RegExpMatchArray => m !== null && Number(m[2]) === process.pid && (m[3]!.includes(dir) || m[3] === '/bin/sleep 30'))
-      .map((m) => Number(m[1]));
+    const helpers = (): number[] => {
+      // procps' ps exits 1, printing nothing, when no process matches --ppid.
+      const ps = spawnSync('/bin/ps', ['--ppid', String(process.pid), '-o', 'pid=,args='], { encoding: 'utf8' });
+      if (ps.error) throw ps.error;
+      if (ps.status !== 0 && !(ps.status === 1 && ps.stdout === '' && ps.stderr === '')) throw new Error(`ps exited ${ps.status}: ${ps.stderr}`);
+      return ps.stdout.split('\n')
+        .map((line) => line.trim().match(/^(\d+)\s+(.*)$/))
+        .filter((m): m is RegExpMatchArray => m !== null && (m[2]!.includes(dir) || m[2] === '/bin/sleep 30'))
+        .map((m) => Number(m[1]));
+    };
     const start = Date.now();
     try {
       process.env.PATH = dir;
