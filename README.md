@@ -144,8 +144,8 @@ the autobiographical memory strategy with adaptive resolution, **kv-unified
 folding** (a cost-aware solver that weighs budget fit, prompt-cache cost and
 continuity), a context budget with a verbatim tail of 40% of it, compression by
 the agent's own model, and summaries voiced as the agent itself
-(`summaryParticipant` defaults to the agent's name), each introduced as standing
-in for earlier conversation whose exact text isn't shown
+(`summaryParticipant` defaults to the agent's name), each introduced by
+context-manager's default label unless a recipe sets its own
 (`summaryContextLabel`). On a model the host knows a
 window for (Claude from 4.5 on, on Anthropic's API), with an `agent.maxTokens`
 that is unset or a positive number, the budget is the smaller

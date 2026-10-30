@@ -6,14 +6,15 @@ import { ContextManager } from '@animalabs/context-manager';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { validateRecipe } from '../src/recipe.js';
 
-const LABEL = "A summary follows, standing in for earlier conversation, tool calls and results included. The exact text it replaces isn't shown.";
+// context-manager's own default, which the host leaves in place when a recipe sets no label.
+const LABEL = 'What do you remember from earlier?';
 
 type Entry = { participant: string; content: Array<{ type: string; text?: string }> };
 
 const textOf = (e: Entry): string => e.content.map((b) => b.text ?? '').join('');
 
 describe('the label before a folded summary', () => {
-  test("an agent whose recipe sets no label reads the host's sentence before each summary, which follows as its own turn", async () => {
+  test("an agent whose recipe sets no label reads context-manager's default before each summary, which follows as its own turn", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'summary-label-'));
     try {
       const recipe = validateRecipe({

@@ -190,10 +190,10 @@ export function buildFrameworkStrategy(
   if (autobiographicalOpts.summaryParticipant === undefined && voice) {
     autobiographicalOpts.summaryParticipant = voice;
   }
-  if (autobiographicalOpts.summaryContextLabel === undefined) {
-    autobiographicalOpts.summaryContextLabel =
-      "A summary follows, standing in for earlier conversation, tool calls and results included. The exact text it replaces isn't shown.";
-  }
+  // No host default for summaryContextLabel: what a resident reads before its
+  // own memories is context-manager's default unless its recipe sets one. A
+  // change to that wording reaches every resident's sense of its memory, so it
+  // is decided with them, per recipe, not as a host default.
 
   return strategyType === 'passthrough'
     ? new PassthroughStrategy()

@@ -9,7 +9,6 @@ import type { ProviderRequest } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter, modelThinking } from '../src/logging-adapter.js';
 import {
   buildFrameworkAgentConfig,
-  FOLD_REASONING_LINE,
   systemPromptFor,
   thinkingBindingSettings,
 } from '../src/framework-agent-config.js';
@@ -265,10 +264,9 @@ describe('thinkingBindingSettings and the agent config', () => {
     }
   });
 
-  test('a model from before Claude 4.5 gets no binding, no window and no fold line, as before', () => {
+  test('a model from before Claude 4.5 gets no binding and no window, as before', () => {
     for (const model of ['claude-opus-4-1', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219']) {
       expect(thinkingBindingSettings(model, 'anthropic')).toEqual({});
-      expect(systemPromptFor('Be yourself.', model)).toBe('Be yourself.');
     }
   });
 
@@ -278,15 +276,15 @@ describe('thinkingBindingSettings and the agent config', () => {
   });
   const build = (model: string, provider?: string) => buildFrameworkAgentConfig(recipe(provider), 'a', model, { kind: 's' } as never);
 
-  test('buildFrameworkAgentConfig sets them, and the fold line, from the model and the recipe\'s provider', () => {
+  test("buildFrameworkAgentConfig sets them from the model and the recipe's provider, and gives the recipe's system prompt as written", () => {
     const direct = build('claude-sonnet-5-5');
     expect(direct.thinkingBinding).toEqual({ binds: true, dropBlock: true });
     expect(direct.physicalWindowTokens).toBe(1_000_000);
-    expect(direct.systemPrompt).toBe(`Be yourself.\n\n${FOLD_REASONING_LINE}`);
+    expect(direct.systemPrompt).toBe('Be yourself.');
     const bedrock = build('claude-sonnet-5-5', 'bedrock');
     expect(bedrock.thinkingBinding).toEqual({ binds: true, dropBlock: false });
     expect(bedrock.physicalWindowTokens).toBeUndefined();
-    expect(bedrock.systemPrompt).toBe(`Be yourself.\n\n${FOLD_REASONING_LINE}`);
+    expect(bedrock.systemPrompt).toBe('Be yourself.');
     const older = build('claude-opus-4-8');
     expect(older.thinkingBinding).toBeUndefined();
     expect(older.physicalWindowTokens).toBeUndefined();
@@ -294,52 +292,31 @@ describe('thinkingBindingSettings and the agent config', () => {
   });
 });
 
-describe('the fold line and the recipe\'s formatter', () => {
-  const xml = (systemPrompt: string, prefillUserMessage?: string) => validateRecipe({
-    name: 'xml',
-    agent: { systemPrompt, formatter: 'anthropic-xml', ...(prefillUserMessage ? { prefillUserMessage } : {}) },
-  });
-  // Membrane refuses assistant prefill on the binding models the record names.
-  const promptOf = (recipe: ReturnType<typeof validateRecipe>, model = 'claude-opus-6') =>
-    buildFrameworkAgentConfig(recipe, 'a', model, { kind: 's' } as never).systemPrompt;
+/** The paragraph hosts 0.16.0 to 0.20.x appended to binding models' prompts. */
+const LEGACY_FOLD_LINE =
+  'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
+  'so a reply of yours that shows no reasoning may still have had some.';
 
-  test('an agent under an anthropic-xml recipe never gets the line, whatever its prompt or prefill message', () => {
-    expect(promptOf(xml(''))).toBe('');
-    expect(promptOf(xml('', '<cmd>cat untitled.txt</cmd>'))).toBe('');
-    expect(promptOf(xml('You are you.'))).toBe('You are you.');
-    expect(systemPromptFor('You are you.', 'claude-opus-6', 'anthropic-xml')).toBe('You are you.');
-    expect(systemPromptFor(`You are you.\n\n${FOLD_REASONING_LINE}`, 'claude-opus-6', 'anthropic-xml')).toBe('You are you.');
-    expect(systemPromptFor(FOLD_REASONING_LINE, 'claude-opus-6', 'anthropic-xml')).toBe('');
-  });
+describe("an agent's system prompt carries no host paragraph about folds", () => {
+  const promptOf = (systemPrompt: string, model: string, formatter?: 'native' | 'anthropic-xml') =>
+    buildFrameworkAgentConfig(
+      validateRecipe({ name: 'p', agent: { systemPrompt, ...(formatter ? { formatter } : {}) } }), 'a', model, { kind: 's' } as never,
+    ).systemPrompt;
 
-  test('under a native recipe, a binding model gets it, an empty prompt included', () => {
-    const native = (systemPrompt: string) => validateRecipe({ name: 'native', agent: { systemPrompt } });
-    expect(promptOf(native(''))).toBe(FOLD_REASONING_LINE);
-    expect(promptOf(native('You are you.'))).toBe(`You are you.\n\n${FOLD_REASONING_LINE}`);
-    expect(promptOf(validateRecipe({ name: 'n', agent: { systemPrompt: '', formatter: 'native' } }))).toBe(FOLD_REASONING_LINE);
-  });
-});
-
-describe('systemPromptFor', () => {
-  test('the line, word for word', () => {
-    expect(FOLD_REASONING_LINE).toBe(
-      'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
-      'so a reply of yours that shows no reasoning may still have had some.',
-    );
+  test('on every model and formatter the prompt is the recipe\'s, an empty one included', () => {
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-haiku-5-5', 'claude-mythos-5-1', 'claude-opus-6', 'claude-opus-4-8']) {
+      for (const formatter of [undefined, 'native', 'anthropic-xml'] as const) {
+        expect(promptOf('You are you.', model, formatter)).toBe('You are you.');
+        expect(promptOf('', model, formatter)).toBe('');
+      }
+    }
   });
 
-  test('ends a binding model\'s prompt with the line, as its own paragraph, once', () => {
-    const once = systemPromptFor('Be yourself.', 'claude-opus-5-5');
-    expect(once).toBe(`Be yourself.\n\n${FOLD_REASONING_LINE}`);
-    expect(systemPromptFor(once, 'claude-opus-5-5')).toBe(once);
-    expect(systemPromptFor('', 'claude-opus-5-5')).toBe(FOLD_REASONING_LINE);
-    expect(systemPromptFor(FOLD_REASONING_LINE, 'claude-mythos-5-1')).toBe(FOLD_REASONING_LINE);
-  });
-
-  test('gives another model the prompt without the line, taking off a copied one', () => {
-    expect(systemPromptFor('Be yourself.', 'claude-opus-4-8')).toBe('Be yourself.');
-    expect(systemPromptFor(`Be yourself.\n\n${FOLD_REASONING_LINE}`, 'claude-opus-4-8')).toBe('Be yourself.');
-    expect(systemPromptFor(FOLD_REASONING_LINE, 'claude-opus-4-8')).toBe('');
+  test('a prompt that still carries the legacy paragraph has it taken off', () => {
+    expect(systemPromptFor('Be yourself.')).toBe('Be yourself.');
+    expect(systemPromptFor(`Be yourself.\n\n${LEGACY_FOLD_LINE}`)).toBe('Be yourself.');
+    expect(systemPromptFor(LEGACY_FOLD_LINE)).toBe('');
+    expect(promptOf(`Be yourself.\n\n${LEGACY_FOLD_LINE}`, 'claude-opus-5-5')).toBe('Be yourself.');
   });
 });
 
@@ -369,13 +346,13 @@ describe('subagents', () => {
     return { framework, inner };
   }
 
-  test('a spawn on a binding model gets the fold line, the control and its window', async () => {
+  test('a spawn on a binding model gets the control and its window, and its prompt as written', async () => {
     const { framework, inner } = await harness('claude-opus-4-8', 'parent');
     try {
       const launch = inner.resolveLaunch('spawn', { name: 'child', systemPrompt: 'Look it up.', task: 't' }, 'parent', 0);
-      expect(launch.systemPrompt).toBe(`Look it up.\n\n${FOLD_REASONING_LINE}`);
+      expect(launch.systemPrompt).toBe('Look it up.');
       const config = inner.ephemeralAgentConfig(launch, 'child-1');
-      expect(config.systemPrompt).toBe(launch.systemPrompt);
+      expect(config.systemPrompt).toBe('Look it up.');
       expect(config.thinkingBinding).toEqual({ binds: true, dropBlock: true });
       expect(config.physicalWindowTokens).toBe(1_000_000);
       const plain = inner.resolveLaunch('spawn', { name: 'old', systemPrompt: 'Look it up.', task: 't', model: 'claude-opus-4-8' }, 'parent', 0);
@@ -392,7 +369,7 @@ describe('subagents', () => {
     const { framework, inner } = await harness('claude-opus-4-8', 'parent', 'bedrock');
     try {
       const launch = inner.resolveLaunch('spawn', { name: 'child', systemPrompt: 'Look it up.', task: 't' }, 'parent', 0);
-      expect(launch.systemPrompt).toBe(`Look it up.\n\n${FOLD_REASONING_LINE}`);
+      expect(launch.systemPrompt).toBe('Look it up.');
       const config = inner.ephemeralAgentConfig(launch, 'child-1');
       expect(config.thinkingBinding).toEqual({ binds: true, dropBlock: false });
       expect(config.physicalWindowTokens).toBeUndefined();
@@ -401,81 +378,45 @@ describe('subagents', () => {
     }
   });
 
-  test("a fork's copy of its parent's prompt has the line once, or not at all on a model that doesn't bind, and its receipt says which", async () => {
-    const parentPrompt = systemPromptFor('parent', 'claude-opus-5-5');
-    const { framework, inner } = await harness('claude-opus-5-5', parentPrompt);
+  test("a fork's prompt is its parent's or its own as written, on any model, and no receipt mentions folds", async () => {
+    const { framework, inner } = await harness('claude-opus-5-5', 'parent');
     try {
       const same = inner.resolveLaunch('fork', { name: 'f', task: 't' }, 'parent', 0);
-      expect(same.systemPrompt).toBe(parentPrompt);
+      expect(same.systemPrompt).toBe('parent');
       expect(same.systemPromptSource).toBe('parent');
-      expect(same.systemPromptFoldLine).toBeUndefined();
       expect(describeSubagentLaunch(same)).toContain("- System prompt: the parent's.");
       const older = inner.resolveLaunch('fork', { name: 'g', task: 't', model: 'claude-opus-4-8' }, 'parent', 0);
       expect(older.systemPrompt).toBe('parent');
       expect(older.systemPromptSource).toBe('parent');
-      expect(older.systemPromptFoldLine).toBe('removed');
-      const olderReceipt = describeSubagentLaunch(older);
-      expect(olderReceipt).toContain("- System prompt: the parent's, with the host's paragraph on folds taken off.");
-      expect(olderReceipt).toMatch(/Differs in [^.]*system prompt/);
-      expect(olderReceipt).not.toMatch(/Same: [^.]*system prompt/);
       const passed = inner.resolveLaunch('fork', { name: 'h', task: 't', systemPrompt: 'parent' }, 'parent', 0);
       expect(passed.systemPromptSource).toBe('parent');
-      expect(passed.systemPrompt).toBe(parentPrompt);
       const other = inner.resolveLaunch('fork', { name: 'i', task: 't', systemPrompt: 'other' }, 'parent', 0);
       expect(other.systemPromptSource).toBe('override');
-      expect(other.systemPrompt).toBe(`other\n\n${FOLD_REASONING_LINE}`);
-      expect(other.systemPromptFoldLine).toBe('added');
-      expect(describeSubagentLaunch(other)).toContain("- System prompt: overridden for this fork, with the host's paragraph on folds added.");
-      const spawn = inner.resolveLaunch('spawn', { name: 's', systemPrompt: 'Look it up.', task: 't' }, 'parent', 0);
-      expect(spawn.systemPromptFoldLine).toBe('added');
-      expect(describeSubagentLaunch(spawn)).toContain("- System prompt: supplied by the caller for this spawn, with the host's paragraph on folds added.");
-      const already = inner.resolveLaunch('spawn', { name: 't', systemPrompt: parentPrompt, task: 't' }, 'parent', 0);
-      expect(already.systemPrompt).toBe(parentPrompt);
-      expect(already.systemPromptFoldLine).toBeUndefined();
-    } finally {
-      await framework.stop();
-    }
-  });
-
-  test('under an anthropic-xml recipe no subagent gets the line: a fork keeps its parent\'s prompt as it is, and a spawn has its own', async () => {
-    const { framework, inner } = await harness('claude-opus-6', '', 'anthropic', 'anthropic-xml');
-    try {
-      const fork = inner.resolveLaunch('fork', { name: 'f', task: 't' }, 'parent', 0);
-      expect(fork.systemPrompt).toBe('');
-      expect(fork.systemPromptSource).toBe('parent');
-      expect(fork.systemPromptFoldLine).toBeUndefined();
-      expect(describeSubagentLaunch(fork)).toContain("- System prompt: the parent's.");
+      expect(other.systemPrompt).toBe('other');
+      expect(describeSubagentLaunch(other)).toContain('- System prompt: overridden for this fork.');
       const spawn = inner.resolveLaunch('spawn', { name: 's', systemPrompt: 'Look it up.', task: 't' }, 'parent', 0);
       expect(spawn.systemPrompt).toBe('Look it up.');
-      expect(spawn.systemPromptFoldLine).toBeUndefined();
-      const copied = inner.resolveLaunch('spawn', { name: 'c', systemPrompt: `Look it up.\n\n${FOLD_REASONING_LINE}`, task: 't' }, 'parent', 0);
-      expect(copied.systemPrompt).toBe('Look it up.');
-      expect(copied.systemPromptFoldLine).toBe('removed');
-      const passed = inner.resolveLaunch('fork', { name: 'g', task: 't', systemPrompt: '' }, 'parent', 0);
-      expect(passed.systemPromptSource).toBe('parent');
+      expect(describeSubagentLaunch(spawn)).toContain('- System prompt: supplied by the caller for this spawn.');
+      for (const launch of [same, older, passed, other, spawn]) expect(describeSubagentLaunch(launch)).not.toMatch(/fold/i);
     } finally {
       await framework.stop();
     }
-    const plain = await harness('claude-opus-6', '', 'anthropic', 'native');
-    try {
-      const fork = plain.inner.resolveLaunch('fork', { name: 'f', task: 't' }, 'parent', 0);
-      expect(fork.systemPrompt).toBe(FOLD_REASONING_LINE);
-      expect(fork.systemPromptFoldLine).toBe('added');
-    } finally {
-      await plain.framework.stop();
-    }
   });
 
-  test("a fork onto a binding model from a parent whose model doesn't bind gets the line, and its receipt says so", async () => {
-    const { framework, inner } = await harness('claude-opus-4-8', 'parent');
+  test("a fork of a parent whose prompt still carries the legacy paragraph gets it without, and a spawn's copy too", async () => {
+    const { framework, inner } = await harness('claude-opus-5-5', `parent\n\n${LEGACY_FOLD_LINE}`);
     try {
-      const fork = inner.resolveLaunch('fork', { name: 'f', task: 't', model: 'claude-opus-5-5' }, 'parent', 0);
-      expect(fork.systemPrompt).toBe(`parent\n\n${FOLD_REASONING_LINE}`);
-      expect(fork.systemPromptFoldLine).toBe('added');
-      expect(describeSubagentLaunch(fork)).toContain("- System prompt: the parent's, with the host's paragraph on folds added.");
-      const passed = inner.resolveLaunch('fork', { name: 'g', task: 't', model: 'claude-opus-5-5', systemPrompt: 'parent' }, 'parent', 0);
+      const fork = inner.resolveLaunch('fork', { name: 'f', task: 't' }, 'parent', 0);
+      expect(fork.systemPrompt).toBe('parent');
+      expect(fork.systemPromptSource).toBe('parent');
+      const passed = inner.resolveLaunch('fork', { name: 'g', task: 't', systemPrompt: 'parent' }, 'parent', 0);
       expect(passed.systemPromptSource).toBe('parent');
-      expect(passed.systemPromptFoldLine).toBe('added');
+      const copied = inner.resolveLaunch('spawn', { name: 'c', systemPrompt: `Look it up.\n\n${LEGACY_FOLD_LINE}`, task: 't' }, 'parent', 0);
+      expect(copied.systemPrompt).toBe('Look it up.');
+      expect(describeSubagentLaunch(fork)).not.toMatch(/fold/i);
+      // A launch an earlier host stored with the paragraph resumes without it.
+      const stored = { ...copied, systemPrompt: `Look it up.\n\n${LEGACY_FOLD_LINE}` };
+      expect(inner.ephemeralAgentConfig(stored, 'c-1').systemPrompt).toBe('Look it up.');
     } finally {
       await framework.stop();
     }

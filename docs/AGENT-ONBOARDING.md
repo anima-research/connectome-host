@@ -379,8 +379,8 @@ churn in the field.
 **Memory defaults.** Current host code fills an omitted/partial `strategy` with:
 autobiographical + `adaptiveResolution: true` + `foldingStrategy: "kv-unified"` with the
 host's standard `kvUnified` block (§5b) + same-model compression (`compressionModel` falls
-back to `agent.model`) + `summaryParticipant` = the agent's name + a `summaryContextLabel`
-saying the summary stands in for earlier conversation. Omitted sizes: a
+back to `agent.model`) + `summaryParticipant` = the agent's name (the label before each
+summary stays context-manager's default unless the recipe sets `summaryContextLabel`). Omitted sizes: a
 `contextBudgetTokens` of 300k, or, on Anthropic's API for a model the host knows a window for, with a `maxTokens`
 that is unset or a positive number, the smaller of 300k and the window less the system prompt and 32k for the tools (§11.1); a `recentWindowTokens`
 of 40% of the budget (120k at 300k), or 40% of the budget less `maxTokens` where the head and

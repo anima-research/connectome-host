@@ -43,25 +43,22 @@ export function thinkingBindingSettings(model: string, provider: string | undefi
   };
 }
 
-/** The system-text line the host gives an agent whose model binds, since a
- *  fold takes its earlier replies' reasoning (anima-research/context-manager#155). */
-export const FOLD_REASONING_LINE =
+/** The paragraph hosts 0.16.0 to 0.20.x appended to a binding model's system
+ *  prompt about folds taking an agent's earlier reasoning. The host no longer
+ *  adds it: an agent isn't told about the mechanics of its own memory or
+ *  reasoning in standing text. */
+const LEGACY_FOLD_LINE =
   'When your context folds, the reasoning behind your earlier replies leaves it, though their words stay, ' +
   'so a reply of yours that shows no reasoning may still have had some.';
 
-export function hasFoldLine(systemPrompt: string): boolean {
-  return systemPrompt === FOLD_REASONING_LINE || systemPrompt.endsWith(`\n\n${FOLD_REASONING_LINE}`);
-}
-
-/** No agent under an `anthropic-xml` recipe gets the line: membrane's XML
- *  transcript renders no thinking, so a reply's reasoning never reaches the
- *  model again, fold or none. */
-export function systemPromptFor(systemPrompt: string, model: string, formatter?: Recipe['agent']['formatter']): string {
-  const base = !hasFoldLine(systemPrompt) ? systemPrompt
-    : systemPrompt === FOLD_REASONING_LINE ? ''
-      : systemPrompt.slice(0, -(FOLD_REASONING_LINE.length + 2));
-  if (!modelThinking(model).binds || formatter === 'anthropic-xml') return base;
-  return base ? `${base}\n\n${FOLD_REASONING_LINE}` : FOLD_REASONING_LINE;
+/** The system prompt an agent is given: the recipe's (or a launch's), with the
+ *  legacy fold paragraph taken off where a prompt still carries it, such as a
+ *  fork's copy of a parent's prompt from a host that added it. */
+export function systemPromptFor(systemPrompt: string): string {
+  if (systemPrompt === LEGACY_FOLD_LINE) return '';
+  return systemPrompt.endsWith(`\n\n${LEGACY_FOLD_LINE}`)
+    ? systemPrompt.slice(0, -(LEGACY_FOLD_LINE.length + 2))
+    : systemPrompt;
 }
 
 /**
@@ -114,7 +111,7 @@ export function buildFrameworkAgentConfig(
     name: agentName,
     ...(recipe.agent.toolPresentation ? {toolPresentation: recipe.agent.toolPresentation} : {}),
     model,
-    systemPrompt: systemPromptFor(recipe.agent.systemPrompt, model, recipe.agent.formatter),
+    systemPrompt: systemPromptFor(recipe.agent.systemPrompt),
     ...(recipe.agent.allowedTools !== undefined
       ? { allowedTools: recipe.agent.allowedTools }
       : {}),
