@@ -151,7 +151,7 @@ interface FleetChild {
   groupSignal?: string;
   spawnError?: unknown;
   env?: Record<string, string>;
-  lastCompletedSpeech: string;
+  lastCompletedSpeech?: string;
   saidExiting?: boolean;
   reopening?: Promise<void>;
   reopenedAt?: number;
@@ -522,7 +522,6 @@ export class FleetModule implements Module {
       ...(p.groupEnded === true ? { groupEnded: true } : {}),
       killRequested: false,
       restartAttempts: [],
-      lastCompletedSpeech: '',
     };
     // Resolved env values may contain secrets. Chronicle stores historical
     // snapshots, so env is runtime-only and legacy persisted env is ignored.
@@ -1363,7 +1362,6 @@ export class FleetModule implements Module {
       bootId: this.bootId(),
       killRequested: false,
       restartAttempts: [...(opts.autoRestartOf?.restartAttempts ?? [])],
-      lastCompletedSpeech: '',
     };
     if (input.env !== undefined) child.env = { ...input.env };
     if (existing) this.cancelAutoRestart(existing);
@@ -1689,6 +1687,14 @@ export class FleetModule implements Module {
     const fromChild = this.children.get(input.from)!;
 
     const speech = fromChild.lastCompletedSpeech;
+    if (speech === '') {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
+          'tool calls, outside a silent heartbeat, had no text in it, so there was nothing to pass on.',
+      };
+    }
     const unreachable = this.unreachable(fromChild);
     if (speech && unreachable !== null && (fromChild.status === 'ready' || fromChild.status === 'starting')) {
       return {
@@ -1710,7 +1716,8 @@ export class FleetModule implements Module {
             'opened' +
             (unreachable !== null
               ? `, and it ${unreachable}.`
-              : `. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay ` +
+              : `. A reply counts once one of its inference rounds ends without tool calls, outside a silent ` +
+                `heartbeat, and fleet--relay ` +
                 `passes it on then; if '${input.from}' has nothing to answer, fleet--send gives it something.`)
           : `Nothing was relayed: '${input.from}' has no finished reply on record, since its subscription ` +
             `(${fromChild.subscription.join(', ') || 'empty'}) leaves out inference:speech, so its replies never ` +
@@ -1927,7 +1934,7 @@ export class FleetModule implements Module {
       c.reopenedAt = Date.now();
       c.closingAgainUntil = undefined;
       c.reopenFailure = undefined;
-      c.lastCompletedSpeech = '';
+      c.lastCompletedSpeech = undefined;
       this.takeChecked(c, checked, c.subscription);
       console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
         `connected to it again (pid ${c.pid}).`);

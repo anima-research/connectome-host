@@ -11,7 +11,7 @@ import { connectWhenAccepting } from './ipc-connect.js';
 type Result = { success: boolean; error?: string; data?: unknown };
 type Event = { type?: string; phase?: string; content?: string };
 type Child = Record<string, unknown> & {
-  socket: Socket | null; lastCompletedSpeech: string; events: Event[]; reopening?: Promise<void>;
+  socket: Socket | null; lastCompletedSpeech?: string; events: Event[]; reopening?: Promise<void>;
 };
 type Fleet = {
   children: Map<string, Child>;
@@ -71,7 +71,7 @@ function setup(config: FleetModuleConfig = {}) {
       pid: recordedPid ?? proc.pid, process: adopted ? null : proc, ...(adopted ? { adopted: true } : {}),
       socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null, lastEventAt: null, exitCode: null,
       exitReason: null, events: [], buffer: '', subscription, idleSinceWork: false, textsSent: 0,
-      autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+      autoRestart: false, killRequested: false, restartAttempts: [],
     } as unknown as Child;
     fleet.children.set(name, child);
     const seen = { ready: 0, idle: 0, marker: 0, snapshot: 0 };
@@ -342,7 +342,7 @@ test('a socket that takes each connect and closes it before any ready gets one c
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [],
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -374,7 +374,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [],
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -385,7 +385,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
   ]);
   expect(child.socket).toBeNull();
   expect(child.events).toEqual([]);
-  expect(child.lastCompletedSpeech).toBe('');
+  expect(child.lastCompletedSpeech).toBeUndefined();
 }, 30_000);
 
 test('after a failed connect, fleet--await tries to connect once before it waits', async () => {
