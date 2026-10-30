@@ -83,6 +83,7 @@ describe("the TUI's Escape, through runTui", () => {
     expect(at('retry wait').frame).toContain('Error: overloaded');
     expect(at('retry wait').frame).toContain('[… attempt-failed');
     expect(at('retry wait').frame).toContain('Esc:stop]');
+    expect(at('retry wait').frame).not.toContain('Ctrl+B:bg');
     expect(at('retry wait, Escape').aborts).toHaveLength(6);
     expect(times(at('retry wait, Escape').frame, INTERRUPTING)).toBe(2);
     expect(at('retried').aborts).toHaveLength(8);
@@ -115,10 +116,20 @@ describe("the TUI's status line, through runTui", () => {
     expect(at('no start, then completed').frame).toContain('[✓ idle]');
     expect(at('no start, then failed').frame).toContain('Error: a turn the TUI never saw start');
     expect(at('no start, then failed').frame).toContain('[… attempt-failed');
+    expect(at('no start, failed, then exhausted').frame).toContain('[✗ error');
   }, 40000);
 
-  test('a backgrounded turn whose attempt fails stays in background, and returns with its earlier rounds and its retry but not the failed attempt', async () => {
-    const steps = await play('background-retry');
+  test("a session switch while a backgrounded turn's attempt has failed ends the background, so the new session's answer shows alone", async () => {
+    const answered = (await play('background-switch')).get('new session answered');
+    if (!answered) throw new Error('missing background-switch frame');
+    expect(answered.frame).toContain('new session words');
+    expect(answered.frame).not.toContain('old session words');
+    expect(answered.frame).not.toContain('returned from background');
+    expect(answered.frame).toContain('[✓ idle]');
+  }, 40000);
+
+  for (const scenario of ['background-retry', 'background-retry-restarted', 'background-retry-before-resume']) test(`${scenario}: a backgrounded turn whose attempt fails stays in background, and returns with its earlier rounds and its retry but not the failed attempt`, async () => {
+    const steps = await play(scenario);
     const failed = steps.get('failed in background');
     const returned = steps.get('returned');
     if (!failed || !returned) throw new Error('missing background-retry frames');

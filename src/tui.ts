@@ -1718,6 +1718,7 @@ export async function runTui(app: AppContext): Promise<void> {
         }
 
         if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
@@ -1737,7 +1738,6 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:stream_resumed': {
         if (agent === rootAgentName) {
-          attemptStart = backgroundBuffer.length;
           state.status = 'thinking';
           state.tool = null;
           beginStream();
@@ -2371,6 +2371,9 @@ export async function runTui(app: AppContext): Promise<void> {
         updateStatus();
         interrupts.reset();
         rootTurnShowing = false;
+        backgrounded = false;
+        backgroundBuffer = '';
+        attemptStart = 0;
         turnFailures = createTurnFailures();
         failureLines.clear();
 
@@ -2583,7 +2586,7 @@ function formatStatusLeft(
       : ` | peek-proc: ${state.peekProcTarget}`;
   } else if (state.viewMode === 'chat') {
     if (escapeActs(state.status, rootTurnRunning)) {
-      bar += state.status === 'background' || state.status === 'error' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
+      bar += state.status === 'background' || state.status === 'error' || state.status === 'attempt-failed' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
     }
     if (running > 0) bar += ' Tab:fleet';
   }

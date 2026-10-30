@@ -3,7 +3,7 @@ import { escapeActs, escapeLine, formatWireEvent, peekEndColor, peekEndLine, roo
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 
 describe('rootTurnEnd', () => {
-  test('every stream end ends a turn that is showing', () => {
+  test('every stream end gives a turn that is showing something to show', () => {
     for (const type of STREAM_END_TRACES) {
       expect(rootTurnEnd({ type, error: 'x' }, true)).not.toBeNull();
     }

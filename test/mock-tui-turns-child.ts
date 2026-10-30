@@ -187,19 +187,33 @@ async function play(): Promise<void> {
     await step('ended error');
     await escape();
     await step('ended error, Escape');
-  } else if (scenario === 'background-retry') {
+  } else if (scenario.startsWith('background-retry')) {
     first.send('inference:started');
     await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
     first.send('inference:tokens', { content: 'first round words' });
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
-    first.send('inference:stream_resumed');
-    first.send('inference:tokens', { content: 'dead attempt words' });
+    if (scenario === 'background-retry') first.send('inference:stream_resumed');
+    if (scenario === 'background-retry-restarted') first.send('inference:started');
+    if (scenario !== 'background-retry-before-resume') first.send('inference:tokens', { content: 'dead attempt words' });
     first.send('inference:failed', { error: 'overloaded' });
     await step('failed in background');
     first.send('inference:started');
     first.send('inference:tokens', { content: 'retry words' });
     first.send('inference:completed');
     await step('returned');
+  } else if (scenario === 'background-switch') {
+    first.send('inference:started');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tokens', { content: 'old session words' });
+    first.send('inference:failed', { error: 'overloaded' });
+    await command('/session switch other');
+    await until(async () => (await frame()).includes('switching'), 'the switch to start');
+    endSwitch('switched');
+    await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
+    second.send('inference:started');
+    second.send('inference:tokens', { content: 'new session words', blockType: 'text' });
+    second.send('inference:completed');
+    await step('new session answered');
   } else if (scenario === 'missed-start') {
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await step('no start, then tools');
@@ -209,6 +223,8 @@ async function play(): Promise<void> {
     await step('no start, then completed');
     first.send('inference:failed', { error: 'a turn the TUI never saw start' });
     await step('no start, then failed');
+    first.send('inference:exhausted', { error: 'a turn the TUI never saw start' });
+    await step('no start, failed, then exhausted');
   } else if (scenario === 'switch' || scenario === 'switch-fails') {
     first.send('inference:started');
     await command('/session switch other');
