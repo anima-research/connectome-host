@@ -152,6 +152,11 @@ interface FleetChild {
   spawnError?: unknown;
   env?: Record<string, string>;
   lastCompletedSpeech: string;
+  saidExiting?: boolean;
+  reopening?: Promise<void>;
+  reopenedAt?: number;
+  reopenFailure?: string;
+  closingAgainUntil?: number;
 }
 
 function exitText(code: number | null, signal: NodeJS.Signals | string | null): string {
@@ -227,6 +232,8 @@ export class FleetModule implements Module {
   private launchingAutoStart = new Map<string, { recorded: Promise<void>; end: () => void }>();
   private detachMode = false;
   private readonly restartFlapWindowMs = 60_000;
+  private readonly reopenWindowMs = 30_000;
+  private readonly connectAnswerMs = CONNECT_ANSWER_MS;
   private readonly restartFlapCap = 3;
   private allowlist: string[];
   private allowlistEnabled: boolean;
@@ -571,35 +578,7 @@ export class FleetModule implements Module {
     child.exitCode = null;
     child.exitReason = null;
 
-    let observedPid: number | null | undefined;
-    const unsubPidCheck = this.onChildEvent(child.name, (_, evt) => {
-      if (observedPid !== undefined) return;
-      if (evt.type === 'lifecycle' && (evt as { phase?: string }).phase === 'ready') {
-        const pid = (evt as { pid?: number | null }).pid;
-        observedPid = pid ?? null;
-      }
-    });
-
-    try {
-      await this.connectChildSocket(child);
-      this.sendToChild(child, { type: 'subscribe', events: p.subscription });
-      await this.waitForReady(child);
-
-      if (observedPid !== p.pid) {
-        // A stale socket refuses connections, so an answer means a live
-        // process serves this data directory, and it isn't the recorded one.
-        throw new Error(
-          `the process answering on its socket reported pid ${observedPid ?? 'none'}, not the recorded pid ` +
-          `${p.pid}, so a process other than the recorded child now serves its data directory`,
-        );
-      }
-    } catch (err) {
-      try { child.socket?.destroy(); } catch { }
-      child.socket = null;
-      throw err;
-    } finally {
-      unsubPidCheck();
-    }
+    await this.connectChildSocket(child, { pid: p.pid, readyMs: this.config.readyTimeoutMs, events: p.subscription });
 
     child.adopted = true;
     child.bootId = this.bootId() ?? child.bootId;
@@ -974,10 +953,11 @@ export class FleetModule implements Module {
       {
         name: 'relay',
         description:
-          "Forward the source child's most recent completed speech to the target child as a text message. " +
+          "Forward the source child's most recent completed speech since this host's connection to it last opened " +
+          'to the target child as a text message. ' +
           'Speech is the text from an inference round that did not end in tool calls (the child\'s "final answer" from its last turn). ' +
-          'Source-child status is NOT checked: as long as the source spoke at least once before exiting, ' +
-          'its last speech can still be relayed (useful for "pass on the dead child\'s last findings"). ' +
+          'A source that has exited can still be relayed (useful for "pass on the dead child\'s last findings"). ' +
+          'A running source this host can\'t reach isn\'t, since a reply this host holds from it may not be its latest. ' +
           'Target child must be running. ' +
           'Requires the source child\'s subscription to include `inference:speech`.',
         inputSchema: {
@@ -1005,8 +985,8 @@ export class FleetModule implements Module {
           'started no turn of their own since, or on timeout. While the wait goes on, a child sent work again is ' +
           'waited for again, and one that went idle and then exited or was restarted still counts. ' +
           'The call blocks your turn for up to timeoutMs; fleet--peek shows a child\'s latest events. ' +
-          'Fails fast if a waited-for child crashes or exits before going idle, or has stopped when the call ' +
-          'begins. ' +
+          'Fails fast if a waited-for child crashes or exits before going idle, has stopped when the call ' +
+          'begins, or can\'t be reached. ' +
           'Requires each child\'s subscription to include `lifecycle` events.',
         inputSchema: {
           type: 'object',
@@ -1037,12 +1017,12 @@ export class FleetModule implements Module {
         case 'launch':  return await this.handleLaunch(call.input as LaunchInput, { viaAutoStart: false });
         case 'list':    return this.handleList();
         case 'status':  return this.handleStatus(call.input as { name?: string });
-        case 'send':    return this.handleSend(call.input as { name: string; content: string });
-        case 'command': return this.handleCommand(call.input as { name: string; command: string });
+        case 'send':    return await this.handleSend(call.input as { name: string; content: string });
+        case 'command': return await this.handleCommand(call.input as { name: string; command: string });
         case 'peek':    return this.handlePeek(call.input as { name: string; lines?: number });
         case 'kill':    return await this.handleKill(call.input as { name: string });
         case 'restart': return await this.handleRestart(call.input as { name: string });
-        case 'relay':   return this.handleRelay(call.input as { from: string; to: string; prefix?: string });
+        case 'relay':   return await this.handleRelay(call.input as { from: string; to: string; prefix?: string });
         case 'await':   return await this.handleAwait(call.input as { names: string[]; timeoutMs?: number; requireAll?: boolean });
         default:
           return unknownToolResult(this, call.name);
@@ -1563,8 +1543,8 @@ export class FleetModule implements Module {
     };
   }
 
-  private handleSend(input: { name: string; content: string }): ToolResult {
-    const ok = this.requireRunning(input.name, 'nothing was sent');
+  private async handleSend(input: { name: string; content: string }): Promise<ToolResult> {
+    const ok = await this.requireReachable(input.name, 'nothing was sent');
     if (!('child' in ok)) return ok;
     if (typeof input.content !== 'string') {
       return {
@@ -1577,7 +1557,7 @@ export class FleetModule implements Module {
     return { success: true, data: { name: input.name, sent: 'text' } };
   }
 
-  private handleCommand(input: { name: string; command: string }): ToolResult {
+  private async handleCommand(input: { name: string; command: string }): Promise<ToolResult> {
     if (typeof input.command === 'string' && parseCommand(input.command).name === 'bug') {
       return {
         success: false,
@@ -1586,7 +1566,7 @@ export class FleetModule implements Module {
           'words, never a session\'s, so calling it again won\'t change that. Ask the user to run /bug themselves.',
       };
     }
-    const ok = this.requireRunning(input.name, 'nothing was sent');
+    const ok = await this.requireReachable(input.name, 'nothing was sent');
     if (!('child' in ok)) return ok;
     if (typeof input.command !== 'string') {
       return {
@@ -1679,7 +1659,7 @@ export class FleetModule implements Module {
     return false;
   }
 
-  private handleRelay(input: { from: string; to: string; prefix?: string }): ToolResult {
+  private async handleRelay(input: { from: string; to: string; prefix?: string }): Promise<ToolResult> {
     if (!input.from || !input.to) {
       return {
         success: false, isError: true,
@@ -1695,20 +1675,39 @@ export class FleetModule implements Module {
           `reply to another. Give two different children's names.`,
       };
     }
-    const fromChild = this.children.get(input.from);
-    if (!fromChild) return this.unknownChild(input.from, 'nothing was relayed');
+    if (!this.children.has(input.from)) return this.unknownChild(input.from, 'nothing was relayed');
+    if (!this.children.has(input.to)) return this.unknownChild(input.to, 'nothing was relayed');
+    const ends = (): FleetChild[] => [this.children.get(input.from)!, this.children.get(input.to)!];
+    for (const c of ends()) void this.tryReopen(c);
+    for (;;) {
+      const connects = ends().map((c) => c.reopening).filter((p): p is Promise<void> => p !== undefined);
+      if (connects.length === 0) break;
+      await Promise.all(connects);
+    }
     const target = this.requireRunning(input.to, 'nothing was relayed');
     if (!('child' in target)) return target;
+    const fromChild = this.children.get(input.from)!;
 
     const speech = fromChild.lastCompletedSpeech;
+    const unreachable = this.unreachable(fromChild);
+    if (speech && unreachable !== null && (fromChild.status === 'ready' || fromChild.status === 'starting')) {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was relayed: this host can't reach '${input.from}', since it ${unreachable}. The reply this ` +
+          `host holds from '${input.from}' came before it lost that connection, and '${input.from}' may have answered ` +
+          `whoever held its connection since, so it may not be the latest. Once this host knows '${input.from}' has ` +
+          'exited, fleet--relay passes that reply on.',
+      };
+    }
     if (!speech) {
       const heard = matchesSubscription('inference:speech', new Set(fromChild.subscription));
-      const unreachable = this.unreachable(fromChild);
       return {
         success: false,
         isError: true,
         error: heard
-          ? `Nothing was relayed: '${input.from}' hasn't finished a reply since this host began tracking it` +
+          ? `Nothing was relayed: '${input.from}' hasn't finished a reply since this host's connection to it last ` +
+            'opened' +
             (unreachable !== null
               ? `, and it ${unreachable}.`
               : `. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay ` +
@@ -1750,27 +1749,33 @@ export class FleetModule implements Module {
 
     const done = new Set<string>();
     const counted = new Map<string, FleetChild>();
+    const unconfirmed = new Set(names.filter((name) => !this.children.get(name)!.socket));
     const reread = (): void => {
       for (const name of names) {
         const child = this.children.get(name);
-        if (child?.idleSinceWork) counted.set(name, child);
+        if (child?.socket) unconfirmed.delete(name);
+        if (child?.idleSinceWork && !unconfirmed.has(name)) counted.set(name, child);
         else if (counted.get(name) === child || (child !== undefined && child.textsSent > 0)) counted.delete(name);
       }
       done.clear();
       for (const name of counted.keys()) done.add(name);
     };
     reread();
-
     for (const name of names) {
       const c = this.children.get(name)!;
       if (c.status === 'crashed' || c.status === 'exited') {
         return { success: false, isError: true, error: this.awaitedChildStopped(c, [...done]) };
       }
     }
-
     const requireAll = input.requireAll !== false;
     const timeoutMs = input.timeoutMs ?? 300_000;
     const startedAt = Date.now();
+    for (const name of names) void this.tryReopen(this.children.get(name)!);
+    for (const name of names) {
+      const c = this.children.get(name)!;
+      const cutOff = this.cutOff(c);
+      if (cutOff !== null) return { success: false, isError: true, error: this.awaitedChildCutOff(c, cutOff, [...done]) };
+    }
 
     const metCriterion = (): boolean => requireAll
       ? done.size === names.length
@@ -1806,8 +1811,8 @@ export class FleetModule implements Module {
         unsubs.push(this.onChildEvent(name, () => { settle(); }));
       }
 
-      const crashPoll = setInterval(() => {
-        if (settle()) return;
+      const check = (): void => {
+        if (finished || settle()) return;
         for (const name of names) {
           if (done.has(name)) continue;
           const c = this.children.get(name);
@@ -1816,8 +1821,14 @@ export class FleetModule implements Module {
             finish({ success: false, isError: true, error: this.awaitedChildStopped(c, [...done]) });
             return;
           }
+          const cutOff = this.cutOff(c);
+          if (cutOff !== null) {
+            finish({ success: false, isError: true, error: this.awaitedChildCutOff(c, cutOff, [...done]) });
+            return;
+          }
         }
-      }, 200);
+      };
+      const crashPoll = setInterval(check, 200);
 
       const timeoutHandle = setTimeout(() => {
         reread();
@@ -1835,13 +1846,26 @@ export class FleetModule implements Module {
   }
 
   private awaitedChildStopped(c: FleetChild, idle: string[]): string {
-    const running = idle.filter((n) => {
+    return `Child '${c.name}' has ${c.status}${stoppedHow(c)}, so there's no idle to wait for. Idle so far: ` +
+      `${listed(this.stillRunning(idle))}. fleet--peek for '${c.name}' shows its last events, and ` +
+      `fleet--restart for '${c.name}' starts it again.`;
+  }
+
+  private cutOff(c: FleetChild): string | null {
+    const unattached = c.status === 'ready' || (c.status === 'starting' && !c.process && !c.adopted);
+    return unattached && !c.socket && !c.reopening ? this.unreachable(c) : null;
+  }
+
+  private awaitedChildCutOff(c: FleetChild, state: string, idle: string[]): string {
+    return `No idle of child '${c.name}' can reach this host, since it ${state}. Idle so far: ` +
+      `${listed(this.stillRunning(idle))}.`;
+  }
+
+  private stillRunning(names: string[]): string[] {
+    return names.filter((n) => {
       const status = this.children.get(n)?.status;
       return status !== 'crashed' && status !== 'exited';
     });
-    return `Child '${c.name}' has ${c.status}${stoppedHow(c)}, so there's no idle to wait for. Idle so far: ` +
-      `${listed(running)}. fleet--peek for '${c.name}' shows its last events, and ` +
-      `fleet--restart for '${c.name}' starts it again.`;
   }
 
   private requireRunning(name: string, outcome: string): { child: FleetChild } | ToolResult {
@@ -1852,20 +1876,150 @@ export class FleetModule implements Module {
     return { success: false, isError: true, error: `${capitalized(outcome)}: child '${c.name}' ${state}.` };
   }
 
+  private async requireReachable(name: string, outcome: string): Promise<{ child: FleetChild } | ToolResult> {
+    const c = this.children.get(name);
+    if (c) await this.tryReopen(c);
+    return this.requireRunning(name, outcome);
+  }
+
+  private async tryReopen(c: FleetChild, { withinBound = false } = {}): Promise<void> {
+    if (c.reopening) await c.reopening;
+    else if (!c.socket && this.mayReopen(c) && (withinBound || !this.closingAgain(c))) await this.reopen(c);
+  }
+
+  private mayReopen(c: FleetChild): boolean {
+    if (this.stopping || c.killRequested || c.saidExiting || c.status !== 'ready') return false;
+    if (this.children.get(c.name) !== c) return false;
+    if (c.process) return c.process.exitCode === null && c.process.signalCode === null;
+    return c.adopted === true;
+  }
+
+  private closingAgain(c: FleetChild): boolean {
+    return c.closingAgainUntil !== undefined && Date.now() < c.closingAgainUntil;
+  }
+
+  private afterClose(c: FleetChild): void {
+    if (!this.mayReopen(c)) return;
+    c.reopenFailure = undefined;
+    const now = Date.now();
+    if (c.reopenedAt !== undefined && now - c.reopenedAt < this.reopenWindowMs) {
+      c.closingAgainUntil = now + this.reopenWindowMs;
+      console.error(`[fleet] child "${c.name}" closed this host's connection again within ` +
+        `${this.reopenWindowMs / 1000} s of this host connecting to it again, so this host leaves it closed: ` +
+        'another client may hold it.');
+      return;
+    }
+    void this.reopen(c);
+  }
+
+  private reopen(c: FleetChild): Promise<void> {
+    c.reopening ??= this.connectAgain(c).finally(() => { c.reopening = undefined; });
+    return c.reopening;
+  }
+
+  private async connectAgain(c: FleetChild): Promise<void> {
+    try {
+      const checked = await this.openChecked(c.socketPath, c.pid, this.connectAnswerMs);
+      if (!this.mayReopen(c)) {
+        checked.socket.destroy();
+        return;
+      }
+      c.reopenedAt = Date.now();
+      c.closingAgainUntil = undefined;
+      c.reopenFailure = undefined;
+      c.lastCompletedSpeech = '';
+      this.takeChecked(c, checked, c.subscription);
+      console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
+        `connected to it again (pid ${c.pid}).`);
+    } catch (err) {
+      c.reopenFailure = err instanceof Error ? err.message : String(err);
+      console.error(`[fleet] connecting to child "${c.name}" again failed: ${c.reopenFailure}`);
+    }
+  }
+
+  private async openChecked(
+    socketPath: string,
+    pid: number | null,
+    readyMs: number,
+  ): Promise<{ socket: Socket; ready: WireEvent; rest: string }> {
+    const socket = await this.openSocket(socketPath);
+    socket.on('error', () => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { ready, rest } = await new Promise<{ ready: WireEvent; rest: string }>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`it didn't say it was ready within ${readyMs} ms`)), readyMs);
+        socket.once('close', () => reject(new Error('its connection closed before it said it was ready')));
+        let buffer = '';
+        const first = (chunk: string): void => {
+          buffer += chunk;
+          const end = buffer.indexOf('\n');
+          if (end < 0) return;
+          socket.off('data', first);
+          socket.pause();
+          const event = ((): { type?: unknown; phase?: unknown } | null => {
+            try { return JSON.parse(buffer.slice(0, end)) as { type?: unknown; phase?: unknown }; } catch { return null; }
+          })();
+          if (event?.type === 'lifecycle' && event.phase === 'ready') resolve({ ready: event as WireEvent, rest: buffer.slice(end + 1) });
+          else reject(new Error("what answered on its socket didn't first say it was ready, as a connectome host does"));
+        };
+        socket.on('data', first);
+      });
+      const answered = (ready as { pid?: number | null }).pid ?? null;
+      if (answered !== pid) {
+        throw new Error(`the process answering on its socket reported pid ${answered ?? 'none'}, not the recorded pid ` +
+          `${pid}, so a process other than the recorded child now serves its data directory`);
+      }
+      return { socket, ready, rest };
+    } catch (err) {
+      socket.destroy();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private takeChecked(c: FleetChild, checked: { socket: Socket; ready: WireEvent; rest: string }, events: string[]): void {
+    this.attach(c, checked.socket);
+    try {
+      this.sendToChild(c, { type: 'subscribe', events });
+      this.recordEvent(c, checked.ready);
+      this.handleChildData(c, checked.rest);
+      checked.socket.resume();
+    } catch (err) {
+      if (c.socket === checked.socket) c.socket = null;
+      checked.socket.destroy();
+      throw err;
+    }
+  }
+
   private unreachable(c: FleetChild): string | null {
     const name = c.name;
     if (c.status !== 'ready' && c.status !== 'starting') {
       return `has ${c.status}${stoppedHow(c)}, so it isn't running. fleet--restart for '${name}' starts it again`;
     }
     if (c.socket) return null;
+    const retried = 'fleet--send, fleet--command, fleet--relay or fleet--await for it';
     return !c.process && !c.adopted
       ? `is recorded as ${c.status}, but this host isn't attached to it` +
         `${c.exitReason !== null ? ` (${c.exitReason})` : ''}. fleet--restart for '${name}' reattaches to it ` +
         'once it answers on its socket, or starts it again if its process is gone'
+      : c.status === 'ready' && c.saidExiting
+        ? `said it was exiting before its connection to this host closed, so it takes nothing more. fleet--status ` +
+          `for '${name}' shows its state, and fleet--restart for '${name}' starts it again`
+      : c.status === 'ready' && this.closingAgain(c)
+        ? `is ready, but its connection to this host closed again within ${this.reopenWindowMs / 1000} s of this ` +
+          'host connecting to it again, so another client may hold it, and this host stopped connecting to it by ' +
+          `itself. This host tries to connect to it once at the first ${retried} after ` +
+          `${formatZonedDateTime(c.closingAgainUntil!, this.config.timeZone)}, and until then they answer this way, ` +
+          'unless this host is already connecting to it for an update, when they wait for that connect. ' +
+          `fleet--restart for '${name}' stops it and starts it again`
+      : c.status === 'ready' && c.reopenFailure !== undefined
+        ? `is ready, but its connection to this host closed, and connecting to it again failed: ${c.reopenFailure}. ` +
+          `It may be exiting or not answering, and the next ${retried} tries to connect once more. fleet--status ` +
+          `for '${name}' shows its state; if it still shows ready, fleet--restart for '${name}' stops it and ` +
+          'starts it again'
       : c.status === 'ready'
-        ? `is ready, but its connection to this host has closed and its exit hasn't been seen yet, so it may ` +
-          `be exiting. fleet--status for '${name}' shows its state; if it still shows ready, fleet--restart ` +
-          `for '${name}' stops it and starts it again`
+        ? `is ready, but this host has no connection to it now. fleet--status for '${name}' shows its state`
         : c.exitReason !== null
           ? `is recorded as starting (${c.exitReason}), and this host has no connection to it. fleet--status ` +
             `for '${name}' shows its state`
@@ -1938,39 +2092,55 @@ export class FleetModule implements Module {
     throw new Error(`its socket refused connections for ${this.config.socketWaitTimeoutMs} ms; the last connect failed: ${refusal}`);
   }
 
-  private async connectChildSocket(child: FleetChild): Promise<void> {
+  private async connectChildSocket(
+    child: FleetChild,
+    checked?: { pid: number | null; readyMs: number; events: string[] },
+  ): Promise<void> {
+    if (!checked) {
+      this.attach(child, await this.openSocket(child.socketPath));
+      return;
+    }
+    this.takeChecked(child, await this.openChecked(child.socketPath, checked.pid, checked.readyMs), checked.events);
+  }
+
+  private openSocket(socketPath: string): Promise<Socket> {
     return new Promise((resolveConn, rejectConn) => {
-      const sock = netConnect(child.socketPath);
+      const sock = netConnect(socketPath);
       // Socket decoding retains incomplete UTF-8 characters across chunks.
       sock.setEncoding('utf8');
       const timer = setTimeout(() => {
         sock.destroy();
-        rejectConn(new Error(`a connect to its socket got no answer within ${CONNECT_ANSWER_MS} ms`));
-      }, CONNECT_ANSWER_MS);
-
+        rejectConn(new Error(`a connect to its socket got no answer within ${this.connectAnswerMs} ms`));
+      }, this.connectAnswerMs);
       sock.once('connect', () => {
         clearTimeout(timer);
-        child.socket = sock;
-        child.buffer = '';
-        child.textsSent = 0;
-        sock.on('data', (chunk: string) => {
-          if (child.socket === sock) this.handleChildData(child, chunk);
-        });
-        // A reset may emit only close; stale callbacks must not release a new socket.
-        const release = (): void => {
-          if (child.socket === sock) child.socket = null;
-        };
-        sock.on('end', release);
-        sock.on('close', release);
-        sock.on('error', () => {
-          // An 'error' event with no listener would throw in the parent.
-        });
-        resolveConn();
+        resolveConn(sock);
       });
       sock.once('error', (err) => {
         clearTimeout(timer);
         rejectConn(err);
       });
+    });
+  }
+
+  private attach(child: FleetChild, sock: Socket): void {
+    child.socket = sock;
+    child.buffer = '';
+    child.textsSent = 0;
+    child.saidExiting = false;
+    sock.on('data', (chunk: string) => {
+      if (child.socket === sock) this.handleChildData(child, chunk);
+    });
+    // A reset may emit only close; stale callbacks must not release a new socket.
+    const release = (): void => {
+      if (child.socket !== sock) return;
+      child.socket = null;
+      this.afterClose(child);
+    };
+    sock.on('end', release);
+    sock.on('close', release);
+    sock.on('error', () => {
+      // An 'error' event with no listener would throw in the parent.
     });
   }
 
@@ -2012,6 +2182,7 @@ export class FleetModule implements Module {
       const { phase, idle, texts } = event as { phase?: string; idle?: unknown; texts?: unknown };
       if (phase === 'idle') child.idleSinceWork = typeof texts !== 'number' || texts >= child.textsSent;
       else if (phase === 'ready') child.idleSinceWork = idle === true && child.textsSent === 0;
+      else if (phase === 'exiting') child.saidExiting = true;
     }
     child.events.push(event);
     if (child.events.length > this.config.bufferSize) {
@@ -2136,7 +2307,11 @@ export class FleetModule implements Module {
       .map((child) => ({ name: child.name }));
   }
 
-  requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    const child = this.children.get(childName);
+    // Keep the switch's requests outside the bound: a switch sends a child three at most, so they make no loop,
+    // and a child whose resume can't be sent stays quiesced until a later resume or its next start.
+    if (child) await this.tryReopen(child, { withinBound: true });
     return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
       (corrId) => ({ type: 'update-request', request, corrId }));
   }

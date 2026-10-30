@@ -140,7 +140,7 @@ describe('FleetTreeAggregator', () => {
     expect(nodes.find(n => n.name === 'lazy-agent')).toBeDefined();
   });
 
-  test('describe is not re-requested while one is in flight', () => {
+  test('every ready asks for a snapshot, since a describe sent before it may have gone with the old connection', () => {
     const fake = new FakeFleet();
     fake.setChildren([{ name: 'miner', status: 'ready' }]);
     const agg = new FleetTreeAggregator(fake as never);
@@ -148,12 +148,12 @@ describe('FleetTreeAggregator', () => {
     expect(fake.describeRequests.length).toBe(1);
 
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
-    expect(fake.describeRequests.length).toBe(1);
+    expect(fake.describeRequests.length).toBe(2);
 
     fake.emit('miner', makeSnapshot(1000, []));
 
     fake.emit('miner', { type: 'lifecycle', phase: 'ready', pid: 1, dataDir: '/tmp' } as WireEvent);
-    expect(fake.describeRequests.length).toBe(2);
+    expect(fake.describeRequests.length).toBe(3);
   });
 
   test('listeners fire on child tree changes', () => {

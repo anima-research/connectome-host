@@ -123,7 +123,7 @@ describe('fleet--relay', () => {
       input: { from: 'src', to: 'dst' },
     });
     expect(res.success).toBe(false);
-    expect(res.error).toStartWith("Nothing was relayed: 'src' hasn't finished a reply since this host began tracking it.");
+    expect(res.error).toStartWith("Nothing was relayed: 'src' hasn't finished a reply since this host's connection to it last opened.");
   });
 
   test('relays source speech to target (with prefix)', async () => {
