@@ -9,10 +9,11 @@ export type AgentPhase =
   | 'invoking'
   | 'executing'
   | 'done'
-  // An attempt failed and the turn isn't over: the framework retries it,
-  // holds it for a provider and runs it again, or ends it (exhausted or
-  // aborted). Nothing on agent-framework 0.30.0 says which, so the phase
-  // says only what is known. Status stays 'running'.
+  // An attempt failed and the turn isn't over: the framework retries it
+  // after its error policy's wait (which sends inference:waiting), holds it
+  // until a provider's limit lifts (which sends nothing) and runs it again,
+  // or ends it (exhausted or aborted). The phase covers all of these, and
+  // status stays 'running'.
   | 'attempt-failed'
   | 'failed'
   // Terminal-but-benign: user cancel, zombie-reclaim, supersession, agent
@@ -64,8 +65,9 @@ export interface AgentNode {
   startedAt?: number;
   completedAt?: number;
   lastEventAt?: number;
-  /** The error of the turn's last failed attempt, while the node is in
-   *  'attempt-failed' or ended 'failed'. Absent otherwise. */
+  /** The error of the turn's last failure (inference:failed or
+   *  inference:exhausted), while the node is 'attempt-failed' or ended
+   *  'failed'. Absent otherwise. */
   attemptError?: string;
 }
 

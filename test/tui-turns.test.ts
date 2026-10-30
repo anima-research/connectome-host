@@ -258,8 +258,9 @@ describe("the TUI's numbered fork phases, through runTui", () => {
     ['numbered-fork-failed', 'attempt-failed'],
     ['numbered-fork-exhausted', 'failed'],
     ['numbered-fork-failed-then-exhausted', 'failed'],
+    ['numbered-fork-failed-then-started', 'sending'],
   ] as const) {
-    test(`${scenario}: only the numbered row changes from sending to ${phase}`, async () => {
+    test(`${scenario}: the numbered row shows ${phase}, and the other row stays sending`, async () => {
       const steps = await play(scenario);
       const before = steps.get('before');
       const after = steps.get('after');

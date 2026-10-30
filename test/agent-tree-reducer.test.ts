@@ -237,6 +237,13 @@ describe('AgentTreeReducer', () => {
     expect(r.getNode('cut')!.attemptError).toBeUndefined();
     expect(r.getNode('broke')!.status).toBe('failed');
     expect(r.getNode('broke')!.attemptError).toBe('held');
+    r.applyEvent({
+      type: 'dendrite:agent-created', agentName: 'broke', kind: 'task-fork', model: 'm', incarnation: 2,
+      lifetime: { kind: 'task', idleTimeoutMs: 600_000 }, timestamp: ts(3),
+    });
+    expect(r.getNode('broke')!.status).toBe('running');
+    expect(r.getNode('broke')!.phase).toBe('idle');
+    expect(r.getNode('broke')!.attemptError).toBeUndefined();
   });
 
   test('a stop after a failed attempt ends the turn cancelled, with no error', () => {
@@ -284,6 +291,7 @@ describe('AgentTreeReducer', () => {
     let node = r.getNode('a')!;
     expect(node.phase).toBe('cancelled');
     expect(node.status).toBe('cancelled');
+    expect(node.attemptError).toBeUndefined();
     expect(node.completedAt).toBe(ts(1));
     expect(node.lastEventAt).toBe(ts(2));
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(3) });

@@ -1579,7 +1579,11 @@ export async function runTui(app: AppContext): Promise<void> {
     switch (event.type) {
       case 'inference:started': {
         if (agent) streamUsage.set(agent, emptyUsage());
-        if (agent && agent !== rootAgentName) subagentFailureShown.delete(agent);
+        if (agent && agent !== rootAgentName) {
+          subagentFailureShown.delete(agent);
+          const short = shortAgentName(agent);
+          if (subagentPhase.get(short) === 'attempt-failed') subagentPhase.set(short, 'sending');
+        }
         if (agent === rootAgentName) {
           if (backgrounded) {
             state.status = 'background';
