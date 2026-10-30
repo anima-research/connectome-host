@@ -16,6 +16,7 @@ type Child = Record<string, unknown> & {
 type Fleet = {
   children: Map<string, Child>;
   connectChildSocket(child: object): Promise<void>;
+  connectStartingChild(child: object): Promise<void>;
   sendToChild(child: object, cmd: object): void;
   requestPanel(name: string, op: string): Promise<{ ok: boolean; error?: string; status?: number }>;
   requestSwitch(name: string, request: object, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }>;
@@ -42,7 +43,7 @@ async function until(check: () => boolean, label: string, timeoutMs = 8_000): Pr
 }
 
 function setup(config: FleetModuleConfig = {}) {
-  const fleet = new FleetModule(config) as unknown as Fleet;
+  const fleet = new FleetModule({ socketWaitTimeoutMs: 8_000, ...config }) as unknown as Fleet;
   const logged: string[] = [];
   const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
   cleanups.push(() => spy.mockRestore());
@@ -64,7 +65,6 @@ function setup(config: FleetModuleConfig = {}) {
       await until(() => !alive(), 'the child ending');
       rmSync(dir, { recursive: true, force: true });
     });
-    await until(() => existsSync(join(dir, 'ipc.sock')), 'the child listening');
     const adopted = recordedPid !== undefined || adoptedAlive === true;
     const child = {
       name, recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
@@ -82,7 +82,7 @@ function setup(config: FleetModuleConfig = {}) {
       if (event.type === 'snapshot') seen.snapshot += 1;
     }));
     const readies = () => seen.ready;
-    await fleet.connectChildSocket(child);
+    await fleet.connectStartingChild(child);
     fleet.sendToChild(child, { type: 'subscribe', events: subscription });
     const log = () => existsSync(join(dir, 'headless.log')) ? readFileSync(join(dir, 'headless.log'), 'utf8') : '';
     const lines = (end: string) => log().split('\n').filter((line) => line.endsWith(end)).length;
@@ -129,6 +129,7 @@ function setup(config: FleetModuleConfig = {}) {
     const unblocked = () => existsSync(join(dir, 'unblocked'));
     const release = () => writeFileSync(join(dir, 'release'), '');
     await until(() => connections() === 1, 'the first connection');
+    await until(() => seen.ready === 1, "this host seeing the child's ready");
     return {
       child, proc, dir, alive, log, connections, disconnections, readies, seen, texts, signal, cut, reply, marker, takeover,
       unblocked, release,
@@ -679,7 +680,6 @@ test("a process other than the recorded child answering on its socket is not tak
   const sleeper: ChildProcess = spawn('sleep', ['30'], { stdio: 'ignore' });
   cleanups.push(() => { sleeper.kill('SIGKILL'); });
   const leaf = await launch('leaf', { recordedPid: sleeper.pid, subscription: ['lifecycle'] });
-  await until(() => leaf.readies() === 1, 'the first ready');
   expect(await call('send', { name: 'leaf', content: 'after the subscribe' })).toMatchObject({ success: true });
   await until(() => leaf.texts().includes('after the subscribe'), 'the child reading past the subscribe');
   await leaf.signal('chatter', 'chattering');
