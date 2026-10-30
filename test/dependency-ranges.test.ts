@@ -62,9 +62,9 @@ function floorOf(range: string): string {
 const within = (inner: string, outer: string): boolean => Bun.semver.satisfies(floorOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework only at the presentation release: not main's 0.30.0, which has no presentation index", () => {
+  test("takes agent-framework only at the presentation release: not main's 0.30.0 or 0.31.0, which have no presentation index", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    for (const published of ['0.29.0', '0.30.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    for (const published of ['0.29.0', '0.30.0', '0.31.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
