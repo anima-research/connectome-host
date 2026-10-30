@@ -216,6 +216,7 @@ describe('AgentTreeReducer', () => {
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(120_002) });
     node = r.getNode('a')!;
     expect(node.status).toBe('running');
+    expect(node.phase).toBe('sending');
     expect(node.attemptError).toBeUndefined();
   });
 
