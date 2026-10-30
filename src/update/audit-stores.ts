@@ -37,6 +37,7 @@ import { SessionManager } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
 } from './contract.js';
+import { StartRefusal } from './host.js';
 
 /** The flag that runs the audit in place of a host: `<entry> --audit-stores
  *  [--recipe <recipe>] <data directory>…`, by hand after a copy. */
@@ -152,14 +153,14 @@ export function placesOnTrial(committed: string, places: () => string[] | null, 
   try {
     within = places();
   } catch (error) {
-    throw new Error(
+    throw new StartRefusal(
       `This release couldn't tell which places its trial's fallback puts back, so it opened ${opened} and starts ` +
       `none of its agents: ${oneLine(error)}. The next start's fallback to ${committed} reads the same records; if ` +
       'it can\'t use them either, it says so and starts nothing.',
     );
   }
   if (within === null) {
-    throw new Error(
+    throw new StartRefusal(
       `No switch or Go back is under way by the install's journal, so this release opened ${opened} and starts none ` +
       `of its agents: nothing would put back what opening its stores before a commit changes. \`current\` still ` +
       `names ${committed}: start that release, or update to this one through the install's launcher, which starts ` +
@@ -172,7 +173,7 @@ export function placesOnTrial(committed: string, places: () => string[] | null, 
 export function checkActiveStore(store: string, committed: string, within: string[]): void {
   const reason = reachesPast(store, within, true, true);
   if (reason === undefined) return;
-  throw new Error(
+  throw new StartRefusal(
     `This release can't open its active session's store on its trial, so it opened no store, starts none of its ` +
     `agents, and the next start goes back to ${committed}:\nCouldn't audit ${store}: ${reason}`,
   );
@@ -199,7 +200,7 @@ export async function auditBeforeCommit(
     },
   });
   if (failures.length === 0) return;
-  throw new Error(
+  throw new StartRefusal(
     `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
     `agents, and the next start goes back to ${committed}:\n${failures.join('\n')}\n` +
     `To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line ` +

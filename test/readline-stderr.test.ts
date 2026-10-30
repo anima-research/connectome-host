@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,12 +19,21 @@ const REPLY_WITH_ALERTS = [
 ];
 
 const EXTENSION = `
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+let made = 0;
 export function register(api, config) {
-  api.registerModule(() => ({
+  api.registerModule(() => { const generation = ++made; return {
     name: 'stderr-probe',
     getTools() { return []; },
-    async start() {},
-    async stop() {},
+    async start() {
+      if (config.marks) writeFileSync(join(config.marks, 'started-' + generation), '');
+    },
+    async stop() {
+      if (!config.marks) return;
+      writeFileSync(join(config.marks, 'stopping-' + generation), '');
+      while (generation === 1 && !existsSync(join(config.marks, 'stop-go'))) await new Promise((r) => setTimeout(r, 10));
+    },
     async handleToolCall() { return { success: false, error: 'no tools' }; },
     async onProcess() { return {}; },
     setFramework(framework) {
@@ -58,7 +67,7 @@ export function register(api, config) {
         }
       });
     },
-  }));
+  }; });
 }
 `;
 
@@ -109,7 +118,9 @@ interface Session {
   close(): Promise<void>;
 }
 
-function startReadline(options: { crash?: boolean; background?: boolean; env?: Record<string, string>; prepare?: (dir: string) => void } = {}): Session {
+function startReadline(options: {
+  crash?: boolean; background?: boolean; env?: Record<string, string>; prepare?: (dir: string) => void; holdFirstStop?: boolean;
+} = {}): Session {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'readline-stderr-')));
   options.prepare?.(dir);
   const extension = join(dir, 'probe.ts');
@@ -122,7 +133,9 @@ function startReadline(options: { crash?: boolean; background?: boolean; env?: R
       mock: { echoMode: false, defaultResponse: 'Hello there, person.', streamChunkSize: 4, streamChunkDelayMs: 40 },
     },
     modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
-    extensions: { probe: { kind: 'module', path: extension, config: { crash: options.crash === true, background: options.background === true } } },
+    extensions: { probe: { kind: 'module', path: extension, config: {
+      crash: options.crash === true, background: options.background === true, ...(options.holdFirstStop ? { marks: dir } : {}),
+    } } },
   }));
   let screen = '';
   const decoder = new TextDecoder();
@@ -273,3 +286,23 @@ for (const { how, prepare, on } of UNWRITABLE) {
     }
   }, 120_000);
 }
+
+test('in readline mode, input that ends while a session switch is under way starts no framework once the host has begun to stop, and says the switch didn\'t finish', async () => {
+  const session = startReadline({ holdFirstStop: true });
+  let ended = false;
+  void session.exited.then(() => { ended = true; });
+  try {
+    await prompted(session);
+    session.type('/session new later\r');
+    await until(() => existsSync(join(session.dir, 'stopping-1')), 30_000, 'the switch\'s stop of the first framework', session.screen);
+    session.type('\x04');
+    await until(() => session.lines().some((line) => line.includes('Shutting down...')), 30_000, 'the shutdown', session.screen);
+    writeFileSync(join(session.dir, 'stop-go'), '');
+    await until(() => ended || existsSync(join(session.dir, 'started-2')), 30_000, 'the host\'s exit or a second framework', session.screen);
+    expect(existsSync(join(session.dir, 'started-2'))).toBe(false);
+    expect(await session.exited).toBe(0);
+    expect(session.lines().some((line) => line.includes('the switch didn\'t finish; the next start opens session later ['))).toBe(true);
+  } finally {
+    await session.close();
+  }
+}, 120_000);

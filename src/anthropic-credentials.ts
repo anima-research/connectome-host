@@ -31,6 +31,7 @@ export interface AnthropicCredentialsConfig {
   baseURL?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  onWriteBack?: (file: string, error?: string) => void;
 }
 
 interface StoredCredential {
@@ -64,7 +65,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   private readonly now: () => number;
   private refreshing: Promise<void> | null = null;
   private generation = 0;
-  private lastPersistError: string | undefined;
+  private readonly onWriteBack?: (file: string, error?: string) => void;
 
   constructor(config: AnthropicCredentialsConfig) {
     this.tokenEndpoint = config.tokenEndpoint ?? ANTHROPIC_OAUTH_TOKEN_URL;
@@ -73,6 +74,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     this.baseURL = (config.baseURL ?? 'https://api.anthropic.com').replace(/\/+$/, '');
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.now = config.now ?? Date.now;
+    this.onWriteBack = config.onWriteBack;
     this.file = config.credentialsFile;
     if (this.file) {
       const stored = this.readFile(this.file);
@@ -114,10 +116,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
 
   canRefresh(): boolean {
     return typeof this.refreshToken === 'string' && this.refreshToken.length > 0;
-  }
-
-  persistWarning(): string | undefined {
-    return this.lastPersistError;
   }
 
   expiresAt(): number | undefined {
@@ -167,7 +165,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     if (typeof doc.refresh_token === 'string' && doc.refresh_token) this.refreshToken = doc.refresh_token;
     const expiresIn = typeof doc.expires_in === 'number' && Number.isFinite(doc.expires_in) ? doc.expires_in : undefined;
     this.expiresAtMs = expiresIn !== undefined ? this.now() + expiresIn * 1000 : undefined;
-    this.persist();
+    this.writeBack();
   }
 
   setToken(token: string): void {
@@ -177,7 +175,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
     this.accessToken = trimmed;
     this.refreshToken = undefined;
     this.expiresAtMs = undefined;
-    this.persist();
+    this.writeBack();
   }
 
   async probe(): Promise<void> {
@@ -235,15 +233,15 @@ export class AnthropicOAuthCredentials implements CredentialSource {
    * when this runs: after a refresh the OLD pair may be dead (rotated
    * refresh tokens), so a failed write must not roll memory back.
    */
-  private persist(): void {
+  writeBack(): void {
     if (!this.file) return;
+    let error: string | undefined;
     try {
       this.writeFile(this.file);
-      this.lastPersistError = undefined;
     } catch (err) {
-      this.lastPersistError = `credential rotated in memory but not written to ${this.file}: ${err instanceof Error ? err.message : String(err)}`;
-      console.error(`[anthropic-credentials] ${this.lastPersistError}`);
+      error = err instanceof Error ? err.message : String(err);
     }
+    this.onWriteBack?.(this.file, error);
   }
 
   private writeFile(file: string): void {

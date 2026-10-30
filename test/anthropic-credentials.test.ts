@@ -102,16 +102,32 @@ describe('credentials file', () => {
     expect(creds.canRefresh()).toBe(true);
   });
 
-  test('a rotation whose save fails stays in memory and is reported', async () => {
+  test('a write that fails leaves the refreshed credential in use, and reports the file and the error', async () => {
     const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
     const { fetchImpl } = fakeFetch(() => Response.json({ access_token: 'b', refresh_token: 'r2', expires_in: 60 }));
-    const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl });
-    (creds as unknown as { file: string }).file = join(path, 'nope', 'creds.json'); // path is a file ⇒ ENOTDIR on open
+    const writes: Array<[string, string | undefined]> = [];
+    const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl, onWriteBack: (file, error) => writes.push([file, error]) });
+    const unreachable = join(path, 'nope', 'creds.json'); // path is a file ⇒ ENOTDIR on open
+    (creds as unknown as { file: string }).file = unreachable;
     await creds.refresh();
     expect(creds.currentToken()).toBe('b');
     expect(creds.canRefresh()).toBe(true);
-    expect(creds.persistWarning()).toMatch(/rotated in memory but not written/);
+    expect(writes).toEqual([[unreachable, expect.stringContaining('ENOTDIR')]]);
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ accessToken: 'a', refreshToken: 'r' });
+  });
+
+  test('writing back again after a failed write puts the credential in use into the file, and says it succeeded', async () => {
+    const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
+    const { fetchImpl } = fakeFetch(() => Response.json({ access_token: 'b', refresh_token: 'r2', expires_in: 60 }));
+    const writes: Array<[string, string | undefined]> = [];
+    const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl, onWriteBack: (file, error) => writes.push([file, error]) });
+    (creds as unknown as { file: string }).file = join(path, 'nope', 'creds.json');
+    await creds.refresh();
+    (creds as unknown as { file: string }).file = path;
+    creds.writeBack();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual([path, undefined]);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ accessToken: 'b', refreshToken: 'r2' });
   });
 
   test('the temp file is created exclusively (no following a pre-planted path)', async () => {

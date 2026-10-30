@@ -591,6 +591,21 @@ describe('status channels', () => {
     expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'instructions-unavailable', '"instructions/AGENTS.md" loaded again; agents have their instructions'));
   });
 
+  test('a credential not written to its file reaches the status channels, answers no one writing to the agent, and its clear follows', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
+    const unsaved = "anthropic credential couldn't be written to /x/creds.json (EACCES: permission denied)";
+    h.alert('credential-unsaved', unsaved);
+    await h.fireTimers();
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(1);
+    expect(h.posts[0]!.channelId).toBe('zulip:ops');
+    expect(h.posts[0]!.text).toContain(`credential-unsaved: ${unsaved}`);
+    h.alert('credential-unsaved-clear', 'anthropic credential written to /x/creds.json');
+    await h.settle();
+    expect(h.posts.length).toBe(2);
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'credential-unsaved', 'anthropic credential written to /x/creds.json'));
+  });
+
   test('a status channel that also matches the reply scope is told once, as status', async () => {
     const h = await started({ statusChannels: ['zulip:ops'] });
     h.alert('hard-down', 'failing');

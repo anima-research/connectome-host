@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, connectedWhenMarked,
   copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy, pendingGoBack,
   readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
@@ -732,8 +732,13 @@ async function switchTo(root: string, record: InstallRecord, mark: Mark, current
   }
   appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
   appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
-  ops.report(`[update] Starting ${mark.to} on trial, from ${current}. It commits once it has opened its stores and ` +
-    `connected its servers, closed tabs aside; if it ends before that, the next start goes back to ${current} and its data.`);
+  const asked = connectedWhenMarked(mark);
+  const commits = asked === null ? 'opened its stores and connected its servers, closed tabs aside'
+    : asked.length === 0 ? `opened its stores, since ${current} had no server connected when it stopped`
+    : `opened its stores and connected whichever of ${asked.join(', ')} it's configured with, the servers ${current} ` +
+      'had connected when it stopped, closed tabs aside';
+  ops.report(`[update] Starting ${mark.to} on trial, from ${current}. It commits once it has ${commits}; if it ends ` +
+    `before that, the next start goes back to ${current} and its data.`);
   return { release: mark.to, trial: true };
 }
 

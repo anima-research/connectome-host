@@ -2,11 +2,14 @@ import { readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ContractError, INSTALL_ROOT_ENV, appendJournal, installPaths, installRootFromEnv, moveCurrent, readCurrent, syncDir,
+  INSTALL_ROOT_ENV, appendJournal, connectedWhenMarked, installPaths, installRootFromEnv, moveCurrent, readCurrent,
+  readMark, syncDir,
 } from './contract.js';
 import { disarmTrialLog } from './trial-log.js';
 
 export const HOST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+export class StartRefusal extends Error {}
 
 export interface ReleaseHere {
   root: string;
@@ -21,7 +24,7 @@ export function releaseHere(
   if (root === null) return null;
   const { releases } = installPaths(root);
   const host = realpathSync(hostRoot);
-  const unreadable = (what: string, error: unknown): ContractError => new ContractError(
+  const unreadable = (what: string, error: unknown): StartRefusal => new StartRefusal(
     `${INSTALL_ROOT_ENV} names the install at ${root}, and ${what} can't be read, so this host can't tell which ` +
     `of its releases it is: ${error instanceof Error ? error.message : String(error)}`,
   );
@@ -42,7 +45,7 @@ export function releaseHere(
     return host === path || host.startsWith(path + sep);
   }).sort();
   if (holding.length === 1) return { root, release: holding[0]! };
-  throw new ContractError(holding.length === 0
+  throw new StartRefusal(holding.length === 0
     ? `${INSTALL_ROOT_ENV} names the install at ${root}, but none of its releases holds this host (${host}). ` +
       `Only an install's entry point sets ${INSTALL_ROOT_ENV}: to run this host on its own, start it without that variable.`
     : `${INSTALL_ROOT_ENV} names the install at ${root}, and ${holding.length} of its releases hold this host ` +
@@ -61,7 +64,7 @@ export function currentForStart(root: string): string | null {
   try {
     return readCurrent(root);
   } catch (error) {
-    throw new Error(
+    throw new StartRefusal(
       `This host couldn't read which release the install at ${root} runs on, so none of its agents started: ` +
       `${error instanceof Error ? error.message : String(error)}. Each start reads \`current\` again before any ` +
       'agent starts.',
@@ -69,12 +72,22 @@ export function currentForStart(root: string): string | null {
   }
 }
 
+function connectedWhenAsked(root: string, release: string): string[] | null {
+  let mark;
+  try {
+    mark = readMark(root);
+  } catch {
+    return null;
+  }
+  return mark?.to === release ? connectedWhenMarked(mark) : null;
+}
+
 export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { from: string } | undefined {
   const { root, release } = here;
   const said = (error: unknown): string => error instanceof Error ? error.message : String(error);
   const from = currentForStart(root);
   if (from === null) {
-    throw new Error(
+    throw new StartRefusal(
       `The install at ${root} has no \`current\` to say which release it runs on, so this host starts none of its ` +
       'agents. Run setup again.',
     );
@@ -85,7 +98,7 @@ export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { fro
     try {
       syncDir(root);
     } catch (error) {
-      throw new Error(
+      throw new StartRefusal(
         `This host couldn't sync \`current\`, which names ${release}, to disk at ${root}, so none of its agents ` +
         `started and it exits: ${said(error)}. Its next start, which its service makes, syncs again.`,
       );
@@ -93,12 +106,28 @@ export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { fro
     return undefined;
   }
   const unconnected = check.unconnectedServers?.() ?? [];
-  if (unconnected.length > 0) {
-    throw new Error(
-      `The MCPL server${unconnected.length === 1 ? '' : 's'} ${unconnected.join(', ')} ` +
-      `${unconnected.length === 1 ? "wasn't" : "weren't"} connected when this release went to commit, so it starts none ` +
-      `of its agents, and the next start goes back to ${from}: a release on trial commits only once every server it's ` +
-      "configured with is connected, closed tabs aside. This start's log says why each one failed.",
+  const asked = unconnected.length > 0 ? connectedWhenAsked(root, release) : null;
+  const holding = asked === null ? unconnected : unconnected.filter((id) => asked.includes(id));
+  const passed = unconnected.filter((id) => !holding.includes(id));
+  if (passed.length > 0) {
+    console.log(
+      `[update] The MCPL server${passed.length === 1 ? '' : 's'} ${passed.join(', ')} ` +
+      `${passed.length === 1 ? "isn't" : "aren't"} connected, and ${from} hadn't connected ` +
+      `${passed.length === 1 ? 'it' : 'them'} when it stopped either, so ` +
+      `${passed.length === 1 ? "it doesn't" : "they don't"} hold this release's commit.`,
+    );
+  }
+  if (holding.length > 0) {
+    throw new StartRefusal(
+      `The MCPL server${holding.length === 1 ? '' : 's'} ${holding.join(', ')} ` +
+      `${holding.length === 1 ? "wasn't" : "weren't"} connected when this release went to commit, so it starts none ` +
+      `of its agents, and the next start goes back to ${from}: ` +
+      (asked === null
+        ? `with no readable record of this request saying which servers ${from} had connected when it stopped, a ` +
+          "release on trial commits only once every server it's configured with is connected, closed tabs aside."
+        : `a release on trial commits only once it has connected each server it's configured with that ${from} had ` +
+          'connected when it stopped, closed tabs aside.') +
+      " This start's log says why each one failed.",
     );
   }
   try {
@@ -111,13 +140,13 @@ export function commitRelease(here: ReleaseHere, check: CommitCheck = {}): { fro
     try {
       named = readCurrent(root);
     } catch (reread) {
-      throw new Error(
+      throw new StartRefusal(
         `This host couldn't record ${release} as the release the install at ${root} runs on, so none of its ` +
         `agents started: ${said(error)}. It couldn't read \`current\` afterwards either, so it can't tell ` +
         `whether \`current\` names ${release} or ${from} now: ${said(reread)}`,
       );
     }
-    throw new Error(named === release
+    throw new StartRefusal(named === release
       ? `This host moved \`current\` to ${release} at ${root} but couldn't sync the move to disk, so none of its ` +
         `agents started and it exits: ${said(error)}. Its next start runs ${release}, and syncs the root again ` +
         'before any agent starts. A disk that failed a sync may not have kept the move: check the disk, and ' +

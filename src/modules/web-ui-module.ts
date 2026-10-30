@@ -34,7 +34,13 @@ import type { CallLedger } from '../call-ledger.js';
 import type { QuotaMeter } from '../quota-meter.js';
 import type { CredentialMonitor } from '../credential-state.js';
 import { handleCommand } from '../commands.js';
-import { PANEL_OPS_THAT_CHANGE_THE_SESSION, refusedWhileSwitching, trackRunning } from '../session-switch.js';
+import {
+  PANEL_OPS_THAT_CHANGE_THE_SESSION,
+  refusedForAnotherSession,
+  refusedWhileSwitching,
+  switchLeftForStop,
+  trackOperatorWork,
+} from '../session-switch.js';
 import { parseCommand } from '../command-name.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -43,6 +49,7 @@ import type { FleetModule } from './fleet-module.js';
 import type { WireEvent } from './fleet-types.js';
 import {
   WEB_PROTOCOL_VERSION,
+  isChildScope,
   isClientMessage,
   type WebUiServerMessage,
   type WebUiClientMessage,
@@ -119,10 +126,11 @@ import {
 
 export interface WebUiAppRef {
   framework: AgentFramework;
+  frameworkSessionId: string;
   sessionManager: SessionManager;
   recipe: Recipe;
   branchState: BranchState;
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<unknown>;
   switching?: boolean;
 }
 
@@ -185,37 +193,59 @@ const HEALTH_ROUTE_STRINGS: ReadonlyMap<string, KeptStrings> = new Map<string, K
   ['/credential', CREDENTIAL_STRINGS],
 ]);
 
-function isChildScope(scope: string | undefined): scope is string {
-  return scope !== undefined && scope !== '' && scope !== 'local';
+function refusalReply(
+  message: WebUiClientMessage,
+  refusal: (what: string) => string | null,
+): WebUiServerMessage | null {
+  switch (message.type) {
+    case 'rollback':
+    case 'suppress': {
+      const error = refusal(message.type);
+      return error ? { type: 'surgery-result', corrId: message.corrId, op: message.type, ok: false, error } : null;
+    }
+    case 'fleet-stop':
+    case 'fleet-restart':
+    case 'cancel-subagent': {
+      const text = refusal(`${message.type} ${message.name}`);
+      return text ? { type: 'command-result', lines: [{ text, style: 'tool' }] } : null;
+    }
+    case 'host-quiesce':
+    case 'host-resume': {
+      const text = refusal(message.type);
+      return text ? { type: 'error', corrId: message.corrId, message: text } : null;
+    }
+    default: {
+      if (!PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) return null;
+      if (isChildScope((message as { scope?: string }).scope)) return null;
+      const text = refusal(message.type);
+      return text ? { type: 'error', message: text } : null;
+    }
+  }
 }
 
 export function switchRefusalFor(
   app: { switching?: boolean },
   message: WebUiClientMessage,
 ): WebUiServerMessage | null {
-  switch (message.type) {
-    case 'rollback':
-    case 'suppress': {
-      const error = refusedWhileSwitching(app, message.type);
-      return error ? { type: 'surgery-result', corrId: message.corrId, op: message.type, ok: false, error } : null;
-    }
-    case 'fleet-stop':
-    case 'fleet-restart': {
-      const text = refusedWhileSwitching(app, `${message.type} ${message.name}`);
-      return text ? { type: 'command-result', lines: [{ text, style: 'tool' }] } : null;
-    }
-    case 'host-quiesce':
-    case 'host-resume': {
-      const text = refusedWhileSwitching(app, message.type);
-      return text ? { type: 'error', corrId: message.corrId, message: text } : null;
-    }
-    default: {
-      if (!PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) return null;
-      if (isChildScope((message as { scope?: string }).scope)) return null;
-      const text = refusedWhileSwitching(app, message.type);
-      return text ? { type: 'error', message: text } : null;
-    }
-  }
+  if (message.type === 'cancel-subagent') return null;
+  return refusalReply(message, (what) => refusedWhileSwitching(app, what));
+}
+
+const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
+  'rollback',
+  'suppress',
+  'cancel-subagent',
+  ...PANEL_OPS_THAT_CHANGE_THE_SESSION,
+]);
+
+export function sessionRefusalFor(
+  app: Pick<WebUiAppRef, 'frameworkSessionId'> & { sessionManager: Pick<SessionManager, 'findSession'> },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  if (!CHANGES_STAMPED_WITH_THEIR_SESSION.has(message.type)) return null;
+  const chosenIn = (message as { sessionId?: string }).sessionId;
+  if (chosenIn === undefined) return null;
+  return refusalReply(message, (what) => refusedForAnotherSession(app.frameworkSessionId, app.sessionManager, chosenIn, what));
 }
 
 function panelErrorResponse(err: unknown): Response {
@@ -1194,7 +1224,8 @@ export class WebUiModule implements Module {
     const params = panelParamsFromUrl(url);
     const pretty = url.searchParams.get('pretty') !== null && url.searchParams.get('pretty') !== '0';
     try {
-      const payload = await buildDebugContext(app, resolveAgent(app, params.agent), params);
+      const sessionId = sharedServer!.app!.frameworkSessionId;
+      const payload = { sessionId, ...await buildDebugContext(app, resolveAgent(app, params.agent), params) };
       return new Response(
         JSON.stringify(payload, null, pretty ? 2 : undefined),
         { headers: { 'content-type': 'application/json' } },
@@ -1686,7 +1717,7 @@ export class WebUiModule implements Module {
       return;
     }
     const app = sharedServer.app;
-    const refused = switchRefusalFor(app, parsed);
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();
@@ -1739,19 +1770,19 @@ export class WebUiModule implements Module {
       }
 
       case 'rollback':
-        void trackRunning(app, 'rollback', this.handleSurgery(client, 'rollback', parsed));
+        void trackOperatorWork(app, 'rollback', this.handleSurgery(client, 'rollback', parsed));
         return;
 
       case 'suppress':
-        void trackRunning(app, 'suppress', this.handleSurgery(client, 'suppress', parsed));
+        void trackOperatorWork(app, 'suppress', this.handleSurgery(client, 'suppress', parsed));
         return;
 
       case 'host-quiesce':
-        void trackRunning(app, 'host-quiesce', this.handleHostMode(client, 'quiesce', parsed));
+        void trackOperatorWork(app, 'host-quiesce', this.handleHostMode(client, 'quiesce', parsed));
         return;
 
       case 'host-resume':
-        void trackRunning(app, 'host-resume', this.handleHostMode(client, 'resume', parsed));
+        void trackOperatorWork(app, 'host-resume', this.handleHostMode(client, 'resume', parsed));
         return;
 
       case 'request-host-mode': {
@@ -1800,7 +1831,7 @@ export class WebUiModule implements Module {
 
       case 'fleet-stop':
       case 'fleet-restart': {
-        void trackRunning(app, `${parsed.type} ${parsed.name}`, this.handleFleetControl(client, parsed.type, parsed.name));
+        void trackOperatorWork(app, `${parsed.type} ${parsed.name}`, this.handleFleetControl(client, parsed.type, parsed.name));
         return;
       }
 
@@ -2592,14 +2623,16 @@ export class WebUiModule implements Module {
 
     const commandName = `/${parseCommand(command).name}`;
     if (result.branchChanged) {
-      await trackRunning(app, commandName, this.materializeConfigMount());
+      await trackOperatorWork(app, commandName, this.materializeConfigMount());
       this.broadcastBranchChanged();
       this.refreshAllWelcomes();
     }
 
     if (result.switchToSessionId) {
       try {
-        await sharedServer?.app.switchSession(result.switchToSessionId);
+        if (await app.switchSession(result.switchToSessionId) === false) {
+          this.send(client, { type: 'error', corrId, message: switchLeftForStop(app.sessionManager.getActiveSession()) });
+        }
       } catch (err) {
         this.send(client, {
           type: 'error',
@@ -2621,7 +2654,7 @@ export class WebUiModule implements Module {
           switchToSessionId: follow.switchToSessionId,
         });
         if (follow.branchChanged) {
-          await trackRunning(app, commandName, this.materializeConfigMount());
+          await trackOperatorWork(app, commandName, this.materializeConfigMount());
           this.broadcastBranchChanged();
           this.refreshAllWelcomes();
         }
@@ -2649,8 +2682,9 @@ export class WebUiModule implements Module {
     const app = this.panelApp();
     if (!app) return;
     try {
+      const sessionId = sharedServer!.app!.frameworkSessionId;
       const snap = buildPinsSnapshot(app, resolveAgent(app, agentName));
-      this.send(client, { type: 'pins-list', scope: 'local', ...snap });
+      this.send(client, { type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch (err) {
       this.send(client, {
         type: 'error',
@@ -2687,20 +2721,22 @@ export class WebUiModule implements Module {
     const app = this.panelApp();
     if (!app) return;
     try {
+      const sessionId = sharedServer!.app!.frameworkSessionId;
       const snap = buildPinsSnapshot(app, agentName);
-      this.broadcast({ type: 'pins-list', scope: 'local', ...snap });
+      this.broadcast({ type: 'pins-list', scope: 'local', sessionId, ...snap });
     } catch { }
   }
 
   private sendSettingsState(client: ClientState, agentName?: string): void {
     const app = this.panelApp();
     if (!app) return;
+    const sessionId = sharedServer!.app!.frameworkSessionId;
     const msg = buildSettingsState(app, resolveAgent(app, agentName));
     if (!msg) {
       this.send(client, { type: 'error', message: 'runtime settings unavailable on this build' });
       return;
     }
-    this.send(client, { type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+    this.send(client, { type: 'settings-state', scope: 'local', sessionId, ...msg } as WebUiServerMessage);
   }
 
   private async sendScopedSettings(client: ClientState, scope: string, agentName?: string): Promise<void> {
@@ -2724,9 +2760,10 @@ export class WebUiModule implements Module {
   private broadcastSettingsState(agentName: string): void {
     const app = this.panelApp();
     if (!app) return;
+    const sessionId = sharedServer!.app!.frameworkSessionId;
     const msg = buildSettingsState(app, agentName);
     if (!msg) return;
-    this.broadcast({ type: 'settings-state', scope: 'local', ...msg } as WebUiServerMessage);
+    this.broadcast({ type: 'settings-state', scope: 'local', sessionId, ...msg } as WebUiServerMessage);
   }
 
   private async requestChildPanel(
@@ -2802,8 +2839,9 @@ export class WebUiModule implements Module {
   }
 
   private handleRequestHistory(client: ClientState, req: RequestHistoryMessage): void {
-    const cm = sharedServer?.app?.framework.getAllAgents()[0]?.getContextManager();
-    if (!cm) {
+    const app = sharedServer?.app;
+    const cm = app?.framework.getAllAgents()[0]?.getContextManager();
+    if (!app || !cm) {
       this.send(client, { type: 'error', corrId: req.corrId, message: 'no context manager' });
       return;
     }
@@ -2817,7 +2855,7 @@ export class WebUiModule implements Module {
     }
     const limit = Math.min(req.limit ?? HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX);
     const beforeIndex = Math.min(req.beforeIndex, cmw.getMessageCount());
-    this.send(client, { type: 'history-page', corrId: req.corrId, ...readHistory(cmw, beforeIndex, limit, client.scopes) });
+    this.send(client, { type: 'history-page', corrId: req.corrId, sessionId: app.frameworkSessionId, ...readHistory(cmw, beforeIndex, limit, client.scopes) });
   }
 
   private async loadWelcomeRecipes(): Promise<Map<string, Awaited<ReturnType<WebUiModule['loadChildRecipeInfo']>>>> {
@@ -2840,10 +2878,14 @@ export class WebUiModule implements Module {
     const app = sharedServer?.app!;
     const fw = app.framework;
     const agents = fw.getAllAgents();
-    const session = app.sessionManager.getActiveSession();
-    if (!session) {
-      throw new Error('cannot build welcome: no active session');
-    }
+    const sessionId = app.frameworkSessionId;
+    let indexed: ReturnType<SessionManager['findSession']> = null;
+    try {
+      indexed = app.sessionManager.findSession(sessionId);
+    } catch { }
+    const session = indexed?.id === sessionId
+      ? indexed
+      : { id: sessionId, name: sessionId, manuallyNamed: false };
 
     const cm = agents[0]?.getContextManager();
     let messages: WelcomeMessageEntry[] = [];

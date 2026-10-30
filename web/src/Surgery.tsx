@@ -130,6 +130,7 @@ export function HostModeToggle(props: {
 
 export interface SurgeryRequest {
   op: 'rollback' | 'suppress';
+  sessionId: string;
   messageIds: string[];
   previews: string[];
   affected?: number;

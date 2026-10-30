@@ -122,6 +122,8 @@ const HOLDS = [
   ['subagent-active', 'a subagent run holding a slot'],
   ['subagent-queued', 'a queued subagent run'],
   ['wake-gap', "a subagent's end, with its wake a loop pass behind,"],
+  ['command', "an operator's command still at work, as /update check reading the registry,"],
+  ['credential', 'a credential action still at work, as a refresh asked of the credential monitor,'],
 ] as const;
 
 for (const [hold, what] of HOLDS) {
@@ -454,8 +456,8 @@ test.concurrent('texts the replaced framework hadn\'t finished go to the new fra
 }, 15_000);
 
 async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: number; dones: number; doneFirst: boolean; scoutStarts: number; turnWorkFrom: number; quietFrom: number }> {
-  const subagent = hold.startsWith('subagent');
-  const { dir, child, closed } = start('quiet-idle', hold, subagent ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
+  const released = hold.startsWith('subagent') || hold === 'command' || hold === 'credential';
+  const { dir, child, closed } = start('quiet-idle', hold, released ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
   try {
     const watching = await client(dir, closed);
     await watching.next('ready');
@@ -465,12 +467,13 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
       writeFileSync(join(dir, 'scout-go'), '');
       while (!existsSync(join(dir, 'scout-polled'))) await Bun.sleep(10);
     }
-    if (subagent) writeFileSync(join(dir, 'release-hold'), '');
+    if (released) writeFileSync(join(dir, 'release-hold'), '');
     const idle = Number((await watching.next('idle')).ts);
     const dones = watching.count('turn-work-done');
     const scoutStarts = watching.starts('spawn-scout');
     watching.close();
     const doneFirst = watching.arrivedBefore('turn-work-done', 'idle');
+    while (!existsSync(join(dir, 'quiet-from'))) await Bun.sleep(10);
     return { done, idle, dones, doneFirst, scoutStarts, turnWorkFrom: Number(readFileSync(join(dir, 'turn-work-from'), 'utf8')), quietFrom: quietFrom(dir) };
   } finally {
     child.kill('SIGTERM');
@@ -481,6 +484,8 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
 for (const [hold, what] of [
   ['subagent-active', 'a subagent run holding a slot'],
   ['subagent-streaming', 'a subagent run whose own agent streams'],
+  ['command', "an operator's command still at work"],
+  ['credential', 'a credential action still at work'],
 ] as const) {
   test.concurrent(`${what} holds lifecycle idle but not turn-work-done, which comes 500 ms after the turn`, async () => {
     const seen = await turnWorkAndIdle(hold);

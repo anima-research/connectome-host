@@ -351,10 +351,17 @@ reasons unless the grant holds `ops` too.
   aren't waited for, and the stop ends them. Then the host stops, and its
   next start, which the service makes, copies the data, starts the new
   release on trial, and commits once that release has opened its stores and
-  connected its servers, closed tabs aside. The host comes back quiesced and resumes once its
-  agents have started; one you'd quiesced yourself stays quiesced. A host
-  run in a terminal stops as `/quit` does: once it has stopped, start it
-  again.
+  connected each MCPL server it's configured with that the release before it
+  had connected when it stopped for the switch, closed tabs aside. A server
+  that was already down then doesn't hold the commit, and if it's still down
+  the new release's log names it. These wait for every configured server
+  instead, as before: a request asked by a release that doesn't record its
+  servers, as releases before this rule don't; one to such a release, whose
+  own check ignores the record; a Go back asked from a shell, which has no
+  running host to ask; and one whose record can't be read. The host comes
+  back quiesced and resumes once its agents have started; one you'd quiesced
+  yourself stays quiesced. A host run in a terminal stops as `/quit` does:
+  once it has stopped, start it again.
 - **A release that ends before its commit** is undone at the next start: the
   copy is restored, what the new release changed is kept aside, and the
   release before starts. `/update` then says why, and shows the last 40
@@ -379,7 +386,9 @@ reasons unless the grant holds `ops` too.
   residents nothing, or restoring the copy (`/update back restore`), which
   sets everything since aside, not deleted, and brings the host back
   quiesced or serving as the copy holds it, so a quiesce you made since
-  doesn't come back. Either way the host quiesces first, as Restart does. If the older release ends before its commit on
+  doesn't come back. Either way the host quiesces first, as Restart does,
+  and records its connected servers for the older release's commit as
+  Restart does, where that release reads the record. If the older release ends before its commit on
   the newer data, as when its store audit refuses a store, the next start
   puts the newer release and its data back by itself, and restoring the
   copy is the way from there.

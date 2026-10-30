@@ -153,14 +153,14 @@ export function traceFollower(
   };
 }
 
-export async function switchFollowing(
+export async function switchFollowing<T>(
   traces: { follow(source: TraceSource): void; stop(): void },
-  switchSession: () => Promise<unknown>,
+  switchSession: () => Promise<T>,
   framework: () => TraceSource,
-): Promise<void> {
+): Promise<T> {
   traces.stop();
   try {
-    await switchSession();
+    return await switchSession();
   } finally {
     traces.follow(framework());
   }

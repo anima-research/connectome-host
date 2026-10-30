@@ -19,6 +19,7 @@ import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../
 import { SessionManager } from '../src/session-manager.js';
 import { startFramework } from '../src/start-framework.js';
 import { auditStores, childAuditLimitMs, fleetChildRepair, type AuditOptions } from '../src/update/audit-stores.js';
+import { StartRefusal } from '../src/update/host.js';
 import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport } from '../src/web/load-repair-alert.js';
 import * as contract from '../src/update/contract.js';
 import { makeRepairStore } from './load-repair-store.js';
@@ -2463,7 +2464,10 @@ describe('a host on trial, before its commit', () => {
     } finally {
       opening.mockRestore();
     }
-    return { ...counts, openedInThisProcess: opened, message: error === undefined ? undefined : error instanceof Error ? error.message : String(error) };
+    return {
+      ...counts, openedInThisProcess: opened, refused: error instanceof StartRefusal,
+      message: error === undefined ? undefined : error instanceof Error ? error.message : String(error),
+    };
   }
 
   test("audits every store it would open only after its commit under a place its fallback undoes, leaves its active session to its own start, and a store it can't open ends the start with `current` as it was", async () => {
@@ -2512,6 +2516,7 @@ describe('a host on trial, before its commit', () => {
     expect(logged).toContain(`[update] ${newLine}`);
     expect(existsSync(join(root, 'not-yet'))).toBe(false);
     const message = result.message!;
+    expect(result.refused).toBe(true);
     expect(message).toStartWith("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
@@ -2539,6 +2544,7 @@ describe('a host on trial, before its commit', () => {
       expect(result.started).toBe(0);
       expect(result.stopped).toBe(1);
       expect(result.message).toBe(said);
+      expect(result.refused).toBe(true);
       expect(readCurrent(install)).toBe('0.10.2');
     }
   });
@@ -2689,6 +2695,7 @@ describe('a host on trial, before its commit', () => {
     expect(stderr).toContain("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(stderr).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(readCurrent(install)).toBe('0.10.2');
+    expect(stderr).not.toContain('Fatal error');
   }, 90_000);
 
   test("through the host's entry, on a trial: the audit builds its strategies from the extensions the start loaded, so none registers twice", async () => {
@@ -2726,6 +2733,7 @@ describe('a host on trial, before its commit', () => {
     const { status, stderr } = await startOnTrial(dir);
     expect(status, stderr.slice(-3000)).toBe(1);
     expect(stderr).toContain("This release can't open its active session's store on its trial, so it opened no store, starts none of its agents, and the next start goes back to 0.10.2:\n");
+    expect(stderr).not.toContain('Fatal error');
     expect(stderr).toContain(linkLine(stores[0]!, join(stores[0]!, 'records.log'), TRIAL_PLACES, true));
     expect(statSync(out).size).toBe(size);
     expect(readCurrent(install)).toBe('0.10.2');
@@ -2740,6 +2748,7 @@ describe('a host on trial, before its commit', () => {
     const { status, stderr } = await startOnTrial(dir, { journal: false });
     expect(status, stderr.slice(-3000)).toBe(1);
     expect(stderr).toContain("No switch or Go back is under way by the install's journal, so this release opened no store and starts none of its agents: ");
+    expect(stderr).not.toContain('Fatal error');
     expect(statSync(log).size).toBe(size);
     expect(readCurrent(install)).toBe('0.10.2');
   }, 90_000);

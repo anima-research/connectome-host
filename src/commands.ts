@@ -41,7 +41,7 @@ import { modelThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
-import { SWITCH_UNDER_WAY, refusedWhileSwitching, runningNames, trackRunning } from './session-switch.js';
+import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
 
@@ -59,9 +59,9 @@ interface AppContext {
     snapshot(): CredentialState;
     runAction(id: CredentialActionId, params?: { token?: string }): Promise<CredentialState>;
   } | null;
-  switching?: boolean;
   stopping?: boolean;
-  switchSession(id: string): Promise<void>;
+  switching?: boolean;
+  switchSession(id: string): Promise<unknown>;
 }
 
 export type { Line };
@@ -260,7 +260,7 @@ function sessionChangeNamed(cmd: string, args: string[]): string | null {
 }
 
 function stillRunning(app: AppContext): CommandResult | null {
-  const names = runningNames(app);
+  const names = sessionChangesRunning(app);
   if (names.length === 0) return null;
   const one = names.length === 1;
   return {
@@ -275,7 +275,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
   const cmd = parseCommand(command).name;
   const change = sessionChangeNamed(cmd, command.slice(1).trim().split(/\s+/).slice(1));
   const result = dispatchCommand(command, cmd, change, app);
-  if (result.asyncWork && change) result.asyncWork = trackRunning(app, change, result.asyncWork);
+  if (result.asyncWork) result.asyncWork = trackOperatorWork(app, change, result.asyncWork);
   return result;
 }
 
@@ -481,6 +481,9 @@ function credentialLines(state: CredentialState): Line[] {
   } else {
     lines.push({ text: `  expiry unknown; ${state.rotatable ? 'host can refresh' : 'not host-rotatable'}`, style: 'system' });
   }
+  if (state.unsaved !== undefined) {
+    lines.push({ text: `  WARNING: ${state.unsaved}. /auth recheck writes it again.`, style: 'system' });
+  }
   if (state.until !== undefined && state.kind === 'quota-spent') {
     lines.push({ text: `  resets ${new Date(state.until).toISOString()}`, style: 'system' });
   }
@@ -644,8 +647,12 @@ function handleSessionList(app: AppContext): CommandResult {
 const switchUnderWay: CommandResult = {
   lines: [{ text: `${SWITCH_UNDER_WAY[0]!.toUpperCase()}${SWITCH_UNDER_WAY.slice(1)}.`, style: 'system' }],
 };
+const hostStopping: CommandResult = {
+  lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
+};
 
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
+  if (app.stopping) return hostStopping;
   if (app.switching) return switchUnderWay;
   const running = stillRunning(app);
   if (running) return running;
@@ -659,6 +666,7 @@ function handleSessionNew(app: AppContext, name?: string): CommandResult {
 }
 
 function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult {
+  if (app.stopping) return hostStopping;
   if (app.switching) return switchUnderWay;
   if (!nameOrId) {
     return { lines: [{ text: 'Usage: /session switch <name or id>', style: 'system' }] };
@@ -1497,9 +1505,15 @@ function handleNewTopic(app: AppContext, args: string[]): CommandResult {
       { text: 'Topic reset. Transition summary:', style: 'system' as const },
       { text: summary.slice(0, 300) + (summary.length > 300 ? '...' : ''), style: 'system' as const },
     ],
-  })).catch(err => ({
-    lines: [{ text: `Topic reset failed: ${err instanceof Error ? err.message : err}`, style: 'system' as const }],
-  }));
+  })).catch(err => {
+    const said = err instanceof Error ? err.message : String(err);
+    return {
+      lines: [{
+        text: app.stopping ? `Topic reset stopped: the host is stopping. What the reset said: ${said}` : `Topic reset failed: ${said}`,
+        style: 'system' as const,
+      }],
+    };
+  });
 
   return {
     lines: [{ text: userContext

@@ -119,7 +119,8 @@ describe('what each client is sent', () => {
           }],
         }),
       },
-      sessionManager: { getActiveSession: () => ({ id: 's1', name: 'Debugging the bridge', manuallyNamed: false }) },
+      frameworkSessionId: 's1',
+      sessionManager: { findSession: (id: string) => (id === 's1' ? { id: 's1', name: 'Debugging the bridge', manuallyNamed: false } : null) },
       config: {
         callLedger: {
           snapshot: () => ledgerNow,
@@ -602,13 +603,13 @@ describe('what each client is sent', () => {
     branch = { id: 'b1', name: 'main' };
     const c = await everyone();
     rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while mira is busy'); };
-    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1' }));
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1', sessionId: 's1' }));
     expect((await c.operator.until('surgery-result', (f) => f.corrId === 'r-busy')).ok).toBe(false);
     rollback = async () => {
       branch = { id: 'b2', name: 'rollback/main/1' };
       throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1');
     };
-    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1' }));
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1', sessionId: 's1' }));
     const stuck = await c.operator.until('surgery-result', (f) => f.corrId === 'r-stuck');
     expect(stuck).toMatchObject({ ok: false, code: 'failed', error: 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1' });
     await host.fence([c.operator, c.reader]);

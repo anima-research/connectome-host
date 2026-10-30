@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as contract from '../src/update/contract.js';
-import { ContractError, installPaths, moveCurrent, readCurrent, readJournal } from '../src/update/contract.js';
-import { HOST_ROOT, commitRelease, releaseHere } from '../src/update/host.js';
+import { installPaths, moveCurrent, readCurrent, readJournal, writeJsonAtomic, writeMark } from '../src/update/contract.js';
+import { HOST_ROOT, StartRefusal, commitRelease, releaseHere } from '../src/update/host.js';
 
 let dir: string;
 let root: string;
@@ -19,6 +19,16 @@ function release(name: string): string {
   const host = join(root, 'releases', name, 'node_modules', 'connectome-host');
   mkdirSync(host, { recursive: true });
   return host;
+}
+
+function refusal(start: () => unknown): string {
+  try {
+    start();
+  } catch (error) {
+    expect(error).toBeInstanceOf(StartRefusal);
+    return (error as Error).message;
+  }
+  throw new Error('the start was not refused');
 }
 
 describe('releaseHere', () => {
@@ -42,24 +52,23 @@ describe('releaseHere', () => {
 
   test('refuses an install none of whose releases holds the host, with or without a releases directory, and a sibling whose name starts with a release\'s is not inside it', () => {
     const env = { CONNECTOME_INSTALL_ROOT: root };
-    const refusal = new ContractError(
-      `CONNECTOME_INSTALL_ROOT names the install at ${root}, but none of its releases holds this host (${realpathSync(HOST_ROOT)}). ` +
-      "Only an install's entry point sets CONNECTOME_INSTALL_ROOT: to run this host on its own, start it without that variable.",
-    );
-    expect(() => releaseHere(env, HOST_ROOT)).toThrow(refusal);
+    const none = `CONNECTOME_INSTALL_ROOT names the install at ${root}, but none of its releases holds this host ` +
+      `(${realpathSync(HOST_ROOT)}). Only an install's entry point sets CONNECTOME_INSTALL_ROOT: to run this host on ` +
+      'its own, start it without that variable.';
+    expect(refusal(() => releaseHere(env, HOST_ROOT))).toBe(none);
     release('0.11.0');
     mkdirSync(join(root, 'releases', '0.11.0-other'));
-    expect(() => releaseHere(env, HOST_ROOT)).toThrow(refusal);
+    expect(refusal(() => releaseHere(env, HOST_ROOT))).toBe(none);
     expect(releaseHere(env, join(root, 'releases', '0.11.0-other'))).toEqual({ root, release: '0.11.0-other' });
   });
 
   test('refuses a host two releases hold, since it could commit the wrong one', () => {
     const host = release('0.11.0');
     symlinkSync(join(root, 'releases', '0.11.0'), join(root, 'releases', 'latest'));
-    expect(() => releaseHere({ CONNECTOME_INSTALL_ROOT: root }, host)).toThrow(new ContractError(
+    expect(refusal(() => releaseHere({ CONNECTOME_INSTALL_ROOT: root }, host))).toBe(
       `CONNECTOME_INSTALL_ROOT names the install at ${root}, and 2 of its releases hold this host (0.11.0, latest), ` +
       `so it can't tell which release it is. Each entry of ${join(root, 'releases')} should be a release of its own.`,
-    ));
+    );
   });
   test('passes over a release entry that is a link to nothing', () => {
     const host = release('0.11.0');
@@ -71,13 +80,13 @@ describe('releaseHere', () => {
     const host = release('0.11.0');
     const env = { CONNECTOME_INSTALL_ROOT: root };
     symlinkSync(join(root, 'releases', 'loop'), join(root, 'releases', 'loop'));
-    expect(() => releaseHere(env, host)).toThrow(new RegExp(
+    expect(refusal(() => releaseHere(env, host))).toMatch(new RegExp(
       `^CONNECTOME_INSTALL_ROOT names the install at ${root}, and the entry loop of ${join(root, 'releases')} can't be ` +
       "read, so this host can't tell which of its releases it is: ELOOP",
     ));
     rmSync(join(root, 'releases'), { recursive: true });
     writeFileSync(join(root, 'releases'), 'not a directory');
-    expect(() => releaseHere(env, HOST_ROOT)).toThrow(new RegExp(
+    expect(refusal(() => releaseHere(env, HOST_ROOT))).toMatch(new RegExp(
       `^CONNECTOME_INSTALL_ROOT names the install at ${root}, and its releases directory ${join(root, 'releases')} ` +
       "can't be read, so this host can't tell which of its releases it is: ENOTDIR",
     ));
@@ -98,13 +107,75 @@ describe('commitRelease', () => {
 
   test("a start on trial with a server it couldn't connect commits nothing and says which", () => {
     moveCurrent(root, '0.10.2');
-    expect(() => commitRelease(here, { now: at, unconnectedServers: () => ['discord', 'heartbeat'] })).toThrow(new Error(
+    expect(refusal(() => commitRelease(here, { now: at, unconnectedServers: () => ['discord', 'heartbeat'] }))).toBe(
       "The MCPL servers discord, heartbeat weren't connected when this release went to commit, so it starts none of " +
-      "its agents, and the next start goes back to 0.10.2: a release on trial commits only once every server it's " +
+      'its agents, and the next start goes back to 0.10.2: with no readable record of this request saying which ' +
+      "servers 0.10.2 had connected when it stopped, a release on trial commits only once every server it's " +
       "configured with is connected, closed tabs aside. This start's log says why each one failed.",
-    ));
+    );
     expect(readCurrent(root)).toBe('0.10.2');
     expect(existsSync(installPaths(root).journal)).toBe(false);
+  });
+
+  test('a server the release before had connected when it stopped holds the commit, and one it hadn\'t doesn\'t', () => {
+    moveCurrent(root, '0.10.2');
+    writeMark(root, { to: '0.11.0', why: 'update', connected: ['heartbeat', 'notes'] });
+    const logged = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(refusal(() => commitRelease(here, { now: at, unconnectedServers: () => ['discord', 'heartbeat'] }))).toBe(
+        "The MCPL server heartbeat wasn't connected when this release went to commit, so it starts none of its " +
+        "agents, and the next start goes back to 0.10.2: a release on trial commits only once it has connected each " +
+        "server it's configured with that 0.10.2 had connected when it stopped, closed tabs aside. This start's log " +
+        'says why each one failed.',
+      );
+      expect(logged.mock.calls).toEqual([[
+        "[update] The MCPL server discord isn't connected, and 0.10.2 hadn't connected it when it stopped either, so " +
+        "it doesn't hold this release's commit.",
+      ]]);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(readCurrent(root)).toBe('0.10.2');
+    expect(existsSync(installPaths(root).journal)).toBe(false);
+  });
+
+  test("a server the release before hadn't connected either doesn't hold the commit, and the start says so", () => {
+    moveCurrent(root, '0.10.2');
+    writeMark(root, { to: '0.11.0', why: 'update', connected: [] });
+    const logged = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(commitRelease(here, { now: at, unconnectedServers: () => ['discord'] })).toEqual({ from: '0.10.2' });
+      expect(logged.mock.calls).toEqual([[
+        "[update] The MCPL server discord isn't connected, and 0.10.2 hadn't connected it when it stopped either, so " +
+        "it doesn't hold this release's commit.",
+      ]]);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(readCurrent(root)).toBe('0.11.0');
+    expect(readJournal(root).map(({ step }) => step)).toEqual(['commit']);
+  });
+
+  test('a request that doesn\'t record its servers, as a release before the record or a Go back from a shell writes, one whose record this release can\'t read, one for another release, or a mark that can\'t be read, counts every server', () => {
+    moveCurrent(root, '0.10.2');
+    const every = "The MCPL servers discord, heartbeat weren't connected when this release went to commit, so it starts " +
+      'none of its agents, and the next start goes back to 0.10.2: with no readable record of this request saying ' +
+      "which servers 0.10.2 had connected when it stopped, a release on trial commits only once every server it's " +
+      "configured with is connected, closed tabs aside. This start's log says why each one failed.";
+    const start = () => commitRelease(here, { now: at, unconnectedServers: () => ['discord', 'heartbeat'] });
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', to: '0.11.0', why: 'update', at: at.toISOString() });
+    expect(refusal(start)).toBe(every);
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', to: '0.11.0', why: 'go-back', at: at.toISOString(), keepData: true });
+    expect(refusal(start)).toBe(every);
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', to: '0.11.0', why: 'update', at: at.toISOString(), connected: [42] });
+    expect(refusal(start)).toBe(every);
+    writeJsonAtomic(installPaths(root).mark, { v: 1, id: 'm1', to: '0.11.0', why: 'update', at: at.toISOString(), connected: 'heartbeat' });
+    expect(refusal(start)).toBe(every);
+    writeMark(root, { to: '0.12.0', why: 'update', connected: [] });
+    expect(refusal(start)).toBe(every);
+    writeFileSync(installPaths(root).mark, 'not json');
+    expect(refusal(start)).toBe(every);
+    expect(readCurrent(root)).toBe('0.10.2');
   });
 
   test('a start already committed starts whatever its servers did', () => {
@@ -114,10 +185,10 @@ describe('commitRelease', () => {
   });
 
   test('an install with no current starts nothing, as its launcher would, and says to run setup again', () => {
-    expect(() => commitRelease(here, { now: at })).toThrow(new Error(
+    expect(refusal(() => commitRelease(here, { now: at }))).toBe(
       `The install at ${root} has no \`current\` to say which release it runs on, so this host starts none of its ` +
       'agents. Run setup again.',
-    ));
+    );
     expect(readCurrent(root)).toBeNull();
     expect(existsSync(installPaths(root).journal)).toBe(false);
   });
@@ -138,10 +209,10 @@ describe('commitRelease', () => {
     moveCurrent(root, '0.11.0');
     const sync = spyOn(contract, 'syncDir').mockImplementation(() => { throw new Error('EIO: i/o error, fsync'); });
     try {
-      expect(() => commitRelease(here, { now: at })).toThrow(new Error(
+      expect(refusal(() => commitRelease(here, { now: at }))).toBe(
         `This host couldn't sync \`current\`, which names 0.11.0, to disk at ${root}, so none of its agents started ` +
         'and it exits: EIO: i/o error, fsync. Its next start, which its service makes, syncs again.',
-      ));
+      );
     } finally {
       sync.mockRestore();
     }
@@ -151,12 +222,12 @@ describe('commitRelease', () => {
     moveCurrent(root, '0.10.2');
     const sync = spyOn(contract, 'syncDir').mockImplementation(() => { throw new Error('EIO: i/o error, fsync'); });
     try {
-      expect(() => commitRelease(here, { now: at })).toThrow(new Error(
+      expect(refusal(() => commitRelease(here, { now: at }))).toBe(
         `This host moved \`current\` to 0.11.0 at ${root} but couldn't sync the move to disk, so none of its agents ` +
         'started and it exits: EIO: i/o error, fsync. Its next start runs 0.11.0, and syncs the root again before any ' +
         'agent starts. A disk that failed a sync may not have kept the move: check the disk, and which release ' +
         '`current` names once the install has started again.',
-      ));
+      );
     } finally {
       sync.mockRestore();
     }
@@ -174,11 +245,11 @@ describe('commitRelease', () => {
       throw new Error('EIO: i/o error, readlink');
     });
     try {
-      expect(() => commitRelease(here, { now: at })).toThrow(new Error(
+      expect(refusal(() => commitRelease(here, { now: at }))).toBe(
         `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents ` +
         "started: EIO: i/o error, rename. It couldn't read `current` afterwards either, so it can't tell whether " +
         '`current` names 0.11.0 or 0.10.2 now: EIO: i/o error, readlink',
-      ));
+      );
     } finally {
       move.mockRestore();
       read.mockRestore();
@@ -189,7 +260,7 @@ describe('commitRelease', () => {
   test("a move that fails before its rename says the release wasn't recorded", () => {
     moveCurrent(root, '0.10.2');
     mkdirSync(join(`${installPaths(root).current}.tmp`, 'in-the-way'), { recursive: true });
-    expect(() => commitRelease(here, { now: at })).toThrow(
+    expect(refusal(() => commitRelease(here, { now: at }))).toStartWith(
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +
       'and the next start goes back to 0.10.2: ',
     );
@@ -199,11 +270,11 @@ describe('commitRelease', () => {
 
   test("a `current` that can't be read starts nothing, and says each start reads it again", () => {
     writeFileSync(installPaths(root).current, '0.10.2');
-    expect(() => commitRelease(here, { now: at })).toThrow(new Error(
+    expect(refusal(() => commitRelease(here, { now: at }))).toBe(
       `This host couldn't read which release the install at ${root} runs on, so none of its agents started: ` +
       `EINVAL: invalid argument, readlink '${installPaths(root).current}'. Each start reads \`current\` again before ` +
       'any agent starts.',
-    ));
+    );
     expect(existsSync(installPaths(root).journal)).toBe(false);
   });
 

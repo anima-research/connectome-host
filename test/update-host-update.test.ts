@@ -11,8 +11,8 @@ import {
 } from '../src/update/contract.js';
 import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST } from '../src/update/launcher.js';
-import type { QuiesceFramework, SwitchFleet } from '../src/update/quiesce.js';
-import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type UpdateSetup } from '../src/update/update.js';
+import type { SwitchFleet } from '../src/update/quiesce.js';
+import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
   COMMAND_WAYS, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet, type ReadCheck, type UpdateStatus,
   type UpdateWay,
@@ -50,6 +50,7 @@ function placeCopy(root: string, dataDir: string, from: string, mark: string): v
 
 function fakeFramework(options: {
   holders?: string[]; drainAfter?: number; quiesced?: string; quiesceFails?: Error; resumeFails?: Error; held?: Promise<unknown>;
+  servers?: Array<{ id: string; connected: boolean; closedTab: boolean }>;
 } = {}) {
   const calls: string[] = [];
   const timeouts: Array<number | undefined> = [];
@@ -63,7 +64,7 @@ function fakeFramework(options: {
       activeTurnAgents: drained ? [] : options.holders ?? [],
     } as HostModeStatus;
   };
-  const framework: QuiesceFramework = {
+  const framework: SwitchFramework = {
     quiesce: async (opts = {}) => {
       if (options.held) await options.held;
       if (options.quiesceFails) throw options.quiesceFails;
@@ -79,6 +80,7 @@ function fakeFramework(options: {
       return status();
     },
     getHostModeStatus: () => { reads += 1; return status(); },
+    listMcplServers: () => options.servers ?? [],
   };
   return { framework, calls, timeouts, drain: () => { drainedNow = true; } };
 }
@@ -125,7 +127,7 @@ function manager(): { ops: InstallOps; runs: string[] } {
 }
 
 function hostUpdate(setup: Partial<UpdateSetup> & {
-  root?: string; dataDir?: string; framework?: QuiesceFramework; frameworks?: () => QuiesceFramework; fleet?: SwitchFleet;
+  root?: string; dataDir?: string; framework?: SwitchFramework; frameworks?: () => SwitchFramework; fleet?: SwitchFleet;
 }, stop?: { supervised: boolean }) {
   const log: string[] = [];
   const stops: Array<{ reason: string; farewell: string }> = [];
@@ -361,6 +363,45 @@ describe('Restart', () => {
     expect(readMark(root)?.keepData).toBeUndefined();
     expect(stops).toEqual([{ reason: 'update: switch to 0.13.0', farewell: answer.lines[0]! }]);
     expect(update.status().restart).toMatchObject({ to: '0.13.0', phase: 'stopping' });
+  });
+
+  test('the mark records the MCPL servers the host has connected when it writes it, and not one that failed or a closed tab, for a switch and a Go back alike', async () => {
+    const servers = [
+      { id: 'heartbeat', connected: true, closedTab: false },
+      { id: 'discord', connected: false, closedTab: false },
+      { id: 'notes', connected: false, closedTab: true },
+    ];
+    const { root, dataDir } = install('0.12.1', ['0.13.0']);
+    const { update } = hostUpdate({ root, dataDir, framework: fakeFramework({ servers }).framework }, { supervised: true });
+    expect((await update.restartToInstalled()).done).toBe(true);
+    expect(readMark(root)).toMatchObject({ to: '0.13.0', why: 'update', connected: ['heartbeat'] });
+    const back = install('0.13.0', ['0.12.1']);
+    placeCopy(back.root, back.dataDir, '0.12.1', 'm1');
+    const going = hostUpdate({ root: back.root, dataDir: back.dataDir, framework: fakeFramework({ servers }).framework, running: '0.13.0' }, { supervised: true }).update;
+    expect((await going.goBack(true)).done).toBe(true);
+    expect(readMark(back.root)).toMatchObject({ to: '0.12.1', why: 'go-back', connected: ['heartbeat'] });
+  });
+
+  test('the mark records the servers connected when the host stops, after the wait for turns or at stop now, not those connected when the restart was asked', async () => {
+    for (const stop of ['after the wait', 'stop now'] as const) {
+      const servers = [
+        { id: 'heartbeat', connected: true, closedTab: false },
+        { id: 'discord', connected: false, closedTab: false },
+      ];
+      const { root, dataDir } = install('0.12.1', ['0.13.0']);
+      const { framework, drain } = fakeFramework({ holders: ['alice'], drainAfter: Infinity, servers });
+      const { update } = hostUpdate({ root, dataDir, framework }, { supervised: true });
+      expect((await update.restartToInstalled()).done).toBe(false);
+      servers[0]!.connected = false;
+      servers[1]!.connected = true;
+      if (stop === 'after the wait') {
+        drain();
+        expect((await update.waitLonger()).done).toBe(true);
+      } else {
+        expect((await update.stopNow()).done).toBe(true);
+      }
+      expect(readMark(root)).toMatchObject({ to: '0.13.0', why: 'update', connected: ['discord'] });
+    }
   });
 
   test("an unsupervised host stops as /quit does, and says to start it again", async () => {
@@ -851,7 +892,7 @@ test('nothing it reads can make the status throw', () => {
   expect(status.lastSwitch).toBeNull();
   expect(status.problems).toEqual([expect.stringContaining("the last switch: Line 1 of the journal")]);
   expect(readFileSync(installPaths(root).journal, 'utf-8')).toBe('not json\n');
-  const framework: QuiesceFramework = { ...fakeFramework().framework, getHostModeStatus: () => { throw new Error('it has stopped'); } };
+  const framework: SwitchFramework = { ...fakeFramework().framework, getHostModeStatus: () => { throw new Error('it has stopped'); } };
   rmSync(join(root, 'releases'), { recursive: true });
   writeFileSync(join(root, 'releases'), '');
   mkdirSync(installPaths(root).copy, { recursive: true });

@@ -281,3 +281,43 @@ describe('/mcp add preserves env on overwrite', () => {
     expect(saved.argtest.args).toBeUndefined();
   });
 });
+
+describe('/newtopic cut short by a stop', () => {
+  const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  // Given its text, /newtopic stores it with resetHeadWindow; bare, it first
+  // writes the summary with context-manager's generateTransitionSummary(),
+  // which stores nothing (HOST-1), and that is where the refusal comes from.
+  test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        resetHeadWindow: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const follow = await handleCommand('/newtopic Moving on.', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
+        : `Topic reset failed: ${CROSSED}`);
+    }
+  });
+
+  test("a bare one whose summary can't be written while the host is stopping says so and gives what the summary said; one that fails otherwise gives the failure", async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        generateTransitionSummary: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const said = `the transition summary couldn't be written (${CROSSED}); nothing was stored`;
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${said}`
+        : `Topic reset failed: ${said}`);
+    }
+  });
+});

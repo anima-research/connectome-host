@@ -1,22 +1,28 @@
-/**
- * Real headless protocol over a fake framework whose boot is already over:
- * main() has held three traces (what create() replayed and what start()
- * emitted before runHeadless attached its sink) in `bootTraces`, and dropped
- * two more past its cap. The tree and socket sink takes the hold; the
- * runtime's other listeners (idle detection) still attach through onTrace,
- * which here sees nothing. A `live` file in its data directory makes the
- * framework emit one live trace through the handed-over sink.
- */
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { holdBootTraces } from '../src/boot-traces.js';
 import { runHeadless } from '../src/headless.js';
 import type { AppContext } from '../src/index.js';
 
-const boot = [
+const bootTurn = process.env.FIXTURE_BOOT_TURN;
+const boot: Array<Record<string, unknown>> = [
   { type: 'dendrite:agent-created', agentName: 'fixture', kind: 'resident', incarnation: 2, lifetime: { kind: 'persistent' }, timestamp: 1_700_000_000_001 },
   { type: 'dendrite:agent-created', agentName: 'fixture.reader-7', kind: 'task-fork', incarnation: 1, lifetime: { kind: 'task', idleTimeoutMs: 1 }, spawnedBy: 'fixture', inherit: { from: 'fixture', mode: 'shared' }, timestamp: 1_700_000_000_002 },
   { type: 'dendrite:agent-ended', agentName: 'fixture.reader-7', reason: 'host-restart', timestamp: 1_700_000_000_003 },
 ];
+const agent = { name: 'fixture', state: { status: bootTurn === 'running' ? 'inferring' : 'idle' } };
+if (bootTurn === 'over' || bootTurn === 'running') {
+  boot.push({ type: 'inference:started', agentName: 'fixture', timestamp: 1_700_000_000_004 });
+}
+if (bootTurn === 'over') boot.push({ type: 'inference:completed', agentName: 'fixture', timestamp: 1_700_000_000_005 });
+if (bootTurn === 'running') {
+  const ending = setInterval(() => {
+    if (!existsSync(join(process.env.DATA_DIR!, 'turn-end'))) return;
+    clearInterval(ending);
+    agent.state.status = 'idle';
+    writeFileSync(join(process.env.DATA_DIR!, 'turn-ended'), String(Date.now()));
+  }, 10);
+}
 
 const restored = [
   { type: 'dendrite:agent-ended', agentName: 'fixture.reader-9', kind: 'task-fork', incarnation: 1, reason: 'host-restart', timestamp: 1_700_000_000_020 },
@@ -29,7 +35,7 @@ const app: Record<string, unknown> & { framework: unknown; onFrameworkReplaced?:
   recipe: { name: 'boot-replay-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {
-    getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
+    getAllAgents: () => [agent],
     getAllModules: () => [],
     getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
     getQueueDepth: () => 0,
@@ -38,12 +44,49 @@ const app: Record<string, unknown> & { framework: unknown; onFrameworkReplaced?:
   },
   bootTraces: {
     handOver(sink: (event: Record<string, unknown>) => void) {
+      writeFileSync(join(process.env.DATA_DIR!, 'handed-over'), String(Date.now()));
       for (const event of boot) sink(event);
       live = sink;
-      return 2;
+      return { lost: 2, lostStarts: [] };
     },
   },
 };
+
+if (bootTurn === 'overflowed' || bootTurn === 'overflowed-subagent' || bootTurn === 'overflowed-speech') {
+  const who = bootTurn === 'overflowed-subagent' ? 'fixture.reader-7' : 'fixture';
+  const held = bootTurn === 'overflowed-speech'
+    ? [{ type: 'inference:started', agentName: who, timestamp: 1_700_000_000_004 }, { type: 'inference:tokens', agentName: who, content: 'OLD', timestamp: 1_700_000_000_005 }]
+    : [];
+  const replayed = [...boot, ...held, ...(bootTurn === 'overflowed-speech' ? [{ type: 'inference:completed', agentName: who, timestamp: 1_700_000_000_006 }] : []),
+    { type: 'inference:started', agentName: who, timestamp: 1_700_000_000_007 },
+    ...(bootTurn === 'overflowed-speech' ? [] : [{ type: 'inference:completed', agentName: who, timestamp: 1_700_000_000_008 }])];
+  let traced: ((event: never) => void) | null = null;
+  const hold = holdBootTraces({
+    onTrace: (listener: (event: never) => void) => {
+      traced = listener;
+      for (const event of replayed) listener(event as never);
+      return () => {};
+    },
+  } as never, boot.length + held.length);
+  if (bootTurn === 'overflowed-speech') {
+    const speaking = setInterval(() => {
+      if (!existsSync(join(process.env.DATA_DIR!, 'live'))) return;
+      clearInterval(speaking);
+      traced!({ type: 'inference:tokens', agentName: who, content: 'NEW', timestamp: 1_700_000_000_010 } as never);
+      traced!({ type: 'inference:completed', agentName: who, timestamp: 1_700_000_000_011 } as never);
+    }, 20);
+  }
+  app.bootTraces = {
+    handOver(sink: (event: Record<string, unknown>) => void) {
+      writeFileSync(join(process.env.DATA_DIR!, 'handed-over'), String(Date.now()));
+      return hold.handOver(sink as never);
+    },
+  };
+  if (bootTurn === 'overflowed-subagent') {
+    const subagents = { name: 'subagent', isSubagentAgent: (name: string) => name === who, getConcurrencyStatus: () => ({ active: 0, queued: 0 }) };
+    (app.framework as { getAllModules: () => unknown[] }).getAllModules = () => [subagents];
+  }
+}
 
 const living = setInterval(() => {
   if (!live || !existsSync(join(process.env.DATA_DIR!, 'live'))) return;

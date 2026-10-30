@@ -31,7 +31,7 @@ import { type FleetModule } from './modules/fleet-module.js';
 import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
-import { refusedWhileSwitching, trackRunning } from './session-switch.js';
+import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { recipeModel } from './recipe.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
@@ -272,7 +272,7 @@ interface AppContext {
   subscriptionUnmetered?: boolean;
   stopping?: boolean;
   switching?: boolean;
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<unknown>;
 }
 
 interface TokenUsage {
@@ -863,7 +863,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     const ws = app.framework.getModule('workspace');
     if (ws && 'materializeMount' in ws) {
-      trackRunning(app, "the _config mount's refresh", (ws as any).materializeMount('_config')).catch(() => {});
+      trackOperatorWork(app, "the _config mount's refresh", (ws as any).materializeMount('_config')).catch(() => {});
     }
 
     updateStatus();
@@ -2285,7 +2285,7 @@ export async function runTui(app: AppContext): Promise<void> {
               showFleetNotice(refused);
               return;
             }
-            trackRunning(app, `stop ${childName}`, fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } }))
+            trackOperatorWork(app, `stop ${childName}`, fleetMod.handleToolCall({ id: `tui-kill-${Date.now()}`, name: 'kill', input: { name: childName } }))
               .then((res) => {
                 if (!res.success) showFleetNotice(`stop ${childName} failed: ${res.error ?? 'unknown'}`);
                 updateFleetView();
@@ -2310,7 +2310,7 @@ export async function runTui(app: AppContext): Promise<void> {
             showFleetNotice(refused);
             return;
           }
-          trackRunning(app, `restart ${childName}`, fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } }))
+          trackOperatorWork(app, `restart ${childName}`, fleetMod.handleToolCall({ id: `tui-restart-${Date.now()}`, name: 'restart', input: { name: childName } }))
             .then((res) => {
               if (!res.success) showFleetNotice(`restart ${childName} failed: ${res.error ?? 'unknown'}`);
               updateFleetView();

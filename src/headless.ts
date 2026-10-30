@@ -38,7 +38,9 @@ import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
 import { traceFollower } from './piped-turns.js';
-import { PANEL_OPS_THAT_CHANGE_THE_SESSION, refusedWhileSwitching, trackRunning } from './session-switch.js';
+import {
+  PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitching, switchLeftForStop, trackOperatorWork,
+} from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 
 interface HeadlessOptions {
@@ -152,8 +154,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     log(`pid file write failed: ${String(err)}`);
   }
 
-  let shuttingDown = false;
-
   let currentClient: Socket | null = null;
   let stalling: (() => void) | null = null;
   const superseded = new WeakSet<Socket>();
@@ -249,20 +249,63 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     }
     emit(event);
   };
+  // `inference:speech` fires once per "final" inference round — the round
+  // that completed without yielding tool calls.  It carries the accumulated
+  // speech text, letting the parent implement fleet--relay without having
+  // to subscribe to the whole token stream.
+  let currentSpeech = '';
+
+  const idleTrace = (event: unknown): void => {
+    const t = (event as { type?: string }).type;
+    const agentName = (event as { agentName?: string }).agentName;
+
+    if (t === 'process:completed') {
+      textsProcessing.delete((event as { processEvent?: unknown }).processEvent);
+    } else if (t === 'inference:started') {
+      hadAtLeastOneInference = true;
+      idleEmitted = false;
+      idleSince = 0;
+      if (!subagentOf(event)) {
+        turnWorkDoneEmitted = false;
+        turnWorkDoneSince = 0;
+      }
+      exitSince = 0;
+      if (agentName === primaryAgentName) currentSpeech = '';
+    } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
+      const content = (event as { content?: string }).content;
+      if (content) currentSpeech += content;
+    } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
+      currentSpeech = '';
+    } else if (t === 'inference:completed' && agentName === primaryAgentName) {
+      if (currentSpeech) {
+        emit({ type: 'inference:speech', agentName, content: currentSpeech });
+      }
+      currentSpeech = '';
+    }
+  };
   let traced = app.framework;
   const forwarding = traceFollower(forwardTrace, { replay: true });
+  const idling = traceFollower(idleTrace);
   // The hold stays subscribed to the boot framework, so its traces stop
-  // here once a session switch replaces that framework.
+  // here once a session switch replaces that framework. The idle follower
+  // takes it too, so a turn the framework ran before this sink existed ends
+  // in an idle: agent-framework 0.30.0 starts its event loop, and drops what
+  // create() replays, in start() (src/framework.ts:5110-5127 at v0.30.0), so an
+  // inference:started the hold carries is a turn of this process's own boot.
   const bootFramework = traced;
   if (app.bootTraces) {
-    const lost = app.bootTraces.handOver((traceEvent) => {
-      if (traced === bootFramework) forwardTrace(traceEvent);
+    const { lost, lostStarts } = app.bootTraces.handOver((traceEvent) => {
+      if (traced !== bootFramework) return;
+      forwardTrace(traceEvent);
+      idleTrace(traceEvent);
     });
     bootDropped += lost;
+    for (const start of lostStarts) idleTrace(start);
   } else {
     forwarding.follow(traced);
+    idling.follow(traced);
   }
-  const followers = [forwarding];
+  const followers = [forwarding, idling];
   const followFramework = (): void => {
     if (app.framework === traced) return;
     traced = app.framework;
@@ -361,8 +404,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
             refused = followUp.refused === true;
           }
           if (result.switchToSessionId) {
-            await app.switchSession(result.switchToSessionId);
-            output('Session switched.', 'system');
+            const switched = await app.switchSession(result.switchToSessionId);
+            output(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()), 'system');
           }
           quit = result.quit === true;
         } catch (error) {
@@ -502,7 +545,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
           return;
         }
         const running = import('./web/panel-data.js').then(({ runPanelOp }) => runPanelOp(app, op, cmd.params ?? {}));
-        const result = await (changes ? trackRunning(app, op, running) : running);
+        const result = await (changes ? trackOperatorWork(app, op, running) : running);
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }
@@ -515,7 +558,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         }
         const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
-          const data = await (asked === 'quiesce' ? trackRunning(app, "the release switch's quiesce", answering) : answering);
+          const data = await (asked === 'quiesce' ? trackOperatorWork(app, "the release switch's quiesce", answering) : answering);
           reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -565,7 +608,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       host.gatedRequests > 0 || app.framework.getQueueDepth() > 0;
   };
   const quietButScripts = (): boolean => {
-    if (app.switching || turnWorkInFlight()) return false;
+    if (app.switching || turnWorkInFlight() || operatorWorkRunning(app) || app.credentials?.actionInFlight() === true) return false;
     const subagents = subagentModule()?.getConcurrencyStatus();
     return app.framework.getHostModeStatus().drained && (!subagents || (subagents.active === 0 && subagents.queued === 0));
   };
@@ -687,17 +730,21 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   });
 
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
-    if (shuttingDown) return;
-    shuttingDown = true;
+    if (app.stopping) return;
     // The host is stopping: a session switch under way goes no further, and
     // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
+    const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
     emit({ type: 'lifecycle', phase: 'exiting', reason });
 
     await new Promise((r) => setTimeout(r, EXITING_FLUSH_MS));
 
     let exitCode = cleanExitCode;
+    if (switchUnderWay) {
+      if (app.switching) log('waiting for the session switch under way to settle, so what it made can be stopped');
+      if ((await switchUnderWay).madeStopFailed) exitCode = 1;
+    }
     try { await app.framework.stop(); } catch (err) {
       exitCode = 1;
       log(`framework.stop() failed: ${String(err)}`);
@@ -724,51 +771,12 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // (agent-framework 0.28.0). --exit-when-idle, and an armed self-restart,
   // which exits 75 instead, also wait for scripts: they shut down once
   // nothing at all has been in flight for the same 500 ms.
-  //
-  // `inference:speech` fires once per "final" inference round — the round
-  // that completed without yielding tool calls.  It carries the accumulated
-  // speech text, letting the parent implement fleet--relay without having
-  // to subscribe to the whole token stream.
   {
     const IDLE_CONFIRM_MS = 500;
     let windowArmed = false;
 
-    let currentSpeech = '';
-
-    const idleTrace = (event: unknown): void => {
-      const t = (event as { type?: string }).type;
-      const agentName = (event as { agentName?: string }).agentName;
-
-      if (t === 'process:completed') {
-        textsProcessing.delete((event as { processEvent?: unknown }).processEvent);
-      } else if (t === 'inference:started') {
-        hadAtLeastOneInference = true;
-        idleEmitted = false;
-        idleSince = 0;
-        if (!subagentOf(event)) {
-          turnWorkDoneEmitted = false;
-          turnWorkDoneSince = 0;
-        }
-        exitSince = 0;
-        if (agentName === primaryAgentName) currentSpeech = '';
-      } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
-        const content = (event as { content?: string }).content;
-        if (content) currentSpeech += content;
-      } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
-        currentSpeech = '';
-      } else if (t === 'inference:completed' && agentName === primaryAgentName) {
-        if (currentSpeech) {
-          emit({ type: 'inference:speech', agentName, content: currentSpeech });
-        }
-        currentSpeech = '';
-      }
-    };
-    const idling = traceFollower(idleTrace);
-    idling.follow(traced);
-    followers.push(idling);
-
     const idlePoll = setInterval(() => {
-      if (shuttingDown) { clearInterval(idlePoll); return; }
+      if (app.stopping) { clearInterval(idlePoll); return; }
       const agents = app.framework.getAllAgents();
       const allIdle = agents.every((a) => a.state.status === 'idle');
       const armed = selfRestart.isArmed();

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FleetModule } from '../src/modules/fleet-module.js';
 import { startFramework } from '../src/start-framework.js';
-import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason } from '../src/update/contract.js';
+import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason, writeMark } from '../src/update/contract.js';
 
 type Servers = Array<{ id: string; connected: boolean; closedTab?: boolean }>;
 
@@ -126,6 +126,20 @@ describe('startFramework, for a host an install started', () => {
     await expect(startFramework(framework(order, { servers }), { root, release: '0.11.0' }))
       .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
     expect(readCurrent(root)).toBe('0.10.2');
+  });
+
+  test("a server the request recorded that the trial isn't configured with doesn't hold the commit", async () => {
+    writeMark(root, { to: '0.11.0', why: 'go-back', connected: ['heartbeat', 'gone'] });
+    const order: string[] = [];
+    const servers = [{ id: 'heartbeat', connected: true }, { id: 'discord', connected: false }];
+    const logged = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await startFramework(framework(order, { servers }), { root, release: '0.11.0' });
+    } finally {
+      logged.mockRestore();
+    }
+    expect(order).toEqual(['framework starts its agents']);
+    expect(readCurrent(root)).toBe('0.11.0');
   });
 
   test('a start on the release already current writes nothing, whatever its servers did', async () => {

@@ -82,13 +82,13 @@ import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
-import { currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
+import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
-import { switchSessionSteps } from './session-switch.js';
+import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName, namingSummary } from './synesthete.js';
 import {
@@ -126,6 +126,7 @@ export type { AppContext };
 
 const headless = process.argv.includes('--headless');
 const noTui = !headless && (process.argv.includes('--no-tui') || !process.stdin.isTTY);
+const batch = noTui && !process.stdin.isTTY;
 
 const config = {
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -147,6 +148,7 @@ const config = {
 
 interface AppContext {
   framework: AgentFramework;
+  frameworkSessionId: string;
   membrane: Membrane;
   sessionManager: SessionManager;
   recipe: Recipe;
@@ -160,18 +162,19 @@ interface AppContext {
   subscriptionUnmetered: boolean;
   /**
    * Headless only: the framework's traces from create() on, held until
-   * runHeadless attaches the sink that feeds the agent tree and the socket.
-   * create() replays its early traces (registry restore, work a stop cut
-   * off, resumed tune-out epochs) only to a listener attached before
-   * start(), and runHeadless runs after start(); this is that listener
-   * (src/boot-traces.ts).
+   * runHeadless attaches the sink that feeds the agent tree, the socket and
+   * the host's idle. create() replays its early traces (registry restore,
+   * work a stop cut off, resumed tune-out epochs) only to a listener
+   * attached before start(), and runHeadless runs after start(); this is
+   * that listener (src/boot-traces.ts).
    */
   bootTraces?: BootTraceHold;
   stopping?: boolean;
   switching?: boolean;
+  switchSettled?: Promise<{ madeStopFailed: boolean }>;
   onFrameworkReplaced?: () => void;
 
-  switchSession(id: string): Promise<void>;
+  switchSession(id: string): Promise<boolean>;
 }
 
 async function resolveRecipe(): Promise<Recipe> {
@@ -741,9 +744,9 @@ async function runPiped(app: AppContext) {
       if (result.switchToSessionId) {
         const sessionId = result.switchToSessionId;
         turns.switched();
-        await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+        const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
         afterSwitch();
-        console.log('Session switched.');
+        console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
       }
     } else {
       app.framework.pushEvent({
@@ -755,7 +758,7 @@ async function runPiped(app: AppContext) {
     return false;
   }
 
-  if (!process.stdin.isTTY) {
+  if (batch) {
     console.log(batchModeStartNotice());
     const lines: string[] = [];
     const rl = createInterface({ input: process.stdin });
@@ -765,6 +768,7 @@ async function runPiped(app: AppContext) {
       console.log(`> ${batchEchoLine(line)}`);
       if (await processLine(line)) break;
     }
+    app.stopping = true;
     console.log('Done.');
     const serverIds = app.framework.listMcplServers().map((s) => s.id);
     console.log(batchTeardownNotice(serverIds));
@@ -775,7 +779,6 @@ async function runPiped(app: AppContext) {
       await mkdir(dir, { recursive: true }).catch(() => {});
       await Promise.all(serverIds.map((id) => appendMcplLogLine(dir, id, now, BATCH_MCPL_LOG_NOTE)));
     }
-    app.stopping = true;
     await app.framework.stop();
     const webUiUrl = getWebUiModule(app.framework)?.listeningUrl();
     if (webUiUrl) console.log(batchWebUiNotice(webUiUrl));
@@ -810,8 +813,8 @@ async function runPiped(app: AppContext) {
       atPrompt = true;
     });
     await new Promise<void>(r => rl.on('close', r));
-    console.log('\nShutting down...');
     app.stopping = true;
+    console.log('\nShutting down...');
     await app.framework.stop();
     if (restarting) {
       await stopWebUiServer().catch((error: unknown) => {
@@ -916,6 +919,7 @@ async function main() {
           : { token: config.authToken }),
         autoRefresh: config.anthropicAutoRefresh,
         baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+        onWriteBack: (file, error) => credentialsRef?.observeWriteBack(file, error),
       })
     : null;
   // Subscription credentials draw down utilization windows instead of being
@@ -1135,6 +1139,7 @@ async function main() {
 
   const app: AppContext = {
     framework,
+    frameworkSessionId: activeSession.id,
     membrane,
     sessionManager,
     recipe,
@@ -1149,7 +1154,7 @@ async function main() {
 
     async switchSession(id: string) {
       const newStorePath = sessionManager.getStorePath(id);
-      await switchSessionSteps(this, {
+      return switchSessionSteps(this, {
         stopOld: async () => {
           handleExport(this);
           await stopForSessionSwitch(this.framework, id);
@@ -1160,6 +1165,7 @@ async function main() {
         },
         install: async (next) => {
           this.framework = next;
+          this.frameworkSessionId = id;
           this.onFrameworkReplaced?.();
           await startFramework(next, null);
           this.userMessageCount = 0;
@@ -1209,8 +1215,10 @@ async function main() {
       },
     },
   });
-  if (!(noTui && !process.stdin.isTTY)) hostUpdate.startChecks();
-  getWebUiModule(framework)?.setApp(app);
+  if (!batch) hostUpdate.startChecks();
+  const serve = (): void => { getWebUiModule(app.framework)?.setApp(app); };
+  if (batch) serve();
+  else hostUpdate.whenStopAttached(serve);
   for (const [kind, message, data] of queuedAlerts.splice(0)) {
     (framework as unknown as { notifyOpsAlert?: (k: string, a: string, m: string, d?: Record<string, unknown>) => void })
       .notifyOpsAlert?.(kind, agentName, message, data);
@@ -1240,7 +1248,8 @@ async function main() {
 }
 
 main().catch(async (err) => {
-  console.error('Fatal error:', err);
+  if (err instanceof StartRefusal) console.error(err.message);
+  else console.error('Fatal error:', err);
   // Headless, headless.log may still hold lines written just before the
   // failure, such as the server's error; exiting at once would drop them.
   await beforeFatalExit?.();

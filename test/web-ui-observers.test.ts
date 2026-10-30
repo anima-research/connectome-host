@@ -1006,9 +1006,10 @@ describe('scope filters', () => {
       type: 'credential-state', scope: 'kid', subscription: true, agent: 'main', kind: 'auth-rejected', provider: 'anthropic',
       message: 'anthropic rejected the credential (raw)', since: 1, rotatable: true, actions: [{ id: 'refresh', label: 'Refresh' }],
       lastAction: { id: 'refresh', at: 2, ok: false, message: 'refresh failed: raw' },
+      unsaved: "anthropic credential couldn't be written to /x/creds.json (raw)",
     } as unknown as WebUiServerMessage;
     expect(JSON.parse(JSON.stringify(frameWithoutFailureText(credential)))).toEqual({
-      ...credential, message: '', lastAction: { id: 'refresh', at: 2, ok: false, message: '' },
+      ...credential, message: '', lastAction: { id: 'refresh', at: 2, ok: false, message: '' }, unsaved: '',
     });
     const trace = { type: 'trace', event: { type: 'usage:updated', agentName: 'main' } } as unknown as WebUiServerMessage;
     const given = structuredClone(trace);

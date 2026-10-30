@@ -246,6 +246,18 @@ export interface Mark {
   at: string;
   /** A Go back that keeps the newer data instead of restoring the copy. */
   keepData?: boolean;
+  /** The ids of the MCPL servers the host had connected when it wrote this
+   *  mark. A release that reads this field holds its commit only for these
+   *  (commitRelease); one from before the field ignores it. The launcher's
+   *  Go back from a shell has no host to ask and writes none, and a release
+   *  before this field wrote none; then every server the release on trial is
+   *  configured with holds its commit, closed tabs aside. */
+  connected?: string[];
+}
+
+export function connectedWhenMarked(mark: Mark): string[] | null {
+  const { connected } = mark;
+  return Array.isArray(connected) && connected.every((id) => typeof id === 'string') ? connected : null;
 }
 
 export const JOURNAL_STEPS = [
@@ -748,11 +760,12 @@ export function readMark(root: string): Mark | null {
  *  request, so the release that ran starts and ends the switch's quiesce, or
  *  the request this one replaced. */
 export function writeMark(
-  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData'>, now: Date = new Date(), write = writeJsonAtomic,
+  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected'>, now: Date = new Date(), write = writeJsonAtomic,
 ): { mark: Mark; unsynced: Error | null } {
   const mark: Mark = {
     v: 1, id: randomUUID(), to: segment(request.to, 'release'), why: request.why, at: now.toISOString(),
     ...(request.keepData ? { keepData: true } : {}),
+    ...(request.connected !== undefined ? { connected: [...request.connected] } : {}),
   };
   const path = installPaths(root).mark;
   try {

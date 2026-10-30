@@ -1,12 +1,15 @@
 import { runHeadless } from '../src/headless.ts';
 import type { AppContext } from '../src/index.ts';
 import { selfRestart } from '../src/self-restart.ts';
+import { CredentialMonitor } from '../src/credential-state.ts';
+import { hostUpdate } from '../src/update/update.ts';
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
   'quiet-exit', 'quiet-idle', 'text-exit'];
-const HOLDS = ['turn', 'gated', 'parked', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'subagent-streaming', 'wake-gap'];
+const HOLDS = ['turn', 'gated', 'parked', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'subagent-streaming', 'wake-gap',
+  'command', 'credential'];
 const TURN_WORK = ['turn', 'gated', 'parked', 'queue', 'wake-gap'];
 const mode = process.argv[2];
 if (!MODES.includes(mode)) throw new Error('Unknown self-restart fixture mode');
@@ -22,6 +25,25 @@ const hold = mode === 'cancel-in-wait' ? 'turn' : quiet && (process.argv[3] === 
   ? undefined : process.argv[3];
 if ((mode === 'held' || (quiet && hold !== undefined)) && !HOLDS.includes(hold!)) throw new Error('Unknown self-restart fixture hold');
 const dataDir = process.env.DATA_DIR!;
+const operatorWorkSettles = async (): Promise<void> => {
+  if (!untilReleased) {
+    await Bun.sleep(Math.max(0, heldUntil - Date.now()));
+    return;
+  }
+  while (!existsSync(join(dataDir, 'release-hold'))) await Bun.sleep(10);
+  quietAt(Date.now());
+};
+const commands = hold === 'command' ? await import('../src/commands.ts') : null;
+if (hold === 'command') {
+  hostUpdate.configure({
+    here: null, running: '0.0.0', env: { CONNECTOME_UPDATE_CHECK: '0' },
+    host: { framework: () => ({ getHostModeStatus: () => ({ quiesced: false }) }) as never, fleet: () => null },
+    fetchManifest: (async () => {
+      await operatorWorkSettles();
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch,
+  });
+}
 
 const agent = { name: 'fixture', state: { status: 'idle' as string } };
 let listeners: Array<(event: unknown) => void> = [];
@@ -92,6 +114,8 @@ const startTurn = () => {
       heldFrom = Date.now();
       heldUntil = heldFrom + (hold === 'wake-gap' ? 1800 : hold === 'late-script' ? 1200 : 1000);
     }
+    if (hold === 'command') void commands!.handleCommand('/update check', app as never).asyncWork;
+    if (hold === 'credential') void app.credentials!.runAction('refresh');
     if (quiet && untilReleased) {
       if (!TURN_WORK.includes(hold!)) turnWorkAt(Date.now());
     } else if (quiet) {
@@ -237,10 +261,19 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
   };
 };
 const unnamed = process.env.FIXTURE_UNNAMED_AGENT === '1';
-const app: { recipe: unknown; agentName: string; framework: ReturnType<typeof framework>; onFrameworkReplaced?: () => void; switching?: boolean } = {
+const app: {
+  recipe: unknown; agentName: string; framework: ReturnType<typeof framework>; onFrameworkReplaced?: () => void; switching?: boolean;
+  credentials?: CredentialMonitor;
+} = {
   recipe: { name: 'Self-restart test', agent: unnamed ? {} : { name: 'fixture' } },
   agentName: unnamed ? 'imported-name' : 'fixture',
   framework: framework(),
+  ...(hold === 'credential' ? {
+    credentials: new CredentialMonitor({
+      source: { provider: 'fixture', canRefresh: () => true, refresh: operatorWorkSettles },
+      alert: () => {},
+    }),
+  } : {}),
 };
 if (mode === 'quiet-idle') {
   whenWritten('speak', () => {
