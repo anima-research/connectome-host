@@ -54,7 +54,7 @@ jobs:
 
       - name: Test
         if: matrix.suite
-        run: npm test
+        run: bash scripts/test-on-tmpfs.sh
 
       - name: Host starts
         if: ${{ !matrix.suite }}

@@ -313,12 +313,18 @@ describe('what a switch copies', () => {
   test("a child whose process has ended holds a fallback while its group has a member; the lock goes by its holder alone", async () => {
     mark({ to: '0.11.0', why: 'update' });
     await decide(root, ops());
+    writeFileSync(join(data, 'sessions', 'store.txt'), 'B wrote this');
     child("kid's job", join(dir, 'kid'), 778, boot);
     groups.add(778);
     let waits = 0;
-    const o: LauncherOps = { ...ops(), sleep: (ms) => { clock += ms; if (++waits === 2) groups.delete(778); } };
+    const o: LauncherOps = { ...ops(), sleep: (ms) => {
+      clock += ms;
+      expect(store()).toBe('B wrote this');
+      if (++waits === 2) groups.delete(778);
+    } };
     expect(await decide(root, o)).toEqual({ release: '0.10.2', trial: false });
-    expect(waits).toBe(2);
+    expect(groups.has(778)).toBe(false);
+    expect(store()).toBe('A wrote this');
     writeJsonAtomic(installPaths(root).lock, { v: 1, pid: 4242, bootId: boot, at: 'x' });
     groups.add(4242);
     expect(await decide(root, ops())).toEqual({ release: '0.10.2', trial: false });
@@ -611,7 +617,7 @@ describe('a switch', () => {
       if (++waits === 8) alive.delete(778);
     } };
     expect(await decide(root, o)).toEqual({ release: '0.10.2', trial: false });
-    expect(waits).toBe(8);
+    expect(alive.has(778)).toBe(false);
     expect(store()).toBe('A wrote this');
   });
 

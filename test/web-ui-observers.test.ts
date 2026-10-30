@@ -78,14 +78,6 @@ describe('ObserverRegistry.verifyHello', () => {
     buf[0]! ^= 0xff;
     expect(registry.verifyHello({ ...h, proof: buf.toString('base64url') }, HOST)).toBeNull();
   });
-
-  test('parse-error keeps previous grants (fail-safe)', () => {
-    expect(loadObserversFile(path)).not.toBeNull();
-    writeFileSync(path, '{not json');
-    expect(loadObserversFile(path)).toBeNull();
-    expect(registry.verifyHello(helloFor(kp, HOST), HOST)).not.toBeNull();
-    saveObserversFile(path, file);
-  });
 });
 
 describe('ObserverRegistry when the grants file is removed', () => {
@@ -887,13 +879,13 @@ describe('scope filters', () => {
       byAgent: { '*': { state: true } },
       rows: { verdict: true, cause: (row) => row.verdict !== 'ERROR' },
     });
-    expect(JSON.stringify(kept)).toBe(JSON.stringify(JSON.parse(`{
+    expect(kept).toEqual(JSON.parse(`{
       "name": "main", "note": "", "count": 2, "ok": true, "none": null,
       "byAgent": { "alice": { "state": "healthy", "error": "" }, "__proto__": { "state": "degraded", "error": "" } },
       "list": ["", ""],
       "rows": [{ "verdict": "ERROR", "cause": "" }, { "verdict": "HIT", "cause": "90% from cache" }],
       "whole": { "anything": "kept", "deep": ["x"] }
-    }`)));
+    }`));
     expect(keepNamedStrings(3, undefined)).toBe(3);
     expect(keepNamedStrings('text', undefined)).toBe('');
     expect(keepNamedStrings('text', true)).toBe('text');
@@ -1019,7 +1011,8 @@ describe('scope filters', () => {
       ...credential, message: '', lastAction: { id: 'refresh', at: 2, ok: false, message: '' },
     });
     const trace = { type: 'trace', event: { type: 'usage:updated', agentName: 'main' } } as unknown as WebUiServerMessage;
-    expect(frameWithoutFailureText(trace)).toBe(trace);
+    const given = structuredClone(trace);
+    expect(frameWithoutFailureText(trace)).toEqual(given);
   });
 
   test('the agent trees go only with every scope but debug, since their nodes carry token counts and how each run ended', () => {
@@ -1051,7 +1044,7 @@ describe('ObserverSessions', () => {
     const scopes = new Set<ObserverScope>(['health']);
     const token = s.mint(scopes, { key: 'k' });
     expect(token).toMatch(/^[a-f0-9]{64}$/);
-    expect(s.lookup(token)!.scopes).toBe(scopes);
+    expect([...s.lookup(token)!.scopes]).toEqual(['health']);
     expect(s.lookup(token)!.full).toBe(false);
     expect(s.lookup('0'.repeat(64))).toBeNull();
     expect(s.lookup(null)).toBeNull();

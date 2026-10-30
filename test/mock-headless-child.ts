@@ -163,15 +163,6 @@ function dispatch(msg: Record<string, unknown>): void {
     if (cmd === '/crash') {
       process.exit(1);
     }
-    if (cmd.startsWith('/tool-use-then-speak ')) {
-      const finalText = cmd.slice('/tool-use-then-speak '.length);
-      started();
-      emit({ type: 'inference:tokens', agentName: 'mock', content: 'let me think' });
-      emit({ type: 'inference:tool_calls_yielded', agentName: 'mock', calls: [{ id: 't1', name: 'dummy', input: {} }] });
-      emit({ type: 'inference:completed', agentName: 'mock' });
-      setTimeout(() => simulateFinalInference(finalText, true), 20);
-      return;
-    }
     if (cmd === '/exit-after-idle') {
       started();
       emit({ type: 'inference:completed', agentName: 'mock' });

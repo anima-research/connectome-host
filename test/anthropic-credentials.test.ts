@@ -102,7 +102,7 @@ describe('credentials file', () => {
     expect(creds.canRefresh()).toBe(true);
   });
 
-  test('a planted temp path cannot capture the write: the rotation stays in memory and is reported', async () => {
+  test('a rotation whose save fails stays in memory and is reported', async () => {
     const path = tmpFile({ accessToken: 'a', refreshToken: 'r' });
     const { fetchImpl } = fakeFetch(() => Response.json({ access_token: 'b', refresh_token: 'r2', expires_in: 60 }));
     const creds = new AnthropicOAuthCredentials({ credentialsFile: path, fetchImpl });

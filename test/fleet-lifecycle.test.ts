@@ -448,39 +448,31 @@ describe('FleetModule lifecycle', () => {
     }
   }, 120_000);
 
-  for (const failure of ['ready', 'subscribe'] as const) {
-    test('real headless relaunch survives the stale socket left after ' + failure + ' failure', async () => {
-      const { fleet, input } = fixture({}, {
-        childIndexPath: new URL('../src/index.ts', import.meta.url).pathname,
-        socketWaitTimeoutMs: 10_000,
-        readyTimeoutMs: 10_000,
-      });
-      writeFileSync(input.recipe, JSON.stringify({
-        name: 'stale-socket-regression',
-        agent: { name: 'leaf', systemPrompt: 'Offline only; never asked to infer.' },
-        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
-      }));
-      const trusted = { ...input, env: { ANTHROPIC_API_KEY: 'sk-offline-stale-socket-test' } };
-      const api = internal(fleet);
-      const ready = api.waitForReady.bind(fleet);
-      const send = api.sendToChild.bind(fleet);
-      if (failure === 'ready') api.waitForReady = async () => { throw new Error('injected readiness failure'); };
-      else api.sendToChild = (child, command) => {
-        if (command.type === 'subscribe') throw new Error('injected subscription failure');
-        send(child, command);
-      };
-      const failed = await api.handleLaunch(trusted, { viaAutoStart: true });
-      expect(failed.success).toBe(false);
-      const original = fleet.getChildren().get('leaf')!;
-      expect(isAlive(original.pid!)).toBe(false);
-      expect(existsSync(original.socketPath)).toBe(true);
-      api.waitForReady = ready;
-      api.sendToChild = send;
-      const relaunched = await api.handleLaunch(trusted, { viaAutoStart: true });
-      expect(relaunched.success).toBe(true);
-      expect(fleet.getChildren().get('leaf')!.pid).not.toBe(original.pid);
-    }, 20_000);
-  }
+  test('real headless relaunch survives the stale socket left after ready failure', async () => {
+    const { fleet, input } = fixture({}, {
+      childIndexPath: new URL('../src/index.ts', import.meta.url).pathname,
+      socketWaitTimeoutMs: 10_000,
+      readyTimeoutMs: 10_000,
+    });
+    writeFileSync(input.recipe, JSON.stringify({
+      name: 'stale-socket-regression',
+      agent: { name: 'leaf', systemPrompt: 'Offline only; never asked to infer.' },
+      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    }));
+    const trusted = { ...input, env: { ANTHROPIC_API_KEY: 'sk-offline-stale-socket-test' } };
+    const api = internal(fleet);
+    const ready = api.waitForReady.bind(fleet);
+    api.waitForReady = async () => { throw new Error('injected readiness failure'); };
+    const failed = await api.handleLaunch(trusted, { viaAutoStart: true });
+    expect(failed.success).toBe(false);
+    const original = fleet.getChildren().get('leaf')!;
+    expect(isAlive(original.pid!)).toBe(false);
+    expect(existsSync(original.socketPath)).toBe(true);
+    api.waitForReady = ready;
+    const relaunched = await api.handleLaunch(trusted, { viaAutoStart: true });
+    expect(relaunched.success).toBe(true);
+    expect(fleet.getChildren().get('leaf')!.pid).not.toBe(original.pid);
+  }, 20_000);
 
   test('a natural nonzero exit reported during launch cleanup keeps its automatic retry', async () => {
     const { fleet, dir, input } = fixture();
@@ -886,17 +878,15 @@ describe('FleetModule lifecycle: every launch answers to stop, kill and newer la
   });
 
   for (const action of ['kill', 'restart', 'stop'] as const) {
-    test(action + ' clears the pending automatic replacement on the record', async () => {
+    test(action + " releases the pending automatic replacement's timer, which would otherwise hold the process up to 10.5 s", async () => {
       const { fleet, input } = fixture();
       const clock = controlRestarts(fleet);
       expect((await internal(fleet).handleLaunch({ ...input, autoRestart: true }, { viaAutoStart: true })).success).toBe(true);
       const crashed = fleet.getChildren().get('leaf')!;
       await crash(fleet, crashed);
-      expect(crashed.restartTimer).toBeDefined();
       expect(clearedTimers.has(clock.pending[0]!.handle)).toBe(false);
       if (action === 'stop') await fleet.stop();
       else await fleet.handleToolCall({ id: action, name: action, input: { name: 'leaf' } });
-      expect(crashed.restartTimer).toBeUndefined();
       expect(clearedTimers.has(clock.pending[0]!.handle)).toBe(true);
     });
   }

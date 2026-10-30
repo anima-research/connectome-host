@@ -640,7 +640,7 @@ describe('what the report says about itself', () => {
     }
   });
 
-  test("a servers file or overlay that couldn't be read is named, without its path", () => {
+  test("a note that the servers file or overlay couldn't be read is printed in the report", () => {
     const facts = { ...canaryFactsless(), configNotes: ["the servers file couldn't be read"] };
     expect(formatBugReport('x', facts).report).toContain("(the servers file couldn't be read)");
   });

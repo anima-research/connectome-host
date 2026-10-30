@@ -1484,7 +1484,7 @@ describe('restart and deploy report the connection they read', () => {
     for (const id of ['down', 'retrying']) {
       expect((await call(mod, 'mcpl_restart', { id })).success).toBe(true);
     }
-    expect(calls).toEqual(['connect:down', 'connect:retrying', 'restart:down', 'restart:retrying']);
+    expect(calls.filter((c) => c.startsWith('restart:'))).toEqual(['restart:down', 'restart:retrying']);
   });
 });
 

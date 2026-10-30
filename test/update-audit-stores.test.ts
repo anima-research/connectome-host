@@ -327,7 +327,7 @@ describe('the store audit', () => {
     try {
       const { lines, failed } = await audit([dir]);
       expect(failed).toEqual([`Couldn't audit ${stores[0]}: it opened, and closing it failed: store close failed`]);
-      expect(lines[1]).toStartWith(`${stores[0]} (agents/agent): agent's memory changed at load: `);
+      expect(lines.some((line) => line.startsWith(`${stores[0]} (agents/agent): agent's memory changed at load: `))).toBe(true);
     } finally {
       storeClose.mockRestore();
     }
@@ -864,11 +864,18 @@ describe('the store audit', () => {
   });
 
   test('a system prompt the recipe gives as a URL is not fetched', async () => {
-    const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: true }]);
-    saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, systemPrompt: 'http://127.0.0.1:1/prompt.md' } });
-    const { status, failed } = await audit([dir]);
-    expect(status).toBe(1);
-    expect(failed[0]).toStartWith(`${stores[0]} (agents/agent): refused: `);
+    const asked: string[] = [];
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) { asked.push(new URL(request.url).pathname); return new Response('a prompt'); } });
+    try {
+      const { dir, stores } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
+      saveRecipe(dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, systemPrompt: `${server.url.href}prompt.md` } });
+      const { status, lines, failed } = await audit([dir]);
+      expect(asked).toEqual([]);
+      expect({ status, failed }).toEqual({ status: 0, failed: [] });
+      expect(lines).toContain(`${stores[0]} (agents/agent): opens`);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("given the extensions a start loaded, the audit builds its strategy from them and runs no register() of its own", async () => {

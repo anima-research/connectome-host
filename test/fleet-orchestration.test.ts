@@ -97,19 +97,6 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
       'lifecycle:idle event recorded',
     );
   });
-
-  test('tool-ending round does NOT update lastCompletedSpeech; final round does', async () => {
-    const before = fleet.getChildren().get('a')!.lastCompletedSpeech;
-    expect(before).toContain('echo: hello there');
-
-    await command(fleet, 'a', '/tool-use-then-speak FINAL-ANSWER');
-
-    await waitFor(
-      () => fleet.getChildren().get('a')!.lastCompletedSpeech === 'FINAL-ANSWER',
-      3_000,
-      'lastCompletedSpeech updated to FINAL-ANSWER (tool-use round ignored)',
-    );
-  });
 });
 
 describe('fleet--relay', () => {

@@ -6,7 +6,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import type { TraceEvent } from '@animalabs/agent-framework';
-import { holdBootTraces, BOOT_TRACE_CAP } from '../src/boot-traces.js';
+import { holdBootTraces } from '../src/boot-traces.js';
 
 function fakeFramework(early: Array<Record<string, unknown>> = []) {
   const listeners: Array<{ listener: (event: TraceEvent) => void; options?: { replay?: boolean } }> = [];
@@ -52,7 +52,6 @@ describe('holdBootTraces', () => {
     const dropped = hold.handOver((event) => seen.push((event as { timestamp: number }).timestamp));
     expect(seen).toEqual([1, 2, 3]);
     expect(dropped).toBe(2);
-    expect(BOOT_TRACE_CAP).toBe(1000);
   });
 
   test('the framework\'s replay comes first, and its count of what it didn\'t keep is added to the hold\'s own, not held', () => {

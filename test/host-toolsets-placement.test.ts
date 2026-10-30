@@ -102,8 +102,8 @@ describe('the retired surface keys', () => {
     }));
     const notices = deprecatedSurfaceNotices(loaded.modules);
     expect(notices).toHaveLength(2);
-    expect(notices[0]).toStartWith('modules.mcplAdmin.surface is no longer read');
-    expect(notices[1]).toStartWith('modules.webui.observersSurface is no longer read');
+    expect(notices.some((line) => line.startsWith('modules.mcplAdmin.surface is no longer read'))).toBe(true);
+    expect(notices.some((line) => line.startsWith('modules.webui.observersSurface is no longer read'))).toBe(true);
   });
 
   test('a recipe without them gets no such line', () => {

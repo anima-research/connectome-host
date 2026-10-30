@@ -148,11 +148,4 @@ describe('headless daemon — describe / snapshot', () => {
     r.stop();
     sock.destroy();
   });
-
-  test('cleanup', async () => {
-    const sock = await connectWhenAccepting(socketPath);
-    sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
-    await new Promise((r) => setTimeout(r, 500));
-    sock.destroy();
-  });
 });

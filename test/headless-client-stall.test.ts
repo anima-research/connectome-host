@@ -119,14 +119,21 @@ test('a client that keeps up through refused writes stays connected past its dea
   await withFlood(KEEP_UP_DEADLINE_MS, async ({ open, log, burst }) => {
     const client = await open();
     const seen = client.lines();
-    let refused = 0;
+    const refusedBy: number[] = [];
+    let lastSent = 0;
     for (let n = 0; n < 4; n += 1) {
-      refused = await burst();
-      await Bun.sleep(KEEP_UP_DEADLINE_MS / 2);
+      const began = Date.now();
+      client.socket.pause();
+      refusedBy.push(await burst());
+      client.socket.resume();
+      lastSent = Date.now();
+      await until(() => client.lines() >= seen + 8_000 * (n + 1) || log().includes('hadn\'t taken'), `burst ${n + 1} read, or a cut`);
+      await Bun.sleep(Math.max(0, began + KEEP_UP_DEADLINE_MS / 2 - Date.now()));
     }
-    await until(() => client.lines() >= seen + 32_000 || log().includes('hadn\'t taken'), 'every burst read, or a cut');
-    expect({ refusedSome: refused > 0, cut: log().includes('hadn\'t taken'), closed: client.closed(), read: client.lines() >= seen + 32_000 })
-      .toEqual({ refusedSome: true, cut: false, closed: false, read: true });
+    await Bun.sleep(Math.max(0, lastSent + KEEP_UP_DEADLINE_MS + 250 - Date.now()));
+    const everyBurstRefused = refusedBy.every((total, n) => total > (n === 0 ? 0 : refusedBy[n - 1]!));
+    expect({ everyBurstRefused, cut: log().includes('hadn\'t taken'), closed: client.closed(), read: client.lines() >= seen + 32_000 })
+      .toEqual({ everyBurstRefused: true, cut: false, closed: false, read: true });
   });
 }, 15_000);
 

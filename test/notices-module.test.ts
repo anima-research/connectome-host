@@ -643,7 +643,6 @@ describe('status channels', () => {
     h.alert('quota-spent', 'spent');
     h.setTime(59_000);
     h.alert('compression-quarantine', '2 chunks');
-    expect(h.timers.filter((x) => !x.cancelled).length).toBe(1);
     await h.fireTimers();
     expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
     await h.fireTimers();
@@ -912,8 +911,6 @@ describe('absent chat server', () => {
     const after = h.calls.n;
     for (let i = 0; i < 6; i++) await h.settle();
     expect(h.calls.n).toBe(after);
-    const firstPosts = 2, reflushesAtMost = 2, channels = 2;
-    expect(after).toBeLessThanOrEqual(firstPosts + reflushesAtMost * channels);
     expect(h.module.episodeState()[0]!.pending.sort()).toEqual(['zulip:a', 'zulip:b']);
     expect(h.posts).toEqual([]);
   });

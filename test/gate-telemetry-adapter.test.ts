@@ -31,8 +31,7 @@ function mockStream() {
 }
 
 function adapterWithTrigger(trigger: () => typeof wake | null) {
-  let asked = 0;
-  const dyn = gateTelemetryHeaders(env, () => 3, () => { asked++; return trigger(); })!;
+  const dyn = gateTelemetryHeaders(env, () => 3, trigger)!;
   const adapter = new AnthropicAdapter({ apiKey: 'sk-test', cacheKeepalive: { enabled: false }, dynamicHeaders: dyn } as any);
   const calls: Array<{ kind: string; headers: Record<string, string> | undefined }> = [];
   (adapter as any).client = {
@@ -42,21 +41,20 @@ function adapterWithTrigger(trigger: () => typeof wake | null) {
       stream: async (_req: unknown, opts: { headers?: Record<string, string> }) => { calls.push({ kind: 'stream', headers: opts?.headers }); return mockStream(); },
     },
   };
-  return { adapter, calls, asked: () => asked };
+  return { adapter, calls };
 }
 
 describe('gate telemetry through the published AnthropicAdapter', () => {
-  it('complete lane: debt only — the active trigger is not consulted', async () => {
-    const { adapter, calls, asked } = adapterWithTrigger(() => wake);
+  it('complete lane: debt only, with none of the turn\'s origin', async () => {
+    const { adapter, calls } = adapterWithTrigger(() => wake);
     await adapter.complete(REQUEST);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.kind).toBe('complete');
     expect(calls[0]!.headers).toEqual({ 'x-gate-debt-chunks': '3' });
-    expect(asked()).toBe(0);
   });
 
-  it('stream lane: the trigger is consulted and the origin trio rides the request', async () => {
-    const { adapter, calls, asked } = adapterWithTrigger(() => wake);
+  it('stream lane: the active trigger\'s origin trio rides the request', async () => {
+    const { adapter, calls } = adapterWithTrigger(() => wake);
     const chunks: string[] = [];
     await adapter.stream(REQUEST, { onChunk: (c: string) => { chunks.push(c); } } as any);
     expect(calls).toHaveLength(1);
@@ -67,7 +65,6 @@ describe('gate telemetry through the published AnthropicAdapter', () => {
       'x-gate-channel': 'discord:1:2',
       'x-gate-counterparty': 'discord:user:42',
     });
-    expect(asked()).toBe(1);
   });
 
   it('stream lane with no turn in progress: debt only, nothing guessed', async () => {

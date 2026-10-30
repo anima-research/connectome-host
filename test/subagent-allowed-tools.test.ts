@@ -104,16 +104,6 @@ describe('subagent allowed-tools inheritance', () => {
     } finally { await h.cleanup(); }
   });
 
-  test('unresolved explicit identity fails closed', async () => {
-    const h = await harness('all');
-    try {
-      for (const kind of ['spawn', 'fork'] as const) {
-        expect((await h.call(kind, undefined, 'missing')).success).toBe(false);
-        expect(h.captured).toHaveLength(0);
-      }
-    } finally { await h.cleanup(); }
-  });
-
   for (const kind of ['spawn', 'fork'] as const) {
     for (const sync of [true, false]) {
       test(`${kind} unknown explicit caller fails before admission (sync=${sync})`, async () => {

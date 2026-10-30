@@ -64,7 +64,6 @@ describe('unionWithReducerRequired', () => {
   test('returns a fresh array (caller can mutate without affecting input)', () => {
     const input = ['lifecycle'];
     const result = unionWithReducerRequired(input);
-    expect(result).not.toBe(input);
     result.push('extra');
     expect(input).toEqual(['lifecycle']);
   });

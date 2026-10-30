@@ -13,7 +13,7 @@ function recipeWith(cacheKeepalive?: unknown, cacheTtl?: unknown) {
 }
 
 describe('recipe agent.cacheKeepalive validation', () => {
-  test('omitting it is valid — keepalive is on by default', () => {
+  test('omitting it is valid, and leaves it unset', () => {
     expect(validateRecipe(recipeWith()).agent.cacheKeepalive).toBeUndefined();
   });
 

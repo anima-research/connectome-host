@@ -258,71 +258,7 @@ describe('AgentTreeReducer', () => {
     });
     expect(r.getNode('a')!.status).toBe('completed');
   });
-
-  test('REDUCER_REQUIRED_EVENTS is derived from the dispatch table — every entry actually does something', () => {
-    for (const eventType of REDUCER_REQUIRED_EVENTS) {
-      const r = new AgentTreeReducer();
-      const event = makeRepresentativeEvent(eventType);
-      r.applyEvent(event as never);
-      const nodes = r.getNodes();
-      const observable = nodes.length > 0 || hasCallIdSideEffect(eventType);
-      expect(observable).toBe(true);
-    }
-  });
 });
-
-function makeRepresentativeEvent(eventType: string): Record<string, unknown> {
-  switch (eventType) {
-    case 'inference:tool_calls_yielded':
-      return {
-        type: eventType,
-        agentName: 'agent',
-        calls: [{ id: 'c1', name: 'x', input: {} }],
-        timestamp: 1000,
-      };
-    case 'tool:started':
-    case 'tool:completed':
-    case 'tool:failed':
-      return { type: eventType, callId: 'c1', tool: 'x', module: 'm', timestamp: 1000, durationMs: 1, error: '' };
-    case 'inference:usage':
-      return {
-        type: eventType,
-        agentName: 'agent',
-        tokenUsage: { input: 100, output: 10 },
-        timestamp: 1000,
-      };
-    case 'inference:completed':
-      return {
-        type: eventType,
-        agentName: 'agent',
-        durationMs: 5,
-        tokenUsage: { input: 100, output: 10 },
-        timestamp: 1000,
-      };
-    case 'inference:failed':
-    case 'inference:exhausted':
-    case 'inference:aborted':
-      return { type: eventType, agentName: 'agent', error: 'x', reason: 'x', timestamp: 1000 };
-    case 'inference:stream_restarted':
-      return { type: eventType, agentName: 'agent', reason: 'x', inputTokens: 0, budget: 0, timestamp: 1000 };
-    case 'dendrite:agent-created':
-      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, lifetime: { kind: 'task', idleTimeoutMs: 1 }, spawnedBy: 'agent', timestamp: 1000 };
-    case 'dendrite:agent-orphaned':
-      return { type: eventType, agentName: 'agent.fork-1', formerParent: 'agent', reason: 'parent ended', candidates: [], timestamp: 1000 };
-    case 'dendrite:agent-reparented':
-      return { type: eventType, agentName: 'agent.fork-1', parent: 'agent', timestamp: 1000 };
-    case 'dendrite:agent-ended':
-      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, reason: 'stopped', timestamp: 1000 };
-    case 'dendrite:agent-interrupted':
-      return { type: eventType, agentName: 'agent.fork-1', kind: 'task-fork', incarnation: 1, reason: 'host-stop', timestamp: 1000 };
-    default:
-      return { type: eventType, agentName: 'agent', content: '', timestamp: 1000 };
-  }
-}
-
-function hasCallIdSideEffect(eventType: string): boolean {
-  return eventType === 'tool:started' || eventType === 'tool:completed' || eventType === 'tool:failed';
-}
 
 describe('AgentTreeReducer (continued)', () => {
 

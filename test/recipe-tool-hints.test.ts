@@ -70,7 +70,7 @@ describe('what the host hands agent-framework', () => {
     const overlay = serversFile({ mine: { command: 'node' } }, 'mcpl-servers.agent.json');
     const final = applyAgentOverlay(merged, overlay);
     expect(final.find((s) => s.id === 'surfaces')).toEqual({ id: 'surfaces', url: 'ws://127.0.0.1:1/mcpl', toolHints: true });
-    expect(final.map((s) => s.id)).toEqual(['surfaces', 'mine']);
+    expect(final.map((s) => s.id).sort()).toEqual(['mine', 'surfaces']);
   });
 });
 

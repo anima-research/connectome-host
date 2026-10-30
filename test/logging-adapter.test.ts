@@ -42,18 +42,20 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
     expect((extra.thinking as { type?: string }).type).toBe('adaptive');
   });
 
-  test('no-op (same reference) when reasoning disabled', () => {
+  test('adds nothing when reasoning is disabled', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', disabled);
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
-  test('no-op when no reasoning getter is wired', () => {
+  test('adds nothing when no reasoning getter is wired', () => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null');
+    const given = structuredClone(baseRequest);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
       .withReasoning(baseRequest);
-    expect(out).toBe(baseRequest);
+    expect(out).toEqual(given);
   });
 
   test.each([
@@ -97,9 +99,10 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect((fable as { extra?: unknown }).extra).toBeUndefined();
   });
 
-  test("no-op (same reference) for 'default' and for unset", () => {
-    expect(withEffort('default')).toBe(fable);
-    expect(withEffort(undefined)).toBe(fable);
+  test("adds no effort for 'default' or for unset", () => {
+    const given = structuredClone(fable);
+    expect(withEffort('default')).toEqual(given);
+    expect(withEffort(undefined)).toEqual(given);
   });
 
   test('merges into an existing output_config instead of replacing it', () => {
@@ -118,7 +121,8 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
   });
 
   test('never sends a level outside the known set, whatever the model', () => {
-    expect(withEffort('minimal')).toBe(fable);
+    const given = structuredClone(fable);
+    expect(withEffort('minimal')).toEqual(given);
     expect(withEffort('minimal', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
   });
 });
@@ -315,41 +319,38 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
 });
 
 describe('LoggingAnthropicAdapter initial recipe effort', () => {
-  test('native index constructs settings with the recipe effort before dispatch', async () => {
+  test("a host started from its recipe sends the recipe's effort on its first request, with no settings update", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'chost-initial-effort-'));
-    const recipePath = join(dir, 'recipe.json');
-    const captured = join(dir, 'settings.json');
-    const preload = join(dir, 'capture-settings.ts');
-    const settingsPath = resolve(import.meta.dir, '../src/modules/settings-module.ts');
-    writeFileSync(recipePath, JSON.stringify({
-      name: 'Initial effort startup',
-      agent: { provider: 'mock', systemPrompt: 'No inference requested', thinking: { enabled: false, effort: 'medium' } },
-      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
-    }));
-    writeFileSync(preload, `
-      import { mock } from 'bun:test';
-      import { writeFileSync } from 'node:fs';
-      import { SettingsModule } from ${JSON.stringify(settingsPath)};
-      class CapturedSettings extends SettingsModule {
-        constructor(...args) {
-          super(...args);
-          writeFileSync(${JSON.stringify(captured)}, JSON.stringify(this.getReasoning()));
-        }
-      }
-      mock.module(${JSON.stringify(settingsPath)}, () => ({ SettingsModule: CapturedSettings }));
-    `);
-    const child = Bun.spawn([process.execPath, '--preload', preload, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
-      cwd: dir, env: { ...process.env, DATA_DIR: join(dir, 'data') },
-      stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
-    });
+    let server: ReturnType<typeof Bun.serve> | undefined;
+    let child: ReturnType<typeof Bun.spawn> | undefined;
     try {
-      const [exit, _stdout, stderr] = await Promise.all([
-        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
-      ]);
-      expect(exit, stderr).toBe(0);
-      expect(JSON.parse(readFileSync(captured, 'utf8')).effort).toBe('medium');
+      const recipePath = join(dir, 'recipe.json');
+      let first: Record<string, unknown> | undefined;
+      server = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          if (new URL(request.url).pathname === '/v1/messages') first ??= await request.json() as Record<string, unknown>;
+          return Response.json({ error: { type: 'invalid_request_error', message: 'local request fixture' } }, { status: 400 });
+        },
+      });
+      writeFileSync(recipePath, JSON.stringify({
+        name: 'Initial effort startup',
+        agent: { model: baseRequest.model, systemPrompt: 'Answer briefly.', thinking: { enabled: false, effort: 'medium' } },
+        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const host = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/index.ts'), recipePath, '--no-tui'], {
+        cwd: dir,
+        env: { ...process.env, DATA_DIR: join(dir, 'data'), ANTHROPIC_API_KEY: 'sk-ant-effort-test', ANTHROPIC_BASE_URL: server.url.href },
+        stdin: new Blob(['hello\n']), stdout: 'ignore', stderr: 'ignore',
+      });
+      child = host;
+      const deadline = Date.now() + 10_000;
+      while (first === undefined && host.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
+      expect(first).toMatchObject({ output_config: { effort: 'medium' } });
     } finally {
-      child.kill();
+      child?.kill('SIGKILL');
+      await child?.exited;
+      server?.stop(true);
       rmSync(dir, { recursive: true, force: true });
     }
   }, 15_000);

@@ -106,13 +106,14 @@ describe('LoggingAnthropicAdapter.withBinding', () => {
     expect(thinkingOf(bind(both))).toEqual({ type: 'adaptive', display: 'omitted', block_binding: DROP_BLOCK });
   });
 
-  test('leaves a config that already carries a binding control alone (same reference)', () => {
+  test('leaves a config that already carries a binding control alone', () => {
     const own = { prefix_mismatch_behavior: 'error' };
     for (const req of [
       request('claude-opus-5-5', { thinking: { type: 'adaptive', block_binding: DROP_BLOCK } }),
       request('claude-opus-5-5', { extra: { thinking: { type: 'adaptive', block_binding: own } } }),
     ]) {
-      expect(bind(req)).toBe(req);
+      const given = structuredClone(req);
+      expect(bind(req)).toEqual(given);
     }
   });
 

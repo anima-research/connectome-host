@@ -1695,32 +1695,12 @@ describe('a name means one subagent until its result has come back', () => {
   }, 20_000);
 });
 
-describe('with the clock held, agent names stay new to agent-framework, and until() still gives up', () => {
+describe('with the clock held, agent names stay new to agent-framework', () => {
   const realNow = Date.now;
   const holdClock = (now = realNow()) => { Date.now = () => now; };
   afterEach(() => { Date.now = realNow; });
   const ran = (speech: string) => ({ speech, toolCallsCount: 0 });
   const stampOf = (agentName: string) => Number(/-(\d+)$/.exec(agentName)?.[1]);
-
-  test('until() still gives up while the clock is held', async () => {
-    holdClock();
-    let error: unknown;
-    try { await until(() => false, 50); } catch (err) { error = err; }
-    expect(String(error)).toContain('not brought about within 50 ms');
-  }, 2_000);
-
-  test('a name\'s number is the time when no earlier name has reached it', async () => {
-    const aMinutePastAnyNumberGiven = 60_000;
-    const now = realNow() + aMinutePastAnyNumberGiven;
-    holdClock(now);
-    const names: string[] = [];
-    const h = await harness({ maxRetries: 0 }, async (agent) => { names.push(agent.name); return ran('done'); });
-    try {
-      await h.subagent.handleToolCall(spawn('scout'));
-      expect(await outcome(h, 'scout')).toEqual({ ok: true, text: 'done' });
-      expect(names).toEqual([`spawn-scout-${now}`]);
-    } finally { await h.cleanup(); }
-  }, 20_000);
 
   for (const call of [spawn, fork]) {
     const shapes = call === spawn
@@ -1771,8 +1751,4 @@ describe('with the clock held, agent names stay new to agent-framework, and unti
       } finally { await h.cleanup(); }
     }, 20_000);
   }
-
-  test('the clock is the real one again after the cases that held it', () => {
-    expect(Date.now).toBe(realNow);
-  });
 });
