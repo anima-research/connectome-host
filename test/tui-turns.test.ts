@@ -254,8 +254,12 @@ describe("the TUI's fleet rows, through runTui", () => {
 });
 
 describe("the TUI's numbered fork phases, through runTui", () => {
-  for (const scenario of ['numbered-fork-failed', 'numbered-fork-exhausted']) {
-    test(scenario + ': only the numbered row changes from sending to failed', async () => {
+  for (const [scenario, phase] of [
+    ['numbered-fork-failed', 'attempt-failed'],
+    ['numbered-fork-exhausted', 'failed'],
+    ['numbered-fork-failed-then-exhausted', 'failed'],
+  ] as const) {
+    test(`${scenario}: only the numbered row changes from sending to ${phase}`, async () => {
       const steps = await play(scenario);
       const before = steps.get('before');
       const after = steps.get('after');
@@ -263,9 +267,9 @@ describe("the TUI's numbered fork phases, through runTui", () => {
 
       expect(before.frame).toMatch(/web  \[sending /);
       expect(before.frame).toMatch(/web-1  \[sending /);
-      expect(after.frame).toMatch(/web-1  \[failed /);
+      expect(after.frame).toContain(`web-1  [${phase} `);
       expect(after.frame).toMatch(/web  \[sending /);
-      expect(after.frame).not.toMatch(/web  \[failed /);
+      expect(after.frame).not.toMatch(/web  \[(attempt-)?failed /);
     }, 40000);
   }
 });

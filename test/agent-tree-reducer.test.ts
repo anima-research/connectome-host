@@ -166,14 +166,89 @@ describe('AgentTreeReducer', () => {
     expect(r.getNode('a')!.phase).toBe('done');
   });
 
-  test('inference:failed sets phase=failed and status=failed', () => {
+  test('inference:failed leaves the turn running, as an attempt that failed, with its error', () => {
     const r = new AgentTreeReducer();
     r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
     r.applyEvent({ type: 'inference:failed', agentName: 'a', error: 'boom', timestamp: ts(1) });
     const node = r.getNode('a')!;
-    expect(node.phase).toBe('failed');
+    expect(node.phase).toBe('attempt-failed');
+    expect(node.status).toBe('running');
+    expect(node.completedAt).toBeUndefined();
+    expect(node.attemptError).toBe('boom');
+  });
+
+  test('a turn waiting to retry stays an attempt that failed until the retry starts, which clears the error', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:failed', agentName: 'a', error: '500 scripted', timestamp: ts(1) });
+    r.applyEvent({ type: 'inference:waiting', agentName: 'a', until: ts(301), timestamp: ts(1) });
+    r.applyEvent({ type: 'inference:waiting', agentName: 'a', until: ts(301), timestamp: ts(61) });
+    let node = r.getNode('a')!;
+    expect(node.phase).toBe('attempt-failed');
+    expect(node.status).toBe('running');
+    expect(node.attemptError).toBe('500 scripted');
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(301) });
+    node = r.getNode('a')!;
+    expect(node.phase).toBe('sending');
+    expect(node.status).toBe('running');
+    expect(node.attemptError).toBeUndefined();
+    r.applyEvent({ type: 'inference:completed', agentName: 'a', durationMs: 5, timestamp: ts(302) });
+    expect(r.getNode('a')!.status).toBe('completed');
+  });
+
+  test("a failed attempt's empty error reads as an unknown one", () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:failed', agentName: 'a', error: '', timestamp: ts(1) });
+    expect(r.getNode('a')!.attemptError).toBe('Unknown error');
+  });
+
+  test('a turn that ends exhausted is failed with its error, and a rearm runs it again', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:failed', agentName: 'a', error: 'first', timestamp: ts(1) });
+    r.applyEvent({ type: 'inference:exhausted', agentName: 'a', error: 'overloaded', timestamp: ts(2) });
+    let node = r.getNode('a')!;
     expect(node.status).toBe('failed');
-    expect(node.completedAt).toBe(ts(1));
+    expect(node.phase).toBe('failed');
+    expect(node.completedAt).toBe(ts(2));
+    expect(node.attemptError).toBe('overloaded');
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(120_002) });
+    node = r.getNode('a')!;
+    expect(node.status).toBe('running');
+    expect(node.attemptError).toBeUndefined();
+  });
+
+  test("an agent's end after a failed attempt keeps the error only when it ends failed", () => {
+    const r = new AgentTreeReducer();
+    for (const [name, end] of [['done', 'completed'], ['stopped', 'stopped'], ['broke', 'failed']] as const) {
+      r.applyEvent({ type: 'inference:started', agentName: name, timestamp: ts(0) });
+      r.applyEvent({ type: 'inference:failed', agentName: name, error: 'held', timestamp: ts(1) });
+      r.applyEvent({ type: 'dendrite:agent-ended', agentName: name, reason: end, timestamp: ts(2) });
+    }
+    r.applyEvent({ type: 'inference:started', agentName: 'cut', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:failed', agentName: 'cut', error: 'held', timestamp: ts(1) });
+    r.applyEvent({ type: 'dendrite:agent-interrupted', agentName: 'cut', timestamp: ts(2) });
+    expect(r.getNode('done')!.status).toBe('completed');
+    expect(r.getNode('done')!.attemptError).toBeUndefined();
+    expect(r.getNode('stopped')!.status).toBe('cancelled');
+    expect(r.getNode('stopped')!.attemptError).toBeUndefined();
+    expect(r.getNode('cut')!.status).toBe('cancelled');
+    expect(r.getNode('cut')!.attemptError).toBeUndefined();
+    expect(r.getNode('broke')!.status).toBe('failed');
+    expect(r.getNode('broke')!.attemptError).toBe('held');
+  });
+
+  test('a stop after a failed attempt ends the turn cancelled, with no error', () => {
+    const r = new AgentTreeReducer();
+    r.applyEvent({ type: 'inference:started', agentName: 'a', timestamp: ts(0) });
+    r.applyEvent({ type: 'inference:failed', agentName: 'a', error: 'held', timestamp: ts(1) });
+    r.applyEvent({ type: 'inference:aborted', agentName: 'a', reason: 'shutdown', timestamp: ts(2) });
+    const node = r.getNode('a')!;
+    expect(node.status).toBe('cancelled');
+    expect(node.phase).toBe('cancelled');
+    expect(node.completedAt).toBe(ts(2));
+    expect(node.attemptError).toBeUndefined();
   });
 
   test('inference:aborted produces terminal cancelled state (P1 #3 — distinct from failed)', () => {

@@ -44,7 +44,7 @@ function fakeFramework(name: string) {
     send(type: string, extra: Trace = {}) {
       for (const listener of [...listeners]) listener({ type, agentName: 'agent', ...extra });
     },
-    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
+    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
@@ -226,7 +226,7 @@ async function play(): Promise<void> {
     first.send('inference:tokens', { agentName: 'spawn-1' });
     await letAKeptInterruptTry();
     await step('subagent compiled');
-  } else if (scenario === 'numbered-fork-failed' || scenario === 'numbered-fork-exhausted') {
+  } else if (scenario === 'numbered-fork-failed' || scenario === 'numbered-fork-exhausted' || scenario === 'numbered-fork-failed-then-exhausted') {
     for (const name of ['web', 'web-1']) {
       subagents.activeSubagents.set(name, {
         name, status: 'running', startedAt: Date.now(),
@@ -244,9 +244,8 @@ async function play(): Promise<void> {
 
     const agentName = 'web-1-d1-1700000000001';
     first.send('inference:started', { agentName });
-    first.send(scenario === 'numbered-fork-failed' ? 'inference:failed' : 'inference:exhausted', {
-      agentName, error: 'numbered fork failure',
-    });
+    if (scenario !== 'numbered-fork-exhausted') first.send('inference:failed', { agentName, error: 'numbered fork failure' });
+    if (scenario !== 'numbered-fork-failed') first.send('inference:exhausted', { agentName, error: 'numbered fork failure' });
     await tab();
     await tab();
     await step('after');

@@ -320,6 +320,7 @@ const YELLOW = '#cccc00';
 const CYAN = '#00cccc';
 const MAGENTA = '#cc00cc';
 const RED = '#cc0000';
+const ORANGE = '#cc6600';
 const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
@@ -387,7 +388,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let spinnerFrame = 0;
   const SPINNER = ['·', '.', 'o', 'O'];
 
-  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed';
+  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'attempt-failed' | 'failed';
   const subagentPhase = new Map<string, SubagentPhase>();
   const subagentFailureShown = new Set<string>();
   let turnFailures = createTurnFailures();
@@ -399,6 +400,7 @@ export async function runTui(app: AppContext): Promise<void> {
     invoking: MAGENTA,
     executing: YELLOW,
     done: DIM_GRAY,
+    'attempt-failed': ORANGE,
     failed: RED,
   };
 
@@ -911,6 +913,7 @@ export async function runTui(app: AppContext): Promise<void> {
     invoking: 4,
     executing: 3,
     sending: 2,
+    'attempt-failed': 1,
   };
 
   function pickBusiest(phases: Iterable<SubagentPhase | undefined>): SubagentPhase | null {
@@ -1277,6 +1280,10 @@ export async function runTui(app: AppContext): Promise<void> {
           : PHASE_COLOR[rn.phase as SubagentPhase] ?? CYAN;
         const ctx = rn.tokens.input > 0 ? `  ${fmtK(rn.tokens.input)}ctx` : '';
         lines.push({ text: `  ${rn.phase}  ${fmtElapsed(elapsed)}  ${rn.toolCallsCount} tool calls${ctx}`, color: phaseColor });
+        if (rn.attemptError) {
+          const error = rn.attemptError.length > 70 ? rn.attemptError.slice(0, 67) + '...' : rn.attemptError;
+          lines.push({ text: `  error: ${error}`, color: phaseColor });
+        }
         if (rn.task) {
           const task = rn.task.length > 70 ? rn.task.slice(0, 67) + '...' : rn.task;
           lines.push({ text: `  task: ${task}`, color: GRAY });
@@ -1662,7 +1669,7 @@ export async function runTui(app: AppContext): Promise<void> {
         if (agent !== rootAgentName) {
           if (agent) {
             const short = shortAgentName(agent);
-            subagentPhase.set(short, 'failed');
+            subagentPhase.set(short, 'attempt-failed');
             subagentFailureShown.add(agent);
           }
           if (agent && failure && failure.show !== 'ended') showFailure(agent, `[${agent}] `, failure, DIM_GRAY);
@@ -1673,8 +1680,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:exhausted': {
         if (agent !== rootAgentName) {
-          if (agent && subagentFailureShown.delete(agent)) break;
           if (agent) subagentPhase.set(shortAgentName(agent), 'failed');
+          if (agent && subagentFailureShown.delete(agent)) break;
           addEvent(`[${agent}] Error: ${traceError(event)}`, DIM_GRAY);
         }
         break;
