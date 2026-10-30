@@ -73,7 +73,7 @@ import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { loadMcplServers, startServers, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
@@ -469,13 +469,14 @@ async function createFramework(
   const recipeServers = recipe.mcpServers ?? {};
   const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
 
-  const allServers = mergeRecipeServers(
+  const { operator: allServers, servers: startedServers, warnings } = startServers(
     recipeServers as unknown as Record<string, Record<string, unknown>>,
     fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
+    DEFAULT_AGENT_OVERLAY_PATH,
   );
 
-  for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
-  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
+  for (const line of warnings) console.warn(line);
+  const finalServers = startedServers.map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
       env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),

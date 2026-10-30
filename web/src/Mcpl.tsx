@@ -247,7 +247,7 @@ function ServerCard(props: {
           <span class="text-[10px] text-neutral-600">prefix={props.server.toolPrefix}</span>
         </Show>
         <Show when={props.server.reconnect}>
-          <span class="text-[10px] text-emerald-400">↻ reconnect</span>
+          <span class="text-[10px] text-emerald-400" title="reconnect as mcpl-servers.json and the recipe compose it: the recipe's value over the file's, on when neither sets it; an agent overlay entry for this id isn't read here">↻ reconnect</span>
         </Show>
         <Show when={!props.readOnly}>
         <button

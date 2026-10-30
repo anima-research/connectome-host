@@ -150,6 +150,17 @@ describe('mcpl_deploy', () => {
     expect(readAgentOverlay(overlayPath).mytool).toEqual({ command: 'node', args: ['tool.js'] });
   });
 
+  test('a deployed stdio server is connected to reconnect, unless the deploy says reconnect: false; a null reads as not given', async () => {
+    const { stub, connected } = makeStubFramework();
+    const mod = makeModule(stub);
+
+    expect((await call(mod, 'mcpl_deploy', { id: 'on', command: 'node' })).success).toBe(true);
+    expect((await call(mod, 'mcpl_deploy', { id: 'off', command: 'node', reconnect: false })).success).toBe(true);
+    expect((await call(mod, 'mcpl_deploy', { id: 'unset', command: 'node', reconnect: null })).success).toBe(true);
+
+    expect(connected.map((c) => [c.id, (c as { reconnect?: unknown }).reconnect])).toEqual([['on', true], ['off', false], ['unset', true]]);
+  });
+
   test('presentation is saved and connected as given, and another value refuses the deploy, naming the values', async () => {
     const { stub, connected, calls } = makeStubFramework();
     const mod = makeModule(stub);
