@@ -17,4 +17,4 @@
   heartbeat's turn, which agent-framework marks `silent` as a wake that
   must not surface prose. `fleet--relay` handed that text to another
   child as the child's latest reply; the child's latest reply now stays
-  its last one that wasn't silent, while this host tracks it.
+  its last one that wasn't silent, until this host connects to it again.
