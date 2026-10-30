@@ -1,8 +1,8 @@
 - **Installers and packagers:** connectome-host now declares
   `@animalabs/agent-framework` `^0.31.0` (was `^0.30.0`),
   `@animalabs/context-manager` `^0.25.0` (was `^0.24.0`) and
-  `@animalabs/chronicle` `^0.6.0` (was `^0.5.0`), above the floors 0.19.0's
-  Dendrite entry set; `@animalabs/membrane` stays `^0.8.0`. They
+  `@animalabs/chronicle` `^0.6.0` (was `^0.5.1`), above the floors 0.19.0's
+  Dendrite entry and 0.20.0's chronicle entry set; `@animalabs/membrane` stays `^0.8.0`. They
   are the releases that carry agent-framework #291's presentation index and
   the exports this release imports (`asOwnRow`, `storeOwnRow`,
   `residentContextOptions`, `subconsciousContextOptions`), context-manager's
