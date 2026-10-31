@@ -2298,12 +2298,9 @@ export class SubagentModule implements Module {
   private streamSurface(agent: { name?: string; canUseTool(name: string): boolean; proseRouting: ProseRouting }): string[] {
     const framework = this.getFramework();
     let tools = framework.getAllTools().filter((t) => agent.canUseTool(t.name));
-    const present = (framework as AgentFramework & {
-      presentedTools?: (agentName: string, tools: ToolDefinition[], canUseMeta?: boolean) => ToolDefinition[];
-    }).presentedTools;
-    if (typeof present === 'function' && agent.name) {
+    if (agent.name) {
       const canUseMeta = agent.canUseTool('toolsets--open') && agent.canUseTool('toolsets--act');
-      tools = present.call(framework, agent.name, tools, canUseMeta);
+      tools = framework.presentedTools(agent.name, tools, canUseMeta);
     }
     const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');

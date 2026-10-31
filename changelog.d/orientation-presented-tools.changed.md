@@ -1,0 +1,1 @@
+- A subagent's orientation now calls agent-framework's `presentedTools` directly to list the tools its first request carries, instead of feature-detecting it, since agent-framework ^0.29.0 is required and always has it.
