@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
+import { OperatorActionError } from '@animalabs/agent-framework';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
+import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
 
 describe('what each client is sent', () => {
   let host: ObservedHost;
@@ -28,6 +30,8 @@ describe('what each client is sent', () => {
     actions: [{ id: 'refresh', label: 'Refresh' }], login, lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
   };
   let onRead: ((offset: number, limit: number) => void) | undefined;
+  // The rows an undo took out of the agent's window (agent-framework #291's windowStatusOf).
+  let undone = new Set<string>();
   const cm = {
     getMessageCount: () => transcript.length,
     getMessageWindow: (offset: number, limit: number, opts?: { alignToBodyGroups?: boolean }) => {
@@ -43,6 +47,7 @@ describe('what each client is sent', () => {
       return () => { if (appended === listener) appended = undefined; };
     },
     currentBranch: () => branch,
+    windowStatusOf: (id: string) => (undone.has(id) ? 'undone' : transcript.some((m) => m.id === id) ? 'in' : 'absent'),
     getMessage: (id: string) => transcript.find((m) => m.id === id) ?? stored,
     getStrategy: () => ({
       getCompressionQuarantineStatus: () => ({
@@ -72,6 +77,8 @@ describe('what each client is sent', () => {
     requestPanel: async (_child: string, op: string) => ({ ok: true, data: panels[op] }),
   };
   const open: Connection[] = [];
+  /** What the framework's rollbackToMessage does, for the Surgery panel's rollback. */
+  let rollback: () => Promise<unknown> = async () => { throw new Error('no rollback in this test'); };
 
   beforeAll(async () => {
     host = await startObservedHost({
@@ -86,6 +93,8 @@ describe('what each client is sent', () => {
         getAllModules: () => [fleet],
         getAgent: (name: string) => (name === 'main' ? agent : undefined),
         getHostModeStatus: () => hostStatus,
+        rollbackToMessage: () => rollback(),
+        getModule: () => undefined,
         getAgentRuntimeSettings: () => ({ contextBudgetTokens: 1000, transition: 'stable' }),
         healthSnapshot: () => ({
           at: '2026-10-22T06:00:00.000Z',
@@ -585,6 +594,126 @@ describe('what each client is sent', () => {
     const read = c.reader.framesOf('welcome').at(-1)!;
     expect(read.branch).toEqual({ id: 'b2', name: 'experiment' });
     expect(read.session).toEqual({ id: 's1', name: 'Debugging the bridge', autoNamed: true });
+  });
+
+  // HOST-1: a Surgery rollback whose switch failed once chronicle had moved,
+  // and whose putting the store back failed too, left the store on the new
+  // branch while every client went on showing the old one.
+  test("a rollback that failed and left the store on its new branch takes the clients there, and one that moved nothing doesn't", async () => {
+    branch = { id: 'b1', name: 'main' };
+    const c = await everyone();
+    rollback = async () => { throw new OperatorActionError('agent-busy', 'Cannot roll back while mira is busy'); };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-busy', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    expect((await c.operator.until('surgery-result', (f) => f.corrId === 'r-busy')).ok).toBe(false);
+    rollback = async () => {
+      branch = { id: 'b2', name: 'rollback/main/1' };
+      throw new OperatorActionError('failed', 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1');
+    };
+    c.operator.ws.send(JSON.stringify({ type: 'rollback', corrId: 'r-stuck', agent: 'main', messageId: 'm1', sessionId: 's1' }));
+    const stuck = await c.operator.until('surgery-result', (f) => f.corrId === 'r-stuck');
+    expect(stuck).toMatchObject({ ok: false, code: 'failed', error: 'Rollback failed; RESTORE TO main ALSO FAILED (EIO); the store is still on rollback/main/1' });
+    await host.fence([c.operator, c.reader]);
+    for (const conn of [c.operator, c.reader]) {
+      expect(conn.framesOf('branch-changed').map((f) => f.branch)).toEqual([{ id: 'b2', name: 'rollback/main/1' }]);
+      expect(conn.framesOf('welcome').at(-1)!.branch).toEqual({ id: 'b2', name: 'rollback/main/1' });
+    }
+    rollback = async () => { throw new Error('no rollback in this test'); };
+    branch = { id: 'b1', name: 'main' };
+  });
+
+  // DQ-4: the transcript shows the record, which keeps an undone turn's rows,
+  // and marks them as out of the agent's window.
+  test("an undo or a redo on the transcript agent's window marks its rows again for clients that hold messages, and a welcome and a history page carry the marks", async () => {
+    transcript = [
+      { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+      { id: 'a1', participant: 'assistant', content: [{ type: 'text', text: 'three' }] },
+    ];
+    undone = new Set(['a1']);
+    try {
+      const c = await everyone();
+      const marks = (entries: unknown) => (entries as Array<{ id?: string; undone?: boolean }>).map((e) => [e.id, e.undone ?? false]);
+      for (const conn of [c.operator, c.reader]) expect(marks(conn.framesOf('welcome').at(-1)!.messages)).toEqual([['u1', false], ['a1', true]]);
+
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      // Another agent's window is not the transcript's.
+      host.emitTrace({ type: 'window:undone', agentName: 'someone-else', retracted: 1 });
+      await host.fence(Object.values(c));
+      for (const conn of [c.operator, c.reader, c.interior, c.everything]) {
+        expect(conn.framesOf('undone-marks')).toEqual([
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+          { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        ]);
+      }
+      expect(c.dashboard.framesOf('undone-marks')).toEqual([]);
+
+      undone = new Set(['u1']);
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-undone', beforeIndex: 2, limit: 10 }));
+      const page = await c.operator.until('history-page', (f) => f.corrId === 'h-undone');
+      expect(marks(page.entries)).toEqual([['u1', true], ['a1', false]]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
+  });
+
+  // HOST-1: the frame named undone rows only in the welcome's tail (the
+  // record's last 200 rows), and a page leaves a row before `fromIndex` as
+  // it was. The agent's reply with 200 rows of others' traffic stored after
+  // it stayed shown as in its context after an undo, and a row a redo put
+  // back after it left the tail kept its undone label.
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+    const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
+    transcript = [
+      say('u1', 'user', 'count the ledgers'),
+      say('a1', 'assistant', 'three'),
+      ...Array.from({ length: 250 }, (_, i) => say(`x${i}`, 'user', `traffic ${i}`)),
+    ];
+    try {
+      const c = await everyone();
+      const welcome = c.operator.framesOf('welcome').at(-1)!;
+      expect((welcome.history as { startIndex: number }).startIndex).toBe(52);
+      // The page reads back to the start, so it holds the reply.
+      c.operator.ws.send(JSON.stringify({ type: 'request-history', corrId: 'h-back', beforeIndex: 52, limit: 100 }));
+      const back = await c.operator.until('history-page', (f) => f.corrId === 'h-back');
+      type Entry = { id?: string; index?: number; undone?: boolean };
+      const rows: MarkableRow[] = [...(back.entries as Entry[]), ...(welcome.messages as Entry[])]
+        .map((e) => ({ storeId: e.id, index: e.index, ...(e.undone ? { undone: true } : {}) }));
+      expect(rows.length).toBe(252);
+      const marked = () => rows.filter((r) => r.undone).map((r) => r.storeId);
+      const frames = () => c.operator.framesOf('undone-marks');
+
+      undone = new Set(['a1']);
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['a1']);
+
+      undone = new Set();
+      host.emitTrace({ type: 'window:undone', agentName: 'main', retracted: 0, represented: 1 });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual([]);
+
+      // A shed takes rows out of the window as an undone turn's.
+      undone = new Set(['x3']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x3'], reason: 'shed' });
+      // Neither another reason nor another agent's window marks anything.
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'hide' });
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'someone-else', messageIds: ['x5'], reason: 'shed' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3']);
+      expect(frames()).toEqual([
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+      ]);
+    } finally {
+      transcript = [];
+      undone = new Set();
+    }
   });
 
   test("pins and context settings reach full clients alone, a child's as well as the host's, and credential state, the host's and a child's, reaches clients that hold health", async () => {

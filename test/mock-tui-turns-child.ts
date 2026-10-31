@@ -1,6 +1,7 @@
 /**
  * The fake framework sends each trace to every listener in turn, as
- * agent-framework's emitTrace calls each one.
+ * agent-framework's emitTrace calls each one. In `undone` the agent's record
+ * holds two rows, and its window's undone ones are the test's to set.
  */
 import { mock } from 'bun:test';
 import * as core from '@opentui/core';
@@ -33,6 +34,16 @@ const subagents = {
   cancelAll() { aborts.push('cancelAll'); return 1; },
 };
 
+/** The agent's record in `undone`, and which of its rows an undo took out of its window. */
+const history: Array<{ id: string; participant: string; content: Array<Record<string, unknown>> }> = [
+  { id: 'u1', participant: 'user', content: [{ type: 'text', text: 'count the ledgers' }] },
+  { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
+];
+const undoneRows = new Set<string>();
+const contextManager = () => (scenario === 'undone'
+  ? { getAllMessages: () => history, windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in') }
+  : { getAllMessages: () => [] });
+
 function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
   const abortable = new Set<string>();
@@ -48,7 +59,7 @@ function fakeFramework(name: string) {
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
-      ? { name: 'agent', state: { status: 'idle' }, getContextManager: () => ({ getAllMessages: () => [] }) }
+      ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
       : undefined,
     onTrace(listener: Listener) {
       listeners.add(listener);
@@ -76,7 +87,7 @@ const app = {
   membrane: {},
   recipe: { name: 'tui-turns-test', agent: { name: 'agent' } },
   credentials: { provider: 'anthropic', snapshot: () => ({ kind: 'ok' }) },
-  branchState: { undoStack: [], redoStack: [], checkpoints: new Map() },
+  branchState: { checkpoints: new Map() },
   sessionManager: {
     getActiveSession: () => active,
     findSession: (nameOrId: string) => sessions.find(s => s.id === nameOrId || s.name === nameOrId) ?? null,
@@ -371,6 +382,29 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'undone') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    await step('history');
+    // A line that isn't the history's: the operator's message, sent here.
+    await command('and the fifth?');
+    await until(async () => (await frame()).includes('You: and the fifth?'), 'the message to show');
+    // A row stored after the history was drawn, as a turn of this session's is.
+    history.push({ id: 'a2', participant: 'agent', content: [{ type: 'text', text: 'a fifth ledger' }] });
+    // An undo on the agent's window: the history marks its rows.
+    undoneRows.add('a1');
+    undoneRows.add('a2');
+    first.send('window:undone', { retracted: 2 });
+    await until(async () => (await frame()).includes('(undone) three ledgers'), 'the mark');
+    await step('undone');
+    // A redo puts the rows back.
+    undoneRows.clear();
+    first.send('window:undone', { retracted: 0, represented: 2 });
+    await until(async () => !(await frame()).includes('(undone)'), 'the mark to go');
+    await step('redone');
+    // Another agent's window isn't the history's.
+    undoneRows.add('a1');
+    first.send('window:undone', { agentName: 'other', retracted: 1 });
+    await step('another agent');
   } else {
     throw new Error(`unknown scenario ${scenario}`);
   }

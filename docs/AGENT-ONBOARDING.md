@@ -353,8 +353,10 @@ For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
 set the recipe baseline; `enabled` is still required and can be `false`.
 Effort set explicitly with `agent_settings` (in the agent's built-in `settings`
 toolset, or its tool list if that lacks `toolsets--open` or `toolsets--act`)
-overrides the recipe until reset, from the point where it was set: a branch made before that point, such as an undo past
-the turn that set it, has the effort set there, or the recipe's where none was.
+overrides the recipe until reset, from the point where it was set: a branch made
+before that point, such as a rollback (`/branchto`) past the turn that set it,
+has the effort set there, or the recipe's where none was. An `/undo` moves no
+branch, so it keeps the effort.
 Unrelated settings updates preserve the baseline, and compression calls are
 unaffected.
 A model that doesn't accept the effort level (Sonnet 4.5, Haiku 4.5, Claude 3

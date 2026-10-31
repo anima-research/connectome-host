@@ -74,6 +74,9 @@ function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
 export function ContextDocument(props: {
   scope?: string;
   session: string | null;
+  /** Changes when the agent's window does without a new compile (an undo or
+   *  a redo on it, DQ-4): the document reads its context again. */
+  refreshKey?: number;
   scrollRoot?: () => HTMLElement | undefined;
   canRollback?: boolean;
   onRollback?: (messageId: string, preview: string, chosenIn: string | null) => void;
@@ -125,6 +128,9 @@ export function ContextDocument(props: {
     setMsgs([]); setMsgsSession(null); setStats(null); setExact(null); setErr(null);
     void load();
   }));
+  // An undo or a redo moves the window the document is compiled from: read
+  // it again, keeping the old one on screen until the new one comes.
+  createEffect(on(() => props.refreshKey, () => void load(), { defer: true }));
 
   const headN = () => stats()?.head.messages ?? 0;
   const tailN = () => stats()?.tail.messages ?? 0;

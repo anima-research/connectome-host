@@ -327,16 +327,35 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 
 ## Reversibility
 
-- **Host commands** — `/undo`, `/redo`, `/checkpoint`, `/restore`,
-  `/branches`, `/checkout`, `/branchto`, `/newtopic` move the head over
-  Chronicle branches. They are refused while a turn is in flight. Checkpoints
-  are held in memory for the session.
+- **Host commands** — `/restore`, `/checkout` and `/branchto` move the head
+  over Chronicle branches, through the framework's `switchBranch` and
+  `rollbackToMessage`, which reserve the store for every agent sharing it and
+  take every agent's context to the branch they move to; `/checkpoint` saves
+  a point for `/restore`, and `/branches` lists the branches and
+  checkpoints. On a
+  presented window a rollback cuts at the write that showed its message, and
+  the command says which rows after it stay (`returnedToArrivals`,
+  `keptInWindowAfterTarget`). `/undo` and `/redo` are the framework's
+  `undoLastTurn` and `redo`, on the agent's window: no branch moves
+  (agent-framework #291); the transcripts mark the undone rows, which the
+  record keeps, on the `window:undone` trace. `/newtopic` resets the agent's
+  head window at a transition row of its own, stored only while the agent has
+  no turn alive: it is refused while a continuation or a retry of the agent's
+  turn is on its way. A bare `/newtopic` stores nothing if the branch or the
+  strategy changes while it writes its summary: context-manager then refuses
+  the summary, and the answer says why. It also stores nothing if a turn of
+  the agent starts, or the session is switched or the host stops, while the
+  summary is written, and then the answer gives the summary back. They are
+  refused while a turn is in flight. Checkpoints are held in memory for the
+  session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages
   by forking and switching branches; quiesce/resume the host. Every action is
   appended to `sessions/<id>/operator-actions.jsonl`.
 
-The two mechanisms coexist: the host's `/undo` predates the framework's
-surgery and still uses its own branch stacks.
+Both go through the framework, so each move of the branch is in the
+operator log (`checkout`, `rollback`, `suppress`) and is refused
+(`agent-busy`) unless every agent sharing the store is idle; nothing is
+queued.
 
 ## Failure handling and observability
 

@@ -54,6 +54,12 @@ export class SettingsModule implements Module {
     this.ctx = ctx;
   }
 
+  /**
+   * The current branch's reasoning settings, and the effort the agent chose
+   * there, read from module state at each call: a rollback or a checkout
+   * moves to another branch without restarting modules. An undo moves no
+   * branch (agent-framework #291), so it leaves the settings as they are.
+   */
   private current(): { reasoning: ReasoningSettings; effortOverride: ReasoningEffort | undefined } {
     const saved = this.ctx?.getState<{ reasoning?: unknown }>()?.reasoning;
     const baseline = { ...DEFAULTS.reasoning, effort: this.initialEffort };
@@ -66,6 +72,22 @@ export class SettingsModule implements Module {
 
   getReasoning(): ReasoningSettings {
     return this.current().reasoning;
+  }
+
+  /**
+   * Tell an agent, in its context, that an operator changed its settings
+   * (the panel's opt-in notice, notifyAgentOfSettingsChange). The row is
+   * written through this module's context for that agent (`forAgent`), so
+   * it is stamped for it alone and enters its window as any row for it does
+   * (agent-framework #291): at once while no turn of it is alive, and
+   * otherwise at a point of its turn that can carry it, never between rounds
+   * a request didn't carry. No inference is requested. False when the module
+   * isn't started, as between a session's stop and the next start.
+   */
+  noteForAgent(agentName: string, text: string): boolean {
+    if (!this.ctx) return false;
+    this.ctx.addMessage('Context Manager', [{ type: 'text', text }], { system: true }, { forAgent: agentName });
+    return true;
   }
 
   getTools(): ToolDefinition[] {

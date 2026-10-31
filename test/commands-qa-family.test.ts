@@ -4,12 +4,31 @@ import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
 import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
 
+// Since agent-framework #291 /undo and /redo are the framework's undo and
+// redo on the agent's window, and /checkout, /restore and /branchto its
+// switchBranch and rollbackToMessage. The stub framework below answers them
+// over the stub ContextManager; commands-branch-framework.test.ts runs them
+// on a real framework.
+
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
 function makeStubWorld(agentStatus: string | null = 'idle') {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
+
+  // The store the context reads. agent-framework's switchBranch moves it,
+  // past every context on it (each live one then follows the move), where a
+  // context's own switchBranch also initializes that context's strategy
+  // again, as a rollback's switch does for its agent. The stub framework's
+  // switchBranch moved the store through the context's, so it modelled a
+  // switch that re-initialized the strategy, which the real one didn't (J-H9).
+  const store = {
+    switchBranch: (name: string): void => {
+      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
+      currentName = name;
+    },
+  };
 
   const cm = {
     currentBranch: () => ({ id: currentName, name: currentName, head: messagesByBranch.get(currentName)!.length }),
@@ -22,10 +41,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
       messagesByBranch.set(newName, msgs.slice(0, idx + 1));
       return newName;
     },
-    switchBranch: async (name: string): Promise<void> => {
-      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
-      currentName = name;
-    },
+    switchBranch: async (name: string): Promise<void> => store.switchBranch(name),
   };
 
   const agent = {
@@ -40,13 +56,23 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
     { id: 'bbbb2222', name: 'other', manuallyNamed: true, createdAt: 't', lastAccessedAt: 't', messageCount: 1 },
   ];
 
+  const undone: string[] = [];
   const app = {
     framework: {
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
+      undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
+      redo: () => ({ redone: false }),
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
       getStore: () => ({ currentBranch: () => cm.currentBranch() }),
-      switchBranch: (name: string) => cm.switchBranch(name),
+      switchBranch: async (name: string) => store.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     sessionManager: {
       listSessions: () => sessions,
@@ -66,7 +92,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
 
   const text = (r: { lines: Array<{ text: string }> }) => r.lines.map(l => l.text).join('\n');
 
-  return { cm, app, addMessage, deleted, text, currentName: () => currentName };
+  return { cm, app, addMessage, deleted, undone, text, currentName: () => currentName };
 }
 
 describe('multi-word names: rest-of-line parsing', () => {
@@ -137,17 +163,19 @@ describe('in-flight guard on head-moving commands', () => {
   }
 
   test('/undo proceeds when idle', () => {
-    const { app, addMessage, text } = makeStubWorld('idle');
+    const { app, addMessage, undone, text } = makeStubWorld('idle');
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows from its start: the turn's own, and any other, which its next turn shows again).");
+    expect(undone).toEqual(['stub-agent']);
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, text } = makeStubWorld(null);
+    const { app, addMessage, undone, text } = makeStubWorld(null);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain('Undone');
+    expect(undone).toEqual(['stub-agent']);
   });
 });
 
@@ -276,6 +304,9 @@ describe('/mcp add preserves env on overwrite', () => {
 
 describe('/newtopic cut short by a stop', () => {
   const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  // Given its text, /newtopic stores it with resetHeadWindow; bare, it first
+  // writes the summary with context-manager's generateTransitionSummary(),
+  // which stores nothing (HOST-1), and that is where the refusal comes from.
   test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
     for (const stopping of [true, false]) {
       const { cm, app, text } = makeStubWorld('idle');
@@ -285,10 +316,28 @@ describe('/newtopic cut short by a stop', () => {
           throw new Error(CROSSED);
         },
       });
-      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      const follow = await handleCommand('/newtopic Moving on.', app).asyncWork!;
       expect(text(follow)).toBe(stopping
         ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
         : `Topic reset failed: ${CROSSED}`);
+    }
+  });
+
+  test("a bare one whose summary can't be written while the host is stopping says so and gives what the summary said; one that fails otherwise gives the failure", async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        generateTransitionSummary: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const said = `the transition summary couldn't be written (${CROSSED}); nothing was stored`;
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${said}`
+        : `Topic reset failed: ${said}`);
     }
   });
 });

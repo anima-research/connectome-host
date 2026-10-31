@@ -167,6 +167,11 @@ export interface WelcomeMessageEntry {
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
+  /** The row left the conversation agent's window by an undo
+   *  (agent-framework #291): its next request is built without it, and the
+   *  record, which the transcript shows, keeps it. A redo puts it back.
+   *  Absent otherwise. */
+  undone?: true;
 }
 
 /** Verbatim framework TraceEvent. Clients typically pipe these into the
@@ -340,11 +345,26 @@ export interface PerAgentCost {
   inferenceCount: number;
 }
 
-/** Sent when the active branch changes (undo/redo/checkout). A fresh
- *  `welcome` with the new branch's messages follows it. */
+/** Sent when the active branch changes (checkout, restore, branchto, a
+ *  rollback). A fresh `welcome` with the new branch's messages follows it. */
 export interface BranchChangedMessage {
   type: 'branch-changed';
   branch: { id: string; name: string };
+}
+
+/** After an undo or a redo on the conversation agent's window
+ *  (agent-framework #291, the `window:undone` trace), or a shed from it
+ *  (`presentation:retracted`, reason `shed`): which of the transcript's
+ *  rows from `fromIndex` on are out of that window as undone
+ *  (`WelcomeMessageEntry.undone`), by store id. A row from there that isn't
+ *  named isn't undone. This host sends `fromIndex` 0, every row of the
+ *  record, so a page marks each row it holds, however far back its history
+ *  reaches. A row before `fromIndex` would keep its mark. */
+export interface UndoneMarksMessage {
+  type: 'undone-marks';
+  agent: string;
+  fromIndex: number;
+  undone: string[];
 }
 
 /** That an agent's stream ended, with nothing of how or why: sent in place
@@ -728,6 +748,18 @@ export interface SurgeryResultMessage {
   targetBranch?: string;
   messagesRemoved?: number;
   lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  /** A rollback on a presented window (agent-framework #291): the rows after
+   *  the target that stay in the record, out of the agent's window until its
+   *  next turn starts, which presents them, or until a restart of the host
+   *  before then, whose pass over every agent at rest does
+   *  (rollbackToMessage's `returnedToArrivals`). Absent when there are none. */
+  returnedToArrivals?: number;
+  /** A rollback on a presented window: the rows after the target that one
+   *  write presented with it, which stay in the agent's window, since a branch
+   *  cut can't separate them; a suppression or a hide takes them out
+   *  (rollbackToMessage's `keptInWindowAfterTarget`). Absent when there are
+   *  none. */
+  keptInWindowAfterTarget?: number;
 }
 
 /** One durable operator-log record (mirrors the framework's OperatorLogEntry). */
@@ -759,6 +791,7 @@ export type WebUiServerMessage =
   | UsageMessage
   | CallLedgerMessage
   | BranchChangedMessage
+  | UndoneMarksMessage
   | BranchesListMessage
   | SessionChangedMessage
   | PeekMessage

@@ -410,6 +410,13 @@ export function applySettingsCancelTransition(app: PanelAppRef, agentName: strin
   fw.cancelAgentRuntimeSettingsTransition(agentName);
 }
 
+/**
+ * The operator's settings notice is written through the settings module's
+ * context for the agent (SettingsModule.noteForAgent), so it is stamped for
+ * that agent and enters its window at the agent's presentation points
+ * (agent-framework #291); a host without the module (SettingsModule is in
+ * every host this one builds) gets no notice.
+ */
 export function notifyAgentOfSettingsChange(
   app: PanelAppRef,
   agentName: string,
@@ -426,8 +433,10 @@ export function notifyAgentOfSettingsChange(
         + (budget !== undefined ? ` — budget ${budget}` : '')
         + (tail !== undefined ? `, tail ${tail}` : '')
         + (transition === 'converging' ? ' (converging gradually)' : '');
-    const cm = app.framework.getAgent(agentName)?.getContextManager();
-    cm?.addMessage('Context Manager', [{ type: 'text', text }], { system: true });
+    const settings = app.framework.getModule('settings') as { noteForAgent?: (agent: string, text: string) => boolean } | null;
+    if (typeof settings?.noteForAgent !== 'function' || !settings.noteForAgent(agentName, text)) {
+      console.warn(`[settings] notify skipped (change still applied): no started settings module to write ${agentName}'s notice through`);
+    }
   } catch (err) {
     console.warn('[settings] notify failed (change still applied):', err);
   }
@@ -527,6 +536,11 @@ export function buildPinsSnapshot(
   };
 }
 
+/**
+ * A row an undo took out of the agent's window (agent-framework #291,
+ * windowStatusOf 'undone') isn't a pin candidate: the fold plan a pin
+ * constrains is the window's, so a pin on it would hold nothing.
+ */
 function buildPinCandidates(
   app: PanelAppRef,
   agentName: string,
@@ -538,6 +552,7 @@ function buildPinCandidates(
       getMessageWindow?: (
         offset: number, limit: number, opts?: { resolveBlobs?: boolean },
       ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+      windowStatusOf?: (id: string) => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
       return [];
@@ -548,6 +563,7 @@ function buildPinCandidates(
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
     win.messages.forEach((m, i) => {
       if (!m.id) return;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') return;
       let text = '';
       if (Array.isArray(m.content)) {
         for (const b of m.content as Array<Record<string, unknown>>) {

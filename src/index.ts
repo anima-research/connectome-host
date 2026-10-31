@@ -963,7 +963,7 @@ async function main() {
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);

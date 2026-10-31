@@ -472,6 +472,8 @@ const OPS: FrameScopes = ['ops'];
 const TOOLS_AND_OPS: FrameScopes = ['messages', 'tools', 'ops'];
 const ALL_BUT_DEBUG: FrameScopes = AGENT_TREE_SCOPES;
 
+// A test fails on a type the installed framework raises without an entry here,
+// and on an entry for a type it no longer raises.
 export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   // The conversation and its turns.
   'message:added': MESSAGES,
@@ -480,9 +482,9 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'inference:turn_ended': MESSAGES,
   // The messages injected into a turn.
   'inference:stream_resumed': MESSAGES,
-  // Branch names.
-  'undo:completed': MESSAGES,
-  'redo:completed': MESSAGES,
+  // An undo or a redo on an agent's window (#291): how many rows left it or
+  // entered it again. No branch moves, so it carries no branch name.
+  'window:undone': MESSAGES,
   // A turn's end, and a restart for its context budget, carry token counts.
   'inference:completed': ['messages', 'health'],
   'inference:stream_restarted': ['messages', 'health'],
@@ -548,12 +550,27 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'dendrite:activation-cancelled': ['health', 'ops'],
   'dendrite:early-traces-dropped': OPS,
   'dendrite:mail-held': OPS,
+  // Mail held in memory behind a live surgery, stored at its release.
   'dendrite:mail-deferred': OPS,
   'dendrite:mail-delivered': OPS,
   'tune-out:reader-fork': OPS,
   // A reader fork whose framing, derive or run threw before it reported; its messages go back to the channel's next reader (agent-framework #793).
   'tune-out:reader-fork-failed': OPS,
   'tune-out:reader-prose-delivered': ['messages', 'ops'],
+  // Where the persistent subconscious's window starts, as an index ordinal.
+  'tune-out:subconscious-window': OPS,
+  // The presentation index (agent-framework #291): which stored rows enter
+  // each agent's window, and when. They carry agent names, counts, ids and
+  // slots, never content: what entered a window, a stamp no reader of its
+  // slot can read, a presentation that failed, a hand-off whose rows weren't
+  // the stream's, and rows taken out of a window. Own rows found out of the
+  // window at boot or when an agent is taken on are the host's health too.
+  'presentation:presented': OPS,
+  'presentation:repaired': ['health', 'ops'],
+  'presentation:unreadable-audience': OPS,
+  'presentation:failed': OPS,
+  'presentation:hand-off-mismatch': OPS,
+  'presentation:retracted': OPS,
   'gate:wake-line-omitted': OPS,
   'gate:policy-added': OPS,
   'gate:policy-removed': OPS,
@@ -607,6 +624,11 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'tune-out:cancelled': OPS,
   'tune-out:timer-failed': OPS,
   'tune-out:ack-failed': OPS,
+  // A tune-out's channel announcement, posted or not (ids and the error, no
+  // text), and an all-except scope's wakes paused at their budget.
+  'tune-out:announced': OPS,
+  'tune-out:announce-failed': OPS,
+  'tune-out:wake-budget-paused': OPS,
   // Held speech's delivery: held, resent, dismissed, with no text.
   'prose:drafts-held': OPS,
   'prose:draft-resent': OPS,
@@ -658,6 +680,9 @@ export function frameScopes(frame: WebUiServerMessage): FrameScopes {
     case 'inbound-trigger':
     case 'branch-changed':
     case 'stream-ended':
+    // Which of the transcript's rows an undo took out of the agent's window,
+    // by id, as the welcome's entries mark them.
+    case 'undone-marks':
       return ['messages'];
     default:
       return FULL_CLIENTS_ONLY;

@@ -5,6 +5,8 @@ import { historyInjectionLine } from '../src/tui.js';
 import { toWireEntry } from '../src/modules/web-ui-module.js';
 import { handleCommand, createBranchState } from '../src/commands.js';
 import { SubagentModule } from '../src/modules/subagent-module.js';
+import { storedInjectionMarkOf, type Module, type ModuleContext, type ModuleContextInjection } from '@animalabs/agent-framework';
+import { bootPresentedHost } from './presented-host.js';
 
 const lessonsRow = (agent = 'alice') => ({
   id: 'inj1',
@@ -89,79 +91,61 @@ describe('readers that show the transcript label stored injections', () => {
   });
 });
 
+// On this branch /undo is the framework's undo on the agent's window
+// (agent-framework #291, decision 4): the host no longer picks a record row to
+// branch at, so main's cases for where /undo lands among stored injections,
+// written over a stub record and its branchAt, are read onto a real framework.
+// A turn's stored injections are stored after its checkpoint, by its compile,
+// so the undo takes them out of the window with the turn's reply, and the rows
+// before the turn stay: where main's /undo lands. Main's tool-round case is
+// gone with the record-level undo: the framework's undo takes the whole turn,
+// its rounds too, and "nothing to undo" means no turn to undo
+// (commands-branch-framework.test.ts).
 describe('/undo steps back past stored injections', () => {
-  interface Row { id: string; participant: string; content: unknown[]; metadata?: unknown }
-  function world(rows: Row[]) {
-    const branches = new Map<string, Row[]>([['main', rows]]);
-    let current = 'main';
-    const cm = {
-      currentBranch: () => ({ id: current, name: current, head: branches.get(current)!.length }),
-      queryMessages: () => ({ messages: branches.get(current)! }),
-      branchAt: (id: string, name: string): string => {
-        const msgs = branches.get(current)!;
-        const at = msgs.findIndex(m => m.id === id);
-        if (at === -1) throw new Error(`Message not found: ${id}`);
-        branches.set(name, msgs.slice(0, at + 1));
-        return name;
-      },
-      switchBranch: async (name: string) => { current = name; },
-    };
-    const app = {
-      framework: {
-        getAgent: () => undefined,
-        getAllAgents: () => [{ getContextManager: () => cm }],
-        getAllModules: () => [],
-        getStore: () => ({ currentBranch: () => cm.currentBranch() }),
-        switchBranch: (name: string) => cm.switchBranch(name),
-      },
-      branchState: createBranchState(),
-      userMessageCount: 0,
-    } as never;
-    return { app, ids: async () => { return branches.get(current)!.map(m => m.id); } };
+  /** Gathers one afterUser block per compile, its text new each time, so each turn stores its own. */
+  class Lessons implements Module {
+    readonly name = 'lessons';
+    ctx: ModuleContext | null = null;
+    private n = 0;
+    async start(ctx: ModuleContext): Promise<void> { this.ctx = ctx; }
+    async stop(): Promise<void> {}
+    getTools() { return []; }
+    async handleToolCall() { return { success: false, isError: true, error: 'no tools' }; }
+    async onProcess() { return {}; }
+    async gatherContext(): Promise<ModuleContextInjection[]> {
+      this.n += 1;
+      return [{ namespace: 'retrieval', position: 'afterUser', content: [{ type: 'text', text: `LESSON ${this.n}` }] }];
+    }
   }
-  const injection = (id: string): Row => ({ id, participant: 'system_context:retrieval', content: [], metadata: { contextInjection: { agent: 'alice', namespace: 'retrieval', contentHash: 'h1', part: 0, parts: 1 } } });
 
-  test('after a turn, it undoes to the row before the turn\'s stored block', async () => {
-    const w = world([
-      { id: 'u1', participant: 'user', content: [] },
-      { id: 'a1', participant: 'alice', content: [] },
-      { id: 'u2', participant: 'user', content: [] },
-      injection('i2'),
-      injection('f2'),
-      { id: 'a2', participant: 'alice', content: [] },
-    ]);
-    await handleCommand('/undo', w.app).asyncWork;
-    expect(await w.ids()).toEqual(['u1', 'a1', 'u2']);
-  });
+  test("after a turn, the turn's stored block leaves the agent's window with its reply, and the rows before the turn stay", async () => {
+    const lessons = new Lessons();
+    const h = await bootPresentedHost({ agents: ['alice'], modules: [lessons as unknown as Module], prefix: 'undo-injections-' });
+    try {
+      const cm = h.framework.getAgent('alice')!.getContextManager();
+      const say = (text: string) => lessons.ctx!.addMessage('user', [{ type: 'text', text }], undefined, { forAgent: 'alice' });
+      say('u1 plan the migration');
+      await h.turn('alice');
+      say('u2 and the rollback');
+      const before = cm.getPresentedMessages().map((m) => m.id);
+      await h.turn('alice');
+      const stored = cm.getAllMessages().filter((m) => storedInjectionMarkOf(m.metadata) !== undefined && !before.includes(m.id));
+      // The premise: the second turn stored a block of its own, after the user's row.
+      expect(stored.length).toBeGreaterThan(0);
+      const reply = cm.getAllMessages().at(-1)!;
+      expect(reply.participant).toBe('alice');
 
-  test('a stored block after the agent\'s last reply isn\'t taken for it', async () => {
-    const w = world([
-      { id: 'u1', participant: 'user', content: [] },
-      injection('i1'),
-      { id: 'a1', participant: 'alice', content: [] },
-      { id: 'u2', participant: 'user', content: [] },
-      injection('i2'),
-    ]);
-    await handleCommand('/undo', w.app).asyncWork;
-    expect(await w.ids()).toEqual(['u1']);
-  });
-
-  test('a turn with a tool round keeps its block, as it keeps the round: /undo lands where it would without stored injections', async () => {
-    const w = world([
-      { id: 'u1', participant: 'user', content: [] },
-      injection('i1'),
-      { id: 'a1', participant: 'alice', content: [{ type: 'tool_use', id: 't1', name: 'look', input: {} }] },
-      { id: 'r1', participant: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }] },
-      { id: 'a2', participant: 'alice', content: [] },
-    ]);
-    await handleCommand('/undo', w.app).asyncWork;
-    expect(await w.ids()).toEqual(['u1', 'i1', 'a1', 'r1']);
-  });
-
-  test('with only stored blocks before the reply, there\'s nothing to undo to', () => {
-    const w = world([injection('i1'), { id: 'a1', participant: 'alice', content: [] }]);
-    expect(handleCommand('/undo', w.app).lines[0]!.text).toBe('Nothing to undo (no agent messages found).');
-  });
+      const undo = handleCommand('/undo', { framework: h.framework, agentName: 'alice', branchState: createBranchState() } as never);
+      expect(undo.lines[0]!.text).toContain("alice's last turn left its window");
+      expect(cm.getPresentedMessages().map((m) => m.id)).toEqual(before);
+      for (const row of [...stored, reply]) {
+        expect(h.inWindow('alice', row.id)).toBe(false);
+        expect(cm.getAllMessages().map((m) => m.id)).toContain(row.id);
+      }
+    } finally {
+      await h.cleanup();
+    }
+  }, 30_000);
 });
 
 describe('readers of a compile leave stored injections out by its provenance', () => {

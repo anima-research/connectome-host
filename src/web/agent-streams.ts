@@ -12,6 +12,12 @@ export interface TraceViewHooks {
   onOpsAlert(event: { [k: string]: unknown }): void;
   onOperatorAction(): void;
   requestHostMode(): void;
+  /** An undo or a redo on an agent's window (agent-framework #291's
+   *  `window:undone`): the views built from what that window holds (context
+   *  makeup and coverage, the compiled context, pin candidates) read again.
+   *  The transcript shows the record, which keeps the rows; the server's
+   *  `undone-marks` frame marks them. */
+  onWindowUndone(agentName: string | undefined): void;
 }
 
 export function conversationAgentOf(
@@ -74,6 +80,9 @@ export function applyTrace(
       return;
     case 'operator:action':
       hooks.onOperatorAction();
+      return;
+    case 'window:undone':
+      hooks.onWindowUndone(typeof e.agentName === 'string' ? e.agentName : undefined);
       return;
   }
   if (STREAM_END_TRACES.has(e.type)) {

@@ -43,7 +43,7 @@ function idleHost(): QuiesceFramework {
   let reason: string | undefined;
   const status = (): HostModeStatus => ({
     quiesced, ...(reason !== undefined ? { reason } : {}), drained: true, activeTurns: 0, activeTurnAgents: [],
-    parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0, deferredWrites: 0,
+    parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0,
   });
   return {
     quiesce: async (opts = {}) => { if (!quiesced) { quiesced = true; reason = opts.reason; } return status(); },

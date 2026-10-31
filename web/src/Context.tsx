@@ -81,7 +81,12 @@ function rowsOf(s: Stats): Row[] {
   ].filter((r) => r.tokens > 0 || r.messages > 0);
 }
 
-export function ContextPanel(props: { scope?: string }) {
+export function ContextPanel(props: {
+  scope?: string;
+  /** Changes when the agent's window does without a new compile (an undo or
+   *  a redo on it, DQ-4): the makeup and the coverage read again. */
+  refreshKey?: number;
+}) {
   const [data, setData] = createSignal<Makeup | null>(null);
   const [coverage, setCoverage] = createSignal<Coverage | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -148,6 +153,9 @@ export function ContextPanel(props: { scope?: string }) {
     setCoverageErr(null);
     refreshAll();
   }));
+
+  // An undo or a redo moves the window the figures are built from.
+  createEffect(on(() => props.refreshKey, () => refreshAll(), { defer: true }));
 
   onMount(() => {
     const timer = window.setInterval(() => void loadCoverage(), 5_000);

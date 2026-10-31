@@ -17,6 +17,7 @@ function recorder() {
     onOpsAlert: () => { calls.push('alert'); },
     onOperatorAction: () => { calls.push('operator'); },
     requestHostMode: () => { calls.push('host-mode'); },
+    onWindowUndone: (agent) => { calls.push(`window-undone:${agent ?? '-'}`); },
   };
   return { calls, hooks };
 }
@@ -137,6 +138,15 @@ describe('the other traces the page reads', () => {
     applyTrace({ type: 'host:quiesce' }, hooks, 'clerk');
     applyTrace({ type: 'inference:started', agentName: 'clerk' }, hooks, 'clerk');
     expect(calls).toEqual(['alert', 'operator', 'host-mode']);
+  });
+
+  // DQ-4: an undo or a redo on a window refreshes the panels built from it,
+  // whichever agent's window it was (a panel can show another agent's).
+  test("an undo or a redo on any agent's window, for the panels built from it", () => {
+    const { calls, hooks } = recorder();
+    applyTrace({ type: 'window:undone', agentName: 'clerk', retracted: 2 }, hooks, 'clerk');
+    applyTrace({ type: 'window:undone', agentName: 'mira', retracted: 0, represented: 1 }, hooks, 'clerk');
+    expect(calls).toEqual(['window-undone:clerk', 'window-undone:mira']);
   });
 });
 

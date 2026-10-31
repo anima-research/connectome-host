@@ -248,9 +248,10 @@ When declarative rules aren't enough, put a `gate.js` in the same directory as
 `gate.json` (on disk — write it with your shell, not through `_config/`). It
 exports a default function that receives the event and returns a behavior — or
 `null` to fall through to your `gate.json` policies. `_config/` versions
-`gate.js` itself but not files beside it that it imports or reads, so an
-undo or a branch switch takes back `gate.js` and leaves those as they are:
-keep `gate.js` self-contained, or put such files in a mount of their own.
+`gate.js` itself but not files beside it that it imports or reads, so a
+branch switch or a rollback takes back `gate.js` and leaves those as they are
+(an undo moves no branch, so it takes back nothing): keep `gate.js`
+self-contained, or put such files in a mount of their own.
 
 The event is `{ content, eventType, serverId, channelId, metadata, tags, mount,
 paths }`. `tags` can be absent on untagged events (so default it), and `mount` /

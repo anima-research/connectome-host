@@ -258,7 +258,7 @@ channel that last had a message either),
 so keep the cap low. Ephemeral subagents don't inherit it: their streams run
 with it off, and a fork's or spawn's orientation lists `auto-continue` beside
 the parent's. It rests on `AgentConfig.autoContinue` (agent-framework#744),
-which agent-framework 0.29.0, this host's floor, has. See Agent Framework's
+which every agent-framework this host can install has. See Agent Framework's
 `docs/auto-continue.md`.
 
 ```json
@@ -680,7 +680,7 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
+- **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
 - **Importers** — claude.ai exports, Claude Code transcripts and Codex rollouts become sessions ([guides above](#what-people-run-on-it))
@@ -887,13 +887,13 @@ headless socket.
 | `/newtopic [context]` | Reset the head window for a new topic |
 | `/nudge [agent]` | Run inference on the current context without a new event |
 | `/puppet <tool> [json]` | Admin: execute a tool as the agent and store the call/result pair |
-| `/undo` | Revert to state before last agent turn |
-| `/redo` | Re-apply undone action |
+| `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
+| `/redo` | Put the turn `/undo` took out back in the agent's window |
 | `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Restore to checkpoint |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
-| `/branchto <msgId>` | Branch from a specific message |
+| `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
 | `/history [n]` | Show the last n messages (20 by default) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
@@ -908,10 +908,30 @@ headless socket.
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
-Commands that move the head are refused while a turn is in flight: `/undo`,
-`/redo`, `/checkout`, `/restore` and `/branchto` while any agent sharing the
-store is mid-turn, the subconscious included, and `/newtopic` while the main
-agent is.
+The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
+those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
+refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
+while any agent sharing the store is mid-turn, the subconscious included, and
+`/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/newtopic` stores its transition only while the agent has no turn alive, and
+is refused while a continuation or a retry of the agent's turn is on its way.
+A bare `/newtopic` writes its summary first. If the branch or the strategy
+changes meanwhile, the summary can't be written: it stores nothing, and its
+answer says why. If a turn of the agent starts, or the session is switched or
+the host stops, meanwhile, it stores nothing, and its answer gives the
+summary it wrote, to pass as `/newtopic <text>`.
+`/checkout`, `/restore` and `/branchto` go through agent-framework's branch
+switch and rollback, which are refused unless every agent sharing the store is
+idle, take every agent's context to the new branch, and are written to the
+operator log (as a `checkout` or a `rollback`). A rollback says which rows
+after its message it kept: rows one write showed the agent together with the
+message stay in its window after it (suppress or hide them to take them out),
+and rows stored before the message was shown and shown after it stay in the
+record and enter the window at the agent's next turn, or at a restart of the
+host before then. `/undo` and `/redo` are
+its undo and redo on the agent's window; the TUI's history and the Web UI's
+transcript mark an undone turn's rows, and the Web UI's context panels read
+the window again.
 
 While a session switch is under way, these are refused, each saying
 nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,

@@ -26,6 +26,7 @@ import { UpdateBanner, UpdateDialog } from './Update';
 import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
+import { applyUndoneMarksTo } from './undone-marks';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
@@ -36,6 +37,7 @@ import {
   type WelcomeMessage,
   type WelcomeMessageEntry,
   type HistoryPageMessage,
+  type UndoneMarksMessage,
   type MessageBlock,
   type TokenUsage,
   type QuotaSnapshotData,
@@ -82,6 +84,10 @@ interface Message {
   timestamp?: number;
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
+  /** The row left the conversation agent's window by an undo
+   *  (agent-framework #291): the record keeps it, its next request is built
+   *  without it. From the welcome, a history page or an undone-marks frame. */
+  undone?: boolean;
   trigger?: {
     origin: string;
     source: string;
@@ -106,6 +112,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
     timestamp: e.timestamp,
+    ...(e.undone ? { undone: true } : {}),
   };
 }
 
@@ -557,6 +564,21 @@ export function App() {
   const refreshPins = (): void => {
     setPinsLoaded(false);
     wire.send({ type: 'request-pins', scope: panelScope() });
+  };
+
+  /** Bumped at each undo or redo on an agent's window (the window:undone
+   *  trace, DQ-4): the panels built from what a window holds (Context's
+   *  makeup and coverage, the compiled context) read again when it moves,
+   *  and so do the pins, whose candidates leave an undone row out. */
+  const [windowEpoch, setWindowEpoch] = createSignal(0);
+  const onWindowUndone = (): void => {
+    setWindowEpoch((n) => n + 1);
+    if (sidebarTab() === 'pins') refreshPins();
+  };
+  /** Mark the transcript's rows from `fromIndex` on as the server says an
+   *  undo left them: in the conversation agent's window, or out of it. */
+  const applyUndoneMarks = (marks: UndoneMarksMessage): void => {
+    setMessages(produce((arr) => applyUndoneMarksTo(arr, marks)));
   };
 
   const [mounts, setMounts] = createSignal<Mount[]>([]);
@@ -1157,6 +1179,8 @@ export function App() {
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
         onCommandAnswer: refreshLocalUpdate,
+        onWindowUndone,
+        applyUndoneMarks,
       });
     });
     onCleanup(() => {
@@ -1401,6 +1425,7 @@ export function App() {
             <For each={messages}>{(m) => (
               <MessageRow
                 storeId={m.storeId}
+                undone={!!m.undone}
                 canRollback={canRollback() && !!m.storeId}
                 canSuppress={canSuppress() && !!m.storeId}
                 selecting={selecting()}
@@ -1418,6 +1443,7 @@ export function App() {
               <ContextDocument
                 scope={panelScope()}
                 session={shownSession()}
+                refreshKey={windowEpoch()}
                 canRollback={canRollback() && panelScope() === 'local'}
                 onRollback={(id, preview, chosenIn) => beginRollback(id, preview, chosenIn)}
               />
@@ -1582,7 +1608,8 @@ export function App() {
                   agent={pinsState()?.agent}
                   candidates={panelScope() === 'local'
                     ? messages
-                        .filter((m) => m.index !== undefined && m.id)
+                        // A row an undo took out of the window: a pin on it would hold nothing.
+                        .filter((m) => m.index !== undefined && m.id && !m.undone)
                         .map<PinCandidate>((m) => ({
                           id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
                         }))
@@ -1607,7 +1634,7 @@ export function App() {
               />
             </Show>
             <Show when={sidebarTab() === 'context'}>
-              <ContextPanel scope={panelScope()} />
+              <ContextPanel scope={panelScope()} refreshKey={windowEpoch()} />
             </Show>
             <Show when={sidebarTab() === 'health'}>
               <HealthPanel
@@ -1665,6 +1692,7 @@ interface HandlerHooks {
   setOpenFile: (file: FileViewer) => void;
   onOpsAlert: (event: { [k: string]: unknown }) => void;
   setBranchesList: (branches: BranchRow[], currentId: string) => void;
+  /** React to a server-side branch switch (checkout, restore, branchto, a rollback). */
   onBranchChanged: (branch: { id: string; name: string }) => void;
   setHostMode: (hostMode: HostModeSnapshot | null) => void;
   requestHostMode: () => void;
@@ -1674,6 +1702,10 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   onOperatorAction: () => void;
   onCommandAnswer: () => void;
+  /** An undo or a redo on an agent's window: the panels built from it read again. */
+  onWindowUndone: (agentName: string | undefined) => void;
+  /** Apply an undone-marks frame to the transcript. */
+  applyUndoneMarks: (marks: UndoneMarksMessage) => void;
 }
 
 function staleScope(msgScope: string | undefined, current: string): boolean {
@@ -1735,6 +1767,9 @@ function handleServerMessage(
     }
     case 'branch-changed':
       hooks.onBranchChanged(msg.branch);
+      return;
+    case 'undone-marks':
+      hooks.applyUndoneMarks(msg);
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
@@ -1900,6 +1935,8 @@ type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
 
 function MessageRow(props: {
   storeId?: string;
+  /** The row left the conversation agent's window by an undo: dimmed and labelled. */
+  undone?: boolean;
   canRollback: boolean;
   canSuppress: boolean;
   selecting: boolean;
@@ -1910,7 +1947,13 @@ function MessageRow(props: {
 }) {
   const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
   return (
-    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''} ${props.undone ? 'opacity-50' : ''}`}>
+      <Show when={props.undone}>
+        <div
+          class="text-[10px] font-mono text-amber-300/80 mb-0.5"
+          title="An undo took this out of the agent's context: its next request is built without it. The record keeps it; /redo puts it back."
+        >undone · not in the agent's context</div>
+      </Show>
       <Show when={actionable()}>
         <div class={`absolute right-0 top-0 z-10 flex gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
           <Show when={props.canRollback && !props.selecting}>
@@ -2335,9 +2378,9 @@ const COMMANDS: CommandHint[] = [
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
   { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
-  { name: '/restore', blurb: 'switch to checkpoint' },
-  { name: '/undo', blurb: 'revert before last agent turn' },
-  { name: '/redo', blurb: 're-apply last undone action' },
+  { name: '/restore', blurb: 'roll back to checkpoint, or to its branch head' },
+  { name: '/undo', blurb: "take the agent's last turn out of its window" },
+  { name: '/redo', blurb: 'put the undone turn back in its window' },
   { name: '/nudge', blurb: 'run inference on current context, no new events' },
   { name: '/history', blurb: 'recent messages' },
   { name: '/lessons', blurb: 'list active lessons' },

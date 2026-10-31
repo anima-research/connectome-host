@@ -11,7 +11,7 @@ import type {
   ContextManager,
 } from '@animalabs/agent-framework';
 import type { Agent, AgentFramework, AgentRecord } from '@animalabs/agent-framework';
-import { AgentStoppedError, KnowledgeStrategy, formatZonedDateTime, resolveTimeZone, storedInjectionMarkOf, taskForkSpec, workerSpec } from '@animalabs/agent-framework';
+import { AgentStoppedError, KnowledgeStrategy, formatZonedDateTime, resolveTimeZone, storeOwnRow, storedInjectionMarkOf, taskForkSpec, workerSpec } from '@animalabs/agent-framework';
 import { compiledWithoutStoredInjections } from '../stored-injection.js';
 import { isToolResultContent, isToolUseContent } from '@animalabs/membrane';
 import type { ContentBlock } from '@animalabs/membrane';
@@ -1477,10 +1477,13 @@ export class SubagentModule implements Module {
 
   // context-manager stores a long status in shards, in order, each carrying
   // the mark, so the newest row is its last shard, whose lines are runs'
-  // whenever the status lists one.
+  // whenever the status lists one. A row the agent's window doesn't hold
+  // (`held`, as an undone turn's is) is passed over: the newest status is the
+  // newest one the agent is shown.
   private newestStatusListsRun(agentName: string): boolean {
     const rows = this.ctx!.queryMessages({ participant: FLEET_PARTICIPANT }, { forAgent: agentName }).messages;
     for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.held) continue;
       const mark = storedInjectionMarkOf(rows[i]!.metadata);
       if (mark?.namespace !== FLEET_NAMESPACE || mark.agent !== agentName) continue;
       const text = rows[i]!.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
@@ -2588,11 +2591,65 @@ export class SubagentModule implements Module {
         say(`, for '${shown}': launched by an earlier attempt`, current);
         return current;
       }
-      say(`, for '${shown}': launched by an attempt that has ended`);
-      return null;
     }
-    say(`, for '${shown}', which has ended`);
+    // The launcher, or the attempt that launched the run, has ended: the row
+    // is written for the nearest agent up the launcher's tree that
+    // agent-framework lists, else for the primary, and wakes nobody (#291).
+    // Written for no agent, it would be stamped for every resident, so each
+    // of them would be shown a run that was none of theirs.
+    const why = run !== undefined ? `, for '${shown}': launched by an attempt that has ended` : `, for '${shown}', which has ended`;
+    const reader = this.nearestListedAbove(launcher, listed);
+    if (reader !== undefined) say(why, reader);
+    else say(why);
     return null;
+  }
+
+  /**
+   * The nearest agent above `agent` in its tree that agent-framework lists:
+   * an ancestor itself, or the current attempt of an ancestor's run that
+   * goes on, else the primary (the first listed agent when none is). Up the
+   * tree by the registry's spawner links, an orphan's through its former
+   * parent, as agent-framework offers an orphan's candidates; and for an
+   * attempt of a run this module holds, by the run's launcher. Undefined
+   * only when no agent is listed.
+   *
+   * attemptEdges climbs the same tree by other rules, and for one run the
+   * two can name different agents. It picks a retry attempt's parent and
+   * resultTo, where the attempt's result goes when the attempt ends, which
+   * the registry records with it. So it follows the registry's records alone,
+   * takes the first agent whose record is missing or hasn't ended, and falls
+   * back to the module's parentAgentName, or to no parent once that has
+   * ended. This rule picks the reader of one row written now, for a run with
+   * no route (addForLauncher): it takes only an agent agent-framework
+   * lists, since a write for any other is refused, steps from an ended
+   * attempt to its run's live attempt, and falls back to the framework's
+   * primary, then to the first listed agent. Where they differ, each names
+   * an agent that can take what is written for it (a row written for a
+   * run's agent goes to the primary if that agent ends without reading it:
+   * agent-framework's PRIMARY_IF_UNREAD), so the difference is in who reads
+   * it, not in whether it is read.
+   */
+  private nearestListedAbove(agent: string, listed: ReadonlySet<string>): string | undefined {
+    const seen = new Set<string>([agent]);
+    for (let cur = this.launcherOf(agent); cur !== undefined && cur !== '' && !seen.has(cur); cur = this.launcherOf(cur)) {
+      seen.add(cur);
+      if (listed.has(cur)) return cur;
+      const run = this.runOfAttempt.get(cur);
+      const current = run === undefined ? undefined : this.liveSubagents.get(run)?.frameworkAgentName;
+      if (current !== undefined && listed.has(current)) return current;
+    }
+    const primary = this.framework?.getPrimaryAgentName() ?? null;
+    if (primary !== null && listed.has(primary)) return primary;
+    return listed.values().next().value;
+  }
+
+  /** Who launched `agent`: its record's spawner, else, for an attempt of a run still going on, the run's launcher. */
+  private launcherOf(agent: string): string | undefined {
+    const record = this.framework?.getAgentRecord(agent) ?? null;
+    const spawner = record?.orphaned?.formerParent.agent ?? record?.relationships.spawnedBy;
+    if (spawner !== undefined) return spawner;
+    const run = this.runOfAttempt.get(agent);
+    return run === undefined ? undefined : this.parentMap.get(run);
   }
 
   private attemptEdges(run: RunProgress, launched: string | undefined, sync: boolean | undefined): { parent: string; resultTo: { to: string; as: 'tool-result' | 'message' } } | null {
@@ -3229,10 +3286,13 @@ export class SubagentModule implements Module {
 
         try {
           // The orientation, then the task, each its own message: the cap
-          // applies to each message alone, so each has all of it.
+          // applies to each message alone, so each has all of it. Each is the
+          // stream's own row (storeOwnRow), as the framework's seed rows are:
+          // stamped for it alone, and presented in its window when its run
+          // takes it on (#291), since no turn of it is alive yet.
           const orientation = this.orientationFor(launch, agent, { kind: 'none', reason: 'spawn' });
-          contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-          contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+          storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
 
           // A real compile, not a dry one: a dry compile returns an
           // over-budget plan where a real one refuses it, and the stream's
@@ -3457,13 +3517,15 @@ export class SubagentModule implements Module {
                 )
               : null;
 
+            // The copy is the stream's own rows (storeOwnRow), as a spawn's seed
+            // rows are: presented in its window when its run takes it on (#291).
             const seen = new Set<string>();
             const addMsg = (msg: { participant: string; content: ContentBlock[] }) => {
               const key = msg.participant + '\0' + JSON.stringify(msg.content);
               if (seen.has(key)) return;
               seen.add(key);
               const participant = msg.participant === parentAgent.name ? agentName : msg.participant;
-              contextManager.addMessage(participant, msg.content);
+              storeOwnRow(agent, participant, msg.content);
             };
 
             if (transformed) {
@@ -3490,13 +3552,13 @@ export class SubagentModule implements Module {
 
               const fallbackForkId = `fork-${input.name}-${crypto.randomUUID()}`;
               const atStart = orient({ kind: 'compiled-at-start', reason: callToolUseId ? 'call-not-in-context' : 'no-call-id' });
-              contextManager.addMessage(agentName, [{
+              storeOwnRow(agent, agentName, [{
                 type: 'tool_use',
                 id: fallbackForkId,
                 name: 'subagent--fork',
                 input: { name: input.name, task: input.task },
               }] as ContentBlock[]);
-              contextManager.addMessage('user', [{
+              storeOwnRow(agent, 'user', [{
                 type: 'tool_result',
                 toolUseId: fallbackForkId,
                 toolName: 'subagent--fork',
@@ -3514,8 +3576,8 @@ export class SubagentModule implements Module {
             // spawn, since the cap applies to each message alone.
             const orientation = `${orient({ kind: 'none', reason: 'no-parent' })}\n\n` +
               'When this intention is complete, return your findings via subagent--return. Your intention for this stream follows.';
-            contextManager.addMessage('user', [{ type: 'text', text: orientation }]);
-            contextManager.addMessage('user', [{ type: 'text', text: input.task }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: orientation }]);
+            storeOwnRow(agent, 'user', [{ type: 'text', text: input.task }]);
             delivery = { kind: 'message', orientation, taskBlock: input.task };
           }
 

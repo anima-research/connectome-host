@@ -51,7 +51,8 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
         return { success: true };
       },
     },
-    getAgent: () => ({ getContextManager: () => ({ addMessage: (_p: string, content: Array<{ text: string }>) => { markers.push(content[0]!.text); return 'id'; } }) }),
+    // Only whether the agent is registered: the marker is written through the module's context (ctx, below).
+    getAgent: (name: string) => (name === 'clerk' ? {} : null),
   };
   let t = 0;
   const module = new NoticesModule({
@@ -64,7 +65,20 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
     },
     ...cfg,
   });
-  const ctx = { getState: () => null, setState: () => {}, getModule: () => undefined } as unknown as ModuleContext;
+  // Since agent-framework #291 the marker is a row for the agent written
+  // through the module's context, stamped for it and presented at its points,
+  // not a row stored straight into its context manager.
+  const markerWrites: Array<{ participant: string; metadata: unknown; opts: unknown }> = [];
+  const ctx = {
+    getState: () => null,
+    setState: () => {},
+    getModule: () => undefined,
+    addMessage: (participant: string, content: Array<{ text: string }>, metadata?: unknown, opts?: unknown) => {
+      markers.push(content[0]!.text);
+      markerWrites.push({ participant, metadata, opts });
+      return 'id';
+    },
+  } as unknown as ModuleContext;
   const emit = (e: Record<string, unknown>) => listener!(e as unknown as TraceEvent);
   const incoming = (channelId: string) => module.onProcess({ type: 'mcpl:channel-incoming', channelId } as never, {} as never);
   const alert = (kind: string, message = kind, data?: Record<string, unknown>, agentName = 'clerk') =>
@@ -73,7 +87,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
   const fireTimers = async () => { for (const h of timers.splice(0)) if (!h.cancelled) { t = Math.max(t, h.due); h.fn(); } await settle(); };
   const setTime = (ms: number) => { t = ms; };
   const hold = (channelId: string) => { let release!: () => void; holds.set(channelId, new Promise<void>((r) => { release = r; })); return release; };
-  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, timers, broken, calls };
+  return { module, framework, ctx, emit, incoming, alert, settle, fireTimers, setTime, hold, posts, markers, markerWrites, timers, broken, calls };
 }
 
 async function started(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?: string[]; refusal?: (server: string, channelId: string) => Refusal } = {}) {
@@ -126,6 +140,11 @@ describe('reactive replies', () => {
     expect(h.posts[0]!.text).not.toContain('weekly');
     expect(h.markers.length).toBe(1);
     expect(h.markers[0]).toContain('[host-notice]');
+    expect(h.markerWrites).toEqual([{
+      participant: 'user',
+      metadata: { system: true, kind: 'host-notice', alertKind: 'quota-spent', channelId: 'zulip:ops' },
+      opts: { forAgent: 'clerk' },
+    }]);
     h.alert('quota-spent-clear', 'anthropic credential ok');
     await h.settle();
     expect(h.module.episodeState()).toEqual([]);
@@ -445,14 +464,31 @@ describe('reply recovery', () => {
     await h.module.stop();
     expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], notified: ['zulip:dev'], pending: ['zulip:other'] });
     h.broken.clear();
+    // The new session starts the module with its context before it hands it
+    // the framework (index.ts), and the markers go through that context.
+    const nextMarkers: Array<{ text: string; opts: unknown }> = [];
+    const next = { ...h.ctx, addMessage: (_p: string, content: Array<{ text: string }>, _m?: unknown, opts?: unknown) => {
+      nextMarkers.push({ text: content[0]!.text, opts });
+      return 'id';
+    } } as unknown as ModuleContext;
+    const before = h.markers.length;
+    await h.module.start(next);
     h.module.setFramework(h.framework as never);
     for (let i = 0; i < 3; i++) await h.settle();
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'zulip:dev', 'zulip:other']);
+    // The episode wrote its one marker before the swap.
+    expect(h.markers.length).toBe(before);
+    expect(nextMarkers).toEqual([]);
     await h.incoming('zulip:dev');
     expect(h.posts.length).toBe(3);
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
     expect(h.posts.slice(3).map((p) => p.channelId).sort()).toEqual(['zulip:dev', 'zulip:ops', 'zulip:other']);
+    // A new outage's marker is written through the new session's context, for the agent.
+    h.alert('auth-rejected', 'rejected');
+    await h.settle();
+    expect(h.markers.length).toBe(before);
+    expect(nextMarkers.map((m) => [m.text.includes('(auth-rejected)'), m.opts])).toEqual([[true, { forAgent: 'clerk' }]]);
   });
 });
 

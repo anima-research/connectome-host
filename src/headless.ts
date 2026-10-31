@@ -731,6 +731,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
 
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (app.stopping) return;
+    // The host is stopping: a session switch under way goes no further, and
+    // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
