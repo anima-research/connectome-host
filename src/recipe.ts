@@ -1589,7 +1589,10 @@ export interface Recipe {
   speech?: RecipeSpeech;
   /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
   tuneOut?: RecipeTuneOut;
-  /** Dendrite lifecycle options (agent-framework `dendrite`). */
+  /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
+   *  `derivationNotice`, so an agent isn't told of a derivation and
+   *  `collapseDerivationNoticesAfter`, which only spaces those lines out, has no
+   *  effect here. */
   dendrite?: RecipeDendrite;
   /**
    * MCPL RFC-008 operator class overrides: tool-name pattern → classes. The
