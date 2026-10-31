@@ -1539,7 +1539,7 @@ describe("a fleet child's audit and what outlasts it", () => {
     writeFileSync(extension, [
       "import { writeFileSync } from 'node:fs';",
       `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-      'for (;;) { /* stuck */ }',
+      'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
       'export function register() {}',
     ].join('\n'));
     const recipe = childRecipe('stuck', { extensions: { stuck: { kind: 'module', path: extension } } });
