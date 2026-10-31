@@ -302,6 +302,7 @@ ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chroni
                "subagents": false, "lessons": false, "retrieval": false,
                "heartbeat": true
                /* + wake policies, workspace mounts (files/, notes/) */ },
+  "codeExecution": { "enabled": true },     // top-level, not under modules — recommended for every resident, see below
   "mcpServers": {
     "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
     "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ }
@@ -376,6 +377,34 @@ entries in the recipe anyway — older host checkouts treated these as opt-out,
 and an accidentally-enabled RetrievalModule has caused severe prompt-cache
 churn in the field.
 
+**Code execution — turn it on for every resident.** `"codeExecution": { "enabled": true }`
+(top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The
+agent writes JavaScript that calls its own tools by name (`await tools["module--tool"]({...})`),
+and only what the script writes or returns comes back, with how each call ended: the calls
+and the results between them stay out of the context. Reading ten files, querying every
+channel or paging through a log then takes one tool round instead of ten, and the window keeps
+the answer, not the haystack. A script that runs long yields and keeps going; the agent can
+wait on it, stop it, or leave it running past its turn, and a script can wake the agent with
+`wake_agent(payload)` (it is also woken if the script fails or reaches its lifetime). Each
+script starts fresh and reaches nothing but the agent's tools — no network, files, timers or
+packages — so by design it adds no authority: anything a script does, the agent could already
+do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's
+WebAssembly sandbox inside a child process of the host, as the host's user, with no
+operating-system sandbox around it: agent-framework claims no containment beyond its engine and
+its glue (the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already
+has a shell tool can already do far more than a script can; on one without, weigh that before
+turning it on.
+
+There is nothing to install: the engine (QuickJS, in a child process) ships with
+agent-framework 0.24 and later. Releases before that ran Python and took other keys
+(`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …); in a block with `"enabled": true`,
+current hosts refuse them with a message saying what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`,
+`scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`,
+`wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`), so `{ "enabled": true }` is the
+whole setting. It is off unless the recipe turns it on: the host's built-in default recipe
+leaves it off, so an agent started with no recipe has none. Turning it on for a running
+resident adds one tool, so its first turn after the restart is one full cache write.
+
 **Memory defaults.** Current host code fills an omitted/partial `strategy` with:
 autobiographical + `adaptiveResolution: true` + `foldingStrategy: "kv-unified"` with the
 host's standard `kvUnified` block (§5b) + same-model compression (`compressionModel` falls
@@ -390,7 +419,8 @@ recipe's budget: if you lower the budget at runtime on a recipe without its own 
 `tailTokens` with it, or compiles fail once the history fills the tail. A resident whose store was built under
 `kv-stable` must pin `"foldingStrategy": "kv-stable"` before it moves to such a host, or
 the upgrade switches its solver. The host's built-in default recipe (`bun src/index.ts`
-with no recipe) is just these defaults with an empty system prompt. Keep the skeleton's
+with no recipe) is just these defaults with an empty system prompt; it leaves code execution
+off (turn it on deliberately in the recipe, below). Keep the skeleton's
 explicit values anyway: older host checkouts default folding to `kv-stable` or
 `flat-profile`, the budget to 100k, the tail to 30k and summary voice to the literal
 `'Claude'` (the stranger's-voice hazard), reject `kv-unified` without a complete block, and
