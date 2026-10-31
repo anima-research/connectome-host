@@ -1,0 +1,1 @@
+- `CODEX_REQUIRE_EXISTING_LOGIN=1` lets `openai-codex` hosts require an existing ChatGPT login without starting device-code login or logging out through host login actions. Existing-session token refresh remains available; the default login flow is unchanged.

@@ -143,6 +143,7 @@ const config = {
   // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
+  codexRequireExistingLogin: ['1', 'true'].includes((process.env.CODEX_REQUIRE_EXISTING_LOGIN ?? '').trim().toLowerCase()),
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -905,6 +906,7 @@ async function main() {
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
+        requireExistingLogin: config.codexRequireExistingLogin,
         fastMode: recipe.agent.codex?.fastMode ?? false,
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');

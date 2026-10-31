@@ -50,6 +50,8 @@ export interface CodexAppServerAuthConfig {
   codexBinary?: string;
   codexHome?: string;
   loginTimeoutMs?: number;
+  /** Require an existing ChatGPT login; never start a device-code login (default: false). */
+  requireExistingLogin?: boolean;
   onLoginRequired?: (details: { verificationUrl: string; userCode: string }) => void;
 }
 
@@ -61,6 +63,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private readonly codexBinary: string;
   private readonly codexHome: string;
   private readonly loginTimeoutMs: number;
+  private readonly requireExistingLogin: boolean;
   private readonly onLoginRequired: (details: { verificationUrl: string; userCode: string }) => void;
   private child: ChildProcessWithoutNullStreams | null = null;
   private lines: ReadLineInterface | null = null;
@@ -78,6 +81,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     this.codexBinary = config.codexBinary ?? process.env.CODEX_BINARY ?? 'codex';
     this.codexHome = expandHome(config.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'));
     this.loginTimeoutMs = config.loginTimeoutMs ?? 10 * 60_000;
+    this.requireExistingLogin = config.requireExistingLogin ?? false;
     this.onLoginRequired = config.onLoginRequired ?? (({ verificationUrl, userCode }) => {
       console.error('\nOpenAI Codex subscription login required.');
       console.error(`Open ${verificationUrl} and enter code: ${userCode}\n`);
@@ -147,6 +151,12 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     let account = await this.readAccount(forceRefresh);
 
     if (account?.type !== 'chatgpt') {
+      if (this.requireExistingLogin) {
+        throw new Error(
+          'OpenAI Codex requires an existing ChatGPT login. ' +
+          'Sign in with ChatGPT using your configured Codex CLI, then retry.',
+        );
+      }
       const login = await this.request('account/login/start', { type: 'chatgptDeviceCode' });
       const loginId = asString(login.loginId);
       const verificationUrl = asString(login.verificationUrl);
@@ -396,6 +406,7 @@ export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig
 export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   override readonly name = 'openai-codex';
   private readonly auth: CodexAuthProvider;
+  private readonly requireExistingLogin: boolean;
 
   constructor(config: CodexSubscriptionAdapterConfig = {}) {
     const auth = config.authProvider ?? new CodexAppServerAuth(config);
@@ -415,6 +426,7 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       ),
     });
     this.auth = auth;
+    this.requireExistingLogin = config.requireExistingLogin ?? false;
   }
 
   async readRateLimits(): Promise<unknown> {
@@ -426,6 +438,9 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
   }
 
   async login(): Promise<void> {
+    if (this.requireExistingLogin) {
+      throw new Error('OpenAI Codex requires an existing ChatGPT login; login actions are disabled.');
+    }
     if (this.auth.logout) {
       try {
         await this.auth.logout();
@@ -447,7 +462,7 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       provider: this.name,
       canRefresh: () => true,
       refresh: () => this.refreshCredentials(),
-      login: () => this.login(),
+      ...(!this.requireExistingLogin ? { login: () => this.login() } : {}),
       ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
     };
   }

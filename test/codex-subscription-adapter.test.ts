@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
-import { CodexSubscriptionAdapter, codexGateAuth } from '../src/codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth, type CodexAppServerAuthConfig } from '../src/codex-subscription-adapter.js';
 
 const originalFetch = globalThis.fetch;
 const originalBaseURL = process.env.CODEX_BASE_URL;
@@ -165,6 +165,164 @@ test('a forced refresh waits behind an ordinary acquisition rather than joining 
   expect(await forced).toBe('fresh');
   expect(await secondForced).toBe('fresh');
   expect(flags).toEqual([false, true]);
+});
+
+describe('Codex existing-login-only authentication', () => {
+  const adapters: CodexSubscriptionAdapter[] = [];
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.dispose();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Exercise authentication and adapter wiring with only the app-server transport replaced.
+  const fixture = (accounts: unknown[], config: Pick<CodexAppServerAuthConfig, 'requireExistingLogin'> = {}) => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'codex-existing-login-'));
+    dirs.push(codexHome);
+    const credentialPath = join(codexHome, 'auth.json');
+    const writeToken = (token: string, accountId = 'fixture-account') =>
+      writeFileSync(credentialPath, JSON.stringify({ tokens: { access_token: token, account_id: accountId } }));
+    writeToken('fixture-token');
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const loginEvents: Array<{ verificationUrl: string; userCode: string }> = [];
+    const adapter = new CodexSubscriptionAdapter({
+      ...config,
+      codexHome,
+      loginTimeoutMs: 1000,
+      onLoginRequired: details => {
+        loginEvents.push(details);
+        queueMicrotask(() => auth.handleLine(JSON.stringify({
+          method: 'account/login/completed', params: { loginId: 'fixture-login', success: true },
+        })));
+      },
+    });
+    adapters.push(adapter);
+    const auth = (adapter as any).auth;
+    auth.ensureStarted = async () => {};
+    auth.request = async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      if (method === 'account/read') {
+        if (accounts.length === 0) throw new Error('Unexpected account/read');
+        const account = accounts.shift();
+        return account === undefined ? {} : { account };
+      }
+      if (method === 'account/login/start') {
+        return { loginId: 'fixture-login', verificationUrl: 'https://example.test/login', userCode: 'fixture-code' };
+      }
+      throw new Error(`Unexpected RPC: ${method}`);
+    };
+    return { adapter, auth, calls, loginEvents, writeToken };
+  };
+
+  for (const [name, account] of [['absent', undefined], ['null', null], ['API-key', { type: 'apiKey' }]] as const) {
+    for (const forceRefresh of [false, true]) {
+      test(`refuses the ${name} account before login (refresh=${forceRefresh})`, async () => {
+        const { auth, calls, loginEvents } = fixture([account], { requireExistingLogin: true });
+        await expect(auth.getAccessToken(forceRefresh)).rejects.toThrow(/existing ChatGPT login/i);
+        expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: forceRefresh } }]);
+        expect(loginEvents).toEqual([]);
+        expect(auth.waiterCount).toBe(0);
+        expect(await auth.cancelLogin()).toBe(false);
+      });
+    }
+  }
+
+  for (const requireExistingLogin of [undefined, false]) {
+    test(`keeps device-code login when requireExistingLogin=${requireExistingLogin}`, async () => {
+      const { auth, calls, loginEvents } = fixture([null, { type: 'chatgpt' }], { requireExistingLogin });
+      expect(await auth.getAccessToken()).toBe('fixture-token');
+      expect(calls).toEqual([
+        { method: 'account/read', params: { refreshToken: false } },
+        { method: 'account/login/start', params: { type: 'chatgptDeviceCode' } },
+        { method: 'account/read', params: { refreshToken: true } },
+      ]);
+      expect(loginEvents).toEqual([{ verificationUrl: 'https://example.test/login', userCode: 'fixture-code' }]);
+    });
+  }
+
+  test('uses an existing session and refreshes its token and account ID after a 401', async () => {
+    const { adapter, auth, calls, loginEvents, writeToken } = fixture(
+      [{ type: 'chatgpt' }, { type: 'chatgpt' }], { requireExistingLogin: true },
+    );
+    const headers: Headers[] = [];
+    globalThis.fetch = Object.assign(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      headers.push(new Headers(init?.headers));
+      if (headers.length === 1) {
+        writeToken('refreshed-token', 'refreshed-account');
+        return new Response('expired', { status: 401 });
+      }
+      return completed();
+    }, { preconnect: originalFetch.preconnect });
+    await adapter.complete(request);
+    expect(calls).toEqual([
+      { method: 'account/read', params: { refreshToken: false } },
+      { method: 'account/read', params: { refreshToken: true } },
+    ]);
+    expect(headers.map(h => h.get('authorization'))).toEqual(['Bearer fixture-token', 'Bearer refreshed-token']);
+    expect(headers.map(h => h.get('chatgpt-account-id'))).toEqual(['fixture-account', 'refreshed-account']);
+    expect(auth.getAccountId()).toBe('refreshed-account');
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('forwards the opt-in through the adapter before any inference request', async () => {
+    const { adapter, calls, loginEvents } = fixture([null], { requireExistingLogin: true });
+    let fetched = false;
+    globalThis.fetch = Object.assign(async () => { fetched = true; return completed(); }, { preconnect: originalFetch.preconnect });
+    await expect(adapter.complete(request)).rejects.toThrow(/existing ChatGPT login/i);
+    expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
+    expect(fetched).toBe(false);
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('refuses a missing account on the 401 refresh without login or a second inference request', async () => {
+    const { adapter, calls, loginEvents } = fixture([{ type: 'chatgpt' }, null], { requireExistingLogin: true });
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => { fetches++; return new Response('expired', { status: 401 }); }, { preconnect: originalFetch.preconnect });
+    await expect(adapter.complete(request)).rejects.toThrow(/existing ChatGPT login/i);
+    expect(calls).toEqual([
+      { method: 'account/read', params: { refreshToken: false } },
+      { method: 'account/read', params: { refreshToken: true } },
+    ]);
+    expect(fetches).toBe(1);
+    expect(loginEvents).toEqual([]);
+  });
+
+  for (const requireExistingLogin of [undefined, false]) {
+    test(`keeps explicit login when requireExistingLogin=${requireExistingLogin}`, async () => {
+      const calls: string[] = [];
+      const adapter = new CodexSubscriptionAdapter({
+        requireExistingLogin,
+        authProvider: {
+          getAccessToken: async forceRefresh => { calls.push(`token:${forceRefresh}`); return 'token'; },
+          logout: async () => { calls.push('logout'); },
+        },
+      });
+      adapters.push(adapter);
+      await adapter.credentialSource().login!();
+      expect(calls).toEqual(['logout', 'token:true']);
+    });
+  }
+
+  test('refuses explicit login before logout and keeps refresh available', async () => {
+    let logouts = 0;
+    const refreshes: boolean[] = [];
+    const adapter = new CodexSubscriptionAdapter({
+      requireExistingLogin: true,
+      authProvider: {
+        getAccessToken: async (forceRefresh = false) => { refreshes.push(forceRefresh); return 'existing-token'; },
+        logout: async () => { logouts++; },
+      },
+    });
+    adapters.push(adapter);
+    await expect(adapter.login()).rejects.toThrow(/existing ChatGPT login/i);
+    expect(logouts).toBe(0);
+    expect(refreshes).toEqual([]);
+    const source = adapter.credentialSource();
+    expect(source.login).toBeUndefined();
+    expect(source.canRefresh()).toBe(true);
+    await source.refresh!();
+    expect(refreshes).toEqual([true]);
+  });
 });
 
 describe("reading Codex's auth.json", () => {

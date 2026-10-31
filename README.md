@@ -776,6 +776,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
+| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true`: require an existing ChatGPT login for local Codex auth; refuse missing or API-key accounts before device-code login. Disables host login actions, including for a custom auth provider; existing-session token refresh remains available. Gate-token auth is unchanged |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
