@@ -302,15 +302,54 @@ or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
 the recipe. Their relative `./` args resolve against the working directory.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools. `agent.retry` sets a Membrane retry policy for
-the host's own provider calls, such as compression and retrieval; an agent's
-turns are retried by agent-framework itself.
+by default) for slow tools. For provider failures, see [`agent.retry`](#provider-retries-agentretry).
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 
 Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full host environment, including credentials. Prefer explicit `env` entries for needed variables. Explicit recipe `false` overrides file `true`; omission preserves the file's policy. Agent-owned `mcpl-servers.agent.json` overlays strip `inheritEnv`, including when replacing an operator-defined server, as they strip `allowHostCommands`, `enabledCapabilities` and `toolLifecycle`, and the startup warnings name each one an overlay entry sets. Put `inheritEnv` or `toolLifecycle` in the recipe, or in `mcpl-servers.json` for a server the recipe names, instead, and `allowHostCommands` or `enabledCapabilities` in a server the recipe defines itself, with its own command or url and an id `mcpl-servers.json` doesn't define, since neither `mcpl-servers.json` nor a recipe's override of a server from it passes those two on.
 
 Check legacy configuration variables before enabling full inheritance. For Discord MCPL, an inherited `DISCORD_SUPPRESS_REACTION_EMOJIS=""` seeds an explicit empty suppression list when its configured filters file does not yet exist; that durable file then overrides the protective baseline. Remove an unintended stale variable before the first startup, or configure the intended suppression in the filters file. Likewise, a `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's environment becomes an inheriting child's whole baseline, in place of agent-framework's protective default. The framework logs when it does.
+
+### Provider retries (`agent.retry`)
+
+`agent.retry` governs framework **turns** as well as Membrane's other calls
+(compression and merging, retrieval, session naming and the TUI status line).
+Omitted or `{}` leaves the framework's default turn policy untouched. A non-empty
+object installs a framework-wide policy, completing every omitted field from Membrane's defaults,
+including the nested `overloaded` fields. Recipe validation still runs first;
+unknown keys, negative values and non-finite numbers are rejected.
+
+The policy applies to the resident, conversation forks and subagents, not just
+the named recipe agent. Fleet children each load their own recipe and get their
+own framework policy; they do not inherit the parent's policy.
+
+Despite its name, `maxRetries` counts **total sends including the first**, not
+additional retries, in the pinned Membrane API. For example,
+`"agent": { "retry": { "maxRetries": 4 } }` allows 4 sends and 3 waits for an
+ordinary retryable failure (1 s, 2 s, 4 s by default). The base default is 3
+sends; retryable rate limits get at least 5 sends even with `maxRetries: 0`.
+Zero stops ordinary resends, not the initial send, nor the class-specific floors.
+
+For an explicit turn policy, omitting `overloaded` uses Membrane's 529 schedule:
+`maxRetries: 7`, `retryDelayMs: 10000`, `backoffMultiplier: 2`,
+`maxRetryDelayMs: 300000`. Its send limit is the larger of the base and overloaded
+counts; waits use equal jitter (half to just below the exponential step).
+Setting `overloaded.maxRetries: 0` disables that special schedule: 529s then use
+the base schedule without jitter. Non-turn calls retain the host's existing
+default of `overloaded.maxRetries: 0`, unless the recipe overrides it. Their
+behavior is unchanged by this wiring fix.
+
+These schedules assume the provider states no wait. An explicit recipe policy
+uses Membrane's stated-wait ceilings (at least 60 s, or the schedule's maximum
+delay if longer), not the framework default's at-least-10-minute ceilings.
+The framework default, kept for omitted or empty retry settings, also allows
+13 overloaded sends rather than Membrane's 7.
+
+Non-retryable errors stop immediately. The framework deliberately treats stream
+deadlines as retryable timeouts (unlike Membrane's own deadline class); this
+change preserves that behavior. Provider quota holds and other framework
+admission rules are unchanged. This policy does not re-arm a turn once retries
+are exhausted.
 
 ### Feature sets and tool names
 

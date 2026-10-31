@@ -28,6 +28,7 @@
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
 import { hostMembraneRetry } from './membrane-retry.js';
+import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -510,6 +511,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
+    ...frameworkErrorPolicy(recipe.agent.retry),
 agents: [agentConfig],
     modules: moduleInstances,
     mcplServers,
