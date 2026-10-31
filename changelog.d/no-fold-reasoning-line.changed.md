@@ -8,4 +8,7 @@
   it taken off. A subagent's launch receipt no longer mentions it. The binding
   settings themselves (`thinkingBinding`, the drop control, the window) are
   unchanged. Where prompt caching is on, an affected agent's first request
-  after the update writes its prompt cache in full, once.
+  after the update writes its prompt cache in full, once. On a host that sets
+  binding (`thinkingBinding.binds`), the shorter system prompt is a change of
+  the request's head, so thinking blocks minted under the old head are left
+  out once, as at any system-prompt change.

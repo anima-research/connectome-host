@@ -183,6 +183,23 @@ process that ends without a stop can lose it. Set 0 only for a short run in
 which a pass at a point that depends on the machine's load would make runs
 differ, such as a test fixture's.
 
+`inferenceBounds`, at the recipe's top level, is how long agent-framework
+lets a model call go without progress before it cuts it, passed to the
+framework as written. Left out, agent-framework's defaults stand. Its
+`progressBounds` takes `beforeContentMs` (how long a streamed call may go
+from its send with no content), `betweenEventsMs` (once content has begun,
+how long after its last provider event) and `thinkTokensPerSecond` (the rate
+a thinking block's allowance assumes: a lower rate allows a slower think);
+the object takes `flatMinimumMs` beside it (the least the flat bound on a
+stream can be); and `false` sets none of these bounds.
+`{"progressBounds": {"beforeContentMs": 90000}}` sets the bound before
+content to 90 seconds. The defaults, which calls each bound applies to, and
+what a cut call does next are in the "Inference bounds" section of
+agent-framework's README, which its package ships
+(`node_modules/@animalabs/agent-framework/README.md` in an install). A key it
+doesn't know, or a value that isn't a finite number above 0, stops the load,
+naming it.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is

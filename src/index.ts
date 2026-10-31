@@ -530,6 +530,7 @@ agents: [agentConfig],
     ...dendriteCreateOptions(recipe, model, timeZone, extensionRegistry),
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
+    inferenceBounds: recipe.inferenceBounds,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the

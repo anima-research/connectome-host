@@ -1,5 +1,5 @@
 - **Installers and packagers:** connectome-host now declares
-  `@animalabs/agent-framework` `^0.32.0` (was `^0.30.0`; 0.31.0 was cut from main without the presentation),
+  `@animalabs/agent-framework` `^0.33.0` (was `^0.31.0`; 0.31.0 and 0.32.0 were cut from main without the presentation),
   `@animalabs/context-manager` `^0.25.0` (was `^0.24.0`) and
   `@animalabs/chronicle` `^0.6.0` (was `^0.5.1`), above the floors 0.19.0's
   Dendrite entry and 0.20.0's chronicle entry set; `@animalabs/membrane` stays `^0.8.0`. They
