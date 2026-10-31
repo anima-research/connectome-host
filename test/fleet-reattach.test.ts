@@ -251,10 +251,10 @@ test('the bound holds only within its window: a later close connects again, and 
   leaf.child.closingAgainUntil = Date.now();
   expect(await call('send', { name: 'leaf', content: 'after the window' })).toMatchObject({ success: true });
   await until(() => leaf.connections() === 7, "the call's connect");
+  await until(() => leaf.texts().includes('after the window'), 'the child taking the text');
   await leaf.takeover();
   await until(() => bounds() === 2, "the bound again, within the window of the call's connect");
   await until(holder.closed, "the holder's connection closing at the call's connect");
-  await until(() => leaf.texts().includes('after the window'), 'the child taking the text');
 }, 30_000);
 
 test('a child that says it is exiting is not connected to again, and this host logs no attempt', async () => {
