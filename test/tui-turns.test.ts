@@ -81,7 +81,9 @@ describe("the TUI's Escape, through runTui", () => {
 
     expect(times(at('retry wait').frame, 'overloaded')).toBe(1);
     expect(at('retry wait').frame).toContain('Error: overloaded');
-    expect(at('retry wait').frame).toContain('[✗ error Esc:stop]');
+    expect(at('retry wait').frame).toContain('[… attempt-failed');
+    expect(at('retry wait').frame).toContain('Esc:stop]');
+    expect(at('retry wait').frame).not.toContain('Ctrl+B:bg');
     expect(at('retry wait, Escape').aborts).toHaveLength(6);
     expect(times(at('retry wait, Escape').frame, INTERRUPTING)).toBe(2);
     expect(at('retried').aborts).toHaveLength(8);
@@ -113,7 +115,46 @@ describe("the TUI's status line, through runTui", () => {
     expect(at('no start, Escape').frame).toContain('[… tools');
     expect(at('no start, then completed').frame).toContain('[✓ idle]');
     expect(at('no start, then failed').frame).toContain('Error: a turn the TUI never saw start');
-    expect(at('no start, then failed').frame).toContain('[✗ error');
+    expect(at('no start, then failed').frame).toContain('[… attempt-failed');
+    expect(at('no start, failed, then exhausted').frame).toContain('[✗ error');
+  }, 40000);
+
+  test("a session switch while a backgrounded turn's attempt has failed lets none of its text into the new session's backgrounded answer", async () => {
+    const answered = (await play('background-switch')).get('new session answered');
+    if (!answered) throw new Error('missing background-switch frame');
+    expect(answered.frame).toContain('new session words');
+    expect(answered.frame).not.toContain('old session words');
+    expect(answered.frame).toContain('[✓ idle]');
+  }, 40000);
+
+  test('a Ctrl+B pressed while a switch is under way leaves the new session in the foreground', async () => {
+    const streaming = (await play('switch-ctrl-b')).get('new session streaming');
+    if (!streaming) throw new Error('missing switch-ctrl-b frame');
+    expect(streaming.frame).toContain('new session words');
+    expect(streaming.frame).not.toContain('[↓ background');
+  }, 40000);
+
+  test("a session switch that fails keeps the backgrounded turn's earlier rounds, which return with its retry", async () => {
+    const returned = (await play('background-switch-fails')).get('old turn returned');
+    if (!returned) throw new Error('missing background-switch-fails frame');
+    expect(returned.frame).toContain('returned from background');
+    expect(returned.frame).toContain('old round words');
+    expect(returned.frame).toContain('retry words');
+  }, 40000);
+
+  for (const scenario of ['background-retry', 'background-retry-restarted', 'background-retry-before-resume']) test(`${scenario}: a backgrounded turn whose attempt fails stays in background, and returns with its earlier rounds and its retry but not the failed attempt`, async () => {
+    const steps = await play(scenario);
+    const failed = steps.get('failed in background');
+    const returned = steps.get('returned');
+    if (!failed || !returned) throw new Error('missing background-retry frames');
+    expect(failed.frame).toContain('[… attempt-failed');
+    expect(failed.frame).toContain('Error: overloaded');
+    expect(failed.frame).not.toContain('returned from background');
+    expect(returned.frame).toContain('returned from background');
+    expect(returned.frame).toContain('first round words');
+    expect(returned.frame).toContain('retry words');
+    expect(returned.frame).not.toContain('dead attempt words');
+    expect(returned.frame).toContain('[✓ idle]');
   }, 40000);
 });
 
@@ -136,7 +177,7 @@ describe("the TUI's session switch, through runTui", () => {
       expect(late.frame).toContain(status);
       const lateFailure = steps.get('late failure')!;
       expect(lateFailure.frame).toContain('Error: a late failure');
-      expect(lateFailure.frame).toContain('[✗ error');
+      expect(lateFailure.frame).toContain('[… attempt-failed');
 
       const after = steps.get('after the switch')!;
       if (scenario === 'switch-fails') expect(after.frame).toContain('Session switch failed');
@@ -254,8 +295,13 @@ describe("the TUI's fleet rows, through runTui", () => {
 });
 
 describe("the TUI's numbered fork phases, through runTui", () => {
-  for (const scenario of ['numbered-fork-failed', 'numbered-fork-exhausted']) {
-    test(scenario + ': only the numbered row changes from sending to failed', async () => {
+  for (const [scenario, phase] of [
+    ['numbered-fork-failed', 'attempt-failed'],
+    ['numbered-fork-exhausted', 'failed'],
+    ['numbered-fork-failed-then-exhausted', 'failed'],
+    ['numbered-fork-failed-then-started', 'sending'],
+  ] as const) {
+    test(`${scenario}: the numbered row shows ${phase}, and the other row stays sending`, async () => {
       const steps = await play(scenario);
       const before = steps.get('before');
       const after = steps.get('after');
@@ -263,9 +309,9 @@ describe("the TUI's numbered fork phases, through runTui", () => {
 
       expect(before.frame).toMatch(/web  \[sending /);
       expect(before.frame).toMatch(/web-1  \[sending /);
-      expect(after.frame).toMatch(/web-1  \[failed /);
+      expect(after.frame).toContain(`web-1  [${phase} `);
       expect(after.frame).toMatch(/web  \[sending /);
-      expect(after.frame).not.toMatch(/web  \[failed /);
+      expect(after.frame).not.toMatch(/web  \[(attempt-)?failed /);
     }, 40000);
   }
 });

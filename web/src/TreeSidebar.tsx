@@ -155,7 +155,7 @@ function NodeLabel(props: { node: UiNode; onUsageClick: () => void }) {
   return (
     <>
       <span class="font-mono text-neutral-300 truncate">{n.label}</span>
-      <span class={`px-1 rounded text-[10px] ${phaseColor(a.phase)}`}>
+      <span class={`px-1 rounded text-[10px] ${phaseColor(a.phase)}`} title={a.attemptError}>
         {a.phase}
       </span>
       <Show when={n.kind === 'subagent'}>
@@ -248,6 +248,7 @@ function phaseColor(phase: AgentNode['phase']): string {
     case 'sending': return 'bg-amber-500/30 text-amber-200';
     case 'invoking': return 'bg-fuchsia-500/30 text-fuchsia-200';
     case 'executing': return 'bg-amber-500/30 text-amber-200';
+    case 'attempt-failed': return 'bg-orange-500/30 text-orange-200';
     case 'done': return 'bg-neutral-700 text-neutral-400';
     case 'failed': return 'bg-rose-500/40 text-rose-200';
     case 'cancelled': return 'bg-neutral-700 text-amber-300/70';

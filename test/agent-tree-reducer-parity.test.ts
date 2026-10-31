@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../src/state/stream-usage.js';
 
-type Phase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed' | 'idle';
+type Phase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'attempt-failed' | 'failed' | 'idle';
 
 interface InlineFold {
   phaseByAgent: Map<string, Phase>;
@@ -61,6 +61,8 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
         break;
       }
       case 'inference:failed':
+        if (agent) phaseByAgent.set(agent, 'attempt-failed');
+        break;
       case 'inference:exhausted':
         if (agent) phaseByAgent.set(agent, 'failed');
         break;
