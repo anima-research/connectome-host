@@ -1,0 +1,1 @@
+- Attribute unknown-caller off-path refusal alerts to the process (`host`), preserving call diagnostics and status delivery with configured agents. Keep these notices out of agent replies and context markers, cap reply overrides at status, and retain the warning until an explicit matching clear; main-agent success and MCPL reconnect do not prove auxiliary-call recovery (#148).
