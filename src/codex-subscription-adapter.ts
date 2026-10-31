@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
-import { OpenAIResponsesAPIAdapter, type CredentialResolver } from '@animalabs/membrane';
+import { MembraneError, OpenAIResponsesAPIAdapter, type CredentialResolver } from '@animalabs/membrane';
 import type { CredentialSource } from './credential-state.js';
 
 type JsonObject = Record<string, unknown>;
@@ -152,10 +152,13 @@ export class CodexAppServerAuth implements CodexAuthProvider {
 
     if (account?.type !== 'chatgpt') {
       if (this.requireExistingLogin) {
-        throw new Error(
-          'OpenAI Codex requires an existing ChatGPT login. ' +
-          'Sign in with ChatGPT using your configured Codex CLI, then retry.',
-        );
+        throw new MembraneError({
+          type: 'auth',
+          retryable: false,
+          message: 'OpenAI Codex requires an existing ChatGPT login. ' +
+            'Sign in with ChatGPT using your configured Codex CLI, then retry.',
+          rawError: undefined,
+        });
       }
       const login = await this.request('account/login/start', { type: 'chatgptDeviceCode' });
       const loginId = asString(login.loginId);

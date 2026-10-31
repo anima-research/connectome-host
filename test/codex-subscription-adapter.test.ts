@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
+import { MembraneError, OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
 import { CodexSubscriptionAdapter, codexGateAuth, type CodexAppServerAuthConfig } from '../src/codex-subscription-adapter.js';
 
 const originalFetch = globalThis.fetch;
@@ -271,6 +271,44 @@ describe('Codex existing-login-only authentication', () => {
     await expect(adapter.complete(request)).rejects.toThrow(/existing ChatGPT login/i);
     expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
     expect(fetched).toBe(false);
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('reports a missing existing login through the provider wrapper as an auth alert', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+    const { adapter, calls, loginEvents, writeToken } = fixture([null], { requireExistingLogin: true });
+    const privateToken = 'fixture-private-credential';
+    writeToken(privateToken);
+    const alerts: Array<{ kind: string; message: string; data: Record<string, unknown> }> = [];
+    const monitor = new CredentialMonitor({
+      source: adapter.credentialSource(),
+      alert: (kind, message, data) => { alerts.push({ kind, message, data }); },
+    });
+    const wrapped = new LoggingProviderAdapter(adapter, '/dev/null');
+    let observedError: unknown;
+    wrapped.onProviderError = error => { observedError = error; monitor.observeError(error); };
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => { fetches++; return completed(); }, { preconnect: originalFetch.preconnect });
+    let failure: unknown;
+    try {
+      await wrapped.complete(request);
+    } catch (error) {
+      failure = error;
+    } finally {
+      monitor.dispose();
+    }
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    expect(alerts.map(alert => alert.kind)).toEqual(['auth-rejected']);
+    expect(alerts[0]!.message).toContain('existing ChatGPT login');
+    expect(failure).toBe(observedError);
+    expect(failure).toBeInstanceOf(MembraneError);
+    expect(failure).toMatchObject({ type: 'auth', retryable: false });
+    expect((failure as MembraneError).httpStatus).toBeUndefined();
+    expect((failure as MembraneError).rawError).toBeUndefined();
+    expect(inspect({ failure, state: monitor.snapshot(), alerts })).not.toContain(privateToken);
+    expect(fetches).toBe(0);
+    expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
     expect(loginEvents).toEqual([]);
   });
 
