@@ -2472,6 +2472,114 @@ test('on macOS, stop and start run from inside either launch agent refuse, stopp
   }
 });
 
+test('a stopped service passes the check that takes stopped as fine, and says so, but not the one install and start make', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([true, true]);
+  expect(fine.lines).toContain(`${HOST} is stopped: systemd shows it inactive (dead).`);
+  expect(fine.lines).toContain(`${SHELL} is stopped: systemd shows it inactive (dead).`);
+  expect(fine.lines.join('\n')).not.toContain('The journal\'s last lines from the shell daemon');
+  const strict = await checkService(at.root, f.system);
+  expect([strict.passed, strict.stopped]).toEqual([false, undefined]);
+});
+
+test('one unit stopped while another runs fails the check even where stopped is fine', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.systemd.running.delete(SHELL);
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`${SHELL} is inactive (dead), not active: journalctl --user -u ${SHELL} shows its log.`);
+  expect(fine.lines.join('\n')).not.toContain('is stopped');
+  expect(fine.lines.join('\n')).toContain('The journal\'s last lines from the shell daemon\'s latest start, which ended');
+});
+
+test('on macOS a service booted out whole is stopped where stopped is fine, and a shell agent unloaded beside a loaded host isn\'t', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform: 'darwin', linger: null });
+  const shellLabel = 'com.animalabs.connectome.my-resident.shell';
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.systemd.agents.delete(shellLabel);
+  const partial = await checkService(at.root, f.system, true);
+  expect([partial.passed, partial.stopped]).toEqual([false, undefined]);
+  expect(partial.lines).toContain(`launchd has no ${shellLabel} loaded.`);
+  f.systemd.agents.delete('com.animalabs.connectome.my-resident');
+  const whole = await checkService(at.root, f.system, true);
+  expect([whole.passed, whole.stopped]).toEqual([true, true]);
+  expect(whole.lines).toContain('com.animalabs.connectome.my-resident is stopped: launchd has it unloaded.');
+  expect(whole.lines).toContain(`${shellLabel} is stopped: launchd has it unloaded.`);
+});
+
+test('a stopped service whose check finds a fault isn\'t reported stopped, so nothing promises start will start it', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  f.systemd.loaded.get(HOST)!.workingDirectory = '/srv/other/My Resident';
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines.join('\n')).toContain(`systemd runs ${HOST} in /srv/other/My Resident, not ${at.work}.`);
+});
+
+test('a recorded unit file that\'s gone fails the check, naming it and service install, and the service isn\'t stopped', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await runService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(await runService(f.ctx(['stop']), f.system)).toBe(0);
+  rmSync(hostUnit(at));
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines.join('\n')).toContain(`${hostUnit(at)}, ${HOST}'s unit file, is gone. Run connectome service install to ` +
+    'check and repair the service for its recorded recipe. If it asks you to stop a loaded unit whose file is gone, follow ' +
+    'its conditional stop instruction, then repeat install.');
+  expect(fine.lines.join('\n')).not.toContain('is stopped');
+});
+
+test('on macOS a recorded launch agent file that\'s gone fails the check, and no agent is said to be stopped', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform: 'darwin', linger: null });
+  const label = 'com.animalabs.connectome.my-resident';
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.systemd.agents.delete(`${label}.shell`);
+  f.systemd.agents.delete(label);
+  const record = readServiceRecord(at.root)!;
+  rmSync(record.units.host.file);
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines.join('\n')).toContain(`${record.units.host.file}, ${label}'s launch agent's file, is gone. Run connectome ` +
+    'service install to check and repair');
+  expect(fine.lines.join('\n')).not.toContain('is stopped');
+});
+
+test('on macOS an agent launchctl can\'t say is loaded or not leaves the service not stopped, and the check says it can\'t tell', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform: 'darwin', linger: null });
+  const label = 'com.animalabs.connectome.my-resident';
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.systemd.agents.delete(`${label}.shell`);
+  f.systemd.agents.delete(label);
+  f.systemd.launchctlFailsOnce.set('list', 'Could not communicate with launchd');
+  const fine = await checkService(at.root, f.system, true);
+  expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
+  expect(fine.lines).toContain(`Whether launchd has ${label} loaded can't be told: Could not communicate with launchd.`);
+  expect(fine.lines.join('\n')).not.toContain('is stopped');
+});
+
+test('a failed unit fails the check even where stopped is fine', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  f.systemd.exiting.add(SHELL);
+  await installService(f.ctx(['install', at.recipe]), f.system);
+  const fine = await checkService(at.root, f.system, true);
+  expect(fine.passed).toBe(false);
+  expect(fine.stopped).toBeUndefined();
+  expect(fine.lines.join('\n')).toContain(`${SHELL} is failed, not active`);
+});
+
 test('stop stops the host and its shell daemon in one call, says so of each, that it stays enabled, and exits 0', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at);

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
@@ -17,6 +18,7 @@ import {
   type ToolClassSource,
 } from '../tool-lifecycle-config.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
+import { compressionModelOf } from '../framework-strategy.js';
 import { hostUpdate } from '../update/update.js';
 
 export interface PanelAppRef {
@@ -49,6 +51,8 @@ export const PANEL_OPS = [
   'quota',
   'credential',
   'credential-action',
+  'shell-check',
+  'count-check',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -139,6 +143,10 @@ export async function runPanelOp(
         return { ok: true, data: await buildDebugContext(app, resolveAgent(app, params.agent), params) };
       case 'media':
         return { ok: true, data: buildMediaBlock(app, resolveAgent(app, params.agent), params) };
+      case 'shell-check':
+        return { ok: true, data: await buildShellCheck(app) };
+      case 'count-check':
+        return { ok: true, data: await buildCountCheck(app) };
       default:
         return { ok: false, error: `unknown panel op: ${op}`, status: 400 };
     }
@@ -1030,10 +1038,26 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   const stats = cm.getRenderStats();
   const statsKept = keepsRenderStats(cm);
 
+  const payload = countablePayload(app, agentName, request as unknown as CountablePreview);
+  // lastBilledInputTokens: what the provider billed for the input of the
+  // latest call on the agent's stream that reported one (fresh + cache read
+  // + cache creation); null from a stream's start until a call reports one.
+  const lastBilledInputTokens =
+    (agent as { lastStreamRealInputTokens?: number }).lastStreamRealInputTokens || null;
+
+  const countModel = agentCountModel(agent);
+  if (!countModel) {
+    return { agent: agentName, stats, statsKept, exactTotalTokens: null, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
+  }
+  const counted = await countTokens(app, countModel, payload);
+  return { agent: agentName, stats, statsKept, exactTotalTokens: counted.tokens, lastBilledInputTokens, countModel, countSource: counted.source };
+}
+
+function countablePayload(app: PanelAppRef, agentName: string, preview: CountablePreview): CountTokensPayload {
   const xml = app.recipe.agent.formatter === 'anthropic-xml';
   const primaryAgentModel = () => requireAgent(app, resolveAgent(app)).model;
-  const payload = buildCountTokensPayload(
-    request as unknown as CountablePreview,
+  return buildCountTokensPayload(
+    preview,
     agentName,
     xml ? anthropicXmlFormatter({ toolsInSystem: xmlToolsInSystem(app.recipe, primaryAgentModel()) }) : new NativeFormatter(),
     xml ? 'xml' : 'native',
@@ -1042,49 +1066,151 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     // adapters only AnthropicAdapter does: the host's for provider anthropic.
     resolveProvider(app.recipe) === 'anthropic',
   );
-  // lastBilledInputTokens: what the provider billed for the input of the
-  // latest call on the agent's stream that reported one (fresh + cache read
-  // + cache creation); null from a stream's start until a call reports one.
-  const lastBilledInputTokens =
-    (agent as { lastStreamRealInputTokens?: number }).lastStreamRealInputTokens || null;
+}
 
-  let exactTotalTokens: number | null = null;
-  // COUNT_TOKENS_MODEL, when set, is the model counted against in place of
-  // the agent's own.
-  const countModel = process.env.COUNT_TOKENS_MODEL
-    || anthropicCountModel((agent as { model?: string }).model);
-  let countSource = 'count_tokens';
-  if (!countModel) {
-    return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
-  }
+function agentCountModel(agent: unknown): string | null {
+  return process.env.COUNT_TOKENS_MODEL || anthropicCountModel((agent as { model?: string }).model);
+}
+
+const COUNT_LIMIT_MS = 30_000;
+
+async function countTokens(
+  app: PanelAppRef,
+  countModel: string,
+  payload: object,
+  limitMs = COUNT_LIMIT_MS,
+): Promise<{ tokens: number | null; source: string }> {
   try {
     const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
+    const bearer = (app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)?.trim();
+    const key = (process.env.ANTHROPIC_API_KEY ?? '').trim();
     const res = await fetch(base + '/v1/messages/count_tokens', {
       method: 'POST',
+      signal: AbortSignal.timeout(limitMs),
       headers: {
-        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
+        ...(bearer
           ? {
-              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
+              authorization: `Bearer ${bearer}`,
               'anthropic-beta': 'oauth-2025-04-20',
             }
-          : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
+          : { 'x-api-key': key }),
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
         'user-agent': 'conhost/1.0',
       },
       body: JSON.stringify({ model: countModel, ...payload }),
     });
-    if (res.ok) {
-      const j = (await res.json()) as { input_tokens?: number };
-      exactTotalTokens = j.input_tokens ?? null;
-    } else {
-      countSource = `count_tokens_failed_${res.status}`;
+    if (!res.ok) {
+      const source = res.status === 401 && !bearer && !key ? 'count_tokens_no_credential' : `count_tokens_failed_${res.status}`;
+      return { tokens: null, source };
     }
+    const j = (await res.json()) as { input_tokens?: number };
+    return { tokens: j.input_tokens ?? null, source: 'count_tokens' };
   } catch {
-    countSource = 'count_tokens_error';
+    return { tokens: null, source: 'count_tokens_error' };
   }
+}
 
-  return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
+export interface CountCheck {
+  agent: { model: string | null; countModel: string | null; source: string };
+  compression: { model: string; countModel: string | null; source: string } | null;
+  beside: { tokens: number | null; source: string; error?: string };
+  budget: number | null;
+}
+
+const COUNT_CHECK_PAYLOAD = { messages: [{ role: 'user', content: 'ping' }] };
+
+const COUNT_CHECK_MESSAGE: NormalizedMessage = { participant: 'User', content: [{ type: 'text', text: 'ping' }] };
+
+export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS): Promise<CountCheck> {
+  const agentName = resolveAgent(app);
+  const agent = requireAgent(app, agentName);
+  const model = (agent as { model?: string }).model ?? null;
+  const unsupported = { tokens: null, source: 'count_tokens_unsupported_model' };
+  const count = (countModel: string | null, payload: object = COUNT_CHECK_PAYLOAD): Promise<{ tokens: number | null; source: string }> =>
+    countModel ? countTokens(app, countModel, payload, limitMs) : Promise.resolve(unsupported);
+  const countModel = agentCountModel(agent);
+  const compressionModel = model ? compressionModelOf(app.recipe, model) : null;
+  const compressionCountModel = compressionModel === null ? null : anthropicCountModel(compressionModel);
+  let sent: CountTokensPayload | { error: string } | null = null;
+  if (countModel) {
+    try {
+      const request = await app.framework.previewActivation(agentName);
+      sent = countablePayload(app, agentName, { ...(request as unknown as CountablePreview), messages: [COUNT_CHECK_MESSAGE] });
+    } catch (error) {
+      sent = { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  const [ping, compression, withSent] = await Promise.all([
+    count(countModel),
+    compressionModel === null ? null : count(compressionCountModel),
+    sent === null || 'error' in sent ? null : count(countModel, sent),
+  ]);
+  const beside: CountCheck['beside'] = sent === null ? unsupported
+    : 'error' in sent ? { tokens: null, source: 'preview_failed', error: sent.error }
+    : withSent!.tokens !== null && ping.tokens !== null ? { tokens: withSent!.tokens - ping.tokens, source: 'count_tokens' }
+    : { tokens: null, source: withSent!.source !== 'count_tokens' ? withSent!.source : ping.source };
+  const live = (app.framework as unknown as {
+    getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
+  }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
+  return {
+    agent: { model, countModel, source: ping.source },
+    compression: compressionModel === null ? null
+      : { model: compressionModel, countModel: compressionCountModel, source: compression!.source },
+    beside,
+    budget: typeof live === 'number' && live > 0 ? live : null,
+  };
+}
+
+export type ShellCheckRow =
+  | { server: string; answered: true; sessions: number | null }
+  | { server: string; answered: false; error: string };
+
+export interface ShellCheck {
+  shells: ShellCheckRow[];
+  notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
+  closedTabs: string[];
+}
+
+export async function buildShellCheck(app: PanelAppRef): Promise<ShellCheck> {
+  const agentName = resolveAgent(app);
+  const servers = app.framework.listMcplServers();
+  const shells: ShellCheckRow[] = [];
+  for (const server of servers) {
+    const tool = server.toolClasses.find((t) => t.serverTool === 'listSessions');
+    if (!tool) continue;
+    const result = await app.framework.executeToolCall({
+      id: `shell-check-${randomUUID()}`,
+      name: tool.tool,
+      input: {},
+      callerAgentName: agentName,
+    });
+    shells.push(result.success
+      ? { server: server.id, answered: true, sessions: sessionCount(result.data) }
+      : { server: server.id, answered: false, error: result.error ?? '' });
+  }
+  const unopenedTab = (s: (typeof servers)[number]): boolean => s.closedTab && s.refused === null;
+  return {
+    shells,
+    notConnected: servers.filter((s) => !s.connected && !unopenedTab(s))
+      .map((s) => ({ id: s.id, retrying: s.retrying, refused: s.refused })),
+    closedTabs: servers.filter((s) => !s.connected && unopenedTab(s)).map((s) => s.id),
+  };
+}
+
+function sessionCount(data: unknown): number | null {
+  const text = typeof data === 'string'
+    ? data
+    : Array.isArray(data)
+      ? data.map((b) => ((b as { type?: unknown }).type === 'text' ? String((b as { text?: unknown }).text ?? '') : '')).join('')
+      : null;
+  if (text === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.length : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

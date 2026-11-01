@@ -213,6 +213,8 @@ by the installed libraries). `params.agent` defaults to the primary agent.
 | `context-maintenance` | — |
 | `debug-context` | `injections` (`true` is **not** transparent: it may run inference or MCPL hooks) |
 | `media` | `messageId`, `path` (`<n>` or `<n>.<m>`); images only |
+| `shell-check` | — (not transparent: it calls `listSessions`, with no arguments, as the recipe's agent on each server that offers it, and answers, for each, whether it answered and how many sessions its answer held when that can be read, or its error, and which servers aren't connected, with whether the host still retries each and why it refuses one, and, apart from those, which are closed tabs (servers kept disconnected as tabs an agent can open), on which it calls nothing; a closed tab whose configuration the host refuses is among those not connected) |
+| `count-check` | — (for the recipe's agent, a one-message count_tokens call with the model the makeup counts with and, at the same time, one with its compression model when its strategy has one; an empty compression model is answered as `{model: '', countModel: null, source: 'count_tokens_unsupported_model'}`, with no call, the same source a model count_tokens doesn't count gets. With the makeup's model it also counts the request a turn sends, as `previewActivation` builds it, with its messages replaced by the same one message, and answers as `beside` that count less the message's own: what the host sends beside the conversation, the system prompt and the tools, without what modules add at each turn. `budget` is the context budget the agent is set to, an agent-settings change included, or null. Answers how each went, a count that doesn't answer within 30 s as failed) |
 
 ---
 

@@ -341,3 +341,8 @@ export function storedSecretRedactor(
     return { text: redacted, replaced: [...replaced], guessed: guessed.filter((name) => replaced.has(name)) };
   };
 }
+
+export function storedSecrets(workingDir: string, env: Record<string, string | undefined>): Secret[] {
+  const envFile = join(workingDir, '.env');
+  return secretValues(secretNames(join(workingDir, '.setup'), envFile).names, envFile, env);
+}

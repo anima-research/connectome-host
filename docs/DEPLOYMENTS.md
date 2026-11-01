@@ -158,14 +158,35 @@ the working directory):
   `invalid_request` rejections of the history itself, a poison-history breaker
   sheds the newest complete exchange and retries, capped by
   `refusalHandling.maxRewinds` (default 3) per episode.
-- **`scripts/connectome-doctor [INSTALL_DIR] [UNIT]`** — one-shot "why isn't
-  the agent responding?" (python3; systemd-user boxes). Prints service state,
-  disk, journal staleness (and where the unit really logs), a last-seen ladder
-  per pipeline stage (discord event → chronicle ingest → `llm-calls` →
-  delivery), recent failures from the unit's log file and
-  `INSTALL_DIR/logs/failures.log`, and a live gate dump via `SIGUSR2`. It
-  assumes `INSTALL_DIR/data` and `INSTALL_DIR/logs`, i.e. the unit runs with
-  the install dir as its working directory.
+- **`scripts/connectome-doctor [--no-signal] [--data-dir DIR] [--findings-json]
+  [INSTALL_DIR] [UNIT]`** — one-shot "why isn't the agent responding?"
+  (python3; systemd-user boxes). Prints service state, disk, a last-seen
+  ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
+  delivery), recent failures, and a live gate dump via `SIGUSR2`. It reads the
+  host's lines from the first `StandardOutput=` or `StandardError=` `file:` or
+  `append:` path in the unit file's text, a commented line included, else from
+  `INSTALL_DIR/logs/agent.log` unless that was last written before the unit
+  started, else from the unit's journal (its last 2,000 lines). Recent
+  failures also come from `INSTALL_DIR/logs/failures.log`. Chronicle ingest
+  comes from the active session's `records.log`, as `sessions.json` names it,
+  and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
+  discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. A stage the
+  ladder can't see reads "can't be seen here", with the reason. `SIGUSR2` goes
+  only to a host whose `/proc/PID/status` says it catches the signal: a host
+  that hasn't built its framework yet has no listener, and the signal's
+  default action ends it. `--no-signal` leaves the dump out. `--data-dir`
+  names the host's data directory, `INSTALL_DIR/data` when left out.
+  `CONNECTOME_DOCTOR_WITHHOLD`, a JSON list of `[name, value]` pairs, has each
+  value replaced by `<name>` in what the ladder reads and in a failed
+  command's error. `--findings-json` prints the findings, once the ladder
+  finishes, as its last line, `connectome-doctor findings: ` and a JSON list
+  of `{"text", "counts"}`, with no findings block or closing line, leaves the
+  service's own state (its row, a unit that isn't active, or a recent start)
+  to its caller, and exits 0. `counts` is false for a finding about what the
+  ladder can't see, and for the resident's own sleep. `connectome doctor` runs
+  the ladder with `--data-dir`, `--findings-json` and
+  `CONNECTOME_DOCTOR_WITHHOLD` for a service `connectome service install` set
+  up under systemd.
 
 ---
 

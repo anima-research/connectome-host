@@ -1436,8 +1436,8 @@ export function serviceLines(root: string, path: string | undefined = process.en
   ];
 }
 
-export async function checkService(root: string, sys: ServiceSystem = machine()):
-  Promise<{ passed: boolean; lines: string[] }> {
+export async function checkService(root: string, sys: ServiceSystem = machine(), stoppedIsFine = false):
+  Promise<{ passed: boolean; lines: string[]; stopped?: true }> {
   let record: ServiceRecord | null;
   try {
     record = readServiceRecord(root);
@@ -1447,14 +1447,15 @@ export async function checkService(root: string, sys: ServiceSystem = machine())
   if (record === null) {
     return { passed: false, lines: [`No service is recorded for this install (${join(root, 'service.json')}).`] };
   }
-  return checkRecord(root, record, sys);
+  return checkRecord(root, record, sys, stoppedIsFine);
 }
 
-async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSystem):
-  Promise<{ passed: boolean; lines: string[] }> {
+async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSystem, stoppedIsFine = false):
+  Promise<{ passed: boolean; lines: string[]; stopped?: true }> {
   const cmd = typedCommand(root, sys.env.PATH);
   const lines: string[] = [];
   let passed = true;
+  let stopped = false;
   const fail = (line: string) => {
     passed = false;
     lines.push(line);
@@ -1501,10 +1502,19 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
     else log(logged.stdout, `The journal's last lines from ${whose}'s latest start, which ended`, true);
     return { invocation, started };
   };
+  const units = unitsOf(record);
+  const gone = units.filter((unit) => !existsSync(unit.file));
+  for (const unit of gone) {
+    fail(`${unit.file}, ${unit.name}'s ${fileOf(record.manager)}, is gone. ${serviceRepair(cmd)}`);
+  }
   if (record.manager === 'systemd-user') {
-    for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
-      const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState', 'NRestarts',
-        'ExecMainStartTimestamp', 'ExecMainStatus', 'Environment', 'WorkingDirectory', 'InvocationID', RESTART_PROPERTIES]);
+    const shownAll = units.map((unit) => showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'SubState',
+      'NRestarts', 'ExecMainStartTimestamp', 'ExecMainStatus', 'Environment', 'WorkingDirectory', 'InvocationID',
+      RESTART_PROPERTIES]));
+    stopped = stoppedIsFine && gone.length === 0 && shownAll.every((shown) => typeof shown !== 'string' &&
+      shown.get('LoadState') === 'loaded' && shown.get('ActiveState') === 'inactive');
+    for (const [index, unit] of units.entries()) {
+      const shown = shownAll[index]!;
       if (typeof shown === 'string') {
         fail(`${shown}.`);
         continue;
@@ -1526,6 +1536,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         lines.push(`${unit.name} is ${state} again: ${restarted}.`);
       } else {
         if (active) lines.push(`${unit.name} is ${state}.`);
+        else if (stopped) lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
         else if (unit === record.units.host) fail(`${unit.name} is ${state}, not active.`);
         else fail(`${unit.name} is ${state}, not active: journalctl --user -u ${unit.name} shows its log.`);
         const exited = active || (shown.get('ExecMainStartTimestamp') ?? '') === '' ? ''
@@ -1533,7 +1544,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
         lines.push(restarts > 0 ? `${restarted}${exited}.` : `systemd hasn't restarted it since it was last started${exited}.`);
       }
       if (unit !== record.units.host) {
-        if (!active) latestStart(unit, shown, false, 'the shell daemon');
+        if (!active && !stopped) latestStart(unit, shown, false, 'the shell daemon');
         continue;
       }
       const policy = restartPolicy(shown);
@@ -1556,10 +1567,20 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       }
     }
   } else {
-    for (const unit of [record.units.host, ...(record.units.shell ? [record.units.shell] : [])]) {
-      const listed = sys.run('launchctl', ['list', unit.name], env);
-      if (listed.status !== 0) {
+    const listedAll = units.map((unit) => sys.run('launchctl', ['list', unit.name], env));
+    stopped = stoppedIsFine && gone.length === 0 && listedAll.every((listed) => listed.status === 113);
+    for (const [index, unit] of units.entries()) {
+      const listed = listedAll[index]!;
+      if (stopped) {
+        lines.push(`${unit.name} is stopped: launchd has it unloaded.`);
+        continue;
+      }
+      if (listed.status === 113) {
         fail(`launchd has no ${unit.name} loaded.`);
+        continue;
+      }
+      if (listed.status !== 0) {
+        fail(`Whether launchd has ${unit.name} loaded can't be told: ${launchctlFailure(listed)}.`);
         continue;
       }
       const pid = pidOf(listed.stdout);
@@ -1585,7 +1606,7 @@ async function checkRecord(root: string, record: ServiceRecord, sys: ServiceSyst
       else log(text, 'The last lines of the host\'s log file, which can hold earlier loads and more than one start', true);
     }
   }
-  return { passed, lines };
+  return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
 }
 
 function stateOf(shown: Map<string, string>): string {

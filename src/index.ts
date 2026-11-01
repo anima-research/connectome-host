@@ -79,7 +79,7 @@ import { speakerOf } from './speaker.js';
 import { askHidden } from './setup/terminal-secret.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
-import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
+import { serversForRecipe, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
@@ -485,16 +485,10 @@ async function createFramework(
     moduleInstances.push(instance);
   }
 
-  const recipeServers = recipe.mcpServers ?? {};
-  const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
-
-  const allServers = mergeRecipeServers(
-    recipeServers as unknown as Record<string, Record<string, unknown>>,
-    fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
-  );
+  const { listed: allServers, loaded } = serversForRecipe(recipe.mcpServers, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH);
 
   for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
-  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
+  const finalServers = loaded.map((server) => {
     const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
       ...server,
       env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),

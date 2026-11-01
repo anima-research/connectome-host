@@ -1,0 +1,1 @@
+- The context makeup's `exactTotalTokens` (`/debug/context/makeup`, and the `context-makeup` panel op) stops waiting for `count_tokens` after 30 s and reports `countSource: "count_tokens_error"`. Before, the call had no limit of its own.

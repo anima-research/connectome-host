@@ -1650,7 +1650,7 @@ export const DEFAULT_RECIPE: Recipe = {
   },
 };
 
-const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`;
+export const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`;
 
 export function namesEnvReference(text: string): boolean {
   return new RegExp(ENV_REFERENCE).test(text);
@@ -1658,7 +1658,8 @@ export function namesEnvReference(text: string): boolean {
 
 /**
  * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
- * string values with `process.env.VAR_NAME`. Applied at recipe-load time,
+ * string values with `env.VAR_NAME`, `env` being process.env unless
+ * another is given. Applied at recipe-load time,
  * before schema validation, so secrets can live in `.env` (gitignored)
  * while the recipe itself stays commit-safe.
  *
@@ -1677,12 +1678,16 @@ export function namesEnvReference(text: string): boolean {
  * No escape syntax yet — a literal `${...}` in recipe JSON is not a
  * supported case.
  */
-export function substituteEnvVars(value: unknown, source: string): unknown {
+export function substituteEnvVars(
+  value: unknown,
+  source: string,
+  env: Record<string, string | undefined> = process.env,
+): unknown {
   if (typeof value === 'string') {
     return value.replace(
       new RegExp(ENV_REFERENCE, 'g'),
       (_match, name: string, defaultValue: string | undefined) => {
-        const v = process.env[name];
+        const v = env[name];
         if (defaultValue !== undefined) {
           return v !== undefined && v !== '' ? v : defaultValue;
         }
@@ -1699,12 +1704,12 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
     );
   }
   if (Array.isArray(value)) {
-    return value.map((v) => substituteEnvVars(v, source));
+    return value.map((v) => substituteEnvVars(v, source, env));
   }
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = substituteEnvVars(v, source);
+      out[k] = substituteEnvVars(v, source, env);
     }
     return out;
   }
@@ -1722,7 +1727,10 @@ export async function loadRecipe(source: string): Promise<Recipe> {
   return (await loadRecipeDetailed(source)).recipe;
 }
 
-export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
+export async function loadRecipeDetailed(
+  source: string,
+  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {},
+): Promise<LoadedRecipe> {
   return loadRecipeDocument(await readRecipeDocument(source), source, options);
 }
 
@@ -1766,17 +1774,17 @@ export async function readRecipeDocument(source: string): Promise<RecipeDocument
 }
 
 export async function loadRecipeDocument(document: RecipeDocument, source: string,
-  options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
+  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {}): Promise<LoadedRecipe> {
   let raw = document.raw;
   const sourceBase = document.sourceBase;
 
   const persistable = structuredClone(raw) as Record<string, unknown>;
 
-  raw = substituteEnvVars(raw, source);
+  raw = substituteEnvVars(raw, source, options.env);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
+  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
   return { recipe: resolved, persistable };
 }
@@ -1851,8 +1859,8 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
   return recipe;
 }
 
-export function runningFit(recipe: Recipe, envModel: string | undefined): RecipeFit {
-  const fit = recipeFit(recipe, recipeModel(recipe, envModel));
+export function runningFit(recipe: Recipe, envModel: string | undefined, beside?: number): RecipeFit {
+  const fit = recipeFit(recipe, recipeModel(recipe, envModel), beside);
   const own = recipeModel(recipe, undefined);
   if (!envModel || envModel === own || !fit.checked || fit.fits) return fit;
   const replaced = recipe.agent.model ? 'agent.model' : `its default, ${own}`;
@@ -1862,8 +1870,8 @@ export function runningFit(recipe: Recipe, envModel: string | undefined): Recipe
   };
 }
 
-function refuseUnfit(recipe: Recipe): Recipe {
-  const fit = runningFit(recipe, process.env.MODEL || undefined);
+function refuseUnfit(recipe: Recipe, env: Record<string, string | undefined> = process.env): Recipe {
+  const fit = runningFit(recipe, env.MODEL || undefined);
   if (fit.checked && !fit.fits) throw new Error(fit.refusal);
   return recipe;
 }

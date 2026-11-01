@@ -136,6 +136,7 @@ describe("why the Context page's next request wasn't counted", () => {
     expect(notCounted('count_tokens_unsupported_model')).toBe("not counted: count_tokens doesn't take this agent's model");
     expect(notCounted('count_tokens_failed_429')).toBe('not counted: count_tokens answered 429');
     expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
+    expect(notCounted('count_tokens_no_credential')).toBe('not counted: no Anthropic credential to count with');
     expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });
@@ -191,6 +192,35 @@ describe('the makeup endpoint', () => {
       expect(compiled.stats).toBe(stats);
       expect(compiled.statsKept).toBe(true);
     });
+  }
+});
+
+test('the makeup gives count_tokens_no_credential, and no total, for a 401 to a count that carried no credential', async () => {
+  const realFetch = globalThis.fetch;
+  const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  globalThis.fetch = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch;
+  try {
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    const app = {
+      recipe: { agent: { name: 'agent' } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => cmWith(null, true) }),
+        previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
+      },
+    } as unknown as PanelAppRef;
+    const makeup = await buildContextMakeup(app, 'agent');
+    expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_no_credential', null]);
+  } finally {
+    globalThis.fetch = realFetch;
+    restore('COUNT_TOKENS_MODEL', prior.model);
+    restore('ANTHROPIC_API_KEY', prior.key);
+    restore('ANTHROPIC_AUTH_TOKEN', prior.token);
   }
 });
 
