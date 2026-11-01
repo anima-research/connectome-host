@@ -242,6 +242,16 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     }
 
     case 'help':
+      if (app.recipe.modules?.setup === true) {
+        return {
+          lines: [
+            { text: '--- In setup ---', style: 'system' },
+            { text: '  /quit                  Leave setup. Setup then says how to go on where it stopped.', style: 'system' },
+            { text: '  /session new           Start a new conversation with setup\'s agent. What setup has done stays on disk.', style: 'system' },
+            { text: '  /help                  This list', style: 'system' },
+          ],
+        };
+      }
       return {
         lines: [
           { text: '--- Commands ---', style: 'system' },

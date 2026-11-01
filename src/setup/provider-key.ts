@@ -1,0 +1,133 @@
+const REQUEST_LIMIT_MS = 15_000;
+
+export type ProviderAnswer<T> =
+  | { kind: 'accepted'; value: T }
+  | { kind: 'refused'; status: number }
+  | { kind: 'unsendable' }
+  | { kind: 'answered'; status: number; said: string | null }
+  | { kind: 'unanswered'; why: string };
+
+interface Request {
+  url: string;
+  headers: Record<string, string>;
+}
+
+interface ProviderKey {
+  provider: string;
+  check(key: string, env: ReadonlyMap<string, string>): Request;
+  accepts(body: unknown): boolean;
+  models(key: string, env: ReadonlyMap<string, string>): Request;
+}
+
+const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
+const dataOf = (body: unknown): unknown =>
+  (body !== null && typeof body === 'object' ? (body as { data?: unknown }).data : undefined);
+const listed = (body: unknown): boolean => Array.isArray(dataOf(body));
+const trimmed = (url: string) => url.replace(/\/+$/, '');
+
+function openaiModels(key: string, env: ReadonlyMap<string, string>): Request {
+  return { url: `${trimmed(env.get('OPENAI_BASE_URL') || 'https://api.openai.com/v1')}/models`, headers: bearer(key) };
+}
+
+function anthropicModels(key: string, env: ReadonlyMap<string, string>): Request {
+  return {
+    url: `${trimmed(env.get('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com')}/v1/models?limit=1000`,
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+  };
+}
+
+/** The provider keys setup checks, by the name each is stored as in the install's .env. Bedrock's keys aren't among
+ *  them, since a request with them needs AWS's signing; nor Codex's, a ChatGPT login rather than a key; nor
+ *  OPENAI_COMPATIBLE_API_KEY, whose base URL is the recipe's. */
+export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
+  OPENAI_API_KEY: { provider: 'OpenAI', check: openaiModels, accepts: listed, models: openaiModels },
+  ANTHROPIC_API_KEY: { provider: 'Anthropic', check: anthropicModels, accepts: listed, models: anthropicModels },
+  OPENROUTER_API_KEY: {
+    provider: 'OpenRouter',
+    check: (key) => ({ url: 'https://openrouter.ai/api/v1/key', headers: bearer(key) }),
+    accepts: (body) => {
+      const data = dataOf(body);
+      return data !== null && typeof data === 'object' && !Array.isArray(data);
+    },
+    models: (key) => ({ url: 'https://openrouter.ai/api/v1/models', headers: bearer(key) }),
+  },
+};
+
+interface Options {
+  fetch?: typeof fetch;
+  limitMs?: number;
+  env?: ReadonlyMap<string, string>;
+}
+
+export function checkProviderKey(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<null>> | null {
+  const provider = PROVIDER_KEYS[name];
+  if (provider === undefined) return null;
+  return ask(provider.check(key, options.env ?? new Map()), name, key, options,
+    (body) => (provider.accepts(body) ? null : undefined));
+}
+
+export function listModels(name: string, key: string, options: Options = {}): Promise<ProviderAnswer<string[]>> | null {
+  const provider = PROVIDER_KEYS[name];
+  if (provider === undefined) return null;
+  return ask(provider.models(key, options.env ?? new Map()), name, key, options, (body) => {
+    const data = (body as { data?: unknown } | null)?.data;
+    if (!Array.isArray(data)) return undefined;
+    return data.map((model) => (model as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string');
+  });
+}
+
+async function ask<T>(
+  request: Request, name: string, key: string, options: Options, read: (body: unknown) => T | undefined,
+): Promise<ProviderAnswer<T>> {
+  try {
+    new Headers(request.headers);
+  } catch {
+    return { kind: 'unsendable' };
+  }
+  const limitMs = options.limitMs ?? REQUEST_LIMIT_MS;
+  const unanswered = (error: unknown): ProviderAnswer<T> => {
+    const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    const words = timedOut ? `no answer within ${limitMs / 1000} s`
+      : error instanceof Error ? error.message : String(error);
+    return { kind: 'unanswered', why: hidden(words, key, name) };
+  };
+  let response: Response;
+  try {
+    response = await (options.fetch ?? fetch)(request.url, {
+      headers: request.headers, signal: AbortSignal.timeout(limitMs), redirect: 'manual',
+    });
+  } catch (error) {
+    return unanswered(error);
+  }
+  if (response.status === 401 || response.status === 403) return { kind: 'refused', status: response.status };
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    return unanswered(error);
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  const value = response.ok ? read(body) : undefined;
+  if (value !== undefined) return { kind: 'accepted', value };
+  const error = (body as { error?: unknown } | undefined)?.error;
+  const message = typeof error === 'string' ? error
+    : typeof (error as { message?: unknown } | undefined)?.message === 'string' ? (error as { message: string }).message
+    : null;
+  return { kind: 'answered', status: response.status, said: message === null ? null : hidden(message, key, name) };
+}
+
+function hidden(words: string, key: string, name: string): string {
+  const forms = [...new Set([key, key.trim()])].filter((form) => form !== '').sort((a, b) => b.length - a.length);
+  for (const form of forms) words = words.split(form).join(`<${name}>`);
+  return words;
+}
+
+export function familyOf(model: string): string {
+  const at = model.search(/[-.]/);
+  return at === -1 ? model : model.slice(0, at);
+}

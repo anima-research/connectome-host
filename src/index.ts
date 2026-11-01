@@ -71,13 +71,19 @@ import { ObserversModule } from './modules/observers-module.js';
 import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
+import {
+  REFUSED_BEFORE, REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
+} from './modules/setup-module.js';
+import { bracketedPaste } from './readline-paste.js';
+import { speakerOf } from './speaker.js';
+import { askHidden } from './setup/terminal-secret.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
-import { openReadlineTerminal } from './readline-terminal.js';
+import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
@@ -249,6 +255,7 @@ function resolveModel(recipe: Recipe): string {
 let noticesRef: NoticesModule | null = null;
 let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
+let terminalAsker: SecretAsker | null = null;
 
 async function createFramework(
   membrane: Membrane,
@@ -420,6 +427,17 @@ async function createFramework(
       dataDir: resolve(config.dataDir),
       timeZone,
       ...(srCfg.cooldownMinutes !== undefined ? { cooldownMinutes: srCfg.cooldownMinutes } : {}),
+    }));
+  }
+
+  if (modules.setup === true) {
+    if (!noTui || !process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new Error('modules.setup runs only in readline mode with stdin and stdout on a terminal, as ' +
+        '`connectome setup` starts it: setup--ask_secret asks the person on that terminal, with nothing typed shown.');
+    }
+    moduleInstances.push(new SetupModule({
+      dir: process.env.CONNECTOME_SETUP_DIR || process.cwd(), env: process.env, asker: () => terminalAsker,
+      show: (line) => console.log(line),
     }));
   }
 
@@ -710,23 +728,54 @@ async function runPiped(app: AppContext) {
   let say = (line: string): void => { console.error(line); };
   let atPrompt = false;
   let onAlert: ((event: Record<string, unknown>) => void) | null = null;
+  let onCompleted: (() => void) | null = null;
+  let answeredUnwaited = (): void => {};
   const turns = createPipedTurns(app.agentName, {
     write: (text) => { atPrompt = false; process.stdout.write(text); },
     log: (line) => { atPrompt = false; console.log(line); },
     error: (line) => { say(line); },
-  }, failureHint(app.recipe, process.env, app.credentials));
+  }, failureHint(app.recipe, process.env, app.credentials), showsItself, () => { answeredUnwaited(); });
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
     if (e.type === 'ops:alert') onAlert?.(e);
+    if (e.type === 'inference:completed' && e.agentName === app.agentName) onCompleted?.();
   });
   traces.follow(app.framework);
-  let afterSwitch = (): void => {};
+  let afterSwitch = async (_switched: boolean): Promise<void> => {};
+  // agent-framework's processNextEvent starts a turn for each event it pops.
+  let lastMessage: Promise<void> = Promise.resolve();
+  let session = 0;
+  let conversationEnded = false;
+  let linesWaiting = 0;
+  const inOrder = async (send: () => Promise<void>, line?: string): Promise<void> => {
+    const before = lastMessage;
+    const sentIn = session;
+    let done!: () => void;
+    lastMessage = new Promise((resolve) => { done = resolve; });
+    if (line !== undefined) linesWaiting++;
+    try {
+      await before;
+      if (line !== undefined) linesWaiting--;
+      if (conversationEnded) return;
+      if (sentIn !== session) {
+        const first = line?.split('\n')[0];
+        if (first !== undefined) {
+          const shown = first.length > 60 ? `${first.slice(0, 60)}…` : first;
+          say(`Not sent, since a session switch was asked for before it went in: "${shown}"`);
+        }
+        return;
+      }
+      await send();
+    } finally {
+      done();
+    }
+  };
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
     if (!trimmed) return false;
-    if (trimmed.startsWith('/')) {
+    if (trimmed.startsWith('/') && !trimmed.includes('\n')) {
       const result = handleCommand(trimmed, app);
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
@@ -745,17 +794,25 @@ async function runPiped(app: AppContext) {
       }
       if (result.switchToSessionId) {
         const sessionId = result.switchToSessionId;
+        session++;
+        app.switching = true;
         turns.switched();
-        const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
-        afterSwitch();
-        console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
+        await inOrder(async () => {
+          app.switching = false;
+          const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+          console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
+          await afterSwitch(switched);
+        });
       }
     } else {
-      app.framework.pushEvent({
-        type: 'external-message', source: 'cli',
-        content: trimmed, metadata: {}, triggerInference: true,
-      });
-      await turns.waitForTurn();
+      await inOrder(async () => {
+        const answered = turns.waitForTurn();
+        app.framework.pushEvent({
+          type: 'external-message', source: 'cli',
+          content: trimmed, metadata: {}, triggerInference: true,
+        });
+        await answered;
+      }, trimmed);
     }
     return false;
   }
@@ -788,7 +845,9 @@ async function runPiped(app: AppContext) {
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
-  const terminal = openReadlineTerminal(config.dataDir, { showing: () => atPrompt, redraw: () => { rl.prompt(true); } });
+  shownPrompt.showing = () => atPrompt;
+  shownPrompt.redraw = () => { rl.prompt(true); };
+  const terminal = earlyTerminal ?? openReadlineTerminal(config.dataDir, shownPrompt);
   try {
     say = terminal.say;
     hostUpdate.attachNotices(terminal.say);
@@ -797,24 +856,104 @@ async function runPiped(app: AppContext) {
       const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message);
       if (line !== null) terminal.say(line.text);
     };
-    onAlert = (event) => { showAlert(opsAlertOf(event)); };
-    afterSwitch = () => { alerts.clear(); };
+    const setup = app.recipe.modules?.setup === true;
+    const setupModule = (): SetupModule | undefined =>
+      setup ? app.framework.getModule(SETUP_MODULE) as SetupModule | undefined : undefined;
+    onAlert = (event) => {
+      const alert = opsAlertOf(event);
+      if (setup && alert.kind === 'refusal') return;
+      showAlert(alert);
+    };
+    // agent-framework logs a turn's last inference, and notes a refusal, after the turn's inference:completed trace in
+    // the same tick.
+    if (setup) {
+      onCompleted = () => {
+        queueMicrotask(() => { if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_TURN); });
+      };
+    }
     let restarting = false;
     hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
+    terminalAsker = {
+      ask: async (name, purpose) => {
+        const release = turns.holdCaps();
+        try {
+          return (await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone gives none)`)) || null;
+        } finally {
+          release();
+        }
+      },
+    };
     console.log('connectome-host (readline mode). Type /help for commands.');
-    if (terminal.logging()) terminal.say(`Error log: ${terminal.logPath}`);
+    if (terminal.logging()) terminal.say(`The host's diagnostics go to ${terminal.logPath}, not to this terminal.`);
+    const paste = process.stdin.isTTY && process.stdout.isTTY
+      ? bracketedPaste(rl, process.stdin, process.stdout, (count) => {
+        terminal.say(`\x1b[2m${count === 1 ? '1 line pasted: Enter sends it.' : `${count} lines pasted: Enter sends them.`}\x1b[22m`);
+      })
+      : null;
     let closed = false;
-    rl.on('close', () => { closed = true; atPrompt = false; });
-    rl.prompt();
-    atPrompt = true;
-    rl.on('line', async (line: string) => {
+    rl.on('close', () => {
+      terminalAsker = null;
+      closed = true;
+      conversationEnded = true;
       atPrompt = false;
-      if (await processLine(line)) { rl.close(); return; }
-      if (closed) return;
+      paste?.end();
+      if (linesWaiting > 0) {
+        const lines = linesWaiting === 1 ? 'A line you typed' : `${linesWaiting} lines you typed`;
+        say(`${lines} hadn't gone in to the agent yet, and won't now.`);
+      }
+    });
+    const ended = new Promise<void>((done) => rl.once('close', () => done()));
+    let unanswered = 0;
+    const promptIfDone = (): void => {
+      if (closed || unanswered > 0) return;
+      if (setupModule()?.finishRequested) {
+        rl.close();
+        return;
+      }
       rl.prompt();
       atPrompt = true;
+    };
+    answeredUnwaited = () => { if (!atPrompt) promptIfDone(); };
+    const opening = async (after: 'start' | 'switch'): Promise<void> => {
+      const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
+      if (lastReplyRefused(app.framework, app.agentName)) say(REFUSED_BEFORE);
+      const opened = turns.waitForTurn(null);
+      app.framework.pushEvent({
+        type: 'external-message', source: 'system',
+        content: openingMessage(
+          held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'),
+          after, setupModule()?.finishedAt() ?? null),
+        metadata: {}, triggerInference: true,
+      });
+      await Promise.race([opened, ended]);
+    };
+    afterSwitch = async (switched) => {
+      alerts.clear();
+      if (switched && setup) await opening('switch');
+    };
+    rl.on('line', async (line: string) => {
+      const message = paste === null ? line : paste.take(line);
+      if (message === null) return;
+      atPrompt = false;
+      unanswered++;
+      let quit = false;
+      try {
+        quit = await processLine(message);
+      } catch (error) {
+        say(`That line failed, and nothing more came of it: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        unanswered--;
+      }
+      if (quit) { rl.close(); return; }
+      promptIfDone();
     });
-    await new Promise<void>(r => rl.on('close', r));
+    if (setup) {
+      unanswered++;
+      await inOrder(() => opening('start'));
+      unanswered--;
+    }
+    promptIfDone();
+    await ended;
     app.stopping = true;
     console.log('\nShutting down...');
     await app.framework.stop();
@@ -825,6 +964,7 @@ async function runPiped(app: AppContext) {
     }
   } finally {
     onAlert = null;
+    onCompleted = null;
     terminal.end();
   }
 }
@@ -844,6 +984,9 @@ function countLines(path: string): number {
 }
 
 let beforeFatalExit: (() => Promise<void>) | undefined;
+
+let earlyTerminal: ReadlineTerminal | null = null;
+const shownPrompt: ShownPrompt = { showing: () => false, redraw: () => {} };
 
 async function main() {
   // It exits as soon as what it wrote has gone out, since an extension the
@@ -1136,6 +1279,9 @@ async function main() {
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
+  if (noTui && !batch && recipe.modules?.setup === true) {
+    earlyTerminal = openReadlineTerminal(config.dataDir, shownPrompt);
+  }
   const extensions = await loadExtensions(recipe);
   // Before any agent config is built: what this account does with thinking
   // whose earlier conversation changed decides whether agents leave it out.
@@ -1260,6 +1406,7 @@ async function main() {
 }
 
 main().catch(async (err) => {
+  earlyTerminal?.end();
   if (err instanceof StartRefusal) console.error(err.message);
   else console.error('Fatal error:', err);
   // Headless, headless.log may still hold lines written just before the

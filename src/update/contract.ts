@@ -222,8 +222,10 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
   'host\'s next start through start.js refuses, naming both.\n' +
   'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
-  'server\'s state, each a JSON string, or none. Only setup writes that list, and each setup run that finished ' +
-  `printed it, after "${EXTRA_STATE_LINE}". If the install has updated, copy/copy.json beside the record ` +
+  'server\'s state, each a JSON string, or none. Only the install\'s setup writes that list, and each of its runs ' +
+  `that finished printed what it recorded, after "${EXTRA_STATE_LINE}", though \`connectome setup\` shows that ` +
+  'block only at its end, and only while the record still holds it; a run that stopped partway may have written ' +
+  'the record without printing it. If the install has updated, copy/copy.json beside the record ' +
   `${copyShows('which stay out of the list')} An update copies only the places the ` +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +

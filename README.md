@@ -18,6 +18,25 @@ else. It started as a knowledge-mining TUI, and those recipes still ship
 
 Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/anima-research/agent-framework) + [@animalabs/context-manager](https://github.com/anima-research/context-manager) + [@animalabs/chronicle](https://github.com/anima-research/chronicle) + [@animalabs/membrane](https://github.com/anima-research/membrane).
 
+## A resident, from one line
+
+On the machine the resident will live on, in a new directory:
+
+```bash
+bunx @animalabs/connectome-host setup discord
+```
+
+If `bunx` doesn't have the package yet, it first downloads it and what it
+depends on, showing its own progress, before setup says anything.
+
+The host's own agent sets the resident up from there, and asks you only what
+only you can answer. Afterwards the install's own `connectome` command looks
+after it: `./connectome-host/connectome` in that directory, or plain
+`connectome` once its directory is on your PATH, as setup shows. With nothing
+after it, it says how the install is. Type the package's whole name,
+`bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
+another package on npm.
+
 ## What people run on it
 
 | Use | Start here |

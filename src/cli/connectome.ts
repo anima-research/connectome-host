@@ -8,7 +8,8 @@ import { KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRe
 import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, setup } from './setup.js';
 
 export interface CliContext {
   root: string | null;
@@ -33,6 +34,12 @@ const UPDATE_USAGE = 'connectome update [check | install | restart [wait | now |
   'back [(keep | restore) [<version>]]]';
 
 export const COMMANDS: CliCommand[] = [
+  {
+    name: 'setup',
+    usage: SETUP_USAGE,
+    summary: SETUP_SUMMARY,
+    run: (ctx) => setup({ ...ctx, root: ctx.root ?? resolve(ROOT_IN_WORKDIR) }),
+  },
   {
     name: 'send',
     usage: 'connectome send <text>',
@@ -82,14 +89,14 @@ export async function main(root: string | null, argv: string[]): Promise<number>
   const [word, ...rest] = argv;
   if (root === null) return fromPackage(argv);
   if (isHelp(word)) {
-    usage(io.out);
+    usage(io.out, typedCommand(root));
     return 0;
   }
   if (word === undefined) return bare({ root, argv: rest, ...io });
   const command = COMMANDS.find((each) => each.name === word);
   if (command === undefined) {
     io.err(`connectome: there's no command ${word}.`);
-    usage(io.err);
+    usage(io.err, typedCommand(root));
     return 2;
   }
   return command.run({ root, argv: rest, ...io });
@@ -99,25 +106,26 @@ function isHelp(word: string | undefined): boolean {
   return word === 'help' || word === '--help' || word === '-h';
 }
 
-function usage(print: (line: string) => void): void {
+function usage(print: (line: string) => void, typed = INSTALL_COMMAND): void {
   print('connectome: an install\'s own command. Each runs the release its install runs. Its own refusals go to ' +
     'stderr, and what the host answers to update to stdout, a refusal or a failure it answers included; an error ' +
     'that stops the host\'s update command goes to stderr. send prints only what the agent says on stdout, and its ' +
     'own notes on stderr.');
-  print('  connectome');
+  print(`  ${typed}`);
   print('      Which install this is, its release, whether its host is running, and its update state.');
   for (const command of COMMANDS) {
-    print(`  ${command.usage}`);
+    print(`  ${command.usage.replace(/^connectome(?= |$)/, typed)}`);
     print(`      ${command.summary}`);
     for (const word of command.words ?? []) print(`        ${word}`);
   }
-  print('  connectome help');
+  print(`  ${typed} help`);
 }
 
 async function fromPackage(argv: string[]): Promise<number> {
   const root = resolve(ROOT_IN_WORKDIR);
   const command = join(root, INSTALL_COMMAND);
-  if (existsSync(command)) {
+  const [word] = argv;
+  if (existsSync(command) && (word !== 'setup' || existsSync(join(root, 'current', SETUP_RECIPE)))) {
     const ran = spawnSync(process.execPath, [command, ...argv], { stdio: 'inherit' });
     if (ran.error !== undefined) {
       io.err(`connectome: ${command} couldn't be run: ${ran.error.message}`);
@@ -125,16 +133,16 @@ async function fromPackage(argv: string[]): Promise<number> {
     }
     if (ran.signal !== null) {
       io.err(`connectome: ${command} ended on ${ran.signal}, so whether what it asked of the host happened isn't ` +
-        'known here. `connectome` says what runs now.');
+        `known here. \`${typedCommand(root)}\` says what runs now.`);
       return 1;
     }
     return ran.status ?? 1;
   }
-  const [word] = argv;
   if (isHelp(word)) {
     usage(io.out);
     return 0;
   }
+  if (word === 'setup') return setup({ root, argv: argv.slice(1), ...io });
   if (word !== undefined && !COMMANDS.some((each) => each.name === word)) {
     io.err(`connectome: there's no command ${word}.`);
     usage(io.err);
@@ -145,7 +153,8 @@ async function fromPackage(argv: string[]): Promise<number> {
       `start.js. ${setupAgain(root)}`);
     return 1;
   }
-  io.err(`connectome: there's no connectome-host install here (${process.cwd()}).`);
+  io.err(`connectome: there's no connectome-host install here (${process.cwd()}). In a new directory, ` +
+    `\`${firstLine()}\` sets one up.`);
   return 1;
 }
 
@@ -213,7 +222,7 @@ const UNREAD = ` The host also closes it when output for it backs up and stays b
 export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS): Promise<number> {
   const text = ctx.argv.join(' ');
   if (text.trim() === '') {
-    ctx.err('connectome: usage: connectome send <text>');
+    ctx.err(`connectome: usage: ${typedCommand(ctx.root!)} send <text>`);
     return 2;
   }
   const host = await reach(ctx);
@@ -226,7 +235,7 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
     host.close();
     ctx.err('connectome: nothing was sent: the running host is an older release than this command, and it ' +
       'doesn\'t say when its agent is in a turn, so a reply here couldn\'t be told from an earlier turn\'s. ' +
-      `${thisRelease(ctx.root!)} Then connectome send works.`);
+      `${thisRelease(ctx.root!)} Then ${typedCommand(ctx.root!)} send works.`);
     return 1;
   }
   const between = host.ready.turnWork !== true;
@@ -339,7 +348,7 @@ async function update(ctx: CliContext): Promise<number> {
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
       'here. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
-      'connecting. `connectome` says what runs now.');
+      `connecting. \`${typedCommand(ctx.root!)}\` says what runs now.`);
     return 1;
   }
   if (answer.error !== undefined) {

@@ -806,6 +806,11 @@ describe('the running setup and the saved file', () => {
     expect(setupFacts(recipe)).toMatchObject({ model: 'claude-opus-4-6', maxTokens: 1000, thinking: true, modules: ['lessons'] });
   });
 
+  test('the setup agent\'s module counts as the host\'s own, from the recipe and from the running agent', () => {
+    expect(setupFacts({ modules: { setup: true } })).toMatchObject({ modules: ['setup'], customModules: 0 });
+    expect(setupFacts({}, { agent: {}, modules: ['setup'], wake: false })).toMatchObject({ modules: ['setup'], customModules: 0 });
+  });
+
   test("when the file can't be saved, the output says so and promises nothing of it", () => {
     const dir = scratch();
     const previous = process.env.DATA_DIR;
