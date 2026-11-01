@@ -1723,6 +1723,15 @@ export async function loadRecipe(source: string): Promise<Recipe> {
 }
 
 export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
+  return loadRecipeDocument(await readRecipeDocument(source), source, options);
+}
+
+export interface RecipeDocument {
+  raw: unknown;
+  sourceBase: RecipeSourceBase;
+}
+
+export async function readRecipeDocument(source: string): Promise<RecipeDocument> {
   let raw: unknown;
   let sourceBase: RecipeSourceBase;
 
@@ -1752,6 +1761,14 @@ export async function loadRecipeDetailed(source: string, options: { fetchSystemP
     }
     sourceBase = { kind: 'file', dir: dirname(path) };
   }
+
+  return { raw, sourceBase };
+}
+
+export async function loadRecipeDocument(document: RecipeDocument, source: string,
+  options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
+  let raw = document.raw;
+  const sourceBase = document.sourceBase;
 
   const persistable = structuredClone(raw) as Record<string, unknown>;
 

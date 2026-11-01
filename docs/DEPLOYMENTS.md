@@ -88,7 +88,11 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
 
 Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
-to stop, `kickstart -k` to restart.)
+to stop, `kickstart -k` to restart.) A service `connectome service install`
+writes is named after the install's working directory instead:
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`.
+`connectome service stop` and `connectome service start` stop and start it,
+and `connectome` alone shows how to follow its log.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only

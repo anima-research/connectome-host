@@ -1336,6 +1336,19 @@ describe('setup--ask_secret', () => {
 });
 
 describe("doctor's redactor", () => {
+  test('line-preserving rendering hides a whole multi-line value while the default stays compact', () => {
+    const dir = scratch();
+    const env = { DISCORD_TOKEN: 'first-part\nmiddle-part\nlast-part' };
+    const text = 'before first-part\nmiddle-part\nlast-part after';
+    expect(storedSecretRedactor(dir, env)(text)).toEqual({
+      text: 'before <DISCORD_TOKEN> after', replaced: ['DISCORD_TOKEN'], guessed: [],
+    });
+    expect(storedSecretRedactor(dir, env, true)(text)).toEqual({
+      text: 'before <DISCORD_TOKEN>\n<DISCORD_TOKEN>\n<DISCORD_TOKEN> after',
+      replaced: ['DISCORD_TOKEN'], guessed: [],
+    });
+  });
+
   test('replaces the stored secrets, as the list and .env hold them, and the provider credentials, and refuses a damaged list', async () => {
     const { dir, module } = install({ asker: { ask: async () => 'the stored #token' } });
     expect((await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'x' })).success).toBe(true);

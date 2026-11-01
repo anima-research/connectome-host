@@ -37,7 +37,7 @@ import {
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
-import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
+import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
 
 export { ENTRY_POINT };
 
@@ -118,6 +118,8 @@ export function linksOutside(install: string): string[] {
 
 export interface ServiceUnit {
   id: string;
+  scope: 'user' | 'system';
+  file: string;
   settings: string;
   restarts: boolean;
 }
@@ -125,7 +127,7 @@ export interface ServiceUnit {
 export interface ServiceUnits {
   found: ServiceUnit[];
   unasked: string[];
-  unresolved: string[];
+  unresolved: Array<{ id: string; scope: 'user' | 'system' }>;
   defaulted: string[];
 }
 
@@ -151,7 +153,7 @@ export function systemdUnits(cwd: string, run = (args: string[]) =>
 homeOf = passwdHome): ServiceUnits {
   const found: ServiceUnit[] = [];
   const unasked: string[] = [];
-  const unresolved: string[] = [];
+  const unresolved: ServiceUnits['unresolved'] = [];
   const defaulted: string[] = [];
   const here = realOrResolved(cwd);
   const realOrNull = (path: string) => {
@@ -168,7 +170,7 @@ homeOf = passwdHome): ServiceUnits {
     let result: { exitCode: number | null; stdout: Uint8Array | Buffer };
     try {
       result = run([...scope, 'show',
-        '--property=Id,WorkingDirectory,User,Restart,SuccessExitStatus,RestartPreventExitStatus,RestartForceExitStatus',
+        `--property=Id,WorkingDirectory,User,FragmentPath,${RESTART_PROPERTIES}`,
         '--', '*.service']) as never;
     } catch {
       unanswered();
@@ -196,37 +198,43 @@ homeOf = passwdHome): ServiceUnits {
       }
       const tilde = set === '~' && !user ? homeOf(fields.get('User') || 'root') : home;
       if (tilde === null) {
-        unresolved.push(id);
+        unresolved.push({ id, scope: user ? 'user' : 'system' });
         continue;
       }
       let real: string;
       try {
         real = realOrResolved(set === '~' ? tilde : set);
       } catch {
-        unresolved.push(id);
+        unresolved.push({ id, scope: user ? 'user' : 'system' });
         continue;
       }
       if (real !== here) continue;
-      const restart = fields.get('Restart') || 'no';
-      const statusesOf = (key: string) => (fields.get(key) ?? '').split(/\s+/).filter(Boolean);
-      // systemd's rules for an exit with `code`: a prevented status never
-      // restarts, and a forced one restarts whatever Restart= says.
-      const restartsOn = (code: string) => {
-        if (statusesOf('RestartPreventExitStatus').includes(code)) return false;
-        if (statusesOf('RestartForceExitStatus').includes(code)) return true;
-        const success = code === '0' || statusesOf('SuccessExitStatus').includes(code);
-        return restart === 'always' || (restart === 'on-failure' && !success) || (restart === 'on-success' && success);
-      };
-      const listed = (key: string) => {
-        const codes = RESTART_ON.filter((code) => statusesOf(key).includes(code));
-        return codes.length > 0 ? [`${key} includes ${codes.join(' and ')}`] : [];
-      };
-      const settings = [`Restart=${restart}`, ...listed('SuccessExitStatus'), ...listed('RestartPreventExitStatus'),
-        ...listed('RestartForceExitStatus')].join(', ');
-      found.push({ id, settings, restarts: RESTART_ON.every(restartsOn) });
+      found.push({ id, scope: user ? 'user' : 'system', file: fields.get('FragmentPath') ?? '', ...restartPolicy(fields) });
     }
   }
   return { found, unasked, unresolved, defaulted };
+}
+
+export const RESTART_PROPERTIES = 'Restart,SuccessExitStatus,RestartPreventExitStatus,RestartForceExitStatus';
+
+export function restartPolicy(fields: Map<string, string>): { settings: string; restarts: boolean } {
+  const restart = fields.get('Restart') || 'no';
+  const statusesOf = (key: string) => (fields.get(key) ?? '').split(/\s+/).filter(Boolean);
+  // systemd's rules for an exit with `code`: a prevented status never
+  // restarts, and a forced one restarts whatever Restart= says.
+  const restartsOn = (code: string) => {
+    if (statusesOf('RestartPreventExitStatus').includes(code)) return false;
+    if (statusesOf('RestartForceExitStatus').includes(code)) return true;
+    const success = code === '0' || statusesOf('SuccessExitStatus').includes(code);
+    return restart === 'always' || (restart === 'on-failure' && !success) || (restart === 'on-success' && success);
+  };
+  const listed = (key: string) => {
+    const codes = RESTART_ON.filter((code) => statusesOf(key).includes(code));
+    return codes.length > 0 ? [`${key} includes ${codes.join(' and ')}`] : [];
+  };
+  const settings = [`Restart=${restart}`, ...listed('SuccessExitStatus'), ...listed('RestartPreventExitStatus'),
+    ...listed('RestartForceExitStatus')].join(', ');
+  return { settings, restarts: RESTART_ON.every(restartsOn) };
 }
 
 export interface SetupOptions {
@@ -427,7 +435,9 @@ export function setup(options: SetupOptions): void {
       `host was started with if that isn't ${dataDir}, and --extra-state PATH added for each place of state kept ` +
       'outside the data directory that\'s there now: setup then makes the install afresh there, serving that data ' +
       'directory, with no journal or copy, so with no Go back, and starting the service again starts the new install, ' +
-      `since its path is the same. Those places: a setup run that finished printed them after "${EXTRA_STATE_LINE}" ` +
+      `since its path is the same, and \`${typedCommand(root)} service install <recipe>\` then records the service ` +
+      'again, if that\'s what set it up. Those places: a setup run that ' +
+      `finished printed them after "${EXTRA_STATE_LINE}" ` +
       '(`connectome setup` shows that block only at its end, and only while the record still holds it), ' +
       `and the moved root's copy/copy.json, if it has updated, ${copyShows('which aren\'t given')} ` +
       'A run that stopped partway may have written the record without printing them. ' +
@@ -647,11 +657,19 @@ export function setup(options: SetupOptions): void {
     'restarted, by Restart=always, by Restart=on-failure while it isn\'t in SuccessExitStatus=, or by ' +
     'RestartForceExitStatus=, and neither in RestartPreventExitStatus=; or launchd\'s KeepAlive.';
   const one = units.unresolved.length === 1;
+  const scoped = (['user', 'system'] as const).flatMap((scope) => {
+    const ids = units.unresolved.filter((unit) => unit.scope === scope).map((unit) => unit.id);
+    return ids.length === 0 ? [] : [`the ${scope} unit${ids.length === 1 ? '' : 's'} ${ids.join(', ')}`];
+  }).join(' and ');
+  const systemToo = units.unresolved.some((unit) => unit.scope === 'system');
   const unresolvedNote = units.unresolved.length === 0 ? '' : ` Setup couldn't resolve the working directory of ` +
-    `${units.unresolved.join(', ')} (one under a directory this user can't search, or a system unit's ~ whose User= ` +
-    `/etc/passwd doesn't name), so it can't tell whether ${one ? 'it runs' : 'they run'} from this directory, and doesn't ` +
-    `check ${one ? 'it' : 'them'}. If ${one ? 'it runs' : 'one of them runs'} the host, check its restart settings by ` +
-    'hand, or run setup as a user who can reach its working directory.';
+    `${scoped}, so it can't tell whether ${one ? 'it runs' : 'they run'} from this directory, and doesn't check ` +
+    `${one ? 'it' : 'them'}. A working directory can't be resolved when, for example, its path runs through a ` +
+    'directory this user can\'t search or through a loop of links' +
+    `${systemToo ? ', or, for a system unit, when it\'s ~ and /etc/passwd doesn\'t name the unit\'s User=' : ''}. If ` +
+    `${one ? 'it runs' : 'one of them runs'} the host, check its restart settings by hand` +
+    `${systemToo ? ', or, where a system unit\'s path runs through a directory this user can\'t search, run setup as a ' +
+      'user who can' : ''}.`;
   const few = units.defaulted.length === 1;
   const defaultedNote = units.defaulted.length === 0 ? '' : ` ${units.defaulted.join(', ')} ${few ? 'sets' : 'set'} no ` +
     `working directory, so ${few ? 'it runs' : 'they run'} in ${few ? 'its' : 'their'} systemd manager's default, which ` +
