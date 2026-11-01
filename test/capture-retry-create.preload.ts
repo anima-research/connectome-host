@@ -14,12 +14,27 @@ AgentFramework.create = async (config) => {
     // timeout; it does not pass membrane's deadline classification through.
     deadline: Object.assign(new MembraneError({ type: 'timeout', message: 'synthetic deadline', retryable: true }), { deadline: true }),
   };
+  // Mirror today's framework fallback when create() receives no errorPolicy.
+  // This no-startup probe cannot observe the installed fallback's identity;
+  // doing so would require framework startup or coupling to private state.
+  // An upstream fallback replacement can therefore escape these default cases.
+  // The separate omission controls assert only that the host supplies no policy.
+  // Probe policy decisions only: provider holds run separately before it.
+  const policy = config.errorPolicy ?? new DefaultErrorPolicy();
+  const statedWaits = [500, ...[60_000, 90_000, 120_000, 300_000, 600_000]
+    .flatMap(ceiling => [ceiling - 1, ceiling, ceiling + 1])];
   console.log('RETRY_CAPTURE=' + JSON.stringify({
     hasErrorPolicy: Object.hasOwn(config, 'errorPolicy'),
     isDefaultErrorPolicy: config.errorPolicy instanceof DefaultErrorPolicy,
     settings: config.errorPolicy && Reflect.get(config.errorPolicy, 'settings'),
     membraneRetry: Reflect.get(config.membrane, 'config').retry,
     membraneSettings: Reflect.get(config.membrane, 'retrySettings'),
+    statedWaitDecisions: Object.fromEntries((['retryable', 'rate_limited', 'overloaded'] as const).map(name => [
+      name, Object.fromEntries(statedWaits.map(retryAfterMs => [retryAfterMs, policy.onInferenceError(new MembraneError({
+        type: errors[name].type, message: errors[name].message, retryable: true,
+        httpStatus: errors[name].httpStatus, retryAfterMs,
+      }), 'synthetic-agent', 0)])),
+    ])),
     decisions: config.errorPolicy && Object.fromEntries(Object.entries(errors).map(([name, error]) => [
       name, Array.from({ length: 8 }, (_, attempt) => config.errorPolicy!.onInferenceError(error, 'synthetic-agent', attempt)),
     ])),

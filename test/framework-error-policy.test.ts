@@ -95,6 +95,67 @@ describe('recipe retry at the real AgentFramework.create call', () => {
     expect(retryDecision('deadline', 1, undefined, settings)).toEqual({ retry: false });
     expect(observed.decisions).toEqual(expected);
   });
+  for (const { name, retry, baseCeiling, overloadedCeiling, overloadedBackoff = 5000 } of [
+    { name: 'omitted retry', retry: undefined, baseCeiling: 600_000, overloadedCeiling: 600_000 },
+    { name: 'empty retry', retry: {}, baseCeiling: 600_000, overloadedCeiling: 600_000 },
+    { name: 'partial recipe', retry: { maxRetries: 4 }, baseCeiling: 60_000, overloadedCeiling: 300_000 },
+    {
+      name: 'recipe with larger maximum delays',
+      retry: { maxRetries: 4, maxRetryDelayMs: 90_000, overloaded: { maxRetryDelayMs: 120_000 } },
+      baseCeiling: 90_000, overloadedCeiling: 120_000,
+    },
+    {
+      name: 'recipe with overloaded schedule disabled', retry: { maxRetries: 4, overloaded: { maxRetries: 0 } },
+      baseCeiling: 60_000, overloadedCeiling: 60_000, overloadedBackoff: 1000,
+    },
+  ]) {
+    test(`stated-wait boundaries at the create call: ${name}`, () => {
+      const observed = capture(retry);
+      for (const [cls, ceiling, backoff] of [
+        ['retryable', baseCeiling, 1000],
+        ['rate_limited', baseCeiling, 1000],
+        ['overloaded', overloadedCeiling, overloadedBackoff],
+      ] as const) {
+        const decisions = observed.statedWaitDecisions[cls];
+        // A stated wait is a lower bound, never a backoff replacement.
+        expect(decisions[500]).toEqual({ retry: true, delayMs: backoff });
+        expect(decisions[ceiling - 1]).toEqual({ retry: true, delayMs: ceiling - 1 });
+        expect(decisions[ceiling]).toEqual({ retry: true, delayMs: ceiling });
+        // Both probes use the first failure: accepting the ceiling above
+        // proves that the next refusal is not attempt exhaustion.
+        expect(decisions[ceiling + 1]).toEqual({ retry: false });
+        expect(decisions[ceiling + 1]).not.toHaveProperty('statedWaitMs');
+        if (observed.settings) {
+          // Explicit policies expose their settings in the existing capture.
+          // Membrane distinguishes a ceiling refusal from exhaustion; the
+          // framework deliberately drops the statedWaitMs refusal metadata.
+          expect(retryDecision(cls, 1, ceiling + 1, observed.settings, () => 0))
+            .toEqual({ retry: false, statedWaitMs: ceiling + 1 });
+          const schedule = observed.settings[cls] ?? observed.settings.retryable;
+          expect(schedule.maxAttempts).toBeGreaterThan(1);
+          expect(retryDecision(cls, schedule.maxAttempts, ceiling + 1, observed.settings, () => 0))
+            .toEqual({ retry: false });
+        }
+      }
+    });
+  }
+  test('the longer-wait recipe also raises non-turn caps and enables its overloaded schedule', () => {
+    const retry = { maxRetryDelayMs: 600_000, overloaded: { maxRetries: 13, maxRetryDelayMs: 600_000 } };
+    const observed = capture(retry);
+    expect(observed.membraneRetry).toEqual(retry);
+    expect(observed.membraneSettings).toEqual(observed.settings);
+    expect(observed.membraneSettings.retryable.maxDelayMs).toBe(600_000);
+    expect(observed.membraneSettings.overloaded).toMatchObject({ maxAttempts: 13, maxDelayMs: 600_000 });
+    const defaults = ownSettings(hostMembraneRetry());
+    expect(defaults.retryable?.maxDelayMs).toBe(30_000);
+    expect(defaults.overloaded).toBeUndefined();
+    // The same provider failure now takes the special jittered schedule
+    // on non-turn calls too, rather than the host's ordinary base schedule.
+    expect(retryDecision('overloaded', 1, undefined, observed.membraneSettings, () => 0))
+      .toEqual({ retry: true, delayMs: 5000 });
+    expect(retryDecision('overloaded', 1, undefined, defaults, () => 0))
+      .toEqual({ retry: true, delayMs: 1000 });
+  });
   test('explicit overloaded values replace the default turn schedule', () => {
     const observed = capture({ maxRetries: 4, overloaded: { maxRetries: 3, retryDelayMs: 20, backoffMultiplier: 2, maxRetryDelayMs: 50 } });
     expect(observed.decisions.overloaded).toEqual(sequence([10, 20, 25]));

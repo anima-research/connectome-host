@@ -360,7 +360,18 @@ These schedules assume the provider states no wait. An explicit recipe policy
 uses Membrane's stated-wait ceilings (at least 60 s, or the schedule's maximum
 delay if longer), not the framework default's at-least-10-minute ceilings.
 The framework default, kept for omitted or empty retry settings, also allows
-13 overloaded sends rather than Membrane's 7.
+13 overloaded sends rather than Membrane's 7. Even a partial override such as
+`{ "maxRetries": 4 }` replaces those omitted turn defaults; it is not layered
+over the framework's policy.
+
+Setting `overloaded.maxRetries: 13`, `maxRetryDelayMs: 600000` and
+`overloaded.maxRetryDelayMs: 600000` raises an explicit policy's send limit and
+stated-wait ceilings, but is **not** an exact restoration of the default turn
+policy or a turn-only workaround. It also raises the backoff delay caps and
+enables the long overloaded schedule for compression, retrieval, session naming
+and other non-turn calls using the same Membrane. Retry fields do not configure
+the framework's separate provider-hold/admission rules. Omit `agent.retry` or use
+`{}` to keep the default turn policy without enabling that non-turn schedule.
 
 Non-retryable errors stop immediately. The framework deliberately treats stream
 deadlines as retryable timeouts (unlike Membrane's own deadline class); this
