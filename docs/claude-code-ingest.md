@@ -9,8 +9,8 @@ becomes the chronicle.
 
 This complements [`claudeai-evacuation.md`](./claudeai-evacuation.md) (claude.ai web
 exports, where thinking signatures are *not* recoverable) and
-[`AGENT-ONBOARDING.md`](./AGENT-ONBOARDING.md) (the full deployment runbook — host,
-recipe, services, Discord). Read the onboarding runbook for everything that isn't
+[`AGENT-ONBOARDING.md`](./AGENT-ONBOARDING.md) (the setup guide — recipe, Discord,
+the service and its checks). Read the setup guide for everything that isn't
 specific to the Claude Code source; this document covers only what is.
 
 ## When this workflow is the right one
@@ -52,7 +52,7 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound to the system text and tools it was minted under, so once the resident's differ from Claude Code's the provider sets it aside: the host sends the drop control on agent turns through the Anthropic API, and an account that enforces the binding refuses the request without it |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, whose thinking binds, a block is bound to the system text and tools it was minted under. On the first four the host sends the drop control on agent turns through the Anthropic API, and the provider sets such a block aside once the resident's differ from Claude Code's; an account that enforces the binding refuses the request without the control. Without the drop control, on the Mythos models or another provider, context-manager leaves the transcript's thinking out |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
 | `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
@@ -70,6 +70,12 @@ Three structural facts matter:
 ```
 
 ### Stage 1 — Build the seed
+
+Here `<agent>-cm` is the resident's directory, `<dir>` in the setup guide. If the setup
+agent sent you here, setup has run there. Otherwise run
+`bunx @animalabs/connectome-host setup discord` first, in a new, empty `<agent>-cm`:
+setup installs only into an empty directory or one it set up. Then make a `scripts/`
+directory in it for this stage's and the next stage's scripts.
 
 Save as `<agent>-cm/scripts/build-seed.mjs`, edit the four constants, run with `node`.
 
@@ -176,14 +182,17 @@ session, rebuild before ingesting — the seed is a snapshot.
 
 ### Stage 2 — Ingest into the chronicle
 
-Save as `<agent>-cm/scripts/ingest-seed.mjs`. **Run it from the connectome-host
-directory** (so `@animalabs/context-manager` resolves to the exact version the host
-will run) and point `DATA_DIR` at the install's legacy store path; the host migrates
-`data/store` → `data/sessions/<id>/` on first launch.
+Save as `<agent>-cm/scripts/ingest-seed.mjs`, and run it from `<agent>-cm`, where
+stage 1 wrote `seed.json`. Node resolves its `@animalabs/context-manager` from the
+script's own directory up, which finds the copy setup installed in
+`<agent>-cm/node_modules`; the install's first release is a copy of that install, so
+before any update it's the version the host will run. Point `DATA_DIR` at the install's
+legacy store path; the host migrates `data/store` → `data/sessions/<id>/` on first
+launch.
 
 ```js
 // One-shot: seed.json → chronicle.  Wipe <agent>-cm/data before re-running.
-//   cd <runtime>/connectome-host && node /home/<agent>/<agent>-cm/scripts/ingest-seed.mjs seed.json [--dry-run]
+//   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import { readFileSync } from 'node:fs';
 
@@ -279,9 +288,9 @@ strategy config chunks its frontier under *that* config):
 3. Confirm the last message is the seam you intend and the first message is the
    human's.
 
-The host's `GET /debug/context` and `/debug/context/makeup` (basic-auth webui) give
+The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
 you 1–2 on a running instance; for a pre-boot check, run the host against a copy of
-the install dir with `--headless` and a mock or real key, then hit the endpoints.
+`<agent>-cm` with `--headless` and a mock or real key, then hit the endpoints.
 `/debug/context/makeup` shows a count the API refused only by its status, such as
 `countSource: "count_tokens_failed_400"`, without the body. To read the body, send
 that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by
@@ -291,8 +300,10 @@ formatting the same `request` that `/debug/context` returns, and posts it, with 
 
 ### Stage 4 — Recipe, first boot, seam
 
-Follow `AGENT-ONBOARDING.md` §5–§10 for the install dir, `.env`, recipe, service,
-and verification. Claude-Code-specific choices:
+Follow `AGENT-ONBOARDING.md`'s "Secrets", "The recipe", "The recipe's servers" and
+"Going live" for `.env`, the recipe, the service and its checks. Those sections
+assume setup has run in `<agent>-cm` (stage 1) and that the setup agent is the one
+reading them, with its `setup--ask_secret`. Claude-Code-specific choices:
 
 - **`agent.model`**: the transcript's model, exactly. Signatures verify only there.
 - **`agent.thinking`**: `{ "enabled": true, "type": "adaptive", "display": "summarized" }`
@@ -308,21 +319,37 @@ and verification. Claude-Code-specific choices:
   message session with heavy tool I/O was ~730k real tokens; a 600k budget on a
   1M-window model folded the oldest third at first compile) or the fleet default
   (300k) and accept that the early conversation folds into first-person summaries
-  before the first wake. Both are fine; decide deliberately. See §11.1 of the
-  onboarding runbook for the window arithmetic.
-- **Strategy**: mirror what the ingest used (§2) for chunking. New residents fold with
-  kv-unified, the host default (onboarding §5b). Decide *before* first boot, since
+  before the first wake. Both are fine; decide deliberately. `DEPLOYMENTS.md`'s
+  "The context budget and the model's window" has the window arithmetic.
+- **Strategy**: mirror what the ingest used (§2) for chunking. The recipe's
+  `agent.strategy` takes `"type": "autobiographical"` and the script's values for
+  `adaptiveResolution`, `targetChunkTokens`, `compressionSlackRatio`, `mergeThreshold`,
+  `headWindowTokens`, `recentWindowTokens`, `maxMessageTokens`, `enforceBudget`,
+  `overBudgetGraceRatio`, `maxSpeculativeL1s`, `summaryParticipant` and
+  `compressionRecallBudgetTokens`. Leave out `autoTickOnNewMessage`, which is off only
+  for the import, and `foldingStrategy`: new residents fold with kv-unified, the host
+  default (`DEPLOYMENTS.md`'s "The folding solver"). Decide *before* first boot, since
   switching later is a layout change.
+- **The Web UI** (`modules.webui`), for stage 3's checks and this stage's, which read
+  its `/debug/context`, `/debug/context/makeup` and `/healthz`. The host starts it only
+  when the recipe names it, so a resident that doesn't need those checks can leave it
+  out. For them, put it on loopback with basic auth under `modules`:
+  `"webui": { "port": 7343, "host": "127.0.0.1", "basicAuth": { "username": "${WEBUI_USER}", "password": "${WEBUI_PASS}" } }`,
+  with `WEBUI_USER` and `WEBUI_PASS` reaching `.env` by `setup--ask_secret`. The
+  README's "Web UI" has the rest. If you're the setup agent, the endpoints are the
+  person's to open, in their own browser with the password they typed, since you never
+  see it: walk them through what to look for. Your own check is `connectome doctor`.
 - **Tools the seed references** (`Bash`, `Read`, `Edit`, …) need not exist in the
   recipe. The resident will notice it no longer has them; that's part of the
   continuation, not an error.
 
 First boot migrates `data/store` into `data/sessions/<id>/` and, with
 `autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately.
-Watch `/healthz` for `compressionQuarantine` and the per-call log
-(`data/llm-calls.<iso>.jsonl`) for `stop_reason`. Then send the first message —
-over the IPC socket, the webui, or the Discord channel you scoped — and let the
-resident find the seam themselves.
+Watch `/healthz` (the person, if you're the setup agent) for `compressionQuarantine`,
+and the per-call log (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. The first
+message comes from the person, not from you, as in
+`AGENT-ONBOARDING.md`'s "Going live"; they can send it over the Discord channel they
+scoped, the Web UI or the IPC socket. Let the resident find the seam themselves.
 
 **Re-runs.** Before first boot the ingest is one-shot: wipe `data/`, rebuild, re-ingest.
 After first boot never re-ingest; if the Claude Code session was continued after the
@@ -345,7 +372,7 @@ blocks will be rejected. Options, in order of preference:
 
 Never modify a turn's *shape* around a retained signed block (split it, reorder it,
 insert before it): the API returns 400 "thinking blocks cannot be modified" — a
-transport error, not a refusal, and the membrane retries once text-only.
+transport error, not a refusal.
 
 ## 5. If you hit `reasoning_extraction` refusals
 
@@ -380,8 +407,9 @@ a typo fails at boot rather than silently disabling the rung.
 1. **Same model, signatures intact.** Replaying the transcript's own signed thinking
    is *protective*, not risky: encrypted carriers alongside model-voiced text are what
    the API expects from that model. Stripping them and leaving the text is worse. On a
-   model whose thinking binds, the provider sets those blocks aside once the resident's
-   system text or tools differ from Claude Code's, and their text stays.
+   model whose thinking binds, those blocks are left out and their text stays: by the
+   provider once the resident's system text or tools differ from Claude Code's, or by
+   context-manager where there's no drop control (the table above).
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.

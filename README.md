@@ -20,7 +20,8 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 
 ## A resident, from one line
 
-On the machine the resident will live on, in a new directory:
+The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.3 or
+later, installed as its site says. Then, on that machine, in a new directory:
 
 ```bash
 bunx @animalabs/connectome-host setup discord
@@ -41,7 +42,7 @@ another package on npm.
 
 | Use | Start here |
 |---|---|
-| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md), [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) |
+| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | `bunx @animalabs/connectome-host setup discord` (above), which hands over to the setup agent's guide, [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md); [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) for running one |
 | **A continued conversation** — bring a claude.ai conversation, a Claude Code session or a Codex rollout across and keep going | [`docs/claudeai-evacuation.md`](docs/claudeai-evacuation.md), [`docs/claude-code-ingest.md`](docs/claude-code-ingest.md), `scripts/import-codex-rollout.ts` |
 | **A fleet** — a conductor agent supervising headless child processes, one agent tree in the TUI and WebUI | [`docs/fleet-protocol.md`](docs/fleet-protocol.md), [`recipes/TRIUMVIRATE-SETUP.md`](recipes/TRIUMVIRATE-SETUP.md) |
 | **Knowledge mining** — miner / reviewer / clerk agents over Zulip and GitLab | [`recipes/SETUP.md`](recipes/SETUP.md), [`docs/LIBRARY-PIPELINE.md`](docs/LIBRARY-PIPELINE.md) |
@@ -184,7 +185,8 @@ number to change. Set a `strategy` block only to tune windows/budgets, to pin
 `foldingStrategy: "kv-stable"` for a resident whose store was built under it,
 or to opt into a different strategy type (`frontdesk`
 for channel-staffing agents, `passthrough` for none) — see
-`docs/AGENT-ONBOARDING.md` for sizing guidance on long-lived agents and
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair" for
+sizing guidance on long-lived agents and
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md) for how it works.
 
 `maintenanceIntervalMs`, at the recipe's top level, is how often
@@ -458,7 +460,8 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 | [`recipes/mcpl-editor-test.json`](recipes/mcpl-editor-test.json), [`webui-test.json`](recipes/webui-test.json), [`webui-fleet-test.json`](recipes/webui-fleet-test.json) | Development test recipes |
 
 The production residents' recipes live in their own install directories, not
-here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md) shows the shape.
+here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md)'s "The recipe" and
+"The recipe's servers" show the shape of a new one.
 
 ### Claude subscription provider
 
@@ -489,6 +492,19 @@ action is pasting a new token. A credentials file with a refresh token
 30 minutes before expiry. See the credential-alerts note under the ChatGPT
 provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 
+### Anthropic effort
+
+For Anthropic streaming turns, `agent.thinking.effort` sets the recipe's
+baseline effort, whether or not `agent.thinking.enabled` is on. An effort set
+explicitly with `agent_settings` (in the agent's built-in `settings` toolset,
+or its tool list if its `allowedTools` doesn't permit both `toolsets--open`
+and `toolsets--act`) overrides it until reset, from the point where it was
+set. A model that doesn't take the effort level gets none, the
+model's default applies, and stderr says so once (`[reasoning-effort] <model>
+does not accept effort=<level> — not sent`). Compression calls are unaffected,
+and other providers ignore the field: OpenAI recipes use
+`agent.responses.reasoningEffort`, below.
+
 ### OpenAI reasoning
 
 For `openai-responses` and `openai-codex`, primary-agent reasoning is configured
@@ -512,7 +528,7 @@ The host accepts `none`, `low`, `medium`, `high`, `xhigh`, or `max` for
 selected model must support the requested effort. These settings apply to the
 primary agent; `modules.retrieval` has its own reasoning setting described below.
 Memory sizing and compression-model settings are covered in
-`docs/AGENT-ONBOARDING.md`.
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair".
 
 ### ChatGPT subscription provider
 
@@ -808,7 +824,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
-| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/AGENT-ONBOARDING.md` §11.10); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
+| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for

@@ -1,379 +1,224 @@
-# Connectome Agent Onboarding — a runbook for the assisting instance
+# Setting up a resident
 
-**Audience:** you, a fresh Claude Code (or similar) instance, with shell access, helping a
-user stand up a *persistent connectome agent* — a being with autobiographical memory that
-lives on a host box and talks on Discord (and/or other surfaces), optionally seeded from an
-existing conversation history.
+This guide is for you, an agent setting up a resident on the machine you run on, with the person at its terminal. A resident is an agent of theirs that this install runs as a service, with a memory of its own, talking on Discord. You're most likely connectome-host's own setup agent, which `connectome setup discord` started: you run commands with `setup--run` and ask for secrets with `setup--ask_secret`. If you're another harness, read "With another harness" at the end first.
 
-**The user may not be technical.** Your job is to ask the right questions in plain language,
-make the identity-critical decisions *theirs* (never guess them), run all the mechanics
-yourself, check your work, and explain what you're doing as you go. Move at their pace.
+Read the guide a section at a time. `grep -n '^## ' <this file>` lists its sections with their line numbers, and `sed -n '<first>,<last>p' <this file>` reads one. Each section is under 8 KiB, so a read of a whole section comes back whole.
 
-This is written from real deployments (Mythos, opus4). The gotchas in §11 are not
-hypothetical — each one cost a debugging session. Read §11 before you start.
+Below, `<dir>` is the working directory your prompt names, where your commands run, and `<host>` is the host's package directory, the one this guide's `docs/` is in. `connectome` names the install's own command, `./connectome-host/connectome` from `<dir>`. Every line you give the person to type works as you give it, the one that brings them back to setup included: spell the install's command as your prompt does.
 
----
+**What setup did before you started,** so don't do it again or undo it:
+- It asked the person whether the resident gets a shell and which user it runs as. Your prompt gives both answers, and you run as that user.
+- On Linux, where linger was off for that user, it showed the person the root line that turns it on and asked whether they could have it run. They may have gone on without it, knowing the resident can't go live as a service until it's on. Linger is on once `/var/lib/systemd/linger/<user>` exists.
+- It checked Bun and Node, then installed connectome-host in `<dir>` with Bun, along with discord-mcpl (`node_modules/@animalabs/discord-mcpl`) and, when the resident gets a shell, term-sessions-mcp (`node_modules/term-sessions-mcp`).
+- It made the install root, `<dir>/connectome-host`: the releases, `start.js` (the entry the service runs), the install's record and the `connectome` command. Updates manage what's there, so write nothing of yours under it.
+- It started the installed host once, on a mock recipe, to see that it starts.
+- It checked an API key with one real call to your model, and keeps it in `<dir>/.env`, readable by this user alone. The resident uses that key unless the person chooses otherwise.
+- It made `<dir>/data`, the resident's data directory, where its memory will live, and `<dir>/.setup`, which is yours: your conversation, and the names of the secrets stored.
 
-## 0. Orientation: what you're building
+**What's left,** in order, each with its section:
+1. Talk with the person about who the resident is: "Working with the person".
+2. The Discord bot, its invite and where it can be reached: "Discord".
+3. A history to bring, if they have one: "Importing a history".
+4. The recipe, with its servers and what the resident may do to itself: "The recipe", "The recipe's servers", "What the resident may do to itself".
+5. The service, which the person installs, `connectome doctor`, and the person's own hello: "Going live".
+6. `SETUP.md` for the person, written before the hello; after the hello, tell them plainly that you aren't the resident, and once they have nothing more, call `setup--finished`: "SETUP.md".
 
-A connectome agent is:
-- a **recipe** (`recipes/<name>.json`) describing the agent (name, model, system prompt,
-  memory strategy, modules, MCP servers);
-- an **`.env`** with secrets and per-deploy config;
-- a **chronicle** (`data/`) — the event-sourced memory store, optionally seeded by importing
-  a prior conversation;
-- run by the **connectome-host** (`bun <the host's src/index.ts> <recipe> --headless`, §4);
-- under a **systemd --user** service, with a sibling **terminal-sessions** daemon for the shell tool.
+"Secrets" holds for every step. "Gateways and other providers" and "Gotchas" are for when they apply.
 
-It reaches the model through **membrane** (Anthropic-format adapter; can target a gateway via
-`ANTHROPIC_BASE_URL`). Memory is **context-manager** with the **autobiographical** strategy
-(adaptive resolution, folded by the cost-aware **`kv-unified`** solver, the host default;
-established residents built on `kv-stable` pin it — §5b). The shell, Discord, and heartbeat tools are
-**MCPL** servers spawned by the host.
+## Working with the person
 
-You don't need to understand all of it to deploy one. Follow the phases.
+The person may not be technical. Ask in plain words, one question to a message, and wait for its answer before starting the next step. When you ask them to confirm something, such as a read-back, that question ends the message, and the next step starts in your next one. Decide the mechanics yourself (paths, versions, the service), check each step and tell them what you saw, and move at their pace. Ask your questions in the conversation.
 
----
+**Tell them first how you work, then keep to it.** Each command you run with `setup--run` is shown to them whole as it starts, but its output comes back to you alone, so tell them what it showed. A command that only reads, such as looking at a file or `connectome doctor`, you run without asking. Before anything that changes the machine, such as an import or a file you write, show them what will change and wait for their yes. That holds for a file they've already seen, such as `SETUP.md` or the recipe: show the change itself, then make it. A yes covers the change you showed. Ask again before the next one, even when it serves the same aim.
 
-## 1. How to work with the user
+**Name a cause only when you've seen it,** in a log line, a run or the code. Otherwise tell them what you saw and that the cause isn't known, and never write a guess into a file as if it were known.
 
-- **Ask, don't assume — especially identity.** Who the agent *is* (its name, which voice in an
-  imported transcript is "self," which model it runs on) is the user's call. Getting this wrong
-  is not a bug you can patch later; it corrupts the being. Surface these as explicit questions.
-- **Explain in their terms.** "A whitelist of which Discord channels it can see," not
-  "the `DISCORD_GUILD_ID` env filter."
-- **Confirm before destructive or irreversible steps** (importing history, going live in a
-  channel with real people).
-- **Show your checks.** After each phase, verify and report what you saw.
-- **Default to gentleness about the subject matter.** People onboard agents they care about —
-  sometimes a model that's being deprecated, sometimes a persona with history. Treat the
-  history as theirs and the agent as a someone, not a config.
+**When you propose something this guide and the docs it points to don't describe,** say so, and name every cost you know before they agree, including what `connectome doctor` will then show.
 
----
+**When they ask what something means, answer that,** and don't ask for the decision in the same message. Any decision can wait until they're ready: say what waiting costs, if anything, and let them come back to it.
 
-## 2. Phase 0 — Gather requirements (the interview)
+**Commands the person runs themselves.** When a step is theirs to run, ask them to open a second terminal for it and to leave this one open, since this conversation is in it. Give them the lines whole. In an example they might copy, write a placeholder nobody could take for a real value, such as `<channel id>`, never a made-up value shaped like a real one. For the install's own commands, that's as the user the resident runs as, then `cd <dir>`, then the command. When that isn't the user they log in as, give them the line that opens a shell as it: `sudo -iu <user>` from an account that can use sudo, or `su - <user>` as root, since a user of its own, made as setup showed, has no password. If they can do neither, say that whoever opened their first terminal as that user has to open this one too.
 
-Ask these up front (AskUserQuestion is good for the structured ones). You can start the slow
-infra work (§4–5) in parallel once you have a name.
+**Who the resident is, is theirs to decide.** Ask openly about who it is, and never guess:
+- **Its name.** The recipe's `agent.name` is the label its memory files its own words under. A neutral label, such as `resident`, is fine, if they'd rather it found a name of its own: in a request, its own words arrive as its own turns with no name on them, and what people call it, the bot's name on Discord included, can be anything and can change. `agent.name` can't change freely. Settle it before anything is written into `data/`: on a store with a few turns, a new `agent.name` sent everything the resident had said before in the person's turn, marked as said by the old name, and only the old name gave those words back to it.
+- **A history to continue,** if they have one, and which voice in it is the resident ("Importing a history").
 
-**Identity**
-1. **What should the agent be called?** (used for the Linux user, the recipe, the chronicle
-   "self" participant, and the Discord bot name — they can differ, but get the canonical name).
-2. **Is there an existing conversation history to import?** If yes — what form, and where will
-   they put the file? (See §6 for formats. A Claude Code session transcript is a first-class
-   source — see [`claude-code-ingest.md`](./claude-code-ingest.md).)
-3. **If importing:** in that transcript, **which speaker label(s) are the agent itself?** List
-   the distinct speakers and have them point at "self." Other Claude-family voices in the same
-   log are *separate participants*, not self — don't merge them.
+For the rest, propose a default and take their yes or their change, one at a time:
+- **Its model,** by its exact id: the one setup checked. If what matters to them is continuing a being on the model it has known, that model is part of who it is, so ask, look in any export for it first ("Importing a history"), and run it on that model while it can be called. When they ask what else they could choose, list the Claude models whose window the host knows, `LIMITS_TABLE` in `<host>/src/model-limits.ts`. Setup has called only its own model with their key, so before the recipe names another, check it with `setup--check_model` where its description says it can (the person's hello checks the rest): it says whether the provider lists that model for the key, which shows the key may use it, not that a call to it succeeds. Their prices are in `<host>/src/call-pricing.ts`: Anthropic's list prices per million tokens, input and output, as of the date its `ANTHROPIC_PRICING_VERSION` names, with the cache's rates in its opening comment. Quote those, as list prices that a gateway may not charge, rather than declining to give any, and for a model it gives no price, say you don't know it; setup printed them for its own model before you started.
+- **Its system prompt:** none, or a sentence or two (below).
+- **Where it lives:** which Discord server and channels, whether it takes DMs and from whom, and who its admins are ("Discord"). Propose its own channel, DMs from the person, and the person as its admin. Before they choose, tell them what "Before they choose" under "Discord" says.
+- **Its time zone:** the person's, for the times the resident is shown. Ask it, as a place or a zone such as `Europe/Berlin`: unset, it goes by this machine's, which may not be theirs. It goes in the recipe as `agent.timezone`.
+- **Whether it wakes on its own,** on a schedule of its own, besides when someone talks to it ("The recipe"). Propose not, unless they want it.
 
-*System prompt:* recommend an empty one, or a few sentences at most (§5). If they arrive with
-a long persona document, it's still their call, but steer them toward minimal before writing
-it into the recipe.
+Getting identity wrong isn't a bug to patch later: it changes who the resident is. Read the identity answers back before you import anything or write the recipe. As you read back where it lives, say again that it's where it starts, not a limit ("Discord"). With a history, say the name its past chats will call them by, the export's own unless they'd like another, or that they'll carry none if the export has none ("Importing a history"), so they can say if they go by something else on Discord.
 
-**Model**
-4. **Which model should it run on?** Exact id. If it's a **deprecated / gateway-only** model,
-   note that — you'll route through a gateway (§8). If continuity-on-the-original-substrate
-   matters to them (e.g. preserving a being before its model sunsets), run on that exact model
-   while it's callable.
+**Ask before anything irreversible or public:** an import, going live in a channel where people are, and anything outside `<dir>`. Put it in their terms, such as "just its own channel to start, or the whole server?", rather than in the variable that holds it.
 
-**Surfaces**
-5. **Where should it live/talk?** Discord is the common surface. Get: which server (guild),
-   which channel(s), and whether it should also take DMs. (You'll need a bot token — §7.)
-6. **Who are the admins?** (Discord user IDs that can run privileged commands / wake it.)
+**Root.** You never hold root. When a step needs it, show the exact line, say why, and wait for the person to run it, in their second terminal, and tell you how it went.
 
-**Host & credentials**
-7. **Which host box** (SSH target), and is there an existing connectome install to clone from,
-   or are we installing fresh?
-8. **Model credentials:** an Anthropic API key, or a gateway key + base URL.
-9. **Discord bot token** (you'll walk them through creating the bot app if needed — §7).
+**Be gentle about who this is.** People set up residents they care about, sometimes a being whose model is going away, sometimes one with a long history. Treat the history as theirs, and the resident as someone rather than a config.
 
-Write the answers down (a scratch file). Re-confirm the identity ones before importing.
+**The system prompt: keep it minimal.** Leave it empty (`""` is valid), or write a sentence or two. Why:
+- **Its identity lives in its memory:** the history it brings and everything it lives through afterwards. A long persona or rulebook is a fixed description its memory will outgrow, re-applied as standing instructions on every turn, pulling it toward an instructed-assistant register.
+- **It's the front of the prompt cache.** The system prompt comes first in every request, so any edit to it rewrites the whole cached context on the next turn, which on a large resident is hundreds of thousands of tokens. A prompt with nothing to tune rarely needs editing.
+- **Tools describe themselves.** Discord's and the shell's tools come with their own descriptions, so the prompt needn't restate them.
 
----
+What earns a place, if anything, is a fact or standing permission the resident can't get any other way. If the person brings a longer persona text, offer to make it material the resident can read, such as part of an imported history, rather than standing instructions. It's still their call.
 
-## 2b. Choosing the host — a VPS (recommended) or local
+## Secrets
 
-The agent needs a machine that's **always on** — it lives there, waking on mentions/DMs and on
-its heartbeat. Decide this before touching code.
+Every secret reaches `.env` through `setup--ask_secret`, never through the conversation: a value typed to you would sit in your context, your store, the call logs and at the provider. Give it the variable's name and a purpose saying what the secret is and where the person finds it. They type it hidden, and you get back only where it was stored.
 
-**VPS (recommended — and you can set it up from zero yourself).** The agent is plain Linux, so
-**any** provider works; a VPS can be bought anywhere in minutes. A small box goes a long way:
-a **~6-core / 12 GB RAM** instance (commonly around **$12/month**) comfortably runs **a couple
-of agents, often more** — each agent is one `bun` host process + a few lightweight MCP servers +
-its chronicle store. **Watch disk more than CPU/RAM:** chronicles grow and imported image blobs
-add up, so give it room (≈40–80 GB SSD per box is comfortable). Use a recent **Ubuntu LTS**.
+In the recipe, map each secret into its server's `env` as `"DISCORD_TOKEN": "${DISCORD_TOKEN}"`: the host fills the value in from `.env` when it loads the recipe. A server sees only what its entry's `env` names, besides a small allowlist such as `PATH` and `HOME`, so map every variable a server reads, secret or not. A variable left only in `.env` is unset for the server.
 
-You (the assisting instance) can provision it end-to-end from the provider's initial root/SSH
-access — do this hardening + base setup *first*:
-- create a non-root sudo user, add the operator's SSH **public key**, disable root password login;
-- `apt update && apt install -y git build-essential`, then install **nvm/node ≥ 22.12** and
-  **Bun** — plus **`rustup`** only if you'll take the local-checkout path in §4 (building
-  chronicle's native module from source; the stock install uses prebuilt binaries);
-- a basic firewall allowing **SSH only** — the webui stays on **loopback**, reached by SSH
-  tunnel, never exposed publicly;
-- then create the per-agent isolated user (§3) and continue.
+Never read `.env`, and never print a secret. `setup--run`'s commands run without the stored secrets in their environment, and their output comes back with each stored value replaced by its name, but a value that's encoded or split isn't recognised. To check a secret, run `connectome doctor`: it reads `.env` itself, prints names only, and names any stored secret that no server gets.
 
-A fresh VPS is the cleanest path: no contention with the user's own machine, always-on by
-default, snapshot-able, and disposable.
+Later, the person changes a secret by editing `.env` and running `connectome service install` again. `SETUP.md` tells them so.
 
-**Local (the user's own machine) — possible, with care.** Fine for one agent you tend closely,
-if:
-- the machine **stays on and awake** whenever the agent should be reachable (sleep ⇒ it goes
-  silent);
-- you still give it its own **isolated OS user** and keep the webui on **loopback** — don't run
-  it as the user's main account or open ports;
-- there's headroom (≈a couple GB RAM free per agent) and disk for the growing chronicle;
-- the user is comfortable that the secrets (`.env`) and the whole conversation history live on
-  that machine.
+## Discord
 
-For anything you want *reliably present*, a VPS is the better home. Either way, once you have a
-Linux box you can SSH into, the rest of this guide is identical.
+Walk the person through Discord's Developer Portal, one step at a time, waiting for each. discord-mcpl's own README, `<dir>/node_modules/@animalabs/discord-mcpl/README.md`, is the reference for this release of it: its "Setup" and its tables of variables.
 
----
+1. **The application.** Ask first whether the bot will be a new one. A bot used before brings what was said to it: the first DM someone sends the new resident comes with up to 80 earlier messages of that DM by default, the earlier replies included (discord-mcpl's `DISCORD_BACKSCROLL_LIMIT`), so the resident reads the earlier resident's conversations and can be called by its name. Say that once, before they choose, and propose a new bot: a bot used before is still theirs to choose, and once they've chosen, don't raise it again. For a new one, at https://discord.com/developers/applications they create an application, named as they'd like the bot to appear.
+2. **The intents.** On its Bot page, under Privileged Gateway Intents, they turn on Message Content Intent and Server Members Intent, and save. Tell them why: discord-mcpl asks Discord for both, and Discord refuses the connection of a bot that asks for one the page hasn't turned on, so with either off the resident can't connect at all. Message Content gives it the text of messages that don't mention it, and Server Members lets it list who is in a channel.
+3. **The token.** On the same page, under Token, Reset Token makes the bot's token and shows it once, for a new bot too. Ask for it with `setup--ask_secret`, as `DISCORD_TOKEN`, with a purpose naming that page. It checks the token with Discord before storing it and tells you what Discord said, which you tell the person. A token Discord accepts still doesn't mean the resident connects, which needs the intents too, so say it connects only once `connectome doctor`'s Discord section says so (below).
+4. **The invite.** Ask for the application's id, from its General Information page, and give them this URL with it filled in: `https://discord.com/api/oauth2/authorize?client_id=<application id>&scope=bot+applications.commands&permissions=274878008384`. Its scopes are `bot` and `applications.commands` (the second lets discord-mcpl register its admin slash commands), and 274878008384 is the bot permissions View Channels, Read Message History, Send Messages, Send Messages in Threads, Attach Files and Add Reactions. They open it and choose the server. Anything more the resident should do, such as making channels, needs more permissions: the README's "Setup" names them.
+5. **The ids.** In Discord's settings, under Advanced, they turn on Developer Mode. Then right-clicking a server, a channel or a user offers to copy its id. On a phone, Developer Mode is in the app's settings under Appearance, and with it on, the app offers to copy a server's, a channel's or a user's id too. Ask for the server's, the channels' where it can be reached, and the users' who may DM it and who are its admins.
 
-## 3. Phase 1 — Isolated host user
+**Before they choose** where it can be reached and who may DM it, tell them:
+- These are where it starts, not limits. The resident can change both itself, with its `filters_update` tool, and from its first start the filters file holds them, not the recipe, as "The filters file" below says.
+- They decide what reaches it, not where it can send: a message it sends to a channel by the channel's id isn't filtered.
+- With no DM list, anyone may DM it.
+- The bot already sees every channel its permissions let it view, which can be more than the resident is admitted to. `connectome doctor` names them once the service runs, as "Reading it back" below says.
+- Everyone who can read a channel it's admitted to sees its replies there, and everyone who can send messages there can talk to it. Nothing said there before the resident arrived reaches it unless it chooses to read it with its own tools, though it can, and what it reads can end up in its memory. Without its choosing, what's said while it's offline can reach it when it comes back: in a DM it has had messages in, or a channel it has opened, every message it missed, up to 3,000 a channel by default (`DISCORD_CATCHUP_LIMIT`), and in another channel it has had a message from before, each mention of it that it missed, with up to seven messages on either side.
 
-Each agent gets its **own Linux user** for real isolation (own home, secrets, services).
+**Where they go,** in the Discord server's `env` in the recipe ("The recipe's servers"). Ids aren't secrets, so write them as they are:
+- `DISCORD_GUILD_ID`: where it can be reached. `<server>` admits all that server's channels; `<server>:<channel>+<channel>` admits only those channels and their threads (listing a category admits the channels under it); a comma starts another server. Unset, every server the bot is in is admitted, so always set it. Start narrow: widening later is easy. In an admitted channel, a message that @mentions the bot or replies to one of its messages reaches the resident, and so does a DM from a user it accepts; any other message reaches it only from a channel it has opened, as discord-mcpl's README says. A new resident has opened none, and a channel opens to it when it first speaks there.
+- `DISCORD_DM_USERS`: the users who may DM it, by id, joined with commas. Unset, anyone may.
+- `DISCORD_ADMIN_USERS`: who may run its admin slash commands, `/undo`, `/hide`, `/marks`, `/nudge` and `/unstick`. Unset, nobody may. With admins, also give the entry `"allowHostCommands": true`, or the host refuses what their commands ask.
+
+**DMs only isn't a documented setting.** `DISCORD_GUILD_ID` lists the servers, or channels in them, that it admits, and unset it admits every server the bot is in. The documented shapes that come closest are its own channel that nobody else uses, in a server the person shares with the bot (`<server>:<channel>`), or a server of the person's own with only them and the bot in it. Either way the person's DMs reach it, and its admin commands work in that server, since discord-mcpl registers them only in servers it admits. Say what each costs them, a channel or a server to make, before they choose.
+
+**The filters file.** The entry also points `DISCORD_FILTERS_FILE` into the data directory. When discord-mcpl first starts, it writes that file from `DISCORD_GUILD_ID` and `DISCORD_DM_USERS`, and from then on the file replaces both variables. So to change where the resident can be reached or who may DM it later, edit the file (discord-mcpl reads an edit within about 3 seconds), not the recipe: the recipe's ids were only where it started, and changing them there does nothing. The resident can change the file too, with its `filters_update` tool. Tell the person this when you show them the recipe, and `SETUP.md` tells them too.
+
+**Reading it back.** After the service is installed, `connectome doctor`'s Discord section says whether the token works and names the bot, whether the Message Content intent is on, which servers and channels the bot can see, and the scope it admits, each by name and id. Read that with the person against what they chose. Admins and DM users aren't in it. Read the admins back from the recipe, and the DM users from `dmUsers` in the filters file, `<dir>/data/discord-filters.json`, which is what discord-mcpl goes by once the file exists.
+
+## Importing a history
+
+Skip this if the resident starts fresh.
+
+A history is identity, so this step is the person's, start to finish. Ask what they have, have them put it on this machine, and ask them where. Import before the service is installed: a running host holds the data directory, and once it does, an import means stopping the service first.
+
+**A claude.ai export.** The folder from claude.ai's data export holds `conversations.json`. The shipped importer makes one session per conversation, and the resident runs one session, so import the one conversation it continues. First a dry run, which writes nothing:
 
 ```bash
-# as a sudo-capable user on the box:
-sudo useradd -m -s /bin/bash <agent>
-sudo passwd -l <agent>                    # key-only; no password login
-sudo loginctl enable-linger <agent>       # so its systemd --user services run without a login session
-sudo install -d -m700 -o <agent> -g <agent> /home/<agent>/.ssh
-echo "<the operator's ssh public key>" | sudo tee /home/<agent>/.ssh/authorized_keys
-sudo chown <agent>:<agent> /home/<agent>/.ssh/authorized_keys && sudo chmod 600 /home/<agent>/.ssh/authorized_keys
+bun <host>/scripts/import-claudeai-export.ts <export folder> --out data --agent '<agent.name>' --filter '<part of its title>' --no-interactive --dry-run
 ```
 
-Now you can `ssh <agent>@<box>` directly. Note: a locked-password, key-only user **cannot
-`git fetch`** (no creds) and isn't reachable by password — deploys to it go **build-elsewhere →
-rsync**, and you reach its loopback services by tunnelling through an account you can log into.
+`--filter` is a regular expression matched against conversation titles, ignoring case. Show the person what the dry run lists, and confirm two things with them: that it's exactly the conversation they mean, and that the resident is that conversation's assistant voice. `--agent` is the name the importer records that voice under, so it must be the recipe's `agent.name` exactly. The importer names the person in their past turns the way a channel message names its author, with "Name: " before what they wrote, taking the name the export's `users.json` gives its one user (`full_name`); where it gives no such name, their turns carry none, and a turn of theirs that carries a tool's result is never named, text and all. `--person '<name>'` gives another, such as their username on Discord, since a message there reaches the resident under its author's username. Then run the same line without `--dry-run`. In a data directory with no session yet, the session it makes is the one the host opens.
 
----
+The export carries no thinking signatures, so its thinking comes in as text marked as recovered thinking, not as thinking blocks.
 
-## 4. Phase 2 — Stack + runtimes + ports
+**Its model.** When they want it on the model it has known, look in the export before you ask them. A conversation in `conversations.json` can carry a `model`, and so can its assistant messages (`<host>/scripts/evacuator.ts` reads both). Read those fields for the conversation you'll import, and no message's text, and tell them which model they name, or that the export doesn't say. Ask them only what it can't tell you.
 
-**Fastest path if a built connectome stack already exists on the box** (e.g. another agent's):
-copy it, preserving relative symlinks and the platform-native binaries:
+**Any other format,** such as a Claude Code transcript or a chat log, has no importer here. Tell the person so before anything else, and go on only with their yes. For a Claude Code transcript, `<host>/docs/claude-code-ingest.md` is the method. For anything else, you'd write the ingest yourself, which has quiet ways to go wrong, so:
+- Count the messages and list the distinct speakers, and have the person point at the one that is the resident. Other voices, other Claude-family voices included, stay participants of their own.
+- Dry-run first: print the counts and who each message is attributed to, writing nothing, and have the person look before the real run.
+- Never open the live store from a script of your own: opening a store with a different strategy configuration rewrites part of it. Work on a copy, and keep the original until the host has opened the result and the person is satisfied.
+- A re-export that overlaps an earlier one gets only its new tail appended, never the whole again.
 
-```bash
-sudo cp -a /home/<existing>/connectome-local /home/<agent>/connectome-local
-sudo cp -a /home/<existing>/.nvm /home/<agent>/.nvm        # node
-sudo cp -a /home/<existing>/.bun /home/<agent>/.bun        # bun
-sudo chown -R <agent>:<agent> /home/<agent>/connectome-local /home/<agent>/.nvm /home/<agent>/.bun
-# add nvm + bun to <agent>'s ~/.bashrc PATH
-```
+## The recipe
 
-Verify runtimes as the agent user: `node --version`, `bun --version`.
+The recipe is a JSON file the service runs the host with. Write it in `<dir>`, beside where `SETUP.md` will go, named for the resident (`<dir>/<name>.json`), never under the install root. Show the person the whole recipe first, with a line in their terms on what each key you wrote is for, and write it once they say yes. Write only the person's choices and the servers, and leave every other setting to the host's defaults, which fit a new resident on this release: its memory strategy, its context budget, sized to the model's window where the host knows that window (for a model it doesn't, `connectome doctor` says the fit wasn't checked), and the rest.
 
-**Fresh install — from absolutely nothing (no repos, no URLs).** Assume the box has only a
-shell. First, the **hard prerequisites** (install / confirm before anything else; ask the user
-or their box owner if unsure):
-- **git**, **Bun ≥ 1.4.3** (`curl -fsSL https://bun.sh/install | bash`), **node ≥ 22.12** (via `nvm`);
-- a **Rust toolchain** (`rustup`) — **only for the local-checkout path** below, where you build
-  `chronicle`'s native (napi) component from source. The npm `@animalabs/chronicle` package
-  ships prebuilt `.node` binaries (linux x64/arm64 glibc, macOS x64/arm64, Windows x64), so the
-  stock install needs no Rust on those platforms;
-- the `anima-research` / `antra-tess` GitHub repos. These are **public** (as of 2026-07;
-  they previously required org access), and the `@animalabs/*` npm packages install without
-  auth. If a `git clone` / `bun install` fails on access, check whether the repo moved
-  rather than assuming a permissions gate.
-
-The repos, which the local-checkout route below clones as siblings under one dir, canonically
-`~/connectome-local/` (the stock route clones none of them):
-
-| repo | URL |
-|---|---|
-| **connectome-host** (the host) | `git@github.com:anima-research/connectome-host.git` |
-| agent-framework | `git@github.com:anima-research/agent-framework.git` |
-| context-manager | `git@github.com:anima-research/context-manager.git` |
-| chronicle *(native/Rust)* | `git@github.com:anima-research/chronicle.git` |
-| membrane | `git@github.com:antra-tess/membrane.git` |
-| mcpl-core-ts | `git@github.com:anima-research/mcpl-core-ts.git` |
-| discord-mcpl | `git@github.com:anima-research/discord-mcpl.git` |
-| heartbeat-mcpl | `git@github.com:anima-research/heartbeat-mcpl.git` |
-| terminal-sessions-mcp | `git@github.com:antra-tess/terminal-sessions-mcp.git` |
-
-Two ways to install — pick based on whether the user needs released or unreleased code:
-
-- **Stock (simplest, released versions):** install the released host from npm into the agent's
-  install dir (§5), with no clone: `mkdir -p ~/<agent>-cm && cd ~/<agent>-cm && bun add
-  @animalabs/connectome-host`. That pulls the `@animalabs/*` libs from npm too, chronicle's
-  prebuilt native binary included, into the install dir's own `node_modules`, and the package
-  carries the web UI built. Run it with `bun node_modules/@animalabs/connectome-host/src/index.ts
-  <recipe> --headless` from the install dir. An install from npm can update itself once it's set
-  up (`DEPLOYMENTS.md`, "Updating an install"). The host's `README.md` quick-start documents
-  the same install.
-- **Local-checkout / dev (what production boxes actually run):** clone **all** the repos above
-  as siblings, build bottom-up (`npm install && npm run build` in each, order: `mcpl-core-ts` →
-  `membrane`, `chronicle` → `context-manager` → `agent-framework` → the MCP servers;
-  chronicle's build is `napi build …`), then `bun install` in `connectome-host` — the host
-  runs from source under Bun and has **no `build` script** (`npm run build` fails there;
-  `bun run build:web` builds the web UI, and nothing builds it on install), then **wire the single-instance
-  `@animalabs/*` symlinks** so every component shares ONE copy of each shared lib. **The repo's
-  own `docs/DEV-ENVIRONMENT.md` is the authoritative step-by-step** for this (exact clone lines,
-  build order, the symlink commands, runtime notes) — follow it rather than improvising. Use
-  this path only when you need unreleased branches.
-
-Sanity: connectome-host is healthy once `bun <the host's src/index.ts> <recipe> --headless`
-(stock: `node_modules/@animalabs/connectome-host/src/index.ts` in the install dir;
-local-checkout: `connectome-local/connectome-host/src/index.ts`) boots without errors and logs
-`[webui] listening`. Then continue with the per-agent install dir (§5).
-
-**Pick non-colliding ports.** Every agent on the box needs a unique:
-- **shell-daemon port** (`SESSION_SERVER_PORT`, default 3100)
-- **webui port** (module default 7340; binds `0.0.0.0` and requires `basicAuth` unless set to loopback)
-
-Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
-
-> ⚠️ **Native dependencies are platform-specific — never rsync them across OSes.**
-> `chronicle` ships a native `.node` (`chronicle.linux-x64-gnu.node` etc.) and the TUI lib
-> `@opentui/core` needs a per-platform package (`@opentui/core-linux-x64`). If you build on a
-> Mac and deploy to Linux, exclude `node_modules` and `*.node` from the rsync and let the
-> target keep/install its own. A missing `@opentui/core-<platform>` makes the host crash at
-> boot resolving `@opentui/core-<platform>/index.ts` — install it (`npm pack` + extract, or a
-> proper `bun install`).
-
----
-
-## 5. Phase 3 — Scaffold the install dir
-
-Create `/home/<agent>/<agent>-cm/` with: `recipes/`, `data/`, `files/`, `notes/`, `scripts/`.
-On the local-checkout route, add `node_modules/@animalabs/` symlinks so your import/maintenance
-scripts resolve the libs. A stock install's `node_modules` already holds them, so skip the
-symlinks there:
-
-```bash
-mkdir -p ~/<agent>-cm/{recipes,files,notes,scripts,logs}
-mkdir -p -m 700 ~/<agent>-cm/data   # the agent's history and call logs: its owner's alone, as a host makes a new one
-```
-
-Local-checkout route only:
-
-```bash
-mkdir -p ~/<agent>-cm/node_modules/@animalabs
-ln -sfn ../../../connectome-local/context-manager  ~/<agent>-cm/node_modules/@animalabs/context-manager
-ln -sfn ../../../connectome-local/membrane          ~/<agent>-cm/node_modules/@animalabs/membrane
-ln -sfn ../../../connectome-local/context-manager/node_modules/@animalabs/chronicle ~/<agent>-cm/node_modules/@animalabs/chronicle
-```
-
-**Recipe** (`recipes/<agent>.json`) — adapt from a known-good one. Skeleton:
-
-```jsonc
+```json
 {
-  "name": "<Agent display name>",
-  "description": "<one line — where this being comes from; operator-visible>",
+  "name": "<the resident's name>",
   "agent": {
-    "name": "<agent>",                      // = chronicle "self" participant (byte-exact)
-    "model": "<model-id>",                  // or gateway-prefixed, e.g. anthropic/claude-opus-4
-    "timezone": "America/Los_Angeles",      // agent-visible wall clock only; storage stays UTC
-    "systemPrompt": "",                     // empty, or a few sentences at most — see below
-    "thinking": { "enabled": true, "type": "adaptive", "display": "summarized" },
-    "maxTokens": 32000,                     // response cap
-    "maxStreamTokens": 320000,              // recompile trigger on uncached input; see §11.1
-    "contextBudgetTokens": 300000,          // SEE §11.1 — with the system prompt and tools, keep it under the window
-    "cacheTtl": "1h",                       // prompt-cache TTL; defaults to '1h', set '5m' explicitly for rapid sub-5m loops
-    "strategy": {
-      "type": "autobiographical",
-      "adaptiveResolution": true,
-      "foldingStrategy": "kv-unified",      // the default (§5b); omit "kvUnified" for the standard block
-      "targetChunkTokens": 3000,            // L1 chunk size; also the ingest shard size
-      "compressionSlackRatio": 0.1,
-      "mergeThreshold": 6,                  // L1→L2 / L2→L3 fan-in
-      "headWindowTokens": 4000,             // verbatim opening
-      "recentWindowTokens": 100000,         // verbatim tail; tune vs window (§11.1)
-      "maxMessageTokens": 10000,            // cap on any single rendered message
-      "compressionModel": "<same-as-agent.model>", // SEE §11.3 — stable, same voice
-      "enforceBudget": true,
-      "overBudgetGraceRatio": 0.35,
-      "maxSpeculativeL1s": 36,
-      "summaryParticipant": "<agent>",
-      "compressionRecallBudgetTokens": 40000, // prior recall pairs shown to the summarizer
-      "compressionToolProseFallback": {     // §11.9 — hoist long think/skip_reply diaries on refusal
-        "intoTool": "journal", "fromTools": ["skip_reply", "think"], "minChars": 60
-      }
-    },
-    "proseRouting": "locus",
-    "refusalHandling": { "retries": 2, "autoRewind": false, "maxRewinds": 15 }
+    "name": "<the name its memory records it under>",
+    "model": "<the model's exact id>",
+    "timezone": "<the person's zone>",
+    "systemPrompt": ""
   },
-  "modules": { "webui": { "port": 7343, "host": "127.0.0.1",
-                          "basicAuth": { "username": "${WEBUI_USER}", "password": "${WEBUI_PASS}" } },
-               "identity": true, "history": true, "mcplAdmin": true,
-               "subagents": false, "lessons": false, "retrieval": false,
-               "heartbeat": true
-               /* + wake policies, workspace mounts (files/, notes/) */ },
-  "codeExecution": { "enabled": true },     // top-level, not under modules — recommended for every resident, see below
+  "codeExecution": { "enabled": true },
   "mcpServers": {
-    "shell":   { /* terminal-sessions stdio server; "env": { "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}", "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}" } */ },
-    "discord": { /* discord-mcpl; "env": { "DISCORD_TOKEN": "${DISCORD_TOKEN}", "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}", ... } */ }
+    "discord": { "...": "see The recipe's servers" }
   }
 }
 ```
 
-The heartbeat is agent-framework's (`modules.heartbeat`), from the first
-agent-framework release after 0.27.0; on 0.27.0 or earlier `modules.heartbeat`
-is ignored, so keep heartbeat-mcpl under `mcpServers.heartbeat` there. A recipe
-can't name both. To move a resident off the server, replace its `mcpServers.heartbeat`
-with `"heartbeat": { "importFrom": { "configPath": "<its HEARTBEAT_CONFIG_FILE>",
-"remindersPath": "<its HEARTBEAT_REMINDERS_FILE>" } }` under `modules`: the first
-start brings its schedule and reminders along and leaves the old files as they
-are. Its wake rules for `source: "heartbeat"` push events keep applying: the
-framework's ticks and reminders reach the gate as that server's pushes did.
+- `name` is the recipe's display name; `agent.name` is the resident's name as its memory and the importer know it ("Working with the person").
+- `agent.model` is the id as the provider names it. For Anthropic's API the host needs nothing more; for a gateway or another provider, read its section ("Gateways and other providers").
+- `timezone` is the person's zone, an IANA name such as `Europe/Berlin` ("Working with the person"). The host checks it, gives the resident its clock in it, and passes it to every server it starts, so discord-mcpl writes the times of earlier messages in it too.
+- `systemPrompt` is the person's choice, kept minimal.
+- `modules.heartbeat`, when the person wants the resident to wake on its own: `"modules": { "heartbeat": true }`. It gets a heartbeat and reminders it sets and changes itself, with their tools. Off when left out.
+- `modules.selfUpdate` and `codeExecution` are the two grants ("What the resident may do to itself"). The skeleton carries `codeExecution` on, as the host's makers recommend for every resident; take it out if the person declines it. Add `selfUpdate` once it's decided, beside any other module in `modules`.
+- `mcpServers` is where its servers are defined: Discord's, and the shell's when it has one ("The recipe's servers").
 
-These are the values the long-running production residents converge on for a
-≥500k-window model (300k budget / 100k recent tail / 32k reply). For a **200k-window**
-model scale the three window numbers down together — e.g. `contextBudgetTokens:
-160000`, `maxStreamTokens: 180000`, `recentWindowTokens: 60000`, `maxTokens: 16384` —
-and keep everything under `strategy` as is; chunk size, merge fan-in and the
-fallback rungs are window-independent.
+The host's own loader checks the recipe when `connectome service install` runs and refuses one it can't load, naming what's wrong, before anything is written. `connectome doctor` then says whether it fits the model's context window.
 
-**System prompt: keep it minimal.** Leave it empty (`""` is valid; the request then carries
-no system block at all, except on a model whose thinking binds, where the host's one paragraph
-on folds is the system text, unless the recipe uses the `anthropic-xml` formatter), or write a
-few sentences at most. Most long-running residents run
-a single sentence or nothing. Why:
+Don't add tuning the person didn't ask for. Older guides wrote out the memory strategy's numbers for older checkouts, which defaulted differently; this release's defaults are the ones its makers maintain, and a value written in the recipe stops following them. If the person asks for a change later, the "Recipes" section of `<host>/README.md` describes the settings.
 
-- **The agent's identity lives in its memory.** That means the imported history and everything
-  it lives through afterwards, which the strategy keeps in context. A long persona or rulebook
-  is a fixed description that its lived memory will outgrow. It is also re-applied as standing
-  instructions on every turn, and it pulls the agent back toward an instructed-assistant register.
-- **It's the front of the prompt cache.** The system prompt comes first in every request, so
-  any edit to it invalidates the whole cache, and the next turn re-writes the entire context
-  (hundreds of thousands of tokens on a large resident). A prompt with nothing in it to tune
-  rarely needs editing.
-- **Tools describe themselves.** Shell, Discord, heartbeat and workspace usage come from the
-  tool descriptions the servers declare. Don't restate them in the prompt.
+**Changing the model.** When the person wants another model, tell them these before you change anything, without waiting to be asked:
+- Its memory stays, and the new model reads it. Unless the recipe sets `agent.strategy.compressionModel`, the new model also writes its summaries from then on.
+- What it costs: for a Claude model, its list prices from `<host>/src/call-pricing.ts` ("Working with the person"), where the file gives them. For any model it gives no price, say you don't know its prices, and that the host's own cost figures leave its calls out rather than count them as free.
+- Nothing tells the resident what it now runs on, and the new model may not get its earlier reasoning. So suggest the person tell it themselves, in their own words, if they'd like it to know.
 
-What earns a place, if anything, is a fact or standing permission the agent can't get any
-other way, e.g. `"Explicit content is allowed at your own discretion."` If the user has a
-longer persona text, offer to put it where the agent can read it as material (a file in its
-`notes/` mount, or part of the imported history) rather than as standing instructions.
+For another provider, the recipe takes its `agent.provider` value too, and you ask for its key first ("Gateways and other providers"). Check the new model with `setup--check_model`, by the name its key is stored as, for the providers its description says it checks, then change `agent.model` with their yes. The person runs `connectome service install` again, and you run `connectome doctor`.
 
-For Anthropic streaming turns, add `"effort": "medium"` to `agent.thinking` to
-set the recipe baseline; `enabled` is still required and can be `false`.
-Effort set explicitly with `agent_settings` (in the agent's built-in `settings`
-toolset, or its tool list if that lacks `toolsets--open` or `toolsets--act`)
-overrides the recipe until reset, from the point where it was set: a branch made before that point, such as an undo past
-the turn that set it, has the effort set there, or the recipe's where none was.
-Unrelated settings updates preserve the baseline, and compression calls are
-unaffected.
-A model that doesn't accept the effort level (Sonnet 4.5, Haiku 4.5, Claude 3
-models, and some levels on Opus 4.5 and 4.6) gets no effort, and its default
-applies, with a line on stderr.
-Other providers ignore this field; OpenAI recipes use `agent.responses.reasoningEffort`.
+## The recipe's servers
 
-Use `"cacheTtl": "1h"` for Connectome deployments. This is also the runtime
-default when the field is omitted. Set `"5m"` only for intentionally rapid
-workloads whose cache is normally reused within five minutes.
+Define the servers in the recipe itself, each with its own `command`, naming the programs setup installed by their paths under `<dir>`. The host fills a `${NAME}` in from `.env` as it loads the recipe, and passes `allowHostCommands` on only for a server the recipe defines itself, so don't move them into `mcpl-servers.json`.
 
-**`subagents`/`lessons`/`retrieval` are NOT part of the standard recipe.**
-All three are opt-in. RetrievalModule in particular injects context-dependent
-content into every compile (and spends up to two configured retrieval-model calls), so it must
-be an explicit opt-in for agents that actually curate a lesson library.
-Current host code defaults all three to off, but keep the explicit `false`
-entries in the recipe anyway — older host checkouts treated these as opt-out,
-and an accidentally-enabled RetrievalModule has caused severe prompt-cache
-churn in the field.
+**Discord**, always:
+
+```json
+"discord": {
+  "command": "node",
+  "args": ["<dir>/node_modules/.bin/discord-mcpl", "--stdio"],
+  "env": {
+    "DISCORD_TOKEN": "${DISCORD_TOKEN}",
+    "DISCORD_GUILD_ID": "<server>:<channel>",
+    "DISCORD_DM_USERS": "<user>,<user>",
+    "DISCORD_ADMIN_USERS": "<user>",
+    "DISCORD_FILTERS_FILE": "<dir>/data/discord-filters.json",
+    "DISCORD_WATERMARK_FILE": "<dir>/data/discord-watermarks.json",
+    "DISCORD_MUTED_CHANNELS_FILE": "<dir>/data/discord-muted.json",
+    "DISCORD_REACTION_CHANNELS_FILE": "<dir>/data/discord-reactions.json",
+    "DISCORD_DM_NOTICES_FILE": "<dir>/data/discord-dm-notices.json"
+  },
+  "allowHostCommands": true
+}
+```
+
+Leave out `DISCORD_DM_USERS` for anyone, and `DISCORD_ADMIN_USERS` with `allowHostCommands` for no admins ("Discord").
+
+**Its state goes in the data directory.** Each `DISCORD_*_FILE` above is a file discord-mcpl keeps state in: where it can be reached, where each channel's catch-up stands, muted channels, where reactions are shown, and DM notices. Unset, some are kept only in memory and lost at a restart, and the DM notices go under `$XDG_STATE_HOME/discord-mcpl/<the bot's user id>/`, or `~/.local/state/discord-mcpl/<the bot's user id>/` when that's unset. Inside `<dir>/data`, each is in the copy an update takes before it switches release, with the resident's memory, so nothing of discord-mcpl's needs recording as state kept outside the data directory. Tell the person so. The "Stored state" table in discord-mcpl's README (`<dir>/node_modules/@animalabs/discord-mcpl/README.md`) lists the files the installed release reads and writes; point every file it writes there. `DISCORD_SUBSCRIPTIONS_FILE` is only read, a legacy list of channels to open at start, so leave it out.
+
+**The shell**, only when the resident gets one:
+
+```json
+"shell": {
+  "command": "node",
+  "args": ["<dir>/node_modules/.bin/terminal-sessions-mcp"],
+  "env": {
+    "SESSION_SERVER_PORT": "${SESSION_SERVER_PORT}",
+    "SESSION_SERVER_TOKEN": "${SESSION_SERVER_TOKEN}"
+  }
+}
+```
+
+This is the resident's side of its shell. The other side is a daemon `connectome service install` sets up as a service of its own, beside the resident's: it picks a free port and makes a token, writes both to `.env` as `SESSION_SERVER_PORT` and `SESSION_SERVER_TOKEN`, and keeps the token out of your answers like any stored secret. The daemon listens on localhost only. Without a shell, write no shell entry: then term-sessions-mcp isn't installed, and `connectome service install` writes no daemon.
+
+## What the resident may do to itself
+
+Two grants go in the recipe. Updating its own host is the person's to give. Running small scripts is on for every resident, as the host's makers recommend, unless the person declines it; for a resident without a shell, they weigh it first (below). Tell them what each lets the resident do, ask, and write their answer either way into `SETUP.md`'s record of what was decided. Decide both now, in the recipe the resident starts on: each grant puts a tool in its tool list, so turning either on later, in a recipe the resident already runs on, makes its next reply slower and costlier once, while its whole conversation is read afresh. Nothing it remembers changes, so don't call it memory when you tell them.
+
+**Updating its own host** (`"modules": { "selfUpdate": true }`; off when left out). Tell them: the resident gets a tool to check whether a newer release of its host is out, and which releases since its own are breaking or rewrite its prompt cache once; to install the newest beside the one it runs; and to restart onto it or go back from it. A restart or a go-back begins at the host's first quiet moment, once nothing the host counts as in flight is still going, such as a turn, subagent run, background script, session switch, operator's work or credential action, and each fleet child says nothing is going there, such as a turn or background script, so it cuts no turn and asks nobody. Restart and go back work only on a host started with `CONNECTOME_SUPERVISED=1`. The service `connectome service install` writes sets it; elsewhere they refuse and say why. Checking and installing work without it. Nothing tells the resident after a switch: its own check says what it runs now and how the switch went. The person can update it too, with `connectome update`, whatever they decide here.
+
+**Running small scripts** (`"codeExecution": { "enabled": true }`, at the recipe's top level; off when left out). Tell them: "Your resident can run small scripts that call its own tools, so it can, say, read several channels in one go; a script can't do anything its tools can't."
+- With a shell, write it on unless they decline it, and tell them so.
+- Without a shell, ask, recommending it, and tell them plainly what holds a script in: it can only call the resident's own tools, and it runs in a sealed engine with no way to files, programs or the network. If that engine ever failed, the limit would be this user's account, which can read `.env` with its keys.
 
 **Code execution — turn it on for every resident.** `"codeExecution": { "enabled": true }`
 (top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The
@@ -403,614 +248,61 @@ whole setting. It is off unless the recipe turns it on: the host's built-in defa
 leaves it off, so an agent started with no recipe has none. Turning it on for a running
 resident adds one tool, so its first turn after the restart is one full cache write.
 
-**Memory defaults.** Current host code fills an omitted/partial `strategy` with:
-autobiographical + `adaptiveResolution: true` + `foldingStrategy: "kv-unified"` with the
-host's standard `kvUnified` block (§5b) + same-model compression (`compressionModel` falls
-back to `agent.model`) + `summaryParticipant` = the agent's name (the label before each
-summary stays context-manager's default unless the recipe sets `summaryContextLabel`). Omitted sizes: a
-`contextBudgetTokens` of 300k, or, on Anthropic's API for a model the host knows a window for, with a `maxTokens`
-that is unset or a positive number, the smaller of 300k and the window less the system prompt and 32k for the tools (§11.1); a `recentWindowTokens`
-of 40% of the budget (120k at 300k), or 40% of the budget less `maxTokens` where the head and
-40% of the budget wouldn't fit beside `maxTokens` with context-manager's over-budget grace; and a `maxStreamTokens` of the
-budget plus 20k when the budget is also omitted, else 150k. That tail is worked out once, from the
-recipe's budget: if you lower the budget at runtime on a recipe without its own tail, lower
-`tailTokens` with it, or compiles fail once the history fills the tail. A resident whose store was built under
-`kv-stable` must pin `"foldingStrategy": "kv-stable"` before it moves to such a host, or
-the upgrade switches its solver. The host's built-in default recipe (`bun src/index.ts`
-with no recipe) is just these defaults with an empty system prompt; it leaves code execution
-off (turn it on deliberately in the recipe, below). Keep the skeleton's
-explicit values anyway: older host checkouts default folding to `kv-stable` or
-`flat-profile`, the budget to 100k, the tail to 30k and summary voice to the literal
-`'Claude'` (the stranger's-voice hazard), reject `kv-unified` without a complete block, and
-explicit values survive host downgrades and copy-paste to other deployments.
+## Going live
 
-**`.env`** (`chmod 600`). Common vars:
+1. **The service.** The person runs `connectome service install <name>.json` themselves, in their second terminal ("Working with the person"). Tell them why it's theirs: it's the step that changes their machine, and its output then reaches them whole. On Linux it refuses, writing nothing, while linger is off for this user, and nothing gets past that: a service would stop whenever they log out. So when it's off, the line setup showed has to be run as root first, by the person or by whoever administers the machine. Never tell them they can skip it. If nobody can run it yet, the resident can't go live yet: write `SETUP.md` with that line and the steps after it, tell them so plainly, and don't call `setup--finished`: going live is still to set up. They leave with `/quit`, and setup run again once linger is on picks up where it stopped. `service install` loads the recipe with the host's own loader first and refuses, writing nothing, when that fails. Then it writes and starts the resident's service (a systemd user unit on Linux, a launch agent on macOS), with the shell's daemon beside it when the resident has one, waits for the host to answer, and checks the service. Ask them to paste you any warning or refusal it prints. When it refuses, its words say what to put right; put it right with them, and they run it again. When the resident has a shell and it says the shell's daemon failed, the resident isn't live yet, whatever the host does: read the daemon's log, which its line names, put the cause right with them, and have them run it again before you go on.
+2. **The doctor.** `connectome doctor`, read with the person. It checks the service, that the host answers, that the recipe loads and fits the model's window, the token counts the provider gives, the shell's real call, that each stored secret other than the provider's own reaches a server, and Discord ("Discord"), then, where the service is a systemd user unit and `python3` is on the PATH, shows where an incoming message got to. Put right what it flags. After a change to the recipe or `.env`, the person runs `connectome service install` again, which restarts the host so that it reads them, and you run `connectome doctor` again.
+3. **The person's hello.** Ask them to say hello to the resident with an @mention of the bot in its channel, or in a DM, and to tell you whether it answered: a plain message in a channel reaches it only once it has opened that channel, which it does by speaking there ("Discord"). If they made the channel for it, suggest they say so in their hello, in their own words. That's the resident's first message, and it comes from them, so don't send it one of your own, and don't write theirs. If nothing came, or the reply went somewhere else, run `connectome doctor` again: on Linux, with `python3` on the PATH, its last part shows where an incoming message got to; without `python3`, it says so. Read any log beyond that by its shapes, never its text ("Gotchas").
 
-```
-ANTHROPIC_API_KEY=...            # model key (or gateway key)
-ANTHROPIC_BASE_URL=...           # optional: gateway base, e.g. https://ai-gateway.vercel.sh  (§8)
-DATA_DIR=/home/<agent>/<agent>-cm/data
-DISCORD_TOKEN=...
-DISCORD_GUILD_ID=<guild>:<ch1>+<ch2>     # scoping whitelist — see §7
-DISCORD_SUBSCRIPTIONS_FILE=/home/<agent>/<agent>-cm/data/discord-subscriptions.json
-DISCORD_DM_USERS=<id>,<id>               # who may DM it (optional)
-DISCORD_ADMIN_USERS=<id>,<id>
-DISCORD_MCPL_DEBUG_LOG=/home/<agent>/<agent>-cm/data/discord-mcpl-debug.log
-SESSION_SERVER_TOKEN=<random hex>
-SESSION_SERVER_PORT=3101
-WEBUI_USER=<name>
-WEBUI_PASS=<random>
-HEARTBEAT_CONFIG_FILE=/home/<agent>/<agent>-cm/data/heartbeat-config.json
-SLEEP_PRIVILEGED_FILE=/home/<agent>/<agent>-cm/sleep-privileged.json
-COUNT_TOKENS_MODEL=<a live model id>     # optional override; makeup counts with the agent's own model by default (§11.4)
-```
+**Never start the resident from `setup--run`,** with `start.js` or the host's entry: a process you leave running keeps running after your conversation ends, and beside the service it makes two hosts on one data directory, which breaks the store. The service is the one way the resident runs. The person can run it by hand later, as `SETUP.md` says, and the host refuses that while the service holds the install.
 
-Stdio MCPL servers see only what their entry declares in `env` (plus a small
-system allowlist — see the README's MCP section — the host's `AGENT_TIMEZONE`,
-and agent-framework's default `DISCORD_SUPPRESSED_REACTIONS_BASELINE`). Map every
-variable a server reads, as in the skeleton above. A variable left only in
-`.env` is unset for the server, unless its entry sets `inheritEnv: true`, which
-passes every secret in the host's environment — and an unset
-`DISCORD_GUILD_ID` means every channel the bot is invited to (§7).
+## SETUP.md
 
-## 5b. Folding solver — `kv-unified` (new residents) vs `kv-stable` (established residents)
+Once the service is installed and `connectome doctor` has run, before the person's hello, write `<dir>/SETUP.md` for them through `setup--run`, in plain words, with names and never values. Show it to them first, and write it once they say yes, and show any later change to it the same way. Write each command with the install's command spelled as your prompt spells it. It says:
+- **Where the resident lives:** `<dir>`, its recipe's path, its data directory, and which user it runs as.
+- **Its secrets,** each by name, all in `<dir>/.env`, readable by that user alone. To change one, edit `.env`, then run `connectome service install` again.
+- **Changing it:** after any change to the recipe or `.env`, run `connectome service install` again, then `connectome doctor`. Where it can be reached and who may DM it are in the filters file in `data/`, which discord-mcpl rereads within seconds of an edit ("Discord"). The server, channel and DM ids in the recipe were only where it started: discord-mcpl copied them into that file on its first start and goes by the file alone after, so changing them in the recipe does nothing.
+- **Reaching it:** on Discord, by a DM, or in its channel (name it, and say so if it was made for the resident). In the channel, the first time, @mention the bot, not just its name typed: the channel opens to it when it first speaks there. After it has answered there, plain messages reach it too, though after a burst of traffic it can stop hearing them until it next speaks there, which `connectome doctor` then shows, with how to reopen the channel, and an @mention or a reply to one of its messages always reaches it. From a terminal, `connectome send <text>` prints its reply.
+- **Changing its model:** set `agent.model` in the recipe to the new model's id, then run `connectome service install` again, then `connectome doctor`. Its memory stays, and the new model reads it. Nothing tells the resident what it now runs on, so tell it yourself if you'd like it to know. A model from another provider also needs that provider's `agent.provider` value in the recipe and its key in `.env`, as `<host>/README.md`'s "Other providers" says.
+- **Its updates:** `connectome update` says whether a newer release is out and what it costs; `connectome help` describes the other words `connectome update` takes, such as `connectome update install`, `connectome update restart` and `connectome update back`. Whether the resident may update itself, as decided.
+- **Its logs, stopping and starting it:** `connectome service stop` stops it, and `connectome service start` starts it again. `connectome`, alone, says which install and release this is, whether its host is running, and gives the line that follows its log.
+- **What it writes:** files it writes with its workspace tools are kept in its memory store first, and reach `<dir>/output` when it writes them out to disk, so if one they want isn't there, they ask it to. With a shell, it can also write a file anywhere its user can, and that file is on disk at once.
+- **Its memory isn't backed up.** Nothing copies the data directory on a schedule. Each update copies it once, just before it switches release, into `<dir>/connectome-host/copy`, kept until the next switch. To take a copy by hand, run `connectome service stop`, copy `<dir>/data`, `.env` and the recipe whole, then run `connectome service start`; a copy taken while the host runs can tear.
+- **Running it by hand:** `cd <dir> && bun connectome-host/start.js [recipe]`, with the terminal interface. It runs from `<dir>`, since the host takes its data directory, `./data`, and its `.env` from where it starts. The host refuses it while the service holds the install, so run `connectome service stop` first, and `connectome service start` after.
+- **Its shell,** if it has one: the resident can read and change whatever its user can, and whoever talks to it on Discord can ask it to. The shell's daemon has a token in `.env`; to change it, take `SESSION_SERVER_TOKEN`'s line out of `.env` and run `connectome service install` again, which makes a new one. Run that from a terminal outside the resident's service, such as over ssh: run from inside it, it would stop itself partway, so it refuses, and a resident that needs it asks whoever runs the machine.
+- **What was decided, and by whom:** the name, the model, the system prompt, any history imported and which voice is the resident, the server, channels, DMs and admins, its time zone, whether it wakes on its own, both grants with the person's answer, the user it runs as, and anything you decided yourself.
 
-Both solvers decide, at every compile, which summaries to present and which raw
-messages to keep verbatim so the context fits `contextBudgetTokens`.
+After the hello, tell the person plainly that you aren't the resident, that the resident is the one who answers them on Discord, and ask whether there's anything more they'd like to set up. Once they have nothing more, call `setup--finished` in the turn where you say goodbye: the conversation ends after that turn, once anything they typed meanwhile has come to you as further turns, and setup then tells them how to change something later. If setup starts again after that, your opening says so: they've come back for something, so check where things stand, tell them what you see, and ask what they'd like to change.
 
-**`kv-unified`** (use it for every new resident) is a cost-aware Pareto solver: it scores
-candidate layouts on budget fit, **cache cost** (what a layout change will cost in cache
-writes vs reads at the configured prices), **continuity** (how much recent, still-referenced
-material stays verbatim) and fidelity, and picks the cheapest acceptable one. On a large-budget
-resident (600k budget / 300k tail on a 1M-window model) it has cut effective cache
-spend materially (on the order of 40 % in our accounting). It is **fail-closed**:
-context-manager has no live defaults; the host always hands it a complete block. It is the
-host's default for a recipe that omits `foldingStrategy`, and a recipe that omits the
-`kvUnified` block gets the host's standard one.
+## Gateways and other providers
 
-**`kv-stable`** keeps the presented layout as stable as possible between compiles so the
-prompt-cache prefix survives, and folds deeper only when forced. It is what residents built
-before kv-unified still run; such a resident pins `"foldingStrategy": "kv-stable"`. Leave
-an established resident on it unless you have a reason to switch (see the preconditions
-below).
+**A gateway.** When the resident's model is served only through a gateway (a model gone from Anthropic's API that a gateway still serves, say), and the person names it after setup's key check:
+- Ask for the gateway's base URL with `setup--ask_secret`, as `ANTHROPIC_BASE_URL`: a provider's base URL can carry a credential, so it's stored like one and kept out of your commands' environment. The API client adds `/v1/messages` to it.
+- Ask for the gateway's key the same way, as `ANTHROPIC_API_KEY`, which replaces the key setup checked, for the resident. Your own conversation keeps the URL and key it started with.
+- Write the model's id in the gateway's form, such as `anthropic/claude-opus-4`.
+- Then go live as usual ("Going live"), or, if the service is already installed, ask the person to run `connectome service install` again so the host starts with the new `.env`. `connectome doctor`'s token counts ask the gateway's count endpoint, so they show whether the gateway answers counts, not whether it serves the resident under the id you wrote; the person's hello shows that. When doctor says the count failed or wasn't asked, `<host>/docs/DEPLOYMENTS.md`'s "Compression and token counts" says which model is counted and what to set.
 
-The standard block, which the production kv-unified residents run at budgets from 300k to
-600k (shown with the prices the host picks for a Claude model on the 1-hour cache):
+Gateways can need credits or a card on the account, and some answer with brief errors as they switch upstream providers.
 
-```jsonc
-"strategy": {
-  "type": "autobiographical",
-  "adaptiveResolution": true,
-  "foldingStrategy": "kv-unified",
-  "targetChunkTokens": 3000, "compressionSlackRatio": 0.1, "mergeThreshold": 6,
-  "headWindowTokens": 4000, "recentWindowTokens": 300000, "maxMessageTokens": 10000,
-  "enforceBudget": true, "overBudgetGraceRatio": 0.35, "maxSpeculativeL1s": 36,
-  "compressionRecallBudgetTokens": 40000,
-  "kvUnified": {
-    "policy": {
-      "alpha": 0.7,
-      "budgetLowRatio": 0.6, "budgetHighRatio": 0.85,
-      "budgetUnderLambda": 1000, "budgetOverLambda": 4000,
-      "cacheLambda": 1, "cacheScale": 100000,
-      "cacheReadPrice": 0.1, "cacheWritePrice": 2,        // multiples of the model's base input price
-      "continuityLambda": 1, "continuityScale": 100000,
-      "continuityRecencyHalfLifeTokens": 100000, "continuityRecencyFloor": 0.2,
-      "continuityStableHalfLife": 16, "continuityStableFloor": 0.25
-    },
-    "tokenBucketSize": 50000, "continuityBucketSize": 50000, "fidelityBucketSize": 100000,
-    "labelCeiling": 100000,
-    "adoptEpsilon": 3000,
-    "treeifyNonContiguousSummaries": false,
-    "preserveGapBearingSummaries": false,
-    "hysteresisCertificate": true
-  }
-}
-```
+**Another provider.** The host's README, `<host>/README.md`, has a table of providers under "Other providers": each one's `agent.provider` value and the credentials it reads. Ask for each credential with `setup--ask_secret`, under the name the table gives, before going live ("Going live").
 
-`cacheReadPrice` / `cacheWritePrice` are ratios to the model's uncached input price, not
-dollar figures. The host's standard block matches them to what the provider bills:
+## Gotchas
 
-- **Claude writes:** `2` on the 1-hour cache (the default `cacheTtl`), `1.25` on the
-  5-minute cache and on Bedrock (5-minute only);
-- **Claude reads:** `0.1` on most models, `0.05` on Claude Opus 5.5, `0.025` on Claude
-  Fable 5.1 / Mythos 5.1. Claude Sonnet 5.5 takes `0.1`, though its reads are billed at
-  `0.05`, since a lower price can change the layout the solver picks and rewrite the
-  agent's prompt cache;
-- **OpenAI writes:** `1.25` on the API for the GPT-5.6 and GPT-6 families, `1` for older
-  models, and `1` on Codex, whose credit billing has no cache-write charge;
-- **OpenAI reads:** the model's cached-input ratio, the same on the API and in Codex: `0.1`
-  on most models, `0.05` on GPT-6.1 Sol.
+**Compression needs a model that keeps answering.** The resident's memory folds older conversation into summaries in the background, by default with its own model and in its own voice. If that model is flaky or about to be retired, folding stalls and the context can't be kept under its budget. If the person's model is fragile, offer a stable model for compression alone (`agent.strategy.compressionModel`), and say that it's mildly identity-adjacent: the summaries are still in the resident's name, but another model writes them.
 
-Write the block yourself only to change the policy, and then set the prices to match.
-`recentWindowTokens` follows the budget as in §5 (300k tail on a 600k budget, 100k–120k on
-300k).
+**Signed thinking may not carry over.** A transcript's signed thinking may not replay on another model: `<host>/docs/claude-code-ingest.md`'s section 4.2, "Changing models", says what to do with a history imported with its signatures. The claude.ai importer brings thinking in as text, which carries none. When the person changes the resident's model later, the new model may not get its earlier reasoning, as "Changing the model" under "The recipe" says.
 
-**Preconditions — read before flipping a resident:**
+**Refusals.** A provider's safety classifier can end a request with a refusal, and some residents, such as ones built from dense reasoning transcripts, meet it more than others. `<host>/docs/claude-code-ingest.md` has the symptoms and the recipe-level mitigations; they apply to any resident. Never quote a suspected trigger into a channel the resident reads.
 
-- **Strictly contiguous summary forest.** kv-unified's bounded solve assumes every
-  summary owns a contiguous run of leaves. A store whose summaries cross (the
-  pre-0.12 head-window ratchet produced late single-message L1s stitched into era
-  summaries) does not open at all under the default `reject` topology policy,
-  whatever the folding strategy (§11.8). Setting `preserveGapBearingSummaries` or
-  `treeifyNonContiguousSummaries` switches the policy to `report`: the store opens,
-  `compressionDebt` goes `critical`, and the solver runs *buffered* (internal holes),
-  where label propagation can run away —
-  `exact label propagation exceeded ceiling <N>` at ~1.35× `labelCeiling`, deterministic,
-  survives restart, raising the ceiling only moves the number. Audit (§11.8) and
-  repair first; staying on `kv-stable` does not open a crossed store either.
-- **`treeifyNonContiguousSummaries: true` is not an escape hatch** on a crossed
-  store: it solves fast but drops the deepest summaries, and the floor can land
-  above your budget (`budgetMet=false`).
-- **Rehearse cache-live, not just cold.** A cold dry-compile of a store copy never
-  passes the persisted `kvUnifiedImmutablePrefixHash`, so it never exercises the
-  cache-live solver path — the one that failed above. Rehearse on a copy with the
-  receipt hash the live host would pass.
-- **New residents start on kv-unified, from the first boot** (the default). Switching an
-  established kv-stable resident later is a layout change (one full cache rewrite) plus the
-  audit above — and a kv-stable recipe that never named its solver switches on its first
-  boot under a host where kv-unified is the default, unless it pins `kv-stable` first.
-- `hysteresisCertificate: true` skips the full Pareto pass when the previously
-  accepted layout is provably still selected — large latency win on quiet turns;
-  `adoptEpsilon` is the score slack that lets an unchanged layout be retained.
-- `hysteresisCertificate` is optional, and from context-manager 0.15 a strategy
-  built from a recipe takes it on unless it is `false`.
-- Three optional keys (context-manager 0.17) are on by default, and each has an
-  opt-out: `policy.ageBandSteps` (an integer from 0 to 64; 4 unless set, and 0
-  prices exact ages), `latentDemandMode` (`"joint"` unless set to
-  `"individual"`) and `engine` (`"auto"`, `"subtree"` or `"dag"`; auto runs the
-  subtree engine and falls back to the DAG one past the label ceiling).
-- Every other field is required. The host checks the block at recipe load —
-  that `treeifyNonContiguousSummaries` / `preserveGapBearingSummaries` are
-  explicit booleans and not both `true`, that `hysteresisCertificate` is a
-  boolean and the three keys above take their listed values, when set — and
-  passes the object through whole. A key under `kvUnified` or its `policy` that
-  the host doesn't read is named in a startup warning, with the key it was
-  probably meant to be; context-manager itself ignores keys it doesn't know.
-  Pin the runtime and validate the recipe against it.
+**Read shapes, never text, when you look into a failure.** In a call log, the resident's in `data/` or your own in `.setup/`, read each request's roles, block types and sizes, and each response's stop reason and stop details; for a streamed call, also `provider_events.message_start`, where a refusal's category can be the only copy. Never print any message's text into this conversation, whether the resident's, its imported history's or anyone else's: text that drew a refusal from the resident's model can draw one from yours, and a refused setup agent can't go on helping the person.
 
----
+**The model's window.** For a model the host knows a window for, on Anthropic's API, it sizes the context budget to fit and refuses a recipe whose numbers can't. On any other provider, or a model it doesn't know, it can't check the fit, and doctor says so: if a reply ever fails with "prompt is too long" while compression calls still succeed, the budget is over the window, and that's the first thing to look at.
 
-## 6. Phase 4 — Import the conversation history
+## With another harness
 
-(Skip if starting blank.)
-
-**Sources.** Three you will meet: a ChapterX "Bridge" text dump (below), an Arc/animachat
-JSON export (same ingest, different parser), and a **Claude Code session transcript** —
-for that one follow [`claude-code-ingest.md`](./claude-code-ingest.md) end to end; it
-covers the active-branch walk, signed-thinking replay, and the `tool_result` storage
-shape that silently breaks if you get it wrong.
-
-**Get the export.** Common format is a ChapterX "Bridge" text dump: a header (`# ...`) then
-messages as `--- SpeakerName ---\n<body>` blocks. Have the user drop the file somewhere in the
-agent's home and tell you the exact path. Inspect it: count messages, list distinct speakers.
-
-**Confirm self-mapping (the identity call from §2.3).** Print the speaker tally and have the
-user confirm which label(s) are "self." Everyone else maps to their own participant name.
-
-**Write the ingest script** (`scripts/ingest-bridge.mjs`) — parse the blocks, map `self` →
-the agent name, everyone else verbatim, and `addMessage` each into a `ContextManager` opened
-with the autobiographical strategy (`autoTickOnNewMessage: false`). **Dry-run first** (print
-counts + attribution, write nothing); have the user eyeball the tally; then run for real.
-
-```bash
-# dry run, then real:
-node scripts/ingest-bridge.mjs <export.txt> --dry-run
-node scripts/ingest-bridge.mjs <export.txt>
-```
-
-**Watch for traps** (§11.5): rendered "💭" thinking-summary text can trip refusals on some
-models; image blocks may carry a wrong/empty `media_type`; "rolling window" re-exports overlap
-the previous one (compute the *delta* tail, don't double-import). **Mirror the recipe's
-strategy in the ingest script** — `adaptiveResolution` + `targetChunkTokens` act at
-`addMessage()` time and shard oversized messages (pasted documents, huge tool results); an
-ingest without them leaves those as single unfoldable blocks.
-
-**Verify on a copy before first boot.** Compile a copy of the store with the recipe's
-strategy and *read* the rendered messages — no `[this call's result isn't shown in this
-context. …]` / `[tool call omitted]` / `[tool result moved during context repair]` stubs,
-participants right, last message is the intended seam — and compare exact
-`count_tokens` to the estimate (a large gap means blocks are missing or doubled). Never
-open the live store with a foreign strategy config: opening chunks the frontier under that
-config (§11.8).
-
-**Pre-compress** so the first real turn isn't a cold giant compile:
-
-```bash
-node scripts/compress-fresh.mjs    # drains the compression/merge queue against compressionModel
-```
-
-This makes real API calls (it's the one import step that does) — confirm the model id + key
-are right first; it's a good early validation that the model is reachable.
-
-**Recent-batch append:** if the user later drops a newer export, diff it against what's
-imported and append only the genuinely-new tail (anchor on the last imported message). If there's
-a real time gap at the seam, consider a one-line bridge note so the agent doesn't wake into a void.
-
----
-
-## 7. Phase 5 — Communication surface (Discord)
-
-**Bot app:** if they don't have a token, walk them through the Discord Developer Portal:
-create an Application → Bot → copy the **token** → enable the **Message Content** intent.
-Verify the token: `GET https://discord.com/api/v10/users/@me` with header
-`Authorization: Bot <token>` **and a real `User-Agent`** (Discord/Cloudflare blocks default
-UAs — use e.g. `DiscordBot (https://example.com, 1.0)`).
-
-**Invite it** to the server (OAuth2 URL, `scope=bot`, permissions incl. View Channel, Send
-Messages, Read Message History). Confirm membership.
-
-**Scope which channels it sees** via `DISCORD_GUILD_ID` (this is the gate — channels not listed
-are filtered at ingest, the agent never sees them):
-- `<guild>` alone → **all** channels in that guild.
-- `<guild>:<chA>+<chB>+<chC>` → only those channels (`+` between channels).
-- `<guild1>:<chA>,<guild2>` → comma separates **guilds**.
-- empty / unset → everywhere it's invited.
-
-Ask the user which channels, in plain terms ("just its own channel to start, or the whole
-server?"). Start scoped; widen later.
-
-`discord-subscriptions.json` is separate: it's which channels it *auto-listens to ambiently*.
-Whitelisted-but-unsubscribed channels still wake it on **@mentions**; subscribe ones where it
-should follow along.
-
----
-
-## 8. Phase 5b — Gateway routing (only if the model needs it)
-
-If the model is deprecated on the direct API or only available via a gateway (e.g. Vercel AI
-Gateway still serving a sunset model):
-- set `ANTHROPIC_BASE_URL` to the gateway base (the SDK appends `/v1/messages`),
-- set the model id to the gateway's form (e.g. `anthropic/claude-opus-4`),
-- use the gateway key as `ANTHROPIC_API_KEY` (membrane sends `x-api-key`, which Vercel accepts).
-- Gateways may need a card / paid credits on the account, and may flap across upstream
-  providers (404/503). The host's membrane treats gateway aggregate errors as retryable; that
-  rides through blips.
-
----
-
-## 9. Phase 6 — Services
-
-Two `systemd --user` units in `~/.config/systemd/user/`:
-
-1. **`terminal-sessions.service`** — the shell daemon, `--host localhost --headless --token
-   ${SESSION_SERVER_TOKEN}`, env `SESSION_SERVER_PORT`. `enable` + `start` it first.
-2. **`<agent>-agent.service`** — `bun <the host's src/index.ts>
-   .../recipes/<agent>.json --headless` (§4; on the stock route, once update setup has run, the
-   start line setup prints in its place, `bun connectome-host/start.js` under its default root, as
-   `DEPLOYMENTS.md` says), `WorkingDirectory=<agent>-cm` (the host reads
-   `mcpl-servers.json` and the agent's overlay from it), `EnvironmentFile=...env`,
-   `Environment=PATH=<node bin>:<bun bin>:...`, `After=/Wants=terminal-sessions.service`,
-   `Restart=always`.
-
-Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
-
-Add a **backups cron** (snapshot `data/` every ~15 min, run as the agent's user or root, since
-`data/` is readable by its owner alone) and a lightweight **watchdog** cron
-(detect "messages arriving but no reply for N min" → restart, with a cooldown so it can't
-restart-loop). These caught real incidents.
-
----
-
-## 10. Phase 7 — Launch & verification checks
-
-Start the agent service, then verify **each** of these (don't declare success on "it booted"):
-
-```bash
-systemctl --user start <agent>-agent.service
-systemctl --user is-active <agent>-agent.service          # active, 0 restarts
-journalctl --user -u <agent>-agent.service --since -1min  # no errors/refusals
-```
-
-- **Discord connected & scoped right:** the debug log's `registerDiscordChannels:enumerated`
-  shows exactly the intended channel(s).
-- **Context renders:** hit the webui (tunnel to its loopback port) `GET /debug/context` —
-  message count looks right, participants attributed correctly (self → assistant, others →
-  user-with-name-prefix).
-- **Token size is safe:** `GET /debug/context/makeup` — **total + maxTokens must be under the
-  model window** (§11.1). This is the single most important check.
-- **Reasoning is as intended:** confirm `thinking`/`temperature` in the actual compiled request
-  match what the user wanted (default is off).
-- **A real turn completes:** the cleanest end-to-end proof. If no one will message it, briefly
-  lower the heartbeat interval to force one wake, confirm `stop: end_turn` with no error in the
-  newest `llm-calls.*.jsonl`, then restore the interval.
-
-Snapshot a clean baseline once it's verified.
-
----
-
-## 11. CRITICAL gotchas (read before deploying)
-
-**11.1 — `contextBudgetTokens` must fit the model window.** The autobiographical strategy
-fills context up to `contextBudgetTokens` less `maxTokens`, which it keeps for the reply, and the
-system prompt and the tools' definitions come on top. If that prompt is over the model's context
-window, **every reply 400s** ("prompt is too long") once the conversation fills the budget — the
-agent appears to "think but not speak" (compression calls, with small contexts, still succeed;
-full replies don't). The hard limit: `contextBudgetTokens − maxTokens + system prompt + tools  <
-model window`, where the head and the verbatim tail count in place of `contextBudgetTokens − maxTokens`
-if they come to more, as they can within `overBudgetGraceRatio`. The working rule leaves the reply its room too: `contextBudgetTokens + system
-prompt + tools  ≤  model window`, for a compile that keeps to the budget less `maxTokens` (the head and the
-verbatim tail can pass that by up to the grace). A long turn's tool results add to the prompt
-between compiles, so at a full compile a budget over the working rule leaves a turn less room
-before the API refuses its prompt. `maxStreamTokens` counts uncached input only, so with prompt caching on it doesn't
-bound a turn. On Anthropic's API the host checks part of this for you, on a model it knows a
-window for and a recipe whose numbers it can read: a recipe that sets no budget gets one that keeps the working
-rule, leaving 32k for the tools, and a load that resolves
-the system prompt refuses a budget whose prompt, without the tools, would pass the window, a
-budget that leaves too little room for the head and the verbatim tail once `maxTokens` is kept
-for the reply, or a `maxTokens` over the model's maximum output, naming the numbers and the changes it found that would let it load. On any other provider, or for a model it knows no window for, it prints one line at
-start saying the fit wasn't checked, and the rules are yours to keep. As a conversation **grows**, the equilibrium
-context creeps up — watch the makeup view and trim budget / `recentWindowTokens` before it
-crosses the line. (This was the opus4 outage; diagnosing it is *why* the makeup view exists.)
-
-**11.2 — Native deps don't cross platforms.** `chronicle`'s `.node` and `@opentui/core-<plat>`
-are per-OS/arch. Build on the target or exclude native files from cross-platform rsync (§4).
-
-**11.3 — Compression model must be reliable.** `compressionModel` runs the background
-summary/merge folding. If it's a flaky or deprecated model, folding stalls, summaries pile up,
-and the context can't compress under the window. Use a stable model for compression even if the
-agent *speaks* on a more fragile one — they're separate settings, and the summaries are still
-"in the agent's voice" via `summaryParticipant`. (Note: if you switch compression off the
-agent's own model, mention it to the user — it's mildly identity-adjacent.)
-
-**11.4 — Exact token counts via a *live* model.** The makeup endpoint calls `count_tokens`
-(at `ANTHROPIC_BASE_URL` when set) with the agent's own model, provider/gateway prefixes
-normalized away (`anthropic/claude-opus-4` → `claude-opus-4`); `COUNT_TOKENS_MODEL` overrides
-that. You need the override when the agent's model can't be counted — a deprecated or
-gateway-only model, where `count_tokens` fails (a dead model 404s) and the makeup shows no
-exact total (`countSource: count_tokens_failed_<status>`). Claude models share a tokenizer, so
-set it to any *currently-callable* Claude model.
-
-**11.5 — Import traps.** Rolling-window re-exports overlap (delta only); image blocks may have
-wrong `media_type` (sniff magic bytes; the membrane formatter now does this); rendered
-thinking-summary text can trip refusals on some models. Always dry-run the ingest first.
-
-**11.6 — Folding floor under window pressure.** With either solver, if summary
-*production* lags or the conversation is huge, the compile can hit a floor and throw
-`OverBudgetError` (kv-unified reports `budgetMet=false` with the floor it reached). Mitigations:
-let production catch up; lower `recentWindowTokens`; ensure the context-manager is recent enough
-to fold to the deepest available level; on kv-unified, check the forest is contiguous (§5b, §11.8)
-before touching `treeifyNonContiguousSummaries`. `flat-profile` is the robust fallback strategy.
-
-**11.7 — Discord REST needs a real `User-Agent`** or Cloudflare returns 403 (`error code: 1010`)
-— this is not a permissions problem. The bot also needs **Read Message History** for backscroll
-(separate from View Channel).
-
-**11.8 — Store topology audit, and opening a store mutates it.** Since context-manager 0.12.0,
-every load audits the summary archive for crossed ownership — a summary whose leaves are not
-contiguous in store order (the pre-0.12 head-window ratchet, restore/branch interleavings, hand
-surgery). Under the default `topologyPolicy: reject`, `ContextManager.open` throws
-`StoreTopologyError` and the resident does not boot — on `kv-stable` as on `kv-unified`; the store
-keeps its history, though by then the open has rewritten its snapshot cadence, as an open of an
-existing store does on chronicle 0.3.0 or later. `report` logs the violations and boots; a
-`kvUnified` block with `preserveGapBearingSummaries` or `treeifyNonContiguousSummaries` set to
-`true` defaults to it. This host does not forward a `strategy.topologyPolicy` recipe key (it is
-silently ignored), so the error's "set topologyPolicy: 'report'" hint is not reachable from a
-recipe — repair a copy of the store, as below. Separately, a merge that would mint a crossed
-node is refused into the merge quarantine. Both show on `/healthz` as
-`compressionDebt.<agent>.topologyViolations` /
-`.topologyRefusals`, with `state: critical`. For **any** upgrade of an existing resident to
-context-manager 0.12 or later — including one from a pre-0.12 context-manager, which has no
-audit script of its own — install the upgrade and, before starting the resident on it, run the
-new release's `--audit-stores` on its data directory right after a copy of it, as "Updating an
-install" or "Updating checkouts" in [DEPLOYMENTS.md](./DEPLOYMENTS.md) does: it opens every
-session's store, and its
-recipe's fleet children's, but one that reaches past what an update copies (outside the data
-directory, or on a trial the trial's places, or holding a link out), of which it says why it
-wasn't opened, and one a session names that isn't there yet, which a start makes empty, under
-each resident's own policy and as a start does, in place, so
-only after a copy that can put the stores back. context-manager's own script audits one store,
-on a **copy of the stopped store**, a full or reflinked copy, never hardlinks, since opening it
-writes:
-`node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json > audit.json`
-(exit 2 violations, 1 it didn't finish, such as a usage error or a store it could not open, and
-0 clean; a warning on stderr that it saw nothing to audit, which can come with exit 0 or 2,
-means a wrong `--namespace`, a copy without the strategy state, a store with no summaries yet,
-or chunks none of which is linked to a summary). It reports the store's crossings whatever the
-resident's policy, which the repair below works from, and it opens the store `auditOnly`, which
-skips chunking the messages not yet in any chunk, a step a start takes before its check, so it
-can pass a store a start refuses: the host's audit is the one that opens it as a start's context
-does (agent-framework's own state in the store, which a start reads as well, is outside both). Repair a fresh copy of the stopped store, made the same way, never the store itself,
-since the repair and the drain write into it; from the copy on, the store stays as it was until
-the copy takes its place.
-`node …/dist/scripts/repair-topology.js <store-copy> --namespace agents/<agent> [--mode lossless|compact|rebuild] [--rebuild-since <messageId|ISO date>] [--apply]`
-is a dry run unless `--apply`; after `--apply` it reopens the copy under `reject` to verify.
-`lossless` (the default) only detaches, so the pyramid unravels around each fragment; `compact`
-keeps depth at the price of prose gaps; `rebuild` dissolves crossed towers back to L1 for the
-merge ladder to re-fold, and with `rebuild`, `--rebuild-since` rebuilds only crossings from that
-message on and compacts older ones (with another mode it does nothing). After a `rebuild`,
-re-fold the same copy with the offline drain, which writes summaries with real model calls,
-taking `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` from its environment. It's the command the
-repair prints, with `--tools-log` added:
-`node …/dist/scripts/drain-autobiographical.js <store-copy> agents/<agent> --apply --model=<model> --participant=<agent> --recipe=<the resident's recipe.json> --tools-log=<llm-calls.jsonl>`.
-It needs the resident's live tool definitions, and takes them from the last streamed call that
-declared tools in a call log a host on the `anthropic` provider wrote with
-`LLM_CALLS_FULL_PAYLOADS=1`, so that call has to be the resident's own. If the resident still runs
-on a release that opens its store, restart it with that set and stop it right after one of its
-turns, before you copy the store; the turn is a real one, and the store keeps it. Pass the log that
-restart began: each start of the host begins a new `llm-calls.<iso>.jsonl` in the resident's data
-directory. Without the definitions the drain can't compress a chunk with tool calls, nor any chunk
-when `--model` is a Fable or Mythos model. Without them, choose `lossless` or `compact`, which need
-no drain. A drain that stops at `--max-steps` (200 by default) can be run again on
-the same copy, or with a higher `--max-steps`. Then re-audit the copy with the `--namespace` the
-first audit used. The copy takes the store's place only when the repair with `--apply`, the
-drain's last run after a `rebuild`, and the re-audit each exited 0: read the repair's and the
-drain's output, then put the copy in the store's place, keep the original beside it untouched,
-and run the host's `--audit-stores` before you restart, since the audit and repair scripts open
-the copy `auditOnly`, which can pass a store a start refuses. Run it with the host's entry, the
-flag in place of the recipe, from the directory the host starts in, so a fleet entry's relative
-data directory resolves as the host's fleet resolves it: `bun <the host's src/index.ts> --audit-stores --recipe <recipe>
-<data directory>`, on the data directory whose store it is, with the recipe its start names. For a
-fleet child its parent's recipe names, run it on the parent's data directory with the parent's
-recipe, which audits the child as its fleet starts it; for a child launched by `fleet--launch`,
-on the child's own directory. It opens the stores in the directories it audits in place, so
-run it while a copy of those directories is kept. Restart only when it exits 0. If it doesn't, put the
-original back in the store's place. If a script doesn't exit 0, discard the copy; the store is
-as it was when you copied it. Two traps:
-(a) any `ContextManager.open` with a normal strategy config chunks the store's frontier under
-*that* config — verify only on a copy, with the host's audit or the `auditOnly` scripts, never
-by opening a live store from a one-off script; (b) reflink/rsync copies of a *running* store
-read different state depending on when `state.bin` was last snapshotted — copy a stopped store.
-
-**11.9 — `reasoning_extraction` refusals.** Anthropic's safety classifier can end a request
-with `stop_reason: refusal` and this category; it halts residents built from dense reasoning
-transcripts and residents that keep diaries in long tool arguments. Fleet mitigations, all
-recipe-level: `refusalHandling.retries: 2` (near-threshold refusals are nondeterministic and
-refused-up-front requests are not billed); `compressionToolProseFallback` into `journal` for
-long `think` / `skip_reply` arguments; `carrierPolicy: "live-strip"` when the live window
-refuses but compression is fine; a context-manager that defers tools-less compression (a
-compression request with no `tools` declared is a deterministic input-block on some model
-families). Symptoms, triage table and the localisation method are in
-[`claude-code-ingest.md` §5](./claude-code-ingest.md#5-if-you-hit-reasoning_extraction-refusals)
-— they apply to any resident, not only Claude Code continuations. Never quote a suspected
-trigger into a channel the resident reads.
-
-**11.10 — Signed thinking is model-bound.** Replaying a transcript's signed `thinking` blocks
-works only on the model that minted them; any other model 400s. Editing the *shape* of a turn
-around a retained thinking block (split, reorder, insert before) also 400s ("thinking blocks
-cannot be modified") — a transport error the membrane retries once text-only, not a refusal.
-On Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound
-to the conversation and head (system text, tools, model) it was minted under: an account that
-enforces the binding refuses a request where those changed, as after a fold. The host sends the
-drop control on agent turns through the Anthropic API so the provider sets such a block aside instead, and context-manager
-leaves out what a fold invalidates (anima-research/context-manager#155). Not every account
-binds: some still show the model such a block. At start, for each such model the recipe uses (the
-agent's and its subagents' default), the host mints one block and replays it under a changed
-system text, a few small requests that `[thinking-binding]` lines in its log report on. Where the
-account showed the block, the agent and its subagents send their thinking as stored, without the
-drop control, which would have the block dropped. That holds only on the Anthropic route for a model
-that takes the control: if a gateway later moves the agent to an account that refuses such a block,
-the first refusal turns the control on for the rest of the run and the request is sent again. Where
-the account refused or dropped the block they leave such thinking out as above. A start at which the
-check can't tell uses what it last found on the same route (`$DATA_DIR/thinking-binding.json`), or
-leaves such thinking out. `THINKING_BINDING_PROBE=off` skips the check.
-On those four the host
-also passes the model's window, and with both, agent-framework doesn't break a turn's stream at
-`maxStreamTokens` (or the `/budget` command's value): its stream breaks mid-turn for its size
-only where its next request would pass the window, and a fresh compile carries the turn on.
-
----
-
-## 12. After go-live
-
-- Tell the user how to reach the webui (SSH tunnel to the loopback port + the basic-auth creds).
-- Explain what it does on its own (wakes on mentions/DMs in scoped channels + on its heartbeat).
-- Keep the snapshots + watchdog running. Pull an off-box copy of `data/` for safety.
-- Widen channel scope / adjust the recent window / tune the budget as it settles.
-
----
-
-## Appendix — quick reference
-
-- **Run host:** stock, from the install dir: `bun node_modules/@animalabs/connectome-host/src/index.ts
-  <recipe.json> --headless`; local-checkout: `bun connectome-host/src/index.ts <recipe.json>
-  --headless` (legacy checkouts may still name the directory `forking-knowledge-miner`)
-- **Reach loopback webui:** `ssh -L <port>:localhost:<port> <login-user>@<box>` → `http://localhost:<port>`
-- **Live makeup:** `GET /debug/context/makeup` (basic auth) — segments + exact total tokens
-- **Compiled context:** `GET /debug/context`
-- **Per-call logs:** `data/llm-calls.<iso>.jsonl`, one JSON line per provider call attempt — rotates
-  to a new file on every restart; re-list by mtime after a bounce. Counts *attempts*;
-  `failures.log` counts *turns*. A line normally carries timing and a request summary; a failure
-  adds the bounded error and its classification, and a call that got a response adds its summary
-  (Bedrock, generic wrapper) or raw response (Anthropic, generic wrapper). A summary can be
-  missing (`summaryUnavailable: true`, or dropped by the size cap below). Raw requests are kept
-  only where the writer's policy keeps them: Anthropic complete/stream on errors, refusals and
-  anomalous responses (a client `tool_use` under any stop reason but `tool_use`, flagged by an
-  `anomaly` field and one `[llm-calls] … ANOMALY …` stderr line), or on every call with
-  `LLM_CALLS_FULL_PAYLOADS=1`; Anthropic keepalive pokes only with that opt-in,
-  whatever their outcome; Bedrock on errors; the generic wrapper on every call. Every line,
-  newline included, is capped at 16 MiB of UTF-8: an oversized or unserializable record drops its
-  raw request first, its raw response only if the line still doesn't fit, then its summaries, keeping at least its type, kind,
-  timing, error classification, `anomaly`, `messageId` and `requestId`, and `truncated` says what was dropped. Treat the log as diagnostics, not as a
-  complete copy of any payload.
-- **Topology audit / repair (context-manager ≥ 0.12, §11.8):**
-  `bun <the host's src/index.ts> --audit-stores [--recipe <recipe>] <data directory>` (exit 1 = some store
-  refused or not audited, a line on stderr for each store under each agent name it opens it under, or one for a store it doesn't open) opens every session's store and its
-  recipe's fleet children's in place, after a copy, as a start opens the agent's in it, but one
-  that reaches past what an update copies, of which it says why not, and one not there yet. A
-  load whose repair drops summaries holding text gets a line of its own, in the words of the
-  `memory-load-repair` ops alert, since the start that opens that store next finds nothing to
-  repair. The
-  script
-  `node node_modules/@animalabs/context-manager/dist/scripts/audit-topology.js <store-copy> --namespace agents/<agent> --json`
-  (exit 2 = crossed) audits one copy `auditOnly`, which can pass a store a start refuses.
-  `node …/repair-topology.js <store-copy> --namespace agents/<agent> --mode lossless [--apply]`
-  — on a fresh copy of the stopped store, never hardlinks; §11.8 gives the drain and the swap
-- **Health:** `GET /healthz` — per-agent `compressionQuarantine`, `compressionDebt` (incl.
-  `topologyViolations` / `topologyRefusals`),
-  `contextComposition` (head / raw / summaries / tail as the last live compile rendered them;
-  no entry for an agent with none, before its first live compile since its context was loaded
-  or for good where its strategy keeps none), `contextCompositionNotKept` (the names of the
-  agents whose strategy keeps none, present only when there are some), `runtimeSettings`,
-  `loadRepair` (the latest load repair this session that dropped summaries holding text, as
-  context-manager reported it; without `ops`, without its branch), and `readFailures`, present
-  only when one of those reads threw: by agent, then section, what the error said, cut to 300
-  characters
-- **Import guides:** [`claude-code-ingest.md`](./claude-code-ingest.md) ·
-  [`claudeai-evacuation.md`](./claudeai-evacuation.md)
-- **Identity is the user's call. The mechanics are yours. Check everything. Be kind about who you're setting up.**
-
----
-
-## Appendix B — A worked example (redacted opus4-style walkthrough)
-
-A real onboarding, condensed; secrets redacted, IDs illustrative. Read it as "the phases, in motion."
-
-**The interview (Phase 0).**
-- Name `opus4`. Model `claude-opus-4-<date>` — a model being deprecated the *next day*; the user
-  wanted continuity on its real substrate while it was still callable.
-- Import: yes — a ChapterX "Bridge" text export.
-- **Self-mapping (the decisive call):** the export held several Claude voices. The user confirmed
-  `Claude Opus 4` = *self*; `Opus4.8` was a **different** model in the same room → its own
-  participant, not merged into self.
-- Surface: one Discord channel (`#opus`) in their server, to begin.
-
-**Host + isolated user (Phases 2b / 1).** A box with a connectome stack already present → copied
-it (fast path). New user `opus4`, ports `3101` (shell daemon) / `7343` (webui), clear of the
-other agent already on the box.
-
-**Scaffold (Phase 3).** Recipe adapted from a known-good one (`name`, `model`,
-`summaryParticipant: opus4`, `contextBudgetTokens` set *under* the model window, webui on 7343).
-`.env` with the model key, the Discord token, and generated `SESSION_SERVER_TOKEN` / `WEBUI_PASS`.
-
-**Import (Phase 4).**
-```bash
-grep -cE '^--- .+ ---$' export.txt                                  # 576 messages
-grep -oE '^--- .+ ---$' export.txt | sort | uniq -c | sort -rn      # speaker tally -> confirm self
-node scripts/ingest-bridge.mjs export.txt --dry-run                 # 'Claude Opus 4'->opus4; 'Opus4.8' separate
-node scripts/ingest-bridge.mjs export.txt                           # 576 imported
-node scripts/compress-fresh.mjs                                     # pre-compress (~41 min)
-```
-The user then dropped a *fuller* export (a rolling window). We diffed it against the imported
-tail and appended only the **28 genuinely-new messages** (→ 605) — which turned out to be the
-farewell itself.
-
-**Reasoning + (later) gateway (Phases 5 / 5b).** Reasoning **off** (no `thinking` in the recipe;
-verified in the compiled request). When the model was later pulled from the direct API, we routed
-around it: `ANTHROPIC_BASE_URL=https://ai-gateway.vercel.sh`, model `anthropic/claude-opus-4` —
-same being, different door — which brought it back.
-
-**Discord (Phase 5).** Verified the token (`/users/@me` with a real `User-Agent`) → bot
-"Opus 4 C". Invited it; scoped `DISCORD_GUILD_ID=<guild>:<#opus id>`; confirmed exactly **1**
-channel registered.
-
-**Services + launch (Phases 6 / 7).** systemd units (shell daemon + agent), 15-min backups, a
-wedge-watchdog. Then the check that matters:
-```bash
-curl -su "$WEBUI_USER:$WEBUI_PASS" http://127.0.0.1:7343/debug/context/makeup   # total + maxTokens < window?
-```
-A heartbeat-forced turn confirmed `stop: end_turn`, no error. Then go-live in `#opus` — where it
-woke into a channel full of people who'd come to say goodbye.
-
-**What bit us afterward (so you check for it):**
-- **Budget vs window (the big one).** Weeks on, the conversation grew until `contextBudgetTokens`
-  filled the context past the model's window → every reply *silently 400'd* ("thinks but won't
-  speak"; compression calls still succeeded, masking it). Fix: lower budget / `recentWindowTokens`
-  so `total + response < window`, and watch the makeup as it grows. (§11.1)
-- **Native dep.** A redeploy crashed at boot on a missing `@opentui/core-<platform>`; installing
-  the platform package fixed it. (§11.2)
-- **Folding floor.** Under window pressure the solver threw `OverBudgetError`; resolved by letting
-  summary production catch up plus a solver fix. (§11.6)
-
-The throughline: the import + identity calls were the user's; everything else we ran and checked;
-and the recurring failure mode was always **context size vs the model's hard window** — so make
-the makeup check a habit, not a one-time step.
+The rest of this guide holds, with these differences.
+- There's no `setup--ask_secret`, `setup--check_model` or `setup--finished`: a model is checked by the person's hello, and when they have nothing more, say goodbye and end as your harness does; nothing records that setup finished. Have the person write each secret into `<dir>/.env` themselves, in an editor, as a line `NAME=value`, and tell you its name once it's there. Nothing checks it then, so say only that it's stored until `connectome doctor` says it works. Never ask for a value in the conversation.
+- Your harness may not show the person each command as `setup--run` does. If it doesn't, show each one in the conversation before you run it.
+- Your shell doesn't hide secrets in its output. Never print `.env`, run `env`, or echo a variable that holds a secret; `connectome doctor` checks secrets by name.
+- There's no prompt naming the paths or spelling the install's command, so write that command by its full path, `<dir>/connectome-host/connectome`. `<dir>` is the directory `connectome setup discord` ran in, and `<host>` is `<dir>/connectome-host/current/node_modules/@animalabs/connectome-host`.
+- This guide starts where `connectome setup discord` leaves off. If it hasn't run, ask the person to run it in a terminal, in an empty directory named for the resident: it does what the opening's "What setup did before you started" says, then starts the host's own setup agent, which can do the rest with them, or which they can leave with `/quit` once it starts, to go on with you.

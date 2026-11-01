@@ -215,7 +215,7 @@ export async function auditBeforeCommit(
   throw new StartRefusal(
     `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
     `agents, and the next start goes back to ${committed}:\n${failures.join('\n')}\n` +
-    `To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line ` +
+    `To take this release, repair each refused store as ${REPAIR_SECTION} says, or correct what a line ` +
     `names, and update again; or stay on ${committed} until a release opens them.`,
   );
 }
@@ -963,13 +963,15 @@ function topologyRefused(error: unknown): boolean {
 /** context-manager's StoreTopologyError, from any copy of the library, ends
  *  "Repair the store or set topologyPolicy: 'report' to open it for
  *  inspection.", an option the host's built-in strategies take from no
- *  recipe, so the line names §11.8 in its place. */
+ *  recipe, so the line names the host's own repair section in its place. */
 function refusal(error: unknown): string {
   const line = oneLine(error);
   if (!topologyRefused(error)) return line;
   const remedy = line.lastIndexOf(' Repair the store');
-  return `${remedy >= 0 ? line.slice(0, remedy) : line} AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.`;
+  return `${remedy >= 0 ? line.slice(0, remedy) : line} ${REPAIR_SECTION} says what a store with crossed summaries needs.`;
 }
+
+const REPAIR_SECTION = 'docs/DEPLOYMENTS.md\'s "Crossed summaries: auditing and repairing a store"';
 
 function oneLine(error: unknown): string {
   return flat(error instanceof Error ? error.message : String(error));
