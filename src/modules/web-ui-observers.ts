@@ -535,6 +535,11 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'gate:debounce-delivered': OPS,
   'gate:config-reloaded': OPS,
   'gate:decision': OPS,
+  // agent-framework #957: a server's suggested treatment offered to an agent
+  // for an explicit decision, and the decision it makes — gate traffic, as
+  // gate:decision is.
+  'gate:onboarding-offered': OPS,
+  'gate:onboarding-decided': OPS,
   'gate:held-dropped': OPS,
   // Admission and the Dendrite registry (agent-framework#546): a decision is
   // an ops fact; an agent's creation, end, interruption, orphaning and
