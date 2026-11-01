@@ -1272,6 +1272,18 @@ export interface RecipeModules {
    */
   selfRestart?: boolean | { cooldownMinutes?: number };
   setup?: boolean;
+
+  /**
+   * The agent's own update (`lifecycle--update`). Off by default. The agent
+   * can check for, install, restart onto or go back from a release of its
+   * own install, as `/update` does. A restart or Go back begins at the
+   * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
+   * says, and is armed only on a host whose environment at its start holds
+   * `CONNECTOME_SUPERVISED=1`, which the service written by `connectome service
+   * install` sets only if that service starts the host again when it exits
+   * with 75 and when it exits with 1.
+   */
+  selfUpdate?: boolean;
 }
 
 export interface RecipeWebUi {
@@ -2046,7 +2058,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat', 'setup',
+  'channelMode', 'selfRestart', 'heartbeat', 'setup', 'selfUpdate',
 ] as const;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
@@ -3280,6 +3292,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
     if (mods.setup !== undefined && typeof mods.setup !== 'boolean') {
       throw new Error('modules.setup must be true or false');
+    }
+
+    if (mods.selfUpdate !== undefined && typeof mods.selfUpdate !== 'boolean') {
+      throw new Error('modules.selfUpdate must be true or false');
     }
 
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {

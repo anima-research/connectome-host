@@ -356,6 +356,10 @@ reasons unless the grant holds `ops` too.
   of `/healthz` say so,
   with what the releases since cost: which are breaking, which write each
   resident's prompt cache in full once, and which say nothing of their cost.
+  The log's line saying how to take it names the install's own command by
+  its full path (`<install>/connectome update install`) for a headless
+  host, whose log is read in a shell, and `/update …` for one in a
+  terminal, which takes those.
   With `CONNECTOME_UPDATE_CHECK=0` or `NO_UPDATE_NOTIFIER` set, it doesn't read
   the registry on its own, and `/update` still does. A fleet child never does.
 - **Update,** `/update install`, installs the newest release that isn't
@@ -366,6 +370,11 @@ reasons unless the grant holds `ops` too.
   restarted onto included. If the new install then fails, what it removed
   isn't put back, and the next Update installs the newest release again.
   When the floor is above it, upgrade Bun and start the host again first.
+  An install with Bun first sets the new release's `trustedDependencies` to
+  the running Bun's default trusted list (`bun pm default-trusted`) and
+  term-sessions-mcp, the list setup writes, so it runs the install scripts
+  an install from npm runs, from whichever registry; when Bun can't give that list whole, it keeps the running
+  release's field, or none where it has none, and says so.
 - **Restart,** `/update restart`, quiesces the host and its fleet children,
   each as the web UI's Quiesce quiesces one host, and gives turns in
   progress two minutes to end. If some don't, it says who is still mid-turn,
@@ -408,12 +417,16 @@ reasons unless the grant holds `ops` too.
   and the log and `/update` say why: ask again once that has cleared.
 - **Going back** after a commit: `/update back` says how old the copy is,
   and offers keeping the newer data (`/update back keep`), which loses
-  residents nothing, or restoring the copy (`/update back restore`), which
-  sets everything since aside, not deleted, and brings the host back
-  quiesced or serving as the copy holds it, so a quiesce you made since
-  doesn't come back. Either way the host quiesces first, as Restart does,
-  and records its connected servers for the older release's commit as
-  Restart does, where that release reads the record. If the older release ends before its commit on
+  residents nothing and brings the host back as it is now, answering new
+  turns or holding them if it's quiesced, or restoring the copy
+  (`/update back restore`), which sets everything since aside, not deleted,
+  and brings the host back answering new turns, unless it had been quiesced
+  from the Web UI before the Restart that took the copy: then it comes back
+  holding them, and clicking "⏸ quiesced" in the Web UI's top bar lets them
+  through. Whether it's quiesced now makes no difference. Either way the
+  host first holds new turns and gives turns in progress up to 2 min to end,
+  as Restart does, and records its connected servers for the older release's
+  commit as Restart does, where that release reads the record. If the older release ends before its commit on
   the newer data, as when its store audit refuses a store, the next start
   puts the newer release and its data back by itself, and restoring the
   copy is the way from there.

@@ -4,8 +4,12 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
-import { KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord } from '../update/launcher.js';
-import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/update-text.js';
+import {
+  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord, type LauncherOps,
+} from '../update/launcher.js';
+import {
+  COMMAND_WAYS, cliWays, inShellWords, statusLines, type UpdateStatus,
+} from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -216,7 +220,7 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
   } else {
     ctx.out(`Its update state, as the running host gives it` +
       `${update.check === null ? '' : `, from its last read of the registry at ${update.check.at}`}:`);
-    const ways = host.ready.turnWork === undefined ? COMMAND_WAYS : CLI_WAYS;
+    const ways = host.ready.turnWork === undefined ? COMMAND_WAYS : cliWays(typedCommand(root));
     for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
   return Math.max(status, service(ctx));
@@ -352,23 +356,25 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   return 0;
 }
 
-async function update(ctx: CliContext): Promise<number> {
+export async function update(ctx: CliContext, launcher: LauncherOps = machineOps()): Promise<number> {
   const words = ctx.argv;
   if (!updateWords(words)) {
-    ctx.err(`connectome: usage: ${UPDATE_USAGE}`);
+    const typed = typedCommand(ctx.root!);
+    ctx.err(`connectome: usage: ${UPDATE_USAGE.replace(/^connectome/, () => typed)}`);
     return 2;
   }
   const host = await reach(ctx);
   if (host === null) return 1;
-  if ('reason' in host) return words[0] === 'back' ? backWithNoHost(ctx, words, host) : noHost(ctx, host);
+  if ('reason' in host) return words[0] === 'back' ? backWithNoHost(ctx, words, host, launcher) : noHost(ctx, host);
   if (host.ready.turnWork === undefined) {
     host.close();
     ctx.err('connectome: nothing was asked: the running host is an older release than this command, and it ' +
       'doesn\'t mark where a command\'s answer ends, so this couldn\'t tell when to stop reading. ' +
-      `${thisRelease(ctx.root!)} Then connectome update works.`);
+      `${thisRelease(ctx.root!)} Then ${typedCommand(ctx.root!)} update works.`);
     return 1;
   }
-  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inCliWords(line)));
+  const typed = typedCommand(ctx.root!);
+  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line, typed)));
   host.close();
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
@@ -377,14 +383,16 @@ async function update(ctx: CliContext): Promise<number> {
     return 1;
   }
   if (answer.error !== undefined) {
-    ctx.err(`connectome: the host's update command failed: ${inCliWords(answer.error)}`);
+    ctx.err(`connectome: the host's update command failed: ${inShellWords(answer.error, typed)}`);
     return 1;
   }
-  return answer.refused ? 1 : 0;
+  if (answer.refused) return 1;
+  if (stops(words)) ctx.err(`connectome: once the host is back, \`${typed}\` says which release runs and how the switch went.`);
+  return 0;
 }
 
-function inCliWords(line: string): string {
-  return line.replace(/(^|[^\w/])\/update(?![\w/-])/g, '$1connectome update');
+function stops([sub, choice]: string[]): boolean {
+  return (sub === 'restart' && choice !== 'resume') || (sub === 'back' && choice !== undefined);
 }
 
 function updateWords([sub, choice, release, ...more]: string[]): boolean {
@@ -399,7 +407,7 @@ function updateWords([sub, choice, release, ...more]: string[]): boolean {
   return false;
 }
 
-function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: NoHost): number {
+function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: NoHost, launcher: LauncherOps): number {
   if (!host.down) return noHost(ctx, host);
   const root = ctx.root!;
   let offer: { to: string; since: string } | null;
@@ -428,12 +436,15 @@ function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: No
   if (choice === undefined) {
     ctx.out(`No host answers (${host.reason}). Going back to ${offer.to} is offered, with the copy of its data ` +
       `taken ${offer.since}. Either of these asks the next start to go back:`);
-    ctx.out(`- ${CLI_WAYS.keep} ${offer.to}: ${offer.to} runs on the data as it is now.`);
-    ctx.out(`- ${CLI_WAYS.restore} ${offer.to}: the copy is restored, and everything since ${offer.since} is set aside, not ` +
+    const ways = cliWays(typedCommand(root));
+    ctx.out(`- ${ways.keep} ${offer.to}: ${offer.to} runs on the data as it is now.`);
+    ctx.out(`- ${ways.restore} ${offer.to}: the copy is restored, and everything since ${offer.since} is set aside, not ` +
       'deleted.');
     return 0;
   }
-  return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [], machineOps(), release);
+  const typed = typedCommand(root);
+  return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [],
+    { ...launcher, report: (text) => ctx.err(inShellWords(text, typed)) }, release);
 }
 
 function noHost(ctx: CliContext, host: NoHost): number {

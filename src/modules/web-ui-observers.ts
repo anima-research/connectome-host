@@ -751,6 +751,8 @@ export const UPDATE_STRINGS = {
   installed: true,
   goBack: { to: true, since: true },
   restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
+  armed: { to: true, why: true, since: true, by: true, lastTry: { at: true, hosts: { host: true, activeTurnAgents: true } } },
+  armedDropped: { to: true, why: true, since: true, at: true },
   lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
 } satisfies KeptStrings;
 

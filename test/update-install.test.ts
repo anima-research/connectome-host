@@ -21,6 +21,11 @@ let calls: Array<{ manager: string; args: string[]; cwd: string; files: Record<s
 const here = () => ({ root, release: '0.11.0' });
 const RUNNING_PACKAGE = '{"dependencies":{"@animalabs/connectome-host":"^0.11.0"}}\n';
 const RUNNING_LOCK = '{"lockfileVersion":3,"of":"0.11.0"}\n';
+const TRUSTED = ['esbuild', 'node-pty', 'puppeteer'];
+const TRUSTED_OUTPUT = `Default trusted dependencies (${TRUSTED.length}):\n${TRUSTED.map((name) => ` - ${name}\n`).join('')}`;
+const WRITTEN = [...TRUSTED, 'term-sessions-mcp'];
+const trusting = (pkg: string, names = WRITTEN) => `${JSON.stringify({ ...JSON.parse(pkg), trustedDependencies: names }, null, 2)}\n`;
+const DEFAULT_TRUSTED = { manager: 'bun', args: ['pm', 'default-trusted'] };
 
 function release(name: string, version = name, files: Record<string, string> = {}): string {
   const path = releaseDir(root, name);
@@ -36,13 +41,14 @@ function release(name: string, version = name, files: Record<string, string> = {
  *  install into package.json. */
 function manager(outcome: {
   status?: number | null; output?: string; version?: string; manifest?: string | null; entry?: boolean; launcher?: boolean;
-  files?: number;
+  files?: number; trusted?: { status: number | null; output: string };
 } = {}): InstallOps {
   return {
     run: async (manager, args, cwd) => {
       const files: Record<string, string> = {};
       for (const name of readdirSync(cwd).sort()) files[name] = readFileSync(join(cwd, name), 'utf-8');
       calls.push({ manager, args, cwd, files });
+      if (args[0] === 'pm') return outcome.trusted ?? { status: 0, output: TRUSTED_OUTPUT };
       const status = outcome.status === undefined ? 0 : outcome.status;
       if (status === 0) {
         const asked = args[args.length - 1]!.replace('@animalabs/connectome-host@', '');
@@ -189,10 +195,13 @@ describe('installing a release beside the running one', () => {
     rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
     writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
     await installRelease(here(), '0.12.0', manager());
-    expect(calls.map(({ manager, args, files }) => ({ manager, args, files }))).toEqual([{
-      manager: 'bun', args: ['add', '--exact', '@animalabs/connectome-host@0.12.0'],
-      files: { 'bun.lock': '{"bun":"text"}\n', 'package.json': RUNNING_PACKAGE },
-    }]);
+    expect(calls.map(({ manager, args, files }) => ({ manager, args, files }))).toEqual([
+      { ...DEFAULT_TRUSTED, files: { 'bun.lock': '{"bun":"text"}\n', 'package.json': RUNNING_PACKAGE } },
+      {
+        manager: 'bun', args: ['add', '--exact', '@animalabs/connectome-host@0.12.0'],
+        files: { 'bun.lock': '{"bun":"text"}\n', 'package.json': trusting(RUNNING_PACKAGE) },
+      },
+    ]);
     expect(installed()).toEqual(['0.11.0', '0.12.0']);
   });
 
@@ -200,8 +209,8 @@ describe('installing a release beside the running one', () => {
     rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
     writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lockb'), 'binary lock');
     await installRelease(here(), '0.12.0', manager());
-    expect(calls.map(({ manager, files }) => ({ manager, files })))
-      .toEqual([{ manager: 'bun', files: { 'bun.lockb': 'binary lock', 'package.json': RUNNING_PACKAGE } }]);
+    expect(calls.filter(({ args }) => args[0] === 'add').map(({ manager, files }) => ({ manager, files })))
+      .toEqual([{ manager: 'bun', files: { 'bun.lockb': 'binary lock', 'package.json': trusting(RUNNING_PACKAGE) } }]);
   });
 
   test('with both bun lockfiles, the text one alone', async () => {
@@ -209,8 +218,8 @@ describe('installing a release beside the running one', () => {
     writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
     writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lockb'), 'binary lock');
     await installRelease(here(), '0.12.0', manager());
-    expect(calls.map(({ manager, files }) => ({ manager, files })))
-      .toEqual([{ manager: 'bun', files: { 'bun.lock': '{"bun":"text"}\n', 'package.json': RUNNING_PACKAGE } }]);
+    expect(calls.filter(({ args }) => args[0] === 'add').map(({ manager, files }) => ({ manager, files })))
+      .toEqual([{ manager: 'bun', files: { 'bun.lock': '{"bun":"text"}\n', 'package.json': trusting(RUNNING_PACKAGE) } }]);
   });
 
   test('with npm\'s and bun\'s lockfiles, npm and its lockfile alone', async () => {
@@ -218,6 +227,58 @@ describe('installing a release beside the running one', () => {
     await installRelease(here(), '0.12.0', manager());
     expect(calls.map(({ manager, files }) => ({ manager, files })))
       .toEqual([{ manager: 'npm', files: { 'package-lock.json': RUNNING_LOCK, 'package.json': RUNNING_PACKAGE } }]);
+  });
+
+  test('with bun, the field is the running Bun\'s default trusted list and term-sessions-mcp, as setup writes it, in place of the one the running release has', async () => {
+    rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
+    const theirs = trusting(RUNNING_PACKAGE, ['an-old-name', 'node-pty']);
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'package.json'), theirs);
+    await installRelease(here(), '0.12.0', manager());
+    expect(calls.map(({ args, files }) => [args[0], files['package.json']])).toEqual([['pm', theirs], ['add', trusting(theirs)]]);
+    expect(JSON.parse(readFileSync(join(releaseDir(root, '0.12.0'), 'package.json'), 'utf-8')).trustedDependencies)
+      .toEqual(WRITTEN);
+    expect(said.filter((line) => line.includes('trusted'))).toEqual([]);
+  });
+
+  test('with bun, a default trusted list that can\'t be had whole leaves the running release\'s field, and the update says so', async () => {
+    rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
+    const theirs = trusting(RUNNING_PACKAGE, ['node-pty']);
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'package.json'), theirs);
+    const cases = [
+      { trusted: { status: 1, output: 'error: unknown command "default-trusted"' }, why: '`bun pm default-trusted` exited 1' },
+      { trusted: { status: 0, output: 'Default trusted dependencies (3):\n - esbuild\n' },
+        why: '`bun pm default-trusted` printed 1 names where it counted 3' },
+    ];
+    for (const [index, each] of cases.entries()) {
+      calls = [];
+      said = [];
+      const version = `0.12.${index}`;
+      await installRelease(here(), version, manager({ trusted: each.trusted }));
+      expect(calls.map(({ args, files }) => [args[0], files['package.json']])).toEqual([['pm', theirs], ['add', theirs]]);
+      expect(said).toContain(`[update] Bun's default trusted list couldn't be read (${each.why}), so this install keeps ` +
+        'the running release\'s trustedDependencies, or none where it has none.');
+    }
+  });
+
+  test('with npm, the field is left as the running release has it, and Bun isn\'t asked', async () => {
+    const theirs = trusting(RUNNING_PACKAGE, ['node-pty']);
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'package.json'), theirs);
+    await installRelease(here(), '0.12.0', manager());
+    expect(calls.map(({ manager, args, files }) => [manager, args[0], files['package.json']])).toEqual([['npm', 'install', theirs]]);
+  });
+
+  test('with bun, a package.json that isn\'t an object gets no field, Bun isn\'t asked for its list, and the add says what\'s wrong with it', async () => {
+    rmSync(join(releaseDir(root, '0.11.0'), 'package-lock.json'));
+    writeFileSync(join(releaseDir(root, '0.11.0'), 'bun.lock'), '{"bun":"text"}\n');
+    for (const [index, manifest] of ['{"dependencies": ', '[]'].entries()) {
+      calls = [];
+      writeFileSync(join(releaseDir(root, '0.11.0'), 'package.json'), manifest);
+      await expect(installRelease(here(), `0.12.${index}`, manager({ status: 1, output: 'error: package.json isn\'t one' })))
+        .rejects.toThrow('package.json isn\'t one');
+      expect(calls.map(({ args, files }) => [args[0], files['package.json']])).toEqual([['add', manifest]]);
+    }
   });
 
   test('with no lockfile, npm from the package.json alone', async () => {
@@ -416,7 +477,6 @@ describe('installing a release beside the running one', () => {
     }
     expect(error).not.toBeInstanceOf(ContractError);
     expect(error.message).toBe('EIO: i/o error, open');
-    await Bun.sleep(50);
     expect(installed()).toEqual(['0.11.0']);
   });
 

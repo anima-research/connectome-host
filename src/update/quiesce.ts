@@ -84,6 +84,12 @@ async function askChildren(fleet: SwitchFleet | null, to: string, waitMs: number
     childQuiet(name, await fleet!.requestSwitch(name, { op: 'quiesce', to, waitMs }, waitMs + ANSWER_MARGIN_MS))));
 }
 
+// agent-framework 0.28.0 waits up to a second for a busy host to drain
+// before it answers a quiesce (QUIESCE_TIMEOUT_MIN_MS).
+export async function lookAtChildren(fleet: SwitchFleet | null, to: string): Promise<HostQuiet[]> {
+  return askChildren(fleet, to, 0);
+}
+
 export async function quiesceForSwitch(
   framework: QuiesceFramework, fleet: SwitchFleet | null, opts: { to: string; timeoutMs: number },
 ): Promise<SwitchQuiet> {

@@ -1,0 +1,1 @@
+- `connectome update`: after a `restart` or `back keep|restore` that stops the host, it says on stderr that bare `connectome` says which release runs and how the switch went once the host is back.

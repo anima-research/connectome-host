@@ -407,7 +407,8 @@ function handleUpdate(args: string[]): CommandResult {
   }
   if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install());
   if (sub === 'restart' && release === undefined) {
-    const quiescing = 'Restarting unless refused: turns in progress get up to 2 min to end…';
+    const quiescing = 'Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up ' +
+      'to 2 min to end…';
     if (choice === undefined) return after(quiescing, hostUpdate.restartToInstalled());
     if (choice === 'wait') return after('Waiting up to 10 min more for turns to end…', hostUpdate.waitLonger());
     if (choice === 'now') return after('Stopping now…', hostUpdate.stopNow());
@@ -420,7 +421,8 @@ function handleUpdate(args: string[]): CommandResult {
       return { ...say(goBackLines(status)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
     }
     if ((choice === 'keep' || choice === 'restore') && (release === undefined || version(release))) {
-      return after('Going back unless refused: turns in progress get up to 2 min to end…', hostUpdate.goBack(choice === 'keep', release));
+      return after('Asking the host to go back. If it goes ahead, new turns are held, and turns in progress get up to ' +
+        '2 min to end…', hostUpdate.goBack(choice === 'keep', release));
     }
   }
   return usage;

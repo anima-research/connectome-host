@@ -9,8 +9,14 @@ import {
 
 const base: UpdateStatus = {
   running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: null,
-  goBack: null, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null, problems: [],
+  goBack: null, restart: null, armed: null, armedDropped: null, operatorQuiesced: null, switchQuiesceLeft: false,
+  lastSwitch: null, problems: [],
 };
+
+test('a status from a release before an agent could arm its own update reads as nothing armed', () => {
+  const { armed: _armed, armedDropped: _dropped, ...older } = base;
+  expect(statusLines(older as UpdateStatus, PAGE_WAYS)).toEqual(statusLines(base, PAGE_WAYS));
+});
 
 const read: ReadCheck = {
   at: '2026-10-24T05:00:00.000Z', ok: true, candidate: '0.13.1', bunFloorUnmet: null, runningDeprecated: null,
