@@ -103,19 +103,52 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
-  test("a file the agent wrote can't run script on the Web UI's origin: HTML and SVG are served sandboxed and unsniffed, as /media is", async () => {
-    for (const [path, type] of [
-      ['files/page.html', 'text/html; charset=utf-8'],
-      ['files/drawing.svg', 'image/svg+xml'],
-      ['files/notes.json', 'application/json; charset=utf-8'],
-    ] as const) {
-      const res = await fetch(`${baseUrl}/files/${path}`);
-      expect(res.status).toBe(200);
-      expect(res.headers.get('content-type')).toBe(type);
-      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
-      const csp = res.headers.get('content-security-policy') ?? '';
-      expect(csp.split(';').map((d) => d.trim())).toContain('sandbox');
-      expect(csp).toContain("default-src 'none'");
+  test("a file the agent wrote runs no script on the Web UI's origin: an HTML page with a script, an SVG with an onload handler and HTML in a .txt or .json file come back byte for byte, sandboxed and unsniffed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'webui-files-script-'));
+    const out = join(dir, 'out');
+    mkdirSync(out);
+    const files: Array<[string, string, string]> = [
+      ['page.html', 'text/html; charset=utf-8',
+        "<!doctype html><img src=\"chart.png\"><script>new WebSocket('ws://' + location.host + '/ws')</script>"],
+      ['drawing.svg', 'image/svg+xml',
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"fetch('/healthz')\"><script>new WebSocket('ws://' + location.host + '/ws')</script></svg>"],
+      ['notes.txt', 'application/octet-stream', "<!doctype html><script>fetch('/healthz')</script>"],
+      ['notes.json', 'application/json; charset=utf-8', '{"note":"<script>fetch(\'/healthz\')</script>"}'],
+    ];
+    for (const [name, , body] of files) writeFileSync(join(out, name), body);
+    const store = JsStore.openOrCreate({ path: join(dir, 'store') });
+    const real = new WorkspaceModule({ mounts: [{ name: 'out', path: out, mode: 'read-write', watch: 'never' }] });
+    real.initStore(store);
+    workspace = real;
+    try {
+      for (const [name, type, body] of files) {
+        const res = await fetch(`${baseUrl}/files/out/${name}`);
+        expect({
+          status: res.status,
+          type: res.headers.get('content-type'),
+          nosniff: res.headers.get('x-content-type-options'),
+          csp: res.headers.get('content-security-policy'),
+          body: await res.text(),
+        }).toEqual({
+          status: 200,
+          type,
+          nosniff: 'nosniff',
+          // Two policies, both enforced. No allow-scripts, so no script runs;
+          // images, media, fonts and styles load only from 'self' (first)
+          // and from a path under /files/ (second), or data: or inline.
+          csp: "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; "
+            + "style-src 'self' 'unsafe-inline'; sandbox allow-same-origin, "
+            + "default-src 'none'; img-src http://*:*/files/ https://*:*/files/ data:; "
+            + "media-src http://*:*/files/ https://*:*/files/ data:; "
+            + "font-src http://*:*/files/ https://*:*/files/ data:; "
+            + "style-src http://*:*/files/ https://*:*/files/ 'unsafe-inline'",
+          body,
+        });
+      }
+    } finally {
+      workspace = standIn;
+      store.close?.();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
