@@ -1,0 +1,94 @@
+# whole-host record C3h/W7/no-tools, from empty
+templates
+T:call-context-manager-cm-3f216d510335 = Context Manager: [CM] Recall memory L#-#.
+T:call-context-manager-system-7390a400c953 = Context Manager: System: You will soon form a new memory, get ready. The messages that follow are the slice of recent experience you are about to compress. After them, write the memory in your own voice.
+T:call-context-manager-write-7f24f266d392 = Context Manager: Write the memory of events since the most recent memory system notification. Speak in the first person from your own perspective. Preserve concrete details — file paths, exact values, decisions, unresolved questions, the user's active asks. Target ~# tokens. Output only the memory body — no preamble, no section headers unless they help preservation, no meta-commentary about summarizing. Memorize only what actually happened in that slice: if it holds little beyond routine system traffic (heartbeats, empty turns, failure notices), a short memory saying so is correct — do not pad it by re-narrating events you already remember from earlier as if they had just happened again.
+T:call-empty-ad1af52e2872 = 
+  
+  ---
+  
+  
+T:call-routing-your-plain-d71d86cf6da8 = [routing] Your plain speech now lands in chat. Other channels need an explicit send tool.
+T:call-the-local-time-1222d23a37ca = The local time at the start of this session is #-#-#T#:#:#.#+#:# [UTC].
+T:call-user-clock-monday-c5cea0da131c = user: Clock: Monday #-#-#, #:# UTC
+T:call-user-delivered-plain-c3f08a222233 = user: [delivered] plain speech → chat
+T:summary-l1-1ab2ab5ee1be = {"bytes":4400,"head":"[[s:M78c15cd0]] Memory 78c15cd0, carried 3 canaries to c:634200.3.r1: Ribbon thr","sha256":"1ab2ab5ee1beaa22","tail":"adow compass thread bridge river river island. Market thread market harbor orcha"}
+T:summary-l1-4a6ca1372d95 = {"bytes":4400,"head":"[[s:M093c7b7e]] Memory 093c7b7e, carried 4 canaries to c:634200.2.r1: Morning ri","sha256":"4a6ca1372d9590ac","tail":"dge winter letter letter. Shadow winter basket morning market river ribbon winte"}
+T:system-you-are-the-fbe6bbb69f1b = You are the strategy fixture's agent.
+T:user-clock-monday-#-#-#-73714c23f411 = Clock: Monday #-#-#, #:# UTC
+T:user-delivered-plain-speech-17b308e66c2c = [delivered] plain speech → chat
+T:user-routing-your-plain-d71d86cf6da8 = [routing] Your plain speech now lands in chat. Other channels need an explicit send tool.
+T:user-the-local-time-1222d23a37ca = The local time at the start of this session is #-#-#T#:#:#.#+#:# [UTC].
+heads
+H:148aa17f = model claude-opus-4-6, max_tokens 16384, stream true, system [T:system-you-are-the-fbe6bbb69f1b], tools -, headers beta - version 2023-06-01
+H:466b22fd = model claude-opus-4-6, max_tokens 16000, stream false, system -, tools -, headers beta - version 2023-06-01
+step 634200.1
+  compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) 634200.1.in [T:user-routing-your-plain-d71d86cf6da8] ^ 4, head H:148aa17f, body e9085269
+step 634200.2
+  compile + 634200.1.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.2.in ^ 4, body b8226e48
+step 634200.3
+  compile + 634200.2.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.3.in ^ 4, body a6c6cd2b
+step 634200.4
+  compile + 634200.3.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.4.in ^ 4, body 268329c8
+step 634200.5
+  compile + 634200.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.5.in ^ 4, body 9c12804d
+step 634200.6
+  compile + 634200.5.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.6.in ^ 4, body 871bff8c
+step 634200.7
+  compile + 634200.6.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.7.in ^ 4, body 96bdebe5
+step 634200.8
+  compile + 634200.7.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.8.in ^ 4, body 1d6fae58
+step 634200.9
+  compile + 634200.8.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.9.in ^ 4, body 8c51abfa
+step 634200.10
+  compile + 634200.9.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.10.in ^ 4, body 5d17b228
+step 634200.11
+  compile + 634200.10.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.11.in ^ 4, body b225763b
+step 634200.12
+  compile + 634200.11.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.12.in ^ 4, body 77a4af9c
+step 634200.13
+  compile + 634200.12.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.13.in ^ 4, body 7eef7876
+step 634200.14
+  compile + 634200.13.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.14.in ^ 4, body 13f34dcb
+step 634200.15
+  compile + 634200.14.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.15.in ^ 4, body 6f960443
+step 634200.16
+  compile + 634200.15.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.16.in ^ 4, body bd10d8f1
+step 634200.17
+  compile + 634200.16.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.17.in ^ 4, body adb544d5
+step 634200.18
+  compile + 634200.17.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.18.in ^ 4, body 171c8fd1
+step 634200.19
+  compile + 634200.18.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.19.in ^ 4, body fcf4f2b9
+step 634200.20
+  compile + 634200.19.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.20.in ^ 4, body 5ef4abcb
+step 634200.21
+  compile + 634200.20.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.21.in ^ 4, body f3d0be4d
+step 634200.22
+  compile + 634200.21.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.22.in ^ 4, body c010d114
+step 634200.23
+  compile + 634200.22.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.23.in ^ 4, body 55a502d4
+step 634200.24
+  compile + 634200.23.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.24.in ^ 4, body 721c50ce
+step 634200.25
+  compile + 634200.24.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.25.in ^ 4, body 0a1ab90a
+step 634200.26
+  compile + 634200.25.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.26.in ^ 4, body d1c56c33
+step 634200.27
+  compile + 634200.26.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.27.in ^ 4, body ff920175
+step 634200.28
+  compile + 634200.27.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.28.in ^ 4, body 40e4d6b3
+step 634200.29
+  compile + 634200.28.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.29.in ^ 4, body f5c8ad6e
+step 634200.30
+  call 634200.1.in 634200.1.r1 634200.2.in 634200.2.r1 [T:call-user-clock-monday-c5cea0da131c](2026,01,05,09,00) [T:call-empty-ad1af52e2872] [T:call-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) [T:call-empty-ad1af52e2872] [T:call-empty-ad1af52e2872] [T:call-routing-your-plain-d71d86cf6da8] [T:call-context-manager-system-7390a400c953] [T:call-user-delivered-plain-c3f08a222233] [T:call-empty-ad1af52e2872] [T:call-context-manager-write-7f24f266d392](2000) -> summary, head H:466b22fd, body 2c77d917
+  wrote L1(634200.1.r1-634200.2.r1) [T:summary-l1-4a6ca1372d95]
+  compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) 634200.1.in [T:user-routing-your-plain-d71d86cf6da8] L1(634200.1.r1-634200.2.r1) L1(634200.1.r1-634200.2.r1) [T:user-delivered-plain-speech-17b308e66c2c] 634200.3.in-634200.3.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.4.in-634200.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.5.in-634200.5.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.6.in-634200.6.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.7.in-634200.7.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.8.in-634200.8.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.9.in-634200.9.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.10.in-634200.10.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.11.in-634200.11.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.12.in-634200.12.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.13.in-634200.13.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.14.in-634200.14.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.15.in-634200.15.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.16.in-634200.16.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.17.in-634200.17.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.18.in-634200.18.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.19.in-634200.19.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.20.in-634200.20.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.21.in-634200.21.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.22.in-634200.22.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.23.in-634200.23.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.24.in-634200.24.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.25.in-634200.25.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.26.in-634200.26.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.27.in-634200.27.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.28.in-634200.28.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.29.in-634200.29.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.30.in ^ 4, body c53d2844
+step 634200.31
+  call 634200.1.in 634200.3.in 634200.3.r1 [T:call-user-clock-monday-c5cea0da131c](2026,01,05,09,00) [T:call-empty-ad1af52e2872] [T:call-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) [T:call-empty-ad1af52e2872] [T:call-empty-ad1af52e2872] [T:call-routing-your-plain-d71d86cf6da8] [T:call-context-manager-cm-3f216d510335](1,0) L1(634200.1.r1-634200.2.r1) [T:call-context-manager-system-7390a400c953] [T:call-user-delivered-plain-c3f08a222233] [T:call-empty-ad1af52e2872] [T:call-user-delivered-plain-c3f08a222233] [T:call-context-manager-write-7f24f266d392](2000) -> summary, body 2075d120
+  wrote L1(634200.2.r1+1-634200.3.r1+1) [T:summary-l1-1ab2ab5ee1be]
+  compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) 634200.1.in [T:user-routing-your-plain-d71d86cf6da8] L1(634200.1.r1-634200.2.r1) L1(634200.1.r1-634200.2.r1) L1(634200.2.r1+1-634200.3.r1+1) L1(634200.2.r1+1-634200.3.r1+1) 634200.4.in-634200.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.5.in-634200.5.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.6.in-634200.6.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.7.in-634200.7.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.8.in-634200.8.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.9.in-634200.9.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.10.in-634200.10.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.11.in-634200.11.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.12.in-634200.12.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.13.in-634200.13.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.14.in-634200.14.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.15.in-634200.15.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.16.in-634200.16.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.17.in-634200.17.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.18.in-634200.18.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.19.in-634200.19.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.20.in-634200.20.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.21.in-634200.21.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.22.in-634200.22.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.23.in-634200.23.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.24.in-634200.24.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.25.in-634200.25.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.26.in-634200.26.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.27.in-634200.27.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.28.in-634200.28.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.29.in-634200.29.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.30.in-634200.30.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.31.in ^ 4, body 42124c2b
+step 634200.32
+  compile + 634200.31.r1 [T:user-delivered-plain-speech-17b308e66c2c] 634200.32.in ^ 4, body d3adb2b7
+end ok
+totals {"actions":0,"calls":2,"compiles":32,"dry":0,"other":0,"refused":0,"rounds":0,"written":2}

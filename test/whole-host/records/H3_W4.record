@@ -1,0 +1,21 @@
+# whole-host record H3/W4, from H3/W1
+templates
+T:system-you-are-the-fbe6bbb69f1b = You are the strategy fixture's agent.
+T:user-clock-tuesday-#-#-#-16d854dc023a = Clock: Tuesday #-#-#, #:# UTC
+T:user-delivered-plain-speech-17b308e66c2c = [delivered] plain speech → chat
+heads
+H:5dd1f58b = model claude-opus-4-6, max_tokens 16384, stream true, system [T:system-you-are-the-fbe6bbb69f1b]^1h, tools time--now:c75ffd8b toolsets--open:93971848 toolsets--act:31eaf5be toolsets--look:89df00cf toolsets--close:012524d9 mcpl--fixture--result:51a802b9 channel_list:79d10259 channel_open:4cf9e8f9 channel_decline:36d64388 channel_close:064c8388 channel_publish:489a8faa think:90ff8920 journal:3ea69d86 skip_reply:9b9848e9 drafts:c31185e6, headers beta - version 2023-06-01
+step 375550.1
+  compile 442693.42.call1-442693.42.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.43.in-442693.43.r3 [T:user-delivered-plain-speech-17b308e66c2c] 442693.44.in-442693.44.r3 [T:user-delivered-plain-speech-17b308e66c2c] 442693.45.in-442693.45.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.46.in-442693.46.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.47.in-442693.47.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.48.in-442693.48.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.49.in-442693.49.r1 [T:user-delivered-plain-speech-17b308e66c2c] 442693.50.in-442693.50.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.51.in-442693.51.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.52.in-442693.52.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.53.in-442693.53.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.54.in-442693.54.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.55.in-442693.55.r1 [T:user-delivered-plain-speech-17b308e66c2c] 442693.56.in-442693.56.r1 [T:user-delivered-plain-speech-17b308e66c2c] 442693.57.in-442693.57.r1 [T:user-delivered-plain-speech-17b308e66c2c] 442693.58.in-442693.58.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.59.in-442693.59.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.60.in-442693.60.r3 [T:user-delivered-plain-speech-17b308e66c2c] 442693.61.in-442693.61.r3 [T:user-delivered-plain-speech-17b308e66c2c] 442693.62.in-442693.62.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.63.in-442693.63.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.64.in-442693.64.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.65.in-442693.65.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.66.in-442693.66.r1 [T:user-delivered-plain-speech-17b308e66c2c] 442693.67.in-442693.67.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.68.in-442693.68.r2 [T:user-delivered-plain-speech-17b308e66c2c] 442693.69.in-442693.69.r4 [T:user-delivered-plain-speech-17b308e66c2c] 442693.70.in-442693.70.r4 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-tuesday-#-#-#-16d854dc023a](2026,01,06,09,00) 375550.1.in, head H:5dd1f58b, body 3e65faf4
+  round + 375550.1.r1 375550.1.call1, body 026c9959
+step 375550.2
+  compile -3 + 375550.1.r1-375550.1.r2 [T:user-delivered-plain-speech-17b308e66c2c] 375550.2.in, body e059fba3
+  round + 375550.2.r1 375550.2.call1, body 41caf0d5
+step 375550.3
+  compile -5 + 375550.2.r1-375550.2.r2 [T:user-delivered-plain-speech-17b308e66c2c] 375550.3.in, body 6f48a888
+  round + 375550.3.r1 375550.3.call1, body 9543ba7a
+step 375550.4
+  compile -7 + 375550.3.r1-375550.3.r2 [T:user-delivered-plain-speech-17b308e66c2c] 375550.4.in, body ba91002c
+  round + 375550.4.r1 375550.4.call1, body 7d396461
+end ok
+totals {"actions":0,"calls":0,"compiles":4,"dry":0,"other":0,"refused":0,"rounds":4,"unjudged":{"budget: PassthroughStrategy gives no render stats":4},"written":0}

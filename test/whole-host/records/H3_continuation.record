@@ -1,0 +1,43 @@
+# whole-host record H3/continuation, from H3/prefix
+templates
+T:system-you-are-the-fbe6bbb69f1b = You are the strategy fixture's agent.
+T:user-clock-#-#-utc-9b6932fc9102 = Clock: #:# UTC
+T:user-clock-monday-#-#-#-73714c23f411 = Clock: Monday #-#-#, #:# UTC
+T:user-clock-tuesday-#-#-#-16d854dc023a = Clock: Tuesday #-#-#, #:# UTC
+T:user-delivered-plain-speech-17b308e66c2c = [delivered] plain speech → chat
+T:user-routing-your-plain-d71d86cf6da8 = [routing] Your plain speech now lands in chat. Other channels need an explicit send tool.
+T:user-the-local-time-1222d23a37ca = The local time at the start of this session is #-#-#T#:#:#.#+#:# [UTC].
+heads
+H:5dd1f58b = model claude-opus-4-6, max_tokens 16384, stream true, system [T:system-you-are-the-fbe6bbb69f1b]^1h, tools time--now:c75ffd8b toolsets--open:93971848 toolsets--act:31eaf5be toolsets--look:89df00cf toolsets--close:012524d9 mcpl--fixture--result:51a802b9 channel_list:79d10259 channel_open:4cf9e8f9 channel_decline:36d64388 channel_close:064c8388 channel_publish:489a8faa think:90ff8920 journal:3ea69d86 skip_reply:9b9848e9 drafts:c31185e6, headers beta - version 2023-06-01
+step c.name
+  action /session rename fixture
+step c.cm.1
+  compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) p.1.in [T:user-routing-your-plain-d71d86cf6da8] p.1.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.2.in-p.2.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](09,10) p.3.in-p.3.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.4.in-p.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](09,20) p.5.in-p.5.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.6.in-p.6.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.7.in-p.7.r2 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](09,30) p.8.in-p.8.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.9.in-p.9.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](09,40) p.10.in-p.10.r1 [T:user-delivered-plain-speech-17b308e66c2c] p.11.in-p.11.r2 [T:user-delivered-plain-speech-17b308e66c2c] p.12.in-p.12.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](09,50) p.13.in-p.13.r2 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-tuesday-#-#-#-16d854dc023a](2026,01,06,09,50) c.cm.1.in, head H:5dd1f58b, body 832d6d52
+step c.cm.2
+  compile + c.cm.1.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](10,00) c.cm.2.in, body ac4a2f09
+step c.cm.3
+  compile + c.cm.2.r1 [T:user-delivered-plain-speech-17b308e66c2c] c.cm.3.in, body 32ae9319
+step c.cm.4
+  compile + c.cm.3.r1 [T:user-delivered-plain-speech-17b308e66c2c] c.cm.4.in, body 76cd0baa
+checkpoint close-merge
+step c.tool
+  compile + c.cm.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](10,10) c.tool.in, body 12655000
+  round + c.tool.r1 c.tool.call1 c.tool.call2, body d7bb8991
+checkpoint tool-round
+step c.par
+  compile + c.tool.r1-c.tool.r2 [T:user-delivered-plain-speech-17b308e66c2c] c.par.in, body eff89e96
+  round + c.par.r1 c.par.call1 c.par.call2 c.par.call3, body 54051738
+checkpoint parallel
+step c.think
+  compile + c.par.r1-c.par.r2 [T:user-delivered-plain-speech-17b308e66c2c] [T:user-clock-#-#-utc-9b6932fc9102](10,20) c.think.in, body 89e22017
+  round + c.think.r1 c.think.call1, body b990a341
+checkpoint thinking-call
+step c.debt
+  compile + c.think.r1-c.think.r2 [T:user-delivered-plain-speech-17b308e66c2c] c.debt.in, body 0fd9b41d
+  round + c.debt.r1 c.debt.call1, body ab3e95b9
+  round + c.debt.r2 c.debt.call2, body 00008dbd
+  round + c.debt.r3 c.debt.call3, body 4c6b5fa1
+  round + c.debt.r4 c.debt.call4, body 7abd2498
+checkpoint debt
+end ok
+totals {"actions":1,"calls":0,"compiles":8,"dry":0,"other":0,"refused":0,"rounds":7,"unjudged":{"budget: PassthroughStrategy gives no render stats":8},"written":0}

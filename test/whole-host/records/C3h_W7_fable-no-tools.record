@@ -1,0 +1,75 @@
+# whole-host record C3h/W7/fable-no-tools, from empty
+templates
+T:system-you-are-the-fbe6bbb69f1b = You are the strategy fixture's agent.
+T:user-clock-monday-#-#-#-73714c23f411 = Clock: Monday #-#-#, #:# UTC
+T:user-delivered-plain-speech-17b308e66c2c = [delivered] plain speech → chat
+T:user-routing-your-plain-d71d86cf6da8 = [routing] Your plain speech now lands in chat. Other channels need an explicit send tool.
+T:user-the-local-time-1222d23a37ca = The local time at the start of this session is #-#-#T#:#:#.#+#:# [UTC].
+heads
+H:148aa17f = model claude-opus-4-6, max_tokens 16384, stream true, system [T:system-you-are-the-fbe6bbb69f1b], tools -, headers beta - version 2023-06-01
+step 2057.1
+  compile [T:user-clock-monday-#-#-#-73714c23f411](2026,01,05,09,00) [T:user-the-local-time-1222d23a37ca](2026,01,05,09,00,00,000,00,00) 2057.1.in [T:user-routing-your-plain-d71d86cf6da8] ^ 4, head H:148aa17f, body e557c77c
+step 2057.2
+  compile + 2057.1.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.2.in ^ 4, body 566629e7
+step 2057.3
+  compile + 2057.2.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.3.in ^ 4, body f13a358a
+step 2057.4
+  compile + 2057.3.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.4.in ^ 4, body ebd1813f
+step 2057.5
+  compile + 2057.4.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.5.in ^ 4, body 35b61b28
+step 2057.6
+  compile + 2057.5.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.6.in ^ 4, body b5f9700e
+step 2057.7
+  compile + 2057.6.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.7.in ^ 4, body 2a875537
+step 2057.8
+  compile + 2057.7.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.8.in ^ 4, body 647b8570
+step 2057.9
+  compile + 2057.8.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.9.in ^ 4, body 794fa1f6
+step 2057.10
+  compile + 2057.9.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.10.in ^ 4, body c95de0a3
+step 2057.11
+  compile + 2057.10.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.11.in ^ 4, body c434258c
+step 2057.12
+  compile + 2057.11.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.12.in ^ 4, body d7f7b4b6
+step 2057.13
+  compile + 2057.12.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.13.in ^ 4, body 77dd371e
+step 2057.14
+  compile + 2057.13.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.14.in ^ 4, body ae77a171
+step 2057.15
+  compile + 2057.14.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.15.in ^ 4, body 88138971
+step 2057.16
+  compile + 2057.15.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.16.in ^ 4, body e8abb570
+step 2057.17
+  compile + 2057.16.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.17.in ^ 4, body c669dd52
+step 2057.18
+  compile + 2057.17.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.18.in ^ 4, body 919500f1
+step 2057.19
+  compile + 2057.18.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.19.in ^ 4, body 6986cd0a
+step 2057.20
+  compile + 2057.19.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.20.in ^ 4, body 44e15d3f
+step 2057.21
+  compile + 2057.20.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.21.in ^ 4, body a4f16e50
+step 2057.22
+  compile + 2057.21.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.22.in ^ 4, body 33e05e30
+step 2057.23
+  compile + 2057.22.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.23.in ^ 4, body b5939837
+step 2057.24
+  compile + 2057.23.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.24.in ^ 4, body dc7d17f3
+step 2057.25
+  compile + 2057.24.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.25.in ^ 4, body dc8425c8
+step 2057.26
+  compile + 2057.25.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.26.in ^ 4, body b3606fec
+step 2057.27
+  compile + 2057.26.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.27.in ^ 4, body be4ecc96
+step 2057.28
+  compile + 2057.27.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.28.in ^ 4, body 3d4c9d1c
+step 2057.29
+  compile + 2057.28.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.29.in ^ 4, body bd2f113b
+step 2057.30
+  compile + 2057.29.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.30.in ^ 4, body a3bca0b3
+step 2057.31
+  compile + 2057.30.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.31.in ^ 4, body 3e8cdc59
+step 2057.32
+  compile + 2057.31.r1 [T:user-delivered-plain-speech-17b308e66c2c] 2057.32.in ^ 4, body 01e34ea3
+end ok
+totals {"actions":0,"calls":0,"compiles":32,"dry":0,"other":0,"refused":0,"rounds":0,"written":0}
