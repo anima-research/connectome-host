@@ -1,7 +1,14 @@
 /** Recipe turn policy, separate from hostMembraneRetry's non-turn defaults. */
 import { DefaultErrorPolicy } from '@animalabs/agent-framework';
 import { DEFAULT_RETRY_CONFIG, type MembraneConfig, type RetryConfig } from '@animalabs/membrane';
-import { membraneRetrySettings } from '@animalabs/membrane/retry';
+import { membraneRetrySettings, type RetrySchedule } from '@animalabs/membrane/retry';
+
+// agent-framework >= 0.31's turn deadline schedule is not exported. The
+// create-call tests pin this copy against DefaultErrorPolicy's own settings.
+const TURN_DEADLINE = {
+  maxAttempts: 2, firstDelayMs: 1_000, multiplier: 1,
+  maxDelayMs: 1_000, statedWaitCeilingMs: null,
+} satisfies RetrySchedule;
 
 /**
  * Membrane 0.8.0 exports its defaults and settings builder, but not its
@@ -37,5 +44,5 @@ function completeRetryConfig(given: MembraneConfig['retry']): RetryConfig {
 /** Spread into create(): absent and empty recipes must omit the property. */
 export function frameworkErrorPolicy(retry: MembraneConfig['retry']): { errorPolicy?: DefaultErrorPolicy } {
   if (!retry || Object.keys(retry).length === 0) return {};
-  return { errorPolicy: new DefaultErrorPolicy(membraneRetrySettings(completeRetryConfig(retry))) };
+  return { errorPolicy: new DefaultErrorPolicy({ ...membraneRetrySettings(completeRetryConfig(retry)), deadline: { ...TURN_DEADLINE } }) };
 }

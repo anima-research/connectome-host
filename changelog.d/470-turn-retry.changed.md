@@ -14,3 +14,5 @@
   the framework's separate provider-hold/admission rules. Omit `agent.retry`
   or use `{}` to keep the framework default turn policy without enabling that
   non-turn schedule.
+  Stream deadline cuts retain the framework's one fresh call after 1 s,
+  independently of the recipe's ordinary retry count.

@@ -10,9 +10,8 @@ AgentFramework.create = async (config) => {
     rate_limited: new MembraneError({ type: 'rate_limit', message: 'synthetic 429', retryable: true, httpStatus: 429 }),
     overloaded: new MembraneError({ type: 'server', message: 'synthetic 529', retryable: true, httpStatus: 529 }),
     final: new MembraneError({ type: 'invalid_request', message: 'synthetic final', retryable: false }),
-    // DefaultErrorPolicy deliberately treats a stream deadline as a retryable
-    // timeout; it does not pass membrane's deadline classification through.
-    deadline: Object.assign(new MembraneError({ type: 'timeout', message: 'synthetic deadline', retryable: true }), { deadline: true }),
+    // The registered marker is what the framework's progress bounds set.
+    deadline: Object.assign(new MembraneError({ type: 'timeout', message: 'synthetic deadline', retryable: true }), { [Symbol.for('membrane.deadlineExpiry')]: true }),
   };
   // Mirror today's framework fallback when create() receives no errorPolicy.
   // This no-startup probe cannot observe the installed fallback's identity;

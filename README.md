@@ -373,9 +373,9 @@ and other non-turn calls using the same Membrane. Retry fields do not configure
 the framework's separate provider-hold/admission rules. Omit `agent.retry` or use
 `{}` to keep the default turn policy without enabling that non-turn schedule.
 
-Non-retryable errors stop immediately. The framework deliberately treats stream
-deadlines as retryable timeouts (unlike Membrane's own deadline class); this
-change preserves that behavior. Provider quota holds and other framework
+Non-retryable errors stop immediately. Stream deadline cuts retain the
+framework's separate schedule: one fresh call after 1 s; a second consecutive
+cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`). Provider quota holds and other framework
 admission rules are unchanged. This policy does not re-arm a turn once retries
 are exhausted.
 

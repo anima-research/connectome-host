@@ -73,8 +73,15 @@ describe('recipe retry at the real AgentFramework.create call', () => {
       const observed = capture(retry);
       expect(observed.hasErrorPolicy).toBe(true);
       expect(observed.isDefaultErrorPolicy).toBe(true);
-      const expected = new DefaultErrorPolicy(ownSettings(retry));
+      const expected = new DefaultErrorPolicy({ ...ownSettings(retry), deadline: Reflect.get(new DefaultErrorPolicy(), 'settings').deadline });
       expect(observed.settings).toEqual(Reflect.get(expected, 'settings'));
+    });
+  }
+  for (const retry of [{ retryDelayMs: 500 }, { maxRetries: 4 }, { maxRetries: 8 }, { maxRetries: 0 }]) {
+    test(`R1-1: deadline keeps one fresh call regardless of ${JSON.stringify(retry)}`, () => {
+      const observed = capture(retry);
+      expect(observed.settings.deadline).toEqual(Reflect.get(new DefaultErrorPolicy(), 'settings').deadline);
+      expect(observed.decisions.deadline).toEqual(sequence([1000]));
     });
   }
   test('maxRetries:4 has explicit failure-number decisions for every error class', () => {
@@ -85,10 +92,10 @@ describe('recipe retry at the real AgentFramework.create call', () => {
       rate_limited: sequence([1000, 2000, 4000, 8000]),
       overloaded: sequence([5000, 10000, 20000, 40000, 80000, 150000]),
       final: sequence([]),
-      deadline: sequence([1000, 2000, 4000]),
+      deadline: sequence([1000]),
     };
-    // Each slot is failure number i+1 (framework attempt i). Deadline is
-    // deliberately mapped to retryable by the pinned DefaultErrorPolicy.
+    // Each slot is failure number i+1 (framework attempt i). A deadline
+    // counts consecutive cuts separately, on the framework's own schedule.
     for (const cls of ['retryable', 'rate_limited', 'overloaded', 'final'] as const) {
       expect(expected[cls]).toEqual(Array.from({ length: 8 }, (_, i) => retryDecision(cls, i + 1, undefined, settings, () => 0)));
     }
@@ -143,7 +150,7 @@ describe('recipe retry at the real AgentFramework.create call', () => {
     const retry = { maxRetryDelayMs: 600_000, overloaded: { maxRetries: 13, maxRetryDelayMs: 600_000 } };
     const observed = capture(retry);
     expect(observed.membraneRetry).toEqual(retry);
-    expect(observed.membraneSettings).toEqual(observed.settings);
+    expect({ ...observed.membraneSettings, deadline: observed.settings.deadline }).toEqual(observed.settings);
     expect(observed.membraneSettings.retryable.maxDelayMs).toBe(600_000);
     expect(observed.membraneSettings.overloaded).toMatchObject({ maxAttempts: 13, maxDelayMs: 600_000 });
     const defaults = ownSettings(hostMembraneRetry());
@@ -168,7 +175,7 @@ describe('recipe retry at the real AgentFramework.create call', () => {
     expect(observed.decisions).toEqual({
       retryable: sequence([]), rate_limited: sequence([1000, 2000, 4000, 8000]),
       overloaded: sequence([5000, 10000, 20000, 40000, 80000, 150000]),
-      final: sequence([]), deadline: sequence([]),
+      final: sequence([]), deadline: sequence([1000]),
     });
   });
   for (const retry of [null, [], { maxRetires: 4 }, { maxRetries: -1 }, { maxRetries: Infinity }, { retryDelayMs: '100' }, { overloaded: null }, { overloaded: { typo: 1 } }, { overloaded: { maxRetries: -1 } }]) {
