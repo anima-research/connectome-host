@@ -2,13 +2,13 @@ import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as childProcess from 'node:child_process';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FLEET_BEGIN_ENV } from '../src/fleet-begin.js';
 import { FleetModule, fleetChildEnv, type FleetModuleConfig } from '../src/modules/fleet-module.js';
 import * as contract from '../src/update/contract.js';
 import { childrenFilePath, readRecord, type ChildrenFile } from '../src/update/contract.js';
+import { connectWhenAccepting } from './ipc-connect.js';
 import { processEnded } from './process-ended.js';
 
 type Result = Awaited<ReturnType<FleetModule['handleToolCall']>>;
@@ -175,9 +175,9 @@ async function linesOf(file: string, what: string): Promise<string[]> {
   return readFileSync(file, 'utf8').trimEnd().split('\n');
 }
 
-function firstLine(socketPath: string): Promise<string> {
+async function firstLine(socketPath: string): Promise<string> {
+  const socket = await connectWhenAccepting(socketPath);
   return new Promise((resolve, reject) => {
-    const socket = connect(socketPath);
     let got = '';
     socket.on('data', (data) => {
       got += data.toString();
