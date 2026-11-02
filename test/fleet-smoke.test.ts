@@ -503,22 +503,39 @@ describe('FleetModule — unresolved launch artifacts', () => {
   test('Node probe deadline fails closed and reaps a silent helper', async () => {
     const dir = mkdtempSync(join(tmpDir, 'silent-node-'));
     const executable = join(dir, 'node');
-    writeFileSync(executable, '#!/bin/sh\nexec /bin/sleep 30\n');chmodSync(executable, 0o700);
+    // The helper writes its own pid, which exec keeps through to sleep, so
+    // the test asks about that one process, whatever system it runs on.
+    // On some macOS hosts the first exec of a freshly written script outlasts
+    // the probe's deadline, so it's run once first with WARM set, which makes
+    // it exit at once.
+    const pidFile = join(dir, 'pid');
+    writeFileSync(executable, `#!/bin/sh\n[ -z "$WARM" ] || exit 0\necho $$ > '${pidFile}'\nexec /bin/sleep 30\n`);chmodSync(executable, 0o700);
+    execFileSync(executable, [], { env: { WARM: '1' } });
+    expect(existsSync(pidFile)).toBe(false);
     const fleet = makeFleet();const previous = process.env.PATH;
-    const helpers = (): number[] => execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,args='], { encoding: 'utf8' }).split('\n')
-      .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
-      .filter((m): m is RegExpMatchArray => m !== null && Number(m[2]) === process.pid && (m[3]!.includes(dir) || m[3] === '/bin/sleep 30'))
-      .map((m) => Number(m[1]));
+    // A zombie still answers signal 0, so only ESRCH says it was reaped.
+    const alive = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+        throw error;
+      }
+    };
+    let pid: number | undefined;
     const start = Date.now();
     try {
       process.env.PATH = dir;
       expect(await (fleet as any).socketRefusesConnection('/unused-test-socket', 200)).toBe(false);
       expect(Date.now() - start).toBeGreaterThanOrEqual(198);
       expect(Date.now() - start).toBeLessThan(5_000);
-      expect(helpers()).toEqual([]);
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, 'utf8'));
+      // An empty file, from a kill between the redirect and the write, reads
+      // as 0, and kill(0) would signal this whole process group.
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      expect(alive(pid)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
-      for (const pid of helpers()) try { process.kill(pid, 'SIGKILL'); } catch { }
+      try { if (pid !== undefined && Number.isInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL'); } catch { }
     }
   }, 6_000);
 
