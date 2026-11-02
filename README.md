@@ -332,9 +332,9 @@ Check legacy configuration variables before enabling full inheritance. For Disco
 `agent.retry` governs framework **turns** as well as Membrane's other calls
 (compression and merging, retrieval, session naming and the TUI status line).
 Omitted or `{}` leaves the framework's default turn policy untouched. A non-empty
-object installs a framework-wide policy, completing every omitted field from Membrane's defaults,
-including the nested `overloaded` fields. Recipe validation still runs first;
-unknown keys, negative values and non-finite numbers are rejected.
+object installs a framework-wide policy, preserving the framework's turn defaults
+for omitted fields, including nested `overloaded` fields. Recipe validation still
+runs first; unknown keys, negative values and non-finite numbers are rejected.
 
 The policy applies to the resident, conversation forks and subagents, not just
 the named recipe agent. Fleet children each load their own recipe and get their
@@ -347,37 +347,32 @@ ordinary retryable failure (1 s, 2 s, 4 s by default). The base default is 3
 sends; retryable rate limits get at least 5 sends even with `maxRetries: 0`.
 Zero stops ordinary resends, not the initial send, nor the class-specific floors.
 
-For an explicit turn policy, omitting `overloaded` uses Membrane's 529 schedule:
-`maxRetries: 7`, `retryDelayMs: 10000`, `backoffMultiplier: 2`,
-`maxRetryDelayMs: 300000`. Its send limit is the larger of the base and overloaded
-counts; waits use equal jitter (half to just below the exponential step).
-Setting `overloaded.maxRetries: 0` disables that special schedule: 529s then use
-the base schedule without jitter. Non-turn calls retain the host's existing
-default of `overloaded.maxRetries: 0`, unless the recipe overrides it. Their
-behavior is unchanged by this wiring fix.
+Turn policies retain the framework's 529 schedule: 13 sends unless
+`overloaded.maxRetries` is specified, with `retryDelayMs: 10000`,
+`backoffMultiplier: 2` and `maxRetryDelayMs: 300000` by default. The send limit
+is the larger of the base and overloaded counts; waits use equal jitter
+(half to just below the exponential step). Setting `overloaded.maxRetries: 0`
+disables that special schedule: 529s then use the base schedule without jitter.
+Non-turn calls retain the existing default of `overloaded.maxRetries: 0`,
+unless the recipe overrides it. Their behavior is unchanged by this wiring fix;
+explicit recipe fields still reach those calls too.
 
-These schedules assume the provider states no wait. An explicit recipe policy
-uses Membrane's stated-wait ceilings (at least 60 s, or the schedule's maximum
-delay if longer), not the framework default's at-least-10-minute ceilings.
-The framework default, kept for omitted or empty retry settings, also allows
-13 overloaded sends rather than Membrane's 7. Even a partial override such as
-`{ "maxRetries": 4 }` replaces those omitted turn defaults; it is not layered
-over the framework's policy.
-
-Setting `overloaded.maxRetries: 13`, `maxRetryDelayMs: 600000` and
-`overloaded.maxRetryDelayMs: 600000` raises an explicit policy's send limit and
-stated-wait ceilings, but is **not** an exact restoration of the default turn
-policy or a turn-only workaround. It also raises the backoff delay caps and
-enables the long overloaded schedule for compression, retrieval, session naming
-and other non-turn calls using the same Membrane. Retry fields do not configure
-the framework's separate provider-hold/admission rules. Omit `agent.retry` or use
-`{}` to keep the default turn policy without enabling that non-turn schedule.
+These backoff schedules assume the provider states no wait. Turn schedules keep
+stated-wait ceilings of at least 10 minutes (or their maximum delay if longer),
+including for partial recipe overrides. These policy ceilings apply to
+**subagents**, which run as ephemeral bounded jobs without a home channel.
+A subagent can wait and retry inside the same run for stated waits up to the
+framework's separate 10-minute ephemeral cap; longer waits end its run with a
+provider-wait error. Residents and conversation forks instead hold for the
+provider's full stated wait **before** the error policy runs, so this ceiling
+does not shorten their holds. Retry fields do not configure provider holds or
+admission rules. No maximum-delay workaround is needed to retain turn patience.
 
 Non-retryable errors stop immediately. Stream deadline cuts retain the
 framework's separate schedule: one fresh call after 1 s; a second consecutive
-cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`). Provider quota holds and other framework
-admission rules are unchanged. This policy does not re-arm a turn once retries
-are exhausted.
+cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`).
+Provider quota holds and other framework admission rules are unchanged. This
+policy does not re-arm a turn once retries are exhausted.
 
 ### Feature sets and tool names
 

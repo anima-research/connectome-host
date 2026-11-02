@@ -20,7 +20,7 @@ AgentFramework.create = async (config) => {
   // The separate omission controls assert only that the host supplies no policy.
   // Probe policy decisions only: provider holds run separately before it.
   const policy = config.errorPolicy ?? new DefaultErrorPolicy();
-  const statedWaits = [500, ...[60_000, 90_000, 120_000, 300_000, 600_000]
+  const statedWaits = [500, ...[60_000, 90_000, 120_000, 300_000, 600_000, 900_000, 1_200_000]
     .flatMap(ceiling => [ceiling - 1, ceiling, ceiling + 1])];
   console.log('RETRY_CAPTURE=' + JSON.stringify({
     hasErrorPolicy: Object.hasOwn(config, 'errorPolicy'),
@@ -35,7 +35,7 @@ AgentFramework.create = async (config) => {
       }), 'synthetic-agent', 0)])),
     ])),
     decisions: config.errorPolicy && Object.fromEntries(Object.entries(errors).map(([name, error]) => [
-      name, Array.from({ length: 8 }, (_, attempt) => config.errorPolicy!.onInferenceError(error, 'synthetic-agent', attempt)),
+      name, Array.from({ length: 14 }, (_, attempt) => config.errorPolicy!.onInferenceError(error, 'synthetic-agent', attempt)),
     ])),
   }));
   process.exit(0);

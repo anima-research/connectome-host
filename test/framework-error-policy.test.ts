@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DefaultErrorPolicy } from '@animalabs/agent-framework';
 import { DEFAULT_RETRY_CONFIG, Membrane, MockAdapter, type MembraneConfig } from '@animalabs/membrane';
-import { membraneRetrySettings, retryDecision, type RetrySettings } from '@animalabs/membrane/retry';
+import { retryDecision, type RetrySettings } from '@animalabs/membrane/retry';
 import { hostMembraneRetry } from '../src/membrane-retry.js';
 import { DEFAULT_RECIPE, validateRecipe } from '../src/recipe.js';
 
@@ -43,7 +43,7 @@ function ownSettings(retry?: Retry): RetrySettings {
   return Reflect.get(new Membrane(new MockAdapter(), { retry }), 'retrySettings');
 }
 function sequence(delays: number[]) {
-  return Array.from({ length: 8 }, (_, i) => i < delays.length ? { retry: true, delayMs: delays[i] } : { retry: false });
+  return Array.from({ length: 14 }, (_, i) => i < delays.length ? { retry: true, delayMs: delays[i] } : { retry: false });
 }
 
 describe('recipe retry at the real AgentFramework.create call', () => {
@@ -69,12 +69,20 @@ describe('recipe retry at the real AgentFramework.create call', () => {
     { overloaded: { maxRetries: 0 } },
     { overloaded: { maxRetries: 4, retryDelayMs: 80, backoffMultiplier: 3, maxRetryDelayMs: 100 } },
   ]) {
-    test(`turn settings match Membrane completion for ${JSON.stringify(retry)}`, () => {
+    test(`turn settings retain Membrane fields with framework turn defaults for ${JSON.stringify(retry)}`, () => {
       const observed = capture(retry);
       expect(observed.hasErrorPolicy).toBe(true);
       expect(observed.isDefaultErrorPolicy).toBe(true);
-      const expected = new DefaultErrorPolicy({ ...ownSettings(retry), deadline: Reflect.get(new DefaultErrorPolicy(), 'settings').deadline });
-      expect(observed.settings).toEqual(Reflect.get(expected, 'settings'));
+      const defaults = Reflect.get(new DefaultErrorPolicy(), 'settings');
+      const expected = ownSettings(retry);
+      for (const [cls, schedule] of Object.entries(expected)) {
+        if (!schedule) continue;
+        schedule.statedWaitCeilingMs = Math.max(schedule.statedWaitCeilingMs ?? 0, defaults[cls].statedWaitCeilingMs);
+        if (cls === 'overloaded' && retry.overloaded?.maxRetries === undefined) {
+          schedule.maxAttempts = Math.max(schedule.maxAttempts ?? 0, defaults.overloaded.maxAttempts);
+        }
+      }
+      expect(observed.settings).toEqual({ ...expected, deadline: defaults.deadline });
     });
   }
   for (const retry of [{ retryDelayMs: 500 }, { maxRetries: 4 }, { maxRetries: 8 }, { maxRetries: 0 }]) {
@@ -84,36 +92,58 @@ describe('recipe retry at the real AgentFramework.create call', () => {
       expect(observed.decisions.deadline).toEqual(sequence([1000]));
     });
   }
+  test('R1-2: restating the base defaults preserves the complete framework turn policy', () => {
+    const { overloaded, ...baseDefaults } = DEFAULT_RETRY_CONFIG;
+    expect(capture(baseDefaults).settings).toEqual(Reflect.get(new DefaultErrorPolicy(), 'settings'));
+    // A named count is an override, even when it restates Membrane's 7.
+    expect(capture({ overloaded }).settings.overloaded.maxAttempts).toBe(7);
+  });
+  test('R1-2: a partial override changes only the requested turn fields', () => {
+    const defaults = Reflect.get(new DefaultErrorPolicy(), 'settings');
+    expect(capture({ maxRetries: 4 }).settings).toEqual({
+      ...defaults, retryable: { ...defaults.retryable, maxAttempts: 4 },
+    }); // The unchanged rate-limit floor is already 5 sends.
+    expect(capture({ retryDelayMs: 500 }).settings).toEqual({
+      ...defaults, retryable: { ...defaults.retryable, firstDelayMs: 500 },
+      rate_limited: { ...defaults.rate_limited, firstDelayMs: 500 },
+    });
+    expect(capture({ overloaded: {} }).settings).toEqual(defaults);
+  });
   test('maxRetries:4 has explicit failure-number decisions for every error class', () => {
     const observed = capture({ maxRetries: 4 });
-    const settings = membraneRetrySettings({ ...DEFAULT_RETRY_CONFIG, maxRetries: 4 });
+    const settings = observed.settings;
     const expected = {
       retryable: sequence([1000, 2000, 4000]),
       rate_limited: sequence([1000, 2000, 4000, 8000]),
-      overloaded: sequence([5000, 10000, 20000, 40000, 80000, 150000]),
+      overloaded: sequence([5000, 10000, 20000, 40000, 80000, ...Array(7).fill(150000)]),
       final: sequence([]),
       deadline: sequence([1000]),
     };
     // Each slot is failure number i+1 (framework attempt i). A deadline
     // counts consecutive cuts separately, on the framework's own schedule.
     for (const cls of ['retryable', 'rate_limited', 'overloaded', 'final'] as const) {
-      expect(expected[cls]).toEqual(Array.from({ length: 8 }, (_, i) => retryDecision(cls, i + 1, undefined, settings, () => 0)));
+      expect(expected[cls]).toEqual(Array.from({ length: 14 }, (_, i) => retryDecision(cls, i + 1, undefined, settings, () => 0)));
     }
-    expect(retryDecision('deadline', 1, undefined, settings)).toEqual({ retry: false });
+    expect(retryDecision('deadline', 1, undefined, settings)).toEqual({ retry: true, delayMs: 1000 });
     expect(observed.decisions).toEqual(expected);
   });
   for (const { name, retry, baseCeiling, overloadedCeiling, overloadedBackoff = 5000 } of [
     { name: 'omitted retry', retry: undefined, baseCeiling: 600_000, overloadedCeiling: 600_000 },
     { name: 'empty retry', retry: {}, baseCeiling: 600_000, overloadedCeiling: 600_000 },
-    { name: 'partial recipe', retry: { maxRetries: 4 }, baseCeiling: 60_000, overloadedCeiling: 300_000 },
+    { name: 'partial recipe', retry: { maxRetries: 4 }, baseCeiling: 600_000, overloadedCeiling: 600_000 },
     {
       name: 'recipe with larger maximum delays',
       retry: { maxRetries: 4, maxRetryDelayMs: 90_000, overloaded: { maxRetryDelayMs: 120_000 } },
-      baseCeiling: 90_000, overloadedCeiling: 120_000,
+      baseCeiling: 600_000, overloadedCeiling: 600_000,
+    },
+    {
+      name: 'recipe with ceilings beyond the turn floor',
+      retry: { maxRetryDelayMs: 900_000, overloaded: { maxRetryDelayMs: 1_200_000 } },
+      baseCeiling: 900_000, overloadedCeiling: 1_200_000,
     },
     {
       name: 'recipe with overloaded schedule disabled', retry: { maxRetries: 4, overloaded: { maxRetries: 0 } },
-      baseCeiling: 60_000, overloadedCeiling: 60_000, overloadedBackoff: 1000,
+      baseCeiling: 600_000, overloadedCeiling: 600_000, overloadedBackoff: 1000,
     },
   ]) {
     test(`stated-wait boundaries at the create call: ${name}`, () => {
@@ -146,7 +176,7 @@ describe('recipe retry at the real AgentFramework.create call', () => {
       }
     });
   }
-  test('the longer-wait recipe also raises non-turn caps and enables its overloaded schedule', () => {
+  test('explicit maximum delays also affect non-turn caps and overloaded settings', () => {
     const retry = { maxRetryDelayMs: 600_000, overloaded: { maxRetries: 13, maxRetryDelayMs: 600_000 } };
     const observed = capture(retry);
     expect(observed.membraneRetry).toEqual(retry);
@@ -174,7 +204,7 @@ describe('recipe retry at the real AgentFramework.create call', () => {
     const observed = capture({ maxRetries: 0 });
     expect(observed.decisions).toEqual({
       retryable: sequence([]), rate_limited: sequence([1000, 2000, 4000, 8000]),
-      overloaded: sequence([5000, 10000, 20000, 40000, 80000, 150000]),
+      overloaded: sequence([5000, 10000, 20000, 40000, 80000, ...Array(7).fill(150000)]),
       final: sequence([]), deadline: sequence([1000]),
     });
   });

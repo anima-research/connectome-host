@@ -276,13 +276,14 @@ export interface RecipeAgent {
    * Retry settings for framework turns AND other provider calls (compression
    * and merging, retrieval, session naming and the TUI status line).
    * A non-empty object installs a framework-wide DefaultErrorPolicy, completing
-   * partial fields from Membrane's defaults;
+   * partial fields from the framework's turn defaults;
    * absent or {} leaves the turn policy untouched. It covers the resident,
    * forks and subagents in that instance; separate fleet hosts use their own
    * recipes. maxRetries counts total sends including the first: 4 means 4
    * sends / 3 waits for ordinary retryable failures. Rate limits get at least
-   * 5 sends. For an explicit turn policy, overloaded defaults to Membrane's 529
-   * schedule (7 sends, equal-jitter backoff, not the framework default's 13);
+   * 5 sends. Turn policies keep 13 overloaded sends unless overloaded.maxRetries
+   * is specified, equal-jitter backoff, at-least-10-minute stated-wait ceilings
+   * for subagents, and one fresh call after a deadline cut;
    * overloaded.maxRetries:0 uses the base schedule instead. Other calls keep
    * hostMembraneRetry's existing default
    * (overloaded schedule off), with recipe overrides. See RetryConfigInput.

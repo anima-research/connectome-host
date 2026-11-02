@@ -44,5 +44,16 @@ function completeRetryConfig(given: MembraneConfig['retry']): RetryConfig {
 /** Spread into create(): absent and empty recipes must omit the property. */
 export function frameworkErrorPolicy(retry: MembraneConfig['retry']): { errorPolicy?: DefaultErrorPolicy } {
   if (!retry || Object.keys(retry).length === 0) return {};
-  return { errorPolicy: new DefaultErrorPolicy({ ...membraneRetrySettings(completeRetryConfig(retry)), deadline: { ...TURN_DEADLINE } }) };
+  const settings = membraneRetrySettings(completeRetryConfig(retry));
+  // Mirror the framework's turn-only lifts, not Membrane's non-turn defaults.
+  // An explicit overloaded count (including zero) opts out of the 13-send floor.
+  if (settings.overloaded && retry.overloaded?.maxRetries === undefined) {
+    settings.overloaded.maxAttempts = Math.max(settings.overloaded.maxAttempts ?? 0, 13);
+  }
+  for (const schedule of Object.values(settings)) {
+    if (schedule && schedule.statedWaitCeilingMs !== null) {
+      schedule.statedWaitCeilingMs = Math.max(schedule.statedWaitCeilingMs, 600_000);
+    }
+  }
+  return { errorPolicy: new DefaultErrorPolicy({ ...settings, deadline: { ...TURN_DEADLINE } }) };
 }
