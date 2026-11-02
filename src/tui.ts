@@ -131,8 +131,8 @@ export function resolveQuitConfirm(raw: string): QuitConfirmAction {
 
 
 export interface RootTurnEnd {
-  status: 'idle' | 'error';
-  background: 'show' | 'drop';
+  status: 'idle' | 'error' | 'attempt-failed';
+  background: 'show' | 'drop' | 'cut';
   line?: { text: string; tone: 'error' | 'note' };
 }
 export function rootTurnEnd(
@@ -140,22 +140,23 @@ export function rootTurnEnd(
   turnShowing: boolean,
 ): RootTurnEnd | null {
   // agent-framework sends inference:failed only for an attempt it started, so
-  // a failure ends a turn even when the TUI didn't see the turn start.
+  // a failure shows a turn under way even when the TUI didn't see it start.
   if (!turnShowing && event.type !== 'inference:failed') return null;
   switch (event.type) {
     case 'inference:completed':
     case 'inference:turn_ended':
       return { status: 'idle', background: 'show' };
     case 'inference:failed':
-      return { status: 'error', background: 'drop', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
+      return { status: 'attempt-failed', background: 'cut', line: { text: `Error: ${traceError(event)}`, tone: 'error' } };
     case 'inference:aborted': {
       const reason = typeof event.reason === 'string' && event.reason !== '' ? `: ${event.reason}` : '';
       return { status: 'idle', background: 'drop', line: { text: `(turn aborted${reason})`, tone: 'note' } };
     }
     case 'inference:exhausted':
-      // Alone, without a `failed` first, it ends a stream aborted for a
-      // reason other than a stop, which agent-framework doesn't treat as
-      // deliberate, so it shows as a failure; a stop ends with `aborted`.
+      // After a `failed`, it ends a turn the framework gave up on. Alone, without
+      // a `failed` first, it ends a stream aborted for a reason other than a
+      // stop, which agent-framework doesn't treat as deliberate. Either way it
+      // shows as a failure; a stop ends with `aborted`.
       return { status: 'error', background: 'drop', line: { text: `(turn ended: ${traceError(event)})`, tone: 'error' } };
     default:
       return null;
@@ -251,6 +252,7 @@ export function rootTurnStep(
   event: { type: string; error?: unknown; reason?: unknown },
 ): { showing: boolean; end: RootTurnEnd | null } {
   if (event.type === 'inference:started' || TURN_RUNNING_TRACES.has(event.type)) return { showing: true, end: null };
+  if (event.type === 'inference:failed') return { showing: true, end: rootTurnEnd(event, true) };
   if (!STREAM_END_TRACES.has(event.type)) return { showing, end: null };
   return { showing: false, end: rootTurnEnd(event, showing) };
 }
@@ -320,6 +322,7 @@ const YELLOW = '#cccc00';
 const CYAN = '#00cccc';
 const MAGENTA = '#cc00cc';
 const RED = '#cc0000';
+const ORANGE = '#cc6600';
 const GRAY = '#888888';
 const DIM_GRAY = '#555555';
 const WHITE = '#cccccc';
@@ -378,6 +381,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let currentStreamText: TextRenderable | null = null;
   let backgrounded = false;
   let backgroundBuffer = '';
+  let attemptStart = 0;
   let rootTurnShowing = false;
   const interrupts = new TurnInterrupts((agentName, reason) => app.framework.abortInference(agentName, reason));
   let currentStreamBuffer = '';
@@ -387,7 +391,7 @@ export async function runTui(app: AppContext): Promise<void> {
   let spinnerFrame = 0;
   const SPINNER = ['·', '.', 'o', 'O'];
 
-  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed';
+  type SubagentPhase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'attempt-failed' | 'failed';
   const subagentPhase = new Map<string, SubagentPhase>();
   const subagentFailureShown = new Set<string>();
   let turnFailures = createTurnFailures();
@@ -399,6 +403,7 @@ export async function runTui(app: AppContext): Promise<void> {
     invoking: MAGENTA,
     executing: YELLOW,
     done: DIM_GRAY,
+    'attempt-failed': ORANGE,
     failed: RED,
   };
 
@@ -911,6 +916,7 @@ export async function runTui(app: AppContext): Promise<void> {
     invoking: 4,
     executing: 3,
     sending: 2,
+    'attempt-failed': 1,
   };
 
   function pickBusiest(phases: Iterable<SubagentPhase | undefined>): SubagentPhase | null {
@@ -1277,6 +1283,10 @@ export async function runTui(app: AppContext): Promise<void> {
           : PHASE_COLOR[rn.phase as SubagentPhase] ?? CYAN;
         const ctx = rn.tokens.input > 0 ? `  ${fmtK(rn.tokens.input)}ctx` : '';
         lines.push({ text: `  ${rn.phase}  ${fmtElapsed(elapsed)}  ${rn.toolCallsCount} tool calls${ctx}`, color: phaseColor });
+        if (rn.attemptError) {
+          const error = rn.attemptError.length > 70 ? rn.attemptError.slice(0, 67) + '...' : rn.attemptError;
+          lines.push({ text: `  error: ${error}`, color: phaseColor });
+        }
         if (rn.task) {
           const task = rn.task.length > 70 ? rn.task.slice(0, 67) + '...' : rn.task;
           lines.push({ text: `  task: ${task}`, color: GRAY });
@@ -1542,7 +1552,9 @@ export async function runTui(app: AppContext): Promise<void> {
     state.status = end.status;
     state.tool = null;
     state.toolStartedAt = null;
-    if (backgrounded) {
+    if (backgrounded && end.background === 'cut') {
+      backgroundBuffer = backgroundBuffer.slice(0, attemptStart);
+    } else if (backgrounded) {
       if (end.background === 'show') {
         if (backgroundBuffer.trim()) addLine(backgroundBuffer, WHITE);
         addEvent('  (researcher returned from background)', CYAN);
@@ -1565,14 +1577,19 @@ export async function runTui(app: AppContext): Promise<void> {
       rootEnd = step.end;
     }
     const failure = turnFailures.onTrace(event as { type: string; agentName?: unknown });
-    if (agent === rootAgentName && failure && failure.show !== 'ended' && rootEnd?.line) {
+    if (agent === rootAgentName && failure && (failure.show !== 'ended' || !failure.alone) && rootEnd?.line) {
       rootEnd = { status: rootEnd.status, background: rootEnd.background };
     }
 
     switch (event.type) {
       case 'inference:started': {
         if (agent) streamUsage.set(agent, emptyUsage());
-        if (agent && agent !== rootAgentName) subagentFailureShown.delete(agent);
+        if (agent === rootAgentName) attemptStart = backgroundBuffer.length;
+        if (agent && agent !== rootAgentName) {
+          subagentFailureShown.delete(agent);
+          const short = shortAgentName(agent);
+          if (subagentPhase.get(short) === 'attempt-failed') subagentPhase.set(short, 'sending');
+        }
         if (agent === rootAgentName) {
           if (backgrounded) {
             state.status = 'background';
@@ -1662,7 +1679,7 @@ export async function runTui(app: AppContext): Promise<void> {
         if (agent !== rootAgentName) {
           if (agent) {
             const short = shortAgentName(agent);
-            subagentPhase.set(short, 'failed');
+            subagentPhase.set(short, 'attempt-failed');
             subagentFailureShown.add(agent);
           }
           if (agent && failure && failure.show !== 'ended') showFailure(agent, `[${agent}] `, failure, DIM_GRAY);
@@ -1673,8 +1690,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'inference:exhausted': {
         if (agent !== rootAgentName) {
-          if (agent && subagentFailureShown.delete(agent)) break;
           if (agent) subagentPhase.set(shortAgentName(agent), 'failed');
+          if (agent && subagentFailureShown.delete(agent)) break;
           addEvent(`[${agent}] Error: ${traceError(event)}`, DIM_GRAY);
         }
         break;
@@ -1702,6 +1719,7 @@ export async function runTui(app: AppContext): Promise<void> {
         }
 
         if (agent === rootAgentName) {
+          attemptStart = backgroundBuffer.length;
           state.status = backgrounded ? 'background' : 'tools';
           state.tool = names;
           if (streaming) endStream();
@@ -2364,6 +2382,9 @@ export async function runTui(app: AppContext): Promise<void> {
         };
         void switchFollowing(follower, async () => {
           await app.switchSession(sessionId);
+          backgrounded = false;
+          backgroundBuffer = '';
+          attemptStart = 0;
           if (stopping) return;
           subMod = app.framework.getAllModules().find(m => m.name === 'subagent') as SubagentModule | undefined;
           fleetMod = app.framework.getAllModules().find(m => m.name === 'fleet') as FleetModule | undefined;
@@ -2566,7 +2587,7 @@ function formatStatusLeft(
       : ` | peek-proc: ${state.peekProcTarget}`;
   } else if (state.viewMode === 'chat') {
     if (escapeActs(state.status, rootTurnRunning)) {
-      bar += state.status === 'background' || state.status === 'error' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
+      bar += state.status === 'background' || state.status === 'error' || state.status === 'attempt-failed' ? ' Esc:stop' : ' Ctrl+B:bg Esc:stop';
     }
     if (running > 0) bar += ' Tab:fleet';
   }
