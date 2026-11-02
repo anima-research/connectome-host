@@ -371,8 +371,11 @@ admission rules. No maximum-delay workaround is needed to retain turn patience.
 Non-retryable errors stop immediately. Stream deadline cuts retain the
 framework's separate schedule: one fresh call after 1 s; a second consecutive
 cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`).
-Provider quota holds and other framework admission rules are unchanged. This
-policy does not re-arm a turn once retries are exhausted.
+Provider quota holds and other framework admission rules are unchanged.
+
+Send counts above are per policy cycle, not lifetime totals. Exhausted resident
+turns can be re-armed independently by `exhaustedTurnRearmMs` (by default after
+2, 8 and 32 minutes); these re-arms apply under either policy.
 
 ### Feature sets and tool names
 

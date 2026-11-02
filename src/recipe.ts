@@ -281,8 +281,9 @@ export interface RecipeAgent {
    * forks and subagents in that instance; separate fleet hosts use their own
    * recipes. maxRetries counts total sends including the first: 4 means 4
    * sends / 3 waits for ordinary retryable failures. Rate limits get at least
-   * 5 sends. Turn policies keep 13 overloaded sends unless overloaded.maxRetries
-   * is specified, equal-jitter backoff, at-least-10-minute stated-wait ceilings
+   * 5 sends per policy cycle. Turn policies keep 13 overloaded sends per cycle
+   * unless overloaded.maxRetries is specified, with equal-jitter backoff,
+   * at-least-10-minute stated-wait ceilings
    * for subagents, and one fresh call after a deadline cut;
    * overloaded.maxRetries:0 uses the base schedule instead. Other calls keep
    * hostMembraneRetry's existing default
