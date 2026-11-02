@@ -21,6 +21,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
+    "test:whole-host": "node test/whole-host/run.mjs",
     "preversion": "node scripts/release-bump.mjs && node scripts/release-holds.mjs",
     "version": "bun scripts/release-changelog.ts && git add CHANGELOG.md changelog.d",
     "prepack": "node scripts/pack-contents.mjs",

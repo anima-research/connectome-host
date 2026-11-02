@@ -1,0 +1,48 @@
+{
+  "release": "v0.21.0",
+  "prefixTurns": {
+    "H1": 49,
+    "H3": 13
+  },
+  "seconds": {
+    "runs": {
+      "H1/W1": 14.4,
+      "H1b/W2": 16.5,
+      "C3h/W7/no-tools": 2.1,
+      "H4/W8/unenforced": 36.4,
+      "H3/W9": 7.2,
+      "H3/W4": 1.6,
+      "C5h/W5": 4.8,
+      "H2/W7/merges-refused": 1.8,
+      "C3h/W8/unenforced": 2.7,
+      "C6h/W8/enforced": 9.3,
+      "H1/W11": 12.2,
+      "H1/continuation": 3.5,
+      "H4/W1": 24.6,
+      "C3h/W7/merges-refused": 4.0,
+      "C3h/W7/fable-no-tools": 2.8,
+      "C3h/W9": 9.8,
+      "C6h/W9": 8.9,
+      "C6h/W11": 6.8,
+      "H3/continuation": 1.4,
+      "C3h/W2": 8.0,
+      "H1/W2": 13.1,
+      "C8h/W6": 5.4,
+      "H1/W7/merges-refused": 5.9,
+      "H1/W7/merges-rejected": 5.7,
+      "H1/W8/enforced": 7.4,
+      "H1/W9": 11.4
+    },
+    "checkpoints": {
+      "H4/W2": 17.3,
+      "H3/W1": 8.4,
+      "C5h/W2": 14.5,
+      "C3h/W2": 6.3,
+      "C6h/W2": 9.6,
+      "H1/W2": 12.1,
+      "H1/prefix": 5.4,
+      "H3/prefix": 1.3,
+      "C8h/W2": 9.2
+    }
+  }
+}

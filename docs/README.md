@@ -52,6 +52,10 @@ attribution, changelog fragments in [`changelog.d/`](../changelog.d/). The
 [CHANGELOG](../CHANGELOG.md) is the most complete record of what changed and
 why.
 
+[whole-host-records.md](./whole-host-records.md) — the whole-host runs in
+`test/whole-host/`: how to read the records a pull request changes, what each
+of their checks judges, and the expected failures.
+
 ## History
 
 [history/](./history/README.md) — the original architecture document and the
