@@ -231,7 +231,7 @@ Check what's taken (`ss -tlnp`) and pick the next pair (e.g. 3101 / 7343).
 > `@opentui/core` needs a per-platform package (`@opentui/core-linux-x64`). If you build on a
 > Mac and deploy to Linux, exclude `node_modules` and `*.node` from the rsync and let the
 > target keep/install its own. A missing `@opentui/core-<platform>` makes the host crash at
-> boot resolving `@opentui/core-<platform>/index.ts` — install it (`npm pack` + extract, or a
+> boot resolving `@opentui/core-<platform>` — install it (`npm pack` + extract, or a
 > proper `bun install`).
 
 ---
