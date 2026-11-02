@@ -103,6 +103,22 @@ describe("the web UI's /files/ route serves only what the mount's own read gives
     }
   });
 
+  test("a file the agent wrote can't run script on the Web UI's origin: HTML and SVG are served sandboxed and unsniffed, as /media is", async () => {
+    for (const [path, type] of [
+      ['files/page.html', 'text/html; charset=utf-8'],
+      ['files/drawing.svg', 'image/svg+xml'],
+      ['files/notes.json', 'application/json; charset=utf-8'],
+    ] as const) {
+      const res = await fetch(`${baseUrl}/files/${path}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe(type);
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+      const csp = res.headers.get('content-security-policy') ?? '';
+      expect(csp.split(';').map((d) => d.trim())).toContain('sandbox');
+      expect(csp).toContain("default-src 'none'");
+    }
+  });
+
   test("a path no mount holds, leading out of it or into a nested mount's directory, a link the mount refuses, at the file or on its way, and one leading outside it are forbidden, and say why", async () => {
     const cases: Array<[string, string]> = [
       ['files/link.txt', 'Symlinks are not allowed: files/link.txt'],

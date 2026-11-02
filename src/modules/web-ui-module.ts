@@ -1283,7 +1283,17 @@ export class WebUiModule implements Module {
     if (!ws) return new Response('Workspace not mounted', { status: 503 });
     try {
       const { bytes, realPath } = await ws.readFileFromDisk(mountPrefixed);
-      return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': mimeFor(realPath) } });
+      // A workspace file is the agent's to write, and this route serves it on
+      // the Web UI's own origin. So it gets /media's isolation: an HTML or SVG
+      // file opens as an inert, sandboxed document, never as a page whose
+      // script shares the operator's origin (and with it /ws).
+      return new Response(bytes as Uint8Array<ArrayBuffer>, {
+        headers: {
+          'content-type': mimeFor(realPath),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        },
+      });
     } catch (err) {
       const read = err instanceof WorkspaceReadError ? err : null;
       if (read && ['unknown_mount', 'traversal', 'outside_include', 'other_mount', 'symlink', 'parent_symlink', 'escape'].includes(read.code)) {
