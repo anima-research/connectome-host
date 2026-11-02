@@ -502,8 +502,13 @@ describe('FleetModule — unresolved launch artifacts', () => {
     const executable = join(dir, 'node');
     // The helper writes its own pid, which exec keeps through to sleep, so
     // the test asks about that one process, whatever system it runs on.
+    // On some macOS hosts the first exec of a freshly written script outlasts
+    // the probe's deadline, so it's run once first with WARM set, which makes
+    // it exit at once.
     const pidFile = join(dir, 'pid');
-    writeFileSync(executable, `#!/bin/sh\necho $$ > '${pidFile}'\nexec /bin/sleep 30\n`);chmodSync(executable, 0o700);
+    writeFileSync(executable, `#!/bin/sh\n[ -z "$WARM" ] || exit 0\necho $$ > '${pidFile}'\nexec /bin/sleep 30\n`);chmodSync(executable, 0o700);
+    execFileSync(executable, [], { env: { WARM: '1' } });
+    expect(existsSync(pidFile)).toBe(false);
     const fleet = makeFleet();const previous = process.env.PATH;
     // A zombie still answers signal 0, so only ESRCH says it was reaped.
     const alive = (pid: number): boolean => {
