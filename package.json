@@ -35,7 +35,7 @@
     "@animalabs/context-manager": "^0.24.0",
     "@animalabs/membrane": "^0.8.0",
     "@anthropic-ai/sdk": "^0.52.0",
-    "@opentui/core": "^0.1.82"
+    "@opentui/core": "^0.2.16"
   },
   "engines": {
     "node": ">=22.12.0",
