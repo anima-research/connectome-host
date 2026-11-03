@@ -1,13 +1,7 @@
-/**
- * Fitting a composer image to a host's limits by redrawing it smaller
- * (web/src/fit.ts), with the browser's redraw stood in for.
- */
 import { describe, test, expect } from 'bun:test';
 import { USER_IMAGE_LIMITS, imageLimitsFrom } from '../src/web/protocol.js';
 import { base64Chars, fitByRedraw, fitNote, noFitReason, type Redraw } from '../web/src/fit.js';
 
-/** A redraw that records each size asked for, and answers with what `answer`
- *  gives for it. */
 function recording(answer: (w: number, h: number) => { bytes: number; flattened?: boolean } | null) {
   const asked: Array<[number, number]> = [];
   const redraw: Redraw = async (w, h) => {
@@ -33,7 +27,6 @@ describe('fitByRedraw', () => {
   });
 
   test('a size the browser draws no image at is tried again smaller', async () => {
-    // No 2D context, or a null blob, past the browser's canvas limits.
     const r = recording((w) => (w > 3000 ? null : { bytes: 1000 }));
     const fit = await fitByRedraw(8000, 8000, USER_IMAGE_LIMITS, r.redraw);
     expect(r.asked.map(([w]) => w)).toEqual([8000, 5600, 3920, 2744]);

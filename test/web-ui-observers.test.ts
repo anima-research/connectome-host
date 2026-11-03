@@ -1112,7 +1112,6 @@ describe('WebUiModule observer flow (e2e)', () => {
   }, 25_000);
 
   test("before the host is ready, an operator's send is refused naming its corrId", async () => {
-    // This harness binds no app, so every message meets 'host not ready'.
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
       headers: { origin: base(), authorization: BASIC },
     } as unknown as undefined);
@@ -1324,7 +1323,6 @@ describe('traces with observers connected', () => {
   beforeAll(async () => {
     tmp = mkdtempSync(join(tmpdir(), 'webui-observer-traces-'));
     const observersPath = join(tmp, 'observers.json');
-    // Granted from the start, so a socket without the password may connect and wait for its hello.
     saveObserversFile(observersPath, { observers: [
       { key: kp.id, label: 'dashboard', scopes: ['health'] },
       { key: kpTools.id, label: 'tools', scopes: ['messages', 'tools'] },
@@ -1351,7 +1349,6 @@ describe('traces with observers connected', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  /** A connection, with every frame it has been sent, once `first` has come. */
   async function connect(first: string, headers?: Record<string, string>) {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, (headers ? { headers } : undefined) as never);
     const frames: Record<string, unknown>[] = [];
@@ -1378,13 +1375,11 @@ describe('traces with observers connected', () => {
     });
     const fleet = mod as unknown as { handleFleetEvent(name: string, event: unknown): void };
 
-    // Connected, waiting for its hello: not welcomed.
     const waiting = await connect('observer-auth-required');
     emitTrace!(event());
     fleet.handleFleetEvent('kid', event());
     expect(serialized).toBe(0);
 
-    // Welcomed, but a message's trace needs the messages scope.
     const dashboard = await connect('observer-auth-required');
     dashboard.ws.send(JSON.stringify({ type: 'observer-hello', identity: helloFor(kp, `127.0.0.1:${port}`) }));
     await dashboard.until('welcome');
@@ -1399,7 +1394,6 @@ describe('traces with observers connected', () => {
       const trace = await op.until('trace');
       expect(JSON.stringify(trace.event)).not.toContain('AAAA');
     }
-    // The dashboard takes a usage trace, which comes after any trace it was sent before.
     emitTrace!({ type: 'usage:updated', totals: { inputTokens: 1, outputTokens: 1 } });
     await dashboard.until('usage');
     expect(dashboard.frames.filter((f) => f.type === 'trace' && (f.event as { type?: string }).type !== 'usage:updated')).toEqual([]);

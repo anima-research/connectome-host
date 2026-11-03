@@ -96,18 +96,10 @@ interface Message {
   /** Client-only, on a row typed here until its echo replaces it: the
    *  images it sent, so a refused send can go back into the composer. */
   sentImages?: Attachment[];
-  /** On a row typed here, and on a stored user message's entry: its send's
-   *  corrId, by which the echo replaces the row (echo.ts). */
   corrId?: string;
-  /** Client-only: a send typed here that the host refused while the composer
-   *  held another draft, or that a welcome didn't hold (echo.ts). */
   unsent?: 'refused' | 'unconfirmed';
-  /** Client-only, on a refused send: the host's reason. */
   refusal?: string;
-  /** Client-only, on a send typed here: where it was sent (echo.ts). */
   sentIn?: Place;
-  /** Client-only, on a kept send shown in another session or branch than it
-   *  was sent in: that one, as its mark names it. */
   earlier?: string;
   trigger?: {
     origin: string;
@@ -162,8 +154,6 @@ export function App() {
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
   const [attachments, setAttachments] = createSignal<Attachment[]>([]);
-  /** Files still being read or shrunk. While any are, Send refuses every
-   *  message, text alone included, with a note to send again. */
   const [preparing, setPreparing] = createSignal(0);
   const [attachNotice, setAttachNotice] = createSignal<string | null>(null);
   const [dropActive, setDropActive] = createSignal(false);
@@ -381,8 +371,6 @@ export function App() {
   };
 
   const features = (): Set<string> => new Set(welcome()?.features ?? []);
-  /** The limits this host checks composer images against, as its welcome
-   *  advertises them, with the defaults for any it doesn't. */
   const imageLimits = () => imageLimitsFrom(welcome()?.userImageLimits);
   const isObserver = (): boolean => wire.observerState() === 'observer';
   const canRollback = (): boolean => features().has('rollback') && !isObserver();
@@ -780,12 +768,6 @@ export function App() {
   };
 
   const applyWelcome = (msg: WelcomeMessage): void => {
-    // A history page asked for before this welcome is dropped, and paging
-    // starts again from here: after a reconnect, the socket it was asked on
-    // is gone, so no answer would come; after a change of session or branch,
-    // the request named a position in the old transcript, so its page has no
-    // place in this one, whichever place the host reads it from; and a
-    // welcome in a protocol this client doesn't speak leaves nothing to page.
     pendingHistoryCorr = null;
     window.clearTimeout(pendingHistoryTimer);
     setHistoryLoading(false);
@@ -916,11 +898,6 @@ export function App() {
     }
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
-    // A page can hold the stored copy of a send still kept as unconfirmed,
-    // as after leaving its session and coming back: the copy stands in its
-    // place in the history, and the kept row goes. That goes first, before
-    // the page's own rows are in, and before the measure below, which then
-    // takes the page's height alone.
     setMessages(produce((arr) => settleByEntries(arr, fresh)));
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
     const prevScrollTop = scrollPane?.scrollTop ?? 0;
@@ -1261,10 +1238,6 @@ export function App() {
     setPreparing((n) => n + images.length);
     for (const file of images) {
       try {
-        // Before reading, so a big drop doesn't decode files that can't be
-        // attached, and keep Send refusing while it does; and again after,
-        // since another paste or drop may have added images while this one
-        // was read.
         if (attachments().length >= L.maxCount) { overCount++; continue; }
         const a = await prepareImage(file, L);
         if (attachments().length >= L.maxCount) { overCount++; continue; }
@@ -1318,9 +1291,6 @@ export function App() {
       return;
     }
     const route = text.startsWith('/') ? null : parseRoute(text);
-    // A user message's send carries a corrId that its row keeps: the host's
-    // refusal names it, and the stored message's entry carries it back, so
-    // the echo replaces this row (echo.ts).
     const corrId = newCorrId();
     const frame: WebUiClientMessage = text.startsWith('/')
       ? { type: 'command', command: text }
@@ -1340,8 +1310,6 @@ export function App() {
       setAttachNotice(overLimit);
       return;
     }
-    // Sent before the composer is cleared: a socket that isn't open takes
-    // nothing, and the message stays here to send once it's back.
     if (!wire.send(frame)) {
       setAttachNotice('not connected to the host: the message is still here; send it again once the connection is back');
       return;
@@ -1378,17 +1346,11 @@ export function App() {
     queueScroll();
   };
 
-  /** A send the host refused (the error row says why): with the composer
-   *  empty, its row comes out and the message goes back there, to fix and
-   *  send again; with another draft there, the row stays, marked not sent
-   *  (settleRefusal). */
   const retractSend = (corrId: string, reason?: string): void => {
     const i = sentRowIndex(messages, corrId);
     if (i < 0) return;
     const text = messages[i]!.text;
     const images = (messages[i]!.sentImages ?? []).map((a) => ({ ...a }));
-    // Images still being read count as a draft: the message going back would
-    // meet them as they land.
     const composerEmpty = !draft().trim() && attachments().length === 0 && preparing() === 0;
     let restore = false;
     setMessages(produce((arr) => { restore = settleRefusal(arr, corrId, composerEmpty, reason); }));
@@ -1874,7 +1836,6 @@ interface HandlerHooks {
   applyAppended: (entry: WelcomeMessageEntry) => void;
   applyHistoryPage: (msg: HistoryPageMessage) => void;
   appendMessage: (msg: Message) => void;
-  /** Settle a refused send's row, by its corrId (see retractSend). */
   retractSend: (corrId: string, reason?: string) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;

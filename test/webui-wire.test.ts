@@ -1,7 +1,3 @@
-/**
- * The Web UI's socket wrapper says whether a frame went out (web/src/wire.ts),
- * so the composer keeps a message the socket didn't take.
- */
 import { describe, test, expect, afterEach } from 'bun:test';
 import { createWireClient, type WireClient } from '../web/src/wire.js';
 

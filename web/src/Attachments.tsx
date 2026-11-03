@@ -18,7 +18,6 @@ export interface Attachment {
   dataUrl: string;
   /** What was done to fit it, when it was not sent as picked. */
   adjusted?: 'shrunk' | 'converted' | 'first frame';
-  /** Says what `adjusted` means, in words for the thumbnail's tooltip. */
   note?: string;
 }
 
@@ -49,10 +48,6 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number): P
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-/** Redraw at w×h as WebP, or as JPEG on a white ground where the browser
- *  can't write WebP (Safari hands back PNG instead). Null when the browser
- *  gives no 2D context or no image at this size, as past its canvas limits,
- *  so a smaller size is tried (fitByRedraw). */
 async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ blob: Blob; flattened: boolean } | null> {
   const canvas = document.createElement('canvas');
   canvas.width = w;
@@ -60,6 +55,7 @@ async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ bl
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
   ctx.drawImage(img, 0, 0, w, h);
+  // Safari's canvas writes PNG when asked for WebP.
   const webp = await canvasBlob(canvas, 'image/webp', 0.9);
   if (webp && webp.type === 'image/webp') return { blob: webp, flattened: false };
   ctx.fillStyle = '#fff';
@@ -69,18 +65,6 @@ async function redraw(img: HTMLImageElement, w: number, h: number): Promise<{ bl
   return jpeg ? { blob: jpeg, flattened: true } : null;
 }
 
-/**
- * Read a file as an attachment that fits `limits`, the host's
- * (`imageLimitsFrom` its welcome). One that already fits is sent byte for
- * byte; one that is too big, too large on a side, or in a format the model
- * APIs don't take (BMP, SVG, …) is redrawn smaller as WebP/JPEG. A PNG, JPEG,
- * GIF or WebP whose structure doesn't hold to its end is refused, not
- * redrawn, as is a PNG with a chunk that fails its checksum (imageDamage):
- * the browser draws what it has of one, and would send that as if it were
- * the picture. Damage inside a JPEG's, GIF's or WebP's compressed data takes
- * a decoder to see, and isn't caught here. Throws with a reason the composer
- * shows.
- */
 export async function prepareImage(file: File, limits: UserImageLimits): Promise<Attachment> {
   const L = limits;
   const name = file.name || 'pasted image';
@@ -88,6 +72,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
   // from the file name.
   const bytes = new Uint8Array(await file.arrayBuffer());
   const sniffed = sniffImageType(bytes);
+  // A browser draws what it has of a cut-short or damaged image.
   if (sniffed) {
     const damage = imageDamage(bytes, sniffed);
     if (damage) throw new Error(`${name} ${damage}; attach a whole copy`);
@@ -127,8 +112,6 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     data: dataUrl.slice(dataUrl.indexOf(',') + 1),
     dataUrl,
     adjusted: animated ? 'first frame' : fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
-    // The bytes' own type where they have one, as the host reads them; the
-    // browser's, from the file name, otherwise.
     note: animated
       ? `${fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
       : fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type }),

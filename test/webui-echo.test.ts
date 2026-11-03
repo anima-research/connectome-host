@@ -1,7 +1,3 @@
-/**
- * A message typed in the Web UI and the row shown for it when it was sent,
- * found again by its send's corrId (web/src/echo.ts).
- */
 import { describe, test, expect, spyOn } from 'bun:test';
 import {
   newCorrId, placeLabel, placeOf, rowsAfterReset, rowsAfterWelcome, sentRowIndex, settleByEntries, settleRefusal, unsentMark,
@@ -17,10 +13,8 @@ interface Row extends SentRow {
 const sent = (id: string, corrId: string, text = 'hi'): Row => ({ id, participant: 'user', text, corrId });
 const stored = (index: number, corrId?: string, text = 'hi'): Row =>
   ({ id: `stored-${index}`, participant: 'user', text, index, ...(corrId ? { corrId } : {}) });
-/** A session and a branch by name, each with an id unlike its name. */
 const at = (session: string, branch: string): Place =>
   ({ session: { id: `id-of-${session}`, name: session }, branch: { id: `id-of-${branch}`, name: branch } });
-/** The place the welcomes below are for, unless a test says otherwise. */
 const HERE = at('s1', 'main');
 
 describe('newCorrId', () => {
@@ -31,8 +25,6 @@ describe('newCorrId', () => {
   });
 
   test("is the hex of crypto.getRandomValues' bytes, and needs no crypto.randomUUID", () => {
-    // A page served over plain http to a LAN or tailnet address has no
-    // randomUUID; getRandomValues it has.
     Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
     const random = spyOn(crypto, 'getRandomValues').mockImplementation(<T extends ArrayBufferView | null>(a: T): T => {
       (a as unknown as Uint8Array).set(Array.from({ length: 16 }, (_, i) => i * 17));
@@ -52,14 +44,12 @@ describe('newCorrId', () => {
 
 describe('sentRowIndex', () => {
   test('an echo finds the row whose send it is, by its corrId alone', () => {
-    // Two sends that look alike take their own echoes, in either order.
     const rows = [sent('m1', 'a'), sent('m2', 'b')];
     expect(sentRowIndex(rows, 'b')).toBe(1);
     expect(sentRowIndex(rows, 'a')).toBe(0);
   });
 
   test("an echo with no corrId, or another client's, finds no row", () => {
-    // A routed message's row carries no corrId, and isn't an echo's either.
     const rows = [sent('m1', 'a'), { id: 'm2', participant: 'user', text: '→ @child: hi' }];
     expect(sentRowIndex(rows, undefined)).toBe(-1);
     expect(sentRowIndex(rows, 'c')).toBe(-1);
@@ -125,7 +115,6 @@ describe('rowsAfterWelcome', () => {
       ['m1', 'refused'],
       ['m2', 'unconfirmed'],
     ]);
-    // A later echo still finds the unconfirmed row.
     expect(sentRowIndex(after, 'b')).toBe(3);
   });
 
