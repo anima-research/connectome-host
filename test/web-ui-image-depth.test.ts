@@ -13,8 +13,12 @@ const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
 const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
   + 'Send the images in a message of their own, or shorten the text';
-const IMAGES_REFUSAL = "message not sent: these images together come within 10% of this host's image depth, the "
-  + "recipe's imageStripDepthTokens, past which they reach the model only as placeholders. Send fewer images at once";
+const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
+  + 'or past it';
+const IMAGES_REFUSAL = `message not sent: ${TOGETHER}, where they could reach the model only as placeholders. `
+  + 'Send fewer images at once';
+const BOTH_REFUSAL = `message not sent: ${TOGETHER}, and so does the text with any one of them. `
+  + 'Send fewer images at once, and the text in a message of its own or shorter';
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
   + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
   + 'Whoever runs this host can raise it';
@@ -159,14 +163,20 @@ describe("a send whose images the strategy would strip at once", () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
     expect((await send({ content: '', images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together' })).error)
       .toEqual({ type: 'error', corrId: 'c-together', message: IMAGES_REFUSAL });
-    expect((await send({ content: 'a'.repeat(1_000), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
+    expect((await send({ content: 'a'.repeat(5_500), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-together-text' })).error)
       .toEqual({ type: 'error', corrId: 'c-together-text', message: IMAGES_REFUSAL });
   });
 
-  test('asks about the text when the text leaves no room for even one image, though the images together also pass', async () => {
+  test('asks about the text alone when the images together are under the line, even if the text leaves no room for one', async () => {
     await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
-    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-no-room' })).error)
+    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE], corrId: 'c-no-room' })).error)
       .toEqual({ type: 'error', corrId: 'c-no-room', message: REFUSAL });
+  });
+
+  test('asks for both when the images together pass the line and the text leaves no room for even one', async () => {
+    await openAgent({ type: 'autobiographical', imageStripDepthTokens: 4_000 });
+    expect((await send({ content: 'a'.repeat(5_900), images: [IMAGE, IMAGE, IMAGE], corrId: 'c-both' })).error)
+      .toEqual({ type: 'error', corrId: 'c-both', message: BOTH_REFUSAL });
   });
 
   test('is refused for its text when the images alone are under the line', async () => {
