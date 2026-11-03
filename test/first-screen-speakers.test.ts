@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework, type Module, type ModuleContext, type ProcessEvent } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter } from '@animalabs/membrane';
-import { historyUserLine } from '../src/tui.js';
+import { historyImageLine, historyUserLine } from '../src/tui.js';
 import { toWireEntry } from '../src/modules/web-ui-module.js';
 import { TimeModule } from '../src/modules/time-module.js';
 import { LifecycleModule } from '../src/modules/lifecycle-module.js';
@@ -44,6 +44,24 @@ describe('a row reads as "you" only when it came in as the host\'s own input', (
   test('a source that doesn\'t read as one, such as a damaged import\'s, is no source', () => {
     expect(shown({ inboundSource: { kind: 'surface', surface: '', acceptedAt: 1 } })).toEqual({ tui: 'user: hello', web: 'user' });
     expect(shown({ inboundSource: { kind: 'surface', surface: 'tui' } })).toEqual({ tui: 'user: hello', web: 'user' });
+  });
+});
+
+describe('a replayed image line names the same speaker as the text after it', () => {
+  const withImages = (metadata: unknown, images: number) => ({
+    participant: 'user',
+    content: [...Array.from({ length: images }, () => ({ type: 'image' })), { type: 'text', text: 'hello' }],
+    metadata,
+  });
+
+  test('your own images read as yours, a channel\'s as its author\'s, and an unsourced row\'s as its participant\'s', () => {
+    expect(historyImageLine(withImages(surface, 1))).toEqual({ text: 'You: [an image]', speaker: 'you' });
+    expect(historyImageLine(withImages(channel, 2))).toEqual({ text: 'alice in #general: [2 images]', speaker: 'other' });
+    expect(historyImageLine(withImages(undefined, 1))).toEqual({ text: 'user: [an image]', speaker: 'other' });
+  });
+
+  test('a row with no images has no image line', () => {
+    expect(historyImageLine(withImages(surface, 0))).toBeUndefined();
   });
 });
 
