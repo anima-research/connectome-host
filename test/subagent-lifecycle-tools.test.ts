@@ -14,6 +14,39 @@ import type { Module, ToolCall, AgentRecord } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
+class HeldAdapter extends MockAdapter {
+  private readonly gates = new Map<string, { released: Promise<void>; release: () => void }>();
+
+  private gate(model: string) {
+    let gate = this.gates.get(model);
+    if (!gate) {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      gate = { released, release };
+      this.gates.set(model, gate);
+    }
+    return gate;
+  }
+
+  release(model: string): void {
+    this.gate(model).release();
+  }
+
+  override async stream(...args: Parameters<MockAdapter['stream']>): ReturnType<MockAdapter['stream']> {
+    const [request, , options] = args;
+    const signal = options?.signal;
+    if (request.model.startsWith('held') && !signal?.aborted) {
+      // A stop aborts the request's signal; membrane's MockAdapter throws its
+      // abort error from stream's first check, so the wait only has to end.
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener('abort', () => resolve(), { once: true });
+        void this.gate(request.model).released.then(resolve);
+      });
+    }
+    return super.stream(...args);
+  }
+}
+
 async function harness(
   adapterConfig: ConstructorParameters<typeof MockAdapter>[0] = {},
   moduleConfig: Record<string, unknown> = {},
@@ -21,8 +54,9 @@ async function harness(
   extraAgents: Array<{ name: string; model: string; systemPrompt: string; maxTokens: number; allowedTools?: string[] }> = [],
 ) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-lifecycle-'));
-  const adapter = new MockAdapter({ defaultResponse: 'all done', ...adapterConfig });
+  const adapter = new HeldAdapter({ defaultResponse: 'all done', ...adapterConfig });
   const subagent = new SubagentModule({ provider: 'mock', parentAgentName: 'parent', defaultModel: 'mock', maxRetries: 0, ...moduleConfig });
+  (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
   const framework = await AgentFramework.create({
     storePath: join(tmpDir, 'store'),
     membrane: new Membrane(adapter, { formatter: new NativeFormatter() }),
@@ -44,6 +78,7 @@ async function harness(
   };
   return {
     adapter, subagent, framework, call, callAs, records, recordOf, parentMessages, until, storePath: join(tmpDir, 'store'),
+    release: (model = 'held') => adapter.release(model),
     cleanup: async () => { await framework.stop().catch(() => {}); rmSync(tmpDir, { recursive: true, force: true }); },
   };
 }
@@ -100,9 +135,9 @@ describe('subagents are Dendrite agents', () => {
   }, 30_000);
 
   test('message reaches a running subagent under the sender\'s name; stop ends a run; both refuse a subagent that is not running', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(1_200) });
+    const h = await harness();
     try {
-      const accepted = await h.call('spawn', { name: 'slow-1', systemPrompt: 'p', task: 'take your time' });
+      const accepted = await h.call('spawn', { name: 'slow-1', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(accepted.success).toBe(true);
       await h.until(() => h.recordOf('slow-1') !== undefined && !h.recordOf('slow-1')!.ended, 'the run is registered');
       const live = h.recordOf('slow-1')!;
@@ -112,13 +147,14 @@ describe('subagents are Dendrite agents', () => {
       // A turn with no tool boundary takes the message when it ends; it is
       // then in the subagent's stored context under the sender's name, or
       // still held for it. Either way it was never dropped.
+      h.release();
       await h.until(() => h.recordOf('slow-1')?.ended !== undefined, 'the run ends', 20_000);
       const stored = (await h.framework.inspectAgentContext(live.name)).getAllMessages() as unknown as Array<{ participant: string; content: Array<{ text?: string }> }>;
       const inContext = stored.some((m) => m.participant === 'parent' && m.content.some((bk) => bk.text?.includes('a word from the parent')));
       const held = h.framework.listHeldMail({ to: live.name }).some((m) => JSON.stringify(m.content).includes('a word from the parent'));
       expect(inContext || held).toBe(true);
 
-      const second = await h.call('spawn', { name: 'slow-2', systemPrompt: 'p', task: 'take your time too' });
+      const second = await h.call('spawn', { name: 'slow-2', systemPrompt: 'p', task: 'take your time too', model: 'held-2' });
       expect(second.success).toBe(true);
       await h.until(() => h.recordOf('slow-2') !== undefined && !h.recordOf('slow-2')!.ended, 'the second run is registered');
       const stopped = await h.call('stop', { name: 'slow-2', reason: 'enough' });
@@ -356,12 +392,12 @@ describe('the lifecycle tools keep the module\'s rules', () => {
   }, 30_000);
 
   test('a run waiting for a slot is reached through the agent it was launched for, not a record another launch left under its name', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(1_200) }, { maxConcurrent: 1 }, [bob]);
+    const h = await harness({}, { maxConcurrent: 1 }, [bob]);
     try {
       const internals = h.framework as unknown as Registry;
       internals.registry.register(workerSpec('spawn-x-bob', { spawnedBy: 'bob', metadata: { subagent: 'x', task: "bob's own x" } }));
       h.framework.stopAgent('spawn-x-bob', { by: 'test' });
-      expect((await h.call('spawn', { name: 'busy', systemPrompt: 'p', task: 'hold the slot' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'busy', systemPrompt: 'p', task: 'hold the slot', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('busy') !== undefined && !h.recordOf('busy')!.ended, 'the slot is taken');
       expect((await h.call('spawn', { name: 'x', systemPrompt: 'p', task: 'wait for the slot' })).success).toBe(true);
       expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
@@ -379,12 +415,12 @@ describe('the lifecycle tools keep the module\'s rules', () => {
   }, 30_000);
 
   test('a stop by the framework name the adoption offer gives stops a run and the runs it started, as a stop by its name does', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(5_000) });
+    const h = await harness();
     try {
-      expect((await h.call('spawn', { name: 'mid', systemPrompt: 'p', task: 'take your time' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'mid', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('mid') !== undefined && !h.recordOf('mid')!.ended, 'mid runs');
       const mid = h.recordOf('mid')!.name;
-      expect((await h.callAs(mid, 'spawn', { name: 'leaf', systemPrompt: 'p', task: 'take your time too' })).success).toBe(true);
+      expect((await h.callAs(mid, 'spawn', { name: 'leaf', systemPrompt: 'p', task: 'take your time too', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('leaf') !== undefined && !h.recordOf('leaf')!.ended, 'leaf runs');
       const stopped = await h.call('stop', { name: mid });
       expect(stopped.success).toBe(true);
@@ -394,13 +430,13 @@ describe('the lifecycle tools keep the module\'s rules', () => {
   }, 30_000);
 
   test("a stop by an ended run's framework name stops nothing, not the live run that now holds its name", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(5_000) });
+    const h = await harness();
     try {
       const internals = h.framework as unknown as Registry;
       internals.registry.register(workerSpec('spawn-x-old', { spawnedBy: 'parent', metadata: { subagent: 'x', task: 'an earlier x' } }));
       h.framework.stopAgent('spawn-x-old', { by: 'test' });
       const liveX = () => h.records().find((r) => (r.metadata as { subagent: string }).subagent === 'x' && !r.ended);
-      expect((await h.call('spawn', { name: 'x', systemPrompt: 'p', task: 'take your time' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'x', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => liveX() !== undefined, 'the new x runs');
       const stopped = await h.call('stop', { name: 'spawn-x-old' });
       expect(stopped.success).toBe(false);
@@ -446,19 +482,17 @@ describe('the lifecycle tools keep the module\'s rules', () => {
   }, 30_000);
 
   test("an adopted run is its adopter's: stopping the adopter stops it first, as one of its own", async () => {
-    const h = await harness({
-      streamChunkDelayMs: 20, streamChunkSize: 10,
-      responseGenerator: (r) => (r.model === 'mock-brief' ? 'y'.repeat(600) : 'x'.repeat(5_000)),
-    });
+    const h = await harness();
     try {
       const live = (name: string) => h.recordOf(name) !== undefined && !h.recordOf(name)!.ended;
-      expect((await h.call('spawn', { name: 'top', systemPrompt: 'p', task: 'take your time' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'top', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => live('top'), 'top runs');
       const top = h.recordOf('top')!.name;
-      expect((await h.callAs(top, 'spawn', { name: 'mid', systemPrompt: 'p', task: 'be brief', model: 'mock-brief' })).success).toBe(true);
+      expect((await h.callAs(top, 'spawn', { name: 'mid', systemPrompt: 'p', task: 'be brief', model: 'held-mid' })).success).toBe(true);
       await h.until(() => live('mid'), 'mid runs');
-      expect((await h.callAs(h.recordOf('mid')!.name, 'spawn', { name: 'leaf', systemPrompt: 'p', task: 'take your time' })).success).toBe(true);
+      expect((await h.callAs(h.recordOf('mid')!.name, 'spawn', { name: 'leaf', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => live('leaf'), 'leaf runs');
+      h.release('held-mid');
       await h.until(() => h.recordOf('mid')?.ended !== undefined && h.recordOf('leaf')?.orphaned !== undefined, 'mid ends and leaf is orphaned');
       expect(h.recordOf('leaf')!.orphaned!.candidates).toContain(top);
       expect((await h.callAs(top, 'adopt', { name: 'leaf' })).success).toBe(true);
@@ -471,7 +505,7 @@ describe('the lifecycle tools keep the module\'s rules', () => {
 
   test("a resume is refused when the launch's tools exceed the caller's rule, or the subagent is outside the caller's tree, or it is still running", async () => {
     const narrow = { name: 'narrow', model: 'mock', systemPrompt: 'narrow prompt', maxTokens: 256, allowedTools: ['subagent--resume', 'subagent--return'] };
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(1_200) }, {}, [bob, narrow]);
+    const h = await harness({}, {}, [bob, narrow]);
     try {
       const first = await h.call('spawn', { name: 'f1', systemPrompt: 'p', task: 'first pass', sync: true });
       expect(first.success).toBe(true);
@@ -496,7 +530,7 @@ describe('the lifecycle tools keep the module\'s rules', () => {
       expect(stranger.success).toBe(false);
       expect(stranger.error).toContain('not in your tree');
 
-      const running = await h.call('spawn', { name: 'slow-3', systemPrompt: 'p', task: 'take your time' });
+      const running = await h.call('spawn', { name: 'slow-3', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(running.success).toBe(true);
       await h.until(() => h.recordOf('slow-3') !== undefined && !h.recordOf('slow-3')!.ended, 'the run is registered');
       const early = await h.call('resume', { name: 'slow-3' });
@@ -534,15 +568,15 @@ describe("a launch whose caller ends before it registers", () => {
     h.parentMessages().find((m) => m.metadata?.kind === 'agent-result' && m.content.some((b) => b.text?.includes(`[Subagent '${name}' returned, for 'caller', which has ended]`)));
 
   test("a run registered under a live subagent ancestor, its caller having ended, is that ancestor's child: stopping the ancestor stops it first", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(3_000) : 'ok') }, { maxConcurrent: 2 });
+    const h = await harness({ responseGenerator: () => 'ok' }, { maxConcurrent: 2 });
     try {
-      expect((await h.call('spawn', { name: 'anc-a', systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'anc-a', systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('anc-a') !== undefined && !h.recordOf('anc-a')!.ended, 'A runs');
       const a = h.recordOf('anc-a')!.name;
-      expect((await h.callAs(a, 'spawn', { name: 'anc-b', systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.callAs(a, 'spawn', { name: 'anc-b', systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('anc-b') !== undefined && !h.recordOf('anc-b')!.ended, 'B runs');
       const b = h.recordOf('anc-b')!.name;
-      expect((await h.callAs(b, 'spawn', { name: 'anc-c', systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.callAs(b, 'spawn', { name: 'anc-c', systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
       h.framework.stopAgent(b, { by: 'test' });
       await h.until(() => h.recordOf('anc-c') !== undefined && !h.recordOf('anc-c')!.ended, 'C registers and runs', 20_000);
@@ -555,13 +589,14 @@ describe("a launch whose caller ends before it registers", () => {
   }, 40_000);
 
   test("a sync spawn queued for a slot, whose caller ended while it waited, returns to the ancestor it ran under, not to the ended caller's call", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(600) : 'the sync answer') }, { maxConcurrent: 1 }, [caller]);
+    const h = await harness({ responseGenerator: () => 'the sync answer' }, { maxConcurrent: 1 }, [caller]);
     try {
-      expect((await h.call('spawn', { name: 'busy-s', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'busy-s', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('busy-s') !== undefined && !h.recordOf('busy-s')!.ended, 'the slot is taken');
       const pending = h.callAs('caller', 'spawn', { name: 'sync-q', systemPrompt: 'p', task: 'answer', sync: true });
       await h.until(() => h.subagent.getConcurrencyStatus().queued === 1, 'the sync spawn waits for the slot');
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await pending;
       await h.until(() => reached(h, 'sync-q') !== undefined, 'its result reaches the ancestor', 20_000);
       expect(reached(h, 'sync-q')!.content.map((b) => b.text ?? '').join('')).toContain('the sync answer');
@@ -569,12 +604,13 @@ describe("a launch whose caller ends before it registers", () => {
   }, 40_000);
 
   test("a sync spawn whose caller ends while it runs holds its result for that caller, as an async one does", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'the held sync answer ' + 'x'.repeat(400) : 'ok') }, {}, [caller]);
+    const h = await harness({ responseGenerator: (r) => (r.model === 'held' ? 'the held sync answer' : 'ok') }, {}, [caller]);
     try {
-      const pending = h.callAs('caller', 'spawn', { name: 'sync-h', systemPrompt: 'p', task: 'take your time', model: 'mock-slow', sync: true });
+      const pending = h.callAs('caller', 'spawn', { name: 'sync-h', systemPrompt: 'p', task: 'take your time', model: 'held', sync: true });
       await h.until(() => h.recordOf('sync-h') !== undefined && !h.recordOf('sync-h')!.ended, 'the run is registered');
       const run = h.recordOf('sync-h')!.name;
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await pending;
       const held = () => h.framework.listHeldMail({ to: 'caller' }).filter((m) => JSON.stringify(m.content).includes("[Subagent 'sync-h' returned]"));
       await h.until(() => held().length > 0, 'the result is held for the ended caller');
@@ -586,9 +622,7 @@ describe("a launch whose caller ends before it registers", () => {
     let adopted = false;
     let h: Awaited<ReturnType<typeof harness>> | undefined;
     h = await harness({
-      streamChunkDelayMs: 20, streamChunkSize: 10,
       responseGenerator: (r) => {
-        if (r.model === 'mock-slow') return 'x'.repeat(3_000);
         if (r.model !== 'mock-flaky') return 'ok';
         if (!adopted) {
           adopted = true;
@@ -600,10 +634,10 @@ describe("a launch whose caller ends before it registers", () => {
       },
     }, { maxConcurrent: 3, maxRetries: 1 });
     try {
-      expect((await h.call('spawn', { name: 'kept-a', systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'kept-a', systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       await h.until(() => h!.recordOf('kept-a') !== undefined && !h!.recordOf('kept-a')!.ended, 'A runs');
       const a = h.recordOf('kept-a')!.name;
-      expect((await h.callAs(a, 'spawn', { name: 'kept-m', systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.callAs(a, 'spawn', { name: 'kept-m', systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       await h.until(() => h!.recordOf('kept-m') !== undefined && !h!.recordOf('kept-m')!.ended, 'M runs');
       const m = h.recordOf('kept-m')!.name;
       expect((await h.callAs(m, 'spawn', { name: 'kept-c', systemPrompt: 'p', task: 'answer', model: 'mock-flaky' })).success).toBe(true);
@@ -617,15 +651,16 @@ describe("a launch whose caller ends before it registers", () => {
   }, 40_000);
 
   test("a launch queued for a slot, whose caller ended while it waited, runs under the caller's nearest live ancestor and returns to it", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(600) : 'the queued answer') }, { maxConcurrent: 1 }, [caller]);
+    const h = await harness({ responseGenerator: () => 'the queued answer' }, { maxConcurrent: 1 }, [caller]);
     try {
-      const busy = await h.call('spawn', { name: 'busy-2', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const busy = await h.call('spawn', { name: 'busy-2', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(busy.success).toBe(true);
       await h.until(() => h.recordOf('busy-2') !== undefined && !h.recordOf('busy-2')!.ended, 'the slot is taken');
       const queued = await h.callAs('caller', 'spawn', { name: 'queued-2', systemPrompt: 'p', task: 'answer' });
       expect(queued.success).toBe(true);
       expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await h.until(() => h.recordOf('queued-2')?.ended !== undefined, 'the queued run registers and ends', 20_000);
       const run = h.recordOf('queued-2')!;
       expect(run.ended!.reason).toBe('completed');
@@ -637,9 +672,9 @@ describe("a launch whose caller ends before it registers", () => {
   }, 40_000);
 
   test("a fork queued for a slot, whose caller ended while it waited, runs under the caller's nearest live ancestor and returns to it", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(600) : 'the forked answer') }, { maxConcurrent: 1 }, [caller]);
+    const h = await harness({ responseGenerator: () => 'the forked answer' }, { maxConcurrent: 1 }, [caller]);
     try {
-      expect((await h.call('spawn', { name: 'busy-4', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'busy-4', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('busy-4') !== undefined && !h.recordOf('busy-4')!.ended, 'the slot is taken');
       const cm = h.framework.getAgent('caller')!.getContextManager();
       cm.addMessage('user', [{ type: 'text', text: 'please look into it' }]);
@@ -647,6 +682,7 @@ describe("a launch whose caller ends before it registers", () => {
       expect((await h.callAs('caller', 'fork', { name: 'queued-fork', task: 'look' }, 'toolu_qf')).success).toBe(true);
       expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await h.until(() => reached(h, 'queued-fork') !== undefined, 'its result reaches the ancestor', 20_000);
       expect(reached(h, 'queued-fork')!.content.map((b) => b.text ?? '').join('')).toContain('the forked answer');
       expect(h.recordOf('queued-fork')!.relationships.spawnedBy).toBe('parent');
@@ -655,19 +691,18 @@ describe("a launch whose caller ends before it registers", () => {
 
   test("a queued launch whose caller ended and which then fails tells the primary whose run it was", async () => {
     const h = await harness({
-      streamChunkDelayMs: 20, streamChunkSize: 10,
       responseGenerator: (r) => {
-        if (r.model === 'mock-slow') return 'x'.repeat(600);
         if (r.model === 'mock-refused') throw new Error('the request was refused');
         return 'ok';
       },
     }, { maxConcurrent: 1, maxRetries: 0 }, [caller]);
     try {
-      expect((await h.call('spawn', { name: 'busy-3', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'busy-3', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('busy-3') !== undefined && !h.recordOf('busy-3')!.ended, 'the slot is taken');
       expect((await h.callAs('caller', 'spawn', { name: 'queued-3', systemPrompt: 'p', task: 'answer', model: 'mock-refused' })).success).toBe(true);
       expect(h.subagent.getConcurrencyStatus().queued).toBe(1);
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       const told = () => h.parentMessages().find((m) => m.content.some((b) => b.text?.includes("[Subagent 'queued-3' failed, for 'caller', which has ended]")));
       await h.until(() => told() !== undefined, 'the failure reaches the primary', 20_000);
       expect(told()!.content.map((b) => b.text ?? '').join('')).toContain('the request was refused');
@@ -726,10 +761,10 @@ describe('a resume that ends before its run starts', () => {
   };
 
   test("a resume stopped while it waits for a slot tells its record's route, from the record's agent", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') }, { maxConcurrent: 1 }, [bob]);
+    const h = await harness({ responseGenerator: () => 'ok' }, { maxConcurrent: 1 }, [bob]);
     try {
       const delivered = mailTo(h);
-      expect((await h.call('spawn', { name: 'busy-r', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'busy-r', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('busy-r') !== undefined && !h.recordOf('busy-r')!.ended, 'the slot is taken');
       failedRecordFor(h, 'spawn-q-bob-1', 'q-bob', 'bob');
       expect((await h.call('resume', { name: 'q-bob' })).success).toBe(true);
@@ -804,9 +839,9 @@ describe('a resume that ends before its run starts', () => {
   }, 30_000);
 
   test('a resume stopped while it waits for a slot ends as a stop, not a failure', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') }, { maxConcurrent: 1 });
+    const h = await harness({ responseGenerator: () => 'ok' }, { maxConcurrent: 1 });
     try {
-      const busy = await h.call('spawn', { name: 'busy-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const busy = await h.call('spawn', { name: 'busy-1', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(busy.success).toBe(true);
       await h.until(() => h.recordOf('busy-1') !== undefined && !h.recordOf('busy-1')!.ended, 'the slot is taken');
       failedRecord(h, 'spawn-queued-1', 'queued-1');
@@ -825,9 +860,9 @@ describe('a resume that ends before its run starts', () => {
   }, 30_000);
 
   test('a resume waiting for a slot is stopped by its framework name as by its name', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') }, { maxConcurrent: 1 });
+    const h = await harness({ responseGenerator: () => 'ok' }, { maxConcurrent: 1 });
     try {
-      const busy = await h.call('spawn', { name: 'busy-2', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const busy = await h.call('spawn', { name: 'busy-2', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(busy.success).toBe(true);
       await h.until(() => h.recordOf('busy-2') !== undefined && !h.recordOf('busy-2')!.ended, 'the slot is taken');
       failedRecord(h, 'spawn-queued-2', 'queued-2');
@@ -884,7 +919,7 @@ describe("a resumed run's launch, and a registry stop of a live run", () => {
   }, 30_000);
 
   test('a live spawn, fork or resume stopped through the registry, outside this module, ends as a stop that names who stopped it, not as a failure', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') });
+    const h = await harness({ responseGenerator: () => 'ok' });
     try {
       const result = (name: string) => h.parentMessages().find((m) => m.content.some((b) => b.text?.includes(`[Subagent '${name}' `)));
       const stopLive = async (name: string) => {
@@ -896,17 +931,17 @@ describe("a resumed run's launch, and a registry stop of a live run", () => {
         expect(text).toContain('[Stopped by operator]');
       };
 
-      expect((await h.call('spawn', { name: 'reg-spawn', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.call('spawn', { name: 'reg-spawn', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await stopLive('reg-spawn');
 
       const cm = h.framework.getAgent('parent')!.getContextManager();
       cm.addMessage('user', [{ type: 'text', text: 'please look into it' }]);
       cm.addMessage('parent', [{ type: 'tool_use', id: 'toolu_reg', name: 'subagent--fork', input: { name: 'reg-fork', task: 'look slowly' } }] as never);
-      expect((await h.call('fork', { name: 'reg-fork', task: 'look slowly', model: 'mock-slow' }, 'toolu_reg')).success).toBe(true);
+      expect((await h.call('fork', { name: 'reg-fork', task: 'look slowly', model: 'held' }, 'toolu_reg')).success).toBe(true);
       await stopLive('reg-fork');
 
       const internals = h.framework as unknown as Internals;
-      internals.registry.register(workerSpec('spawn-reg-resume-1', { spawnedBy: 'parent', resultTo: { to: 'parent', as: 'message' }, metadata: { subagent: 'reg-resume', task: 'again', launch: { kind: 'spawn', model: 'mock-slow', systemPrompt: 'p', maxTokens: 64, allowedTools: 'all', strategy: {} } } }));
+      internals.registry.register(workerSpec('spawn-reg-resume-1', { spawnedBy: 'parent', resultTo: { to: 'parent', as: 'message' }, metadata: { subagent: 'reg-resume', task: 'again', launch: { kind: 'spawn', model: 'held', systemPrompt: 'p', maxTokens: 64, allowedTools: 'all', strategy: {} } } }));
       internals.registry.end('spawn-reg-resume-1', 'failed', 'test');
       expect((await h.call('resume', { name: 'reg-resume' })).success).toBe(true);
       await stopLive('reg-resume');
@@ -918,16 +953,15 @@ describe("a resumed run's parent", () => {
   type Internals = {
     registry: { register(spec: ReturnType<typeof workerSpec>): unknown; end(name: string, reason: string, by?: string): unknown };
   };
-  const slowLaunch = { kind: 'spawn', model: 'mock-slow', systemPrompt: 'p', maxTokens: 64, allowedTools: 'all', strategy: {} };
-  const slow = { streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r: { model: string }) => (r.model === 'mock-slow' ? 'x'.repeat(3_000) : 'done quickly') };
+  const heldLaunch = { kind: 'spawn', model: 'held', systemPrompt: 'p', maxTokens: 64, allowedTools: 'all', strategy: {} };
   const names = (listed: { data?: unknown }) => (listed.data as { subagents: Array<{ name: string }> }).subagents.map((s) => s.name);
 
   test("a run resumed after its spawner ended becomes its resumer's: the resumer lists it and stops it", async () => {
-    const h = await harness(slow);
+    const h = await harness();
     try {
       const internals = h.framework as unknown as Internals;
       internals.registry.register(workerSpec('spawn-mid-1', { spawnedBy: 'parent', metadata: { subagent: 'mid', task: 'mid' } }));
-      internals.registry.register(workerSpec('spawn-left-1', { spawnedBy: 'spawn-mid-1', metadata: { subagent: 'left', task: 'again', launch: slowLaunch } }));
+      internals.registry.register(workerSpec('spawn-left-1', { spawnedBy: 'spawn-mid-1', metadata: { subagent: 'left', task: 'again', launch: heldLaunch } }));
       internals.registry.end('spawn-left-1', 'failed', 'test');
       internals.registry.end('spawn-mid-1', 'stopped', 'test');
       expect((await h.call('resume', { name: 'left' })).success).toBe(true);
@@ -941,14 +975,14 @@ describe("a resumed run's parent", () => {
   }, 30_000);
 
   test("a resumed run is stopped through its own parent, not through another launch's link left on its display name", async () => {
-    const h = await harness(slow, { maxConcurrent: 4 });
+    const h = await harness({}, { maxConcurrent: 4 });
     try {
-      for (const n of ['link-p', 'link-q']) expect((await h.call('spawn', { name: n, systemPrompt: 'p', task: 'hold', model: 'mock-slow' })).success).toBe(true);
+      for (const n of ['link-p', 'link-q']) expect((await h.call('spawn', { name: n, systemPrompt: 'p', task: 'hold', model: 'held' })).success).toBe(true);
       await h.until(() => ['link-p', 'link-q'].every((n) => h.recordOf(n) !== undefined && !h.recordOf(n)!.ended), 'P and Q run');
       const [p, q] = ['link-p', 'link-q'].map((n) => h.recordOf(n)!.name) as [string, string];
       expect((await h.callAs(p, 'spawn', { name: 'x', systemPrompt: 'p', task: 'quick', sync: true })).success).toBe(true);
       const internals = h.framework as unknown as Internals;
-      internals.registry.register(workerSpec('spawn-x-of-q', { spawnedBy: q, metadata: { subagent: 'x', task: 'again', launch: slowLaunch } }));
+      internals.registry.register(workerSpec('spawn-x-of-q', { spawnedBy: q, metadata: { subagent: 'x', task: 'again', launch: heldLaunch } }));
       internals.registry.end('spawn-x-of-q', 'failed', 'test');
       expect((await h.call('resume', { name: 'spawn-x-of-q' })).success).toBe(true);
       await h.until(() => h.framework.getAgentRecord('spawn-x-of-q')!.ended === undefined, 'the resumed run is registered');
@@ -964,10 +998,10 @@ describe("a resumed run's parent", () => {
 
 describe("the host's stop and a live run's record", () => {
   test("a run the host's stop cuts off keeps its record live for the next boot, which ends it as a restart, and it can be resumed then", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, defaultResponse: 'x'.repeat(1_200) });
+    const h = await harness();
     let next: AgentFramework | undefined;
     try {
-      const running = await h.call('spawn', { name: 'slow-k', systemPrompt: 'p', task: 'take your time' });
+      const running = await h.call('spawn', { name: 'slow-k', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(running.success).toBe(true);
       await h.until(() => h.recordOf('slow-k') !== undefined && !h.recordOf('slow-k')!.ended, 'the run is registered');
       const before = h.recordOf('slow-k')!;
@@ -1022,9 +1056,9 @@ describe('what a run that ends without a result says, and to whom', () => {
   }, 30_000);
 
   test("a stopped run whose caller has ended is held for that caller as mail from the run's own agent, not a line in the primary's window", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') }, {}, [caller]);
+    const h = await harness({ responseGenerator: () => 'ok' }, {}, [caller]);
     try {
-      const accepted = await h.callAs('caller', 'spawn', { name: 'stopped-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const accepted = await h.callAs('caller', 'spawn', { name: 'stopped-1', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(accepted.success).toBe(true);
       await h.until(() => h.recordOf('stopped-1') !== undefined && !h.recordOf('stopped-1')!.ended, 'the run is registered');
       const run = h.recordOf('stopped-1')!;
@@ -1039,9 +1073,9 @@ describe('what a run that ends without a result says, and to whom', () => {
   }, 30_000);
 
   test("a run stopped with the stop tool says who stopped it and why in its stopped result", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'x'.repeat(1_200) : 'ok') });
+    const h = await harness({ responseGenerator: () => 'ok' });
     try {
-      const accepted = await h.call('spawn', { name: 'told-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const accepted = await h.call('spawn', { name: 'told-1', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(accepted.success).toBe(true);
       await h.until(() => h.recordOf('told-1') !== undefined && !h.recordOf('told-1')!.ended, 'the run is registered');
       const stopped = await h.call('stop', { name: 'told-1', reason: 'the question was answered elsewhere' });
@@ -1054,12 +1088,13 @@ describe('what a run that ends without a result says, and to whom', () => {
 
   test("a result held for a caller that has ended is logged, and counted on its run in list", async () => {
     const logged = spyOn(console, 'error');
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'the held answer ' + 'x'.repeat(400) : 'ok') }, {}, [caller]);
+    const h = await harness({ responseGenerator: (r) => (r.model === 'held' ? 'the held answer' : 'ok') }, {}, [caller]);
     try {
-      const accepted = await h.callAs('caller', 'spawn', { name: 'held-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const accepted = await h.callAs('caller', 'spawn', { name: 'held-1', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(accepted.success).toBe(true);
       await h.until(() => h.recordOf('held-1') !== undefined && !h.recordOf('held-1')!.ended, 'the run is registered');
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await h.until(() => heldFor(h, 'caller', "[Subagent 'held-1' returned]").length > 0, 'the result is held for the ended caller');
       const lines = logged.mock.calls.map((c) => String(c[0]));
       expect(lines.some((l) => l.includes("'held-1' returned, and its result is held as mail for 'caller', which has ended"))).toBe(true);
@@ -1072,19 +1107,19 @@ describe('what a run that ends without a result says, and to whom', () => {
   test("an orphan that finished before anyone adopted it is adopted for the result it holds for its ended caller: the result reaches the adopter under its name, and it stays ended; a stranger is refused", async () => {
     let adopterSaw = false;
     const h = await harness({
-      streamChunkDelayMs: 20, streamChunkSize: 10,
       responseGenerator: (r) => {
-        if (r.model === 'mock-slow') return 'the held answer ' + 'x'.repeat(400);
+        if (r.model === 'held') return 'the held answer';
         if (JSON.stringify(r).includes('the held answer')) adopterSaw = true;
         return 'ok';
       },
     }, {}, [caller, bob]);
     try {
-      const accepted = await h.callAs('caller', 'spawn', { name: 'held-2', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' });
+      const accepted = await h.callAs('caller', 'spawn', { name: 'held-2', systemPrompt: 'p', task: 'take your time', model: 'held' });
       expect(accepted.success).toBe(true);
       await h.until(() => h.recordOf('held-2') !== undefined && !h.recordOf('held-2')!.ended, 'the run is registered');
       const run = h.recordOf('held-2')!.name;
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await h.until(() => heldFor(h, 'caller', "[Subagent 'held-2' returned]").length > 0, 'the result is held for the ended caller');
       expect(h.framework.getAgentRecord(run)!.ended).toBeDefined();
 
@@ -1108,12 +1143,13 @@ describe('what a run that ends without a result says, and to whom', () => {
   }, 30_000);
 
   test('an orphan that ended is reached by its framework name however many runs have ended since', async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'the old answer ' + 'x'.repeat(400) : 'ok') }, {}, [caller]);
+    const h = await harness({ responseGenerator: (r) => (r.model === 'held' ? 'the old answer' : 'ok') }, {}, [caller]);
     try {
-      expect((await h.callAs('caller', 'spawn', { name: 'old-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow' })).success).toBe(true);
+      expect((await h.callAs('caller', 'spawn', { name: 'old-1', systemPrompt: 'p', task: 'take your time', model: 'held' })).success).toBe(true);
       await h.until(() => h.recordOf('old-1') !== undefined && !h.recordOf('old-1')!.ended, 'the run is registered');
       const run = h.recordOf('old-1')!.name;
       h.framework.stopAgent('caller', { by: 'test' });
+      h.release();
       await h.until(() => heldFor(h, 'caller', "[Subagent 'old-1' returned]").length > 0, 'the result is held for the ended caller');
       const internals = h.framework as unknown as { registry: { register(spec: ReturnType<typeof workerSpec>): unknown } };
       for (let i = 0; i < 260; i++) {
@@ -1165,9 +1201,9 @@ describe('what a run that ends without a result says, and to whom', () => {
   }, 30_000);
 
   test("a sync run moved to the background, whose caller ended and which the primary then adopted, returns to its adopter", async () => {
-    const h = await harness({ streamChunkDelayMs: 20, streamChunkSize: 10, responseGenerator: (r) => (r.model === 'mock-slow' ? 'the adopted answer ' + 'x'.repeat(1_200) : 'ok') }, {}, [caller]);
+    const h = await harness({ responseGenerator: (r) => (r.model === 'held' ? 'the adopted answer' : 'ok') }, {}, [caller]);
     try {
-      const moved = await h.callAs('caller', 'spawn', { name: 'moved-1', systemPrompt: 'p', task: 'take your time', model: 'mock-slow', sync: true, timeoutMs: 500 });
+      const moved = await h.callAs('caller', 'spawn', { name: 'moved-1', systemPrompt: 'p', task: 'take your time', model: 'held', sync: true, timeoutMs: 500 });
       expect(moved.success).toBe(true);
       expect(String(moved.data)).toContain('moved to background');
       const run = h.recordOf('moved-1')!;
@@ -1176,6 +1212,7 @@ describe('what a run that ends without a result says, and to whom', () => {
       await h.until(() => h.recordOf('moved-1')?.orphaned !== undefined, 'the run is orphaned');
       const adopted = await h.call('adopt', { name: 'moved-1' });
       expect(adopted.success).toBe(true);
+      h.release();
       await h.until(() => h.parentMessages().some((m) => m.content.some((b) => b.text?.includes("[Subagent 'moved-1' returned, for 'caller', which has ended]"))), 'the result reaches the adopter, saying whose run it was', 20_000);
       expect(h.parentMessages().find((m) => m.content.some((b) => b.text?.includes("[Subagent 'moved-1' returned, for 'caller', which has ended]")))!.participant).toBe(run.name);
       expect(h.framework.listHeldMail({ to: 'caller' }).some((m) => JSON.stringify(m.content).includes("[Subagent 'moved-1'"))).toBe(false);
