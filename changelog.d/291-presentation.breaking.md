@@ -49,10 +49,11 @@
   - The TUI's and the Web UI's transcripts still show the record, so an undo
     changes what the agent is sent next, not the transcript; both mark the
     rows an undo took out (dimmed, and `(undone)` in the TUI, which marks
-    its lines in place and draws an undone row it has no line for below
-    them until a redo puts it back), and the Web
+    its lines in place and draws below them an undone row stored since it
+    loaded the history that it has no line for, until a redo puts it
+    back), and the Web
     UI's context panels (makeup and coverage, the compiled context, the
-    pins) read the window again at each undo or redo. The local pin picker
+    pins) read the window again at each undo, redo or shed. The local pin picker
     lists the host's candidates, the record's last 200 rows, as a fleet
     child's does, where it listed the rows the transcript had loaded; it
     leaves out undone rows and rows stamped for other residents only.
@@ -64,9 +65,10 @@
   agent names, counts, ids and slots, never content. `window:undone`, an undo
   or a redo on a window, needs `messages`, and so does the new
   `undone-marks` frame, sent at each undo, redo or shed on the conversation
-  agent's window, which names every row of the transcript's record that is
-  out of that window as undone (`fromIndex` 0), as a welcome's and a history
-  page's entries mark them (`undone: true`). `undo:completed` and `redo:completed`
+  agent's window, which names each row of the transcript's record that an
+  undo or a shed took out of that window (status `undone`), from `fromIndex`
+  0, as a welcome's and a history page's entries mark them (`undone: true`).
+  `undo:completed` and `redo:completed`
   are gone, with agent-framework's branch-moving undo.
 - **Going back to an earlier release** after this one: a row this release
   stored for an agent while its turn was alive is where the record put it, and
