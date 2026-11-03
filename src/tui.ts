@@ -2425,6 +2425,10 @@ export async function runTui(app: AppContext): Promise<void> {
         state.status = 'thinking';
         updateStatus();
         result.asyncWork.then(asyncResult => {
+          // A branch move or a rollback lands in the follow-up, and
+          // agent-framework traces neither: the follow-up saying the branch
+          // changed is what has the TUI draw the branch the store is on.
+          if (asyncResult.branchChanged) refreshFromStore();
           for (const l of asyncResult.lines) {
             addLine(l.text, GRAY);
           }

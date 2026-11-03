@@ -297,6 +297,19 @@ describe("the TUI's history after an undo", () => {
   }, 40000);
 });
 
+describe("the TUI's branch moves, through runTui", () => {
+  // agent-framework's switchBranch and rollbackToMessage trace nothing: the
+  // command's follow-up saying the branch changed is what tells the TUI.
+  test("a command whose follow-up says the branch changed draws the history of the branch the store is on", async () => {
+    const switched = (await play('async-branch')).get('switched');
+    if (!switched) throw new Error('missing async-branch frame');
+    expect(switched.frame).toContain('the side branch reply');
+    expect(switched.frame).not.toContain('three ledgers');
+    expect(times(switched.frame, '── session history')).toBe(1);
+    expect(switched.frame.indexOf('the side branch reply')).toBeLessThan(switched.frame.indexOf('Switched to branch side.'));
+  }, 40000);
+});
+
 function parentRows(frame: string): Map<string, string> {
   const rows: Array<{ name: string; column: number }> = [];
   for (const line of frame.split('\n')) {

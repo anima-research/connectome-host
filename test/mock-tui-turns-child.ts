@@ -40,9 +40,17 @@ const history: Array<{ id: string; participant: string; content: Array<Record<st
   { id: 'a1', participant: 'agent', content: [{ type: 'thinking', thinking: 'tally them first' }, { type: 'text', text: 'three ledgers' }] },
 ];
 const undoneRows = new Set<string>();
+/** The store's branch in `async-branch`, which a /checkout moves (the framework's switchBranch traces nothing). */
+let storeBranch = 'main';
 const contextManager = () => (scenario === 'undone'
   ? { getAllMessages: () => history, windowStatusOf: (id: string) => (undoneRows.has(id) ? 'undone' : 'in') }
-  : { getAllMessages: () => [] });
+  : scenario === 'async-branch'
+    ? {
+        getAllMessages: () => history,
+        listBranches: () => [{ id: 'b-main', name: 'main', head: 2 }, { id: 'b-side', name: 'side', head: 2 }],
+        currentBranch: () => ({ id: `b-${storeBranch}`, name: storeBranch, head: 2 }),
+      }
+    : { getAllMessages: () => [] });
 
 function fakeFramework(name: string) {
   const listeners = new Set<Listener>();
@@ -56,7 +64,9 @@ function fakeFramework(name: string) {
       for (const listener of [...listeners]) listener({ type, agentName: 'agent', ...extra });
     },
     getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
-    getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }] : [{ name: 'agent' }]),
+    getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }]
+      : scenario === 'async-branch' ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
+      : [{ name: 'agent' }]),
     getModule: () => undefined,
     getAgent: (agentName: string) => agentName === 'agent'
       ? { name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }
@@ -75,6 +85,11 @@ function fakeFramework(name: string) {
     },
     pushEvent: () => {},
     stop: async () => {},
+    getStore: () => ({ currentBranch: () => ({ name: storeBranch }) }),
+    async switchBranch(branch: string) {
+      storeBranch = branch;
+      history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
+    },
   };
 }
 
@@ -437,6 +452,12 @@ async function play(): Promise<void> {
     await until(async () => (await frame()).includes('Session: other'), 'the switch to end');
     second.send('inference:exhausted', { agentName, error: 'after switch' });
     await step('after switch');
+  } else if (scenario === 'async-branch') {
+    await until(async () => (await frame()).includes('three ledgers'), 'the history');
+    // The store moves in the command's follow-up, with no trace of it.
+    await command('/checkout side');
+    await until(async () => (await frame()).includes('Switched to branch side.'), 'the follow-up');
+    await step('switched');
   } else if (scenario === 'undone') {
     await until(async () => (await frame()).includes('three ledgers'), 'the history');
     await step('history');
