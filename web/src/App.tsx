@@ -84,9 +84,11 @@ interface Message {
   timestamp?: number;
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
-  /** The row left the conversation agent's window by an undo
-   *  (agent-framework #291): the record keeps it, its next request is built
-   *  without it. From the welcome, a history page or an undone-marks frame. */
+  /** The row is out of the conversation agent's window as an undone turn's
+   *  (agent-framework #291): an undo (which /redo puts back) or a shed after
+   *  a refusal or failed inference (which it doesn't). The record keeps it,
+   *  its next request is built without it. From the welcome, a history page
+   *  or an undone-marks frame. */
   undone?: boolean;
   trigger?: {
     origin: string;
@@ -1935,7 +1937,7 @@ type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
 
 function MessageRow(props: {
   storeId?: string;
-  /** The row left the conversation agent's window by an undo: dimmed and labelled. */
+  /** The row is out of the conversation agent's window as an undone turn's: dimmed and labelled. */
   undone?: boolean;
   canRollback: boolean;
   canSuppress: boolean;
@@ -1951,7 +1953,7 @@ function MessageRow(props: {
       <Show when={props.undone}>
         <div
           class="text-[10px] font-mono text-amber-300/80 mb-0.5"
-          title="An undo took this out of the agent's context: its next request is built without it. The record keeps it; /redo puts it back."
+          title="Out of the agent's context as an undone turn's: an undo (which /redo puts back) or a shed after a refusal or failed inference (which it doesn't). Its next request is built without it; the record keeps it."
         >undone · not in the agent's context</div>
       </Show>
       <Show when={actionable()}>
