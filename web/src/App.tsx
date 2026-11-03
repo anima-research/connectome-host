@@ -567,9 +567,10 @@ export function App() {
   };
 
   /** Bumped at each undo or redo on an agent's window (the window:undone
-   *  trace, DQ-4): the panels built from what a window holds (Context's
-   *  makeup and coverage, the compiled context) read again when it moves,
-   *  and so do the pins, whose candidates leave an undone row out. */
+   *  trace, DQ-4) and at each undone-marks frame (which a shed sends too):
+   *  the panels built from what a window holds (Context's makeup and
+   *  coverage, the compiled context) read again when it moves, and so do
+   *  the pins, whose candidates leave an undone row out. */
   const [windowEpoch, setWindowEpoch] = createSignal(0);
   const onWindowUndone = (): void => {
     setWindowEpoch((n) => n + 1);
@@ -1702,7 +1703,7 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   onOperatorAction: () => void;
   onCommandAnswer: () => void;
-  /** An undo or a redo on an agent's window: the panels built from it read again. */
+  /** An undo, a redo or a shed on an agent's window: the panels built from it read again. */
   onWindowUndone: (agentName: string | undefined) => void;
   /** Apply an undone-marks frame to the transcript. */
   applyUndoneMarks: (marks: UndoneMarksMessage) => void;
@@ -1770,6 +1771,9 @@ function handleServerMessage(
       return;
     case 'undone-marks':
       hooks.applyUndoneMarks(msg);
+      // A shed sends this frame without a window:undone trace: the panels
+      // built from the window read again here too.
+      hooks.onWindowUndone(msg.agent);
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
