@@ -25,6 +25,7 @@ const TOOL_ROUND: Block[] = [
 const mode = process.env.CHILD_REPLY;
 
 function roundOf(call: number): Block[] {
+  if (mode === 'refusal-retry') return [{ type: 'text', text: call === 1 ? 'No' : 'Yes' }];
   if (mode === 'thinking-only') return [{ type: 'thinking', thinking: 'Nothing to say.', signature: 'test-signature' }];
   if (mode === 'then-skip' && call > 1) return [{ type: 'tool_use', id: `skip-${call}`, name: 'skip_reply', input: {} }];
   if (mode === 'tool-then-reply') return call === 1 ? TOOL_ROUND : [{ type: 'text', text: 'Done.' }];
@@ -59,7 +60,8 @@ class ThinkingAdapter extends MockAdapter {
     });
     return {
       content: [...blocks],
-      stopReason: blocks.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
+      stopReason: mode === 'refusal-retry' && calls === 1 ? 'refusal'
+        : blocks.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
       usage: { inputTokens: 10, outputTokens: 10 },
       model: request.model,
       rawRequest: request,
@@ -87,7 +89,10 @@ const dataDir = process.env.DATA_DIR!;
 const framework = await AgentFramework.create({
   storePath: join(dataDir, 'store'),
   membrane: new Membrane(new ThinkingAdapter(), { formatter: new NativeFormatter() }),
-  agents: [{ name: 'resident', model: 'mock', systemPrompt: 'test', maxTokens: 64 }],
+  agents: [{
+    name: 'resident', model: 'mock', systemPrompt: 'test', maxTokens: 64,
+    ...(mode === 'refusal-retry' ? { refusalHandling: { retries: 1 } } : {}),
+  }],
   modules: [new TuiModule(), new ProbeModule()],
 });
 framework.start();

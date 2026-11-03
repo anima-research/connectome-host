@@ -62,6 +62,14 @@ test("a client subscribed to inference:speech gets the round's text without its 
   });
 }, 60_000);
 
+test("a refused attempt's text goes with it: inference:speech carries the answered retry's text alone", async () => {
+  await withHost(async (dir) => {
+    const frames = await turnFrames(dir);
+    expect(frames.filter((f) => f.type === 'inference:tokens' && f.blockType === 'text').map((f) => f.content)).toEqual(['N', 'o', '', 'Ye', 's']);
+    expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual(['Yes']);
+  }, { CHILD_REPLY: 'refusal-retry' });
+}, 60_000);
+
 test("a final round with no text sends inference:speech with no text, so a parent doesn't keep an earlier reply as the latest", async () => {
   await withHost(async (dir) => {
     const frames = await turnFrames(dir);
