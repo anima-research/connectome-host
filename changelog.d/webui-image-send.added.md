@@ -28,10 +28,11 @@
   much text asks for the images first, in a message of their own, then the
   text once the agent has answered them, one whose images together come that
   near says how many fit and asks for the rest to be attached again after,
-  as many at a time, each once the agent has answered (and, when its text
-  leaves no room for even one, for the text after them, in a message of its
-  own), and where a single image would, the refusal says the depth leaves
-  too little room for an image, which whoever runs the host can raise.
+  at most as many as fit alone at a time, each once the agent has answered
+  (and, when its text leaves no room for even one, for the text after them,
+  in a message of its own), and where a single image would, the refusal says
+  the depth leaves too little room for an image, which whoever runs the host
+  can raise.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.
