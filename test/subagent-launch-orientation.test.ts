@@ -520,7 +520,12 @@ describe('fork orientation', () => {
       const against = line(block, '- Against the parent at the call')!;
       expect(against).toMatch(/Differs in [^.]*prose routing\./);
       expect(against).not.toMatch(/Same: [^.]*prose routing/);
-      expect(h.runs[0]!.proseRouting).toBe('disabled');
+      const run = h.runs[0]!;
+      expect(run.proseRouting).toBe('disabled');
+      // The subagent reads the same words, and is told it lacks the parent's prose_locus.
+      expect(run.launchAsStored).toContain(block);
+      expect(run.surface).not.toContain('prose_locus');
+      expect(line(startSection(run.launchAsStored), '- Tools:')).toContain('prose_locus');
     } finally {
       await h.cleanup();
     }
@@ -538,6 +543,7 @@ describe('fork orientation', () => {
         `- Prose routing: disabled, since the caller's is locked and a subagent has no lock of its own: ${ROUTING_EFFECT.disabled}.`,
       );
       expect(h.runs[0]!.proseRouting).toBe('disabled');
+      expect(h.runs[0]!.launchAsStored).toContain(block);
     } finally {
       await h.cleanup();
     }

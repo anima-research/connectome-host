@@ -2335,6 +2335,10 @@ export class SubagentModule implements Module {
     }
     const names = tools.map((t) => t.name);
     if (agent.proseRouting === 'explicit' && agent.canUseTool('prose_help')) names.push('prose_help');
+    // Locked routing offers prose_locus the same way, outside the tool
+    // board. A subagent never has it (subagentProseRouting runs it disabled),
+    // so a fork of a locked parent is told it lacks it.
+    if (agent.proseRouting === 'locked' && agent.canUseTool('prose_locus')) names.push('prose_locus');
     return names;
   }
 
