@@ -1421,4 +1421,12 @@ describe('traces with observers connected', () => {
     expect(JSON.stringify(trace.event)).toContain('[20 base64 characters, not sent in traces]');
     observer.ws.close();
   }, 15_000);
+
+  test("a stream's end that can't be sent as a trace reaches a client that takes traces as its stand-in", async () => {
+    const operator = await connect('welcome', { origin: `http://127.0.0.1:${port}`, authorization: BASIC });
+    emitTrace!({ type: 'inference:completed', agentName: 'a', tokens: 1n });
+    expect(await operator.until('stream-ended')).toEqual({ type: 'stream-ended', agentName: 'a' });
+    expect(operator.frames.filter((f) => f.type === 'trace')).toEqual([]);
+    operator.ws.close();
+  }, 15_000);
 });

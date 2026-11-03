@@ -805,7 +805,7 @@ export class WebUiModule implements Module {
 
   /** `prepare` makes the frame that goes out, once, at the first client that
    *  takes it, so a frame no client takes costs nothing; a null from it sends
-   *  the frame to no client, and the stand-in still goes. */
+   *  the stand-in in its place. */
   private broadcast(
     frame: WebUiServerMessage,
     standIn?: WebUiServerMessage | null,
@@ -820,7 +820,10 @@ export class WebUiModule implements Module {
       if (!client.welcomed) continue;
       if (clientHolds(client, scopes)) {
         if (prepared === undefined) prepared = prepare!(frame);
-        if (prepared === null) continue;
+        if (prepared === null) {
+          if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
+          continue;
+        }
         this.send(client, clientHolds(client, ['ops']) ? prepared : (withoutText ??= frameWithoutFailureText(prepared)));
       } else if (fallback && clientHolds(client, fallback.scopes)) this.send(client, fallback.frame);
     }
