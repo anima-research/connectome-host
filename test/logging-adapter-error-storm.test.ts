@@ -361,6 +361,8 @@ test('failures that each succeed on retry spend the budget, which refills over a
     expect(told.filter((l) => l.includes('the budget for failing requests in full'))).toHaveLength(1);
     expect(told.find((l) => l.includes('the budget for failing requests'))).toContain('LLM_CALLS_FULL_PAYLOADS=1');
     expect(told.find((l) => l.includes('the budget for failing requests'))).toContain("keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on");
+    // It names the refused request's size, since refusal goes by size.
+    expect(told.find((l) => l.includes('the budget for failing requests'))).toContain(`has no room for one of ${size} bytes: a failing request is kept in full only while the budget has room for its size`);
     // A day later, the budget has refilled: a failure the request caused is kept.
     now += 24 * 60 * 60 * 1000;
     setSystemTime(new Date(now));
@@ -623,6 +625,33 @@ test("after a first failure whose record the line bound cut, the run's copy is t
   failWith(rateLimitError('429'), ofLineage('a', 'again'));
   const repeat = (await errorRecords('stream', 1, adapter)).at(-1)!;
   expect(repeat.rawRequestOmitted).toMatchObject({ copySha256: copy.requestSha256, reason: expect.stringContaining(FOLLOWED) });
+}, 30_000);
+
+test("a run's place among the 256 counts from its first failure, even one the budget had no room for", async () => {
+  const adapter = newAdapter();
+  const small = (name: string, content = 'x') => ofLineage(name, content);
+  const size = Buffer.byteLength(JSON.stringify(small('agent 255')), 'utf8');
+  // Room for every small copy below, never for the large request.
+  (adapter as unknown as { failedCopyBudget: number }).failedCopyBudget = 300 * size;
+  await stderrOf(async () => {
+    failWith(rateLimitError('429'), ofLineage('a', 'y'.repeat(400 * size)));
+    expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest).toBeUndefined();
+    // 255 more runs, then a's copy: a's run began first, before any of them.
+    for (let n = 0; n < 255; n++) {
+      failWith(rateLimitError('429'), small(`agent ${n}`));
+      expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest).toBeDefined();
+    }
+    failWith(rateLimitError('429'), small('a'));
+    expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest).toEqual(small('a'));
+    // A 257th run passes the bound, and the run begun earliest, a's, goes:
+    // agent 0's run is still remembered, and a's next failure is a new run's.
+    failWith(rateLimitError('429'), small('agent 255'));
+    await errorRecords('stream', 1, adapter);
+    failWith(rateLimitError('429'), small('agent 0', 'again'));
+    expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequestOmitted).toMatchObject({ copySha256: sha(small('agent 0')) });
+    failWith(rateLimitError('429'), small('a', 'again'));
+    expect((await errorRecords('stream', 1, adapter)).at(-1)!.rawRequest).toEqual(small('a', 'again'));
+  });
 }, 30_000);
 
 test('past the bound of 256 runs, runs that have ended are dropped before a live one', async () => {
