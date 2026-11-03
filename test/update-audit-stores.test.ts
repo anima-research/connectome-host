@@ -39,6 +39,23 @@ const CONTEXT_MANAGER = ((): string => {
   while (!existsSync(join(dir, 'package.json')) && dirname(dir) !== dir) dir = dirname(dir);
   return join(dir, (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { main: string }).main);
 })();
+/** That agent-framework loads the host's copy of context-manager: the
+ *  parity tests record agent-framework's ContextManager.open calls through a
+ *  spy on the host's ContextManager, which sees them only then (a
+ *  deduplicated install, or an agent-framework linked from a sibling tree
+ *  whose context-manager is the host's). */
+async function expectFrameworkLoadsOurContextManager(): Promise<void> {
+  const ours = realpathSync(Bun.resolveSync('@animalabs/context-manager', import.meta.dir));
+  const framework = realpathSync(Bun.resolveSync('@animalabs/agent-framework', import.meta.dir));
+  const theirs = realpathSync(Bun.resolveSync('@animalabs/context-manager', dirname(framework)));
+  const loaded = (await import(theirs)) as { ContextManager?: unknown };
+  expect(
+    loaded.ContextManager === ContextManager,
+    `the host loads context-manager from ${ours}, and agent-framework (${framework}) loads it from ${theirs}: ` +
+      "a spy on the host's ContextManager.open doesn't see agent-framework's opens unless the two are one copy",
+  ).toBe(true);
+}
+
 const REMEDY = 'AGENT-ONBOARDING.md §11.8 says what a store with crossed summaries needs.';
 const MODEL_CALLED = 'its strategy called a model while opening it, and the audit gives a strategy none: only a start of this release can answer for this store';
 
@@ -461,6 +478,7 @@ describe('the store audit', () => {
     // subconsciousContextOptions), and the audit opens with them. This
     // records each ContextManager.open a start and the audit make, and the
     // window each opened manager holds, over a store a start left presented.
+    await expectFrameworkLoadsOurContextManager();
     const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, systemPrompt: 'attend to the agent', name: 'Muse' } };
     const recipe = validateRecipe(structuredClone(raw));
     const opened: Array<{ config: Record<string, unknown>; window: string[]; mode: string }> = [];
@@ -576,6 +594,7 @@ describe('the store audit', () => {
     // The audit has no copy of the view: it opens with agent-framework's own
     // options (subconsciousContextOptions, #291), so the two are read from
     // the opens, not from an export of the audit's.
+    await expectFrameworkLoadsOurContextManager();
     const raw = { ...DEFAULT_RECIPE, subconscious: { enabled: true, name: 'Muse', systemPrompt: 'attend to the agent' } };
     const { dir, stores } = await makeDataDirWith('framework-subconscious', [(store) => copyStore(store, 'agents/agent', false)]);
     saveRecipe(dir, raw as never);

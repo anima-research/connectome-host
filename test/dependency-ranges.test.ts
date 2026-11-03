@@ -26,7 +26,9 @@
  * their presentation releases added are checked instead, the ones
  * agent-framework's create() doesn't check itself. An agent-framework without
  * the exports the host imports fails the host's load, and membrane's range
- * is the one the host declared before the presentation.
+ * is the one the host declared before the presentation. Each range is also
+ * asked to admit its presentation release (agent-framework 0.33.0,
+ * context-manager 0.25.0, chronicle 0.6.0), which no install layout changes.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -43,6 +45,10 @@ const ours = manifest(join(ROOT, 'package.json'));
 const installed = (name: string): Manifest => manifest(join(ROOT, 'node_modules', name, 'package.json'));
 /** Whether `name` is a sibling tree linked into node_modules, which keeps its main's version until its release is cut. */
 const linked = (name: string): boolean => lstatSync(join(ROOT, 'node_modules', name)).isSymbolicLink();
+/** That `range` admits `release`, the presentation release of `name`, whatever the install layout. */
+function admitsRelease(name: string, range: string, release: string): void {
+  expect(Bun.semver.satisfies(release, range), `${range} admits ${name} ${release}, its presentation release`).toBe(true);
+}
 /** That `range` admits the installed `name`, asked only of a package installed from the registry (not `linked`). */
 function admitsInstalled(name: string, range: string): void {
   if (linked(name)) return;
@@ -62,15 +68,17 @@ function floorOf(range: string): string {
 const within = (inner: string, outer: string): boolean => Bun.semver.satisfies(floorOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework only at the presentation release: not main's 0.30.0, 0.31.0 or 0.32.0, which have no presentation index", () => {
+  test("takes agent-framework from the presentation release, 0.33.0: not main's 0.30.0, 0.31.0 or 0.32.0, which have no presentation index", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
     for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/agent-framework', range!, '0.33.0');
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
-  test("takes context-manager only at a release with the window APIs: not main's 0.23.0 or 0.24.0, which have none", () => {
+  test("takes context-manager from its release with the window APIs, 0.25.0: not main's 0.23.0 or 0.24.0, which have none", () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
     for (const published of ['0.23.0', '0.24.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/context-manager', range!, '0.25.0');
     // agent-framework's create() refuses a ContextManager without presentRows.
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
     for (const method of ['windowStatusOf', 'retractRows', 'getPresentedMessages']) {
@@ -79,9 +87,10 @@ describe("the host's dependency ranges (#291's release set)", () => {
     admitsInstalled('@animalabs/context-manager', range!);
   });
 
-  test('takes chronicle only at a release with the batched append: not 0.4.0, or the published 0.5.0, which has none', () => {
+  test('takes chronicle from its release with the batched append, 0.6.0: not 0.4.0, or the published 0.5.0, which has none', () => {
     const range = ours.dependencies?.['@animalabs/chronicle'];
     for (const published of ['0.4.0', '0.5.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/chronicle', range!, '0.6.0');
     // agent-framework's create() refuses a store without appendManyToStateJsonWithIdentity.
     const proto = JsStore.prototype as unknown as Record<string, unknown>;
     for (const method of ['appendManyToStateJson', 'getStateItemsJson', 'getRecords']) {
