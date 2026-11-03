@@ -13,7 +13,7 @@ import { ContextManager } from '@animalabs/context-manager';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
@@ -62,7 +62,8 @@ beforeAll(async () => {
       onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
       pushEvent: () => {},
     },
-    sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+    frameworkSessionId: 's',
+    sessionManager: { findSession: () => null },
     recipe: { name: 'recipe', agent: {} },
   };
   webUiModule.setApp(app as never);
@@ -70,7 +71,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await webUiModule.stop();
-  await __resetSharedServerForTests();
+  await stopWebUiServer();
   cm.close();
   rmSync(root, { recursive: true, force: true });
 });

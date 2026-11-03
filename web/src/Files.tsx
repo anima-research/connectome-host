@@ -1,15 +1,3 @@
-/**
- * Files panel — workspace-aware browser for one process's mounts (the host
- * or a fleet child; the sidebar's shared scope selector decides which).
- *
- * Lists mounts, expands one at a time on click, builds a hierarchical tree
- * from the flat workspace `ls -r` output, and lets the operator click a
- * file to view its content in a centered modal.
- *
- * Reads only — write/edit/delete aren't surfaced here. Operators with that
- * intent should be on the host shell anyway.
- */
-
 import { createSignal, For, Show } from 'solid-js';
 
 export interface Mount {
@@ -36,10 +24,7 @@ export function FilesPanel(props: {
   loaded: boolean;
   moduleLoaded: boolean;
   mounts: Mount[];
-  /** Currently-loaded tree, keyed by mount name. Populated lazily on
-   *  expand-click — the parent component maintains the cache. */
   treesByMount: Map<string, FlatEntry[]>;
-  /** Mounts that have been expanded at least once. */
   expandedMounts: Set<string>;
   onRefreshMounts(): void;
   onExpandMount(name: string): void;
@@ -131,9 +116,7 @@ function MountSection(props: {
 }
 
 interface TreeNode {
-  /** Empty string for the synthetic root. */
   name: string;
-  /** Full path rooted at the mount (so the row can pass it to onOpenFile). */
   fullPath: string;
   isDir: boolean;
   size?: number;
@@ -162,7 +145,6 @@ function buildTree(entries: FlatEntry[]): TreeNode {
       cursor = next;
     }
   }
-  // Sort children: dirs first, then files, alpha within each.
   const sortNode = (node: TreeNode): void => {
     node.children.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;

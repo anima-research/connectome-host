@@ -1,17 +1,3 @@
-/**
- * DryContext — the context a hypothetical settings change WOULD produce,
- * rendered in the main pane.
- *
- * Distinct from `ContextDocument`, which shows the agent's live context. This
- * one shows the output of a dry run: nothing here has been applied, and the
- * agent is still running the settings shown in the sidebar. The banner says so,
- * because a rendered context that looks exactly like the real thing is a good
- * way for an operator to lose track of which is which.
- *
- * Entries come straight from context-manager's dry-run select, so this is the
- * actual layout that budget would produce — not an approximation.
- */
-
 import { For, Show } from 'solid-js';
 
 interface Seg { messages: number; tokens: number }
@@ -29,17 +15,13 @@ export interface DryContextData {
 
 const fmt = (n: number) => n.toLocaleString();
 
-/** Recall pairs render as a CM prompt followed by the summary text. */
-const RECALL_MARKERS = ['what do you remember', 'recall memory', '[cm]'];
+const CONTEXT_MANAGER_RECALL_MARKERS = ['what do you remember', 'recall memory', '[cm]'];
 const isRecallPrompt = (s: string) =>
-  s.length < 400 && RECALL_MARKERS.some((m) => s.toLowerCase().includes(m));
+  s.length < 400 && CONTEXT_MANAGER_RECALL_MARKERS.some((m) => s.toLowerCase().includes(m));
 
 export function DryContext(props: { data: DryContextData | null; onClose(): void }) {
   const rows = () =>
     (props.data?.entries ?? []).map((e, i) => {
-      // Server-side projection (see projectDryEntries): identity, size and a
-      // bounded text preview. Full content blocks are deliberately NOT sent —
-      // shipping them cost ~110s of blocked agent.
       const o = (e ?? {}) as {
         i?: number; who?: string; text?: string; chars?: number;
         media?: number; truncated?: boolean;
@@ -70,7 +52,6 @@ export function DryContext(props: { data: DryContextData | null; onClose(): void
           </div>
         }
       >
-        {/* Unmissable: this is NOT the live context. */}
         <div class="sticky top-0 z-10 bg-amber-950/80 backdrop-blur border-b border-amber-800
                     px-4 py-2 text-[11px] text-amber-200 flex items-center gap-3 flex-wrap">
           <span class="font-semibold uppercase tracking-wider">dry run — not applied</span>

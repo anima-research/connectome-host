@@ -1,14 +1,5 @@
-/**
- * Context panel — the makeup of the agent's current compiled context.
- *
- * Reads GET /debug/context/makeup (transparent: previewActivation +
- * count_tokens, no inference / no writes) and shows the segment breakdown the
- * autobiographical strategy produced: head window, raw middle, summaries by
- * level (L1/L2/L3), and the recent verbatim tail — as a proportional bar plus
- * a per-segment table, with an exact total token count.
- */
-
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
+import { contextPageView } from './composition-text';
 
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -22,6 +13,7 @@ interface Stats {
 interface Makeup {
   agent: string;
   stats: Stats | null;
+  statsKept?: boolean;
   exactTotalTokens: number | null;
   countModel: string;
   countSource: string;
@@ -97,8 +89,6 @@ export function ContextPanel(props: { scope?: string }) {
   const [err, setErr] = createSignal<string | null>(null);
   const [coverageErr, setCoverageErr] = createSignal<string | null>(null);
 
-  /** Fleet-child scopes route through the host's ?scope= proxy; the child's
-   *  primary agent answers. Local scope needs no params. */
   const query = () => props.scope && props.scope !== 'local'
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
@@ -115,7 +105,7 @@ export function ContextPanel(props: { scope?: string }) {
       }
       const j = (await res.json()) as Makeup;
       if (j.error) throw new Error(j.error);
-      if (props.scope !== scopeAtStart) return; // scope switched mid-flight
+      if (props.scope !== scopeAtStart) return;
       setData(j);
     } catch (e) {
       if (props.scope !== scopeAtStart) return;
@@ -151,9 +141,6 @@ export function ContextPanel(props: { scope?: string }) {
     void loadCoverage();
   };
 
-  // Initial load AND scope-switch refetch: the effect re-runs whenever the
-  // shared scope selector changes, clearing the previous scope's data so a
-  // slow child never renders under the wrong header.
   createEffect(on(() => props.scope, () => {
     setData(null);
     setCoverage(null);
@@ -167,9 +154,29 @@ export function ContextPanel(props: { scope?: string }) {
     onCleanup(() => window.clearInterval(timer));
   });
 
-  const estTotal = () => data()?.stats?.total.tokens ?? 0;
+  const view = () => {
+    const d = data();
+    return d ? contextPageView(d) : null;
+  };
+  const counted = () => {
+    const count = view()?.count;
+    return count && 'tokens' in count ? count : undefined;
+  };
+  const notCountedReason = () => {
+    const count = view()?.count;
+    return count && 'reason' in count ? count.reason : undefined;
+  };
+  const compositionStats = () => {
+    const composition = view()?.composition;
+    return composition && 'stats' in composition ? composition.stats : undefined;
+  };
+  const compositionLine = () => {
+    const composition = view()?.composition;
+    return composition && 'line' in composition ? composition.line : undefined;
+  };
+  const estTotal = () => compositionStats()?.total.tokens ?? 0;
   const rows = () => {
-    const s = data()?.stats;
+    const s = compositionStats();
     return s ? rowsOf(s) : [];
   };
 
@@ -300,21 +307,30 @@ export function ContextPanel(props: { scope?: string }) {
         </section>
       </Show>
 
-      <Show when={data()?.stats} fallback={<Show when={!err()}><div class="text-neutral-500">loading…</div></Show>}>
-        {/* headline totals */}
-        <div class="flex gap-4">
+      <Show when={!data() && !err()}><div class="text-neutral-500">loading…</div></Show>
+
+      <Show when={counted()}>
+        {(count) => (
           <div>
-            <div class="text-2xl text-neutral-100">{fmt(data()!.exactTotalTokens ?? estTotal())}</div>
-            <div class="text-neutral-500">
-              {data()!.exactTotalTokens != null ? 'tokens (exact)' : 'tokens (est)'}
-            </div>
+            <div class="text-2xl text-neutral-100">{fmt(count().tokens)}</div>
+            <div class="text-neutral-500">tokens (exact): the next request as a preview builds it, without what modules add at each turn</div>
+            <div class="text-neutral-600">counted by count_tokens for {count().model}</div>
           </div>
-          <div class="self-end text-neutral-500">
-            {fmt(data()!.stats!.total.messages)} msgs · est {fmt(estTotal())}
-          </div>
+        )}
+      </Show>
+      <Show when={notCountedReason()}>
+        {(reason) => <div class="text-neutral-500">next request: {reason()}</div>}
+      </Show>
+
+      <Show when={compositionLine()}>
+        {(line) => <div class="text-neutral-500">{line()}</div>}
+      </Show>
+
+      <Show when={compositionStats()}>
+        <div class="text-neutral-500">
+          last live compile: {fmt(compositionStats()!.total.messages)} msgs · est {fmt(estTotal())} tokens
         </div>
 
-        {/* proportional bar */}
         <div class="flex h-4 w-full overflow-hidden rounded border border-neutral-800">
           <For each={rows()}>
             {(r) => (
@@ -326,7 +342,6 @@ export function ContextPanel(props: { scope?: string }) {
           </For>
         </div>
 
-        {/* per-segment table */}
         <table class="w-full">
           <thead>
             <tr class="text-neutral-500 text-left">
@@ -355,11 +370,9 @@ export function ContextPanel(props: { scope?: string }) {
 
         <div class="text-neutral-500 space-y-0.5">
           <div>
-            pending compression: {data()!.stats!.pending.chunks} chunk(s), {data()!.stats!.pending.merges} merge(s)
+            pending compression: {compositionStats()!.pending.chunks} chunk(s), {compositionStats()!.pending.merges} merge(s)
           </div>
-          <div>
-            exact via count_tokens ({data()!.countModel}; same tokenizer) · per-segment tokens are strategy estimates
-          </div>
+          <div>per-segment tokens are strategy estimates</div>
         </div>
       </Show>
     </div>

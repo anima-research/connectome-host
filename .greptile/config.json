@@ -1,4 +1,6 @@
 {
   "autoReview": ["open"],
-  "disabledLabels": ["no-greptile"]
+  "labels": ["greptile"],
+  "disabledLabels": ["no-greptile"],
+  "statusCommentsEnabled": false
 }

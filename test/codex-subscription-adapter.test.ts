@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { inspect } from 'node:util';
 import { OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
 import { CodexSubscriptionAdapter, codexGateAuth } from '../src/codex-subscription-adapter.js';
 
@@ -68,7 +72,6 @@ describe('Codex host integration', () => {
     const seen: Array<{ url: string; headers: Headers }> = [];
     globalThis.fetch = async (url, init) => {
       seen.push({ url: String(url), headers: new Headers(init?.headers) });
-      // the gate refreshed the login behind a 401; the single retry meets it
       return seen.length === 1 ? new Response('expired', { status: 401 }) : completed();
     };
     const adapter = new CodexSubscriptionAdapter({ codexBinary: '/nonexistent/codex', authProvider: auth });
@@ -77,8 +80,6 @@ describe('Codex host integration', () => {
     expect(seen.every((c) => c.headers.get('authorization') === 'Bearer gt_devops')).toBe(true);
     expect(seen[0]!.headers.get('chatgpt-account-id')).toBeNull();
     expect(await adapter.readRateLimits()).toBeNull();
-    // Observe-only credential source: the gate holds the login, so no
-    // host-side refresh/login/paste is offered — a 401 is reported, not "fixed".
     const source = adapter.credentialSource();
     expect(source.provider).toBe('openai-codex via https://gate.test/codex');
     expect(source.canRefresh()).toBe(false);
@@ -120,7 +121,6 @@ for (const mode of ['subscription', 'api'] as const) {
         const membrane = new Membrane(wrapped, { formatter: new OpenAIResponsesFormatter() });
         const normalized = { messages: [{ participant: 'user', content: [{ type: 'text' as const, text: 'hello' }] }], config: { model: 'gpt-5.4', maxTokens: 100 } };
         const response = lane === 'complete' ? await membrane.complete(normalized) : await membrane.stream(normalized, { onChunk: () => {} });
-        // 2026-07-31 incident: adding cached tokens twice ratcheted calibration until the agent wedged.
         expect(response.usage.inputTokens).toBe(20);
         expect(response.usage.cacheReadTokens).toBe(80);
         const log = JSON.parse(readFileSync(`${dir}/calls.jsonl`, 'utf8').trim());
@@ -153,7 +153,6 @@ test('a forced refresh waits behind an ordinary acquisition rather than joining 
   const auth = new CodexAppServerAuth();
   const flags: boolean[] = [];
   let release!: (token: string) => void;
-  // Only the app-server exchange is stubbed; exercise real acquisition coordination.
   (auth as any).authenticate = (refresh: boolean) => {
     flags.push(refresh);
     return refresh ? Promise.resolve('fresh') : new Promise<string>(resolve => { release = resolve; });
@@ -166,4 +165,40 @@ test('a forced refresh waits behind an ordinary acquisition rather than joining 
   expect(await forced).toBe('fresh');
   expect(await secondForced).toBe('fresh');
   expect(flags).toEqual([false, true]);
+});
+
+describe("reading Codex's auth.json", () => {
+  const dirs: string[] = [];
+  afterEach(() => { while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+  const home = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-home-'));
+    dirs.push(dir);
+    return dir;
+  };
+  const thrown = async (auth: unknown): Promise<Error> => {
+    try {
+      await (auth as { readAccessToken(): Promise<string> }).readAccessToken();
+    } catch (err) {
+      return err as Error;
+    }
+    throw new Error('it read');
+  };
+
+  test("a file that isn't valid JSON is refused without the parser's error, as text or as its cause", async () => {
+    const { CodexAppServerAuth } = await import('../src/codex-subscription-adapter.js');
+    const codexHome = home();
+    const SECRET = 's3cretTokenValue';
+    writeFileSync(join(codexHome, 'auth.json'), `{ "tokens": { "access_token": ${SECRET} } }`);
+    const err = await thrown(new CodexAppServerAuth({ codexHome }));
+    expect(inspect(err)).not.toContain(SECRET);
+    expect([err.message, err.cause]).toEqual([`Codex login succeeded but ${join(codexHome, 'auth.json')} isn't valid JSON.`, undefined]);
+  });
+
+  test('a file that can\'t be read keeps the read error as its cause', async () => {
+    const { CodexAppServerAuth } = await import('../src/codex-subscription-adapter.js');
+    const codexHome = home();
+    const err = await thrown(new CodexAppServerAuth({ codexHome }));
+    expect(err.message).toStartWith(`Codex login succeeded but ${join(codexHome, 'auth.json')} could not be read.`);
+    expect((err.cause as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
 });

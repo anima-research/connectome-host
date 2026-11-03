@@ -62,8 +62,6 @@ describe('parseAnthropicUsage', () => {
   });
 
   test('the live response shape (max plan, 2026-09-21), trimmed', () => {
-    // Unknown window keys come and go server-side; they must be ignored, and
-    // limits[] repeats the session/weekly windows under other kinds.
     const windows = parseAnthropicUsage({
       five_hour: { utilization: 20, resets_at: '2026-09-21T12:00:00.205547+00:00', limit_dollars: null, locked_reason: null },
       seven_day: { utilization: 13, resets_at: '2026-09-26T06:00:00.205570+00:00', limit_dollars: null, locked_reason: null },
@@ -164,7 +162,7 @@ describe('QuotaMeter', () => {
     const snapshot = await meter.refresh();
     expect(snapshot?.error).toBe('HTTP 429');
     expect(snapshot?.windows).toHaveLength(1);
-    now += 31_000; // inside the doubled floor
+    now += 31_000;
     await meter.refresh();
     expect(source.calls).toBe(2);
     now += 31_000;
@@ -209,7 +207,6 @@ describe('quotaProviderHold', () => {
     ]]), { now: () => now });
     const hold = quotaProviderHold(meter, () => 'claude-opus-5', () => now);
 
-    // Nothing known yet: ordinary retry — but the consultation kicks a read.
     expect(hold(rateLimit(), 'agent')).toBeUndefined();
     await meter.refresh();
 
@@ -240,8 +237,6 @@ describe('quotaProviderHold', () => {
 
 describe('review follow-ups', () => {
   test('a watched meter keeps polling through error backoff and recovers', async () => {
-    // Real clock: the point is that a timer tick suppressed by the backoff
-    // floor re-arms itself instead of leaving the meter with no timer at all.
     const source = fakeSource([new Error('down'), new Error('down'), new Error('down'),
       [{ key: 'five_hour', label: '5h', utilization: 7 }]]);
     const meter = new QuotaMeter(source, { minRefreshIntervalMs: 10, watchIntervalMs: 15 });
@@ -262,7 +257,7 @@ describe('review follow-ups', () => {
     const hold = hook(rateLimit(), 'resident');
     expect(hold?.holdMs).toBe(10 * 60_000);
     expect(hold?.reason).toContain('reset time not reported');
-    now += 2 * HOUR; // the reading is now too old to ground a hold on
+    now += 2 * HOUR;
     source.fetchWindows = async () => { throw new Error('down'); };
     expect(hook(rateLimit(), 'resident')).toBeUndefined();
     meter.dispose();
@@ -276,7 +271,7 @@ describe('review follow-ups', () => {
     const hook = quotaProviderHold(meter, () => 'claude-opus-4-6', () => now);
     expect(hook(rateLimit(), 'subconscious', { model: 'claude-sonnet-5' })).toBeUndefined();
     expect(hook(rateLimit(), 'resident', { model: 'claude-opus-4-6' })?.holdMs).toBe(10 * 60_000);
-    expect(hook(rateLimit(), 'resident')?.holdMs).toBe(10 * 60_000); // older framework: no context
+    expect(hook(rateLimit(), 'resident')?.holdMs).toBe(10 * 60_000);
     meter.dispose();
   });
 

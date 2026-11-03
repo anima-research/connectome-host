@@ -1,20 +1,11 @@
-/**
- * Integration test for the 'panel-request' IPC verb against a REAL headless
- * child (full framework, no inference): the same runPanelOp dispatcher the
- * WebUI host uses locally must answer over the socket, so every operator
- * panel (mcpl / settings / pins / health / context debug) works for fleet
- * children exactly as it does for the host.
- *
- * Also verifies panel-response bypasses subscription filtering — a narrowed
- * event stream must never eat a request/response pair.
- */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { connect as netConnect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectWhenAccepting } from './ipc-connect.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '..');
@@ -46,7 +37,7 @@ function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; s
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
       if (!line) continue;
-      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* ignore malformed */ }
+      try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { }
     }
   };
   socket.on('data', handler);
@@ -62,18 +53,6 @@ async function waitFor(check: () => boolean, timeoutMs: number, label: string): 
   throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
 }
 
-async function connectSocket(path: string, timeoutMs = 3_000): Promise<Socket> {
-  return new Promise((resolveConn, rejectConn) => {
-    const s = netConnect(path);
-    const timer = setTimeout(() => {
-      s.destroy();
-      rejectConn(new Error(`socket connect timeout: ${path}`));
-    }, timeoutMs);
-    s.once('connect', () => { clearTimeout(timer); resolveConn(s); });
-    s.once('error', (err) => { clearTimeout(timer); rejectConn(err); });
-  });
-}
-
 describe('headless daemon — panel-request / panel-response', () => {
   let tmpDir: string;
   let socketPath: string;
@@ -82,7 +61,6 @@ describe('headless daemon — panel-request / panel-response', () => {
   let reader: { events: Array<Record<string, unknown>>; stop: () => void };
   let corrSeq = 0;
 
-  /** Send one panel-request and await its panel-response. */
   async function panel(op: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> {
     const corrId = `panel-test-${++corrSeq}`;
     sock.write(JSON.stringify({ type: 'panel-request', op, ...(params ? { params } : {}), corrId }) + '\n');
@@ -115,7 +93,7 @@ describe('headless daemon — panel-request / panel-response', () => {
     );
 
     await waitFor(() => existsSync(socketPath), 15_000, 'socket file appears');
-    sock = await connectSocket(socketPath);
+    sock = await connectWhenAccepting(socketPath);
     reader = lineReader(sock);
     await waitFor(
       () => reader.events.some((e) => e.type === 'lifecycle' && (e as { phase?: string }).phase === 'ready'),
@@ -125,11 +103,11 @@ describe('headless daemon — panel-request / panel-response', () => {
   });
 
   afterAll(async () => {
-    try { sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { /* noop */ }
+    try { sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { }
     await new Promise((r) => setTimeout(r, 500));
-    try { reader.stop(); sock.destroy(); } catch { /* noop */ }
-    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { /* noop */ }
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    try { reader.stop(); sock.destroy(); } catch { }
+    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
   });
 
   test('op=health returns the healthz assembly', async () => {
@@ -137,7 +115,6 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(res.ok).toBe(true);
     expect(res.op).toBe('health');
     const data = res.data as Record<string, unknown>;
-    // Same shape /healthz serves: framework snapshot + the panel-data extras.
     expect(data.agents ?? data.runtimeSettings ?? data.contextComposition).toBeDefined();
   });
 
@@ -157,7 +134,7 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(typeof data.configPath).toBe('string');
     expect(Array.isArray(data.servers)).toBe(true);
     expect(Array.isArray(data.live)).toBe(true);
-    expect(data.live.length).toBe(0); // minimal recipe opts into no MCPLs
+    expect(data.live.length).toBe(0);
   });
 
   test('op=tool-classes reports effective classes, host table included', async () => {
@@ -171,8 +148,6 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(data.agent).toBeNull();
     expect(data.tools.length).toBeGreaterThan(0);
     expect(Object.values(data.counts).reduce((a, b) => a + b, 0)).toBe(data.tools.length);
-    // index.ts hands this host's module table to the framework: the
-    // always-loaded time module is classed by it, not left unclassed.
     expect(data.tools.find((t) => t.tool === 'time--now')).toMatchObject({ class: ['control'], source: 'host' });
 
     const scoped = await panel('tool-classes', { agent: 'commander' });
@@ -201,6 +176,12 @@ describe('headless daemon — panel-request / panel-response', () => {
     expect(data.agent).toBe('commander');
     expect(typeof data.branch).toBe('string');
     expect(typeof data.totals.chunks).toBe('number');
+  });
+
+  test('op=context-maintenance reports the framework\'s own interval, 5000 ms, for a recipe without maintenanceIntervalMs', async () => {
+    const res = await panel('context-maintenance');
+    expect(res.ok).toBe(true);
+    expect((res.data as { intervalMs?: unknown }).intervalMs).toBe(5000);
   });
 
   test('unknown agent comes back ok:false with 404', async () => {

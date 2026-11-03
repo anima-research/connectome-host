@@ -5,8 +5,6 @@ import { join } from 'node:path';
 import { GeminiAdapter, Membrane, NativeFormatter, type NormalizedRequest } from '@animalabs/membrane';
 import { LoggingProviderAdapter } from '../src/logging-provider-wrapper.js';
 
-// CI with the locked package proves transparent wrapping. The companion-pin
-// run sets this flag to additionally require the new media capability.
 const requireCapability = process.env.EXPECT_TOOL_RESULT_IMAGE_CAPABILITY === '1';
 
 function imageData(brand: string): string {
@@ -73,8 +71,6 @@ for (const lane of ['complete', 'stream'] as const) {
         expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(1);
 
         if (capability) {
-          // Full history passes through Membrane -> NativeFormatter -> the real
-          // logging wrapper -> Gemini wire conversion, not a mock adapter.
           const body = JSON.parse(bodies[1]);
           const parts = body.contents.flatMap((message: any) => message.parts);
           const response = parts.find((part: any) => part.functionResponse)?.functionResponse;

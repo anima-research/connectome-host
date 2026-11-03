@@ -56,10 +56,13 @@ describe('kv-unified recipe plumbing', () => {
     expect(strategy.config.kvUnified).toEqual(config());
   });
 
-  test('rejects selecting kv-unified without a complete policy', () => {
+  test('takes kv-unified with its kvUnified block left out, and rejects a block written incomplete', () => {
     const missing = recipe() as ReturnType<typeof recipe>;
     delete (missing.agent.strategy as { kvUnified?: unknown }).kvUnified;
-    expect(() => validateRecipe(missing)).toThrow(/complete.*kvUnified/i);
+    expect(() => validateRecipe(missing)).not.toThrow();
+    for (const bad of [null, 'standard', [], 0]) {
+      expect(() => validateRecipe(recipe(bad))).toThrow(/complete object/);
+    }
     const incomplete = config() as unknown as Record<string, unknown>;
     incomplete.policy = { ...(incomplete.policy as object) };
     delete (incomplete.policy as Record<string, unknown>).cacheLambda;
@@ -117,9 +120,64 @@ describe('kv-unified recipe plumbing', () => {
     });
   }
 
+  test('forwards an optional hysteresisCertificate and rejects a non-boolean one', () => {
+    const withCertificate = { ...config(), hysteresisCertificate: true };
+    const built = buildFrameworkStrategy(validateRecipe(recipe(withCertificate)), 'model', 'UTC') as unknown as {
+      config: { kvUnified: RecipeKvUnifiedConfig };
+    };
+    expect(built.config.kvUnified).toEqual(withCertificate);
+
+    for (const value of [null, 0, 1, 'true', {}, []]) {
+      expect(() => validateRecipe(recipe({ ...config(), hysteresisCertificate: value })))
+        .toThrow(/hysteresisCertificate must be a boolean/);
+    }
+  });
+
+  test('forwards the context-manager 0.17 keys and rejects values it would read as something else (#346)', () => {
+    const withKeys = {
+      ...config(),
+      policy: { ...config().policy, ageBandSteps: 0 },
+      engine: 'dag' as const,
+      latentDemandMode: 'individual' as const,
+    };
+    const built = buildFrameworkStrategy(validateRecipe(recipe(withKeys)), 'model', 'UTC') as unknown as {
+      config: { kvUnified: RecipeKvUnifiedConfig };
+    };
+    expect(built.config.kvUnified).toEqual(withKeys);
+    for (const steps of [0, 4, 64]) {
+      expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } }))).not.toThrow();
+    }
+    for (const engine of ['auto', 'subtree', 'dag']) {
+      expect(() => validateRecipe(recipe({ ...config(), engine }))).not.toThrow();
+    }
+    for (const latentDemandMode of ['individual', 'joint']) {
+      expect(() => validateRecipe(recipe({ ...config(), latentDemandMode }))).not.toThrow();
+    }
+
+    for (const steps of [-1, 65, 1.5, Number.NaN, '4', null]) {
+      expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } })))
+        .toThrow(/ageBandSteps must be an integer from 0 to 64/);
+    }
+    for (const engine of ['leaf', 'DAG', 'subtree ', null, 0]) {
+      expect(() => validateRecipe(recipe({ ...config(), engine }))).toThrow(/engine must be "auto", "subtree" or "dag"/);
+    }
+    for (const mode of ['joint ', 'Joint', 'both', null, true]) {
+      expect(() => validateRecipe(recipe({ ...config(), latentDemandMode: mode })))
+        .toThrow(/latentDemandMode must be "individual" or "joint"/);
+    }
+  });
+
   test('rejects a kvUnified object when another solver is selected', () => {
     const raw = recipe() as ReturnType<typeof recipe>;
     raw.agent.strategy.foldingStrategy = 'kv-stable';
+    expect(() => validateRecipe(raw)).toThrow(/requires foldingStrategy/);
+  });
+
+  test('a kvUnified block with foldingStrategy omitted is in use (kv-unified is the default) unless adaptive resolution is off', () => {
+    const raw = recipe() as ReturnType<typeof recipe>;
+    delete (raw.agent.strategy as { foldingStrategy?: string }).foldingStrategy;
+    expect(() => validateRecipe(raw)).not.toThrow();
+    (raw.agent.strategy as Record<string, unknown>).adaptiveResolution = false;
     expect(() => validateRecipe(raw)).toThrow(/requires foldingStrategy/);
   });
 });

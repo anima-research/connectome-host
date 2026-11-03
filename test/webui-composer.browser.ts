@@ -115,6 +115,7 @@ function scriptedHost(opts: ScriptedHostOptions = {}) {
           const page: HistoryPageMessage = {
             type: 'history-page',
             corrId: frame.corrId,
+            sessionId: session.id,
             entries: stored.slice(start, end),
             startIndex: start,
             totalCount: stored.length,

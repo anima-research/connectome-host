@@ -9,7 +9,7 @@ import type { ModuleContext } from '@animalabs/agent-framework';
 import {
   WebUiModule,
   __getSharedServerPortForTests,
-  __resetSharedServerForTests,
+  stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 import { MAX_WS_FRAME_BYTES, USER_IMAGE_LIMITS, frameLimitNote, wsFrameBytes } from '../src/web/protocol.js';
 
@@ -36,14 +36,15 @@ beforeAll(async () => {
       onTrace: (listener: (event: Record<string, unknown>) => void) => { emitTrace = listener; },
       pushEvent: (e: Record<string, unknown>) => { pushed.push(e); },
     },
-    sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+    frameworkSessionId: 's',
+    sessionManager: { findSession: () => null },
     recipe: { name: 'recipe', agent },
   } as never);
 });
 
 afterAll(async () => {
   await webUiModule.stop();
-  await __resetSharedServerForTests();
+  await stopWebUiServer();
 });
 
 /** An operator connection, with every frame it has been sent. */

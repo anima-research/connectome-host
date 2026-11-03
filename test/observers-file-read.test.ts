@@ -1,9 +1,5 @@
-/**
- * Reading observers.json: a file that parses is read grant by grant, what
- * the registry and the tools are told about a file of any shape, without a
- * throw, and what the registry admits and logs as the file changes.
- */
 import { describe, expect, test, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'node:fs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, utimesSync } from 'node:fs';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -13,9 +9,8 @@ import { loadObserversFile, observerStatement, readObserversFile, ObserverRegist
 // A canonical key: 43 base64url characters whose last one carries no stray bits.
 const key = (c: string) => `ed25519:${c.repeat(42)}A`;
 const SCOPES = '(the scopes are health, ops, messages, tools, thinking, debug)';
+const realReadFileSync = fs.readFileSync;
 
-// A file an operator set up and then broke by hand: a grant with a scope
-// that doesn't exist.
 const BAD_SCOPE = JSON.stringify({
   observers: [
     { key: key('A'), label: 'baseline', scopes: ['health'], protected: true },
@@ -93,15 +88,25 @@ describe('reading the grants file', () => {
     expect(read).toEqual({ kind: 'unreadable', problem: 'can\'t be checked (boom)' });
   });
 
+  // A value this deep overflows the stack as it's checked; a shallower one might
+  // not on another platform.
   test('a value too deep to check gives no grants, not a throw', () => {
     const deep = '['.repeat(100_000) + ']'.repeat(100_000);
     writeFileSync(path, `{"observers": [{"key": "${key('A')}", "label": "x", "scopes": [${deep}]}]}`);
-    // Bun 1.4.3 parses this and overflows checking it; an older JSON.parse may
-    // give out first. Either way it can't be checked, and nothing throws.
+    // Bun's message for a stack overflow, so a check that threw anything else
+    // would fail the case.
     const read = readObserversFile(path) as { kind: string; problem?: string };
     expect(read.kind).toBe('unreadable');
-    expect(read.problem).toStartWith('can\'t be checked (');
+    expect(read.problem).toBe('can\'t be checked (Maximum call stack size exceeded.)');
     expect(loadObserversFile(path)).toBeNull();
+  }, 20_000);
+
+  test('a path a read fails on, such as a directory, is unreadable and marked as a failed read', () => {
+    mkdirSync(path);
+    const read = readObserversFile(path) as { kind: string; problem?: string; readFailed?: boolean };
+    expect(read.kind).toBe('unreadable');
+    expect(read.problem).toStartWith('can\'t be read (');
+    expect(read.readFailed).toBe(true);
   });
 });
 
@@ -111,27 +116,43 @@ describe('the registry', () => {
   let bump = 0;
   let lines: string[];
   let spy: ReturnType<typeof spyOn>;
+  let readSpy: ReturnType<typeof spyOn>;
   let registry: ObserverRegistry;
+  let reads: number;
+  let readAs: (() => string) | null;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'observers-registry-'));
     path = join(dir, 'observers.json');
     lines = [];
+    reads = 0;
+    readAs = null;
     spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.join(' ')); });
+    readSpy = spyOn(fs, 'readFileSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+      if (file === path) {
+        reads++;
+        if (readAs) return readAs();
+      }
+      return (realReadFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+    }) as typeof fs.readFileSync);
     registry = new ObserverRegistry(path, 20);
   });
   afterEach(() => {
     registry.stop();
+    readSpy.mockRestore();
     spy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** Write the file with an mtime of its own, or the one given. */
+  const checkedByHand = () => {
+    registry = new ObserverRegistry(path, 60_000);
+  };
+  const check = () => (registry as unknown as { check(): void }).check();
+
   const write = (body: string, mtime = new Date(Date.now() + ++bump * 2_000)) => {
     writeFileSync(path, body);
     utimesSync(path, mtime, mtime);
     return mtime;
   };
-  /** Wait for what a check should bring about, rather than for a set time. */
   const until = async (done: () => boolean, ms = 3_000) => {
     const end = Date.now() + ms;
     while (!done() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
@@ -141,6 +162,9 @@ describe('the registry', () => {
   const file = (...grants: Array<Record<string, unknown>>) => JSON.stringify({ observers: grants });
   const X = { key: key('X'), label: 'x', scopes: ['health'] };
   const Z = { key: key('Z'), label: 'z', scopes: ['health'] };
+  const keeping = (l: string) => l.startsWith(`[webui-observers] ${path} isn't valid JSON`) && l.endsWith('— keeping the previous grants until it parses');
+  /** A read that fails while the stat succeeds, as with too many files open. */
+  const tooManyOpen = (): string => { throw Object.assign(new Error('EMFILE: too many open files, open'), { code: 'EMFILE' }); };
 
   test('an edit that drops a grant and adds a bad one admits exactly the file\'s good grants', async () => {
     write(file(X, Z));
@@ -161,37 +185,65 @@ describe('the registry', () => {
     ]);
   });
 
-  test('a later write that isn\'t valid JSON keeps the previous grants until it parses, and says so once', async () => {
+  test('a later write that isn\'t valid JSON keeps the previous grants until it parses, and says so once', () => {
+    checkedByHand();
     write(file(X));
     registry.start();
     write('{"observers": [');
-    const keeping = (l: string) => l.startsWith(`[webui-observers] ${path} isn't valid JSON`) && l.endsWith('— keeping the previous grants until it parses');
-    await until(() => lines.some(keeping));
-    await new Promise((r) => setTimeout(r, 100)); // several more checks read it again
+    for (let i = 0; i < 4; i++) check();
+    expect(reads).toBe(1 + 4);
     expect(admitted()).toEqual(['x']);
+    expect(lines).toHaveLength(1);
     expect(lines.filter(keeping)).toHaveLength(1);
     write(file(Z));
-    await until(() => same(admitted(), ['z']));
+    check();
     expect(admitted()).toEqual(['z']);
   });
 
-  test('a save that finishes with the same mtime as its half-written read is read again', async () => {
+  test('a read that finds a save half-written is read again at the next check, though the file\'s stat hasn\'t changed', () => {
+    checkedByHand();
     write(file(X));
     registry.start();
-    const mtime = write('{"observers": [');
-    await until(() => lines.some((l) => l.includes('keeping the previous grants')));
-    write(file(Z), mtime);
-    await until(() => same(admitted(), ['z']));
+    const whole = file(Z);
+    readAs = () => {
+      readAs = null;
+      return whole.slice(0, -5);
+    };
+    write(whole);
+    check();
+    expect(admitted()).toEqual(['x']);
+    expect(lines.filter(keeping)).toHaveLength(1);
+    check();
     expect(admitted()).toEqual(['z']);
+    check();
+    expect(reads).toBe(3);
   });
 
-  test('started on a file that isn\'t valid JSON, it admits none until it parses', async () => {
-    write('{"observers": [');
+  test('a read at start that finds a save half-written is read again at the next check', () => {
+    checkedByHand();
+    const whole = file(X);
+    write(whole);
+    readAs = () => {
+      readAs = null;
+      return whole.slice(0, -5);
+    };
     registry.start();
     expect(admitted()).toEqual([]);
+    check();
+    expect(admitted()).toEqual(['x']);
+  });
+
+  test('started on a file that isn\'t valid JSON, it admits none until it parses, and says so once', () => {
+    checkedByHand();
+    write('{"observers": [');
+    registry.start();
+    for (let i = 0; i < 3; i++) check();
+    expect(reads).toBe(1 + 3);
+    expect(admitted()).toEqual([]);
+    expect(lines).toHaveLength(1);
     expect(lines[0]).toEndWith('— admitting no grants until it parses');
     write(file(X));
-    await until(() => same(admitted(), ['x']));
+    check();
     expect(admitted()).toEqual(['x']);
   });
 
@@ -204,24 +256,44 @@ describe('the registry', () => {
     expect(lines).toContain(`[webui-observers] ${path} isn't a grants file: it holds null, not an object with an "observers" list — admitting no grants from it`);
   });
 
-  test('a read that fails admits nothing, is tried again at each check, and is named once', async () => {
+  test('a read that keeps failing admits nothing, is tried again at each check, and is named once', () => {
+    checkedByHand();
     write(file(X));
     registry.start();
-    rmSync(path);
-    mkdirSync(path);
-    const mtime = new Date(Date.now() + ++bump * 2_000);
-    utimesSync(path, mtime, mtime);
-    const failed = (l: string) => l.startsWith(`[webui-observers] ${path} can't be read (`);
-    await until(() => lines.some(failed));
-    await new Promise((r) => setTimeout(r, 100));
+    readAs = tooManyOpen;
+    write(file(Z));
+    for (let i = 0; i < 4; i++) check();
+    expect(reads).toBe(1 + 4);
     expect(admitted()).toEqual([]);
-    expect(lines.filter(failed)).toHaveLength(1);
-    // The file that takes the directory's place has the same mtime, so only
-    // a read tried again finds it.
-    rmSync(path, { recursive: true });
-    write(file(Z), mtime);
-    await until(() => same(admitted(), ['z']));
+    expect(lines).toEqual([`[webui-observers] ${path} can't be read (EMFILE: too many open files, open) — admitting no grants from it`]);
+    readAs = null;
+    check();
     expect(admitted()).toEqual(['z']);
+  });
+
+  test('a read that fails at start is tried again at the next check, though the file\'s stat hasn\'t changed', () => {
+    checkedByHand();
+    write(file(X));
+    readAs = tooManyOpen;
+    registry.start();
+    expect(admitted()).toEqual([]);
+    readAs = null;
+    check();
+    expect(admitted()).toEqual(['x']);
+  });
+
+  test('a file gone between the stat and the read at start is read again at the next check', () => {
+    checkedByHand();
+    write(file(X));
+    readAs = () => {
+      readAs = null;
+      throw Object.assign(new Error('ENOENT: no such file or directory, open'), { code: 'ENOENT' });
+    };
+    registry.start();
+    expect(admitted()).toEqual([]);
+    expect(lines).toEqual([`[webui-observers] ${path} is gone — admitting no grants from it`]);
+    check();
+    expect(admitted()).toEqual(['x']);
   });
 
   test('started on a link whose file is gone, it says so', () => {

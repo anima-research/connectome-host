@@ -1,13 +1,6 @@
-// This repository's wiring of scripts/release-holds.mjs, a copy of
-// agent-framework's, whose own suite tests the check itself (see the
-// script's header). Each case runs npm or bun with this repository's
-// preversion and prepublishOnly entries against a local stand-in for
-// GitHub's issues endpoint, or runs the script with this repository's own
-// package.json, so the hooks that make a release stop, and the repository
-// they ask, are tested here.
 import { afterAll, test } from "bun:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,16 +11,15 @@ import { fileURLToPath } from "node:url";
 const SCRIPT = fileURLToPath(
   new URL("../scripts/release-holds.mjs", import.meta.url),
 );
+const PACK_CONTENTS = fileURLToPath(new URL("../scripts/pack-contents.mjs", import.meta.url));
 const PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
+const BUMP = fileURLToPath(new URL("../scripts/release-bump.mjs", import.meta.url));
 
 interface Seen {
   url: string;
   headers: IncomingHttpHeaders;
 }
 
-/** Answers every request with `status` and `body`, or with what `body`
- *  gives for the request's URL, recording each request. A `raw` body is
- *  sent as it is, not as JSON. */
 async function github(
   status: number,
   body: unknown | ((url: string) => unknown),
@@ -55,7 +47,6 @@ afterAll(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway directory with this package.json (or this raw text). */
 function project(pkg: Record<string, unknown> | string): string {
   const dir = mkdtempSync(join(tmpdir(), "release-holds-"));
   made.push(dir);
@@ -71,8 +62,8 @@ const PKG = {
 
 const HOLD = { number: 300, title: "DefaultErrorPolicy sleeps the provider's retryAfterMs uncapped" };
 
-/** Runs `file` with `args` and only the environment given, so a CI
- *  runner's own GITHUB_REPOSITORY or token can't reach it. */
+/** Runs `file` with only the environment given, so a CI runner's own
+ *  GITHUB_REPOSITORY or token can't reach it. */
 function exec(
   file: string,
   args: string[],
@@ -89,22 +80,23 @@ function exec(
 // Under node, not the test runner's bun: npm runs it with node.
 const run = (cwd: string, env: Record<string, string>) => exec("node", [SCRIPT], cwd, env);
 
-/** A throwaway package whose preversion and prepublishOnly are this
- *  repository's own, with the script beside it. */
 function wiredProject(): string {
   const scripts = (JSON.parse(readFileSync(PACKAGE_JSON, "utf8")) as { scripts: Record<string, string> }).scripts;
   const dir = project({
     ...PKG,
-    scripts: { preversion: scripts.preversion, prepublishOnly: scripts.prepublishOnly },
+    scripts: { preversion: scripts.preversion, prepublishOnly: scripts.prepublishOnly, prepack: scripts.prepack },
   });
   mkdirSync(join(dir, "scripts"));
   copyFileSync(SCRIPT, join(dir, "scripts", "release-holds.mjs"));
+  copyFileSync(BUMP, join(dir, "scripts", "release-bump.mjs"));
+  copyFileSync(PACK_CONTENTS, join(dir, "scripts", "pack-contents.mjs"));
   writeFileSync(join(dir, ".npmrc"), "");
+  mkdirSync(join(dir, "dist", "web"), { recursive: true });
+  writeFileSync(join(dir, "dist", "web", "index.html"), "");
+  execFileSync("git", ["init", "-q"], { cwd: dir });
   return dir;
 }
 
-/** npm, kept to the throwaway directory: its own cache and user config,
- *  and the stand-in for its registry and GitHub's API. */
 function npm(dir: string, args: string[], api: string) {
   // Under `npm test`, npm names its own CLI script in npm_execpath, and node
   // runs it: a bare `npm` is npm.cmd on Windows, which execFile can't start
@@ -125,8 +117,6 @@ function npm(dir: string, args: string[], api: string) {
   });
 }
 
-/** bun, kept to the throwaway directory as npm is: under `bun test`, the
- *  running binary. */
 function bun(dir: string, args: string[], api: string) {
   return exec(process.execPath, args, dir, {
     HOME: dir,

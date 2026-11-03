@@ -16,6 +16,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { PRIVATE_DIR_MODE } from '../src/update/data-swap.js';
 
 interface RolloutRecord {
   timestamp?: string;
@@ -57,8 +58,7 @@ function parseArgs(argv: string[]) {
   return { source, outDir, agentName };
 }
 
-/** Reconstruct the provider's current input window. A `compacted` record
- * replaces all prior response-item history with its canonical
+/** A `compacted` record replaces all prior response-item history with its
  * `replacement_history`; later response items append normally. */
 export function reconstructEffectiveHistory(records: RolloutRecord[]): EffectiveItem[] {
   let history: EffectiveItem[] = [];
@@ -102,8 +102,8 @@ function textFromContent(content: unknown): string {
     .join('\n');
 }
 
-/** A human-readable Chronicle projection. `rawItem` is the load-bearing field:
- * the Responses formatter emits it verbatim and ignores the projection. */
+/** `rawItem` is the load-bearing field: membrane's Responses formatter emits
+ * it verbatim and ignores the projection. */
 export function projectItem(item: NativeItem): ContentBlock[] {
   const carrier = <T extends ContentBlock>(block: T): ContentBlock =>
     ({ ...block, rawItem: item } as ContentBlock);
@@ -138,8 +138,6 @@ export function projectItem(item: NativeItem): ContentBlock[] {
         content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? null),
       })];
     default:
-      // Custom tool calls/outputs and future item types stay opaque. The
-      // zero-width projection avoids injecting synthetic text into the model.
       return [carrier({ type: 'text', text: '' })];
   }
 }
@@ -197,7 +195,7 @@ async function main() {
 
   const dataDir = join(opts.outDir, 'data');
   const sourceDir = join(opts.outDir, 'source');
-  mkdirSync(sourceDir, { recursive: true });
+  mkdirSync(sourceDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const snapshotPath = join(sourceDir, basename(opts.source));
   writeFileSync(snapshotPath, raw);
 

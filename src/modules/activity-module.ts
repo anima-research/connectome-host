@@ -1,10 +1,6 @@
 /**
- * ActivityModule — surfaces agent composition activity (typing indicators)
- * to a configurable set of MCPL channels while inference is active.
- *
- * Recipe-seeded initial channels; agent can add/remove at runtime via tools.
- * State persists via Chronicle. Typing refresh is owned by the framework's
- * ChannelRegistry (~7s interval, matches Discord/Zulip expiry).
+ * agent-framework's ChannelRegistry refreshes a channel's typing indicator
+ * every 7 s while it shows.
  */
 
 import type {
@@ -20,49 +16,30 @@ import type {
   TraceEvent,
   WorkspaceModule,
 } from '@animalabs/agent-framework';
-import { open } from 'node:fs/promises';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { STREAM_END_TRACES } from '../state/turn-trace.js';
+import { addressedPush } from './addressed-push.js';
 
 export interface ActivityModuleConfig {
   initialChannels?: string[];
 }
 
-/** Trace events that end a turn's stream. A turn's tool rounds stay inside
- *  its one stream, so `inference:completed` comes once, at a turn's normal
- *  end; `inference:turn_ended` ends one a tool closed; and an aborted, failed
- *  or exhausted stream ends with its own event. A failed attempt that the
- *  framework retries starts again with `inference:started`, and a failure
- *  can send `failed` and then `exhausted`. */
-const TURN_END_TRACES: ReadonlySet<string> = new Set([
-  'inference:completed',
-  'inference:turn_ended',
-  'inference:aborted',
-  'inference:failed',
-  'inference:exhausted',
-]);
-
 interface ActivityState {
   channels: string[];
 }
 
+const ORIGIN_HEAD_BYTES = 2048;
+
 /**
- * Parse a loose origin hint out of a file's top lines. Used when an inference
- * is triggered by a workspace file rather than an incoming channel message:
- * if the file's head declares the conversation it's replying to, we route the
- * typing indicator to that topic. Returns null if no hint is found.
- *
- * Recognized shapes:
+ * A workspace file's head can name the conversation it answers, and typing
+ * for an inference the file triggers shows there. Recognized shapes:
  *   - `origin: zulip#<channel>#<topic>`
  *   - `reply-to: zulip:<channel>/<topic>`
- *   - YAML frontmatter (delimited by leading `---` ... `---`) containing both
- *     `channel: <name>` and `topic: <name>` — matches the clerk's existing
- *     knowledge-request ticket convention. Loose `channel:`/`topic:` lines
- *     outside a frontmatter block are ignored to avoid mis-routing on prose
- *     files (e.g. README headings, mined artifacts quoting Zulip metadata).
- *
- * All platform hints currently resolve to `zulip:<channel>` — extend here when
- * another MCPL server wants in on origin-routing.
+ *   - YAML frontmatter (between leading `---` lines) holding both
+ *     `channel: <name>` and `topic: <name>`; `channel:` and `topic:` lines
+ *     outside a frontmatter block are ignored.
+ * Every hint names `zulip:<channel>`. Returns null if the head holds none.
  */
 function parseOriginHint(text: string): { channelId: string; topic: string } | null {
   const compact = text.match(/origin:\s*zulip#([^\s#]+)#(\S+)/i);
@@ -90,18 +67,11 @@ export class ActivityModule implements Module {
   private ctx: ModuleContext | null = null;
   private framework: AgentFramework | null = null;
   private channels = new Set<string>();
-  /** Whether a turn is under way, as far as typing shows it. One flag for
-   *  every agent: the framework itself clears every channel's typing when
-   *  any turn's stream reaches its end, so a turn's end, whoever's, is when
-   *  the channels stop showing it. */
+  /** One flag for every agent: agent-framework clears every channel's typing
+   *  when any turn's stream ends, unless it hands the turn to a successor. */
   private typingActive = false;
-  /** The framework's trace subscription, ended in stop(), as onTrace's
-   *  contract asks, and when setFramework replaces the framework. */
   private unsubscribeTrace: (() => void) | null = null;
 
-  /** Most recent incoming-message metadata per channel. Handed back to the
-   *  originating server on each typing notification so routing hints (e.g.
-   *  Zulip topic) land where the conversation is active. */
   private lastMetadata = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly config: ActivityModuleConfig = {}) {}
@@ -126,10 +96,6 @@ export class ActivityModule implements Module {
     this.framework = null;
   }
 
-  /** Called from the host after framework creation, like SubagentModule.
-   *  The host builds a module per framework; a framework handed over here
-   *  replaces any earlier one as stop() ends it: no more of its traces, and
-   *  no typing left on its channels. */
   setFramework(framework: AgentFramework): void {
     this.unsubscribeTrace?.();
     this.stopAllTyping();
@@ -137,13 +103,11 @@ export class ActivityModule implements Module {
     this.typingActive = false;
     this.unsubscribeTrace = framework.onTrace((event: TraceEvent) => {
       if (event.type === 'inference:started') {
-        // A silent wake's prose is suppressed. agent-framework's own Discord
-        // module shows no typing for one either.
+        // agent-framework suppresses a silent wake's prose, and its own Discord
+        // module shows no typing for one.
         if ((event as { silent?: unknown }).silent === true) return;
         this.onInferenceStarted();
-      } else if (TURN_END_TRACES.has(event.type)) {
-        // Any end, failed or aborted ones included: leaving the flag on
-        // would have show_in start "typing…" when no turn is under way.
+      } else if (STREAM_END_TRACES.has(event.type)) {
         this.onInferenceEnded();
       }
     });
@@ -235,8 +199,6 @@ export class ActivityModule implements Module {
   }
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
-    // Track the most recent incoming-message metadata per channel so typing
-    // notifications can echo it back to the originating server as routing hints.
     if (event.type === 'mcpl:channel-incoming') {
       const e = event as unknown as {
         channelId: string;
@@ -249,9 +211,10 @@ export class ActivityModule implements Module {
       }
       this.lastMetadata.set(e.channelId, merged);
     }
-    // Workspace-triggered inferences have no incoming-message metadata, so
-    // peek at the file's head for an origin hint and populate routing metadata
-    // if found. Best-effort; failures are silent.
+    else if (event.type === 'mcpl:push-event') {
+      const pushed = addressedPush(event);
+      if (pushed) this.lastMetadata.set(pushed.channelId, { ...pushed.origin });
+    }
     else if (event.type === 'workspace:created' || event.type === 'workspace:modified') {
       const e = event as unknown as { paths: string[] };
       await this.extractOriginFromFiles(e.paths);
@@ -264,28 +227,14 @@ export class ActivityModule implements Module {
     if (!workspace) return;
 
     for (const mountPath of mountPaths) {
-      const abs = workspace.resolveAbsolutePath(mountPath);
-      if (!abs) continue;
-
       try {
-        const fd = await open(abs, 'r');
-        try {
-          const buf = Buffer.alloc(2048);
-          const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
-          const head = buf.toString('utf8', 0, bytesRead);
-
-          const origin = parseOriginHint(head);
-          if (origin && this.channels.has(origin.channelId)) {
-            // Merge with any existing metadata so other keys (e.g. senderEmail)
-            // survive if the origin refresh is subsequent to an incoming message.
-            const prior = this.lastMetadata.get(origin.channelId) ?? {};
-            this.lastMetadata.set(origin.channelId, { ...prior, topic: origin.topic });
-          }
-        } finally {
-          await fd.close();
+        const { bytes } = await workspace.readFileFromDisk(mountPath, { maxBytes: ORIGIN_HEAD_BYTES });
+        const origin = parseOriginHint(bytes.toString('utf8'));
+        if (origin && this.channels.has(origin.channelId)) {
+          const prior = this.lastMetadata.get(origin.channelId) ?? {};
+          this.lastMetadata.set(origin.channelId, { ...prior, topic: origin.topic });
         }
       } catch {
-        // File unreadable / gone / etc. — silently skip.
       }
     }
   }

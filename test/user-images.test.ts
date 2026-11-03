@@ -425,7 +425,7 @@ describe('stored messages as the WebUI is sent them', () => {
     const media = entries[0]!.blocks.filter((b) => b.kind === 'media');
     expect(media).toEqual([
       { kind: 'media', mediaType: 'image/png', ref: 's0/1' },
-      { kind: 'media', mediaType: 'image/png', ref: 's1/0.1' },
+      { kind: 'media', mediaType: 'image/png', ref: 's1/0.1', toolUseId: 't1' },
     ]);
   });
 
