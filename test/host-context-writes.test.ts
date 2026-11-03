@@ -512,9 +512,18 @@ describe("a subagent's result or failure whose launcher has ended", () => {
       expect(audienceOf(forPrimary.metadata)).toEqual({ audience: ['clerk'] });
       expect(h.inWindow('clerk', forPrimary.id)).toBe(true);
       expect(h.inWindow('mira', forPrimary.id)).toBe(false);
-      // Nobody is woken: no request is asked for, and none is sent.
+      // Nobody is woken: no request is asked for, the framework holds no
+      // turn of either agent and no request waiting to start, and none is
+      // sent. The wait is a backstop for a request still on its way.
+      const waiting = () => {
+        const { activeTurnAgents, gatedRequests, parkedAdmissions } = h.framework.getHostModeStatus();
+        return { activeTurnAgents, gatedRequests, parkedAdmissions };
+      };
+      const none = { activeTurnAgents: [], gatedRequests: 0, parkedAdmissions: 0 };
+      expect(waiting()).toEqual(none);
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(woken).toEqual([]);
+      expect(waiting()).toEqual(none);
       expect({ clerk: h.adapter.callsFor('clerk'), mira: h.adapter.callsFor('mira') }).toEqual(calls);
       // Each one's next request carries its own rows and not the other's.
       await h.turn('clerk');
