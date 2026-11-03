@@ -671,10 +671,14 @@ unknown-key warning, like those at the other levels.
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
   (read-only `./input`) and `products` (read-write `./output`). A mount with
   `"backend": "direct"` reads disk as it is, and writes it as it is if it's
-  writable, with no store, undo or watcher: it names its mode, `"read-only"`,
-  or `"read-write"` from agent-framework 0.27.0, and a mount whose changes
-  should wake the agent, or whose writes should be undoable, leaves `backend`
-  out. A direct mount that names no `ignore` passes over `node_modules`,
+  writable, with no store or watcher, so a branch switch or a rollback
+  (`/checkout`, `/restore`, `/branchto`) leaves its files as they are: it
+  names its mode, `"read-only"`, or `"read-write"` from agent-framework
+  0.27.0, and a mount whose changes should wake the agent, or whose writes a
+  branch switch or a rollback should take back, leaves `backend` out.
+  `/undo` moves no branch, so it takes back no mount's writes, a
+  Chronicle-backed mount's included. A direct mount that names no `ignore`
+  passes over `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
   and one that names any passes over only what it names. While its store
   holds changes from when it ran as Chronicle, it runs as Chronicle, taking no
