@@ -29,49 +29,66 @@ for (const version of ['0.14.1', '0.15.0']) {
 moveCurrent(root, '0.14.1');
 
 const agent = { name: 'fixture', state: { status: 'idle' as string } };
-let heldUntil = 0;
-let scriptUntil = 0;
+// Each state the fixture holds is let go only once the host has been seen to meet it while armed: a turn or a held
+// token once the idle poll has read it SEEN times, and work that starts in the quiesce once a try has stayed armed over it.
+const SEEN = 4;
+let armedNow = false;
+let turnSeen = 0;
+let tokenHeld = false;
+let tokenSeen = 0;
+let scriptRunning = false;
 let scriptStarted = false;
-let credentialUntil = 0;
+let credentialRunning = false;
+let workStarted = false;
+let endWork = () => {};
 const app = {
   recipe: { name: 'Self-update test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   switching: false,
   stopping: false,
-  credentials: { actionInFlight: () => Date.now() < credentialUntil },
+  credentials: { actionInFlight: () => credentialRunning },
 };
 let quiesced: { quiesced: boolean; reason?: string } = { quiesced: false };
-const held = () => Date.now() < heldUntil;
-const scripting = () => Date.now() < scriptUntil;
-const status = () => ({
+const held = () => tokenHeld;
+const scripting = () => scriptRunning;
+const status = () => {
+  if (tokenHeld) tokenSeen += 1;
+  return statusNow();
+};
+const statusNow = () => ({
   ...quiesced, drained: !held(), activeTurns: held() ? 1 : 0, parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: scripting() ? 1 : 0,
   deferredWrites: 0, activeTurnAgents: held() ? ['fixture'] : [],
 });
 const framework = {
-  getAllAgents: () => [agent],
+  getAllAgents: () => {
+    if (armedNow && agent.state.status !== 'idle') turnSeen += 1;
+    return [agent];
+  },
   onTrace: () => () => {},
   getHostModeStatus: status,
   quiesce: async (opts: { reason?: string } = {}) => {
     quiesced = { quiesced: true, reason: opts.reason };
     if (mode === 'script-starts-in-quiesce' && !scriptStarted) {
       scriptStarted = true;
-      scriptUntil = Date.now() + 4000;
+      scriptRunning = true;
+      startWork(() => { scriptRunning = false; });
       writeFileSync(join(dataDir, 'started'), 'script');
     }
     if (mode === 'switch-starts-in-quiesce' && !scriptStarted) {
       scriptStarted = true;
       app.switching = true;
-      setTimeout(() => { app.switching = false; }, 4000);
+      startWork(() => { app.switching = false; });
       writeFileSync(join(dataDir, 'started'), 'switch');
     }
     if (mode === 'operator-starts-in-quiesce' && !scriptStarted) {
       scriptStarted = true;
-      void trackOperatorWork(app, null, new Promise((done) => setTimeout(done, 4000)));
+      void trackOperatorWork(app, null, new Promise<void>((done) => { startWork(done); }));
       writeFileSync(join(dataDir, 'started'), 'operator');
     }
     if (mode === 'credential-starts-in-quiesce' && !scriptStarted) {
       scriptStarted = true;
-      credentialUntil = Date.now() + 4000;
+      credentialRunning = true;
+      startWork(() => { credentialRunning = false; });
       writeFileSync(join(dataDir, 'started'), 'credential');
     }
     if (mode === 'stop-in-quiesce' && !scriptStarted) {
@@ -87,7 +104,6 @@ const framework = {
   getAllModules: () => [],
   listMcplServers: () => [],
   async stop() {
-    while (hostUpdate.armedSwitch() !== null) await new Promise((done) => setTimeout(done, 10));
     writeFileSync(join(dataDir, 'stopped'), `${agent.state.status}${held() ? ' in-flight' : ''}${scripting() ? ' script' : ''}${app.switching ? ' switching' : ''}${operatorWorkRunning(app) ? ' operator' : ''}${app.credentials.actionInFlight() ? ' credential' : ''}`);
   },
 };
@@ -107,10 +123,31 @@ const arming = setInterval(() => {
   if (!answer.done) return;
   clearInterval(arming);
   writeFileSync(join(dataDir, 'armed'), JSON.stringify(answer));
-  setTimeout(() => {
+  armedNow = true;
+}, 10);
+
+function startWork(end: () => void): void {
+  workStarted = true;
+  endWork = end;
+}
+
+const letting = setInterval(() => {
+  if (armedNow && agent.state.status !== 'idle' && turnSeen >= SEEN) {
+    writeFileSync(join(dataDir, 'seen-turn'), String(turnSeen));
     agent.state.status = 'idle';
-    if (mode === 'token-held-after-turn') heldUntil = Date.now() + 1500;
-  }, 1200);
+    if (mode === 'token-held-after-turn') tokenHeld = true;
+  }
+  if (tokenHeld && tokenSeen >= SEEN) {
+    writeFileSync(join(dataDir, 'seen-token'), String(tokenSeen));
+    tokenHeld = false;
+  }
+  const lastTry = hostUpdate.armedSwitch()?.lastTry ?? null;
+  if (workStarted && lastTry !== null) {
+    writeFileSync(join(dataDir, 'blocked'), lastTry.waited);
+    workStarted = false;
+    endWork();
+  }
+  if (app.stopping) clearInterval(letting);
 }, 10);
 
 await runHeadless(Object.assign(app, { framework }) as unknown as AppContext, []);
