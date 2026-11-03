@@ -622,16 +622,25 @@ describe('echoes', () => {
 });
 
 describe('images', () => {
-  test('a send carries its image, and a refusal puts the text and the image back into an empty composer', async () => {
+  test('a send carries its image, and a refusal puts the text, the image and its notes back into an empty composer', async () => {
     await withComposer(async (c) => {
-      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
+      const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
+      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }, { name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
       await c.page.getByTitle(/^dot\.png/).waitFor();
+      await c.page.getByText(cut).waitFor();
       const frame = await send(c, 'with a picture');
       expect(frame.images?.map((i) => [i.mediaType, i.data])).toEqual([['image/png', DOT_PNG.toString('base64')]]);
       expect(await c.page.getByTitle(/^dot\.png/).count()).toBe(0);
+      await until('the notes cleared by the send', () => c.page.getByText(cut).count(), (n) => n === 0);
+      const later = 'later.png is cut short: the file ends before the image does; attach a whole copy';
+      await attach(c, [{ name: 'later.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
+      await c.page.getByText(later).waitFor();
       c.host.refuse(frame.corrId!);
       await until('the message back in the composer', () => c.box.inputValue(), (v) => v === 'with a picture');
       await c.page.getByTitle(/^dot\.png/).waitFor();
+      await c.page.getByText(cut).waitFor();
+      const notice = (await c.page.getByText(later).textContent()) ?? '';
+      expect([notice.indexOf(cut) >= 0, notice.indexOf(cut) < notice.indexOf(later)]).toEqual([true, true]);
       const again = await send(c, 'with a picture');
       expect(again.images?.map((i) => [i.mediaType, i.data])).toEqual([['image/png', DOT_PNG.toString('base64')]]);
     });
@@ -725,6 +734,7 @@ describe('images', () => {
       await c.box.press('Enter');
       await c.page.getByText(slash).waitFor();
       await c.box.fill('an ordinary message');
+      expect(await c.page.getByText(slash).count()).toBe(1);
       await attach(c, [{ name: 'second.png', buffer: DOT_PNG }]);
       await until('the send note cleared by a new batch', () => c.page.getByText(slash).count(), (n) => n === 0);
     });

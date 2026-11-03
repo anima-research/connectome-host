@@ -96,6 +96,7 @@ interface Message {
   /** Client-only, on a row typed here until its echo replaces it: the
    *  images it sent, so a refused send can go back into the composer. */
   sentImages?: Attachment[];
+  sentFileNotes?: string[];
   corrId?: string;
   unsent?: 'refused' | 'unconfirmed';
   refusal?: string;
@@ -1321,6 +1322,7 @@ export function App() {
       setSendNote('not connected to the host: the message is still here; send it again once the connection is back');
       return;
     }
+    const leftOut = fileNotes();
     setDraft('');
     setAttachments([]);
     setFileNotes([]);
@@ -1344,6 +1346,7 @@ export function App() {
       timestamp: Date.now(),
       corrId,
       ...(here ? { sentIn: placeOf(here) } : {}),
+      ...(leftOut.length > 0 ? { sentFileNotes: leftOut } : {}),
       ...(images.length > 0
         ? {
             blocks: images.map((a): UiBlock => ({ kind: 'media', mediaType: a.mediaType, dataUrl: a.dataUrl })),
@@ -1359,12 +1362,14 @@ export function App() {
     if (i < 0) return;
     const text = messages[i]!.text;
     const images = (messages[i]!.sentImages ?? []).map((a) => ({ ...a }));
+    const leftOut = messages[i]!.sentFileNotes ?? [];
     const composerEmpty = !draft().trim() && attachments().length === 0 && preparing() === 0;
     let restore = false;
     setMessages(produce((arr) => { restore = settleRefusal(arr, corrId, composerEmpty, reason); }));
     if (restore) {
       setDraft(text);
       setAttachments(images);
+      setFileNotes((shown) => [...leftOut, ...shown]);
       setSendNote('not sent (see the error above); the message is back here');
     }
   };
