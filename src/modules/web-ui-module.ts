@@ -1738,7 +1738,8 @@ export class WebUiModule implements Module {
             this.send(client, {
               type: 'error',
               ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
-              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request. Remove them to send the text",
+              message: "message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request"
+                + (parsed.content.trim() ? '. Remove them to send the text' : ''),
             });
             return;
           }

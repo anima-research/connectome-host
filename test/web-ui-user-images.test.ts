@@ -227,6 +227,8 @@ describe('composer images over the WebSocket', () => {
       const sent = await send({ content: 'look', images: [{ mediaType: 'image/png', data: FIX.png }] });
       expect(sent.pushed).toBeUndefined();
       expect(sent.error).toBe("message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request. Remove them to send the text");
+      const imagesOnly = await send({ content: '', images: [{ mediaType: 'image/png', data: FIX.png }] });
+      expect(imagesOnly.error).toBe("message not sent: this host doesn't take images: its strategy, passthrough, keeps every image in every request");
       expect((await send({ content: 'just text' })).pushed).toBeDefined();
     } finally {
       delete agent.strategy;
