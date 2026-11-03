@@ -16,9 +16,9 @@ const REFUSAL = 'message not sent: with this much text, its images could be drop
 const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
   + 'or past it';
 const IMAGES_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, where they could reach the model only as `
-  + `placeholders. Send at most ${fit}, and the rest after it, in a message of their own`;
+  + `placeholders. Send at most ${fit}; attach the rest again after it, in a message of their own`;
 const BOTH_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, and so does the text with any one of them. `
-  + `Send at most ${fit} at once first, then the text in a message of its own`;
+  + `Send at most ${fit} at once first, then the text in a message of its own, then attach the rest again`;
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
   + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
   + 'Whoever runs this host can raise it';
