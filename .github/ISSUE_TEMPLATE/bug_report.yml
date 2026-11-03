@@ -1,0 +1,24 @@
+name: Bug report
+description: Something went wrong with connectome-host. The /bug command fills this form in for you.
+title: "[/bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting this. Inside connectome-host, `/bug <what happened>` assembles a report and opens this form with it filled in.
+
+        This repository is public. Please don't paste conversation text, prompts, keys or personal paths here. If we need more, we'll ask whether you can share it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: In your own words. What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: Assembled by /bug. It has versions, the setup as structure, and errors as kinds and code locations, with no conversation text, prompts, keys, names or paths. Leave it empty if you're filing by hand.
+      render: text

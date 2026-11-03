@@ -1,6 +1,6 @@
 {
   "name": "WebUI Fleet Test",
-  "description": "Parent recipe with one fleet child for WebUI tree-rendering smoke tests",
+  "description": "WebUI tree-rendering smoke test: parent at http://127.0.0.1:8788, child WebUI at http://127.0.0.1:8787",
   "agent": {
     "name": "conductor",
     "systemPrompt": "You are a test conductor."
@@ -11,7 +11,7 @@
     "retrieval": false,
     "wake": false,
     "workspace": false,
-    "webui": true,
+    "webui": { "host": "127.0.0.1", "port": 8788 },
     "fleet": {
       "children": [
         {

@@ -5,17 +5,16 @@ restart. Everything here follows the idiom the offline surgeries use: fork
 first, mutate the fork, make the fork the live branch. The parent branch
 keeps everything, so "undo" is always `checkout <parent>`.
 
-Requirements: `@animalabs/agent-framework` with `rollbackToMessage` /
-`suppressMessages` / `getOperatorLog` (live-surgery release); the quiesce
-toggle additionally needs the host quiesce work (agent-framework #122). The
-SPA feature-detects all of it from `welcome.features`, so a new bundle
-against an older host simply shows none of the affordances.
+The agent-framework this host depends on (^0.21.0) provides all of it. The
+SPA still feature-detects each affordance from `welcome.features`, so a
+bundle against a host without them simply shows none.
 
 ## Rollback to a message
 
-Chat view: hover a message → **⏪**. Context view: hover a raw (non-summary)
-box → **roll back to here** (boxes carry `sourceMessageId`; summaries do
-not, so they have no button).
+Chat view: hover a message → **⏪ roll back** (the row actions sit inside the
+row, top-right). Context view: **⏪ roll back to here** on a raw (non-summary)
+box, faintly visible until hovered (boxes carry `sourceMessageId`; summaries
+do not, so they have no button).
 
 What happens (`framework.rollbackToMessage`): the chronicle is forked at that
 message's origin sequence (`branchAt`), the fork — `rollback/<agent>/<ts>` —
@@ -28,8 +27,8 @@ queued. The dialog then offers **Quiesce, then retry**.
 
 ## Suppress messages
 
-Hover → **⊘** enters selection mode; tick more rows; the floating bar's
-**suppress** opens the confirm. `framework.suppressMessages` forks at the
+The row's **⊘ suppress** enters selection mode; tick more rows; the floating
+bar's **suppress** opens the confirm. `framework.suppressMessages` forks at the
 current head (`suppress/<agent>/<ts>`), redacts the selected messages on the
 fork newest-to-oldest (a shard of a body group expands to the whole group —
 chronicle refuses to bisect one), and switches. If any removal fails the
@@ -56,9 +55,9 @@ click. `ref` is `<messageId>/<blockIndex>` or `<messageId>/<blockIndex>.<inner>`
 for an image nested in a tool result (read_image, cameras, screenshots).
 The endpoint resolves that one message's blobs and streams bytes
 (`image/*` only, `nosniff`, sandboxed CSP; observer sessions need the
-`messages` scope; `?scope=<child>` proxies to a fleet child via the `media`
-panel op). Coalesced shard runs carry no refs (their block indices are
-synthetic) and keep the type chip.
+`messages` scope; `?agent=<name>` picks a non-root agent; `?scope=<child>`
+proxies to a fleet child via the `media` panel op). Coalesced shard runs carry
+no refs (their block indices are synthetic) and keep the type chip.
 
 The Context document already receives the compiled request with base64
 inline (it *is* what the model sees), so it renders those directly; the
@@ -66,11 +65,15 @@ stripped-image placeholder text stays visible where the strategy dropped one.
 
 ## Operator log
 
-`<storePath>/operator-actions.jsonl` — one JSON line per operator mutation:
+`<storePath>/operator-actions.jsonl` (`DATA_DIR/sessions/<id>/`) — one JSON
+line per operator mutation:
 `at, kind, agent, requester{via,name}, note, params, result | error`. Kinds:
 `rollback`, `suppress`, `hide`, `undo-turn`, `redo-turn`, `unstick`, `nudge`,
 `settings-update`, `settings-reset`, `settings-cancel-transition`,
-`quiesce`, `resume`. Refusals are logged too (with `error`). The branch
+`quiesce`, `resume`. Refusals are logged too (with `error`), except a
+change refused before it reaches its handler: one sent during a session
+switch, or one chosen in a session other than the one whose framework is
+open. The branch
 panel shows the tail and refreshes on `operator:action` traces. The
 chronicle record log remains the authoritative history of *what* changed;
 this file records *who/where/why*.
@@ -81,10 +84,16 @@ cannot mutate, so they only appear for read requests that fail).
 
 ## Wire additions
 
-Client → server: `rollback {messageId, agent?, note?}`, `suppress
-{messageIds, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
+Client → server: `rollback {messageId, sessionId, agent?, note?}`, `suppress
+{messageIds, sessionId, agent?, note?}`, `host-quiesce {reason?}`, `host-resume`,
 `request-host-mode`, `request-operator-log {limit?}`.
 Server → client: `surgery-result`, `host-mode`, `operator-log`;
-`welcome.features`, `welcome.hostMode`. After a successful surgery the
-server does what `/checkout` does: `branch-changed` + a fresh welcome for
-every client.
+`welcome.features`, `welcome.hostMode`. `sessionId` is the session whose
+messages the operator chose from, as the server stamped it on them: the
+welcome's `session` for the transcript, and the `/debug/context` answer's
+`sessionId` for the Context view, each the session whose framework produced
+them. A rollback or suppress chosen in a session other than the one whose
+framework is open is answered `ok: false`, saying nothing changed. After a successful surgery the
+server does what `/checkout` does: `branch-changed` to every client whose
+scopes hold `messages`, and a fresh welcome for every client, as its scopes
+allow.

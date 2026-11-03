@@ -1,14 +1,15 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { createWireClient, type WireClient } from './wire';
 import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './TreeSidebar';
-import { StreamPanel, formatStreamEvent, type StreamLine } from './Stream';
+import { StreamPanel } from './Stream';
+import { formatStreamEvent, withStreamLines, type StreamLine } from '@conhost/web/stream-lines';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
-import { McplPanel, type McplServerRow, type McplLiveRow } from './Mcpl';
+import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
 import { SettingsPanel, type SettingsState } from './Settings';
 import { DryContext, type DryContextData } from './DryContext';
 import { PinsPanel, type PinsState, type PinCandidate } from './Pins';
@@ -16,11 +17,21 @@ import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewe
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
-import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
-import { BranchPanel } from './Branches';
-import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
+  OpsAlertStrip, HealthPanel, CREDENTIAL_ALERT_KINDS,
+  type OpsAlert, type HealthSnapshot, type CredentialInfo, type CredentialAction,
+} from './Health';
+import { BranchPanel } from './Branches';
+import { UpdateBanner, UpdateDialog } from './Update';
+import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
+import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
+import { planHealthAlerts } from './health-alerts';
+import { HealthReads, passedGrant } from './health-reads';
+import { healthReadError } from '@conhost/web/health-lookup';
+import {
+  AGENT_TREE_SCOPES,
   WEB_PROTOCOL_VERSION,
+  isChildScope,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
@@ -36,6 +47,9 @@ import {
   type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
 import {
+  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor,
+} from '@conhost/web/agent-streams';
+import {
   Lightbox,
   MediaView,
   HostModeToggle,
@@ -44,44 +58,30 @@ import {
   type SurgeryRequest,
 } from './Surgery';
 
-/** Client-side block: the wire MessageBlock plus live-stream bookkeeping. */
 type UiBlock =
   | { kind: 'text'; text: string; truncated?: boolean; streaming?: boolean }
   | { kind: 'thinking'; text: string; truncated?: boolean; streaming?: boolean }
   | { kind: 'redacted_thinking'; bytes: number }
   | {
       kind: 'tool_use'; id: string; name: string; inputJson: string; truncated?: boolean;
-      /** Live lifecycle from tool:* traces; undefined for historical calls. */
       status?: 'running' | 'done' | 'failed';
       durationMs?: number;
     }
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
-  | { kind: 'media'; mediaType: string; ref?: string }
-  /** Client-only: a tool call being written live (raw partial JSON from
-   *  blockType 'tool_call' token deltas). Replaced by the parsed tool_use
-   *  blocks when inference:tool_calls_yielded lands. */
+  | { kind: 'media'; mediaType: string; ref?: string; toolUseId?: string }
   | { kind: 'tool_draft'; text: string; streaming?: boolean };
 
 interface Message {
   id: string;
-  /** Chronicle store id — present only for canonical (server-sourced)
-   *  messages; the target of rollback / suppress. */
   storeId?: string;
   participant: 'user' | 'assistant' | 'system' | 'tool' | 'command' | 'trigger';
+  speaker?: string;
   text: string;
-  /** Ordered content blocks — present on server-sourced and streamed
-   *  messages; absent on synthetic command/trigger rows. */
   blocks?: UiBlock[];
-  /** Store slot index (paging cursor); absent on synthetic messages. */
   index?: number;
-  /** Epoch millis. Server value for canonical entries; client clock for
-   *  optimistic/streamed rows until the canonical entry replaces them. */
   timestamp?: number;
-  /** Per-line style — only set for `command` messages from /slash output. */
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
-  /** True if the message is mid-stream — render with a cursor cue. */
   streaming?: boolean;
-  /** For 'trigger' participant: origin/source/author metadata for the box header. */
   trigger?: {
     origin: string;
     source: string;
@@ -101,6 +101,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     id: e.id ?? nextMessageId(),
     ...(e.id ? { storeId: e.id } : {}),
     participant: e.participant,
+    ...(e.speaker !== undefined ? { speaker: e.speaker } : {}),
     text: e.text,
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
@@ -111,29 +112,19 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
 export function App() {
   const wire = createWireClient();
   const treeStore = createTreeStore();
+  const treesShown = (): boolean => treesShownFor(wire.observerState(), wire.observer()?.scopes ?? null);
 
-  // Use a store rather than a signal so the streaming token append can
-  // mutate the last message's `text` in place. Replacing the message object
-  // (as a plain signal would force) makes <For> remount the DOM, which
-  // replays the msg-enter fade — visible as a wholesale flicker on every
-  // token. Keyed-by-id mutation keeps the same DOM element throughout.
+  // A store, so a streaming token can mutate the last message in place: <For>
+  // remounts a row given a new object, even one with the same id, which
+  // replays the msg-enter fade on every token.
   const [messages, setMessages] = createStore<Message[]>([]);
   const [welcome, setWelcome] = createSignal<WelcomeMessage | null>(null);
-  /** History paging state: slot index of the earliest loaded message +
-   *  store total. Null until the first welcome. */
   const [historyInfo, setHistoryInfo] = createSignal<{ startIndex: number; totalCount: number } | null>(null);
   const [historyLoading, setHistoryLoading] = createSignal(false);
-  /** Server protocol version when it doesn't match this bundle (stale
-   *  dist/web or old host) — renders a persistent banner. */
   const [protoMismatch, setProtoMismatch] = createSignal<number | null>(null);
-  /** Store ids of server-sourced messages currently rendered — dedupe set
-   *  for message-appended / history-page / re-welcome overlap. */
   let knownIds = new Set<string>();
-  /** session.id + '/' + branch.id of the last welcome; same key → soft
-   *  merge (keep paged-in scrollback), changed key → hard reset. */
   let welcomeKey: string | null = null;
-  /** Whether the operator is pinned to the bottom of the scroll pane.
-   *  Autoscroll only fires when true, so reading history isn't yanked. */
+  const [shownSession, setShownSession] = createSignal<string | null>(null);
   let atBottom = true;
   let historyCorrSeq = 0;
   let pendingHistoryCorr: string | null = null;
@@ -143,16 +134,9 @@ export function App() {
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
-  /** Currently-focused tree node + the panel mode rendered on its behalf.
-   *  `mode` decides whether the side panel shows live stream events or a
-   *  static usage breakdown; clicking the row opens 'stream', clicking the
-   *  token badge opens 'usage'. Both share the same panel slot. */
   type PanelMode = 'stream' | 'usage' | 'branches';
   const [focusedId, setFocusedId] = createSignal<string | null>(null);
   const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
-  /** The usage panel follows the focused node, and a fleet child answers for
-   *  its own credential: a pay-per-token child under a subscription parent
-   *  keeps its dollars. (The header stays the parent's readout.) */
   const usageQuotaScope = (): string | null => {
     const src = focusedNode()?.streamSource;
     return src && (src.kind === 'child-event-all' || src.kind === 'child-event-agent') ? src.childName : null;
@@ -160,27 +144,17 @@ export function App() {
   const focusedQuota = createQuotaPoll(usageQuotaScope);
   const [panelMode, setPanelMode] = createSignal<PanelMode | null>(null);
   const [streamLines, setStreamLines] = createSignal<StreamLine[]>([]);
-  /** Default-collapsed; the parent root and freshly-spawned fleet children
-   *  auto-expand once on first sight, so users see structure without a click. */
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set(['process:local']));
   const seenAutoExpand = new Set<string>(['process:local']);
-  /** Names of fleet children the server says are still running when /quit
-   *  was invoked. Non-null = the quit-confirm modal is open. */
   const [quitConfirm, setQuitConfirm] = createSignal<string[] | null>(null);
 
-  // ---------------------------------------------------------------------------
-  // Ops alerts + health — the operator-facing half of the ops:alert pipeline
-  // (failures.log / webhook already exist for machines; this is for the human
-  // actually looking at the page).
-  // ---------------------------------------------------------------------------
-
-  /** Active alerts keyed `${agent}:${kind}`. Live `ops:alert` traces upsert;
-   *  `<kind>-clear` traces and /healthz reconciliation remove. */
+  /** agent-framework sends no `hard-down-clear`, so a `hard-down` row leaves
+   *  only by a dismissal. */
   const [opsAlerts, setOpsAlerts] = createSignal<Map<string, OpsAlert>>(new Map());
   const alertList = createMemo(() =>
     [...opsAlerts().values()].sort((a, b) => b.at - a.at));
 
-  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true): void => {
+  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true, actions?: CredentialAction[]): void => {
     const key = `${agent}:${kind}`;
     setOpsAlerts((prev) => {
       const next = new Map(prev);
@@ -192,6 +166,8 @@ export function App() {
         message,
         at: Date.now(),
         count: existing ? existing.count + (bump ? 1 : 0) : 1,
+        scope: 'local',
+        ...(actions ? { actions } : existing?.actions ? { actions: existing.actions } : {}),
       });
       return next;
     });
@@ -205,9 +181,6 @@ export function App() {
     });
   };
 
-  /** Fold an `ops:alert` trace into the strip. All-clear travels as a
-   *  distinct `<kind>-clear` alert (see the host's quarantine wiring), so a
-   *  `-clear` suffix removes its base alert instead of adding a row. */
   const applyOpsAlertTrace = (e: { [k: string]: unknown }): void => {
     const kind = typeof e.kind === 'string' ? e.kind : 'unknown';
     const agent = typeof e.agentName === 'string' ? e.agentName : '?';
@@ -216,95 +189,149 @@ export function App() {
       removeOpsAlert(`${agent}:${kind.slice(0, -'-clear'.length)}`);
       return;
     }
-    upsertOpsAlert(kind, agent, message);
+    upsertOpsAlert(kind, agent, message, true, readActions((e.data as { actions?: unknown } | undefined)?.actions));
   };
 
-  /** /healthz snapshot — feeds the Health tab and reconciles durable-state
-   *  alerts (quarantine, hard-down) so a page opened mid-incident alarms
-   *  without waiting for the next klaxon re-fire. */
+  const readActions = (raw: unknown): CredentialAction[] | undefined => {
+    if (!Array.isArray(raw)) return undefined;
+    const out: CredentialAction[] = [];
+    for (const a of raw) {
+      const id = (a as { id?: unknown })?.id;
+      const label = (a as { label?: unknown })?.label;
+      if (typeof id !== 'string' || typeof label !== 'string') continue;
+      const hint = (a as { hint?: unknown })?.hint;
+      out.push({ id, label, ...(typeof hint === 'string' ? { hint } : {}) });
+    }
+    return out.length > 0 ? out : undefined;
+  };
+
+  const [credentialState, setCredentialState] = createSignal<{ scope: string; info: CredentialInfo } | null>(null);
+  const credentialForScope = (): CredentialInfo | null => {
+    const c = credentialState();
+    return c && c.scope === panelScope() ? c.info : null;
+  };
+
+  let credentialFrameSeq = 0;
+  const applyCredentialState = (c: CredentialInfo | undefined, scope: string, from: 'frame' | 'health' = 'frame'): void => {
+    if (!c || c.subscription === false) return;
+    if (from === 'frame') credentialFrameSeq++;
+    setCredentialState({ scope, info: c });
+    if (scope !== 'local') return;
+    const agent = c.agent ?? '?';
+    const kind = c.kind ?? 'ok';
+    for (const k of CREDENTIAL_ALERT_KINDS) {
+      const key = `${agent}:${k}`;
+      if (k === kind) {
+        if (opsAlerts().get(key)?.message !== c.message) {
+          upsertOpsAlert(kind, agent, c.message ?? kind, false, c.actions);
+        }
+      } else {
+        removeOpsAlert(key);
+      }
+    }
+  };
+
+  const runCredentialAction = (actionId: string, scope: string): void => {
+    if (actionId === 'set-token') {
+      const who = scope === 'local' ? 'this host' : `fleet child "${scope}"`;
+      const token = window.prompt(`Paste the replacement token for ${who} (kept in memory; written to the credentials file only when that process loaded one):`);
+      if (!token || !token.trim()) return;
+      wire.send({ type: 'credential-action', scope, action: 'set-token', token: token.trim() });
+      return;
+    }
+    if (actionId !== 'refresh' && actionId !== 'login' && actionId !== 'recheck') return;
+    wire.send({ type: 'credential-action', scope, action: actionId });
+  };
+
   const [health, setHealth] = createSignal<HealthSnapshot | null>(null);
   const [healthErr, setHealthErr] = createSignal<string | null>(null);
-  let healthDenied = false;
+  const healthReads = new HealthReads();
 
   const reconcileHealthAlerts = (h: HealthSnapshot): void => {
-    const quarantine = h.compressionQuarantine ?? {};
-    for (const [agent, q] of Object.entries(quarantine)) {
-      const key = `${agent}:compression-quarantine`;
-      if ((q.count ?? 0) > 0) {
-        if (!opsAlerts().has(key)) {
-          upsertOpsAlert('compression-quarantine', agent,
-            `${q.count} chunk(s) in compression quarantine — spans stay raw and will eventually exhaust the context budget.`,
-            false);
-        }
-      } else {
-        removeOpsAlert(key);
-      }
-    }
-    for (const a of h.agents ?? []) {
-      const key = `${a.name}:inference-exhausted`;
-      const streak = a.consecutiveInferenceFailures ?? 0;
-      if (streak >= 3) {
-        const message = `${streak} consecutive inference failures — agent is down.`
-          + (a.lastInference?.lastError ? ` Last: ${a.lastInference.lastError}` : '');
-        // Only touch the entry when the condition actually changed —
-        // rewriting `at` every poll would show a perpetual "5s ago" and
-        // re-sort the strip on every cycle.
-        if (opsAlerts().get(key)?.message !== message) {
-          upsertOpsAlert('inference-exhausted', a.name, message, false);
-        }
-      } else {
-        removeOpsAlert(key);
-      }
+    applyCredentialState(h.credential, 'local');
+    const plan = planHealthAlerts(h, opsAlerts());
+    for (const key of plan.remove) removeOpsAlert(key);
+    for (const u of plan.upsert) {
+      upsertOpsAlert(u.kind, u.agent, u.message, false);
     }
   };
 
-  /** `force` retries past a remembered 401/403 — the operator's grant may
-   *  have gained the 'health' scope since the poll gave up. Follows the
-   *  inspection scope: a fleet child's /healthz is proxied over the panel
-   *  IPC by the host. Alert reconciliation stays LOCAL-only — the strip is
-   *  a host-level surface, and child agent names could collide with the
-   *  parent's alert keys. */
   const loadHealth = async (force = false): Promise<void> => {
-    if (healthDenied && !force) return;
-    if (force) healthDenied = false;
+    if (healthReads.denied && !force) return;
+    if (force) healthReads.denied = false;
     const scope = panelScope();
+    const frameSeqAtStart = credentialFrameSeq;
+    const asked = healthReads.ask();
     try {
       const res = await fetch(`/healthz${scopeQuery()}`, { credentials: 'same-origin' });
+      if (!passedGrant(res.status)) {
+        if (healthReads.refused(asked)) setHealthErr('403');
+        return;
+      }
+      healthReads.answered(asked);
       if (!res.ok) {
-        if (res.status === 403 || res.status === 401) {
-          healthDenied = true;
-          setHealthErr('403');
-          return;
-        }
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+        const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+        throw new Error(healthReadError(res.status, body));
       }
       const h = (await res.json()) as HealthSnapshot;
-      if (scope !== panelScope()) return; // scope switched mid-flight — stale
+      if (scope !== panelScope()) return;
+      if (scope === 'local' && !healthReads.takeLocal(asked)) return;
       setHealth(h);
       setHealthErr(null);
-      if (scope === 'local') reconcileHealthAlerts(h);
+      if (scope === 'local') {
+        reconcileHealthAlerts(h);
+        takeLocalUpdate(h.update ?? null);
+      }
+      else if (h.credential && credentialFrameSeq === frameSeqAtStart) applyCredentialState(h.credential, scope, 'health');
     } catch (e) {
       if (scope !== panelScope()) return;
       setHealthErr(e instanceof Error ? e.message : String(e));
     }
   };
 
-  /** Local-alert reconciliation when the panel scope is parked on a child:
-   *  the strip's durable-state alerts (quarantine, hard-down) are host-level
-   *  and must keep reconciling regardless of what the Health tab inspects. */
   const reconcileLocalAlerts = async (): Promise<void> => {
-    if (healthDenied) return;
+    if (healthReads.denied) return;
+    const asked = healthReads.ask();
     try {
       const res = await fetch('/healthz', { credentials: 'same-origin' });
-      if (!res.ok) return; // auth handling lives on the loadHealth path
-      reconcileHealthAlerts((await res.json()) as HealthSnapshot);
-    } catch { /* transient — next tick retries */ }
+      if (passedGrant(res.status)) healthReads.answered(asked);
+      if (!res.ok) return;
+      const h = (await res.json()) as HealthSnapshot;
+      if (!healthReads.takeLocal(asked)) return;
+      reconcileHealthAlerts(h);
+      takeLocalUpdate(h.update ?? null);
+    } catch { }
   };
 
-  // ---------------------------------------------------------------------------
-  // Branch panel — Chronicle lineage view, opened from the header branch chip.
-  // ---------------------------------------------------------------------------
+  const [localUpdate, setLocalUpdate] = createSignal<UpdateStatus | null>(null);
+  const [dismissedUpdate, setDismissedUpdate] = createSignal<string | null>(null);
+  const [updateDialog, setUpdateDialog] = createSignal<'restart' | 'back' | null>(null);
+
+  const takeLocalUpdate = (update: UpdateStatus | null): void => {
+    setLocalUpdate(update);
+    setDismissedUpdate((line) => keptDismissal(update, line));
+    setUpdateDialog((open) => dialogStill(open, update));
+  };
+
+  const sendUpdateWay = (way: UpdateWay): void => {
+    setUpdateDialog(null);
+    const status = localUpdate();
+    const command = status === null ? null : commandFor(way, status);
+    if (isObserver() || command === null) return;
+    setMainView('chat');
+    wire.send({ type: 'command', command });
+  };
+  const runUpdateWay = (way: UpdateWay): void => {
+    if (way === 'restart' || way === 'back') setUpdateDialog(way);
+    else sendUpdateWay(way);
+  };
+  const refreshLocalUpdate = (): void => {
+    if (panelScope() === 'local') void loadHealth();
+    else void reconcileLocalAlerts();
+  };
+  createEffect(on(() => wire.observerState(), (state) => {
+    if (state === 'observer') void loadHealth(true);
+  }));
 
   const [branches, setBranches] = createSignal<BranchRow[]>([]);
   const [branchesCurrentId, setBranchesCurrentId] = createSignal<string | null>(null);
@@ -319,11 +346,6 @@ export function App() {
     wire.send({ type: 'command', command: `/checkout ${name}` });
   };
 
-  // ---------------------------------------------------------------------------
-  // Live surgery (rollback / suppress), host quiesce, operator log. Every
-  // affordance is gated on `welcome.features` so an older host shows nothing.
-  // ---------------------------------------------------------------------------
-
   const features = (): Set<string> => new Set(welcome()?.features ?? []);
   const isObserver = (): boolean => wire.observerState() === 'observer';
   const canRollback = (): boolean => features().has('rollback') && !isObserver();
@@ -335,9 +357,8 @@ export function App() {
   const [surgery, setSurgery] = createSignal<SurgeryRequest | null>(null);
   const [surgeryPending, setSurgeryPending] = createSignal(false);
   const [surgeryResult, setSurgeryResult] = createSignal<SurgeryResultMessage | null>(null);
-  /** Set when the operator chose "quiesce, then retry": the pending surgery
-   *  is resent as soon as the host reports `quiesced`. */
   let retryAfterQuiesce: { note: string } | null = null;
+  let pendingSurgeryCorrId: string | null = null;
   const [selecting, setSelecting] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
   const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
@@ -345,20 +366,19 @@ export function App() {
   const [opLogLoading, setOpLogLoading] = createSignal(false);
 
   const previewOf = (m: Message): string => {
-    const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
+    const who = m.participant === 'assistant' ? (conversationAgentOf(welcome()) ?? 'assistant') : m.participant;
     const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
   };
 
-  /** Rollback so `storeId` becomes the tail. `preview` is used when the
-   *  message is not in the loaded chat window (context-document boxes). */
-  const beginRollback = (storeId: string, preview?: string): void => {
-    if (!canRollback()) return;
+  const beginRollback = (storeId: string, preview?: string, chosenIn: string | null = shownSession()): void => {
+    if (!canRollback() || chosenIn === null) return;
     const idx = messages.findIndex((m) => m.storeId === storeId);
     const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
     setSurgeryResult(null);
     setSurgery({
       op: 'rollback',
+      sessionId: chosenIn,
       messageIds: [storeId],
       previews: [
         `new tail → ${idx >= 0 ? previewOf(messages[idx]) : (preview ?? storeId)}`,
@@ -384,11 +404,13 @@ export function App() {
   };
   const beginSuppressSelected = (): void => {
     const ids = [...selected()];
-    if (ids.length === 0) return;
+    const chosenIn = shownSession();
+    if (ids.length === 0 || chosenIn === null) return;
     const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
     setSurgeryResult(null);
     setSurgery({
       op: 'suppress',
+      sessionId: chosenIn,
       messageIds: ids,
       previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
     });
@@ -397,10 +419,11 @@ export function App() {
   const sendSurgery = (req: SurgeryRequest, note: string): void => {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
+    pendingSurgeryCorrId = corrId;
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -432,12 +455,13 @@ export function App() {
       retryAfterQuiesce = null;
       if (req) sendSurgery(req, note); else setSurgeryPending(false);
     } else if (retryAfterQuiesce && hm.mode !== 'quiescing') {
-      // Quiesce did not land (error frame arrives separately) — stop waiting.
       retryAfterQuiesce = null;
       setSurgeryPending(false);
     }
   };
   const onSurgeryResult = (r: SurgeryResultMessage): void => {
+    if (r.corrId !== pendingSurgeryCorrId) return;
+    pendingSurgeryCorrId = null;
     setSurgeryPending(false);
     setSurgeryResult(r);
     if (r.ok) clearSelection();
@@ -449,27 +473,42 @@ export function App() {
     setSurgery(null);
     setSurgeryResult(null);
   };
+  const stampFor = (scope: string, chosenIn: string | undefined): { sessionId?: string } =>
+    isChildScope(scope) ? {} : { sessionId: chosenIn ?? '' };
+  const panelKey = (): string =>
+    isChildScope(panelScope()) ? `child|${panelScope()}` : `local|${shownSession() ?? ''}`;
+  const dropWhatWasPrepared = (): void => {
+    retryAfterQuiesce = null;
+    pendingSurgeryCorrId = null;
+    setSurgery(null);
+    setSurgeryResult(null);
+    setSurgeryPending(false);
+    clearSelection();
+    pendingHistoryCorr = null;
+    setHistoryLoading(false);
+    setBulkRemaining(0);
+    setBranches([]);
+    setBranchesCurrentId(null);
+    if (isChildScope(panelScope())) return;
+    setSettingsLoaded(false);
+    setSettingsState(null);
+    setPinsLoaded(false);
+    setPinsState(null);
+    if (sidebarTab() === 'settings') refreshSettings();
+    if (sidebarTab() === 'pins') refreshPins();
+  };
   const refreshOpLog = (): void => {
     if (!features().has('operator-log')) return;
     setOpLogLoading(true);
     wire.send({ type: 'request-operator-log', limit: 200 });
   };
 
-  /** Right-sidebar tab selection. The Tree is the most-used surface so it's
-   *  the default; lessons / mcp / files are operator-driven panels. */
   type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'settings' | 'pins' | 'health';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
   const [mainView, setMainView] = createSignal<'chat' | 'context' | 'dry'>('chat');
-  /** Rendered dry-run context awaiting display. Never applied — see DryContext. */
   const [dryContext, setDryContext] = createSignal<DryContextData | null>(null);
 
-  /** THE inspection scope — one selector for every operator panel (lessons,
-   *  files, MCPL, context, settings, pins, health, recipe). 'local' means
-   *  the parent process; otherwise the fleet child's name. Deliberately
-   *  shared and sticky: an operator pins a child of interest once (the
-   *  dropdown in the sidebar header) and every panel follows. */
   const [panelScope, setPanelScope] = createSignal<string>('local');
-  /** Query-string suffix routing scoped HTTP debug fetches to a child. */
   const scopeQuery = (): string =>
     panelScope() !== 'local' ? `?scope=${encodeURIComponent(panelScope())}` : '';
   const availableScopes = (): Array<{ id: string; label: string }> => {
@@ -482,8 +521,6 @@ export function App() {
     return [local, ...children];
   };
 
-  /** Lessons panel state — populated by 'lessons-list' responses to a
-   *  'request-lessons' message. */
   const [lessons, setLessons] = createSignal<LessonRow[]>([]);
   const [lessonsLoaded, setLessonsLoaded] = createSignal(false);
   const [lessonsModuleLoaded, setLessonsModuleLoaded] = createSignal(false);
@@ -492,23 +529,22 @@ export function App() {
     wire.send({ type: 'request-lessons', scope: panelScope() });
   };
 
-  /** MCPL panel state — populated by 'mcpl-list' responses, which the server
-   *  also re-sends after every mutation so the panel auto-refreshes. The
-   *  `live` list is the scoped process's actually-loaded servers (recipe
-   *  opt-in + overlay) with connection status — per-scope truth the shared
-   *  registry file can't express. */
   const [mcplServers, setMcplServers] = createSignal<McplServerRow[]>([]);
   const [mcplLive, setMcplLive] = createSignal<McplLiveRow[]>([]);
+  const [mcplToolClasses, setMcplToolClasses] = createSignal<ToolClassRow[] | undefined>(undefined);
   const [mcplLoaded, setMcplLoaded] = createSignal(false);
   const [mcplConfigPath, setMcplConfigPath] = createSignal('');
   const refreshMcpl = (): void => {
     setMcplLoaded(false);
     wire.send({ type: 'request-mcpl', scope: panelScope() });
   };
+  const clearMcpl = (): void => {
+    setMcplLoaded(false);
+    setMcplServers([]);
+    setMcplLive([]);
+    setMcplToolClasses(undefined);
+  };
 
-  /** Context-settings panel state. The server BROADCASTS `settings-state` after
-   *  every mutation (unlike mcpl-list, which is requester-only), because these
-   *  are live process values — two operators must not see divergent budgets. */
   const [settingsState, setSettingsState] = createSignal<SettingsState | null>(null);
   const [settingsLoaded, setSettingsLoaded] = createSignal(false);
   const refreshSettings = (): void => {
@@ -516,11 +552,6 @@ export function App() {
     wire.send({ type: 'request-settings', scope: panelScope() });
   };
 
-  /** Pins panel state — broadcast on change, like settings: pins alter the next
-   *  compile's fold plan, so operators must not hold divergent views. For
-   *  fleet-child scopes the snapshot also carries picker `candidates` (real
-   *  store ids from the child) — the local candidate list below only knows
-   *  the parent's conversation. */
   const [pinsState, setPinsState] = createSignal<PinsState | null>(null);
   const [pinsLoaded, setPinsLoaded] = createSignal(false);
   const refreshPins = (): void => {
@@ -528,7 +559,6 @@ export function App() {
     wire.send({ type: 'request-pins', scope: panelScope() });
   };
 
-  /** Workspace files panel state — mounts list + per-mount tree cache. */
   const [mounts, setMounts] = createSignal<Mount[]>([]);
   const [mountsLoaded, setMountsLoaded] = createSignal(false);
   const [workspaceModuleLoaded, setWorkspaceModuleLoaded] = createSignal(false);
@@ -561,11 +591,6 @@ export function App() {
     wire.send({ type: 'request-workspace-file', path, scope: panelScope() });
   };
 
-  /** Switch the inspection scope. Every per-scope cache is invalidated; the
-   *  currently-visible tab re-fetches immediately and the rest lazy-load on
-   *  next open. Context / ContextDocument re-fetch reactively off their
-   *  `scope` prop, and the health poll picks the new scope up on its next
-   *  tick (forced immediately when the Health tab is open). */
   const changePanelScope = (scope: string): void => {
     if (scope === panelScope()) return;
     setPanelScope(scope);
@@ -577,9 +602,7 @@ export function App() {
     setExpandedMounts(new Set<string>());
     setOpenFile(null);
     setFileLoading(false);
-    setMcplLoaded(false);
-    setMcplServers([]);
-    setMcplLive([]);
+    clearMcpl();
     setSettingsLoaded(false);
     setSettingsState(null);
     setPinsLoaded(false);
@@ -594,13 +617,8 @@ export function App() {
     if (tab === 'pins') refreshPins();
     if (tab === 'health') void loadHealth(true);
   };
-  /** Pending-token buffer for the active stream; flushes on newline or non-token event. */
   let streamTokenBuffer = '';
 
-  /** Per-childName ring buffer of recent child-event payloads. Used to
-   *  backfill the stream pane when an operator opens a fleet child / agent
-   *  view — events fan out to every connected client regardless of focus, so
-   *  we capture them as they pass through. */
   const FLEET_BACKFILL_LIMIT = 80;
   const childEventBuffers = new Map<string, Array<{ type: string; [k: string]: unknown }>>();
   const recordChildEvent = (childName: string, event: { type: string; [k: string]: unknown }): void => {
@@ -615,16 +633,6 @@ export function App() {
 
   let scrollPane: HTMLDivElement | undefined;
 
-  // Append-to-last-assistant streaming buffer. createStore lets us mutate
-  // the existing message's blocks in place — Solid's <For> sees the same
-  // item reference and only updates the changed text, instead of remounting
-  // the row (which would replay the entrance animation).
-  //
-  // Tokens are routed by trace blockType: 'text' → visible prose, 'thinking'
-  // → a live thinking block, 'tool_call' → a live "writing tool call" draft
-  // (raw partial JSON; replaced by the parsed call on tool_calls_yielded).
-  // (Previously ALL tokens were appended to the visible text, so enabling
-  // extended thinking polluted the markdown.)
   const appendStreamToken = (token: string, blockType?: string): void => {
     if (blockType === 'tool_result') return;
     const kind: 'text' | 'thinking' | 'tool_draft' =
@@ -656,8 +664,6 @@ export function App() {
     queueScroll();
   };
 
-  /** block_complete → clear the open block's streaming flag (a finished
-   *  thinking block auto-collapses to its header). */
   const handleContentBlock = (phase: string): void => {
     if (phase !== 'block_complete') return;
     setMessages(produce((arr) => {
@@ -670,9 +676,6 @@ export function App() {
     }));
   };
 
-  /** Attach yielded tool calls to the streaming assistant message as
-   *  tool_use blocks (status: running). Results pair up later via the
-   *  tool_result blocks arriving in message-appended frames. */
   const appendToolUseBlocks = (calls: Array<{ id: string; name: string; input?: unknown }>): void => {
     setMessages(produce((arr) => {
       let last = arr[arr.length - 1];
@@ -688,7 +691,6 @@ export function App() {
         last = arr[arr.length - 1]!;
       }
       let blocks = (last.blocks ??= []);
-      // The parsed calls supersede any live tool_draft scaffolding.
       if (blocks.some((b) => b.kind === 'tool_draft')) {
         last.blocks = blocks = blocks.filter((b) => b.kind !== 'tool_draft');
       }
@@ -704,8 +706,6 @@ export function App() {
     queueScroll();
   };
 
-  /** Flip a tool_use block's lifecycle from tool:* traces, matched by callId
-   *  over the most recent messages. */
   const updateToolStatus = (callId: string, status: 'done' | 'failed', durationMs?: number): void => {
     setMessages(produce((arr) => {
       for (let i = arr.length - 1; i >= 0 && i >= arr.length - 12; i--) {
@@ -742,10 +742,6 @@ export function App() {
     });
   };
 
-  // -------------------------------------------------------------------------
-  // Windowed history: welcome merge, upward paging, live appends
-  // -------------------------------------------------------------------------
-
   const applyWelcome = (msg: WelcomeMessage): void => {
     if (msg.protocolVersion !== WEB_PROTOCOL_VERSION) {
       setProtoMismatch(msg.protocolVersion);
@@ -753,17 +749,20 @@ export function App() {
     }
     setProtoMismatch(null);
     setWelcome(msg);
-    // A scope pinned to a child that no longer exists (stopped, crashed,
-    // session switch) would leave every panel dead-ended on a name the
-    // fleet no longer knows. Fall back to the host.
     if (panelScope() !== 'local' && !msg.childTrees.some((c) => c.name === panelScope())) {
       changePanelScope('local');
     }
+    if (shownSession() !== null && msg.session.id !== shownSession()) {
+      clearMcpl();
+      if (sidebarTab() === 'mcp') refreshMcpl();
+      closePanel();
+    }
+    if (msg.session.id !== shownSession()) dropWhatWasPrepared();
+    setShownSession(msg.session.id);
     const key = `${msg.session.id}/${msg.branch.id}`;
     const entries = msg.messages.map(entryToMessage);
 
     if (key !== welcomeKey) {
-      // Session/branch changed (or first connect): hard reset.
       welcomeKey = key;
       knownIds = new Set(entries.map((m) => m.id).filter((id) => !isSyntheticId(id)));
       setMessages(entries);
@@ -773,10 +772,6 @@ export function App() {
       return;
     }
 
-    // Same session+branch (reconnect / setApp re-welcome): keep paged-in
-    // older scrollback, replace the tail with the canonical window. Synthetic
-    // rows (optimistic user msgs, command output, triggers) are dropped —
-    // the canonical entries carry the durable conversation.
     setMessages(produce((arr) => {
       const kept = arr.filter(
         (m) => typeof m.index === 'number' && m.index < msg.history.startIndex && !isSyntheticId(m.id),
@@ -800,10 +795,7 @@ export function App() {
     const incoming = entryToMessage(entry);
     setMessages(produce((arr) => {
       const last = arr[arr.length - 1];
-      // Canonical assistant message replaces the streamed scaffold (brings
-      // authoritative block order, signatures, redacted blocks).
       if (incoming.participant === 'assistant' && last?.participant === 'assistant' && last.streaming) {
-        // Preserve live tool statuses the trace stream already delivered.
         const statusById = new Map<string, { status?: 'running' | 'done' | 'failed'; durationMs?: number }>();
         for (const b of last.blocks ?? []) {
           if (b.kind === 'tool_use') statusById.set(b.id, { status: b.status, durationMs: b.durationMs });
@@ -817,7 +809,6 @@ export function App() {
         arr[arr.length - 1] = incoming;
         return;
       }
-      // Server echo of a message typed here: adopt into the optimistic row.
       if (incoming.participant === 'user') {
         for (let i = arr.length - 1; i >= Math.max(0, arr.length - 3); i--) {
           const m = arr[i]!;
@@ -835,10 +826,7 @@ export function App() {
     queueScroll();
   };
 
-  /** Server page cap (web-ui-module HISTORY_PAGE_MAX); bulk loads chain pages. */
   const HISTORY_PAGE_CAP = 500;
-  /** Messages still owed by an in-flight bulk load (0 = none). Bulk loads
-   *  chain one page per reply so a stop is honoured at a page boundary. */
   const [bulkRemaining, setBulkRemaining] = createSignal(0);
   const [bulkLoaded, setBulkLoaded] = createSignal(0);
 
@@ -859,8 +847,6 @@ export function App() {
     }, 10_000);
   };
 
-  /** Load up to `n` older messages in server-sized pages; progress shows in
-   *  the header row and a stop lands at the next page boundary. */
   const loadOlder = (n: number): void => {
     const info = historyInfo();
     if (!info || info.startIndex <= 0) return;
@@ -869,17 +855,19 @@ export function App() {
     setBulkRemaining(want);
     requestOlder(Math.min(want, HISTORY_PAGE_CAP));
   };
-  const stopLoadOlder = (): void => setBulkRemaining(0);
+  const stopLoadOlder = (): void => { setBulkRemaining(0); };
 
   const applyHistoryPage = (msg: HistoryPageMessage): void => {
     if (msg.corrId !== pendingHistoryCorr) return;
     pendingHistoryCorr = null;
     window.clearTimeout(pendingHistoryTimer);
     setHistoryLoading(false);
+    if (msg.sessionId !== shownSession()) {
+      setBulkRemaining(0);
+      return;
+    }
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
-    // Prepending grows the pane upward; restore the operator's viewport by
-    // offsetting scrollTop by the height delta after the DOM settles.
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
     const prevScrollTop = scrollPane?.scrollTop ?? 0;
     setMessages(produce((arr) => arr.unshift(...fresh.map(entryToMessage))));
@@ -890,8 +878,6 @@ export function App() {
     requestAnimationFrame(() => {
       if (scrollPane) scrollPane.scrollTop = scrollPane.scrollHeight - prevScrollHeight + prevScrollTop;
     });
-    // Bulk load: chain the next page until the quota is met, history is
-    // exhausted, the operator stopped it, or a page came back empty.
     const remaining = Math.max(0, bulkRemaining() - msg.entries.length);
     setBulkLoaded((v) => v + msg.entries.length);
     setBulkRemaining(remaining);
@@ -908,8 +894,6 @@ export function App() {
     if (scrollPane.scrollTop < 400) requestOlder();
   };
 
-  /** toolUseId → result block, across all loaded messages. Rendered inline
-   *  under the matching tool_use; standalone all-paired result rows hide. */
   const toolResults = createMemo(() => {
     const map = new Map<string, { text: string; isError?: boolean; truncated?: boolean }>();
     for (const m of messages) {
@@ -920,8 +904,6 @@ export function App() {
     return map;
   });
 
-  /** ids of all tool_use blocks currently loaded — lets a pure-tool_result
-   *  message know its content is already displayed inline. */
   const toolUseIds = createMemo(() => {
     const set = new Set<string>();
     for (const m of messages) {
@@ -940,12 +922,12 @@ export function App() {
     streamTokenBuffer = streamTokenBuffer.slice(newlineIdx + 1);
     if (completed) {
       const lines = completed.split('\n').filter(s => s.length > 0);
-      setStreamLines((prev) => [...prev, ...lines.map(s => ({
+      setStreamLines((prev) => withStreamLines(prev, lines.map(s => ({
         id: streamLineId(),
         kind: 'token' as const,
         text: s,
         color: 'text-cyan-200',
-      }))]);
+      }))));
     }
   };
 
@@ -953,17 +935,14 @@ export function App() {
     if (streamTokenBuffer.length === 0) return;
     const text = streamTokenBuffer;
     streamTokenBuffer = '';
-    setStreamLines((prev) => [...prev, {
+    setStreamLines((prev) => withStreamLines(prev, [{
       id: streamLineId(),
       kind: 'token' as const,
       text,
       color: 'text-cyan-200',
-    }]);
+    }]));
   };
 
-  /** Tear down any peek subscription tied to the currently focused node.
-   *  Idempotent — safe to call when nothing's focused or when the focused
-   *  node was a non-peek source. */
   const teardownPeek = (): void => {
     const node = focusedNode();
     if (node && panelMode() === 'stream' && node.streamSource.kind === 'peek') {
@@ -983,7 +962,6 @@ export function App() {
   const openStream = (node: UiNode): void => {
     if (node.streamSource.kind === 'none') return;
     if (focusedId() === node.id && panelMode() === 'stream') {
-      // Re-clicking same node in stream mode closes the panel.
       closePanel();
       return;
     }
@@ -996,11 +974,9 @@ export function App() {
     if (node.streamSource.kind === 'peek') {
       wire.send({ type: 'subscribe-peek', scope: node.streamSource.scope, active: true });
     } else if (node.streamSource.kind === 'child-event-all') {
-      // Replay buffered child-events for this child so the panel isn't blank.
       const buf = childEventBuffers.get(node.streamSource.childName);
       if (buf) for (const ev of buf) ingestStreamEvent(ev);
     } else if (node.streamSource.kind === 'child-event-agent') {
-      // Replay only events attributable to this agent inside the child.
       const buf = childEventBuffers.get(node.streamSource.childName);
       if (buf) {
         for (const ev of buf) {
@@ -1014,7 +990,6 @@ export function App() {
 
   const openUsage = (node: UiNode): void => {
     if (focusedId() === node.id && panelMode() === 'usage') {
-      // Re-clicking the same usage badge toggles closed.
       closePanel();
       return;
     }
@@ -1026,9 +1001,6 @@ export function App() {
     streamTokenBuffer = '';
   };
 
-  /** Toggle the branch panel in the shared middle-panel slot. Requests a
-   *  fresh listing on every open — branch mutations happen through commands
-   *  and MCPL, so a cached list goes stale invisibly. */
   const openBranches = (): void => {
     if (panelMode() === 'branches') {
       closePanel();
@@ -1053,7 +1025,7 @@ export function App() {
   };
 
   const cancelSubagent = (name: string, childName?: string): void => {
-    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : {}) });
+    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : { sessionId: shownSession() ?? '' }) });
   };
 
   const fleetStop = (name: string): void => {
@@ -1064,7 +1036,6 @@ export function App() {
     wire.send({ type: 'fleet-restart', name });
   };
 
-  /** Stop the focused stream's underlying node, dispatched by stream source kind. */
   const stopFocusedNode = (): void => {
     const node = focusedNode();
     if (!node) return;
@@ -1072,16 +1043,11 @@ export function App() {
     if (src.kind === 'peek') cancelSubagent(src.scope);
     else if (src.kind === 'child-event-all') fleetStop(src.childName);
     else if (src.kind === 'child-event-agent') {
-      // For a subagent inside a fleet child, route the cancel to that
-      // child's SubagentModule rather than killing the whole child. The
-      // main framework agent of a child is not a subagent — for that we
-      // still have no per-agent kill verb, so fall back to fleetStop.
       if (node.kind === 'subagent') cancelSubagent(src.agentName, src.childName);
       else fleetStop(src.childName);
     }
   };
 
-  /** Whether the current focused node has a sensible stop affordance. */
   const canStopFocused = (): boolean => {
     const node = focusedNode();
     if (!node) return false;
@@ -1092,8 +1058,6 @@ export function App() {
     return src.kind === 'child-event-all' || src.kind === 'child-event-agent';
   };
 
-  /** Auto-expand newly-discovered fleet-child folders the first time they
-   *  appear, so the user sees their agents without an extra click. */
   const autoExpandNewFleetChildren = (): void => {
     const roots = treeStore.build();
     const visit = (node: UiNode): void => {
@@ -1112,10 +1076,8 @@ export function App() {
 
   onMount(() => {
     const detach = wire.onMessage((msg) => {
-      treeStore.ingest(msg);
+      if (treesShown()) treeStore.ingest(msg);
       autoExpandNewFleetChildren();
-      // Capture child-events into the per-childName ring buffer so a future
-      // openStream() can backfill the panel from local history.
       if (msg.type === 'child-event') {
         recordChildEvent(msg.childName, msg.event);
       }
@@ -1141,17 +1103,20 @@ export function App() {
           setLessonsModuleLoaded(moduleLoaded);
           setLessons(list);
         },
-        setMcpl: (configPath, servers, live) => {
+        setMcpl: (configPath, servers, live, toolClasses) => {
           setMcplLoaded(true);
           setMcplConfigPath(configPath);
           setMcplServers(servers);
           setMcplLive(live);
+          setMcplToolClasses(toolClasses);
         },
         setSettings: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
           setSettingsLoaded(true);
           setSettingsState(state);
         },
         setPins: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
           setPinsLoaded(true);
           setPinsState(state);
         },
@@ -1172,15 +1137,13 @@ export function App() {
           setFileLoading(false);
         },
         onOpsAlert: applyOpsAlertTrace,
+        onCredentialState: (state, scope) => applyCredentialState(state, scope),
         setBranchesList: (list, currentId) => {
           setBranches(list);
           setBranchesCurrentId(currentId);
           setBranchesLoading(false);
         },
         onBranchChanged: (branch) => {
-          // Update the header chip immediately; the server's re-welcome
-          // follows with the new branch's messages. Refresh the lineage
-          // panel if the operator is looking at it.
           setWelcome((w) => (w ? { ...w, branch } : w));
           if (panelMode() === 'branches') refreshBranches();
         },
@@ -1189,9 +1152,11 @@ export function App() {
         onTurnSettled: () => {
           if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
         },
+        conversationAgent: () => conversationAgentOf(welcome()),
         onSurgeryResult,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
+        onCommandAnswer: refreshLocalUpdate,
       });
     });
     onCleanup(() => {
@@ -1199,11 +1164,6 @@ export function App() {
       wire.close();
     });
 
-    // Health poll: durable-state alerts (quarantine, hard-down) must not
-    // depend on being connected when the klaxon fired. 15s keeps the strip
-    // honest without meaningful load (counts-only JSON). With the scope on a
-    // fleet child, loadHealth feeds the Health tab from that child and a
-    // second local fetch keeps the alert strip reconciled.
     void loadHealth();
     const healthTimer = window.setInterval(() => {
       void loadHealth();
@@ -1212,35 +1172,12 @@ export function App() {
     onCleanup(() => window.clearInterval(healthTimer));
   });
 
-  /** Route a server message into the stream pane *if* it matches the focused
-   *  node's StreamSource. Each kind has its own match rule. */
   const handleStreamMessage = (msg: WebUiServerMessage): void => {
     if (panelMode() !== 'stream') return;
     const node = focusedNode();
     if (!node) return;
-    const src = node.streamSource;
-    if (src.kind === 'none') return;
-
-    if (src.kind === 'peek' && msg.type === 'peek' && msg.scope === src.scope) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
-
-    if (msg.type !== 'child-event') return;
-
-    if (src.kind === 'child-event-all' && msg.childName === src.childName) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
-
-    if (
-      src.kind === 'child-event-agent'
-      && msg.childName === src.childName
-      && (msg.event as { agentName?: string }).agentName === src.agentName
-    ) {
-      ingestStreamEvent(msg.event);
-      return;
-    }
+    const event = streamEventFor(node.streamSource, msg as Parameters<typeof streamEventFor>[1]);
+    if (event) ingestStreamEvent(event);
   };
 
   const ingestStreamEvent = (event: { type: string; [k: string]: unknown }): void => {
@@ -1250,7 +1187,7 @@ export function App() {
     }
     flushStreamBuffer();
     const line = formatStreamEvent(event);
-    if (line) setStreamLines((prev) => [...prev, line]);
+    if (line) setStreamLines((prev) => withStreamLines(prev, [line]));
   };
 
   const submit = (): void => {
@@ -1258,10 +1195,6 @@ export function App() {
     if (!text) return;
     setDraft('');
     if (text.startsWith('/')) {
-      // /clear is display-local (the TUI clears its scrollback the same
-      // way): wipe this client's transcript view without touching the
-      // Chronicle or other clients. Sending it to the host was a no-op
-      // that APPENDED a "(cleared)" line — the opposite of clearing.
       if (text === '/clear' || text.startsWith('/clear ')) {
         setMessages(produce((arr) => { arr.length = 0; }));
         setStreamLines([]);
@@ -1339,7 +1272,27 @@ export function App() {
         )}
       </Show>
       <ReconnectBanner status={wire.status()} />
-      <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
+      <OpsAlertStrip
+        alerts={alertList()}
+        onDismiss={removeOpsAlert}
+        onAction={(alert, id) => runCredentialAction(id, alert.scope ?? 'local')}
+      />
+      <UpdateBanner
+        status={localUpdate()}
+        dismissed={dismissedUpdate()}
+        onDismiss={(line) => setDismissedUpdate(line)}
+        onWay={isObserver() ? undefined : runUpdateWay}
+      />
+      <Show when={!isObserver() && updateDialog() !== null && localUpdate()}>
+        {(status) => (
+          <UpdateDialog
+            kind={updateDialog()!}
+            status={status()}
+            onWay={sendUpdateWay}
+            onClose={() => setUpdateDialog(null)}
+          />
+        )}
+      </Show>
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
         {(info) => (
           <div class="bg-violet-950/60 border-b border-violet-900 px-4 py-1.5 text-xs text-violet-200 flex items-center gap-2">
@@ -1359,7 +1312,7 @@ export function App() {
           <span class="w-2 h-2 rounded-full bg-amber-500" />
           <span>
             Protocol mismatch — server speaks v{protoMismatch()}, this bundle expects v{WEB_PROTOCOL_VERSION}.
-            Rebuild the SPA (<code class="font-mono">bun run build:web</code>) and/or restart the host, then reload.
+            Reload the page. If this is still shown and the host runs from a clone, rebuild the SPA (<code class="font-mono">bun run build:web</code>) and reload. If it's still shown, restart the host and reload.
           </span>
         </div>
       </Show>
@@ -1464,8 +1417,9 @@ export function App() {
             </Show>}>
               <ContextDocument
                 scope={panelScope()}
+                session={shownSession()}
                 canRollback={canRollback() && panelScope() === 'local'}
-                onRollback={(id, preview) => beginRollback(id, preview)}
+                onRollback={(id, preview, chosenIn) => beginRollback(id, preview, chosenIn)}
               />
             </Show>
           </div>
@@ -1547,15 +1501,11 @@ export function App() {
             onRefreshLog={refreshOpLog}
           />
         </Show>
-        {/* Was w-72 (288px): the context/settings panels have dense numeric
-            tables that did not fit. Widen, and give large displays more. */}
         <aside class="w-96 xl:w-[30rem] border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
           <SidebarTabs
             current={sidebarTab()}
             onSelect={(tab) => {
               setSidebarTab(tab);
-              // Lazy-load tab data on first open. Mutations re-broadcast a
-              // fresh list so we don't need to re-fetch after every change.
               if (tab === 'lessons' && !lessonsLoaded()) refreshLessons();
               if (tab === 'mcp' && !mcplLoaded()) refreshMcpl();
               if (tab === 'files' && !mountsLoaded()) refreshMounts();
@@ -1569,7 +1519,12 @@ export function App() {
             onChange={changePanelScope}
           />
           <div class="flex-1 min-h-0">
-            <Show when={sidebarTab() === 'tree'}>
+            <Show when={sidebarTab() === 'tree' && !treesShown() && wire.observer() !== null}>
+              <div class="p-4 text-xs text-neutral-500">
+                The agent tree shows for a grant with every scope but debug ({AGENT_TREE_SCOPES.join(', ')}).
+              </div>
+            </Show>
+            <Show when={sidebarTab() === 'tree' && treesShown()}>
               <TreeSidebar
                 roots={treeStore.build()}
                 selectedId={focusedId()}
@@ -1596,6 +1551,7 @@ export function App() {
                 configPath={mcplConfigPath()}
                 servers={mcplServers()}
                 live={mcplLive()}
+                toolClasses={mcplToolClasses()}
                 readOnly={panelScope() !== 'local'}
                 onRefresh={refreshMcpl}
                 onAdd={(input) => wire.send({ type: 'mcpl-add', ...input })}
@@ -1603,35 +1559,39 @@ export function App() {
                 onSetEnv={(id, env) => wire.send({ type: 'mcpl-set-env', id, env })}
               />
             </Show>
-            <Show when={sidebarTab() === 'settings'}>
-              <SettingsPanel
-                loaded={settingsLoaded()}
-                state={settingsState()}
-                scope={panelScope()}
-                onRefresh={refreshSettings}
-                onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...patch })}
-                onReset={(keys, persist) =>
-                  wire.send({ type: 'settings-reset', scope: panelScope(), ...(keys ? { keys } : {}), persist })}
-                onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope() })}
-                onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
-              />
+            <Show when={sidebarTab() === 'settings' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <SettingsPanel
+                  loaded={settingsLoaded()}
+                  state={settingsState()}
+                  scope={panelScope()}
+                  onRefresh={refreshSettings}
+                  onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...patch })}
+                  onReset={(keys, persist) =>
+                    wire.send({ type: 'settings-reset', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...(keys ? { keys } : {}), persist })}
+                  onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId) })}
+                  onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
+                />
+              )}
             </Show>
-            <Show when={sidebarTab() === 'pins'}>
-              <PinsPanel
-                loaded={pinsLoaded()}
-                state={pinsState()}
-                agent={pinsState()?.agent}
-                candidates={panelScope() === 'local'
-                  ? messages
-                      .filter((m) => m.index !== undefined && m.id)
-                      .map<PinCandidate>((m) => ({
-                        id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
-                      }))
-                  : pinsState()?.candidates ?? []}
-                onRefresh={refreshPins}
-                onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...input })}
-                onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), pinId })}
-              />
+            <Show when={sidebarTab() === 'pins' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <PinsPanel
+                  loaded={pinsLoaded()}
+                  state={pinsState()}
+                  agent={pinsState()?.agent}
+                  candidates={panelScope() === 'local'
+                    ? messages
+                        .filter((m) => m.index !== undefined && m.id)
+                        .map<PinCandidate>((m) => ({
+                          id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
+                        }))
+                    : pinsState()?.candidates ?? []}
+                  onRefresh={refreshPins}
+                  onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
+                  onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}
+                />
+              )}
             </Show>
             <Show when={sidebarTab() === 'files'}>
               <FilesPanel
@@ -1655,6 +1615,10 @@ export function App() {
                 error={healthErr()}
                 ledger={callLedger()?.rows}
                 onRefresh={() => void loadHealth(true)}
+                credential={credentialForScope()}
+                onCredentialAction={(id) => runCredentialAction(id, panelScope())}
+                update={panelScope() === 'local' ? localUpdate() : null}
+                onUpdateWay={isObserver() ? undefined : runUpdateWay}
               />
             </Show>
           </div>
@@ -1668,6 +1632,7 @@ export function App() {
 function streamHint(src: StreamSource): string | undefined {
   switch (src.kind) {
     case 'peek': return 'subagent';
+    case 'trace-agent': return 'agent';
     case 'child-event-all': return 'fleet child';
     case 'child-event-agent': return `agent in ${src.childName}`;
     default: return undefined;
@@ -1675,66 +1640,42 @@ function streamHint(src: StreamSource): string | undefined {
 }
 
 interface HandlerHooks {
-  /** Merge (or hard-reset on session/branch change) a welcome frame. */
   applyWelcome: (w: WelcomeMessage) => void;
-  /** Fold a message-appended push into the timeline (id-deduped). */
   applyAppended: (entry: WelcomeMessageEntry) => void;
-  /** Prepend a history page with scroll-anchor preservation. */
   applyHistoryPage: (msg: HistoryPageMessage) => void;
-  /** Append a single message at the end (used for command-result, errors, etc.). */
   appendMessage: (msg: Message) => void;
   setUsage: (u: TokenUsage) => void;
   setPerAgentCost: (c: PerAgentCost[]) => void;
   setCallLedger: (ledger: CallLedgerSnapshot | null) => void;
   appendStreamToken: (token: string, blockType?: string) => void;
-  /** Attach yielded tool calls to the streaming assistant message. */
   appendToolUseBlocks: (calls: Array<{ id: string; name: string; input?: unknown }>) => void;
-  /** Flip a tool_use block's live status from tool:* traces. */
   updateToolStatus: (callId: string, status: 'done' | 'failed', durationMs?: number) => void;
-  /** Handle inference:content_block phases (auto-collapse finished blocks). */
   handleContentBlock: (phase: string) => void;
   finishStream: () => void;
   queueScroll: () => void;
-  /** Show the quit-confirm modal with the given list of running children. */
   openQuitConfirm: (children: string[]) => void;
-  /** The live inspection scope — scoped responses that don't match it are
-   *  dropped as stale (a slow child reply must not render under another
-   *  scope's header). Responses without a scope stamp (older host) pass. */
   currentScope: () => string;
-  /** Apply a lessons-list response from the server. */
   setLessons: (loaded: boolean, moduleLoaded: boolean, lessons: LessonRow[]) => void;
-  /** Apply an mcpl-list response from the server. */
-  setMcpl: (configPath: string, servers: McplServerRow[], live: McplLiveRow[]) => void;
-  /** Apply a settings-state broadcast. */
+  setMcpl: (configPath: string, servers: McplServerRow[], live: McplLiveRow[], toolClasses?: ToolClassRow[]) => void;
   setSettings: (state: SettingsState) => void;
-  /** Apply a pins-list broadcast. */
+  onCredentialState: (state: CredentialInfo, scope: string) => void;
   setPins: (state: PinsState) => void;
-  /** Apply a workspace-mounts response. */
   setMounts: (loaded: boolean, moduleLoaded: boolean, mounts: Mount[]) => void;
-  /** Apply a workspace-tree response for one mount. */
   setMountTree: (mount: string, entries: FlatEntry[]) => void;
-  /** Apply a workspace-file response. */
   setOpenFile: (file: FileViewer) => void;
-  /** Fold an ops:alert trace into the alert strip. */
   onOpsAlert: (event: { [k: string]: unknown }) => void;
-  /** Apply a branches-list response. */
   setBranchesList: (branches: BranchRow[], currentId: string) => void;
-  /** React to a server-side branch switch (undo/redo/checkout). */
   onBranchChanged: (branch: { id: string; name: string }) => void;
-  /** Host serving state (welcome, host-mode frames). */
   setHostMode: (hostMode: HostModeSnapshot | null) => void;
-  /** Ask the server for a fresh host-mode snapshot (after host:* traces). */
   requestHostMode: () => void;
-  /** A turn ended — refresh host mode if a quiesce was still draining. */
   onTurnSettled: () => void;
+  conversationAgent: () => string | undefined;
   onSurgeryResult: (result: SurgeryResultMessage) => void;
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
-  /** An operator:action trace landed — refresh the log if it is on screen. */
   onOperatorAction: () => void;
+  onCommandAnswer: () => void;
 }
 
-/** True when a scope-stamped response belongs to a scope the operator has
- *  already navigated away from. Unstamped responses (older host) pass. */
 function staleScope(msgScope: string | undefined, current: string): boolean {
   return msgScope !== undefined && msgScope !== current;
 }
@@ -1775,61 +1716,12 @@ function handleServerMessage(
     case 'call-ledger':
       hooks.setCallLedger(msg.ledger);
       return;
-    case 'trace': {
-      const e = msg.event;
-      switch (e.type) {
-        case 'inference:tokens': {
-          const content = e.content;
-          if (typeof content === 'string') {
-            hooks.appendStreamToken(content, typeof e.blockType === 'string' ? e.blockType : undefined);
-          }
-          return;
-        }
-        case 'inference:content_block': {
-          if (typeof e.phase === 'string') hooks.handleContentBlock(e.phase);
-          return;
-        }
-        case 'inference:completed':
-        case 'inference:failed':
-          hooks.finishStream();
-          // A quiesce that was still draining may have just settled; the
-          // framework emits no trace for "drained", so re-pull the snapshot.
-          hooks.onTurnSettled();
-          return;
-        case 'inference:tool_calls_yielded': {
-          const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
-          if (calls.length === 0) return;
-          hooks.appendToolUseBlocks(calls);
-          return;
-        }
-        case 'tool:completed': {
-          if (typeof e.callId === 'string') {
-            hooks.updateToolStatus(e.callId, 'done',
-              typeof e.durationMs === 'number' ? e.durationMs : undefined);
-          }
-          return;
-        }
-        case 'tool:failed': {
-          if (typeof e.callId === 'string') {
-            hooks.updateToolStatus(e.callId, 'failed',
-              typeof e.durationMs === 'number' ? e.durationMs : undefined);
-          }
-          return;
-        }
-        case 'ops:alert':
-          hooks.onOpsAlert(e);
-          return;
-        case 'operator:action':
-          hooks.onOperatorAction();
-          return;
-        default:
-          // Host serving-state transitions (host:quiesce / host:resume /
-          // host:quiesced_boot) may originate elsewhere (Discord host
-          // command, API) — pull a fresh snapshot rather than parsing them.
-          if (typeof e.type === 'string' && e.type.startsWith('host:')) hooks.requestHostMode();
-          return;
-      }
-    }
+    case 'trace':
+      if (typeof msg.event.type === 'string') applyTrace(msg.event, hooks, hooks.conversationAgent());
+      return;
+    case 'stream-ended':
+      applyStreamEnded(msg.agentName, hooks, hooks.conversationAgent());
+      return;
     case 'command-result': {
       hooks.appendMessage({
         id: nextMessageId(),
@@ -1838,6 +1730,7 @@ function handleServerMessage(
         lines: msg.lines,
       });
       hooks.queueScroll();
+      hooks.onCommandAnswer();
       return;
     }
     case 'branch-changed':
@@ -1846,8 +1739,6 @@ function handleServerMessage(
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
       return;
-    // The server follows a session switch with a full re-welcome (setApp
-    // re-flushes every client), which resets all session-scoped state.
     case 'session-changed':
       return;
     case 'inbound-trigger': {
@@ -1875,11 +1766,14 @@ function handleServerMessage(
       return;
     case 'mcpl-list':
       if (staleScope(msg.scope, hooks.currentScope())) return;
-      hooks.setMcpl(msg.configPath, msg.servers, msg.live ?? []);
+      hooks.setMcpl(msg.configPath, msg.servers, msg.live ?? [], msg.toolClasses);
       return;
     case 'settings-state':
       if (staleScope(msg.scope, hooks.currentScope())) return;
       hooks.setSettings(msg as unknown as SettingsState);
+      return;
+    case 'credential-state':
+      hooks.onCredentialState(msg as unknown as CredentialInfo, msg.scope ?? 'local');
       return;
     case 'pins-list':
       if (staleScope(msg.scope, hooks.currentScope())) return;
@@ -1914,12 +1808,10 @@ function handleServerMessage(
 function Header(props: {
   welcome: WelcomeMessage | null;
   usage: TokenUsage;
-  /** Subscription quota windows; replaces the dollar figure when present. */
   quota: QuotaSnapshotData | null;
   status: string;
   branchPanelOpen: boolean;
   onBranchClick(): void;
-  /** null hides the toggle (host without quiesce support). */
   hostMode: HostModeSnapshot | null;
   hostModeBusy: boolean;
   hostModeReadOnly: boolean;
@@ -1986,6 +1878,11 @@ function Header(props: {
             {quotaReadout(props.quota!)}
           </span>
         </Show>
+        <Show when={quotaUnreadable(props.quota ?? null)}>
+          <span class="ml-3 text-amber-400" title={`Subscription quota unreadable${props.quota!.error ? `: ${props.quota!.error}` : ''}`}>
+            quota: unreadable
+          </span>
+        </Show>
         <Show when={!props.quota?.subscription && props.usage.cost && props.usage.cost.total > 0}>
           <span
             class="ml-3 text-emerald-300"
@@ -2001,11 +1898,6 @@ function Header(props: {
 
 type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
 
-/**
- * Hover toolbar around a canonical chat row: "roll back to here" and
- * "suppress" (which enters multi-select). Rows without a store id (synthetic
- * command/trigger/streaming rows) render bare.
- */
 function MessageRow(props: {
   storeId?: string;
   canRollback: boolean;
@@ -2017,9 +1909,6 @@ function MessageRow(props: {
   children: JSX.Element;
 }) {
   const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
-  // The toolbar lives INSIDE the row (top-right). An earlier version hung it
-  // off the row's left edge, where the scroll pane's overflow clipping made
-  // it all but invisible — hover affordances must be inside the clip box.
   return (
     <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
       <Show when={actionable()}>
@@ -2059,7 +1948,7 @@ function MessageView(props: {
   if (props.msg.participant === 'user') {
     return (
       <div class="msg-enter">
-        <div class="text-xs text-neutral-500 mb-1">you<TimeChip ts={props.msg.timestamp} /></div>
+        <div class="text-xs text-neutral-500 mb-1">{props.msg.speaker ?? 'you'}<TimeChip ts={props.msg.timestamp} /></div>
         <div class="font-mono text-sm whitespace-pre-wrap text-neutral-200">{props.msg.text}</div>
         <MediaChips blocks={props.msg.blocks} />
       </div>
@@ -2089,9 +1978,6 @@ function MessageView(props: {
   }
 
   if (props.msg.participant === 'tool') {
-    // A message whose payload is entirely tool_results that are already
-    // rendered inline under their tool_use blocks carries no new
-    // information — hide it. Unpaired results render standalone.
     const allPaired = (): boolean => {
       const blocks = props.msg.blocks ?? [];
       if (blocks.length === 0) return false;
@@ -2123,8 +2009,6 @@ function MessageView(props: {
 
   if (props.msg.participant === 'trigger') {
     const t = props.msg.trigger!;
-    // Bordered box with an origin chip — emphasises that the agent didn't
-    // generate this; the world did. Dim when the gate filtered it (no wake).
     const tone = t.triggered
       ? 'border-amber-700/60 bg-amber-950/20'
       : 'border-neutral-800 bg-neutral-900/40';
@@ -2153,12 +2037,6 @@ function MessageView(props: {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Block rendering — the interiority layer
-// ---------------------------------------------------------------------------
-
-/** Compact timestamp chip for message headers. Time-only for today,
- *  "Jul 5 14:22:07" otherwise; full ISO on hover. */
 function TimeChip(props: { ts?: number }) {
   const label = (): string => {
     const d = new Date(props.ts!);
@@ -2178,17 +2056,6 @@ function TimeChip(props: { ts?: number }) {
   );
 }
 
-/**
- * Readable rendering for tool inputs/results. Raw payloads are JSON (tool
- * inputs always; shell/MCPL results usually — often DOUBLE-encoded), which
- * renders as escape-soup. Strategy:
- *   - parse; unwrap one level of double-encoding ("\"{...}\"")
- *   - object → per-field rows: long/multiline strings as real pre-wrapped
- *     text (the `think` tool's `thought`, shell `command`s, file contents),
- *     short values inline
- *   - bare string → pre-wrapped text
- *   - arrays/other/unparseable → pretty JSON / raw fallback
- */
 function ToolPayload(props: { raw: string; isError?: boolean }) {
   const parsed = createMemo<
     | { kind: 'fields'; entries: Array<[string, unknown]> }
@@ -2199,7 +2066,6 @@ function ToolPayload(props: { raw: string; isError?: boolean }) {
     if (!t) return { kind: 'raw', text: props.raw };
     let v: unknown;
     try { v = JSON.parse(t); } catch { return { kind: 'raw', text: props.raw }; }
-    // Double-encoded payload: a JSON string that itself contains JSON.
     if (typeof v === 'string') {
       const s: string = v;
       const inner = s.trim();
@@ -2250,17 +2116,7 @@ function ToolPayload(props: { raw: string; isError?: boolean }) {
   );
 }
 
-/** Expand/collapse state for thinking + tool blocks, keyed `${msgId}:${idx}`.
- *  Module-scope signal: one timeline per page, and survival across <For>
- *  row recycling is exactly what we want. */
 const [expandedBlocks, setExpandedBlocks] = createSignal<Set<string>>(new Set());
-/**
- * Second layer: whole KINDS expanded at once — `tool:<name>` ("expand all
- * similar") or `thinking`. A block is open when it is pinned individually,
- * or its kind is expanded and it was not individually collapsed afterwards.
- * `blockKinds` remembers each toggled key's kind so collapsing a kind can
- * also drop that kind's individual pins.
- */
 const [expandedKinds, setExpandedKinds] = createSignal<Set<string>>(new Set());
 const [collapsedOverrides, setCollapsedOverrides] = createSignal<Set<string>>(new Set());
 const blockKinds = new Map<string, string>();
@@ -2280,11 +2136,9 @@ const toggleBlock = (key: string, kind = ''): void => {
     setExpandedBlocks((prev) => new Set(prev).add(key));
   }
 };
-/** Expand or collapse every block of a kind across the loaded history. */
 const toggleKind = (kind: string): void => {
   const opening = !expandedKinds().has(kind);
   setExpandedKinds((prev) => { const next = new Set(prev); if (opening) next.add(kind); else next.delete(kind); return next; });
-  // Either way, per-block state for this kind resets to "follow the kind".
   setCollapsedOverrides((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
   if (!opening) {
     setExpandedBlocks((prev) => { const next = new Set(prev); for (const [k, kd] of blockKinds) if (kd === kind) next.delete(k); return next; });
@@ -2317,7 +2171,6 @@ function BlockView(props: {
     return <ToolBlockView block={b} blockKey={key()} result={props.results.get(b.id)} />;
   }
   if (b.kind === 'tool_result') {
-    // Standalone (unpaired) result — its tool_use isn't loaded.
     return (
       <div class="my-1">
         <div class="text-[10px] uppercase tracking-wider mb-0.5 text-neutral-600">
@@ -2338,13 +2191,10 @@ function BlockView(props: {
       </div>
     );
   }
-  // media — inline image when the host gave us a locator, else the type chip
   return <MediaView mediaType={b.mediaType} mediaRef={b.ref} />;
 }
 
 function TextBlockView(props: { block: Extract<UiBlock, { kind: 'text' }> }) {
-  // While streaming: plain pre-wrap text — no markdown reparse per token.
-  // Once final: parse once via memo (recomputes only if text changes again).
   const html = createMemo(() => renderMarkdown(props.block.text));
   return (
     <Show
@@ -2365,8 +2215,6 @@ function ThinkingBlockView(props: {
   block: Extract<UiBlock, { kind: 'thinking' }>;
   blockKey: string;
 }) {
-  // Expanded while streaming (watch the mind move), collapsed once done —
-  // unless the operator pinned it open.
   const KIND = 'thinking';
   const open = (): boolean => props.block.streaming === true || isBlockOpen(props.blockKey, KIND);
   const allOpen = (): boolean => expandedKinds().has(KIND);
@@ -2411,12 +2259,12 @@ function ToolBlockView(props: {
   const kind = (): string => `tool:${props.block.name}`;
   const open = (): boolean => isBlockOpen(props.blockKey, kind());
   const allOpen = (): boolean => expandedKinds().has(kind());
-  const dot = (): string => {
-    if (props.block.status === 'running') return 'bg-amber-400 animate-pulse';
-    if (props.block.status === 'failed' || props.result?.isError) return 'bg-rose-500';
-    if (props.block.status === 'done' || props.result) return 'bg-emerald-500';
-    return 'bg-neutral-600';
-  };
+  const dot = (): string => ({
+    running: 'bg-amber-400 animate-pulse',
+    failed: 'bg-rose-500',
+    done: 'bg-emerald-500',
+    unknown: 'bg-neutral-600',
+  })[toolCallState(props.block.status, props.result)];
   const duration = (): string => {
     const ms = props.block.durationMs;
     if (ms === undefined) return '';
@@ -2497,6 +2345,7 @@ const COMMANDS: CommandHint[] = [
   { name: '/session', blurb: 'list/new/switch/rename/delete sessions' },
   { name: '/newtopic', blurb: 'reset head window with summary' },
   { name: '/mcp', blurb: 'list/add/remove/env MCPL servers' },
+  { name: '/tools', blurb: 'each tool\'s effective class and its source' },
   { name: '/fleet', blurb: 'list/peek/stop/restart fleet children' },
   { name: '/clear', blurb: 'clear conversation display' },
   { name: '/quit', blurb: 'export lessons + exit' },
@@ -2565,14 +2414,6 @@ function SidebarTabs(props: {
   );
 }
 
-/**
- * The one fleet-scope selector — a persistent dropdown under the sidebar
- * tabs that every inspection panel (lessons, files, MCPL, context, settings,
- * pins, health, recipe) follows. A dropdown rather than pill rows so the
- * control's footprint is independent of fleet size, and it stays visible on
- * every tab instead of being re-invented per panel. Hidden entirely when no
- * fleet children exist — single-process mode has nothing to select.
- */
 function ScopeBar(props: {
   scopes: Array<{ id: string; label: string }>;
   scope: string;
@@ -2603,8 +2444,6 @@ function QuitConfirmModal(props: {
   childNames: string[];
   onAction: (action: 'kill-children' | 'detach' | 'cancel') => void;
 }) {
-  // Centered overlay rather than a corner banner — quit is a deliberate
-  // action, so the dialog should command attention.
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl max-w-md w-full mx-4 p-5">
@@ -2696,9 +2535,6 @@ function ReconnectBanner(props: { status: string }) {
 }
 
 function RecipePane(props: { welcome: WelcomeMessage | null; scope: string }) {
-  /** Pick the displayed recipe based on the current panel scope: parent
-   *  process when scope is 'local', otherwise the matching child entry
-   *  from welcome.childTrees (recipe summary loaded by the host). */
   const displayed = (): { name: string; description?: string; agentModel?: string; scopeLabel: string } | null => {
     if (!props.welcome) return null;
     if (props.scope === 'local') {
@@ -2769,13 +2605,8 @@ function parseRoute(input: string): { childName: string; content: string } | nul
 
 marked.setOptions({ async: false, breaks: false, gfm: true });
 
-// marked v14 has no built-in sanitizer (the `sanitize` option was removed),
-// and assistant output is the *primary* untrusted input on this admin
-// surface — a tool result, mined-knowledge ingestion, or peeked subagent
-// line that contains literal HTML lands here. Pipe through DOMPurify before
-// innerHTML so <script>, <img onerror=...>, javascript: hrefs, etc. are
-// stripped. The default DOMPurify config already drops <script>, on*
-// handlers, and dangerous URL schemes.
+// marked 14 has no built-in sanitizer, and the default DOMPurify config
+// drops <script>, on* handlers and dangerous URL schemes.
 function renderMarkdown(src: string): string {
   if (!src) return '';
   try {

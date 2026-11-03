@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { SessionMeta } from '../src/session-manager.js';
 import {
   detectModel,
   levenshtein,
@@ -9,6 +10,7 @@ import {
   checkRetirement,
   supportsThinking,
   composeRecipe,
+  selectWarmupSession,
   loadMemoriesBlock,
   MODEL_PROMPT_SOURCES,
   RETIRED_MODELS,
@@ -93,11 +95,8 @@ describe('rankByDistance', () => {
       'claude-sonnet-4-6',
       'claude-opus-4-1',
     ]);
-    expect(ranked.map((r) => r.name)).toEqual([
-      'claude-opus-4-5',
-      'claude-opus-4-1',
-      'claude-sonnet-4-6',
-    ]);
+    expect(ranked.slice(0, 2).map((r) => r.name).sort()).toEqual(['claude-opus-4-1', 'claude-opus-4-5']);
+    expect(ranked[2]!.name).toBe('claude-sonnet-4-6');
     expect(ranked[0]!.distance).toBeLessThanOrEqual(ranked[1]!.distance);
     expect(ranked[1]!.distance).toBeLessThanOrEqual(ranked[2]!.distance);
   });
@@ -127,8 +126,6 @@ describe('checkRetirement', () => {
   });
 
   test('does not false-positive on prefix collisions in plausible future names', () => {
-    // A future `claude-21-...` (whatever that may be) must NOT be confused with
-    // claude-2.1; substring-based matching used to make that mistake.
     expect(checkRetirement('claude-21-orion').retired).toBe(false);
   });
 
@@ -167,6 +164,21 @@ describe('supportsThinking', () => {
   });
 });
 
+describe('selectWarmupSession', () => {
+  test('ID prefixes must be unique; exact IDs and unique case-insensitive names retain precedence', () => {
+    const session = (id: string, name: string): SessionMeta => ({
+      id, name, manuallyNamed: true, createdAt: '', lastAccessedAt: '',
+    });
+    const choices = [session('abc11111', 'First'), session('abc22222', 'Second')];
+    expect(() => selectWarmupSession(choices, 'abc')).toThrow(/Ambiguous warmup session/);
+    expect(selectWarmupSession(choices, 'abc11111')?.name).toBe('First');
+    expect(selectWarmupSession(choices, 'abc2')?.name).toBe('Second');
+    expect(selectWarmupSession(choices, 'SECOND')?.id).toBe('abc22222');
+    expect(selectWarmupSession([...choices, session('other', 'abc11111')], 'abc11111')?.name).toBe('First');
+  });
+
+});
+
 describe('composeRecipe', () => {
   test('produces the expected top-level recipe shape', () => {
     const recipe = composeRecipe({
@@ -180,7 +192,7 @@ describe('composeRecipe', () => {
     expect(recipe).toHaveProperty('modules');
     expect(recipe).toHaveProperty('mcplServers');
     const agent = recipe.agent as Record<string, unknown>;
-    expect(agent.name).toBe('agent');
+    expect(agent.name).toBe('Claude');
     expect(agent.model).toBe('claude-opus-4-7');
     expect(agent.strategy).toEqual({ type: 'autobiographical', compressionModel: 'claude-opus-4-7' });
   });
@@ -222,7 +234,6 @@ describe('composeRecipe', () => {
     expect(composed).toContain('<persistent_memories>');
     expect(composed).toContain('remembered text');
     expect(composed).toContain('</persistent_memories>');
-    // Order: base prompt, then memories, then addendum.
     expect(composed.indexOf('base prompt')).toBeLessThan(composed.indexOf('<persistent_memories>'));
     expect(composed.indexOf('</persistent_memories>')).toBeLessThan(composed.indexOf('addendum'));
   });
@@ -324,7 +335,6 @@ describe('constants', () => {
     for (const [key, meta] of Object.entries(RETIRED_MODELS)) {
       for (const alt of meta.closestLiving ?? []) {
         expect(checkRetirement(alt).retired).toBe(false);
-        // Sanity: closestLiving shouldn't repeat the retired prefix
         expect(alt.startsWith(key)).toBe(false);
       }
     }

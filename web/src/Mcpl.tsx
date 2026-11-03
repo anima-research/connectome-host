@@ -1,17 +1,3 @@
-/**
- * MCPL panel — two views of one scope's MCPL world:
- *
- *   live      what the scoped process actually LOADED (recipe opt-in +
- *             agent overlay), with connection status and tool counts. This
- *             is the per-scope truth: a conductor with zero MCPLs and a
- *             clerk with five share the same registry file.
- *   registry  the shared mcpl-servers.json (editable). Mutations are
- *             file-only — a restart applies them — and happen on the HOST
- *             scope: the file is one cwd-shared registry for the whole
- *             fleet, so the panel goes read-only on child scopes rather
- *             than pretending a "child-local" edit exists.
- */
-
 import { createSignal, For, Show } from 'solid-js';
 
 export interface McplServerRow {
@@ -25,24 +11,50 @@ export interface McplServerRow {
   disabledFeatureSets?: string[];
 }
 
-/** A server the scoped process has actually loaded, with live status. */
 export interface McplLiveRow {
   id: string;
   connected: boolean;
   toolCount: number;
   toolPrefix?: string;
   target?: string;
+  closedTab?: boolean;
 }
+
+/** One tool's effective MCPL class (RFC-008) and where it came from. */
+export interface ToolClassRow {
+  tool: string;
+  class: string[];
+  source: 'override' | 'host' | 'server' | 'none';
+  serverId?: string;
+}
+
+const SOURCE_LABEL: Record<ToolClassRow['source'], string> = {
+  override: 'operator override',
+  host: 'host table',
+  server: 'server _meta',
+  none: 'unclassed',
+};
+
+const SOURCE_TITLE: Record<ToolClassRow['source'], string> = {
+  override: "the recipe's toolClassOverrides",
+  host: "this host's (or the framework's) table of its own tools",
+  server: 'declared by the MCPL server (_meta["mcpl/class"])',
+  none: 'no class: handled as the most restrictive (observers never see its arguments)',
+};
+
+const SOURCE_TONE: Record<ToolClassRow['source'], string> = {
+  override: 'text-cyan-300',
+  host: 'text-neutral-400',
+  server: 'text-emerald-300',
+  none: 'text-amber-300',
+};
 
 export function McplPanel(props: {
   loaded: boolean;
   configPath: string;
   servers: McplServerRow[];
-  /** Servers the scoped process actually loaded, with connection status.
-   *  Empty array is meaningful ("this process runs no MCPLs"); undefined
-   *  means an older host that doesn't report it. */
   live?: McplLiveRow[];
-  /** True on fleet-child scopes: registry edits stay on the host scope. */
+  toolClasses?: ToolClassRow[];
   readOnly?: boolean;
   onRefresh(): void;
   onAdd(input: { id: string; command: string; args?: string[]; env?: Record<string, string>; toolPrefix?: string }): void;
@@ -81,7 +93,6 @@ export function McplPanel(props: {
       </Show>
 
       <Show when={props.loaded}>
-        {/* ---- live: what this process actually runs ---- */}
         <Show when={props.live !== undefined}>
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
             loaded by this process
@@ -94,10 +105,13 @@ export function McplPanel(props: {
           <div class="space-y-1 mb-3">
             <For each={props.live}>{(s) => (
               <div class="border border-neutral-800 rounded px-2 py-1 bg-neutral-950 flex items-baseline gap-2">
-                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                  title={s.connected ? 'connected' : 'disconnected'} />
+                <span class={`inline-block w-2 h-2 rounded-full self-center shrink-0 ${s.connected ? 'bg-emerald-500' : s.closedTab ? 'bg-neutral-500' : 'bg-rose-500'}`}
+                  title={s.connected ? 'connected' : s.closedTab ? 'closed tab: disconnected by choice, not by a failure' : 'disconnected'} />
                 <span class="font-mono text-cyan-300 truncate">{s.id}</span>
                 <span class="text-[10px] text-neutral-500 shrink-0">{s.toolCount} tools</span>
+                <Show when={s.closedTab}>
+                  <span class="text-[10px] text-neutral-400 shrink-0">closed tab</span>
+                </Show>
                 <Show when={s.toolPrefix}>
                   <span class="text-[10px] text-neutral-600 shrink-0">prefix={s.toolPrefix}</span>
                 </Show>
@@ -109,6 +123,9 @@ export function McplPanel(props: {
               </div>
             )}</For>
           </div>
+          <Show when={props.toolClasses !== undefined}>
+            <ToolClasses rows={props.toolClasses!} />
+          </Show>
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold mb-1">
             shared registry
           </div>
@@ -155,6 +172,57 @@ export function McplPanel(props: {
             Changes are written to disk; restart the host process to apply.
           </div>
         </Show>
+      </Show>
+    </div>
+  );
+}
+
+function ToolClasses(props: { rows: ToolClassRow[] }) {
+  const [open, setOpen] = createSignal(false);
+  const counts = (): Array<[ToolClassRow['source'], number]> =>
+    (['override', 'host', 'server', 'none'] as const)
+      .map((source): [ToolClassRow['source'], number] => [source, props.rows.filter(r => r.source === source).length])
+      .filter(([, n]) => n > 0);
+  return (
+    <div class="mb-3">
+      <div class="flex items-baseline gap-2 mb-1">
+        <span class="text-neutral-500 uppercase tracking-wider text-[10px] font-semibold">
+          tool classes
+        </span>
+        <span class="text-neutral-600 text-[10px]">{props.rows.length}</span>
+        <Show when={props.rows.length > 0}>
+          <button
+            type="button"
+            class="ml-auto px-1 py-0.5 text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded font-mono"
+            onClick={() => setOpen(o => !o)}
+          >
+            {open() ? 'hide' : 'show'}
+          </button>
+        </Show>
+      </div>
+      <div class="flex flex-wrap gap-x-2 text-[10px]">
+        <For each={counts()}>{([source, n]) => (
+          <span class={SOURCE_TONE[source]} title={SOURCE_TITLE[source]}>
+            {n} {SOURCE_LABEL[source]}
+          </span>
+        )}</For>
+      </div>
+      <Show when={open()}>
+        <div class="mt-1 border border-neutral-800 rounded bg-neutral-950 divide-y divide-neutral-900">
+          <For each={props.rows}>{(r) => (
+            <div class="px-2 py-0.5 flex flex-wrap items-baseline gap-x-2">
+              <span class="font-mono text-neutral-200 truncate min-w-0 max-w-full" title={r.tool}>{r.tool}</span>
+              <span class="ml-auto min-w-0 flex flex-wrap justify-end items-baseline gap-x-2 text-[10px]">
+                <span class="font-mono text-neutral-400 break-all">
+                  {r.class.length > 0 ? r.class.join(',') : '—'}
+                </span>
+                <span class={`break-all ${SOURCE_TONE[r.source]}`} title={SOURCE_TITLE[r.source]}>
+                  {SOURCE_LABEL[r.source]}{r.serverId ? ` · ${r.serverId}` : ''}
+                </span>
+              </span>
+            </div>
+          )}</For>
+        </div>
       </Show>
     </div>
   );
@@ -352,15 +420,10 @@ function Field(props: { label: string; value: string; onInput: (v: string) => vo
   );
 }
 
-/** Naive whitespace split — sufficient for the args field where shell-quoted
- *  values with spaces are uncommon. Operators editing complex commands can
- *  hand-edit mcpl-servers.json directly. */
 function splitArgs(raw: string): string[] {
   return raw.split(/\s+/).filter(s => s.length > 0);
 }
 
-/** Parse a KEY=VALUE-per-line block into an env object. Returns null if the
- *  block is empty (so the caller can omit the env field entirely). */
 function parseEnvBlock(raw: string): Record<string, string> | null {
   const out: Record<string, string> = {};
   for (const line of raw.split('\n')) {

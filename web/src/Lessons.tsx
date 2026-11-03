@@ -1,13 +1,3 @@
-/**
- * Lessons panel — read-only view of one process's lesson library (the host
- * or a fleet child; the sidebar's shared scope selector decides which).
- *
- * Shows active lessons sorted by confidence; deprecated entries collapse to a
- * dim line with the reason. Manual refresh button — lessons mutate slowly
- * (the agent's LessonsModule tools are the typical writer), so we don't
- * auto-poll.
- */
-
 import { For, Show } from 'solid-js';
 
 export interface LessonRow {
@@ -22,10 +12,7 @@ export interface LessonRow {
 }
 
 export function LessonsPanel(props: {
-  /** True once a lessons-list response has come back; false during initial
-   *  request so the panel can show a "loading…" hint. */
   loaded: boolean;
-  /** True if the LessonsModule is mounted in the recipe. */
   moduleLoaded: boolean;
   lessons: LessonRow[];
   onRefresh(): void;

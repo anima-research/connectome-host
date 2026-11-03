@@ -6,6 +6,8 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": ["bun", "node"],
     "outDir": "dist",
     "rootDir": "src"
   },

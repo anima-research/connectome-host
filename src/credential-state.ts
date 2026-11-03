@@ -1,0 +1,519 @@
+import type { QuotaMeter, QuotaSnapshot } from './quota-meter.js';
+
+export type CredentialStateKind =
+  | 'ok'
+  | 'quota-spent'
+  | 'quota-unreadable'
+  | 'auth-expiring'
+  | 'auth-expired'
+  | 'auth-rejected'
+  | 'auth-login-required';
+
+export type CredentialActionId = 'refresh' | 'login' | 'set-token' | 'recheck';
+
+export interface CredentialAction {
+  id: CredentialActionId;
+  /** Button / command label. */
+  label: string;
+  /** One line of operator guidance, e.g. what to paste. */
+  hint?: string;
+}
+
+/** The wire shape (health snapshot, `credential` panel op, alert data). Never
+ *  carries a token. */
+export interface CredentialState {
+  kind: CredentialStateKind;
+  provider: string;
+  /** Operator-facing one-liner; also the alert message. */
+  message: string;
+  /** Epoch ms the current state was entered. */
+  since: number;
+  /** Epoch ms the condition is expected to lift by itself (quota reset,
+   *  token expiry for `auth-expiring`), when known. */
+  until?: number;
+  /** Spent window labels (`weekly`, `5h`, …) for `quota-spent`. */
+  windows?: string[];
+  /** The source can rotate the credential without operator input, which it
+   *  can't while a login is pending. */
+  rotatable: boolean;
+  /** Epoch ms of the credential's own expiry, when the source knows it. */
+  expiresAt?: number;
+  /** Actions the host can run for this state, in the order to offer them. */
+  actions: CredentialAction[];
+  /** Device-code login in progress (`auth-login-required`). */
+  login?: { verificationUrl: string; userCode: string };
+  /** Outcome of the last operator action, for the panel. */
+  lastAction?: { id: CredentialActionId; at: number; ok: boolean; message: string };
+  /** While the last write of the credential to its file failed: what the
+   *  `credential-unsaved` alert said. */
+  unsaved?: string;
+}
+
+export interface CredentialSource {
+  readonly provider: string;
+  canRefresh(): boolean;
+  refresh?(): Promise<void>;
+  login?(): Promise<void>;
+  cancelLogin?(): Promise<boolean>;
+  setToken?(token: string): Promise<void> | void;
+  expiresAt?(): number | undefined;
+  /** Only 401/403 count as an auth verdict: an inference-only token answers
+   *  429 on the usage endpoint. */
+  probe?(): Promise<void>;
+  currentToken?(): string | undefined;
+  writeBack?(): void;
+}
+
+export interface CredentialMonitorOptions {
+  source: CredentialSource;
+  quotaMeter?: QuotaMeter | null;
+  modelFor?: () => string | undefined;
+  alert: (kind: string, message: string, data: Record<string, unknown>) => void;
+  now?: () => number;
+  expiryWarningMs?: number;
+  unreadableAfterErrors?: number;
+}
+
+export const JAM_ALERT_KINDS: ReadonlySet<string> = new Set([
+  'quota-spent',
+  'auth-expired',
+  'auth-rejected',
+  'auth-login-required',
+]);
+
+const DEFAULT_EXPIRY_WARNING_MS = 30 * 60_000;
+const DEFAULT_UNREADABLE_AFTER = 3;
+const EXPIRING_RECHECK_MS = 60_000;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object';
+}
+
+/** Membrane's typed auth verdict, or a bare HTTP 401/403 from another layer. */
+export function isAuthFailure(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  if (error.type === 'auth') return true;
+  const status = error.httpStatus ?? error.status;
+  return status === 401 || status === 403;
+}
+
+export class CredentialMonitor {
+  private readonly source: CredentialSource;
+  private readonly meter: QuotaMeter | null;
+  private readonly modelFor: () => string | undefined;
+  private readonly alert: CredentialMonitorOptions['alert'];
+  private readonly now: () => number;
+  private readonly expiryWarningMs: number;
+  private readonly unreadableAfter: number;
+  private state: CredentialState;
+  private meterErrors = 0;
+  private meterVerdict: PendingState | null = null;
+  private unsubMeter: (() => void) | null = null;
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null;
+  private actionChain: Promise<void> = Promise.resolve();
+  private actionsRunning = 0;
+  private loginInFlight = false;
+  private disposed = false;
+  private unsaved: string | undefined;
+
+  constructor(options: CredentialMonitorOptions) {
+    this.source = options.source;
+    this.meter = options.quotaMeter ?? null;
+    this.modelFor = options.modelFor ?? (() => undefined);
+    this.alert = options.alert;
+    this.now = options.now ?? Date.now;
+    this.expiryWarningMs = options.expiryWarningMs ?? DEFAULT_EXPIRY_WARNING_MS;
+    this.unreadableAfter = options.unreadableAfterErrors ?? DEFAULT_UNREADABLE_AFTER;
+    this.state = this.okState();
+    if (this.meter) {
+      this.unsubMeter = this.meter.onChange((snapshot) => this.observeMeter(snapshot));
+      const current = this.meter.getSnapshot();
+      if (current) this.observeMeter(current);
+    }
+    this.armExpiryTimer();
+  }
+
+  get provider(): string {
+    return this.source.provider;
+  }
+
+  snapshot(): CredentialState {
+    return {
+      ...this.current(),
+      actions: [...this.state.actions],
+      ...(this.unsaved !== undefined ? { unsaved: this.unsaved } : {}),
+    };
+  }
+
+  private current(): CredentialState {
+    const { expiresAt: _entered, ...state } = this.state;
+    const expiresAt = this.expiry();
+    return {
+      ...state,
+      ...(state.kind === 'auth-login-required' ? {} : { rotatable: this.source.canRefresh() }),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+    };
+  }
+
+  bearer(): string | undefined {
+    try {
+      return this.source.currentToken?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private authHasPrecedence(): boolean {
+    return this.state.kind.startsWith('auth-') && this.state.kind !== 'auth-expiring';
+  }
+
+  private applyMeterVerdict(): void {
+    if (this.authHasPrecedence()) return;
+    if (this.meterVerdict) {
+      this.transition(this.meterVerdict);
+      return;
+    }
+    if (this.state.kind === 'auth-expiring') return;
+    this.transition(this.okState());
+    this.checkExpiry();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.unsubMeter?.();
+    this.unsubMeter = null;
+    if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+  }
+
+  observeError(error: unknown): void {
+    if (this.disposed) return;
+    if (!isAuthFailure(error)) return;
+    if (this.state.kind === 'auth-login-required') return;
+    const expiresAt = this.expiry();
+    const expired = expiresAt !== undefined && expiresAt <= this.now();
+    const detail = isRecord(error) && typeof error.message === 'string' ? error.message : 'authentication rejected';
+    this.transition({
+      kind: expired ? 'auth-expired' : 'auth-rejected',
+      message: expired
+        ? `${this.source.provider} credential expired ${new Date(expiresAt).toISOString()} — the provider rejects it (${trim(detail)})`
+        : `${this.source.provider} rejected the credential (${trim(detail)})`,
+      rotatable: this.source.canRefresh(),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      actions: this.authActions(),
+    });
+  }
+
+  observeSuccess(): void {
+    if (this.disposed) return;
+    if (this.authHasPrecedence()) this.settleAfterAuth();
+    else if (this.state.kind === 'auth-expiring') this.checkExpiry();
+  }
+
+  private settleAfterAuth(): void {
+    if (this.meterVerdict) {
+      this.transition(this.meterVerdict);
+      return;
+    }
+    this.transition(this.okState());
+    this.checkExpiry();
+  }
+
+  loginRequired(details: { verificationUrl: string; userCode: string }): void {
+    if (this.disposed) return;
+    this.transition({
+      kind: 'auth-login-required',
+      message: `${this.source.provider} login required — open ${details.verificationUrl} and enter code ${details.userCode}`,
+      rotatable: false,
+      login: { ...details },
+      actions: [
+        { id: 'login', label: 'Restart login', hint: 'Starts a new device-code login and shows a fresh code.' },
+        { id: 'recheck', label: 'Re-check' },
+      ],
+    });
+  }
+
+  observeWriteBack(file: string, error?: string): void {
+    if (this.disposed) return;
+    const provider = this.source.provider;
+    if (error === undefined) {
+      if (this.unsaved === undefined) return;
+      this.unsaved = undefined;
+      this.emit('credential-unsaved-clear', `${provider} credential written to ${file}`, { provider });
+      return;
+    }
+    const why = error.trim() ? ` (${trim(error)})` : '';
+    this.unsaved = `${provider} credential couldn't be written to ${file}${why} — the credential in use may not be in that file, which is what a restart reads`;
+    this.emit('credential-unsaved', this.unsaved, {
+      provider,
+      actions: [{ id: 'recheck', label: 'Re-check', hint: 'Writes the credential to its file again, then re-checks it.' }],
+    });
+  }
+
+  private observeMeter(snapshot: QuotaSnapshot): void {
+    if (this.disposed || !this.meter) return;
+    const model = this.modelFor();
+    const spent = this.meter.spentWindows(model);
+    const until = this.meter.blockedUntil(model);
+    if (spent.length > 0 && (until !== undefined || this.meter.spentWithUnknownReset(model))) {
+      const labels = spent.map((w) => w.label);
+      this.meterVerdict = {
+        kind: 'quota-spent',
+        message: `${this.source.provider} subscription quota spent (${labels.join(', ')}) — ` +
+          (until !== undefined ? `resets ${new Date(until).toISOString()}` : 'reset time not reported'),
+        rotatable: this.source.canRefresh(),
+        windows: labels,
+        ...(until !== undefined ? { until } : {}),
+        actions: [
+          { id: 'recheck', label: 'Re-read quota' },
+          ...(this.source.setToken ? [{ id: 'set-token' as const, label: 'Use another token', hint: 'Paste a token from a different subscription.' }] : []),
+        ],
+      };
+      this.applyMeterVerdict();
+      return;
+    }
+    if (snapshot.error && snapshot.fetchedAt === 0) {
+      this.meterErrors++;
+      if (this.meterErrors >= this.unreadableAfter) {
+        this.meterVerdict = {
+          kind: 'quota-unreadable',
+          message: `${this.source.provider} quota cannot be read (${trim(snapshot.error)}) — ` +
+            'no spent-quota hold is possible for this credential; a 429 that states a retry-after holds ' +
+            "the agent's turns until then, and one that doesn't is retried as a throttle",
+          rotatable: this.source.canRefresh(),
+          actions: [{ id: 'recheck', label: 'Re-read quota' }],
+        };
+        this.applyMeterVerdict();
+      }
+      return;
+    }
+    if (!snapshot.error) {
+      this.meterErrors = 0;
+      this.meterVerdict = null;
+      this.applyMeterVerdict();
+    }
+  }
+
+  private checkExpiry(): void {
+    if (this.disposed) return;
+    const expiresAt = this.expiry();
+    this.armExpiryTimer();
+    if (expiresAt === undefined) {
+      if (this.state.kind === 'auth-expiring') this.settleAfterAuth();
+      return;
+    }
+    const remaining = expiresAt - this.now();
+    if (remaining > this.expiryWarningMs) {
+      // The token rotated (a 401 retried inside one provider call shows
+      // here only as a success tap): the old countdown is over.
+      if (this.state.kind === 'auth-expiring') this.settleAfterAuth();
+      return;
+    }
+    if (remaining <= 0) {
+      if (this.state.kind !== 'ok' && this.state.kind !== 'auth-expiring') return;
+      this.transition({
+        kind: 'auth-expired',
+        message: `${this.source.provider} credential expired ${new Date(expiresAt).toISOString()} — the next call will be rejected`,
+        rotatable: this.source.canRefresh(),
+        expiresAt,
+        actions: this.authActions(),
+      });
+      return;
+    }
+    if (this.state.kind !== 'ok' && this.state.kind !== 'auth-expiring') return;
+    const minutes = Math.max(1, Math.round(remaining / 60_000));
+    this.transition({
+      kind: 'auth-expiring',
+      message: `${this.source.provider} credential expires in ~${minutes} min (${new Date(expiresAt).toISOString()})`,
+      rotatable: this.source.canRefresh(),
+      until: expiresAt,
+      expiresAt,
+      actions: this.authActions(),
+    });
+  }
+
+  private armExpiryTimer(): void {
+    if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+    if (this.disposed) return;
+    const expiresAt = this.expiry();
+    if (expiresAt === undefined) return;
+    const warnAt = expiresAt - this.expiryWarningMs;
+    const delay = Math.max(1_000, Math.min(warnAt - this.now(), EXPIRING_RECHECK_MS * 60));
+    const wait = warnAt <= this.now() ? EXPIRING_RECHECK_MS : delay;
+    this.expiryTimer = setTimeout(() => this.checkExpiry(), wait);
+    this.expiryTimer.unref?.();
+  }
+
+  runAction(id: CredentialActionId, params: { token?: string } = {}): Promise<CredentialState> {
+    let queued: { token?: string; restart?: boolean } = params;
+    if (id === 'login' && this.loginInFlight) {
+      if (this.source.cancelLogin) {
+        void this.source.cancelLogin().catch(() => false);
+        queued = { ...params, restart: true };
+      } else {
+        this.state = { ...this.state, lastAction: { id, at: this.now(), ok: false, message: 'a login is already in progress — enter the code shown, or wait for it to expire' } };
+        return Promise.resolve(this.snapshot());
+      }
+    }
+    const run = this.actionChain.then(() => this.performAction(id, queued));
+    const settled = run.then(() => undefined, () => undefined);
+    this.actionChain = settled;
+    this.actionsRunning++;
+    void settled.then(() => { this.actionsRunning--; });
+    return run;
+  }
+
+  /** Whether an action asked for here, from any entry, hasn't settled yet. */
+  actionInFlight(): boolean {
+    return this.actionsRunning > 0;
+  }
+
+  private async performAction(id: CredentialActionId, params: { token?: string; restart?: boolean }): Promise<CredentialState> {
+    const at = this.now();
+    const done = (ok: boolean, message: string): CredentialState => {
+      this.state = { ...this.state, lastAction: { id, at, ok, message } };
+      return this.snapshot();
+    };
+    try {
+      switch (id) {
+        case 'refresh': {
+          if (!this.source.refresh || !this.source.canRefresh()) {
+            return done(false, `${this.source.provider} credential cannot be refreshed by the host — paste a new token instead`);
+          }
+          await this.source.refresh();
+          return done(...(await this.settle('refreshed', id)));
+        }
+        case 'login': {
+          if (!this.source.login) return done(false, `${this.source.provider} has no interactive login`);
+          if (params.restart && !this.state.kind.startsWith('auth-')) return done(true, 'login no longer needed — the credential is accepted');
+          this.loginInFlight = true;
+          try {
+            await this.source.login();
+          } finally {
+            this.loginInFlight = false;
+          }
+          return done(...(await this.settle('login completed', id)));
+        }
+        case 'set-token': {
+          if (!this.source.setToken) return done(false, `${this.source.provider} credential cannot be replaced at runtime`);
+          const token = typeof params.token === 'string' ? params.token.trim() : '';
+          if (!token) return done(false, 'set-token needs a non-empty token');
+          await this.source.setToken(token);
+          return done(...(await this.settle('token replaced', id)));
+        }
+        case 'recheck': {
+          if (this.unsaved !== undefined) this.source.writeBack?.();
+          await this.meter?.refresh();
+          return done(...(await this.settle('re-checked', id)));
+        }
+        default:
+          return done(false, `unknown credential action: ${String(id)}`);
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      return done(false, `${id} failed: ${trim(reason)}`);
+    }
+  }
+
+  private async settle(what: string, id: CredentialActionId): Promise<[boolean, string]> {
+    this.armExpiryTimer();
+    if (!this.source.probe) {
+      if (id === 'recheck') {
+        return [true, `${what}; nothing to verify for ${this.source.provider} (no probe) — state unchanged`];
+      }
+      if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
+      return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell`];
+    }
+    try {
+      await this.source.probe();
+      if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
+      return [true, `${what}; credential verified`];
+    } catch (err) {
+      if (isAuthFailure(err)) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.transition({
+          kind: 'auth-rejected',
+          message: `${this.source.provider} still rejects the credential after ${what} (${trim(reason)})`,
+          rotatable: this.source.canRefresh(),
+          actions: this.authActions(),
+        });
+        return [false, `${what}, but the provider still rejects the credential`];
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return [true, `${what}; verification inconclusive (${trim(reason)})`];
+    }
+  }
+
+  private okState(): CredentialState {
+    const expiresAt = this.expiry();
+    return {
+      kind: 'ok',
+      provider: this.source.provider,
+      message: 'credential ok',
+      since: this.now(),
+      rotatable: this.source.canRefresh(),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      actions: [],
+    };
+  }
+
+  private authActions(): CredentialAction[] {
+    const actions: CredentialAction[] = [];
+    if (this.source.canRefresh() && this.source.refresh) {
+      actions.push({ id: 'refresh', label: 'Refresh token', hint: 'Rotates the credential with its refresh token.' });
+    }
+    if (this.source.login) actions.push({ id: 'login', label: 'Log in again' });
+    if (this.source.setToken) {
+      actions.push({ id: 'set-token', label: 'Paste new token', hint: 'Replaces the credential in memory for this process.' });
+    }
+    actions.push({ id: 'recheck', label: 'Re-check' });
+    return actions;
+  }
+
+  private expiry(): number | undefined {
+    try {
+      return this.source.expiresAt?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private transition(next: PendingState): void {
+    const prev = this.state;
+    const state: CredentialState = {
+      ...next,
+      provider: next.provider ?? this.source.provider,
+      since: next.kind === prev.kind ? prev.since : (next.since ?? this.now()),
+      ...(prev.lastAction ? { lastAction: prev.lastAction } : {}),
+    };
+    const same = prev.kind === state.kind && prev.message === state.message;
+    this.state = state;
+    if (same) return;
+    const data = this.alertData(state);
+    if (prev.kind !== 'ok' && prev.kind !== state.kind) {
+      this.emit(`${prev.kind}-clear`, state.kind === 'ok' ? `${this.source.provider} credential ok` : `superseded by ${state.kind}`, data);
+    }
+    if (state.kind !== 'ok') this.emit(state.kind, state.message, data);
+  }
+
+  private emit(kind: string, message: string, data: Record<string, unknown>): void {
+    try {
+      this.alert(kind, message, data);
+    } catch (err) {
+      console.error(`[credential-monitor] alert sink threw for ${kind}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  private alertData(state: CredentialState): Record<string, unknown> {
+    const { message: _m, lastAction: _l, ...rest } = state;
+    return { ...rest };
+  }
+}
+
+type PendingState = Omit<CredentialState, 'provider' | 'since'> & { provider?: string; since?: number };
+
+function trim(text: string, max = 200): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}

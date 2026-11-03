@@ -1,19 +1,8 @@
-/**
- * Parity test: AgentTreeReducer's output matches what tui.ts currently builds
- * from the same event stream.
- *
- * Approach: replicate the TUI's per-event fold inline (mirror of the
- * subagentPhase, agentContextTokens, agentParent maps in tui.ts) and feed both
- * folds the same canonical event stream. Assert they produce equivalent state.
- *
- * This test exists to prevent silent drift during Phase 2's extraction. Once
- * the TUI is migrated to the reducer (Phase 4), the inline fold here can stay
- * as a frozen reference of the pre-extraction behavior.
- */
 import { describe, test, expect } from 'bun:test';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
+import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from '../src/state/stream-usage.js';
 
-type Phase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'failed' | 'idle';
+type Phase = 'sending' | 'streaming' | 'invoking' | 'executing' | 'done' | 'attempt-failed' | 'failed' | 'idle';
 
 interface InlineFold {
   phaseByAgent: Map<string, Phase>;
@@ -27,14 +16,23 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
   const inputTokensByAgent = new Map<string, number>();
   const parentByChild = new Map<string, string>();
   const toolCountByAgent = new Map<string, number>();
-  // Mirror SubagentModule's callIdIndex so tool events route to the correct agent.
   const callIdIndex = new Map<string, string>();
+  const streamUsage = new Map<string, UsageCounts>();
+  const noteUsageSample = (agent: string, sample: UsageSample | undefined) => {
+    if (!sample) return;
+    const step = foldUsageSample(streamUsage.get(agent), sample);
+    streamUsage.set(agent, step.total);
+    if (step.prompt !== undefined) inputTokensByAgent.set(agent, step.prompt);
+  };
 
   for (const e of events) {
     const agent = e.agentName as string | undefined;
     switch (e.type) {
       case 'inference:started':
-        if (agent) phaseByAgent.set(agent, 'sending');
+        if (agent) {
+          phaseByAgent.set(agent, 'sending');
+          streamUsage.set(agent, emptyUsage());
+        }
         break;
       case 'inference:tokens':
         if (agent) phaseByAgent.set(agent, 'streaming');
@@ -52,21 +50,20 @@ function inlineFold(events: Array<Record<string, unknown>>): InlineFold {
         break;
       }
       case 'inference:usage': {
-        if (agent) {
-          const usage = e.tokenUsage as { input?: number } | undefined;
-          if (usage?.input) inputTokensByAgent.set(agent, usage.input);
-        }
+        if (agent) noteUsageSample(agent, e.tokenUsage as UsageSample | undefined);
         break;
       }
       case 'inference:completed': {
         if (agent) {
           phaseByAgent.set(agent, 'done');
-          const usage = e.tokenUsage as { input?: number } | undefined;
-          if (usage?.input) inputTokensByAgent.set(agent, usage.input);
+          noteUsageSample(agent, e.tokenUsage as UsageSample | undefined);
         }
         break;
       }
       case 'inference:failed':
+        if (agent) phaseByAgent.set(agent, 'attempt-failed');
+        break;
+      case 'inference:exhausted':
         if (agent) phaseByAgent.set(agent, 'failed');
         break;
       case 'tool:started': {
@@ -105,10 +102,6 @@ function reducerFold(events: Array<Record<string, unknown>>): InlineFold {
 function assertParity(events: Array<Record<string, unknown>>): void {
   const inline = inlineFold(events);
   const reducer = reducerFold(events);
-  // The reducer creates nodes for agents the inline fold never explicitly
-  // tracked (e.g. it preserves them after seeing only spawn-call events without
-  // an inference:started). We only assert that the inline fold's keys are a
-  // subset and agree on values.
   for (const [agent, phase] of inline.phaseByAgent) {
     expect(reducer.phaseByAgent.get(agent)).toBe(phase);
   }
@@ -183,12 +176,20 @@ describe('AgentTreeReducer parity with inline fold', () => {
     ]);
   });
 
-  test('multiple usage events accumulate context size correctly', () => {
-    // Last input tokens wins (= current context window).
+  test('lone exhausted inference', () => {
     assertParity([
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 1000, output: 50 }, timestamp: t(0) },
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 2000, output: 80 }, timestamp: t(1) },
-      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 3500, output: 120 }, timestamp: t(2) },
+      { type: 'inference:started', agentName: 'a', timestamp: t(0) },
+      { type: 'inference:exhausted', agentName: 'a', error: 'Stream aborted', timestamp: t(1) },
+    ]);
+  });
+
+  test('multiple usage events accumulate context size correctly', () => {
+    assertParity([
+      { type: 'inference:started', agentName: 'a', timestamp: t(0) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 1000, output: 50, cacheCreation: 3000 }, timestamp: t(1) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 2000, output: 80, cacheRead: 3000, cacheCreation: 3200 }, timestamp: t(2) },
+      { type: 'inference:usage', agentName: 'a', tokenUsage: { input: 3500, output: 120, cacheRead: 6200, cacheCreation: 3300 }, timestamp: t(3) },
+      { type: 'inference:completed', agentName: 'a', durationMs: 100, tokenUsage: { input: 3500, output: 120, cacheRead: 6200, cacheCreation: 3300 }, timestamp: t(4) },
     ]);
   });
 });

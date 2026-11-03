@@ -34,11 +34,13 @@ Enable lessons, retrieval, and the Web UI in the recipe:
 ```
 
 `reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-or `max`. It is optional, applies to both retrieval calls, and does not inherit
-the primary agent's reasoning setting. This field is supported only when
+or `max`. It is optional, applies to both retrieval calls, does not inherit
+the primary agent's reasoning setting, and requires an explicit
+`modules.retrieval.model`. This field is supported only when
 `agent.provider` is `openai-responses` or `openai-codex`; Anthropic/Claude uses
 separate native thinking controls and is rejected here rather than receiving an
-invalid OpenAI-shaped request.
+invalid OpenAI-shaped request. `modules.retrieval.reasoningContext` is
+rejected: retrieval calls are independent one-shot requests.
 
 Retrieval remains opt-in and requires the lessons module. Depending on the
 candidate count, one turn can use one selector call plus an optional relevance
@@ -107,7 +109,8 @@ Both routes require password-derived operator authentication, including on a
 loopback bind. Web UI Basic Auth must be configured; the routes accept either
 direct valid Basic Auth or a full session created by password sign-in. A
 loopback-only Web UI without configured credentials returns `401` for these two
-routes, while other Web UI routes retain their historical loopback behavior.
+routes under a loopback name, while other Web UI routes retain their historical
+loopback behavior; under any other name, every route answers `403`.
 Read-only observer cookies are rejected even when they carry the `debug` scope.
 
 Exact recent conversation and stage inputs are omitted by default because they
