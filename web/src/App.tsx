@@ -1292,11 +1292,11 @@ export function App() {
   const submit = (): void => {
     const text = draft().trim();
     const images = attachments();
-    if (!text && images.length === 0) return;
     if (preparing() > 0) {
       setAttachNotice('still reading images; send again in a moment');
       return;
     }
+    if (!text && images.length === 0) return;
     if (images.length > 0 && !canAttach()) {
       setAttachNotice("this host doesn't take images now: remove them to send");
       return;

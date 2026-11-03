@@ -771,6 +771,19 @@ describe('images', () => {
     }, { init: HOLD_FILE_READS });
   });
 
+  test('Send pressed while the only image is still being read says to send again, and sends nothing', async () => {
+    await withComposer(async (c) => {
+      const from = c.host.received.length;
+      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
+      await c.page.getByText('reading 1 image').waitFor();
+      await c.box.press('Enter');
+      await c.page.getByText('still reading images; send again in a moment').waitFor();
+      await c.page.evaluate(() => (window as unknown as { releaseFileReads: () => void }).releaseFileReads());
+      await c.page.getByTitle(/^dot\.png/).waitFor();
+      expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toEqual([]);
+    }, { init: HOLD_FILE_READS });
+  });
+
   test('an image is fitted to the side the welcome advertises, its thumbnail says so, and the fitted image is what is sent', async () => {
     await withComposer(async (c) => {
       await attach(c, [{ name: 'wide.png', buffer: WIDE_PNG }]);
