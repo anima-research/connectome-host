@@ -83,7 +83,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     img = await loadImage(file);
   } catch {
     throw new Error(sniffed
-      ? `${name} can't be drawn by this browser: it may be damaged, or in a form this browser can't decode; convert it to PNG or JPEG`
+      ? `${name} can't be drawn by this browser: it may be damaged, or in a form this browser can't decode; attach an intact copy, or convert it to PNG or JPEG`
       : `${name} isn't in a format this browser can read; convert it to PNG or JPEG`);
   }
   const width = img.naturalWidth;

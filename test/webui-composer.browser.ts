@@ -658,11 +658,39 @@ describe('images', () => {
       await c.page.getByText('reading 1 image').waitFor();
       await c.box.press('Enter');
       await c.page.getByText('still reading images; send again in a moment').waitFor();
-      await c.page.evaluate(() => (window as unknown as { releaseFileReads: () => void }).releaseFileReads());
+      await releaseFileReads(c);
       await c.page.getByTitle(/^dot\.png/).waitFor();
       await until('the reading note cleared', () => c.page.getByText('still reading images; send again in a moment').count(), (n) => n === 0);
-      c.host.append('after the send', 'a corrId of its own');
-      await c.page.getByText('after the send', { exact: true }).waitFor();
+      await c.box.press('Enter');
+      const sends = () => c.host.received.slice(from).filter((f): f is UserMessageMessage => f.type === 'user-message');
+      await until('the send after the read', () => sends().find((f) => f.images?.length === 1), (f) => f !== undefined);
+      expect(sends()).toHaveLength(1);
+    }, { init: HOLD_FILE_READS });
+  });
+
+  test("overlapping batches each keep their notes, and the reading note clears without taking them", async () => {
+    await withComposer(async (c) => {
+      const from = c.host.received.length;
+      const cut = 'cut.png is cut short: the file ends before the image does; attach a whole copy';
+      const heic = "photo.heic isn't in a format this browser can read; convert it to PNG or JPEG";
+      const reading = 'still reading images; send again in a moment';
+      await attach(c, [{ name: 'cut.png', buffer: DOT_PNG.subarray(0, DOT_PNG.length - 4) }]);
+      await attach(c, [{ name: 'photo.heic', buffer: Buffer.from('not an image the browser can draw') }]);
+      await attach(c, [{ name: 'dot.png', buffer: DOT_PNG }]);
+      await c.page.getByText('reading 3 images').waitFor();
+      await releaseFileReads(c, 'cut.png');
+      await c.page.getByText(cut).waitFor();
+      await c.box.press('Enter');
+      await c.page.getByText(reading).waitFor();
+      expect(await c.page.getByText(cut).count()).toBe(1);
+      await releaseFileReads(c, 'photo.heic');
+      await c.page.getByText(heic).waitFor();
+      expect(await c.page.getByText(cut).count()).toBe(1);
+      await releaseFileReads(c, 'dot.png');
+      await c.page.getByTitle(/^dot\.png/).waitFor();
+      await until('the reading note cleared', () => c.page.getByText(reading).count(), (n) => n === 0);
+      expect(await c.page.getByText(cut).count()).toBe(1);
+      expect(await c.page.getByText(heic).count()).toBe(1);
       expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toEqual([]);
     }, { init: HOLD_FILE_READS });
   });
@@ -747,6 +775,20 @@ describe('images', () => {
       expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
       const { rgba } = await sentImage(c.page, frame.images![0]!);
       expect(rgba.slice(0, 3).every((v) => v < 60)).toBe(true);
+      expect(rgba[3]).toBe(255);
+    });
+  });
+
+  test('an animated WebP that already fits is redrawn as one still frame, and its note says only that', async () => {
+    await withComposer(async (c) => {
+      await c.page.locator('input[type="file"]').setInputFiles({ name: 'anim.webp', mimeType: 'image/webp', buffer: ANIMATED_WEBP });
+      const tile = c.page.getByTitle(/^anim\.webp/);
+      await tile.waitFor();
+      expect(await tile.getAttribute('title')).toBe('anim.webp — an animation, redrawn as one still frame');
+      expect(await tile.getByText('still frame', { exact: true }).count()).toBe(1);
+      const frame = await send(c, 'anim');
+      expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
+      expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
     });
   });
 });
@@ -784,13 +826,38 @@ const CANVAS_LIKE_A_SMALLER_SAFARI = `(() => {
 
 const HOLD_FILE_READS = `(() => {
   const read = Blob.prototype.arrayBuffer;
-  const held = [];
+  let held = [];
   Blob.prototype.arrayBuffer = function () {
     if (!(this instanceof File)) return read.call(this);
-    return new Promise((resolve) => held.push(() => resolve(read.call(this))));
+    return new Promise((resolve) => held.push({ name: this.name, go: () => resolve(read.call(this)) }));
   };
-  window.releaseFileReads = () => { for (const go of held.splice(0)) go(); };
+  window.releaseFileReads = (name) => {
+    const going = held.filter((h) => name === undefined || h.name === name);
+    held = held.filter((h) => !going.includes(h));
+    for (const h of going) h.go();
+  };
 })();`;
+
+const releaseFileReads = (c: Composer, name?: string): Promise<void> =>
+  c.page.evaluate((n) => (window as unknown as { releaseFileReads: (name?: string) => void }).releaseFileReads(n), name);
+
+const ANIMATED_WEBP = ((): Buffer => {
+  const chunk = (type: string, body: Buffer): Buffer => {
+    const head = Buffer.alloc(8);
+    head.write(type, 0, 'latin1');
+    head.writeUInt32LE(body.length, 4);
+    return Buffer.concat([head, body, Buffer.alloc(body.length & 1)]);
+  };
+  const vp8l = chunk('VP8L', Buffer.from('LwJAAAAHUI8i16P/gYjofwA=', 'base64'));
+  const vp8x = chunk('VP8X', Buffer.from([0x02, 0, 0, 0, 2, 0, 0, 1, 0, 0]));
+  const anim = chunk('ANIM', Buffer.from([0, 0, 0, 0, 0, 0]));
+  const anmf = chunk('ANMF', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0, 100, 0, 0, 0]), vp8l]));
+  const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), vp8x, anim, anmf]);
+  const riff = Buffer.alloc(8);
+  riff.write('RIFF', 0, 'latin1');
+  riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+})();
 
 const TWO_FRAME_GIF = Buffer.from([
   0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,

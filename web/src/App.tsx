@@ -158,6 +158,7 @@ export function App() {
   const [attachments, setAttachments] = createSignal<Attachment[]>([]);
   const [preparing, setPreparing] = createSignal(0);
   const [attachNotice, setAttachNotice] = createSignal<string | null>(null);
+  const [stillReading, setStillReading] = createSignal(false);
   const [dropActive, setDropActive] = createSignal(false);
   let fileInput: HTMLInputElement | undefined;
   type PanelMode = 'stream' | 'usage' | 'branches';
@@ -1256,8 +1257,8 @@ export function App() {
       }
     }
     if (overCount > 0) notes.push(`${overCount} image(s) not attached: a message takes at most ${L.maxCount}`);
-    if (notes.length > 0) setAttachNotice(notes.join(' · '));
-    else if (preparing() === 0 && attachNotice() === STILL_READING) setAttachNotice(null);
+    if (notes.length > 0) setAttachNotice((shown) => [shown, ...notes].filter((n) => n).join(' · '));
+    if (preparing() === 0) setStillReading(false);
   };
 
   const removeAttachment = (id: string): void => {
@@ -1269,7 +1270,7 @@ export function App() {
     const text = draft().trim();
     const images = attachments();
     if (preparing() > 0) {
-      setAttachNotice(STILL_READING);
+      setStillReading(true);
       return;
     }
     if (!text && images.length === 0) return;
@@ -1587,7 +1588,7 @@ export function App() {
             <AttachmentStrip
               attachments={attachments()}
               preparing={preparing()}
-              notice={attachNotice()}
+              notice={[attachNotice(), stillReading() ? STILL_READING : null].filter((n) => n).join(' · ') || null}
               onRemove={removeAttachment}
             />
             <div class="flex gap-2">
