@@ -1201,14 +1201,16 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to
-   * the relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak
-   * it. Also handles the relay's `interruption` events: the just-posted
-   * Discord message is edited down to the words actually voiced, and a note
-   * lands in the agent's context. `token` should be `${VAR}`-substituted
-   * from .env, never literal.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the turn's channel)
+   * and each message its prose publishes (one text block, on the channel it
+   * was published to) to the relay's `/bot` WebSocket, where voice clients
+   * (Melodeus / iOS) speak it. Text the agent didn't publish, its thinking
+   * and tool calls, and messages sent by a tool call aren't sent, nor is
+   * anything published while the relay is reconnecting. Also handles the
+   * relay's `interruption` events: the just-posted Discord message is edited
+   * down to the words actually voiced, and a note lands in the agent's
+   * context. `token` should be `${VAR}`-substituted from .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 

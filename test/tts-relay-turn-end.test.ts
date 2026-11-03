@@ -59,13 +59,13 @@ describe('a turn a tool ended', () => {
     emit({ type: 'inference:tokens', content: 'Nothing to add.', blockType: 'text', blockIndex: 0, channelId: CHANNEL });
     emit({ type: 'inference:turn_ended' });
     await waitFor(() => kinds().includes('activation_end:complete'), 'the activation end');
-    expect(kinds()).toEqual(['activation_start', 'chunk', 'activation_end:complete']);
-    expect(received[2]).toMatchObject({ channelId: '123', username: 'Wren' });
+    expect(kinds()).toEqual(['activation_start', 'activation_end:complete']);
+    expect(received[1]).toMatchObject({ channelId: '123', username: 'Wren' });
 
     emit({ type: 'inference:started', channelId: CHANNEL });
     emit({ type: 'inference:completed' });
-    await waitFor(() => received.length === 5, 'the second turn');
-    expect(kinds().slice(3)).toEqual(['activation_start', 'activation_end:complete']);
+    await waitFor(() => received.length === 4, 'the second turn');
+    expect(kinds().slice(2)).toEqual(['activation_start', 'activation_end:complete']);
   }, 30_000);
 
   test('another agent\'s turn a tool ended leaves this agent\'s activation open', async () => {
@@ -73,11 +73,11 @@ describe('a turn a tool ended', () => {
     const kinds = () => received.map((m) => `${m.type}${m.reason ? `:${String(m.reason)}` : ''}`);
     emit({ type: 'inference:started', channelId: CHANNEL });
     emit({ type: 'inference:turn_ended', agentName: 'spawn-research-1' });
-    emit({ type: 'inference:tokens', content: 'Still here.', blockType: 'text', blockIndex: 0, channelId: CHANNEL });
-    await waitFor(() => kinds().includes('chunk'), 'the chunk after the other agent\'s end');
+    emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1', index: 0, text: 'Still here.' });
+    await waitFor(() => kinds().includes('block_complete'), 'the message after the other agent\'s end');
     emit({ type: 'inference:completed' });
     await waitFor(() => kinds().includes('activation_end:complete'), 'the activation end');
-    expect(kinds()).toEqual(['activation_start', 'chunk', 'activation_end:complete']);
+    expect(kinds()).toEqual(['activation_start', 'block_start', 'chunk', 'block_complete', 'activation_end:complete']);
   }, 30_000);
 
   test('a turn that sends both ends, in either order, ends its activation once', async () => {
@@ -93,6 +93,74 @@ describe('a turn a tool ended', () => {
       'activation_start', 'activation_end:complete',
       'activation_start', 'activation_end:complete',
       'activation_start', 'activation_end:abort',
+    ]);
+  }, 30_000);
+});
+
+describe('a failed attempt', () => {
+  test('that the framework retries leaves the activation open, so what the turn published before it is still voiced', async () => {
+    const { received, emit } = await harness();
+    const kinds = () => received.map((m) => `${m.type}${m.reason ? `:${String(m.reason)}` : ''}`);
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1', index: 0, text: 'Let me check.', messageId: 'm1' });
+    emit({ type: 'inference:failed', error: 'overloaded' });
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:published', serverId: 'discord', channelId: CHANNEL, inferenceId: 'i2', index: 0, text: 'It opens at nine.', messageId: 'm2' });
+    emit({ type: 'inference:completed' });
+    await waitFor(() => kinds().some((k) => k.startsWith('activation_end')), 'the turn\'s end');
+    expect(kinds()).toEqual([
+      'activation_start',
+      'block_start', 'chunk', 'block_complete',
+      'block_start', 'chunk', 'block_complete',
+      'activation_end:complete',
+    ]);
+  }, 30_000);
+
+  test('that the framework gives up on ends the activation as an error, once', async () => {
+    const { received, emit } = await harness();
+    const kinds = () => received.map((m) => `${m.type}${m.reason ? `:${String(m.reason)}` : ''}`);
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:failed', error: 'overloaded' });
+    emit({ type: 'inference:exhausted', error: 'overloaded' });
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:completed' });
+    await waitFor(() => received.length === 4, 'the next turn\'s end');
+    expect(kinds()).toEqual([
+      'activation_start', 'activation_end:error',
+      'activation_start', 'activation_end:complete',
+    ]);
+  }, 30_000);
+});
+
+describe('what the relay is given to voice', () => {
+  test("each message the agent published, as a whole text block on its channel; none of what the model wrote", async () => {
+    const { received, emit } = await harness();
+    emit({ type: 'inference:started', channelId: CHANNEL });
+    emit({ type: 'inference:tokens', content: 'Weighing the route.', blockType: 'thinking', blockIndex: 0, channelId: CHANNEL });
+    emit({ type: 'inference:tokens', content: 'An aside for no one. ', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
+    emit({ type: 'inference:tokens', content: '>> The ferry leaves at noon.', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
+    emit({ type: 'inference:content_block', phase: 'block_complete', blockType: 'text', blockIndex: 1, channelId: CHANNEL });
+    const published = { serverId: 'discord', channelId: CHANNEL, inferenceId: 'i1' };
+    emit({ type: 'inference:published', ...published, index: 0, text: 'The ferry leaves at noon.', messageId: 'm1' });
+    emit({ type: 'inference:published', ...published, index: 1, text: '\n\nTake the coast road.', messageId: 'm2' });
+    emit({ type: 'inference:completed' });
+    await waitFor(() => received.some((m) => m.type === 'activation_end'), 'the turn\'s end');
+
+    const all = JSON.stringify(received);
+    for (const unpublished of ['Weighing', 'An aside', '>>']) expect(all).not.toContain(unpublished);
+    expect(received.map((m) => m.type)).toEqual([
+      'activation_start',
+      'block_start', 'chunk', 'block_complete',
+      'block_start', 'chunk', 'block_complete',
+      'activation_end',
+    ]);
+    const blocks = received.filter((m) => m.blockType !== undefined);
+    expect(blocks.every((m) => m.blockType === 'text' && m.channelId === '123')).toBe(true);
+    expect(blocks.filter((m) => m.type === 'chunk').map((m) => [m.text, m.visible])).toEqual([
+      ['The ferry leaves at noon.', true], ['Take the coast road.', true],
+    ]);
+    expect(blocks.filter((m) => m.type === 'block_complete').map((m) => m.content)).toEqual([
+      'The ferry leaves at noon.', 'Take the coast road.',
     ]);
   }, 30_000);
 });

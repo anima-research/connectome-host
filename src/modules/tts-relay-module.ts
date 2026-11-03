@@ -29,8 +29,6 @@ export interface TtsRelayModuleConfig {
   notifyOnInterruption?: boolean;
 }
 
-type BlockType = 'text' | 'thinking' | 'tool_call' | 'tool_result';
-
 interface InterruptionEvent {
   channelId: string; // raw Discord snowflake
   spokenText: string;
@@ -149,7 +147,6 @@ interface ActivationState {
   mcplChannelId?: string;
   rawChannelId?: string;
   announced: boolean;
-  blocks: Map<number, string>;
 }
 
 interface PublishedMessage {
@@ -239,7 +236,7 @@ export class TtsRelayModule implements Module {
   private activation(agentName: string): ActivationState {
     let st = this.activations.get(agentName);
     if (!st) {
-      st = { announced: false, blocks: new Map() };
+      st = { announced: false };
       this.activations.set(agentName, st);
     }
     return st;
@@ -285,6 +282,20 @@ export class TtsRelayModule implements Module {
         if (this.published.length > PUBLISHED_RING_MAX) {
           this.published.splice(0, this.published.length - PUBLISHED_RING_MAX);
         }
+        // Only published prose is voiced: agent-framework's contract for a
+        // relay that voices the agent's prose. Each message is a whole text
+        // block, so the client voices its last sentence when it's posted.
+        const content = event.text.replace(/^\n+/, '');
+        if (!content.trim()) break;
+        const block = {
+          channelId: rawChannelId(event.channelId),
+          ...this.identity(event.agentName),
+          blockIndex: event.index,
+          blockType: 'text' as const,
+        };
+        this.client?.emit('block_start', block);
+        this.client?.emit('chunk', { ...block, text: content, visible: true });
+        this.client?.emit('block_complete', { ...block, content });
         break;
       }
 
@@ -295,40 +306,13 @@ export class TtsRelayModule implements Module {
         break;
       }
 
-      case 'inference:tokens': {
-        const st = this.activation(event.agentName);
-        this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (!st.rawChannelId) break;
-        st.blocks.set(event.blockIndex, (st.blocks.get(event.blockIndex) ?? '') + event.content);
-        this.client?.emit('chunk', {
-          channelId: st.rawChannelId,
-          ...this.identity(event.agentName),
-          text: event.content,
-          blockIndex: event.blockIndex,
-          blockType: event.blockType as BlockType,
-          visible: event.blockType === 'text',
-        });
-        break;
-      }
-
+      // The model's text, thinking and tool calls as written aren't what was
+      // published (an explicit-mode aside, a `>>` prefix, a held draft): the
+      // token traces are read for the turn's channel only.
+      case 'inference:tokens':
       case 'inference:content_block': {
         const st = this.activation(event.agentName);
         this.adoptChannel(st, event.agentName, traceChannelId(event));
-        if (!st.rawChannelId) break;
-        const base = {
-          channelId: st.rawChannelId,
-          ...this.identity(event.agentName),
-          blockIndex: event.blockIndex,
-          blockType: event.blockType as BlockType,
-        };
-        if (event.phase === 'block_start') {
-          this.client?.emit('block_start', base);
-        } else {
-          // inference:content_block carries no content.
-          const content = st.blocks.get(event.blockIndex) ?? '';
-          st.blocks.delete(event.blockIndex);
-          this.client?.emit('block_complete', { ...base, content });
-        }
         break;
       }
 
@@ -339,7 +323,10 @@ export class TtsRelayModule implements Module {
       case 'inference:aborted':
         this.endActivation(event.agentName, 'abort');
         break;
-      case 'inference:failed':
+      // inference:failed ends one attempt, not the turn: the framework then
+      // retries it, holds it for a provider's wait, or ends it with
+      // inference:exhausted or inference:aborted. Ending the activation there
+      // would cancel the client's audio of what the turn already published.
       case 'inference:exhausted':
         this.endActivation(event.agentName, 'error');
         break;
