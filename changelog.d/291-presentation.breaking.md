@@ -8,7 +8,10 @@
   - `/undo` is agent-framework's `undoLastTurn`: the agent's last turn leaves
     its window, and its next request is built without it. The record keeps the
     turn and no branch moves, so the workspace and `_config` mounts, MCPL
-    checkpoints and the inference log are no longer reverted, and another
+    checkpoints and the inference log are no longer reverted, history search
+    (`modules.history`, its semantic search too) still finds the turn,
+    marked `window: "undone"`, where it left out a turn the undo had moved
+    off the current branch, and another
     resident's newer row is left alone, where `/undo` used to branch the store
     before the record's newest reply, whoever's it was. `/redo` puts the turn
     back. Both are refused while the agent's own turn is alive, and for an
