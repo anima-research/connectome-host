@@ -14,7 +14,7 @@
  */
 
 import type { ContentBlock } from '@animalabs/agent-framework';
-import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG } from '@animalabs/context-manager';
+import { DEFAULT_AUTOBIOGRAPHICAL_CONFIG, defaultTokenEstimator } from '@animalabs/context-manager';
 import type { RecipeStrategy } from '../recipe.js';
 import { USER_IMAGE_LIMITS, type UserImageLimits, type UserMessageImage } from './protocol.js';
 import { imageDamage, imageSize, isAnimated, sniffImageType } from './image-bytes.js';
@@ -60,6 +60,48 @@ export function liveImageWindow(strategy: RecipeStrategy | undefined): number | 
  */
 export function takesUserImages(strategy: RecipeStrategy | undefined): boolean {
   return (strategy?.type ?? 'autobiographical') !== 'passthrough';
+}
+
+/**
+ * The depth, in context-manager's token estimate, past which a recipe's
+ * strategy replaces images with a placeholder (`imageStripDepthTokens`), or
+ * `undefined` when there is none to check: 0 turns the depth off, and a
+ * strategy an extension registers keeps a depth the host can't know.
+ */
+export function liveImageDepth(strategy: RecipeStrategy | undefined): number | undefined {
+  const type = strategy?.type ?? 'autobiographical';
+  if (type !== 'autobiographical' && type !== 'frontdesk') return undefined;
+  const n = strategy?.imageStripDepthTokens ?? DEFAULT_AUTOBIOGRAPHICAL_CONFIG.imageStripDepthTokens;
+  return typeof n === 'number' && n > 0 ? n : undefined;
+}
+
+/** The share of `liveImageDepth` a send's own estimate may take. */
+export const SEND_DEPTH_SHARE = 0.9;
+
+/** context-manager 0.24.0's estimate for an image block with no `tokenEstimate`. */
+const IMAGE_TOKENS = 1600;
+
+/** The ingestion chunking a context-manager strategy may apply to a message. */
+export interface IngressChunker {
+  chunkIngressMessage?(participant: string, content: never[]): { shards: Array<{ content: unknown[] }> } | null;
+}
+
+/**
+ * The depth context-manager counts for a send's images while it is the newest
+ * message: its estimate of each shard `strategy` stores the send as, at the
+ * calibration `multiplier`, priced block by block as
+ * `MessageStore.estimateTokens` prices them.
+ */
+export function sendDepthTokens(content: ContentBlock[], strategy: IngressChunker, multiplier: number): number {
+  const shards = strategy.chunkIngressMessage?.('user', content as never[])?.shards.map((s) => s.content) ?? [content];
+  let tokens = 0;
+  for (const shard of shards) {
+    for (const block of shard as ContentBlock[]) {
+      const raw = block.type === 'text' ? defaultTokenEstimator(block.text) : block.type === 'image' ? IMAGE_TOKENS : 0;
+      tokens += Math.round(raw * multiplier);
+    }
+  }
+  return tokens;
 }
 
 /**

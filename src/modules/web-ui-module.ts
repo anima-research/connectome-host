@@ -14,6 +14,7 @@ import type {
   TraceEvent,
   SessionUsageSnapshot,
   WorkspaceModule,
+  ContentBlock,
 } from '@animalabs/agent-framework';
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
@@ -106,7 +107,10 @@ import {
   type PanelAppRef,
   type McplLiveServer,
 } from '../web/panel-data.js';
-import { hostImageLimits, liveImageBytes, liveImageWindow, takesUserImages, userImageBlocks } from '../web/user-images.js';
+import {
+  SEND_DEPTH_SHARE, hostImageLimits, liveImageBytes, liveImageDepth, liveImageWindow, sendDepthTokens, takesUserImages,
+  userImageBlocks,
+} from '../web/user-images.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import {
   ObserverRegistry,
@@ -1781,6 +1785,20 @@ export class WebUiModule implements Module {
           content = parsed.content.trim()
             ? [...checked.blocks, { type: 'text', text: parsed.content }]
             : checked.blocks;
+          const depth = liveImageDepth(sharedServer.app.recipe.agent.strategy);
+          const cm = sharedServer.app.framework.getAllAgents()[0]?.getContextManager();
+          if (depth !== undefined && cm) {
+            const multiplier = cm.getRenderStats()?.calibration?.multiplier ?? 1;
+            if (sendDepthTokens(content as ContentBlock[], cm.getStrategy(), multiplier) > depth * SEND_DEPTH_SHARE) {
+              this.send(client, {
+                type: 'error',
+                ...(parsed.corrId !== undefined ? { corrId: parsed.corrId } : {}),
+                message: 'message not sent: with this much text, its images would be dropped before the model sees them. '
+                  + 'Send the images in a message of their own, or shorten the text',
+              });
+              return;
+            }
+          }
         }
         sharedServer?.app.framework.pushEvent({
           type: 'external-message',
