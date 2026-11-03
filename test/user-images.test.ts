@@ -243,6 +243,44 @@ describe('a whole image', () => {
   });
 });
 
+describe('an image whose parts are there but empty', () => {
+  test('an empty IDAT, a GIF frame with no data and an empty ANMF are no image data', () => {
+    const png = bytes('png');
+    const emptyIdat = Buffer.concat([png.subarray(0, 33), pngChunk('IDAT', new Uint8Array()), pngChunk('IEND', new Uint8Array())]);
+    expect(imageDamage(emptyIdat, 'image/png')).toBe('has no image data');
+    const emptyFrame = Buffer.from([
+      ...Buffer.from('GIF89a', 'latin1'), 1, 0, 1, 0, 0x00, 0, 0,
+      0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x00, 0x02, 0x00,
+      0x3b,
+    ]);
+    expect(imageDamage(emptyFrame, 'image/gif')).toBe('has no image data');
+    const vp8x = [...Buffer.from('VP8X', 'latin1'), 10, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const emptyAnmf = Buffer.from([
+      ...Buffer.from('RIFF', 'latin1'), 4 + 18 + 8, 0, 0, 0, ...Buffer.from('WEBP', 'latin1'),
+      ...vp8x, ...Buffer.from('ANMF', 'latin1'), 0, 0, 0, 0,
+    ]);
+    expect(imageDamage(emptyAnmf, 'image/webp')).toBe('has no image data');
+  });
+
+  test('an IHDR of any length but 13 gives no size', () => {
+    const png = bytes('png');
+    const short = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', png.subarray(16, 24)), png.subarray(33)]);
+    expect(imageSize(short, 'image/png')).toBeNull();
+  });
+
+  test("a WebP whose last chunk lacks its pad byte, or that ends in a few spare bytes, is taken, as decoders take it", () => {
+    const webp = bytes('webpLossless');
+    const riff = (body: Buffer) => {
+      const b = Buffer.from(body);
+      b.writeUInt32LE(b.length - 8, 4);
+      return b;
+    };
+    expect(imageDamage(riff(Buffer.concat([webp, Buffer.from('EXIF', 'latin1'), Buffer.from([1, 0, 0, 0, 0x41])])), 'image/webp')).toBeNull();
+    expect(imageDamage(riff(Buffer.concat([webp, Buffer.from([0, 0, 0])])), 'image/webp')).toBeNull();
+    expect(imageDamage(riff(Buffer.concat([webp, Buffer.from('EXIF', 'latin1'), Buffer.from([1, 0, 0, 0, 0x41, 0])])), 'image/webp')).toBeNull();
+  });
+});
+
 describe('isAnimated', () => {
   test('a GIF of two frames is animated, and of one is not', () => {
     expect(imageDamage(gifOf(2), 'image/gif')).toBeNull();

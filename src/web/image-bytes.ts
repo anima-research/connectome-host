@@ -45,7 +45,7 @@ export function imageSize(b: Uint8Array, mediaType: string): { width: number; he
   switch (mediaType) {
     case 'image/png':
       // 8-byte signature, then the IHDR chunk: length, 'IHDR', width, height.
-      if (b.length < 24 || tag(12) !== 'IHDR') return null;
+      if (b.length < 24 || tag(12) !== 'IHDR' || u32be(b, 8) !== 13) return null;
       return { width: u32be(b, 16), height: u32be(b, 20) };
     case 'image/gif':
       if (b.length < 10) return null;
@@ -161,7 +161,7 @@ function pngDamage(b: Uint8Array): string | null {
     if (end > b.length) return CUT_SHORT;
     const stored = u32be(b, end - 4);
     if (crc32(b, o + 4, end - 4) !== stored) return `is damaged: its ${type} chunk fails its checksum`;
-    if (type === 'IDAT') sawData = true;
+    if (type === 'IDAT' && len > 0) sawData = true;
     if (type === 'IEND') return sawData ? null : 'has no image data';
     o = end;
   }
@@ -250,8 +250,9 @@ function gifWalk(b: Uint8Array): number | string {
       o = skipSubBlocks(o + 2);
     } else if (block === 0x2c) {
       if (o + 10 > b.length) return CUT_SHORT;
-      o = skipSubBlocks(o + 10 + tableSize(b[o + 9]!) + 1);
-      frames++;
+      const data = o + 10 + tableSize(b[o + 9]!) + 1;
+      if (data < b.length && b[data] !== 0) frames++;
+      o = skipSubBlocks(data);
     } else {
       return 'is damaged: it has a block of unknown kind';
     }
@@ -270,7 +271,7 @@ function webpDamage(b: Uint8Array): string | null {
     const type = String.fromCharCode(b[o]!, b[o + 1]!, b[o + 2]!, b[o + 3]!);
     const size = u32le(b, o + 4);
     if (o + 8 + size > riffEnd) return CUT_SHORT;
-    if (type === 'VP8 ' || type === 'VP8L' || type === 'ANMF') sawImage = true;
+    if (type === 'VP8 ' || type === 'VP8L' || (type === 'ANMF' && size > 16)) sawImage = true;
     o += 8 + size + (size & 1);
   }
   return sawImage ? null : 'has no image data';
