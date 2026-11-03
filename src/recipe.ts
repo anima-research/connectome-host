@@ -1207,11 +1207,11 @@ export interface RecipeModules {
    * was published to) to the relay's `/bot` WebSocket, where voice clients
    * (Melodeus / iOS) speak it. Text the agent didn't publish, its thinking,
    * tool calls and tool results, and messages sent by a tool call aren't
-   * sent, nor is anything published while the relay is reconnecting. Also
-   * handles the relay's `interruption` events: the just-posted Discord
-   * message is edited down to the words actually voiced, and a note lands in
-   * the agent's context. `token` should be `${VAR}`-substituted from .env,
-   * never literal.
+   * sent, and nothing is sent while the host isn't connected to the
+   * relay. Also handles the relay's `interruption` events: the just-posted
+   * Discord message is edited down to the words actually voiced, and a note
+   * lands in the agent's context. `token` should be `${VAR}`-substituted from
+   * .env, never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
