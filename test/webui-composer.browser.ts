@@ -384,7 +384,7 @@ const OLDER = 'scroll to the top or click to load 200 older messages';
 
 async function olderReadyOrAsked(c: Composer): Promise<void> {
   await until('the older-history control enabled, or a request of the pane\'s own',
-    async () => c.host.historyAsked() > 1 || await c.page.getByTitle(OLDER).isEnabled().catch(() => false), (v) => v);
+    async () => c.host.historyAsked() > 1 || await c.page.getByTitle(OLDER).isEnabled().catch(() => false), (v) => v, 3_000);
 }
 
 async function pageInOlder(c: Composer, texts: string[]): Promise<boolean> {
@@ -555,7 +555,7 @@ describe('a message is never lost', () => {
       c.host.append('after the page', 'a corrId of its own');
       await c.page.getByText('after the page', { exact: true }).waitFor();
       expect(await c.page.getByText('older on long', { exact: true }).count()).toBe(0);
-      await until("the new branch's own history", () => pageInOlder(c, ['oldest on side', 'older on side']), (v) => v);
+      await until("the new branch's own history", () => pageInOlder(c, ['oldest on side', 'older on side']), (v) => v, 5_000);
     });
   });
 
@@ -602,7 +602,7 @@ describe('a message is never lost', () => {
       expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
       await olderReadyOrAsked(c);
       c.host.releaseHistory();
-      await until('the older history', () => pageInOlder(c, ['oldest', 'older']), (v) => v);
+      await until('the older history', () => pageInOlder(c, ['oldest', 'older']), (v) => v, 5_000);
     });
   });
 });
@@ -660,6 +660,9 @@ describe('images', () => {
       await c.page.getByText('still reading images; send again in a moment').waitFor();
       await c.page.evaluate(() => (window as unknown as { releaseFileReads: () => void }).releaseFileReads());
       await c.page.getByTitle(/^dot\.png/).waitFor();
+      await until('the reading note cleared', () => c.page.getByText('still reading images; send again in a moment').count(), (n) => n === 0);
+      c.host.append('after the send', 'a corrId of its own');
+      await c.page.getByText('after the send', { exact: true }).waitFor();
       expect(c.host.received.slice(from).filter((f) => f.type === 'user-message')).toEqual([]);
     }, { init: HOLD_FILE_READS });
   });
@@ -672,6 +675,8 @@ describe('images', () => {
       ]);
       await c.page.getByText("photo.heic isn't in a format this browser can read; convert it to PNG or JPEG").waitFor();
       await c.page.getByText('cut.png is cut short: the file ends before the image does; attach a whole copy').waitFor();
+      expect(await c.page.getByTitle(/^photo\.heic/).count()).toBe(0);
+      expect(await c.page.getByTitle(/^cut\.png/).count()).toBe(0);
     });
   });
 
@@ -730,16 +735,18 @@ describe('images', () => {
     }, { limits: { maxTotalBase64Chars: 6_000 } });
   });
 
-  test('an animated GIF is sent as its first frame, still, and marked first frame', async () => {
+  test('an animated GIF is sent as its first frame, still, and marked still frame', async () => {
     await withComposer(async (c) => {
       await c.page.locator('input[type="file"]').setInputFiles({ name: 'blink.gif', mimeType: 'image/gif', buffer: TWO_FRAME_GIF });
       const tile = c.page.getByTitle(/^blink\.gif/);
       await tile.waitFor();
       expect(await tile.getAttribute('title')).toBe('blink.gif — converted from image/gif to image/webp; an animation, redrawn as one still frame');
-      expect(await tile.getByText('first frame', { exact: true }).count()).toBe(1);
+      expect(await tile.getByText('still frame', { exact: true }).count()).toBe(1);
       const frame = await send(c, 'blink');
       expect(frame.images?.map((i) => i.mediaType)).toEqual(['image/webp']);
       expect(isAnimated(Buffer.from(frame.images![0]!.data, 'base64'), 'image/webp')).toBe(false);
+      const { rgba } = await sentImage(c.page, frame.images![0]!);
+      expect(rgba.slice(0, 3).every((v) => v < 60)).toBe(true);
     });
   });
 });

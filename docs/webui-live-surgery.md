@@ -89,9 +89,9 @@ byte; one too big, too large on a side, or in a format the model APIs
 don't take (BMP, SVG, …) is redrawn smaller as WebP (JPEG on white, which
 flattens any transparency, where the browser can't write WebP), and its
 thumbnail says so. A size the browser can't draw at is tried smaller. An
-animation is redrawn as its first frame, the one the canvas draws, and shows
-"first frame": Claude's docs say only the first frame is used, and OpenAI's
-list only non-animated GIF. A host whose recipe uses `openai-responses` or
+animation is redrawn as one still frame, the one a canvas draws (its default
+image, else its first frame), and shows "still frame": Claude's docs say only
+the first frame is used, and OpenAI's list only non-animated GIF. A host whose recipe uses `openai-responses` or
 `openai-codex` refuses an animated GIF, WebP or PNG from any client. A PNG,
 JPEG, GIF or WebP that is cut short, or a PNG with a chunk that
 fails its checksum, is refused rather than redrawn, since the browser would

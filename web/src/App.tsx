@@ -128,6 +128,8 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
   };
 }
 
+const STILL_READING = 'still reading images; send again in a moment';
+
 export function App() {
   const wire = createWireClient();
   const treeStore = createTreeStore();
@@ -1255,6 +1257,7 @@ export function App() {
     }
     if (overCount > 0) notes.push(`${overCount} image(s) not attached: a message takes at most ${L.maxCount}`);
     if (notes.length > 0) setAttachNotice(notes.join(' · '));
+    else if (preparing() === 0 && attachNotice() === STILL_READING) setAttachNotice(null);
   };
 
   const removeAttachment = (id: string): void => {
@@ -1266,7 +1269,7 @@ export function App() {
     const text = draft().trim();
     const images = attachments();
     if (preparing() > 0) {
-      setAttachNotice('still reading images; send again in a moment');
+      setAttachNotice(STILL_READING);
       return;
     }
     if (!text && images.length === 0) return;

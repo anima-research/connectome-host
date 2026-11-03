@@ -7,10 +7,11 @@
   fails its checksum; the host checks every image again and refuses,
   saying why, a message with an image whose format, size or dimensions the
   API would refuse, or that is cut short or a damaged PNG, so no such image
-  is stored. The browser redraws an animation as its first frame, marked
-  "first frame", which is the frame Claude's docs say it uses; a host on
-  `openai-responses` or `openai-codex`, where OpenAI's docs list only
-  non-animated GIF, refuses an animated image from any client. A message the host refuses, or that the connection
+  is stored. The browser redraws an animation as one still frame, marked
+  "still frame", since Claude's docs say only the first frame is used; a
+  host on `openai-responses` or `openai-codex`, where OpenAI's docs list
+  only non-animated GIF, refuses an animated image from any client. A
+  message the host refuses, or that the connection
   doesn't take, isn't lost: it stays in the composer, or in the transcript
   marked not sent with the host's reason, and one a reconnect can't confirm
   is marked so until its echo comes. Such a row stays through a change of

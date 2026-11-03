@@ -17,7 +17,7 @@ export interface Attachment {
   /** data: URL for the thumbnail and the sent message's own row. */
   dataUrl: string;
   /** What was done to fit it, when it was not sent as picked. */
-  adjusted?: 'shrunk' | 'converted' | 'first frame';
+  adjusted?: 'shrunk' | 'converted' | 'still frame';
   note?: string;
 }
 
@@ -83,7 +83,7 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     img = await loadImage(file);
   } catch {
     throw new Error(sniffed
-      ? `${name} can't be drawn, so its data may be damaged; attach another copy`
+      ? `${name} can't be drawn by this browser: it may be damaged, or in a form this browser can't decode; convert it to PNG or JPEG`
       : `${name} isn't in a format this browser can read; convert it to PNG or JPEG`);
   }
   const width = img.naturalWidth;
@@ -111,10 +111,12 @@ export async function prepareImage(file: File, limits: UserImageLimits): Promise
     mediaType: fit.blob.type,
     data: dataUrl.slice(dataUrl.indexOf(',') + 1),
     dataUrl,
-    adjusted: animated ? 'first frame' : fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
-    note: animated
-      ? `${fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
-      : fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type }),
+    adjusted: animated ? 'still frame' : fit.w !== width || fit.h !== height ? 'shrunk' : 'converted',
+    note: animated && fit.w === width && fit.h === height && !fit.flattened && sniffed === fit.blob.type
+      ? ANIMATED_REDRAWN_NOTE
+      : animated
+        ? `${fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type })}; ${ANIMATED_REDRAWN_NOTE}`
+        : fitNote(fit, { width, height, type: sniffed ?? file.type, to: fit.blob.type }),
   };
 }
 
