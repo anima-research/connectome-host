@@ -549,28 +549,71 @@ describe('observer sessions and connections end with their grant', () => {
   });
 });
 
+const TRANSPILER = new Bun.Transpiler({ loader: 'ts' });
+
 /** The traces raised at each emitTrace call (emitTrace, emitTraceFn,
- *  hooks.emitTrace) in `code`: the type of the event it's given, or of each
- *  event a conditional gives it (`ok ? { type: 'a' } : { type: 'b' }`). */
-function emittedTypes(code: string): string[] {
+ *  hooks.emitTrace, an optional call among them) in `source`, read as Bun
+ *  transpiles it, so a call in a comment isn't read: the `type` of each
+ *  object literal the call is given, whichever of its keys it is and
+ *  however it is quoted, and of each object a conditional gives it
+ *  (`ok ? { type: 'a' } : { type: 'b' }`). An object inside another, or
+ *  given to another call (`emitTrace(build({ type: 'x' }))`), isn't read,
+ *  nor is an event passed by name. */
+function emittedTypes(source: string): string[] {
+  const code = TRANSPILER.transformSync(source);
   const types: string[] = [];
-  for (const call of code.matchAll(/\bemitTrace(?:Fn)?\(/g)) {
-    // The call's argument, up to its closing parenthesis, strings skipped whole.
-    const from = call.index! + call[0].length;
-    let depth = 1;
-    let to = from;
-    for (; to < code.length && depth > 0; to++) {
-      const c = code[to]!;
+  for (const call of code.matchAll(/\bemitTrace(?:Fn)?(?:\?\.)?\(/g)) {
+    // The call's argument, read to its closing parenthesis: `view` holds the
+    // top level of each object it's given, all else a space.
+    const opened: string[] = [];
+    let view = '';
+    for (let k = call.index! + call[0].length; k < code.length; k++) {
+      const c = code[k]!;
+      const inObject = opened.length === 1 && opened[0] === '{';
       if (c === '"' || c === "'" || c === '`') {
-        for (to++; to < code.length && code[to] !== c; to++) if (code[to] === '\\') to++;
-      } else if (c === '(') depth++;
-      else if (c === ')') depth--;
+        let end = k + 1;
+        while (end < code.length && code[end] !== c) end += code[end] === '\\' ? 2 : 1;
+        if (inObject && c !== '`' && /(?<![\w$.])type\s*:\s*$/.test(view)) types.push(code.slice(k + 1, end));
+        view += ' ';
+        k = end;
+        continue;
+      }
+      if ('([{'.includes(c)) opened.push(c);
+      else if (')]}'.includes(c) && opened.pop() === undefined) break;
+      view += inObject && !'([{)]}'.includes(c) ? c : ' ';
     }
-    const argument = code.slice(from, to - 1);
-    for (const m of argument.matchAll(/(?:^\s*|\?\s*|\s:\s*)\{\s*type: '([^']+)'/g)) types.push(m[1]!);
   }
   return types;
 }
+
+/** `source` without its comments; a `//` or `/*` in a string is kept.
+ *  For trace.ts, which declares types alone, so no regular expression is in it. */
+function withoutComments(source: string): string {
+  let out = '';
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === '/' && source[i + 1] === '/') {
+      i = source.indexOf('\n', i);
+      if (i < 0) break;
+      out += '\n';
+    } else if (c === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end < 0) break;
+      out += ' ';
+      i = end + 1;
+    } else if (c === '"' || c === "'" || c === '`') {
+      let end = i + 1;
+      while (end < source.length && source[end] !== c) end += source[end] === '\\' ? 2 : 1;
+      out += source.slice(i, end + 1);
+      i = end;
+    } else out += c;
+  }
+  return out;
+}
+
+/** The trace types trace.ts's union declares, its comments left out. */
+const unionTypes = (source: string): string[] =>
+  [...new Set([...withoutComments(source).matchAll(/\btype:\s*(['"])([^'"]+)\1/g)].map((m) => m[2]!))].sort();
 
 describe('scope filters', () => {
   const entry: WelcomeMessageEntry = {
@@ -706,16 +749,15 @@ describe('scope filters', () => {
     // Bun resolves the package through its exports to the index of its source,
     // wherever it's installed; the trace types sit beside it.
     const index = Bun.resolveSync('@animalabs/agent-framework', import.meta.dir);
-    const source = readFileSync(join(dirname(index), 'types', 'trace.ts'), 'utf-8');
-    const types = [...new Set([...source.matchAll(/\btype: '([^']+)'/g)].map((m) => m[1]!))].sort();
+    const types = unionTypes(readFileSync(join(dirname(index), 'types', 'trace.ts'), 'utf-8'));
     expect(types.length).toBeGreaterThan(50);
     expect(types.filter((type) => !Object.hasOwn(TRACE_SCOPES, type))).toEqual([]);
     // And the table names no type the framework has dropped, such as the
     // branch-moving undo's undo:completed and redo:completed (#291). The gate,
     // MCPL and tune-out traces main's table gives entries (#462) are outside
-    // trace.ts's union: they're those raised at an emitTrace call, as the
-    // first key of the event it's given. Any other `type:` literal (a
-    // process event, a workspace event) is no trace and has no entry.
+    // trace.ts's union: they're those raised at an emitTrace call, as a key
+    // of the event it's given. Any other `type:` literal (a process event, a
+    // workspace event) is no trace and has no entry.
     const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? sources(join(dir, entry.name)) : entry.name.endsWith('.ts') ? [join(dir, entry.name)] : []);
     const emitted = new Set(sources(dirname(index)).flatMap((path) => emittedTypes(readFileSync(path, 'utf-8'))));
@@ -728,15 +770,37 @@ describe('scope filters', () => {
 
   test("the scan for the traces raised outside trace.ts's union reads only an emitTrace call's event", () => {
     const code = [
+      'export function f(this: any, hooks: any, emitTrace: any, emitTraceFn: any, build: any, r: any, base: any, agentName: string, path: string) {',
       "this.emitTrace({ type: 'gate:decided', agentName });",
       "hooks.emitTrace({\n      type: 'mcpl:channel-open',\n    });",
       "emitTraceFn({ type: 'tune-out:started' });",
       "this.pushEvent({ type: 'inference-request', agentName });",
       "const event = { type: 'workspace:created', path };",
       "emitTrace(build({ type: 'discord:message' }));",
-      "this.hooks.emitTrace(r.success\n        ? { type: 'tune-out:announced', ...base }\n        : { type: 'tune-out:announce-failed', ...base, error: r.error ?? 'publish failed' }),",
+      "this.hooks.emitTrace(r.success\n        ? { type: 'tune-out:announced', ...base }\n        : { type: 'tune-out:announce-failed', ...base, error: r.error ?? 'publish failed' });",
+      "this.emitTrace({ agentName, type: 'gate:new' });",
+      'emitTrace({ type: "mcpl:quoted-twice" });',
+      "this.hooks.emitTrace?.({ type: 'gate:optional-call' });",
+      "emitTrace({ type: 'gate:outer', detail: { type: 'nested:inner' } });",
+      "emitTrace({ note: \"type: 'in:a-string'\", type: 'gate:after-a-string' });",
+      "// this.emitTrace({ type: 'example:in-a-line-comment' });",
+      "/* emitTrace({ type: 'example:in-a-block-comment' }) */",
+      'return event;',
+      '}',
     ].join('\n');
-    expect(emittedTypes(code)).toEqual(['gate:decided', 'mcpl:channel-open', 'tune-out:started', 'tune-out:announced', 'tune-out:announce-failed']);
+    expect(emittedTypes(code)).toEqual([
+      'gate:decided', 'mcpl:channel-open', 'tune-out:started', 'tune-out:announced', 'tune-out:announce-failed',
+      'gate:new', 'mcpl:quoted-twice', 'gate:optional-call', 'gate:outer', 'gate:after-a-string',
+    ]);
+  });
+
+  test("the scan of trace.ts's union leaves out a type named only in a comment", () => {
+    const source = [
+      "// | { type: 'example:line'; }",
+      "export type T = | { type: 'tool:started'; url: 'http://example.com' } /* | { type: 'example:block' } */",
+      '  | { type: "tool:completed" };',
+    ].join('\n');
+    expect(unionTypes(source)).toEqual(['tool:completed', 'tool:started']);
   });
 
   test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
