@@ -12,13 +12,13 @@ const FIX = JSON.parse(readFileSync(new URL('./fixtures/user-images.json', impor
 const AUTH = `Basic ${Buffer.from('admin:pw').toString('base64')}`;
 const IMAGE = { mediaType: 'image/png', data: FIX.png };
 const REFUSAL = 'message not sent: with this much text, its images could be dropped before the model sees them. '
-  + 'Send the images in a message of their own, or shorten the text';
+  + 'Send the images in a message of their own';
 const TOGETHER = "these images together come within 10% of this host's image depth, the recipe's imageStripDepthTokens, "
   + 'or past it';
 const IMAGES_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, where they could reach the model only as `
   + `placeholders. Send at most ${fit}`;
 const BOTH_REFUSAL = (fit: string) => `message not sent: ${TOGETHER}, and so does the text with any one of them. `
-  + `Send at most ${fit} at once, and the text in a message of its own or shorter`;
+  + `Send at most ${fit} at once, and the text in a message of its own`;
 const DEPTH_REFUSAL = "message not sent: this host's image depth, the recipe's imageStripDepthTokens, leaves too little room "
   + 'for an image: the host keeps images 10% clear of it, since past it they reach the model only as placeholders. '
   + 'Whoever runs this host can raise it';
