@@ -280,11 +280,16 @@ describe("the TUI's history after an undo", () => {
     // The undone row's thinking is marked with its text.
     expect(frameAt('undone')).toContain('(undone) 💭 tally them first');
     expect(frameAt('undone')).not.toContain('(undone) You: count the ledgers');
-    // Lines that aren't the history's stay: the start's, and the operator's message.
+    // Lines that aren't the history's stay: the start's, and the operator's
+    // message. The history's lines are marked where they are, above the
+    // operator's message, not drawn again below it.
     for (const at of ['undone', 'redone']) {
       expect(frameAt(at)).toContain('tui-turns-test. Type /help for commands.');
       expect(frameAt(at)).toContain('You: and the fifth?');
+      expect(times(frameAt(at), '── session history')).toBe(1);
       expect(times(frameAt(at), '── end history ──')).toBe(1);
+      expect(times(frameAt(at), 'three ledgers')).toBe(1);
+      expect(frameAt(at).indexOf('three ledgers')).toBeLessThan(frameAt(at).indexOf('You: and the fifth?'));
     }
     // A row stored after the history was drawn is drawn below it while undone, and taken down at the redo.
     expect(frameAt('undone')).toContain('(undone) a fifth ledger');
