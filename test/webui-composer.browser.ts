@@ -467,6 +467,18 @@ const REFUSED = 'not sent: the host refused it';
 const UNCONFIRMED = 'not confirmed: it may not have reached the host';
 /** The title of the control that loads older history. */
 const OLDER = 'scroll to the top or click to load 200 older messages';
+
+async function olderReadyOrAsked(c: Composer): Promise<void> {
+  await until('the older-history control enabled, or a request of the pane\'s own',
+    async () => c.host.historyAsked() > 1 || await c.page.getByTitle(OLDER).isEnabled().catch(() => false), (v) => v);
+}
+
+async function pageInOlder(c: Composer, texts: string[]): Promise<boolean> {
+  const counts = await Promise.all(texts.map((t) => c.page.getByText(t, { exact: true }).count()));
+  if (counts.every((n) => n === 1)) return true;
+  if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 500 }).catch(() => {});
+  return false;
+}
 /** The title of the header's chip that names the branch. */
 const BRANCH_CHIP = 'Chronicle branches — click to browse lineage';
 
@@ -650,7 +662,7 @@ describe('a message is never lost', () => {
       expect(await c.page.getByText('newer on long', { exact: true }).count()).toBe(0);
       // No load carried over to it, bulk or single.
       expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
-      if (c.host.historyAsked() === 1) expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
+      await olderReadyOrAsked(c);
       c.host.releaseHistory();
       // A socket's frames arrive in order, so once this shows, the page has
       // been handled.
@@ -659,9 +671,7 @@ describe('a message is never lost', () => {
       expect(await c.page.getByText('older on long', { exact: true }).count()).toBe(0);
       // The new branch's own older history comes in, all of it, asked for by
       // the pane itself or, if it hasn't, as a person would.
-      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 });
-      await until("the new branch's own history", async () =>
-        [await c.page.getByText('oldest on side', { exact: true }).count(), await c.page.getByText('older on side', { exact: true }).count()].join(), (v) => v === '1,1');
+      await until("the new branch's own history", () => pageInOlder(c, ['oldest on side', 'older on side']), (v) => v);
     });
   });
 
@@ -715,13 +725,11 @@ describe('a message is never lost', () => {
       c.host.append('after the reconnect', 'a corrId of its own');
       await c.page.getByText('after the reconnect', { exact: true }).waitFor();
       expect(await c.page.getByTitle('stop after the current page').count()).toBe(0);
-      if (c.host.historyAsked() === 1) expect(await c.page.getByTitle(OLDER).isEnabled()).toBe(true);
+      await olderReadyOrAsked(c);
       // Paging goes on from the welcome, asked for by the pane itself or, if
       // it hasn't, as a person would.
       c.host.releaseHistory();
-      if (c.host.historyAsked() === 1) await c.page.getByTitle(OLDER).click({ timeout: 5_000 });
-      await until('the older history', async () =>
-        [await c.page.getByText('oldest', { exact: true }).count(), await c.page.getByText('older', { exact: true }).count()].join(), (v) => v === '1,1');
+      await until('the older history', () => pageInOlder(c, ['oldest', 'older']), (v) => v);
     });
   });
 });
