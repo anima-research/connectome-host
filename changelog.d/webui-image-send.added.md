@@ -25,11 +25,12 @@
   image in every request, takes no composer images. A message that would
   come near `imageStripDepthTokens` as soon as it is stored, where its
   images could reach the model only as a placeholder, is refused: one with
-  much text asks for the images in a message of their own, one whose images
-  together come that near says how many fit (and, when its text leaves no
-  room for even one, asks for the text in a message apart too), and where a
-  single image would, the refusal says the depth leaves too little room for
-  an image, which whoever runs the host can raise.
+  much text asks for the text first, then the images in a message of their
+  own, one whose images together come that near says how many fit (and, when
+  its text leaves no room for even one, asks for the text first, in a
+  message of its own, too), and where a single image would, the refusal says
+  the depth leaves too little room for an image, which whoever runs the host
+  can raise.
   A message whose text and images together are over the 16 MiB one
   message can carry stays in the composer with a note, rather than being
   lost when the host closes the connection.

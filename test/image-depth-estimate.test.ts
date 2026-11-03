@@ -109,6 +109,25 @@ describe("context-manager's own strip, at the measure the host prices", () => {
     }
   }
 
+  test('replaces images sent ahead of a long text, and keeps them sent after it', async () => {
+    const imagesOf = async (sends: ContentBlock[][]): Promise<number> => {
+      const root = mkdtempSync(join(tmpdir(), 'image-depth-order-'));
+      try {
+        const recipe = validateRecipe({ name: 'depth', agent: { systemPrompt: 'sys', strategy: { type: 'autobiographical', imageStripDepthTokens: 2_000 } } });
+        const cm = await ContextManager.open({ path: join(root, 'store'), strategy: buildFrameworkStrategy(recipe, 'claude-sonnet-4-5-20250929', 'UTC')! });
+        for (const content of sends) cm.addMessage('user', content as never);
+        const { messages } = await cm.compile();
+        cm.close();
+        return messages.flatMap((m) => m.content as Array<{ type: string }>).filter((b) => b.type === 'image').length;
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const text = { type: 'text', text: 'a'.repeat(1_200) } as ContentBlock;
+    expect(await imagesOf([[image()], [text]])).toBe(0);
+    expect(await imagesOf([[text], [image()]])).toBe(1);
+  });
+
   test('keeps the image of a send at the depth, and replaces it one token past', async () => {
     expect(PLACEHOLDER).toEqual(expect.any(String));
     expect(await compiledImages([image(), { type: 'text', text: 'a'.repeat(1_159) } as ContentBlock]))
